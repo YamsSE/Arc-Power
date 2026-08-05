@@ -16,7 +16,6 @@ import {
   createIpcHandlers,
   seedWaiverState,
 } from '../src/main/ipc-core.js';
-import { hasRetryable } from '../src/main/apply-retry.js';
 import { MockBackend } from '../src/main/backend/mock-backend.js';
 import { createMockIgs } from '../src/main/igs-service.js';
 import { createMockStartup } from '../src/main/startup.js';
@@ -432,22 +431,18 @@ test('igs-service channels: the DEFAULT adapter is the MOCK — no injection mea
 });
 
 // ---------------------------------------------------------------------------
-// F3 retry-with-verify (M2C-A) — replaces the M2b io-failed-only retry policy
+// F3 instant apply (M2C-B) — replaces the M2C-A retry-with-verify policy
 // ---------------------------------------------------------------------------
 
-/** Fully-off IGS stub: retries stay enabled (the default mock is fully on,
- *  which would take the single-attempt fast path). */
+/** Fully-off IGS stub: refusals compose the IGS-on message for PL/freq. */
 function fullyOffIgs() {
   return { getState: async () => ({ service: { found: true, running: false, startType: 'disabled' }, appRunning: false }) };
 }
 
-test('hasRetryable (F3 replacement for the M2b io-failed-only predicate): true for io-failed and silent no-ops, never for hard outcomes', () => {
-  assert.equal(hasRetryable({ ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed' } } }), true);
-  assert.equal(hasRetryable({ ok: false, perControl: { powerLimitW: { ok: false, silentNoop: true } } }), true);
-  assert.equal(hasRetryable({ ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } }), false);
-  assert.equal(hasRetryable({ ok: true, perControl: {} }), false);
-  assert.equal(hasRetryable({ ok: false, perControl: {} }), false);
-});
+/** Fully-on IGS stub (matches the default mock adapter). */
+function fullyOnIgs() {
+  return { getState: async () => ({ service: { found: true, running: true, startType: 'auto' }, appRunning: true }) };
+}
 
 function countingBackend() {
   const backend = new MockBackend();
@@ -459,61 +454,49 @@ function countingBackend() {
   return { backend, calls };
 }
 
-test('apply-settings: an io-failed apply is retried with backoff and marked retried on success', async () => {
+test('apply-settings: a refusal is instant — exactly ONE backend call, honest result', async () => {
   const { backend, calls } = countingBackend();
   const store = fakeStore();
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs(), applyRetryBackoffs: [1, 1], applyBudgetMs: 60_000 });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
 
-  // Fail io-failed twice, then succeed on the third attempt.
-  const realApply = backend.applySettings.bind(backend);
-  let fails = 2;
+  // The backend would succeed on a retry — it must never get one.
   let attempts = 0;
   backend.applySettings = async (deviceId, settings) => {
     attempts += 1;
-    if (fails > 0) {
-      fails -= 1;
+    if (attempts === 1) {
       return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed', message: 'driver busy' } } };
     }
-    return realApply(deviceId, settings);
+    return MockBackend.prototype.applySettings.call(backend, deviceId, settings);
   };
 
   const { result, state } = await handlers['apply-settings'](0, { powerLimitW: 220 });
-  assert.equal(attempts, 3); // initial + 2 retries
-  assert.equal(calls.apply, 1); // only the final attempt reached the backend
-  assert.equal(result.ok, true);
-  assert.equal(result.retried, true);
-  assert.equal(result.attempts, 3);
-  assert.equal(result.gaveUp, false);
-  assert.equal(state.powerLimitW, 220);
+  assert.equal(attempts, 1, 'single attempt — no retries, no backoff');
+  assert.equal(calls.apply, 0, 'the retried backend call never happened');
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.powerLimitW.errorCode, 'io-failed');
+  // IGS off + powerLimit refusal -> the composed message names IGS.
+  assert.match(result.perControl.powerLimitW.message, /Intel Graphics Software/);
+  assert.equal(state.powerLimitW, 210, 'driver state untouched (read-back unchanged)');
 });
 
-test('apply-settings: an always-io-failed apply gives up within the budget, retried: true, honest result', async () => {
+test('apply-settings: silent no-op (SUCCESS + unchanged read-back) fails instantly, NEVER applied', async () => {
   const backend = new MockBackend();
   const store = fakeStore();
-  const { handlers } = createIpcHandlers({
-    backend, store, emit: () => {}, igs: fullyOffIgs(),
-    // Deterministic give-up: attempt 1, retry at +1 ms, attempt 2, then the
-    // 1000 ms backoff exceeds the 10 ms budget.
-    applyRetryBackoffs: [1, 1000], applyBudgetMs: 10,
-  });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
 
   backend.applySettings = async () => ({
     ok: false,
-    perControl: { powerLimitW: { ok: false, errorCode: 'io-failed', message: 'driver busy' } },
+    perControl: { powerLimitW: { ok: false, errorCode: 'io-failed', readBackEqual: false, silentNoop: true, message: 'read-back 210 != requested 220' } },
   });
-  const attemptCount = { n: 0 };
-  const orig = backend.applySettings.bind(backend);
-  backend.applySettings = async (d, s) => { attemptCount.n += 1; return orig(d, s); };
-
-  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
-  assert.equal(attemptCount.n, 2);
-  assert.equal(result.ok, false);
-  assert.equal(result.retried, true);
-  assert.equal(result.gaveUp, true);
-  assert.equal(result.perControl.powerLimitW.errorCode, 'io-failed');
+  const { result, state } = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(result.ok, false, 'a silent no-op is NEVER "applied"');
+  assert.equal(result.perControl.powerLimitW.silentNoop, true);
+  assert.equal(result.perControl.powerLimitW.ok, false);
+  assert.match(result.perControl.powerLimitW.message, /Intel Graphics Software/);
+  assert.equal(state.powerLimitW, 210);
 });
 
-test('apply-settings: non-io-failed errors are NEVER retried (waiver/out-of-range are hard)', async () => {
+test('apply-settings: hard errors are instant with the errorCode kept (no refusal message)', async () => {
   const { backend, calls } = countingBackend();
   backend.injectFail('powerLimitW', 'waiver-not-set');
   const store = fakeStore();
@@ -521,135 +504,46 @@ test('apply-settings: non-io-failed errors are NEVER retried (waiver/out-of-rang
 
   const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
   assert.equal(calls.apply, 1);
-  assert.equal(result.retried, false);
+  assert.equal(result.ok, false);
   assert.equal(result.perControl.powerLimitW.errorCode, 'waiver-not-set');
+  assert.equal(result.perControl.powerLimitW.message, undefined, 'hard errors keep the renderer errorMessage mapping');
 });
 
-test('apply-settings: success on the first attempt is not marked retried', async () => {
+test('apply-settings: success on the single attempt reports ok + fresh state', async () => {
   const { backend, calls } = countingBackend();
   const store = fakeStore();
   const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
 
-  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
-  assert.equal(calls.apply, 1);
-  assert.equal(result.retried, false);
-  assert.equal(result.ok, true);
-});
-
-test('apply-settings: partial re-apply — a hard-failed control keeps its honest result, retry sends only the retryable one', async () => {
-  const backend = new MockBackend();
-  const store = fakeStore();
-  const sent = [];
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs(), applyRetryBackoffs: [1, 1], applyBudgetMs: 60_000 });
-
-  let n = 0;
-  backend.applySettings = async (d, s) => {
-    n += 1;
-    sent.push({ ...s });
-    if (n < 3) {
-      return {
-        ok: false,
-        perControl: {
-          powerLimitW: { ok: false, errorCode: 'io-failed', message: 'driver busy' },
-          tempLimitC: { ok: false, errorCode: 'waiver-not-set', message: 'waiver' },
-        },
-      };
-    }
-    return { ok: true, perControl: { powerLimitW: { ok: true, readBackEqual: true } } };
-  };
-  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220, tempLimitC: 85 });
-  assert.equal(n, 3);
-  assert.equal(result.retried, true);
-  // The hard-failed control (waiver) is never re-sent after the first
-  // attempt and its honest failure survives into the final result.
-  assert.deepEqual(Object.keys(sent[1]).sort(), ['powerLimitW']);
-  assert.deepEqual(Object.keys(sent[2]).sort(), ['powerLimitW']);
-  assert.equal(result.ok, false, 'partial result stays honest');
-  assert.equal(result.perControl.tempLimitC.errorCode, 'waiver-not-set');
-  assert.equal(result.perControl.powerLimitW.ok, true);
-});
-
-// --- F3 additions: fast path, progress events, cancel, silent no-op --------
-
-test('apply-settings: IGS fully ON -> single attempt even when the backend would fail', async () => {
-  const { backend } = countingBackend();
-  const store = fakeStore();
-  const attempts = { n: 0 };
-  backend.applySettings = async (d, s) => {
-    attempts.n += 1;
-    return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed', message: 'busy' } } };
-  };
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} }); // default mock igs = fully on
-
-  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
-  assert.equal(attempts.n, 1, 'fast path: single attempt, no retries');
-  assert.equal(result.retried, false);
-  assert.equal(result.gaveUp, true, 'a retryable refusal on the fast path is still a give-up (summary fires)');
-  assert.equal(result.ok, false, 'still honest: the failure is reported');
-});
-
-test('apply-settings: retry progress is pushed as apply:progress events (deviceId-scoped)', async () => {
-  const backend = new MockBackend();
-  const store = fakeStore();
-  const emitted = [];
-  const { handlers } = createIpcHandlers({ backend, store, emit: (ch, p) => emitted.push([ch, p]), igs: fullyOffIgs(), applyRetryBackoffs: [1, 1], applyBudgetMs: 60_000 });
-
-  let n = 0;
-  const real = MockBackend.prototype.applySettings.bind(backend);
-  backend.applySettings = async (d, s) => {
-    n += 1;
-    if (n < 3) return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed' } } };
-    return real(d, s);
-  };
-
-  await handlers['apply-settings'](0, { powerLimitW: 220 });
-  const progress = emitted.filter(([ch]) => ch === 'apply:progress');
-  assert.equal(progress.length, 2, 'one progress event per retry');
-  assert.deepEqual(progress.map(([, p]) => p.deviceId), [0, 0]);
-  assert.deepEqual(progress.map(([, p]) => p.attempt), [1, 2]);
-  assert.ok(progress.every(([, p]) => Array.isArray(p.controls) && p.controls.includes('powerLimitW')));
-});
-
-test('apply-cancel: aborts the in-flight apply; the handler returns the honest partial result', async () => {
-  const backend = new MockBackend();
-  const store = fakeStore();
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs(), applyRetryBackoffs: [500], applyBudgetMs: 60_000 });
-
-  backend.applySettings = async () => ({ ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed' } } });
-
-  const pending = handlers['apply-settings'](0, { powerLimitW: 220 });
-  await new Promise((r) => setTimeout(r, 60));
-  assert.deepEqual(await handlers['apply-cancel'](0), { ok: true });
-  const { result } = await pending;
-  assert.equal(result.cancelled, true);
-  assert.equal(result.attempts, 1);
-  assert.equal(result.ok, false);
-  assert.equal(result.perControl.powerLimitW.errorCode, 'io-failed');
-});
-
-test('apply-settings: a SILENT NO-OP (SUCCESS + unchanged read-back) is retried, never reported applied', async () => {
-  const backend = new MockBackend();
-  const store = fakeStore();
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs(), applyRetryBackoffs: [1, 1], applyBudgetMs: 60_000 });
-
-  let n = 0;
-  const real = MockBackend.prototype.applySettings.bind(backend);
-  backend.applySettings = async (d, s) => {
-    n += 1;
-    if (n < 3) {
-      // E4 evidence shape: SUCCESS + read-back unchanged (the driver accepted
-      // nothing). The backend flags silentNoop: true — must be retried.
-      return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed', readBackEqual: false, silentNoop: true, message: 'read-back 210 != requested 220' } } };
-    }
-    return real(d, s);
-  };
-
   const { result, state } = await handlers['apply-settings'](0, { powerLimitW: 220 });
-  assert.equal(n, 3);
-  assert.equal(result.retried, true);
+  assert.equal(calls.apply, 1);
   assert.equal(result.ok, true);
   assert.equal(result.perControl.powerLimitW.ok, true);
   assert.equal(state.powerLimitW, 220);
+});
+
+test('apply-settings: refusal message composition — PL with IGS on is plain + code, volt is plain', async () => {
+  // Default mock igs = fully on: a refusal there is rare -> plain + code.
+  const backend = new MockBackend();
+  const store = fakeStore();
+  let n = 0;
+  backend.applySettings = async () => {
+    n += 1;
+    return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed' } } };
+  };
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOnIgs() });
+  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(result.perControl.powerLimitW.message, 'The GPU driver refused the change. (io-failed)');
+  assert.equal(n, 1);
+});
+
+test('apply-settings: a volt/temp refusal with IGS off gets the plain driver message', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
+  backend.injectFail('gpuVoltOffsetV', 'io-failed');
+  const { result } = await handlers['apply-settings'](0, { gpuVoltOffsetV: 0.05 });
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.gpuVoltOffsetV.message, 'The GPU driver refused the change.');
 });
 
 // ---------------------------------------------------------------------------
@@ -738,6 +632,21 @@ test('driver-info channel: an injected adapter is used (registry failure -> null
   const driverInfo = { get: async () => ({ driverDate: null }) };
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, driverInfo });
   assert.deepEqual(await handlers['driver-info'](), { driverDate: null });
+});
+
+// M2C-B B3 — app:version channel: no payload; the default reads package.json
+// (electron-free), an injected version is used verbatim.
+test('app-version channel: no payload; the DEFAULT reads the package.json version', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['app-version'], 'function');
+  await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
+  const { version } = await handlers['app-version']();
+  assert.equal(version, '0.1.0', 'package.json version');
+});
+
+test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, appVersion: '2.3.4' });
+  assert.deepEqual(await handlers['app-version'](), { version: '2.3.4' });
 });
 
 test('fps-poll channel: the DEFAULT adapter reports unavailable (never loads PresentMon)', async () => {

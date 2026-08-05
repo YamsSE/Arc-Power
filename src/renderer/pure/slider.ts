@@ -5,7 +5,7 @@
 // be off-grid (e.g. the A770's ~48.3 MHz offset) — the slider value and the
 // driver value are deliberately distinct and both shown in the UI.
 
-import type { DeviceState, RangeInfo } from '../types.ts';
+import type { RangeInfo } from '../types.ts';
 
 /**
  * Snap `value` to the nearest multiple of `range.step` from `range.min`,
@@ -60,18 +60,4 @@ export function formatDriverValue(value: number | null | undefined, range: Range
 export function isOffGrid(value: number | null | undefined, range: RangeInfo): boolean {
   if (value === null || value === undefined || !Number.isFinite(value)) return false;
   return snapToRange(value, range) !== value;
-}
-
-/**
- * Dirty flags for a set of slider values vs the driver state: a value
- * differs from the driver read-back (or the driver reports none). Recompute
- * with the fresh state returned by apply to clear chips that just applied.
- */
-export function computeDirty(values: Record<string, number>, state: DeviceState, keys: string[]): Record<string, boolean> {
-  const out: Record<string, boolean> = {};
-  for (const key of keys) {
-    const driver = state[key as keyof DeviceState];
-    out[key] = driver === null || driver === undefined ? true : values[key] !== driver;
-  }
-  return out;
 }

@@ -1,8 +1,9 @@
 // Arc Power — Dashboard page (M2b-B redesign): device card (dotted driver
-// version + registry date, Xe cores + shader units, no PCI ID, no persistent
-// waiver status), ONE merged Service Status card (dot + label, degraded-only
-// IGCL line, half-state note, IGS toggle button), and a compact live
-// readout (core clock, memory clock, temp, power, fan).
+// version + registry date, Xe cores + shader units, max core clock + memory
+// clock rows, no PCI ID, no persistent waiver status, no capsSummary chips
+// footer — M2C-B B2), ONE merged Service Status card (dot + label,
+// degraded-only IGCL line, half-state note, IGS toggle button), and a
+// compact live readout (core clock, memory clock, temp, power, fan).
 //
 // The page re-renders fully only when a status slot changes (boot probe,
 // IGS toggle refresh, boot errors); telemetry ticks refresh the readout grid
@@ -17,21 +18,10 @@ import { driverLine } from '../components/header.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
-import type { DeviceState, IgsServiceState, TelemetrySample } from '../types.ts';
-import { formatValue } from '../pure/slider.ts';
+import type { IgsServiceState, TelemetrySample } from '../types.ts';
 
 const DISABLE_BTN = 'Disable IGS service';
 const REENABLE_BTN = 'Re-enable IGS service';
-
-function capsSummary(state: DeviceState): string[] {
-  const out: string[] = [];
-  if (state.powerLimitW !== null) out.push(`Power limit ${state.powerLimitW} W`);
-  if (state.gpuVoltOffsetV !== null) out.push(`Voltage offset ${formatValue(state.gpuVoltOffsetV, 'V')}`);
-  if (state.gpuFreqOffsetMhz !== null) out.push(`Core offset ${state.gpuFreqOffsetMhz} MHz`);
-  if (state.tempLimitC !== null) out.push(`Temp limit ${state.tempLimitC} °C`);
-  if (state.fanCurve) out.push(`Fan curve ${state.fanCurve.length} points`);
-  return out;
-}
 
 function statTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   const clock = sample?.gpuClockMhz;
@@ -156,7 +146,6 @@ export const dashboardPage: Page = {
     lastSig = currentSig(ctx);
     const s = ctx.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-    const state = s.state;
 
     clear(container);
     container.append(
@@ -174,11 +163,12 @@ export const dashboardPage: Page = {
                   ? el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}` })])
                   : null,
                 el('div', { class: 'kv', 'data-label': 'Graphics clock' }, [el('span', { text: `${device.graphicsClockMHz} MHz` })]),
+                // M2C-B B8: memory clock from the latest telemetry sample
+                // ('--' until the first sample arrives; the card re-renders
+                // on status changes — acceptable).
+                el('div', { class: 'kv', 'data-label': 'Memory clock' }, [el('span', { text: `${s.latestSample?.memClockMhz !== undefined ? s.latestSample.memClockMhz : '--'} MHz` })]),
               ])
             : el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' }),
-          state
-            ? el('div', { class: 'card-footer chips' }, capsSummary(state).map((t) => el('span', { class: 'chip', text: t })))
-            : null,
         ]),
 
         // --- merged Service Status card (health + IGS in one) ---
@@ -221,6 +211,13 @@ export const dashboardPage: Page = {
           ]),
         ),
       );
+    }
+    // M2C-B B8: the device-card memory clock row tracks the latest sample
+    // in place (the card itself only re-renders on status changes).
+    const memValue = container.querySelector<HTMLElement>('.card-grid .kv[data-label="Memory clock"] span');
+    if (memValue) {
+      const mem = ctx.store.get().latestSample?.memClockMhz;
+      memValue.textContent = `${mem !== undefined ? mem : '--'} MHz`;
     }
   },
 };

@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld('arcPower', {
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
   getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
   applySettings: (deviceId, settings) => ipcRenderer.invoke('apply-settings', deviceId, settings),
-  cancelApply: (deviceId) => ipcRenderer.invoke('apply-cancel', deviceId),
   resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
@@ -22,6 +21,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   startupGet: () => ipcRenderer.invoke('startup-get'),
   startupSet: (enabled, profileId) => ipcRenderer.invoke('startup-set', enabled, profileId),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
+  appVersion: () => ipcRenderer.invoke('app-version'),
   fpsPoll: (deviceId) => ipcRenderer.invoke('fps-poll', deviceId),
   profilesList: () => ipcRenderer.invoke('profiles-list'),
   profilesSave: (profile) => ipcRenderer.invoke('profiles-save', profile),
@@ -33,10 +33,5 @@ contextBridge.exposeInMainWorld('arcPower', {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);
     return () => ipcRenderer.removeListener('telemetry:sample', listener);
-  },
-  onApplyProgress: (cb) => {
-    const listener = (_event, progress) => cb(progress);
-    ipcRenderer.on('apply:progress', listener);
-    return () => ipcRenderer.removeListener('apply:progress', listener);
   },
 });

@@ -13,6 +13,7 @@
     "start": "electron .",
     "smoke": "electron . --headless",
     "smoke:mock": "electron . --headless --mock",
+    "make:icon": "node scripts/make-icon.js",
     "build:renderer": "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138",
     "typecheck": "tsc --noEmit",
     "dist": "npm run build:renderer && electron-builder --win portable"
@@ -20,6 +21,7 @@
   "build": {
     "appId": "com.rid.arcpower",
     "productName": "Arc Power",
+    "icon": "build/icon.ico",
     "files": [
       "src/**/*",
       "package.json"

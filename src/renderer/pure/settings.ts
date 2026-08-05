@@ -122,46 +122,72 @@ export function isControlDirty(control: string, settings: Settings, state: Devic
 }
 
 /**
- * Any-dirty predicate for a Settings payload vs the driver read-back. Drives
- * the floating Apply button (M2b-B): shown only when something differs from
- * the loaded driver state.
- */
-export function computeDirty(settings: Settings, state: DeviceState): boolean {
-  for (const key of Object.keys(settings)) {
-    if (isControlDirty(key, settings, state)) return true;
-  }
-  return false;
-}
-
-/**
  * No-op apply predicate (M2b-B toast suppression): true when the requested
  * value for `control` equals the driver's value BEFORE the apply — i.e. the
  * apply changed nothing for that control, so a success toast would be noise.
- * Call with the pre-apply state snapshot.
+ * Call with the pre-apply state snapshot. (M2C-B B5(b): the no-op comparison
+ * STAYS against the driver read-back — the silent-success rule survives the
+ * applied-reference change.)
  */
 export function isNoopApply(control: string, settings: Settings, beforeState: DeviceState): boolean {
   return !isControlDirty(control, settings, beforeState);
 }
 
-/**
- * M2b review F3: the "Applied on retry" note is only truthful when the
- * retried apply SUCCEEDED — the main-process handler also sets `retried` on
- * an apply that exhausted its retries and ultimately failed, and the note
- * would then be a lie. Gate both the toast and the flag.
- */
-export function shouldShowRetryNote(result: { retried?: boolean; ok?: boolean }): boolean {
-  return result.retried === true && result.ok === true;
+// ---------------------------------------------------------------------------
+// M2C-B B5 — applied-reference dirty detection (chips + floating Apply)
+// ---------------------------------------------------------------------------
+//
+// Two separate references, deliberately NOT merged:
+//   (a) the dirty reference for the "Unapplied" chips AND the floating Apply
+//       button: per-`result.ok` control it becomes the APPLIED value, so the
+//       chip clears and the button hides even while the driver read-back
+//       lags (the mock/A770 read-back can trail the write);
+//   (b) the no-op suppression comparison stays against the driver read-back
+//       (isNoopApply, untouched) so the silent-success rule survives.
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (typeof a === 'number' || typeof b === 'number') return a === b;
+  if (typeof a === 'string' || typeof b === 'string') return a === b;
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const pa = a as Record<string, unknown>;
+    const pb = b as Record<string, unknown>;
+    if ('voltageV' in pa && 'voltageV' in pb) return pa.voltageV === pb.voltageV && pa.freqMhz === pb.freqMhz;
+  }
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /**
- * F3 honest give-up summary: when the retry budget was exhausted with
- * retryable controls still refusing, surface exactly that — never a generic
- * "failed" that hides how patient the app already was.
+ * B5(a): is `control` dirty against the APPLIED reference (per-control
+ * result.ok values from the last apply) falling back to the driver state?
+ * A control in `applied` is judged against the applied value alone — the
+ * lagging driver read-back cannot re-dirty a chip that just applied.
  */
-export function applyGiveUpSummary(result: { gaveUp?: boolean; attempts?: number }): string | null {
-  if (result.gaveUp !== true) return null;
-  const n = typeof result.attempts === 'number' ? result.attempts : 1;
-  return `The driver kept refusing after ${n} attempt${n === 1 ? '' : 's'} — no more retries within the apply budget.`;
+export function isControlDirtyVsApplied(control: string, settings: Settings, state: DeviceState, applied: Record<string, unknown>): boolean {
+  if (!(control in settings)) return false;
+  const wanted = (settings as Record<string, unknown>)[control];
+  if (control in applied) return !sameValue(wanted, applied[control]);
+  return isControlDirty(control, settings, state);
+}
+
+/**
+ * B5(a): any-dirty predicate for the floating Apply button against the
+ * applied reference + driver state.
+ */
+export function computeDirtyVsApplied(settings: Settings, state: DeviceState, applied: Record<string, unknown>): boolean {
+  for (const key of Object.keys(settings)) {
+    if (isControlDirtyVsApplied(key, settings, state, applied)) return true;
+  }
+  return false;
+}
+
+/**
+ * B5(a): scalar variant for the per-card "Unapplied" chips (slider values
+ * are numbers; the driver may report none — then it counts as dirty).
+ */
+export function isScalarDirtyVsApplied(control: string, value: number, state: DeviceState, applied: Record<string, unknown>): boolean {
+  if (control in applied) return value !== applied[control];
+  const driver = (state as unknown as Record<string, unknown>)[control];
+  return driver === null || driver === undefined ? true : value !== driver;
 }
 
 /**

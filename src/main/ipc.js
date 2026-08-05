@@ -2,7 +2,7 @@
 // all handler logic live in ipc-core.js (electron-free, unit-testable); this
 // module only binds the map to ipcMain.handle.
 
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
 import { createIpcHandlers } from './ipc-core.js';
 import { createStartup } from './startup.js';
 import { createDriverInfo } from './driver-info.js';
@@ -20,12 +20,10 @@ import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
  *   driverInfo?: ReturnType<typeof createDriverInfo>,
  *   presentmon?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
  *   rebuildTray?: () => Promise<unknown>,
- *   applyRetryBackoffs?: number[],
- *   applyBudgetMs?: number,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, applyRetryBackoffs, applyBudgetMs }) {
+export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {} }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -34,12 +32,11 @@ export function registerIpc({ backend, store, getWindow, igs, startup = createSt
     driverInfo,
     presentmon,
     rebuildTray,
-    applyRetryBackoffs,
-    applyBudgetMs,
+    appVersion: app.getVersion(),
     emit: (channel, payload) => {
       // Only push-style channels cross the window boundary; request/response
       // channels return their payload via the invoke promise.
-      if (channel !== 'telemetry:sample' && channel !== 'apply:progress') return;
+      if (channel !== 'telemetry:sample') return;
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },

@@ -18,6 +18,8 @@ import {
   xToTemp,
   rpmMarkerY,
   fanCurvePresets,
+  fanSpeedTicks,
+  FAN_AXIS_TICKS,
   MIN_CURVE_POINTS,
 } from '../src/renderer/pure/curve.ts';
 import type { CurvePoint as CP } from '../src/renderer/pure/curve.ts';
@@ -172,4 +174,17 @@ test('fanCurvePresets: stock ends at 100% and quiet stays under', () => {
   const quiet = fanCurvePresets(d, 10).find((p) => p.id === 'quiet');
   assert.equal(stock?.points.at(-1)?.speedPct, 100);
   assert.ok((quiet?.points.at(-1)?.speedPct ?? 0) < 100);
+});
+
+// M2C-B B1 — the right-side 0-100% axis ticks (mirror of the bottom temp
+// axis): one tick per horizontal grid line, 100% at the top (y 0), 0% at
+// the bottom (y 100), labels OUTSIDE the plot.
+test('B1: fanSpeedTicks covers 0..100% at the five grid lines, top-down', () => {
+  assert.deepEqual(FAN_AXIS_TICKS, [0, 25, 50, 75, 100]);
+  const ticks = fanSpeedTicks();
+  assert.equal(ticks.length, 5);
+  assert.deepEqual(ticks.map((t) => t.pct), [100, 75, 50, 25, 0]);
+  assert.deepEqual(ticks.map((t) => t.y), [0, 25, 50, 75, 100]);
+  // the y of each tick is the grid line it aligns to (top-down SVG y)
+  assert.ok(ticks.every((t) => t.y === 100 - t.pct));
 });

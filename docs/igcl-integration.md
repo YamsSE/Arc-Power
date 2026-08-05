@@ -282,34 +282,39 @@ card (bSupported=false). Throttle flags all false at idle. Full dump: `tools/pro
 7. **Telemetry cadence** — samples <50 ms apart return stale/cached data; TelemetryService must enforce the
    rate (500 ms poll is fine).
 
-## 8b. F3 retry-with-verify + temp-limit clamp (M2C-A, implemented 2026-08-05)
+## 8b. F3 instant apply + temp-limit clamp (M2C-A clamp, M2C-B instant revision 2026-08-05)
 
 **Design (user-constrained, 2026-08-05):** the fix must NOT require any
 additional programs to be running and must work for clock/voltage offsets AND
 power limit AND temp limit. Evidence basis: IGS fully ON = 100% apply success
 (E4c); IGS OFF = PL/PT silent no-op (SUCCESS + read-back unchanged; E4a) with
 minute-scale flaps that open on their own. Therefore F3 never starts or stops
-IGS from code; the apply path is patient and honest:
+IGS from code.
 
-- Outcome per control (shared core `src/main/apply-retry.js`,
-  `applyWithRetry`  -  the seam where UI Apply, tray apply and apply-on-startup
-  converge): `ok` (set + read-back match) / `hard` (OUTSIDE_RANGE family
-  0x44000004/05/06/07, waiver-not-set, invalid-argument 0x4000000b,
-  unsupported  -  instant honest failure, NO retry) / `retryable` (io-failed
-  incl. NOT_AVAILABLE 0x40000007, and the SILENT NO-OP: SUCCESS returned but
-  read-back unchanged  -  flagged `silentNoop` by the backend, NEVER reported
-  "applied", retried).
-- Retry schedule: 1 s, 2 s, 4 s, 8 s, 12 s, 12 s -  capped, bounded by a total
-  budget (60 s UI/tray, 20 s apply-on-startup so boot is never blocked; the
-  boot path always exits). Every retried attempt re-sends ONLY the failed
-  controls (partial re-apply) and re-verifies each by read-back.
-- IGS fast path: when the IGS service + app are fully ON, a single attempt is
-  made (100% success proven, no delay); any other state retries.
-- Abort semantics: the Apply/Load button shows live "Applying  -  retry N/9 - "
-  state and a click cancels (`apply-cancel` IPC ? ApplyToken); cancelled
-  applies report the honest partial result. Give-up reports "the driver kept
-  refusing after N attempts"  -  never a silent failure.
-- **PT range fix:** the driver setter refuses temp limits above 90 C with
+**M2C-B revision (user feedback 2026-08-05):** the retry loop + progress UI
+are REMOVED entirely (the harness proved retries never changed the off-window
+outcome - freq/PL 0/3 with retries, IGS-on 100% single attempt). New design:
+ONE attempt, instant result, honest per-control error with an actionable
+driver-refusal message.
+
+- Outcome per control (shared core `src/main/apply-once.js`, `applyOnce`  -  the
+  seam where UI Apply, tray apply and apply-on-startup converge): `ok` (set +
+  read-back match) / `hard` (OUTSIDE_RANGE family 0x44000004/05/06/07,
+  waiver-not-set, invalid-argument 0x4000000b, unsupported  -  instant honest
+  failure, errorCode kept, renderer maps via `errorMessage`) / `refusal`
+  (io-failed incl. NOT_AVAILABLE 0x40000007, and the SILENT NO-OP: SUCCESS
+  returned but read-back unchanged  -  flagged `silentNoop` by the backend,
+  NEVER reported "applied"; fails instantly with a composed message).
+- Refusal message (composed against the live IGS state, `refusalMessage`):
+  powerLimit/freq refusals (and silent no-ops on those controls) with IGS NOT
+  fully on name the IGS-on requirement ("...power and frequency writes need
+  Intel Graphics Software running - start IGS and apply again"); every other
+  refusal gets the plain driver message; with IGS fully on (rare) plain +
+  error code.
+- Removed with the revision: `apply:progress` events, the "Applying - retry
+  N/9" label, `apply-cancel` IPC, the backoff scheduler, `APPLY_MAX_RETRIES`,
+  budgets, the "Applied on retry" note and the give-up summary.
+- **PT range fix (kept):** the driver setter refuses temp limits above 90 C with
   0x44000005 even in the fully-on window (E4c: TL 92 ? 0x44000005 both V1 and
   V2; the 92 entered the pipeline via the E4 battery/plan test value, the
   product always clamped to the capability max). The exposed max is now
@@ -321,7 +326,7 @@ IGS from code; the apply path is patient and honest:
 {volt +0.02 V, freq +100 MHz, PL 252 W, TL 90 C} applied one at a time through
 the real F3 core, plus a RAW 300 W cell (direct IGCL V2 set bypassing the
 product clamp) to prove the cap. Every attempt records timestamp, IGS state,
-control, value, result (ok / code / silent-noop), read-back, retries, elapsed.
+control, value, result (ok / code / silent-noop), read-back, elapsed.
 
 **Off-window results (3 sessions, IGS fully off  -  run 2026-08-05):**
 

@@ -22,7 +22,9 @@ test('errorMessage: each message is distinct and mentions the actionable cause',
   assert.match(errorMessage('locked-mode'), /lock/i);
   assert.match(errorMessage('reset-required'), /reset/i);
   assert.match(errorMessage('unsupported'), /not supported/i);
-  assert.match(errorMessage('io-failed'), /read-back|driver|busy/i);
+  assert.match(errorMessage('io-failed'), /read-back mismatch/i);
+  // the retry-era "GPU may be busy — try again" guidance is gone (M2C-B F3)
+  assert.doesNotMatch(errorMessage('io-failed'), /busy|try again/i);
 });
 
 test('errorMessage: prefixed with the control label when a control is given', () => {

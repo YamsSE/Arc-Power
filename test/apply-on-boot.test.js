@@ -137,7 +137,7 @@ test('apply-on-boot: failure -> defaults restored + fallbackApplied flag (never 
     });
     // The profile asks for 240 W; the driver (mock) refuses with io-failed.
     backend.injectFail('powerLimitW', 'io-failed');
-    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1', budgetMs: 10 });
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1' });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, true);
     assert.equal(out.result.ok, false);
@@ -146,6 +146,36 @@ test('apply-on-boot: failure -> defaults restored + fallbackApplied flag (never 
     const state = await backend.getCurrentSettings(0);
     assert.equal(state.powerLimitW, 210);
     assert.equal(state.gpuFreqOffsetMhz, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// M2C-B F3 (instant apply): the boot/tray path uses the same one-attempt
+// core — a backend that would succeed on a retry never gets one.
+test('apply-on-boot: exactly ONE backend apply call (instant, no retries)', async () => {
+  const dir = testDir('ononce');
+  try {
+    const backend = new MockBackend();
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1' },
+      profiles: [PROFILE],
+    });
+    let applies = 0;
+    const real = MockBackend.prototype.applySettings.bind(backend);
+    backend.applySettings = async (d, s) => {
+      applies += 1;
+      if (applies === 1) {
+        return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed' } } };
+      }
+      return real(d, s);
+    };
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1' });
+    assert.equal(applies, 1, 'single attempt — the flow falls back to defaults instead of retrying');
+    assert.equal(out.applied, false);
+    assert.equal(out.fallbackApplied, true);
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -162,7 +192,7 @@ test('apply-on-boot: failure AND failed defaults restore -> fallbackApplied fals
       profiles: [PROFILE],
     });
     backend.injectFail('powerLimitW', 'io-failed');
-    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1', budgetMs: 10 });
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1' });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, false);
   } finally {
@@ -311,7 +341,7 @@ test('F2: apply failure -> ONE tray instance reused for the failure balloon (nev
     });
     backend.injectFail('powerLimitW', 'io-failed');
     const { setupTray, calls } = countingTray();
-    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray, budgetMs: 10 });
+    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, true); // defaults were restored
     assert.equal(calls.setup, 1); // F2 regression: exactly ONE setupTray call
@@ -387,7 +417,7 @@ test('NIT5: read-back throw after the defaults fallback -> failure still reporte
       profiles: [PROFILE],
     });
     const { setupTray, calls } = countingTray();
-    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray, budgetMs: 10 });
+    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, true); // the restore itself ran
     assert.equal(out.state, null);

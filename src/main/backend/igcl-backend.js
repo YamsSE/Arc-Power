@@ -570,8 +570,9 @@ export class IgclBackend {
         readBackEqual,
         // F3 silent no-op (plan M2C-A): the setter returned SUCCESS but the
         // read-back did not change — the driver accepted nothing. This is a
-        // retryable failure, NEVER "applied"; the retry core keys off
-        // silentNoop to classify it before the generic io-failed class.
+        // refusal, NEVER "applied"; the apply core keys off silentNoop to
+        // classify it before the generic io-failed class (M2C-B instant
+        // apply: the silent no-op fails instantly with the refusal message).
         silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
       };
       if (!readBackEqual) result.ok = false;

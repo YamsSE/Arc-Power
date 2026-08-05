@@ -95,8 +95,9 @@ export class MockBackend {
   /**
    * Dev-only knob: force `control` to fail with `errorCode` (null clears).
    * `once: true` fails only the NEXT apply that touches the control — lets
-   * tests/ui-verify exercise the success-after-retry path deterministically
-   * (M2b review F3) while a persistent failure pins the exhausted-retry path.
+   * tests/ui-verify pin that an instant apply makes exactly ONE attempt
+   * and reports the failure honestly (a one-shot failure must never be
+   * silently retried); persistent failures pin the honest-failure path.
    */
   injectFail(control, errorCode, once = false) {
     if (errorCode) {

@@ -4,7 +4,6 @@
 // live in src/main/ipc-core.js — this type mirrors that contract.
 
 import type {
-  ApplyProgress,
   ApplyResponse,
   Capabilities,
   DeviceInfo,
@@ -27,8 +26,6 @@ export interface ArcPowerApi {
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
   applySettings(deviceId: number, settings: Settings): Promise<ApplyResponse>;
-  /** F3: abort the in-flight apply for a device (live Apply button). */
-  cancelApply(deviceId: number): Promise<{ ok: boolean }>;
   resetToDefaults(deviceId: number): Promise<ResetResponse>;
   waiverGet(deviceId: number): Promise<{ accepted: boolean }>;
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;
@@ -40,6 +37,8 @@ export interface ArcPowerApi {
   startupGet(): Promise<{ enabled: boolean; profileId: string | null; value: string | null }>;
   startupSet(enabled: boolean, profileId: string | null): Promise<{ enabled: boolean; profileId: string | null; value: string | null }>;
   driverInfo(): Promise<{ driverDate: string | null }>;
+  /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
+  appVersion(): Promise<{ version: string }>;
   fpsPoll(deviceId: number): Promise<FpsSample | null>;
   profilesList(): Promise<ProfilesEnvelope>;
   profilesSave(profile: Partial<Profile> & { id: string; name: string; settings: Settings; ocOnBoot: boolean }): Promise<ProfilesEnvelope>;
@@ -48,8 +47,6 @@ export interface ArcPowerApi {
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
   trayRebuild(): Promise<{ ok: boolean }>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
-  /** F3: live retry progress while an apply is running (deviceId-scoped). */
-  onApplyProgress(cb: (progress: ApplyProgress) => void): () => void;
 }
 
 declare global {

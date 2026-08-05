@@ -1,13 +1,17 @@
 // Arc Power — dev-only UI verification (`electron . --ui-verify`).
 //
 // Drives the REAL window (renderer + preload + IPC + MockBackend) through
-// the M2a/M2b-B product flows and asserts the outcomes, mirroring what the
-// prompt requires to be verified in mock mode:
-//   1. shell renders (sidebar + header);
-//   1b. M2b-B dashboard redesign: driver line "32.0.101.8861 - Jul 05, 2026"
-//       (mock driver-info fixture), no PCI ID anywhere, memory-clock readout
-//       next to core clock, ONE merged "Service Status" card (no Level Zero
-//       item, no persistent waiver row), "Xe Cores 32 - Shader Units 4096";
+// the M2a/M2b-B/M2C-B product flows and asserts the outcomes:
+//   1. shell renders (sidebar + header); M2C-B B7: the sidebar brand shows
+//      the blue "AP" logo before "Arc Power";
+//   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
+//       0.1.0" (app:version IPC) — the driver version + date live in the
+//       dashboard device card 'Driver version' kv ("32.0.101.8861 - Jul 05,
+//       2026" from the mock driver-info fixture); no PCI ID anywhere;
+//       M2C-B B2: NO capsSummary chips footer on the device card; M2C-B B8:
+//       a 'Memory clock' kv row next to 'Graphics clock'; memory-clock
+//       readout next to core clock, ONE merged "Service Status" card,
+//       "Xe Cores 32 - Shader Units 4096";
 //   1c. IGS state card (M2a.5): the merged status card keeps the dot, the
 //       half-state note and the toggle; env knobs RID_MOCK_IGS_RUNNING /
 //       RID_MOCK_IGS_APP fixture the four-combination matrix;
@@ -20,10 +24,13 @@
 //      no-ops and stay silent — M2b-B suppression);
 //   4. a second apply does NOT re-show the dialog;
 //   5. per-card reset-to-default + apply round-trips the default;
-//   5b. an io-failed apply retries with backoff; the "Applied on retry"
-//       warning shows ONLY when the retried apply succeeded — a fully-failed
-//       retry shows the error toast and NO warn (M2b review F3);
-//   6. fan editor: mode toggle, add point, preset, apply;
+//   5b. M2C-B F3 instant apply: ONE attempt, no retry note, no progress
+//       label — an io-failed apply fails instantly with the composed
+//       refusal toast (IGS-on requirement when IGS is off; plain + code
+//       when fully on); M2C-B B5: the "Unapplied" chips + floating Apply
+//       clear per-`result.ok` even while the driver read-back lags;
+//   6. fan editor: mode toggle, add point, preset, apply; M2C-B B1: the
+//       right-side 0-100% axis renders outside the plot;
 //   7. a failed fan apply surfaces the mapped OcErrorCode message (not the
 //      raw backend message);
 //   8. startup (Run-key) channels: get/set round trip + validation;
@@ -84,29 +91,54 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     fail('sidebar did not render (6 nav links expected)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
-  if (brand.trim() !== 'Arc Power') fail(`sidebar brand is '${brand}'`);
-  step('boot', `shell rendered; brand='${brand.trim()}'; mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
+  if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
+  // M2C-B B7: the blue "AP" logo img sits before the "Arc Power" line.
+  const logoSrc = await js(`document.querySelector('.sidebar-brand img.sidebar-logo')?.getAttribute('src') ?? ''`);
+  if (!logoSrc.includes('icon.png')) fail(`sidebar brand logo missing: src='${logoSrc}'`);
+  step('boot', `shell rendered; brand with logo (${logoSrc}); mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
 
-  // --- 1b. M2b-B dashboard redesign ----------------------------------------
-  // Driver line: dotted version from the hex DeviceInfo + the fixture date
-  // from the mock driver-info adapter. No PCI anywhere.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').includes('32.0.101.8861 - Jul 05, 2026')`))) {
-    fail(`header driver line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected '32.0.101.8861 - Jul 05, 2026')`);
+  // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
+  // B3: the line below the GPU name is the APP version (app:version IPC) —
+  // the driver line moved to the dashboard device card.
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.1.0'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.1.0')`);
   }
+  // B6: the page favicon points at the generated blue-AP asset.
+  const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
+  if (!favicon.includes('favicon.png')) fail(`favicon link is '${favicon}'`);
   if (await js(`document.body.textContent.includes('PCI')`)) fail('PCI ID is still shown somewhere in the UI');
-  // Top-right indicator: just the dot + the static 'Service Status' label
-  // (the verbose IGS text moved into the dot tooltip / the status card).
+  // Top-right indicator: just the dot + the static 'Service Status' label.
   const headerIndicator = await js(`document.querySelector('.gpu-status-text')?.textContent ?? ''`);
   if (!headerIndicator.includes('Service Status')) fail(`header indicator is '${headerIndicator}' (expected 'Service Status')`);
   if (headerIndicator.includes('OC control OK')) fail(`header indicator still shows the verbose IGS text: '${headerIndicator}'`);
-  step('driver-line', `header driver line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; indicator='${headerIndicator.trim()}'`);
+  step('version-line', `header line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; indicator='${headerIndicator.trim()}'`);
 
-  // Device card: compute line, no persistent waiver row.
+  // Device card: driver version kv (B3 move), compute line, no persistent
+  // waiver row, NO capsSummary chips footer (B2).
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.getAttribute('data-label') ?? '') === 'Driver version' && (k.textContent ?? '').includes('32.0.101.8861 - Jul 05, 2026'))`))) {
+    fail(`device card driver version kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`)}' (expected '32.0.101.8861 - Jul 05, 2026')`);
+  }
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
     fail('Xe cores / shader units line missing');
   }
   if (await js(`document.body.textContent.includes('OC waiver')`)) fail('persistent waiver status is still shown');
-  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no OC waiver row, no PCI row');
+  // B2: the chips footer ("Fan curve N points", power/volt/freq/temp notes)
+  // is GONE from the device card — no chips inside the card grid at all.
+  const gridChips = await js(`document.querySelectorAll('.card-grid .chip').length`);
+  if (gridChips !== 0) fail(`B2: device card chips footer still renders ${gridChips} chips`);
+  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no OC waiver row, no PCI row, no chips footer');
+
+  // M2C-B B8: 'Memory clock' kv row next to 'Graphics clock' (mock
+  // telemetry memClockMhz = 2000).
+  if (!(await waitFor(win, `(() => {
+    const rows = Array.from(document.querySelectorAll('.card-grid .kv'));
+    const mem = rows.find((k) => (k.getAttribute('data-label') ?? '') === 'Memory clock');
+    const gfx = rows.find((k) => (k.getAttribute('data-label') ?? '') === 'Graphics clock');
+    return !!mem && !!gfx && (mem.textContent ?? '').includes('2000');
+  })()`))) {
+    fail(`memory clock kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Memory clock"]')?.textContent ?? ''`)}' (expected '2000 MHz')`);
+  }
+  step('mem-clock-kv', `device card memory clock kv = ${await js(`document.querySelector('.card-grid .kv[data-label="Memory clock"]')?.textContent ?? ''`)} (next to Graphics clock)`);
 
   // Memory clock readout next to core clock (mock telemetry: 2000 MHz).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2000')`))) {
@@ -323,79 +355,147 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (Math.abs(afterReset.powerLimitW - 210) > 1e-6) fail(`reset apply failed: ${afterReset.powerLimitW}`);
   step('reset', `reset to default 210 W applied, read-back ${afterReset.powerLimitW} W`);
 
-  // --- 5b. M2b-B retry note (M2b review F3) + F3 retry-with-verify ---------
-  // The "Applied on retry" warn is shown ONLY when the retried apply
-  // succeeded; a persistent io-failed apply exhausts its retries, fails, and
-  // must show the error toast with NO warn note. F3 (M2C-A): when the mock
-  // IGS is fully ON the fast path takes a single attempt by design — then we
-  // assert the no-retry behavior instead (success without any retry note,
-  // honest failure without retries on an always-failing backend).
-  if (svcRunning && appRunning) {
-    // Fast path: one attempt, immediate honest outcome, no retry note.
+  // --- 5b. M2C-B F3 instant apply: ONE attempt, composed refusal toasts,
+  // --- no retry note, no progress label. M2C-B B5: chips + floating Apply
+  // --- clear per-`result.ok` even while the driver read-back lags. --------
+  const igsOff = !svcRunning && !appRunning;
+
+  // B5 first: simulate a read-back that LAGS (the driver write succeeded,
+  // the read-back still reports the old value). After the successful apply
+  // the chip must clear and the button must hide against the APPLIED
+  // reference, even though the driver still reads 210.
+  const realApply = backend.applySettings.bind(backend);
+  backend.applySettings = async (d, s) => {
+    const before = backend._state.powerLimitW;
+    const res = await realApply(d, s);
+    backend._state.powerLimitW = before; // the read-back lags
+    return res;
+  };
+  await setSlider(220);
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('lagging-read-back apply success toast missing');
+  await sleep(300);
+  const lagState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(lagState.powerLimitW - 210) > 1e-6) fail(`read-back lag setup broken: ${lagState.powerLimitW}`);
+  const chipHidden = await js(`Array.from(document.querySelectorAll('.oc-card')).every((c) => c.querySelector('.oc-dirty')?.hidden !== false)`);
+  if (!chipHidden) fail('B5: an Unapplied chip is still visible after a successful apply (read-back lags)');
+  if (!(await floatingHidden())) fail('B5: floating Apply still visible after a successful apply (read-back lags)');
+  step('b5-lag', `B5: apply ok with lagging read-back (${lagState.powerLimitW} W) -> chips clear, Apply hidden`);
+  await clearToasts();
+  // Restore the real backend and re-render the OC page fresh (values snap
+  // back to the 210 W read-back; the applied reference is per-page state).
+  backend.applySettings = realApply;
+  await js(`location.hash = '#/dashboard'`);
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
+  if (!(await floatingHidden())) fail('floating Apply visible on a clean re-render');
+  step('b5-fresh', 'B5: fresh re-render is clean (applied reference is per-render state)');
+
+  if (igsOff) {
+    // IGS fully off: an io-failed powerLimit apply fails INSTANTLY and the
+    // toast names the IGS-on requirement (composed in main).
     backend.injectFail('powerLimitW', 'io-failed');
     await setSlider(220);
     await clearToasts();
     await clickApply();
     if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
-      fail('io-failed error toast missing on the IGS-on fast path');
+      fail('io-failed error toast missing (instant apply, IGS off)');
     }
-    await sleep(300);
-    if (await js(`!!document.querySelector('.toast-warn')`)) {
-      fail('fast path must NOT retry — a retry note appeared on the IGS-on apply');
-    }
-    backend.injectFail('powerLimitW', null);
-    await setSlider(210);
-    await clearToasts();
-    await clickApply();
-    await sleep(400);
-    const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(recovered.powerLimitW - 210) > 1e-6) fail(`recovery did not restore 210 W: ${recovered.powerLimitW}`);
-    await clearToasts();
-    step('retry-note', 'IGS-on fast path: io-failed -> single attempt, error toast, NO retry note; recovery applied');
-  } else {
-    // First: a PERSISTENT io-failed apply exhausts its retries and fails — the
-    // error toast appears and the warn note must NOT (it would be a lie).
-    backend.injectFail('powerLimitW', 'io-failed');
-    await setSlider(220);
-    await clearToasts();
-    await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
-      fail('io-failed error toast missing (always-fail retry)');
-    }
-    await sleep(300);
-    if (await js(`!!document.querySelector('.toast-warn')`)) {
-      fail('fully-failed retried apply must NOT show the "Applied on retry" note');
-    }
-    backend.injectFail('powerLimitW', null);
-    // Then: a ONE-SHOT io-failed apply retries and succeeds — the note IS
-    // shown and the read-back lands on the requested value.
+    const errMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
+    if (!/Intel Graphics Software/.test(errMsg)) fail(`IGS-off refusal toast does not name IGS: '${errMsg}'`);
+    if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
+    // The "Applying — retry N/9" surface is gone: the button never shows it.
+    const btnLabel = await js(`document.querySelector('.floating-apply')?.textContent ?? ''`);
+    if (btnLabel.includes('retry')) fail(`floating Apply shows a retry label: '${btnLabel}'`);
+    // A one-shot io-failed backend (would succeed on a retry) must STILL
+    // fail instantly — no retry attempt ever happens.
     backend.injectFail('powerLimitW', 'io-failed', true);
     await clearToasts();
     await clickApply();
-    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-warn')).some((t) => (t.textContent ?? '').includes('Applied on retry'))`, 10000))) {
-      fail('retried-and-succeeded apply did not show the "Applied on retry" note');
+    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
+      fail('one-shot io-failed apply did not fail instantly (a retry must never happen)');
     }
     await sleep(300);
-    if (await js(`!!document.querySelector('.toast-error')`)) {
-      fail('one-shot retry ended in failure — an error toast appeared next to the note');
-    }
-    const retriedState = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(retriedState.powerLimitW - 220) > 1e-6) fail(`one-shot retry did not apply 220 W: ${retriedState.powerLimitW}`);
-    // Recover: restore defaults via the OC UI.
-    await setSlider(210);
+    if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply: retry note appeared');
+    const oneShotState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(oneShotState.powerLimitW - 210) > 1e-6) fail(`instant apply changed the driver state: ${oneShotState.powerLimitW}`);
+    backend.injectFail('powerLimitW', null);
+    // Recover: apply the requested value cleanly, then restore 210 W so the
+    // later profile-load step sees the same baseline in every variant.
     await clearToasts();
     await clickApply();
-    await sleep(400);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('recovery apply did not succeed');
+    const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(recovered.powerLimitW - 220) > 1e-6) fail(`recovery did not apply 220 W: ${recovered.powerLimitW}`);
+    await clearToasts();
+    await setSlider(210);
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('baseline restore (210 W) did not apply');
+    const baseline = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(baseline.powerLimitW - 210) > 1e-6) fail(`baseline is not 210 W: ${baseline.powerLimitW}`);
+    await clearToasts();
+    step('instant-igs-off', `IGS-off: io-failed -> ONE attempt, IGS-on refusal toast ('${errMsg.trim()}'), no retry note, no progress label; recovery + baseline applied`);
+  } else {
+    // IGS fully on (or half-state): a refusal there is rare -> plain + code.
+    backend.injectFail('powerLimitW', 'io-failed');
+    await setSlider(220);
+    await clearToasts();
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
+      fail('io-failed error toast missing (instant apply, IGS on)');
+    }
+    const errMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
+    if (!/refused the change/.test(errMsg)) fail(`IGS-on refusal toast is '${errMsg}' (expected plain + code)`);
+    if (/Intel Graphics Software/.test(errMsg)) fail(`IGS-on refusal toast wrongly names IGS: '${errMsg}'`);
+    if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
+    backend.injectFail('powerLimitW', null);
+    // Recovery: the driver read-back already reports 210 (the refusal never
+    // wrote) — the settings are clean, so the button hides and nothing more
+    // is applied (no-op suppression in action).
+    await setSlider(210);
+    await clearToasts();
+    if (!(await floatingHidden())) fail('floating Apply visible while clean after the refusal');
+    await clickApply();
+    await sleep(300);
     const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(recovered.powerLimitW - 210) > 1e-6) fail(`recovery did not restore 210 W: ${recovered.powerLimitW}`);
     await clearToasts();
-    step('retry-note', 'io-failed apply: failed retry -> error toast only (no warn); one-shot retry -> "Applied on retry" note + 220 W read back');
+    step('instant-igs-on', `IGS-on: io-failed -> ONE attempt, plain refusal toast ('${errMsg.trim()}'), no retry note; recovery clean (210 W)`);
   }
 
   // --- 6. fan editor ---------------------------------------------------------
   const fanReadonly = process.env.RID_MOCK_FAN_READONLY === '1';
   await js(`location.hash = '#/fan'`);
   await sleep(250);
+  // M2C-B B1: the right-side 0-100% axis renders OUTSIDE the plot (one tick
+  // per grid line, top-down: 100% first) and the old in-plot labels are gone.
+  if (!(await waitFor(win, `document.querySelectorAll('.fan-yaxis .fan-yaxis-tick').length === 5`))) {
+    fail(`fan right-side axis missing (got ${await js(`document.querySelectorAll('.fan-yaxis .fan-yaxis-tick').length`)} ticks)`);
+  }
+  const axisTicks = await js(`Array.from(document.querySelectorAll('.fan-yaxis .fan-yaxis-tick')).map((t) => t.textContent).join(',')`);
+  if (axisTicks !== '100%,75%,50%,25%,0%') fail(`fan axis ticks are '${axisTicks}' (expected 100%,75%,50%,25%,0% top-down)`);
+  if (await js(`document.querySelectorAll('.fan-svg .fan-label').length !== 0`)) fail('B1: fan % labels still drawn inside the SVG plot');
+  if (!(await waitFor(win, `!!document.querySelector('.fan-plot .fan-svg')`))) fail('fan plot wrapper missing');
+  // M2C-B review B1: the 100%/0% edge labels must NOT be centered on the
+  // stage edges (translateY(-50%) would clip their outer half under
+  // .fan-stage overflow:hidden) — they hug the edge (translateY(0) /
+  // translateY(-100%)) so all five render fully while the interior ticks
+  // stay centered on their grid lines.
+  if (!(await waitFor(win, `(() => {
+    const ticks = Array.from(document.querySelectorAll('.fan-yaxis .fan-yaxis-tick'));
+    if (ticks.length !== 5) return false;
+    const [top, , mid, , bottom] = ticks;
+    if (!top.classList.contains('fan-yaxis-tick-edge-top')) return false;
+    if (!bottom.classList.contains('fan-yaxis-tick-edge-bottom')) return false;
+    const midTransform = getComputedStyle(mid).transform;
+    const topTransform = getComputedStyle(top).transform;
+    const bottomTransform = getComputedStyle(bottom).transform;
+    return topTransform !== midTransform && bottomTransform !== midTransform;
+  })()`))) {
+    fail('B1: fan axis edge ticks are not edge-clamped (their outer half is clipped by .fan-stage)');
+  }
+  step('fan-axis', `B1: right-side axis '${axisTicks}' outside the plot, aligned to the grid, edge ticks clamped`);
   if (fanReadonly) {
     if (!(await waitFor(win, `!!document.querySelector('.fan-card')`))) fail('fan card did not render');
     const dots = await js(`document.querySelectorAll('.fan-dot').length`);
@@ -447,8 +547,17 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 5000))) fail('fan apply failure toast missing');
   const errMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
   if (!/outside the range/i.test(errMsg)) fail(`fan failure toast not mapped via errorMessage: '${errMsg}'`);
+  // F3 instant: a fan REFUSAL (io-failed) must toast the COMPOSED refusal
+  // message (per.message wins over the errorCode mapping — review MINOR 1).
+  backend.injectFail('fanCurve', 'io-failed');
+  await clearToasts();
+  await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings'))?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 5000))) fail('fan apply refusal toast missing');
+  const refuseMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
+  if (!/refused the change/.test(refuseMsg)) fail(`fan refusal toast did not use the composed message: '${refuseMsg}'`);
+  if (/read-back mismatch/.test(refuseMsg)) fail(`fan refusal toast fell back to the errorCode mapping: '${refuseMsg}'`);
   backend.injectFail('fanCurve', null);
-  step('fan-fail-toast', `fan apply failure mapped: '${errMsg}'`);
+  step('fan-fail-toast', `fan apply failure mapped: '${errMsg}' (hard) + refusal composed: '${refuseMsg}'`);
 
   // --- 8. startup (Run-key) channels (M2b) ----------------------------------
   const startState = await js(`window.arcPower.startupGet()`);

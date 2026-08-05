@@ -158,6 +158,28 @@ export function rpmMarkerY(rpm: number, maxRpm: number): number {
   return 100 - Math.min(100, (rpm / maxRpm) * 100);
 }
 
+// M2C-B B1 — right-side 0-100% fan axis (mirror of the bottom temp axis).
+// The axis labels live OUTSIDE the plot (the labels used to sit inside the
+// SVG at x:99/x:1); each tick aligns with the horizontal grid line at the
+// same normalized y (0 = top, 100 = bottom).
+
+/** The speed-percent ticks drawn on the right-side axis. */
+export const FAN_AXIS_TICKS = [0, 25, 50, 75, 100];
+
+export interface FanAxisTick {
+  pct: number;
+  /** Normalized top-down y (0..100) — the grid line the tick aligns to. */
+  y: number;
+}
+
+/**
+ * The 0-100% scale as (pct, y) ticks, TOP-DOWN render order: 100% first
+ * (top, y 0), 0% last (bottom, y 100), one tick per horizontal grid line.
+ */
+export function fanSpeedTicks(): FanAxisTick[] {
+  return [...FAN_AXIS_TICKS].reverse().map((pct) => ({ pct, y: 100 - pct }));
+}
+
 export interface CurvePreset {
   id: string;
   name: string;

@@ -213,7 +213,7 @@ export function igclErrorCode(code) {
     case 0x4400000e: return 'out-of-range'; // invalid custom VF curve
     case 0x4000000a: return 'unsupported';
     // Invalid argument is a caller/driver contract violation — deterministic,
-    // never transient: classify as a HARD error (no retry) in the F3 core.
+    // never transient: classify as a HARD error (instant fail) in the F3 core.
     case 0x4000000b: return 'invalid-argument';
     default: return null;
   }

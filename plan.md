@@ -359,6 +359,18 @@ splits into M2C-A (OC reliability/capability - vital, first) and
 M2C-B (UI/UX polish). The user explicitly requires **status updates at
 every phase boundary** (brainstorm, experiments, implementation, tests).
 
+**USER FEEDBACK 2026-08-05 (after M2C-A shipped):** on the live A770,
+"none of these Retry-Tries Work" and the retry progress UI "looks very
+bad for end-users. Make one that's instant." -> F3's retry-with-verify
+is REVISED: the retry loop + progress surfaces are REMOVED entirely
+(evidence-consistent: the harness proved retries never changed the
+off-window outcome - freq/PL 0/3 with retries, IGS-on 100% single
+attempt). New design: ONE attempt, instant result, honest per-control
+error with an actionable driver-refusal message (name the IGS-on
+requirement for PL/freq). Ships WITH M2C-B as one milestone.
+Also: user asleep - NO UAC prompts during M2C-B; anything needing
+elevation (harness on-window re-runs, etc.) is postponed to M3.
+
 #### M2C-A - OC apply reliability (vital)
 
 **Problem statement.** On the real A770, writes are refused in IGS
@@ -440,24 +452,19 @@ actually RUN on this machine, so the premise is unverified empirically.
 - F1 (if E5 confirms): OC-enable/authorize step in the apply path before
   the first write.
 - F2 (if E6 confirms): GPU wake before apply.
-- F3 (universal, lands regardless - USER-CONSTRAINED design, 2026-08-05):
-  "must not require any additional programs to be running; must work for
-  clock/voltage offsets AND power limit AND temp limit." The A1 evidence
-  (E4c: IGS fully ON = 100% success; E4a: IGS off = PL/PT silent no-op;
-  E1: ArcTool landed one off-state success -> the off-state flaps open on
-  its own, minute-scale) therefore defines F3 as **retry-with-verify**,
-  NOT queue-on-IGS-transition:
-  - Apply anywhere, in any IGS state; never start or stop IGS from code.
-  - Outcome per control: ok / hard-error (OUTSIDE_RANGE family,
-    WAIVER, validation - instant fail, honest message) / retryable
-    (refusal codes AND silent no-op = SUCCESS with read-back mismatch).
-  - Retryable outcomes retry with backoff (1s,2s,4s,... bounded, ~60 s
-    total budget), live "retrying N/M" state on the Apply button
-    (cancellable), shared by UI Apply, tray, apply-on-startup.
-  - When IGS is fully ON: single attempt (100% success, no delay).
-  - PT range fix: driver caps TL at 90 C (props say 60-90); our exposed
-    max 92 causes 0x44000005 - find where 92 enters (capability query vs
-    props) and clamp the exposed range to 90.
+- F3 (REVISED 2026-08-05 by user feedback - instant, no retry UI):
+  **instant apply**: one attempt per control, zero waiting, no progress
+  UI, no cancellation, no budgets. Silent-noop detection STAYS (SUCCESS
+  + read-back unchanged = per-control FAIL, never "applied"). Refusals
+  fail instantly with an actionable per-control message - for PL/freq
+  refusals name the IGS-on requirement ("the GPU driver refused this
+  change; power/frequency writes need Intel Graphics Software running -
+  start IGS and apply again"); volt/TL refusals get the plain driver
+  message. IGS fully-on = single attempt, 100% success (evidence).
+  Removed: apply:progress events, "Applying - retry N/9" label,
+  apply-cancel IPC, backoff scheduler, APPLY_MAX_RETRIES, budgets.
+  Shared by UI Apply, tray, apply-on-startup (one attempt, always
+  exits). Regression tests rewritten to pin instant semantics.
 - F2/F1/F4/F5: killed by evidence (wake = no effect; no authorize
   control exists - all 29 OC exports bound; old runtime+AppVersion
   1.0+ArcTool GUID unlocks nothing, 315 W claim is a client-gated lie,
@@ -567,9 +574,15 @@ M3 stays blocked until one branch's gate is met.
   icon visible in window, tray, EXE, sidebar.
 
 #### M2C ordering & gates
-- M2C-A first (vital; blocks M3), then M2C-B. Separate milestone commits
-  `M2C-A: ...` / `M2C-B: ...`, each with `npm run dist` + packaged
-  `--headless` smoke (exit 0, in a workable IGS window) before commit.
+- M2C-A first (vital; blocks M3), then M2C-B. M2C-B ships WITH the F3
+  instant-apply revision (user feedback, 2026-08-05) as one milestone
+  commit `M2C-B: ...`, with `npm run dist` + packaged `--headless`
+  smoke (exit 0, in a workable IGS window) before commit.
+- NO UAC prompts during M2C-B (user asleep). Postponed to M3: any
+  elevation-needing steps (e.g. harness IGS-on window re-runs after the
+  instant-apply change - not required for acceptance since on-window
+  evidence is already 100% single-attempt; off-window behavior is
+  unchanged by the revision: instant fail instead of fail-after-60s).
 - pipeline/ + tools/validate/ stay gitignored; icon assets + generator
   script are tracked.
 - Deferred (unchanged): NIT4 tooltip, PresentMon DLL in dist, anything

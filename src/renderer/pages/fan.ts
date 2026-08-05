@@ -19,6 +19,7 @@ import {
   clampPointCount,
   seedCurvePoints,
   fanCurvePresets,
+  fanSpeedTicks,
   MIN_CURVE_POINTS,
 } from '../pure/curve.ts';
 import { buildFanSettings, validateSettingsPayload } from '../pure/settings.ts';
@@ -134,8 +135,11 @@ function renderReadOnly(container: HTMLElement, ctx: PageContext, points: CurveP
         el('span', { class: 'fan-rpm', id: 'fan-rpm-readout', text: '—' }),
       ]),
       el('div', { class: 'fan-stage' }, [
-        editorSvg(points, maxRpm, false),
-        el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true }),
+        el('div', { class: 'fan-plot' }, [
+          editorSvg(points, maxRpm, false),
+          el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true }),
+        ]),
+        fanAxis(),
       ]),
       el('p', { class: 'card-note', text: 'Editing is disabled: this GPU reports fan control as read-only (canControl=false). Intel Graphics Software manages the fan curve on Alchemist GPUs.' }),
     ]),
@@ -200,9 +204,12 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       card.dataset['fanDomainMax'] = String(domain.maxT);
 
       const stage = el('div', { class: 'fan-stage' }, [
-        editorSvg(editor.points, maxRpm, true, domain),
-        el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true }),
-        el('div', { class: 'fan-dots' }),
+        el('div', { class: 'fan-plot' }, [
+          editorSvg(editor.points, maxRpm, true, domain),
+          el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true }),
+          el('div', { class: 'fan-dots' }),
+        ]),
+        fanAxis(),
       ]);
       const dotsLayer = stage.querySelector<HTMLElement>('.fan-dots') as HTMLElement;
 
@@ -333,8 +340,9 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       ctx.store.set({ state: fresh });
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) toast('success', `${key === 'fanMode' ? 'Fan mode' : 'Fan curve'} applied`, '');
-        // Same OcErrorCode -> message mapping as the overclocking page.
-        else toast('error', 'Fan apply failed', errorMessage(per.errorCode, key));
+        // F3 instant: refusals carry the composed actionable message; hard
+        // errors keep the errorCode mapping (same as the OC page).
+        else toast('error', 'Fan apply failed', per.message ?? errorMessage(per.errorCode, key));
       }
       ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
     } catch (err) {
@@ -348,6 +356,24 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
 // ---------------------------------------------------------------------------
 // Shared SVG curve view
 // ---------------------------------------------------------------------------
+
+/**
+ * The right-side 0-100% axis (M2C-B B1): one label per horizontal grid
+ * line, aligned to the same normalized y — the labels live OUTSIDE the
+ * plot (they used to sit inside the SVG at x:99/x:1).
+ */
+function fanAxis(): HTMLElement {
+  return el('div', { class: 'fan-yaxis' }, fanSpeedTicks().map((tick) => {
+    const label = el('span', { class: 'fan-yaxis-tick', text: `${tick.pct}%` });
+    label.style.top = `${tick.y}%`;
+    // Edge labels keep their FULL height inside .fan-stage (overflow:hidden):
+    // the top tick hangs below the 100% grid line, the bottom tick sits
+    // above the 0% line — the interior ticks stay centered (translateY(-50%)).
+    if (tick.y === 0) label.classList.add('fan-yaxis-tick-edge-top');
+    if (tick.y === 100) label.classList.add('fan-yaxis-tick-edge-bottom');
+    return label;
+  }));
+}
 
 function editorSvg(points: CurvePoint[], maxRpm: number, interactive: boolean, domain = curveDomain(points)): HTMLElement {
   const svg = svgEl('svg', {
@@ -375,9 +401,7 @@ function editorSvg(points: CurvePoint[], maxRpm: number, interactive: boolean, d
   if (maxRpm > 0) {
     const y = rpmMarkerY(100, maxRpm);
     svg.append(svgEl('line', { x1: 0, y1: y, x2: 100, y2: y, class: 'fan-maxline' }));
-    svg.append(svgEl('text', { x: 99, y: Math.max(4, y - 1), class: 'fan-label', 'text-anchor': 'end', textContent: '100%' }));
   }
-  svg.append(svgEl('text', { x: 1, y: 99, class: 'fan-label', textContent: '0%' }));
   const elNode = svg as unknown as HTMLElement;
   if (interactive) elNode.dataset['interactive'] = '1';
   return elNode;

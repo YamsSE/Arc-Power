@@ -34,12 +34,38 @@ html, body {
   font-family: var(--font);
   font-size: 14px;
   line-height: 1.45;
+  /* M2C-B B4: theme scrollbars with a native fallback (Firefox). */
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-strong) var(--bg-inset);
+}
+
+/* M2C-B B4: styled scrollbars — thin, inset track, blue-accent thumb that
+   lights up on hover. Applies to every scroll container in the client. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-inset);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+  border: 2px solid var(--bg-inset);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-strong);
+}
+::-webkit-scrollbar-corner {
+  background: var(--bg-inset);
 }
 
 #app {
   display: grid;
   grid-template-columns: 224px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* ------------------------------------------------------------------ sidebar */
@@ -51,14 +77,28 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
 
 .sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   font-size: 17px;
   font-weight: 700;
   letter-spacing: 0.04em;
   padding: 0 10px;
   color: var(--text);
+}
+
+/* M2C-B B7: the blue "AP" logo in front of the "Arc Power" line. */
+.sidebar-logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex-shrink: 0;
 }
 
 .sidebar-brand::after {
@@ -95,6 +135,7 @@ html, body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
 #gpu-header {
@@ -151,6 +192,10 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
 
 .page-title { margin: 0; font-size: 22px; font-weight: 700; }
@@ -319,28 +364,31 @@ html, body {
 
 /* --------------------------------------------------------------- stat tiles */
 
-.readout-card { margin-top: 2px; }
+/* M2C-B B9: the dashboard live readout is compact — shorter tiles, tighter
+   padding, larger values (user: "a bit too long and small, 5 boxes next to
+   each other"). */
+.readout-card { margin-top: 2px; padding: 12px 16px; }
+.readout-card .card-title { margin-bottom: 8px; }
 
-/* M2b-B: the dashboard live readout got a tighter layout (smaller tiles). */
 .readout-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 6px;
 }
 
 .stat-tile {
   background: var(--bg-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 8px 12px;
+  padding: 6px 10px;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
 }
 
-.stat-value { font-size: 18px; font-weight: 700; font-family: var(--mono); }
-.stat-unit { font-size: 11.5px; color: var(--accent); font-family: var(--mono); }
-.stat-label { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+.stat-value { font-size: 21px; font-weight: 700; font-family: var(--mono); line-height: 1.1; }
+.stat-unit { font-size: 10.5px; color: var(--accent); font-family: var(--mono); margin-top: 1px; }
+.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 
 /* ------------------------------------------------------------ overclocking */
 
@@ -469,12 +517,22 @@ html, body {
 
 .fan-stage {
   position: relative;
+  display: flex;
   width: 100%;
   height: 320px;
   background: var(--bg-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
+}
+
+/* M2C-B B1: the plot area is a flex child — the right-side 0-100% axis
+   lives OUTSIDE it (the old labels sat inside the SVG at x:99/x:1). */
+.fan-plot {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
 .fan-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -490,7 +548,32 @@ html, body {
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
-.fan-label { fill: var(--text-dim); font-size: 4px; font-family: var(--font); }
+
+/* The right-side axis (B1): one tick per horizontal grid line, aligned to
+   the same normalized y (0 = top / 100%, 100 = bottom / 0%). */
+.fan-yaxis {
+  position: relative;
+  width: 38px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.fan-yaxis-tick {
+  position: absolute;
+  right: 8px;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+  line-height: 1;
+}
+
+/* M2C-B review B1: the 100%/0% labels centered on the stage edges would
+   lose their outer half to .fan-stage { overflow: hidden } — hug the edge
+   instead (label edge on the grid line) so all five render fully. */
+.fan-yaxis-tick-edge-top { transform: translateY(0); }
+.fan-yaxis-tick-edge-bottom { transform: translateY(-100%); }
 
 .fan-dots { position: absolute; inset: 0; }
 
@@ -607,17 +690,6 @@ html, body {
   box-shadow: var(--shadow);
   font-size: 14px;
   padding: 10px 30px;
-}
-
-/* F3 retry-in-progress state: still clickable (a click cancels the apply). */
-.floating-apply.applying {
-  animation: oc-pulse 1.2s ease-in-out infinite;
-  cursor: pointer;
-}
-
-@keyframes oc-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.65; }
 }
 
 /* ------------------------------------------------- compact OC cards (M2b-B) */

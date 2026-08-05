@@ -6,13 +6,13 @@ import {
   validateSettingsPayload,
   buildScalarSettings,
   buildFanSettings,
-  computeDirty,
   isNoopApply,
   isControlDirty,
-  shouldShowRetryNote,
   profileApplyOutcome,
   clampExposedRange,
-  applyGiveUpSummary,
+  isControlDirtyVsApplied,
+  computeDirtyVsApplied,
+  isScalarDirtyVsApplied,
   TEMP_LIMIT_MAX_C,
 } from '../src/renderer/pure/settings.ts';
 import { computePresets } from '../src/renderer/pure/presets.ts';
@@ -99,22 +99,6 @@ const mockState: DeviceState = {
   fixedFanPct: null,
 };
 
-test('computeDirty: a payload matching the driver state is clean', () => {
-  assert.equal(computeDirty({ powerLimitW: 210, gpuFreqOffsetMhz: 0 }, mockState), false);
-  assert.equal(computeDirty({}, mockState), false);
-});
-
-test('computeDirty: any differing scalar / string / pair / array makes it dirty', () => {
-  assert.equal(computeDirty({ powerLimitW: 220 }, mockState), true);
-  assert.equal(computeDirty({ fanMode: 'auto' }, mockState), true);
-  assert.equal(computeDirty({ gpuLock: { voltageV: 0.9, freqMhz: 2100 } }, mockState), true);
-  assert.equal(computeDirty({ fanCurve: [{ t: 20, speedPct: 25 }, { t: 90, speedPct: 100 }] }, mockState), true);
-});
-
-test('computeDirty: a missing driver read-back counts as dirty (cannot verify)', () => {
-  assert.equal(computeDirty({ vramFreqOffsetGts: 2 }, mockState), true);
-});
-
 test('isNoopApply: requested == pre-apply state is a no-op; a real change is not', () => {
   assert.equal(isNoopApply('powerLimitW', { powerLimitW: 210 }, mockState), true);
   assert.equal(isNoopApply('powerLimitW', { powerLimitW: 220 }, mockState), false);
@@ -132,17 +116,16 @@ test('isControlDirty: number / string / gpuLock / curve comparisons stay type-ho
   assert.equal(isControlDirty('fanCurve', { fanCurve: [{ t: 20, speedPct: 20 }, { t: 90, speedPct: 100 }] }, mockState), false);
 });
 
-// M2b review F3 — the "Applied on retry" warn only fires when the retried
-// apply SUCCEEDED (retried is also set by an apply that exhausted its
-// retries and failed).
-test('shouldShowRetryNote: true only when the retried apply succeeded', () => {
-  assert.equal(shouldShowRetryNote({ retried: true, ok: true }), true);
-  assert.equal(shouldShowRetryNote({ retried: false, ok: true }), false);
-  assert.equal(shouldShowRetryNote({ retried: true, ok: false }), false);
-  assert.equal(shouldShowRetryNote({ ok: true }), false);
-  assert.equal(shouldShowRetryNote({ retried: true }), false);
-  assert.equal(shouldShowRetryNote({}), false);
+test('isControlDirty: a missing driver read-back counts as dirty (cannot verify)', () => {
+  assert.equal(isControlDirty('vramFreqOffsetGts', { vramFreqOffsetGts: 2 }, mockState), true);
 });
+
+// M2b review F3 — the "Applied on retry" warn was deleted with the retry
+// machinery (M2C-B F3 instant apply): no retry note exists anymore. The
+// remaining post-apply surface is profileApplyOutcome (M2b step-5 NIT 2):
+// a partially-failed profile load must NOT mark the profile active nor
+// claim "applied to the GPU" (the per-control error toasts already covered
+// it); only result.ok may gate the active mark.
 
 // M2b step-5 NIT 2 — a partially-failed profile load must NOT mark the
 // profile active nor claim "applied to the GPU" (the per-control error
@@ -157,7 +140,7 @@ test('profileApplyOutcome: partial failure never marks active or claims applied'
 });
 
 // ---------------------------------------------------------------------------
-// M2C-A F3 — PT clamp (92 -> 90) + honest give-up summary
+// M2C-A F3 — PT clamp (92 -> 90)
 // ---------------------------------------------------------------------------
 
 test('F3 PT clamp: the renderer ceiling is 90 C', () => {
@@ -182,9 +165,57 @@ test('F3 PT clamp: an already-legal range and other controls pass through untouc
   assert.equal(clampExposedRange(undefined, 'tempLimitC'), undefined);
 });
 
-test('F3: applyGiveUpSummary reports the honest give-up text with the attempt count', () => {
-  assert.equal(applyGiveUpSummary({ gaveUp: true, attempts: 5 }), 'The driver kept refusing after 5 attempts — no more retries within the apply budget.');
-  assert.equal(applyGiveUpSummary({ gaveUp: true, attempts: 1 }), 'The driver kept refusing after 1 attempt — no more retries within the apply budget.');
-  assert.equal(applyGiveUpSummary({ gaveUp: false, attempts: 5 }), null);
-  assert.equal(applyGiveUpSummary({}), null);
+// ---------------------------------------------------------------------------
+// M2C-B B5 — applied-reference dirty detection (chips + floating Apply)
+// ---------------------------------------------------------------------------
+// (a) the dirty reference for the "Unapplied" chips AND the floating Apply
+//     button: per-`result.ok` control it becomes the APPLIED value, so the
+//     chip clears and the button hides even while the driver read-back lags;
+// (b) the no-op suppression comparison (isNoopApply) stays against the
+//     driver read-back — the silent-success rule survives.
+
+test('B5: an applied control is clean against its applied value even when the driver read-back lags', () => {
+  // Apply 220 W succeeded; the driver read-back still reports 210.
+  const laggingState: DeviceState = { ...mockState, powerLimitW: 210 };
+  const applied = { powerLimitW: 220 };
+  assert.equal(isControlDirtyVsApplied('powerLimitW', { powerLimitW: 220 }, laggingState, applied), false);
+  assert.equal(isScalarDirtyVsApplied('powerLimitW', 220, laggingState, applied), false);
+  assert.equal(computeDirtyVsApplied({ powerLimitW: 220 }, laggingState, applied), false);
+});
+
+test('B5: a control NOT in the applied reference judges against the driver read-back', () => {
+  const applied = { powerLimitW: 220 };
+  assert.equal(isControlDirtyVsApplied('gpuFreqOffsetMhz', { gpuFreqOffsetMhz: 50 }, mockState, applied), true);
+  assert.equal(isControlDirtyVsApplied('gpuFreqOffsetMhz', { gpuFreqOffsetMhz: 0 }, mockState, applied), false);
+  // the old dirty predicate is unchanged for controls outside the reference
+  assert.equal(isControlDirty('gpuFreqOffsetMhz', { gpuFreqOffsetMhz: 50 }, mockState), true);
+});
+
+test('B5: moving the slider after a successful apply re-dirties the control', () => {
+  const laggingState: DeviceState = { ...mockState, powerLimitW: 210 };
+  const applied = { powerLimitW: 220 };
+  assert.equal(isScalarDirtyVsApplied('powerLimitW', 230, laggingState, applied), true, 'new slider value is dirty');
+  assert.equal(isScalarDirtyVsApplied('powerLimitW', 220, laggingState, applied), false, 'same as applied is clean');
+});
+
+test('B5: a missing driver read-back still counts as dirty (cannot verify) unless applied', () => {
+  const applied = { vramFreqOffsetGts: 2 };
+  assert.equal(isScalarDirtyVsApplied('vramFreqOffsetGts', 2, mockState, applied), false, 'applied reference covers it');
+  assert.equal(isScalarDirtyVsApplied('vramFreqOffsetGts', 3, mockState, applied), true);
+  assert.equal(isControlDirtyVsApplied('vramFreqOffsetGts', { vramFreqOffsetGts: 2 }, mockState, {}), true);
+});
+
+test('B5(b): repeat-apply of an identical value stays silent (no-op suppression against the read-back)', () => {
+  // The value already equals the driver read-back BEFORE the apply: a
+  // success must not toast — unchanged from M2b-B. The applied reference
+  // never leaks into this comparison (isNoopApply takes no reference).
+  assert.equal(isNoopApply('powerLimitW', { powerLimitW: 210 }, mockState), true);
+  assert.equal(isNoopApply('powerLimitW', { powerLimitW: 220 }, mockState), false);
+});
+
+test('B5: computeDirtyVsApplied is any-dirty across the payload', () => {
+  const laggingState: DeviceState = { ...mockState, powerLimitW: 210 };
+  const applied = { powerLimitW: 220 };
+  assert.equal(computeDirtyVsApplied({ powerLimitW: 220, gpuFreqOffsetMhz: 0 }, laggingState, applied), false);
+  assert.equal(computeDirtyVsApplied({ powerLimitW: 220, gpuFreqOffsetMhz: 50 }, laggingState, applied), true);
 });

@@ -3,9 +3,10 @@
 // IPC channels), plus the "start at boot" toggle (ocOnBoot, waiver-gated)
 // backed by the Run-key helper (startup-set) with honest state reporting.
 // Loading a profile applies its settings through the same waiver gate and
-// toast rules as the Overclocking page (no-op applies stay silent; retried
-// applies note the retry; errors always toast). Every mutation rebuilds the
-// tray menu (tray-rebuild IPC) and marks the active profile.
+// toast rules as the Overclocking page (no-op applies stay silent; errors
+// always toast; M2C-B F3 instant apply — one attempt, no retry UI). Every
+// mutation rebuilds the tray menu (tray-rebuild IPC) and marks the active
+// profile.
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
@@ -13,7 +14,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { isNoopApply, shouldShowRetryNote, validateSettingsPayload, profileApplyOutcome, applyGiveUpSummary } from '../pure/settings.ts';
+import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
 import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings } from '../types.ts';
 
@@ -227,18 +228,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const profileRow = (p: Profile, active: boolean, activeId: string | null): HTMLElement => {
-    // F3: the Load button is the single click surface — while a load is
-    // retrying it shows the live attempt state and a click CANCELS it.
+    // F3 instant apply (M2C-B): the Load button is a single trigger — one
+    // attempt, immediate result (no in-flight cancel surface anymore).
     const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load' });
     let loadInFlight = false;
     loadBtn.addEventListener('click', () => {
-      if (loadInFlight) {
-        void api.cancelApply(s.deviceId ?? -1).catch(() => {});
-        toast('info', 'Cancelling…', 'Stopping further retries — controls already applied stay applied.');
-        return;
-      }
+      if (loadInFlight) return;
       loadInFlight = true;
-      void onLoad(p, loadBtn, () => { loadInFlight = false; });
+      void onLoad(p, () => { loadInFlight = false; });
     });
     return el('div', {
       class: `profile-row${active ? ' profile-active' : ''}`,
@@ -363,7 +360,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     }
   };
 
-  const onLoad = async (p: Profile, btn: HTMLElement, done: () => void): Promise<void> => {
+  const onLoad = async (p: Profile, done: () => void): Promise<void> => {
     const deviceId = s.deviceId;
     if (deviceId === null) return;
     const decision = await ensureWaiver(deviceId, caps.waiverAccepted, caps.deviceName || 'this GPU');
@@ -372,40 +369,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
       return;
     }
-    let unsubProgress: (() => void) | null = null;
-    const setLoading = (on: boolean, label = 'Load') => {
-      btn.textContent = label;
-      if (!on) done();
-    };
     try {
       const before = ctx.store.get().state as DeviceState;
-      setLoading(true, 'Loading…');
-      // F3 live retry state on the Load button (same push events as the
-      // Overclocking Apply button; never a dead click).
-      unsubProgress = api.onApplyProgress((ev) => {
-        if (ev.deviceId !== deviceId) return;
-        setLoading(true, `Loading — retry ${ev.attempt}/${ev.retryOf}…`);
-      });
       const { result, state: fresh } = await api.applySettings(deviceId, p.settings);
       ctx.store.set({ state: fresh });
       let changed = 0;
       for (const [key, per] of Object.entries(result.perControl)) {
         if (!per.ok) {
-          toast('error', `${CONTROL_LABELS[key] ?? key} failed`, errorMessage(per.errorCode, key));
+          // F3 instant: refusals carry the composed actionable message;
+          // hard errors keep the errorCode mapping.
+          toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
         } else if (!isNoopApply(key, p.settings, before)) {
           changed += 1;
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
         }
       }
-      if (result.cancelled) {
-        toast('info', 'Load cancelled', 'Controls already applied stay applied; the rest were not written.');
-      } else if (shouldShowRetryNote(result)) {
-        // The retry note only claims success when the retried apply actually
-        // succeeded (M2b review F3) — a failed retry shows only the errors.
-        toast('warn', 'Applied on retry', 'The driver was busy — the profile was applied on the retry attempt.');
-      }
-      const giveUp = applyGiveUpSummary(result);
-      if (giveUp) toast('error', 'Profile load failed', giveUp);
       ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
       // M2b step-5 NIT 2: only a fully-successful apply (result.ok) may mark
       // the profile active and claim "applied to the GPU" — a partially-
@@ -420,8 +398,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     } catch (err) {
       toast('error', 'Profile load failed', err instanceof Error ? err.message : String(err));
     } finally {
-      unsubProgress?.();
-      setLoading(false);
+      done();
     }
   };
 

@@ -4,18 +4,24 @@
 // ONLY when a setting differs from the loaded driver state (dirty) and
 // disappears when clean. Apply writes every dirty control with per-control
 // result toasts: no-op controls (value == driver read-back before the
-// apply) stay silent, errors always toast, and a retried apply shows the
-// "driver was busy — applied on retry" note. All limits come from
-// Capabilities.ranges — never hardcoded.
+// apply) stay silent, errors always toast.
+//
+// M2C-B F3 (instant apply): ONE attempt per control, zero waiting, no
+// progress UI, no cancellation, no retry note. Refusals (incl. the silent
+// no-op) toast the actionable message composed in main.
+//
+// M2C-B B5: the "Unapplied" chip + floating Apply use the APPLIED reference
+// (per-`result.ok` control -> the applied value), so they clear immediately
+// even when the driver read-back lags; the no-op toast suppression still
+// compares against the pre-apply driver read-back.
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
-import { computeDirty as perControlDirty } from '../pure/slider.ts';
 import { computePresets } from '../pure/presets.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, computeDirty, isNoopApply, shouldShowRetryNote, applyGiveUpSummary, clampExposedRange } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, clampExposedRange, computeDirtyVsApplied, isScalarDirtyVsApplied } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { toast } from '../components/toast.ts';
 import type { RangeInfo, Capabilities, DeviceState } from '../types.ts';
@@ -64,37 +70,25 @@ export const overclockingPage: Page = {
     const cards = new Map<string, HTMLElement>();
     const valueNodes = new Map<string, HTMLElement>();
     // Mutable current-state reference: refreshed from every apply response so
-    // the "Unapplied" chips and the floating Apply never go stale (F4).
+    // the chips and the floating Apply never go stale.
     let currentState: DeviceState = state;
+    // B5(a): the applied reference — per-`result.ok` control it becomes the
+    // applied value, so the chip clears and the button hides even while the
+    // driver read-back lags. Never merged with the no-op comparison (b).
+    const applied: Record<string, number> = {};
 
     // --- floating Apply (M2b-B): bottom-left, dirty-only -------------------
-    // F3 (M2C-A): while an apply is retrying, the button shows the live
-    // attempt state ("Applying — retry 3/9…") and clicking it CANCELS the
-    // in-flight apply — never a dead click. Progress arrives via push events
-    // from main; the final result is reported honestly (give-up summary).
+    // F3 instant apply (M2C-B): one attempt, immediate result; the button is
+    // just a trigger (a reentry guard swallows a double-click mid-apply).
     const applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
     let applying = false;
-    let unsubProgress: (() => void) | null = null;
     applyBtn.addEventListener('click', () => {
-      if (applying) {
-        const dev = ctx.store.get().deviceId;
-        if (dev !== null) {
-          void api.cancelApply(dev).catch(() => {});
-          toast('info', 'Cancelling…', 'Stopping further retries — controls already applied stay applied.');
-        }
-        return;
-      }
+      if (applying) return;
       void apply();
     });
-    const setApplying = (on: boolean, label = APPLY_BTN_TEXT) => {
-      applying = on;
-      applyBtn.textContent = label;
-      applyBtn.classList.toggle('applying', on);
-      applyBtn.disabled = false; // always clickable: a click cancels while in flight
-    };
     const updateFloating = () => {
       if (applying) return;
-      applyBtn.hidden = !computeDirty(buildScalarSettings(values), currentState);
+      applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values), currentState, applied);
     };
 
     const refreshCard = (key: string) => {
@@ -107,7 +101,7 @@ export const overclockingPage: Page = {
       if (input) input.value = String(value);
       if (fill) fill.style.width = `${normalizedPosition(value, range) * 100}%`;
       if (valueNode) valueNode.textContent = formatValue(value, range.units);
-      if (dirty) dirty.hidden = !perControlDirty(values, currentState, [key])[key];
+      if (dirty) dirty.hidden = !isScalarDirtyVsApplied(key, value, currentState, applied);
       updateFloating();
     };
 
@@ -198,11 +192,7 @@ export const overclockingPage: Page = {
         // control whose value already equals the driver read-back stays
         // silent on success.
         const before = currentState;
-        setApplying(true, `${APPLY_BTN_TEXT}…`);
-        unsubProgress = api.onApplyProgress((p) => {
-          if (p.deviceId !== deviceId) return;
-          setApplying(true, `Applying — retry ${p.attempt}/${p.retryOf}…`);
-        });
+        applying = true;
         const { result, state: fresh } = await api.applySettings(deviceId, settings);
         // M1 risk note: IGS may change OC state — refresh after every apply.
         currentState = fresh;
@@ -210,29 +200,22 @@ export const overclockingPage: Page = {
         for (const [key, per] of Object.entries(result.perControl)) {
           const range = caps.ranges[key];
           if (!per.ok) {
-            toast('error', `${CONTROL_LABELS[key] ?? key} failed`, errorMessage(per.errorCode, key));
-          } else if (!isNoopApply(key, settings, before)) {
-            const applied = settings[key as keyof typeof settings];
-            toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof applied === 'number' && range ? formatValue(applied, range.units) : '');
+            // F3 instant: refusals carry the composed actionable message;
+            // hard errors keep the errorCode mapping.
+            toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
+          } else {
+            // B5(a): a control that applied becomes the APPLIED reference —
+            // its chip clears and the button hides even while the driver
+            // read-back lags. (b) The toast still needs a REAL change vs
+            // the pre-apply read-back.
+            const wanted = settings[key as keyof typeof settings];
+            if (typeof wanted === 'number') applied[key] = wanted;
+            if (!isNoopApply(key, settings, before)) {
+              toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof wanted === 'number' && range ? formatValue(wanted, range.units) : '');
+            }
+            // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }
-          // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
         }
-        if (result.cancelled) {
-          // F3 abort semantics: the user stopped the retries; report the
-          // honest partial state (controls already applied stay applied).
-          toast('info', 'Apply cancelled', 'Controls already applied stay applied; the rest were not written.');
-        } else if (shouldShowRetryNote(result)) {
-          // The retry note only claims success when the retried apply
-          // actually succeeded (M2b review F3): an apply that exhausted its
-          // retries and failed must not show "applied on the retry attempt".
-          toast('warn', 'Applied on retry', 'The driver was busy — the value was applied on the retry attempt.');
-        }
-        // F3 honest give-up: the driver kept refusing across the whole
-        // budget — say exactly that, never a generic failure.
-        const giveUp = applyGiveUpSummary(result);
-        if (giveUp) toast('error', 'Apply failed', giveUp);
-        // Recompute dirty chips + the floating button against the fresh
-        // read-back so a control that just applied stops showing "Unapplied".
         for (const key of controls) refreshCard(key);
         updateFloating();
         if (!result.ok) {
@@ -245,9 +228,8 @@ export const overclockingPage: Page = {
       } catch (err) {
         toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
       } finally {
-        unsubProgress?.();
-        unsubProgress = null;
-        setApplying(false);
+        applying = false;
+        updateFloating();
       }
     };
 

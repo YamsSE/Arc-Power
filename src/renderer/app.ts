@@ -47,7 +47,11 @@ function renderSidebar() {
   const active = currentPage();
   clear(nav);
   nav.append(
-    el('div', { class: 'sidebar-brand', text: 'Arc Power' }),
+    // M2C-B B7: the blue "AP" logo in front of the "Arc Power" line.
+    el('div', { class: 'sidebar-brand' }, [
+      el('img', { class: 'sidebar-logo', src: '../assets/icon.png', alt: 'Arc Power' }),
+      el('span', { text: 'Arc Power' }),
+    ]),
     el('nav', { class: 'sidebar-nav' }, PAGE_IDS.map((id) =>
       el('a', {
         class: `sidebar-link${id === active ? ' active' : ''}`,
@@ -103,8 +107,17 @@ async function boot() {
   const deviceId = devices[0].id;
   store.set({ deviceId });
 
+  // App version for the header line (M2C-B B3). Failure degrades to the
+  // initial placeholder — the header stays up.
+  try {
+    const v = await api.appVersion();
+    store.set({ appVersion: v?.version ?? '0.0.0' });
+  } catch {
+    store.set({ appVersion: '0.0.0' });
+  }
+
   // Display-driver registry date (M2b-B, read-only): a lookup failure
-  // degrades to null and the header shows the driver version alone.
+  // degrades to null and the dashboard card shows the driver version alone.
   try {
     const info = await api.driverInfo();
     store.set({ driverDate: info?.driverDate ?? null });

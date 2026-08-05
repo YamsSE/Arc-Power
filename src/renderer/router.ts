@@ -60,6 +60,8 @@ export interface AppState {
   igsState: IgsServiceState | null;
   /** Display-driver registry date ("7-5-2026") from the driver-info IPC. */
   driverDate: string | null;
+  /** M2C-B B3: app version for the header line (app:version IPC). */
+  appVersion: string;
   bootError: string | null;
 }
 
@@ -72,6 +74,7 @@ const INITIAL: AppState = {
   latestSample: null,
   igsState: null,
   driverDate: null,
+  appVersion: '0.0.0',
   bootError: null,
 };
 

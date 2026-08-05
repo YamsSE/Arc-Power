@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid, computeDirty } from '../src/renderer/pure/slider.ts';
+import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../src/renderer/pure/slider.ts';
 import type { DeviceState, RangeInfo } from '../src/renderer/types.ts';
 
 const A770_FREQ: RangeInfo = { min: 0, max: 300, step: 1, default: 0, units: 'MHz' };
@@ -99,27 +99,3 @@ function deviceState(patch: Partial<DeviceState> = {}): DeviceState {
     ...patch,
   };
 }
-
-test('computeDirty: flags values that differ from the driver state', () => {
-  const values = { powerLimitW: 220, tempLimitC: 85 };
-  const dirty = computeDirty(values, deviceState(), ['powerLimitW', 'tempLimitC']);
-  assert.deepEqual(dirty, { powerLimitW: true, tempLimitC: true });
-  assert.deepEqual(computeDirty(values, deviceState(), ['powerLimitW']), { powerLimitW: true });
-});
-
-test('computeDirty: a fresh apply state clears the flag for applied controls (F4 regression)', () => {
-  const values = { powerLimitW: 220, tempLimitC: 85 };
-  // after apply, the read-back state equals the applied values for the
-  // control that succeeded (tempLimitC is still pending elsewhere).
-  const fresh = deviceState({ powerLimitW: 220 });
-  assert.deepEqual(computeDirty(values, fresh, ['powerLimitW', 'tempLimitC']), {
-    powerLimitW: false,
-    tempLimitC: true,
-  });
-});
-
-test('computeDirty: an unavailable driver readout keeps the control dirty', () => {
-  assert.deepEqual(computeDirty({ powerLimitW: 220 }, deviceState({ powerLimitW: null }), ['powerLimitW']), {
-    powerLimitW: true,
-  });
-});
