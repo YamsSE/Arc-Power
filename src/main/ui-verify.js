@@ -15,12 +15,13 @@
 //   8. with RID_MOCK_OFFGRID_FREQ_MHZ=48.3, the driver readout line renders
 //      the off-grid value with an extra decimal, distinct from the snapped
 //      slider value.
-//   9. IGS service card (M2a extension): with the default mock (running),
-//      the header shows the warning dot, the dashboard shows the note and
-//      the "Disable IGS service" button; clicking it (mock) toasts, flips
-//      the state to stopped (disabled) and the button to "Re-enable IGS
-//      service"; clicking back restores running. With RID_MOCK_IGS_RUNNING=0
-//      the indicator stays ok and no note is shown.
+//   9. IGS state card (M2a.5 extension): the env knobs RID_MOCK_IGS_RUNNING /
+//      RID_MOCK_IGS_APP fixture the four-combination matrix. The header dot
+//      and the dashboard card must match: half-states (svc != app) show the
+//      warning dot + the partial-running note + the toggle button; fully-on
+//      (both running) and fully-off (both stopped) show the ok dot and no
+//      note. Clicking the toggle flips ONLY the service part (mock) — the
+//      round trip is verified from every starting corner.
 // This script is dev tooling only — it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot.
@@ -66,65 +67,63 @@ export async function runUiVerify(win, backend) {
   if (brand.trim() !== 'Arc Power') fail(`sidebar brand is '${brand}'`);
   step('boot', `shell rendered; brand='${brand.trim()}'; mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
 
-  // --- 1b. IGS service card + disable/enable (mock; never touches the real
-  // ---    service; RID_MOCK_IGS_RUNNING drives the fixture) --------------
-  const igsRunningMode = process.env.RID_MOCK_IGS_RUNNING !== '0';
+  // --- 1b. IGS state card (mock; never touches the real service; the env
+  // ---    knobs RID_MOCK_IGS_RUNNING/RID_MOCK_IGS_APP drive the fixture) ---
+  // The verified rule (docs/igcl-integration.md §8a): half-states (service
+  // and app disagree) block OC writes -> warning + note; fully-on and
+  // fully-off -> ok, no note. The toggle flips ONLY the service part.
+  const svcRunning = process.env.RID_MOCK_IGS_RUNNING !== '0';
+  const appRunning = process.env.RID_MOCK_IGS_APP !== '0';
   const igsBtnText = () => js(`document.querySelector('.igs-toggle')?.textContent ?? ''`);
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
-  if (igsRunningMode) {
-    // Default fixture (running, auto): warning dot in the header + note +
-    // "Disable IGS service" button on the dashboard.
-    if (!(await waitFor(win, `!!document.querySelector('.status-warning')`))) {
-      fail('header status dot is not warning while the IGS service runs (mock)');
-    }
-    if (!(await waitFor(win, `(document.querySelector('.igs-note')?.textContent ?? '').includes('won\\'t apply')`))) {
-      fail('IGS warning note missing on the dashboard');
-    }
-    const btn = await igsBtnText();
-    if (btn.trim() !== 'Disable IGS service') fail(`IGS button is '${btn}' (expected 'Disable IGS service')`);
-    step('igs', `IGS service card: warning dot + note + '${btn.trim()}' (mock running)`);
-
-    // Disable (mock): success toast + state flips to stopped (disabled).
-    await js(`document.querySelector('.igs-toggle')?.click()`);
-    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`))) fail('IGS disable success toast missing');
-    const afterDisable = await js(`window.arcPower.getIgsServiceState()`);
-    if (afterDisable.running !== false || afterDisable.startType !== 'disabled') {
-      fail(`mock IGS state after disable: ${JSON.stringify(afterDisable)}`);
-    }
-    if (!(await waitFor(win, `(document.querySelector('.igs-toggle')?.textContent ?? '').trim() === 'Re-enable IGS service'`))) {
-      fail('button did not flip to Re-enable after disable');
-    }
-    await clearToasts();
-    step('igs-disable', 'IGS disable (mock): toast + state stopped (disabled) + Re-enable button');
-
-    // Re-enable (mock): reversible — state flips back to running (auto), the
-    // button back to Disable, and the header dot back to warning (full round
-    // trip through the store -> mapStatus -> header dot).
-    await js(`document.querySelector('.igs-toggle')?.click()`);
-    if (!(await waitFor(win, `(document.querySelector('.igs-toggle')?.textContent ?? '').trim() === 'Disable IGS service'`))) {
-      fail('button did not flip back to Disable after re-enable');
-    }
-    if (!(await waitFor(win, `!!document.querySelector('.status-warning')`))) {
-      fail('header status dot is not warning again after re-enable');
-    }
-    const afterEnable = await js(`window.arcPower.getIgsServiceState()`);
-    if (!afterEnable.running || afterEnable.startType !== 'auto') {
-      fail(`mock IGS state after enable: ${JSON.stringify(afterEnable)}`);
-    }
-    await clearToasts();
-    step('igs-enable', 'IGS re-enable (mock): state running (auto) again');
-  } else {
-    // RID_MOCK_IGS_RUNNING=0: stopped (disabled) — ok indicator, no note.
-    if (!(await waitFor(win, `!!document.querySelector('.status-ok')`))) {
-      fail('status dot is not ok with the IGS service stopped (mock)');
+  /** Assert the full IGS UI for a given (service, app) corner of the matrix. */
+  const expectIgsUi = async (svc, app) => {
+    const level = svc === app ? 'ok' : 'warning';
+    if (!(await waitFor(win, `!!document.querySelector('.status-${level}')`))) {
+      fail(`status dot is not ${level} for svc=${svc} app=${app}`);
     }
     const note = await js(`document.querySelector('.igs-note')?.textContent ?? ''`);
-    if (note !== '') fail(`IGS note shown despite a stopped service: '${note}'`);
+    if (svc !== app) {
+      if (!note.includes('partially running')) fail(`IGS half-state note missing: '${note}'`);
+    } else if (note !== '') {
+      fail(`IGS note shown in the fully-${svc ? 'on' : 'off'} state: '${note}'`);
+    }
     const btn = await igsBtnText();
-    if (btn.trim() !== 'Re-enable IGS service') fail(`IGS button is '${btn}' (expected 'Re-enable IGS service')`);
-    step('igs-stopped', `IGS service card: ok indicator, no note, '${btn.trim()}' (mock stopped)`);
+    const expectedBtn = svc ? 'Disable IGS service' : 'Re-enable IGS service';
+    if (btn.trim() !== expectedBtn) fail(`IGS button is '${btn}' (expected '${expectedBtn}')`);
+    const state = await js(`window.arcPower.getIgsServiceState()`);
+    if (state.service.running !== svc || state.appRunning !== app || state.service.startType !== (svc ? 'auto' : 'disabled')) {
+      fail(`mock IGS state: ${JSON.stringify(state)} (expected svc=${svc} app=${app})`);
+    }
+  };
+
+  const comboName = (svc, app) => {
+    if (svc && app) return 'fully on';
+    if (!svc && !app) return 'fully off';
+    return svc ? 'half (service on, app off)' : 'half (app on, service off)';
+  };
+
+  // Initial corner from the env fixture.
+  await expectIgsUi(svcRunning, appRunning);
+  step('igs', `IGS card: initial ${comboName(svcRunning, appRunning)} — dot ${svcRunning === appRunning ? 'ok' : 'warning'}, note ${svcRunning !== appRunning ? 'shown' : 'absent'}, '${(await igsBtnText()).trim()}'`);
+
+  // Toggle (disable or enable): flips ONLY the service part (mock) — the
+  // app process state must be untouched.
+  await js(`document.querySelector('.igs-toggle')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`))) fail('IGS toggle success toast missing');
+  await expectIgsUi(!svcRunning, appRunning);
+  step('igs-toggle', `IGS toggle (mock): svc ${svcRunning ? 'disabled' : 'enabled'} -> ${comboName(!svcRunning, appRunning)}, toast ok`);
+
+  // Toggle back: reversible — restores the initial corner.
+  await clearToasts();
+  await js(`document.querySelector('.igs-toggle')?.click()`);
+  if (!(await waitFor(win, `(document.querySelector('.igs-toggle')?.textContent ?? '').trim() === '${svcRunning ? 'Disable IGS service' : 'Re-enable IGS service'}'`))) {
+    fail('button did not flip back after the second toggle');
   }
+  await expectIgsUi(svcRunning, appRunning);
+  await clearToasts();
+  step('igs-roundtrip', `IGS toggle round trip (mock): back to ${comboName(svcRunning, appRunning)}`);
 
   // --- 2. overclocking cards ------------------------------------------------
   await js(`location.hash = '#/overclocking'`);

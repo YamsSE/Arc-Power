@@ -209,8 +209,11 @@ Implications:
 - The KMD/IGCL path is healthy; the IGS service is the blocker (it enforces/reverts OC state).
 - Arc Power works fully when the IGS service is stopped/disabled; with it running, power/freq/temp
   applies fail honestly via read-back (`io-failed` toasts in the UI).
-- Product note (M2b+): when applies fail, the UI should hint at the IGS service (documented
-  workaround), and the dist smoke should be run with the service stopped or IGS OC engaged.
+- Product note (M2b+): the verified rule is **IGS fully off OR fully on** — OC writes are
+  refused in the half-states (IGS service running without the app, or the app running
+  without the service); fully-on (app + service, Tuning tab enabled) and fully-off both
+  work. The UI hints at this state when applies fail, and the dist smoke should be run
+  with IGS fully off or fully on.
 
 **Update (same day, after the M2a.5 disable-button feature):** the picture is more complex than
 "the service is the blocker". With the service DISABLED (via the app's elevated button), the IGS
@@ -239,6 +242,13 @@ oscillates on a minutes scale. Non-zero offset sets (and voltage offset generall
 often accepted than 0-value no-op sets, which is why the no-op smoke gate is the first thing
 to go red. Product note for M2b: a retry-with-backoff on `io-failed` applies, and a
 "driver busy — retry" hint, would mask most of this for real users.
+
+**Update 3 (M2a.6, same day):** the half-state matrix was verified — with the service
+running and the IGS app closed, OC writes are refused; with the service stopped but the
+app running, refused as well. Fully on (service + app, Tuning tab enabled) and fully off
+both accept writes. The app now detects both halves (service state via `sc.exe`, app
+process via `tasklist /FO CSV /NH /FI "IMAGENAME eq IntelGraphicsSoftware.exe"`) and
+warns on the half-states with the rule: IGS must be fully disabled OR fully running.
 
 ## 9. Telemetry findings
 

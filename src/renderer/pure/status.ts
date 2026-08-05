@@ -4,22 +4,41 @@
 // The health report alone decides searching/ok/degraded/error (same semantics
 // that used to live in components/header.ts — the F9 rule that a null health
 // report reads as 'searching' still holds). The combined mapping additionally
-// raises a `warning` when the device is healthy BUT the IGS service is
-// running: the service blocks OC writes (docs/igcl-integration.md §8a), so
-// healthy-but-blocked is the state the user must see. degraded/error always
-// win over the warning — a broken backend is worse than a blocked one.
+// raises a `warning` on the IGS HALF-states (docs/igcl-integration.md §8a,
+// verified rule): the service running without the app, or the app running
+// without the service — both block OC writes. Fully-on (app + service) and
+// fully-off are both OK. degraded/error always win over the warning — a
+// broken backend is worse than a blocked one.
 
 import type { Capabilities, HealthReport, IgsServiceState } from '../types.ts';
 
 export type StatusLevel = 'searching' | 'ok' | 'warning' | 'degraded' | 'error';
 
+/**
+ * IGS four-combination labels (pinned by unit tests and --ui-verify).
+ * - half, service-on/app-off: the service enforces OC state with no app to
+ *   expose it — writes are refused.
+ * - half, service-off/app-on: the app holds OC state without the service —
+ *   writes are refused as well.
+ * - fully on / fully off: both verified to accept OC writes.
+ */
+export const IGS_LABELS = {
+  fullyOn: 'IGS fully active — OC control OK',
+  fullyOff: 'IGS fully off — OC control OK',
+  serviceWithoutApp: 'IGS service running without the app — OC changes may not apply',
+  appWithoutService: 'IGS app running without the service — OC changes may not apply',
+} as const;
+
 export const STATUS_LABEL: Record<StatusLevel, string> = {
   ok: 'Healthy',
-  warning: "IGS service running — OC changes won't apply",
+  warning: IGS_LABELS.serviceWithoutApp,
   degraded: 'Degraded',
   error: 'Error',
   searching: 'Searching…',
 };
+
+/** Exact user-facing partial-running note (pinned by unit tests and --ui-verify). */
+export const IGS_NOTE = 'Intel Graphics Software is partially running. For OC changes to apply, either disable IGS completely or run it fully with the Tuning tab enabled.';
 
 /** Health-only level (kept separate so the header test contract stays exact). */
 export function healthLevel(h: HealthReport | null): StatusLevel {
@@ -35,15 +54,31 @@ export interface StatusOutcome {
 }
 
 /**
- * Combined health + IGS service mapping.
+ * IGS half-state predicate (service and app disagree) — the dashboard card's
+ * note condition. Deliberately NOT gated on `service.found`: a failed/absent
+ * service probe (e.g. non-1060 sc failure) with the app still running is
+ * still the OC-write blocker, so the card must agree with the header warning.
+ * @param igs null while the probe is pending — no half-state until we know.
+ */
+export function igsHalfState(igs: IgsServiceState | null): boolean {
+  return !!igs && igs.service.running !== igs.appRunning;
+}
+
+/**
+ * Combined health + IGS mapping.
  * @param igs null while the probe is pending — no warning until we know.
  */
 export function mapStatus(health: HealthReport | null, igs: IgsServiceState | null): StatusOutcome {
   const base = healthLevel(health);
-  if (base === 'ok' && igs?.running) {
-    return { level: 'warning', label: STATUS_LABEL.warning };
+  if (base !== 'ok' || !igs) return { level: base, label: STATUS_LABEL[base] };
+  const svc = igs.service;
+  // Half-states block OC writes — warn with the direction-specific label.
+  if (svc.running !== igs.appRunning) {
+    const label = svc.running ? IGS_LABELS.serviceWithoutApp : IGS_LABELS.appWithoutService;
+    return { level: 'warning', label };
   }
-  return { level: base, label: STATUS_LABEL[base] };
+  // Fully on (service + app) and fully off are both OK.
+  return { level: 'ok', label: svc.running ? IGS_LABELS.fullyOn : IGS_LABELS.fullyOff };
 }
 
 // ---------------------------------------------------------------------------

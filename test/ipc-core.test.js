@@ -298,16 +298,23 @@ test('telemetry-start emits samples through the injected emit channel', async ()
 // IGS service channels (M2a extension)
 // ---------------------------------------------------------------------------
 
-/** Construct a mock IGS adapter from an env value and restore env afterwards. */
-function makeEnvIgs(envValue) {
-  const prev = process.env.RID_MOCK_IGS_RUNNING;
-  if (envValue === undefined) delete process.env.RID_MOCK_IGS_RUNNING;
-  else process.env.RID_MOCK_IGS_RUNNING = envValue;
+/** Construct a mock IGS adapter from env knobs and restore the env afterwards. */
+function makeEnvIgs({ running, app } = {}) {
+  const prev = {
+    RID_MOCK_IGS_RUNNING: process.env.RID_MOCK_IGS_RUNNING,
+    RID_MOCK_IGS_APP: process.env.RID_MOCK_IGS_APP,
+  };
+  for (const [k, v] of Object.entries({ RID_MOCK_IGS_RUNNING: running, RID_MOCK_IGS_APP: app })) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   return {
     igs: createMockIgs(),
     restore: () => {
-      if (prev === undefined) delete process.env.RID_MOCK_IGS_RUNNING;
-      else process.env.RID_MOCK_IGS_RUNNING = prev;
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
     },
   };
 }
@@ -324,43 +331,81 @@ test('igs-service channels: registered, and the no-payload channels reject paylo
   }
 });
 
-test('igs-service mock: default state is running (auto) — matches this machine', async () => {
-  const env = makeEnvIgs(undefined);
+test('igs-service mock: default state is fully on (service + app running) — matches this machine', async () => {
+  const env = makeEnvIgs();
   try {
     const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
-    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: true, startType: 'auto' });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: true, startType: 'auto' },
+      appRunning: true,
+    });
   } finally {
     env.restore();
   }
 });
 
-test('igs-service mock: RID_MOCK_IGS_RUNNING=0 -> stopped (disabled)', async () => {
-  const env = makeEnvIgs('0');
+test('igs-service mock: RID_MOCK_IGS_RUNNING=0 -> service stopped (disabled), app still running', async () => {
+  const env = makeEnvIgs({ running: '0' });
   try {
     const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
-    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: false, startType: 'disabled' });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: true,
+    });
   } finally {
     env.restore();
   }
 });
 
-test('igs-service mock: disable flips to stopped+disabled, enable flips back — no spawning', async () => {
-  const env = makeEnvIgs(undefined);
+test('igs-service mock: RID_MOCK_IGS_APP=0 -> app not running, service still running', async () => {
+  const env = makeEnvIgs({ app: '0' });
+  try {
+    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: true, startType: 'auto' },
+      appRunning: false,
+    });
+  } finally {
+    env.restore();
+  }
+});
+
+test('igs-service mock: both knobs =0 -> fully off', async () => {
+  const env = makeEnvIgs({ running: '0', app: '0' });
+  try {
+    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: false,
+    });
+  } finally {
+    env.restore();
+  }
+});
+
+test('igs-service mock: disable/enable flip ONLY the service part — appRunning untouched — no spawning', async () => {
+  const env = makeEnvIgs({ app: '0' }); // app off: must STAY off through the toggle
   try {
     const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
 
     assert.deepEqual(await handlers['igs-service-disable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: false, startType: 'disabled' });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: false,
+    });
 
     assert.deepEqual(await handlers['igs-service-enable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: true, startType: 'auto' });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: true, startType: 'auto' },
+      appRunning: false,
+    });
   } finally {
     env.restore();
   }
 });
 
 test('igs-service channels: the DEFAULT adapter is the MOCK — no injection means no elevation, ever', async () => {
-  const env = makeEnvIgs(undefined);
+  const env = makeEnvIgs();
   try {
     // No `igs` injected: the default MUST be the mock adapter. With the real
     // adapter these calls would spawn an ELEVATED helper (UAC) instead of
@@ -369,10 +414,16 @@ test('igs-service channels: the DEFAULT adapter is the MOCK — no injection mea
     const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
 
     assert.deepEqual(await handlers['igs-service-disable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: false, startType: 'disabled' });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: true,
+    });
 
     assert.deepEqual(await handlers['igs-service-enable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: true, startType: 'auto' });
+    assert.deepEqual(await handlers['igs-service-state'](), {
+      service: { found: true, running: true, startType: 'auto' },
+      appRunning: true,
+    });
   } finally {
     env.restore();
   }

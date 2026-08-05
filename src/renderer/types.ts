@@ -103,13 +103,21 @@ export interface HealthReport {
   error?: string;
 }
 
-/** IGS (IntelGraphicsSoftwareService) state — mirrors src/main/igs-service.js. */
+/**
+ * IGS state — mirrors src/main/igs-service.js. The verified rule
+ * (docs/igcl-integration.md §8a): OC writes are refused in the half-states
+ * (service.running !== appRunning); fully-on (app + service) and fully-off
+ * both work.
+ */
 export type IgsStartType = 'auto' | 'manual' | 'disabled' | 'unknown';
 
 export interface IgsServiceState {
-  found: boolean;
-  running: boolean;
-  startType: IgsStartType;
+  service: {
+    found: boolean;
+    running: boolean;
+    startType: IgsStartType;
+  };
+  appRunning: boolean;
 }
 
 /** Result of the elevated disable/enable action over IPC. */

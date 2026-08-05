@@ -2,10 +2,14 @@
 //
 // The IGS service blocks OC writes (power/freq/temp) from other apps while it
 // runs (docs/igcl-integration.md §8a, verified both directions on the A770).
-// This module detects the service state (read-only, safe to run at boot) and
-// exposes the disable/enable actions, which spawn an ELEVATED helper via
-// Start-Process -Verb RunAs — those run ONLY on an explicit user click from
-// the renderer, never at boot and never in mock mode.
+// Verified rule (M2a.5): OC writes are refused in the IGS half-states — the
+// service running without the app, or the app running without the service;
+// fully-on (app + service) and fully-off both work. This module detects the
+// combined state (service via sc.exe, app process via tasklist — both
+// read-only, safe to run at boot) and exposes the disable/enable actions,
+// which spawn an ELEVATED helper via Start-Process -Verb RunAs — those run
+// ONLY on an explicit user click from the renderer, never at boot and never
+// in mock mode.
 //
 // The parser is pure (no process calls) and unit-tested; the probes degrade
 // to "not detected" instead of throwing — the app must not go red because a
@@ -17,8 +21,14 @@ import { promisify } from 'node:util';
 const execFile = promisify(nodeExecFile);
 
 const SC_EXE = 'C:\\Windows\\System32\\sc.exe';
+const TASKLIST_EXE = 'C:\\Windows\\System32\\tasklist.exe';
 const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const SERVICE_NAME = 'IntelGraphicsSoftwareService';
+// The IGS front-end app process (the WPF "Intel Graphics Software" app). The
+// verified rule (docs/igcl-integration.md §8a): OC writes are refused in the
+// half-states — service running without the app, or app running without the
+// service; fully-on (app + service) and fully-off both work.
+const APP_PROCESS_NAME = 'IntelGraphicsSoftware.exe';
 // sc.exe exit code for "The specified service does not exist".
 const ERROR_SERVICE_DOES_NOT_EXIST = 1060;
 // Win32 ERROR_CANCELLED — the locale-independent marker of a declined UAC
@@ -36,7 +46,10 @@ export const ELEVATION_FAILED_MSG = 'elevation declined or timed out';
 // code (1223) itself. Exit code 1223 is also classified as declined.
 const ELEVATION_DECLINE_RE = /canceled by the user|cancelled by the user|abgebrochen|annul|cancelada|annull|requires elevation|elevation required|ERROR_CANCELLED|\b1223\b/i;
 
-export const DEGRADED_STATE = Object.freeze({ found: false, running: false, startType: 'unknown' });
+export const DEGRADED_STATE = Object.freeze({
+  service: Object.freeze({ found: false, running: false, startType: 'unknown' }),
+  appRunning: false,
+});
 
 // ---------------------------------------------------------------------------
 // Pure parser (unit-testable, no process calls)
@@ -106,6 +119,66 @@ function parseStartType(line) {
   return START_TYPE_MAP[m[2]] ?? START_TYPE_MAP[m[1]] ?? 'unknown';
 }
 
+/**
+ * Split one CSV line into fields, honoring double-quoted fields (`""` is an
+ * embedded quote, as in tasklist's `"10,432 K"` memory column). Garbage is
+ * tolerated: unquoted text parses as a literal field rather than throwing.
+ * @param {string} line
+ * @returns {string[]}
+ */
+export function parseTasklistCsvLine(line) {
+  const fields = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cur += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      fields.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  fields.push(cur);
+  return fields;
+}
+
+/**
+ * Parse `tasklist /FO CSV /NH` output: true when a row's image-name field is
+ * the IGS app process. Rows look like `"IntelGraphicsSoftware.exe","12345",
+ * "Console","1","10,432 K"`. Empty output (no matching tasks — tasklist
+ * prints only an INFO line, or nothing at all) is NOT running; garbage input
+ * never throws. Case-insensitive on the image name (tasklist reports the
+ * name as typed, but the comparison must not depend on that).
+ * @param {unknown} output stdout of the tasklist invocation
+ * @returns {boolean}
+ */
+export function parseTasklistCsv(output) {
+  const text = String(output ?? '').replace(/\r\n/g, '\n');
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const fields = parseTasklistCsvLine(trimmed);
+    if (fields.length > 0 && fields[0].toLowerCase() === APP_PROCESS_NAME.toLowerCase()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Probes (read-only; safe at boot)
 // ---------------------------------------------------------------------------
@@ -132,26 +205,64 @@ async function runSc(args, exec = execFile, timeoutMs = SC_PROBE_TIMEOUT_MS) {
 }
 
 /**
- * Current IGS service state. Never throws — network/parse/spawn/timeout
- * failures degrade to `{ found: false, running: false, startType: 'unknown' }`.
+ * Probe whether the IGS app process is running via tasklist (read-only, no
+ * elevation). Never throws — a spawn failure, non-zero exit or timeout all
+ * degrade to `false` (not running) so the probe can never stall boot.
+ * `execFile` and `timeoutMs` are injectable for unit tests only.
+ * @param {typeof execFile} [exec]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<boolean>}
+ */
+async function probeTasklist(exec = execFile, timeoutMs = SC_PROBE_TIMEOUT_MS) {
+  try {
+    const { stdout } = await exec(TASKLIST_EXE, ['/FO', 'CSV', '/NH', '/FI', `IMAGENAME eq ${APP_PROCESS_NAME}`], {
+      windowsHide: true,
+      maxBuffer: 64 * 1024,
+      timeout: timeoutMs,
+    });
+    return parseTasklistCsv(stdout);
+  } catch (err) {
+    // tasklist exits non-zero when no process matches the filter (stdout
+    // carries the "INFO: No tasks..." line on the rejection); timeouts and
+    // spawn failures carry no usable output. Either way: not running.
+    return parseTasklistCsv(typeof err?.stdout === 'string' ? err.stdout : '');
+  }
+}
+
+/**
+ * Current IGS state — service part (from `sc query`/`sc qc`) plus whether
+ * the IGS app process is running (from tasklist). Never throws — network/
+ * parse/spawn/timeout failures degrade to
+ * `{ service: { found: false, running: false, startType: 'unknown' },
+ *   appRunning: false }`. The tasklist failure degrades the app part only
+ * (appRunning: false), never the service part.
+ * The three probes are independent and read-only — they run CONCURRENTLY
+ * (Promise.all) so the worst-case stall is ONE probe timeout (10 s), not
+ * three sequential ones (30 s).
  * `execFile` and `probeTimeoutMs` are injectable for unit tests only.
  * @param {{ execFile?: typeof execFile, probeTimeoutMs?: number }} [deps]
- * @returns {Promise<{ found: boolean, running: boolean, startType: string }>}
+ * @returns {Promise<{ service: { found: boolean, running: boolean, startType: string }, appRunning: boolean }>}
  */
 export async function getIgsServiceState({ execFile: exec = execFile, probeTimeoutMs = SC_PROBE_TIMEOUT_MS } = {}) {
   try {
-    const query = await runSc(['query', SERVICE_NAME], exec, probeTimeoutMs);
-    if (query.degraded) return { ...DEGRADED_STATE };
-    const qc = await runSc(['qc', SERVICE_NAME], exec, probeTimeoutMs);
-    if (qc.degraded) return { ...DEGRADED_STATE };
+    const [query, qc, appRunning] = await Promise.all([
+      runSc(['query', SERVICE_NAME], exec, probeTimeoutMs),
+      runSc(['qc', SERVICE_NAME], exec, probeTimeoutMs),
+      probeTasklist(exec, probeTimeoutMs),
+    ]);
+    // A degraded sc probe degrades the WHOLE state to default — the
+    // tasklist result is ignored so the fallback stays identical to the
+    // sequential probe behavior.
+    if (query.degraded || qc.degraded) return { service: { ...DEGRADED_STATE.service }, appRunning: false };
     const notFound = query.code === ERROR_SERVICE_DOES_NOT_EXIST || qc.code === ERROR_SERVICE_DOES_NOT_EXIST;
-    return parseScQueryOutput(
+    const service = parseScQueryOutput(
       `${query.stdout}\n${qc.stdout}`,
       `${query.stderr}\n${qc.stderr}`,
       notFound ? ERROR_SERVICE_DOES_NOT_EXIST : 0,
     );
+    return { service, appRunning };
   } catch {
-    return { ...DEGRADED_STATE };
+    return { service: { ...DEGRADED_STATE.service }, appRunning: false };
   }
 }
 
@@ -273,15 +384,20 @@ export function createIgs() {
 
 /**
  * Mock adapter — used whenever the app runs in mock mode (tests, --ui-verify,
- * RID_BACKEND=mock). Reads RID_MOCK_IGS_RUNNING at construction: anything
- * other than "0" reports running (startType 'auto', matching this machine);
- * "0" reports stopped (startType 'disabled'). disable/enable just flip the
- * in-memory state — no elevation, no service, no spawned process.
+ * RID_BACKEND=mock). Reads RID_MOCK_IGS_RUNNING and RID_MOCK_IGS_APP at
+ * construction: anything other than "0" reports the service running
+ * (startType 'auto', matching this machine) / the app process running.
+ * Default mock = fully on (service + app). disable/enable flip ONLY the
+ * service part — no elevation, no service, no spawned process.
  */
-export function createMockIgs(initialRunning = process.env.RID_MOCK_IGS_RUNNING) {
+export function createMockIgs(initialRunning = process.env.RID_MOCK_IGS_RUNNING, initialApp = process.env.RID_MOCK_IGS_APP) {
   let running = initialRunning !== '0';
+  let appRunning = initialApp !== '0';
   return {
-    getState: async () => ({ found: true, running, startType: running ? 'auto' : 'disabled' }),
+    getState: async () => ({
+      service: { found: true, running, startType: running ? 'auto' : 'disabled' },
+      appRunning,
+    }),
     disable: async () => { running = false; return { ok: true }; },
     enable: async () => { running = true; return { ok: true }; },
   };

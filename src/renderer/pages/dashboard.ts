@@ -9,15 +9,13 @@
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
-import { mapStatus, dashboardNeedsFullRender } from '../pure/status.ts';
+import { mapStatus, igsHalfState, IGS_NOTE, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig } from '../pure/status.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import type { DeviceState, IgsServiceState, TelemetrySample } from '../types.ts';
 import { formatValue } from '../pure/slider.ts';
 
-/** Exact user-facing strings (pinned by --ui-verify and unit tests). */
-export const IGS_NOTE = 'The Intel Graphics Software service is running — power, frequency and temperature changes won\'t apply. Disable it to enable full control.';
 const DISABLE_BTN = 'Disable IGS service';
 const REENABLE_BTN = 'Re-enable IGS service';
 
@@ -45,8 +43,9 @@ function statTiles(sample: TelemetrySample | null): Array<{ label: string; value
 }
 
 function igsStateText(igs: IgsServiceState | null): string {
-  if (!igs?.found) return 'not detected';
-  return `${igs.running ? 'running' : 'stopped'} (${igs.startType})`;
+  if (!igs?.service.found) return 'not detected';
+  const svc = igs.service;
+  return `${svc.running ? 'running' : 'stopped'} (${svc.startType}) · app ${igs.appRunning ? 'running' : 'not running'}`;
 }
 
 /** The store slots that decide whether the dashboard must fully re-render. */
@@ -67,8 +66,8 @@ let lastSig: DashboardSig | null = null;
 async function runIgsToggle(ctx: PageContext): Promise<void> {
   const s = ctx.store.get();
   const igs = s.igsState;
-  if (!igs?.found) return;
-  const disable = igs.running;
+  if (!igs?.service.found) return;
+  const disable = igs.service.running;
   const result = disable ? await api.disableIgsService() : await api.enableIgsService();
   toast(
     result.ok ? 'success' : 'error',
@@ -88,6 +87,12 @@ async function runIgsToggle(ctx: PageContext): Promise<void> {
 
 function igsCard(ctx: PageContext): HTMLElement {
   const igs = ctx.store.get().igsState;
+  // Half-state = the verified OC blocker: service and app disagree (NOT gated
+  // on service.found — a failed probe with the app running still blocks OC
+  // writes; the note must agree with the header warning). Fully-on and
+  // fully-off both accept OC writes — no warning note.
+  const halfState = igsHalfState(igs);
+  const svcRunning = igs?.service.running === true;
   return el('section', { class: 'card' }, [
     el('h2', { class: 'card-title', text: 'System status' }),
     el('div', { class: 'card-body kv-grid' }, [
@@ -95,14 +100,14 @@ function igsCard(ctx: PageContext): HTMLElement {
         el('span', { text: igsStateText(igs) }),
       ]),
     ]),
-    igs?.found && igs.running
+    halfState
       ? el('p', { class: 'card-note igs-note', text: IGS_NOTE })
       : null,
-    igs?.found
+    igs?.service.found
       ? el('div', { class: 'card-footer' }, [
           el('button', {
-            class: igs.running ? 'btn btn-danger igs-toggle' : 'btn igs-toggle',
-            text: igs.running ? DISABLE_BTN : REENABLE_BTN,
+            class: svcRunning ? 'btn btn-danger igs-toggle' : 'btn igs-toggle',
+            text: svcRunning ? DISABLE_BTN : REENABLE_BTN,
             onClick: (ev: Event) => {
               (ev.currentTarget as HTMLButtonElement).disabled = true;
               void runIgsToggle(ctx);

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseScQueryOutput,
+  parseTasklistCsv,
   createMockIgs,
   ELEVATION_FAILED_MSG,
   buildElevatedScript,
@@ -111,29 +112,141 @@ test('parseScQueryOutput: START_TYPE without STATE still yields startType, found
 });
 
 // ---------------------------------------------------------------------------
+// parseTasklistCsv (tasklist /FO CSV /NH output — the app-process probe)
+// ---------------------------------------------------------------------------
+
+test('parseTasklistCsv: a matching row -> running', () => {
+  assert.equal(parseTasklistCsv('"IntelGraphicsSoftware.exe","12345","Console","1","10,432 K"'), true);
+});
+
+test('parseTasklistCsv: image-name comparison is case-insensitive', () => {
+  assert.equal(parseTasklistCsv('"intelgraphicssoftware.exe","12345"'), true);
+  assert.equal(parseTasklistCsv('"INTELGRAPHICSSOFTWARE.EXE","12345"'), true);
+});
+
+test('parseTasklistCsv: empty output -> not running', () => {
+  assert.equal(parseTasklistCsv(''), false);
+  assert.equal(parseTasklistCsv('\r\n\r\n'), false);
+});
+
+test('parseTasklistCsv: tasklist INFO no-match message -> not running', () => {
+  assert.equal(parseTasklistCsv('INFO: No tasks are running which match the specified criteria.'), false);
+});
+
+test('parseTasklistCsv: multiple processes (several instances) -> running', () => {
+  const out = [
+    '"svchost.exe","100","Services","0","8,192 K"',
+    '"IntelGraphicsSoftware.exe","12345","Console","1","10,432 K"',
+    '"IntelGraphicsSoftware.exe","67890","Console","1","12,000 K"',
+  ].join('\r\n');
+  assert.equal(parseTasklistCsv(out), true);
+});
+
+test('parseTasklistCsv: CRLF line endings parse identically', () => {
+  assert.equal(parseTasklistCsv('"IntelGraphicsSoftware.exe","12345"\r\n"other.exe","2"\r\n'), true);
+});
+
+test('parseTasklistCsv: other process names -> not running', () => {
+  assert.equal(parseTasklistCsv('"Notepad.exe","100","Console","1","8,192 K"'), false);
+});
+
+test('parseTasklistCsv: garbage input never throws -> not running', () => {
+  assert.equal(parseTasklistCsv('gibberish no csv here'), false);
+  assert.equal(parseTasklistCsv('"unclosed,"quote'), false);
+  assert.equal(parseTasklistCsv('"unterminated'), false);
+  assert.equal(parseTasklistCsv(undefined), false);
+  assert.equal(parseTasklistCsv(null), false);
+  assert.equal(parseTasklistCsv(42), false);
+});
+
+// ---------------------------------------------------------------------------
 // Mock adapter
 // ---------------------------------------------------------------------------
 
-test('createMockIgs: default (env unset) reports running (auto)', async () => {
-  delete process.env.RID_MOCK_IGS_RUNNING;
-  const igs = createMockIgs();
-  assert.deepEqual(await igs.getState(), { found: true, running: true, startType: 'auto' });
+const IGS_ENV_KEYS = ['RID_MOCK_IGS_RUNNING', 'RID_MOCK_IGS_APP'];
+
+/** Set the mock env knobs for the callback, restoring both afterwards. */
+function withIgsEnv(knobs, fn) {
+  const prev = Object.fromEntries(IGS_ENV_KEYS.map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(knobs)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of IGS_ENV_KEYS) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
+  }
+}
+
+test('createMockIgs: default (env unset) reports fully on (service + app running)', async () => {
+  await withIgsEnv({}, async () => {
+    const igs = createMockIgs();
+    assert.deepEqual(await igs.getState(), {
+      service: { found: true, running: true, startType: 'auto' },
+      appRunning: true,
+    });
+  });
 });
 
-test('createMockIgs: RID_MOCK_IGS_RUNNING=0 reports stopped (disabled)', async () => {
-  process.env.RID_MOCK_IGS_RUNNING = '0';
-  const igs = createMockIgs();
-  assert.deepEqual(await igs.getState(), { found: true, running: false, startType: 'disabled' });
-  delete process.env.RID_MOCK_IGS_RUNNING;
+test('createMockIgs: RID_MOCK_IGS_RUNNING=0 -> service stopped (disabled), app still running', async () => {
+  await withIgsEnv({ RID_MOCK_IGS_RUNNING: '0' }, async () => {
+    const igs = createMockIgs();
+    assert.deepEqual(await igs.getState(), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: true,
+    });
+  });
 });
 
-test('createMockIgs: disable/enable flip the in-memory state, always ok', async () => {
-  delete process.env.RID_MOCK_IGS_RUNNING;
-  const igs = createMockIgs();
-  assert.deepEqual(await igs.disable(), { ok: true });
-  assert.deepEqual(await igs.getState(), { found: true, running: false, startType: 'disabled' });
-  assert.deepEqual(await igs.enable(), { ok: true });
-  assert.deepEqual(await igs.getState(), { found: true, running: true, startType: 'auto' });
+test('createMockIgs: RID_MOCK_IGS_APP=0 -> app not running, service still running', async () => {
+  await withIgsEnv({ RID_MOCK_IGS_APP: '0' }, async () => {
+    const igs = createMockIgs();
+    assert.deepEqual(await igs.getState(), {
+      service: { found: true, running: true, startType: 'auto' },
+      appRunning: false,
+    });
+  });
+});
+
+test('createMockIgs: both knobs =0 -> fully off', async () => {
+  await withIgsEnv({ RID_MOCK_IGS_RUNNING: '0', RID_MOCK_IGS_APP: '0' }, async () => {
+    const igs = createMockIgs();
+    assert.deepEqual(await igs.getState(), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: false,
+    });
+  });
+});
+
+test('createMockIgs: disable/enable flip ONLY the service part, never the app', async () => {
+  await withIgsEnv({}, async () => {
+    const igs = createMockIgs();
+    assert.deepEqual(await igs.disable(), { ok: true });
+    assert.deepEqual(await igs.getState(), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: true,
+    });
+    assert.deepEqual(await igs.enable(), { ok: true });
+    assert.deepEqual(await igs.getState(), {
+      service: { found: true, running: true, startType: 'auto' },
+      appRunning: true,
+    });
+  });
+});
+
+test('createMockIgs: disable keeps the app off when it was off (RID_MOCK_IGS_APP=0)', async () => {
+  await withIgsEnv({ RID_MOCK_IGS_APP: '0' }, async () => {
+    const igs = createMockIgs();
+    await igs.disable();
+    assert.deepEqual(await igs.getState(), {
+      service: { found: true, running: false, startType: 'disabled' },
+      appRunning: false,
+    });
+  });
 });
 
 test('ELEVATION_FAILED_MSG: pinned user-facing string', () => {
@@ -230,7 +343,10 @@ test('getIgsServiceState: every sc.exe probe carries a 10s timeout — a hung pr
     throw Object.assign(new Error('spawn failed'), { code: null, killed: true });
   };
   const state = await getIgsServiceState({ execFile: exec });
-  assert.deepEqual(state, { found: false, running: false, startType: 'unknown' });
+  assert.deepEqual(state, {
+    service: { found: false, running: false, startType: 'unknown' },
+    appRunning: false,
+  });
   assert.ok(seen.length >= 1, 'the state probe must invoke execFile');
   assert.equal(seen[0].cmd, 'C:\\Windows\\System32\\sc.exe');
   assert.equal(seen[0].timeout, 10000);
@@ -245,20 +361,121 @@ test('getIgsServiceState: a hung sc.exe degrades after the probe timeout instead
   const t0 = Date.now();
   const state = await getIgsServiceState({ execFile: exec, probeTimeoutMs: 50 });
   const elapsed = Date.now() - t0;
-  assert.deepEqual(state, { found: false, running: false, startType: 'unknown' });
+  assert.deepEqual(state, {
+    service: { found: false, running: false, startType: 'unknown' },
+    appRunning: false,
+  });
   assert.ok(elapsed >= 50, `degraded before the probe timeout window (${elapsed}ms) — timeout option not honored`);
   assert.ok(elapsed < 1000, `degraded long after the probe timeout (${elapsed}ms) — the probe must not hang boot`);
 });
 
 test('getIgsServiceState: a numeric non-zero exit (1060) is NOT degraded — parsed as not found', async () => {
   const exec = async (cmd, args) => {
-    if (args[0] === 'query') {
+    if (cmd === 'C:\\Windows\\System32\\sc.exe' && args[0] === 'query') {
       throw Object.assign(new Error('exit 1060'), { code: 1060, stdout: '', stderr: 'The specified service does not exist as an installed service.' });
     }
     return { stdout: '', stderr: '' };
   };
   const state = await getIgsServiceState({ execFile: exec });
-  assert.deepEqual(state, { found: false, running: false, startType: 'unknown' });
+  assert.deepEqual(state, {
+    service: { found: false, running: false, startType: 'unknown' },
+    appRunning: false,
+  });
+});
+
+test('getIgsServiceState: combined state shape — service (sc) + app process (tasklist)', async () => {
+  const exec = async (cmd, args) => {
+    if (cmd === 'C:\\Windows\\System32\\sc.exe') {
+      return { stdout: args[0] === 'query' ? QUERY_RUNNING : QC_AUTO, stderr: '' };
+    }
+    assert.equal(cmd, 'C:\\Windows\\System32\\tasklist.exe');
+    assert.deepEqual(args, ['/FO', 'CSV', '/NH', '/FI', 'IMAGENAME eq IntelGraphicsSoftware.exe']);
+    return { stdout: '"IntelGraphicsSoftware.exe","12345","Console","1","10,432 K"\r\n' };
+  };
+  const state = await getIgsServiceState({ execFile: exec });
+  assert.deepEqual(state, {
+    service: { found: true, running: true, startType: 'auto' },
+    appRunning: true,
+  });
+});
+
+test('getIgsServiceState: tasklist finds no matching process (exit 1 + INFO message) -> appRunning false', async () => {
+  const exec = async (cmd, args) => {
+    if (cmd === 'C:\\Windows\\System32\\sc.exe') {
+      return { stdout: args[0] === 'query' ? QUERY_RUNNING : QC_AUTO, stderr: '' };
+    }
+    throw Object.assign(new Error('exit 1'), {
+      code: 1,
+      stdout: 'INFO: No tasks are running which match the specified criteria.',
+      stderr: '',
+    });
+  };
+  const state = await getIgsServiceState({ execFile: exec });
+  assert.equal(state.service.running, true);
+  assert.equal(state.appRunning, false);
+});
+
+test('getIgsServiceState: a hung tasklist degrades to appRunning:false — service part intact, 10s timeout', async () => {
+  const seen = [];
+  const exec = async (cmd, args, options) => {
+    seen.push({ cmd, timeout: options?.timeout });
+    if (cmd === 'C:\\Windows\\System32\\tasklist.exe') {
+      throw Object.assign(new Error('timeout'), { killed: true, code: null, stdout: '' });
+    }
+    return { stdout: args[0] === 'query' ? QUERY_RUNNING : QC_AUTO, stderr: '' };
+  };
+  const state = await getIgsServiceState({ execFile: exec });
+  assert.deepEqual(state, {
+    service: { found: true, running: true, startType: 'auto' },
+    appRunning: false,
+  });
+  const tasklist = seen.find((s) => s.cmd === 'C:\\Windows\\System32\\tasklist.exe');
+  assert.ok(tasklist, 'the tasklist probe must run alongside the sc probes');
+  assert.equal(tasklist.timeout, 10000, 'the tasklist probe carries the same 10s timeout as sc.exe');
+});
+
+test('getIgsServiceState: the three probes run CONCURRENTLY — worst case is one probe timeout, not three sequential', { timeout: 5000 }, async () => {
+  // The sc query / sc qc / tasklist probes are independent and read-only.
+  // Regression: if they ran sequentially, this fake would deadlock (the sc
+  // query result is gated on ALL THREE probes being invoked) and the test
+  // would time out and fail. Concurrent (Promise.all) execution starts all
+  // three before any resolves.
+  const calls = [];
+  let releaseAll;
+  const allProbesStarted = new Promise((r) => { releaseAll = r; });
+  const exec = async (cmd, args) => {
+    calls.push(cmd);
+    if (calls.length === 3) releaseAll();
+    await allProbesStarted;
+    if (cmd === 'C:\\Windows\\System32\\tasklist.exe') {
+      return { stdout: '"IntelGraphicsSoftware.exe","12345","Console","1","10,432 K"\r\n', stderr: '' };
+    }
+    return { stdout: args[0] === 'query' ? QUERY_RUNNING : QC_AUTO, stderr: '' };
+  };
+  const state = await getIgsServiceState({ execFile: exec });
+  assert.deepEqual(state, {
+    service: { found: true, running: true, startType: 'auto' },
+    appRunning: true,
+  });
+  assert.equal(calls.filter((c) => c === 'C:\\Windows\\System32\\sc.exe').length, 2, `sc probes: ${calls}`);
+  assert.equal(calls.filter((c) => c === 'C:\\Windows\\System32\\tasklist.exe').length, 1, `tasklist probes: ${calls}`);
+});
+
+test('getIgsServiceState: a degraded sc probe still degrades the WHOLE state — the tasklist result is ignored', async () => {
+  // With concurrent probes the tasklist runs even when sc fails; the
+  // degrade-to-default fallback must stay identical to the sequential
+  // behavior (appRunning:false), never leaking the tasklist result.
+  const exec = async (cmd) => {
+    if (cmd === 'C:\\Windows\\System32\\tasklist.exe') {
+      return { stdout: '"IntelGraphicsSoftware.exe","12345"', stderr: '' };
+    }
+    throw Object.assign(new Error('spawn failed'), { code: null, killed: true });
+  };
+  const state = await getIgsServiceState({ execFile: exec });
+  assert.deepEqual(state, {
+    service: { found: false, running: false, startType: 'unknown' },
+    appRunning: false,
+  });
 });
 
 test('buildElevatedLaunch: -ArgumentList elements are quoted; the script stays one element before -Verb', () => {
