@@ -1,6 +1,6 @@
 // Arc Power — hash router + app-wide state store.
 
-import type { Capabilities, DeviceInfo, DeviceState, HealthReport, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, HealthReport, IgsServiceState, TelemetrySample } from './types.ts';
 
 export type PageId = 'dashboard' | 'overclocking' | 'fan' | 'monitoring' | 'profiles' | 'tweaks';
 
@@ -51,6 +51,7 @@ export interface AppState {
   caps: Capabilities | null;
   state: DeviceState | null;
   latestSample: TelemetrySample | null;
+  igsState: IgsServiceState | null;
   bootError: string | null;
 }
 
@@ -61,6 +62,7 @@ const INITIAL: AppState = {
   caps: null,
   state: null,
   latestSample: null,
+  igsState: null,
   bootError: null,
 };
 

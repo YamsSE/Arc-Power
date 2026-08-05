@@ -98,6 +98,15 @@ async function boot() {
   const deviceId = devices[0].id;
   store.set({ deviceId });
 
+  // IGS service probe at boot (read-only). Failure degrades to
+  // not-detected — the app must not go red because the probe failed.
+  try {
+    const igsState = await api.getIgsServiceState();
+    store.set({ igsState });
+  } catch {
+    store.set({ igsState: { found: false, running: false, startType: 'unknown' } });
+  }
+
   try {
     const caps = await api.getCapabilities(deviceId);
     const state = await api.getCurrentSettings(deviceId);

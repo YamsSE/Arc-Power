@@ -22,6 +22,7 @@ import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
+import { createMockIgs } from './igs-service.js';
 
 const SCALAR_CONTROLS = new Set([
   'powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC',
@@ -138,14 +139,25 @@ export async function seedWaiverState(backend, store) {
 }
 
 /**
+ * Channels that take no payload must never receive one (the preload only
+ * calls them bare, but the whitelist is the enforcement point).
+ */
+export function assertNoPayload(args, channel) {
+  if (args.length > 0) {
+    throw new Error(`${channel} takes no payload`);
+  }
+}
+
+/**
  * Build the handler map for every whitelisted channel.
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
+ *   igs?: { getState: () => Promise<unknown>, disable: () => Promise<unknown>, enable: () => Promise<unknown> },
  * }} ctx
  */
-export function createIpcHandlers({ backend, store, emit }) {
+export function createIpcHandlers({ backend, store, emit, igs = createMockIgs() }) {
   /** @type {Map<number, TelemetryService>} */
   const telemetry = new Map();
 
@@ -246,6 +258,25 @@ export function createIpcHandlers({ backend, store, emit }) {
           await svc.stop();
           telemetry.delete(deviceId);
         }
+      },
+
+      // IGS service (M2a extension): state probe is read-only; disable/enable
+      // spawn an ELEVATED helper — they run ONLY on an explicit user click.
+      // The adapter defaults to the MOCK (never the real service): real
+      // elevation is unreachable unless ipc.js explicitly injects it.
+      'igs-service-state': async (...args) => {
+        assertNoPayload(args, 'igs-service-state');
+        return igs.getState();
+      },
+
+      'igs-service-disable': async (...args) => {
+        assertNoPayload(args, 'igs-service-disable');
+        return igs.disable();
+      },
+
+      'igs-service-enable': async (...args) => {
+        assertNoPayload(args, 'igs-service-enable');
+        return igs.enable();
       },
     },
     stopAllTelemetry,

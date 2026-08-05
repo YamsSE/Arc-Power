@@ -12,13 +12,15 @@ import { createIpcHandlers } from './ipc-core.js';
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   getWindow: () => import('electron').BrowserWindow,
+ *   igs: import('./igs-service.js').IgsService,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow }) {
+export function registerIpc({ backend, store, getWindow, igs }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
+    igs,
     emit: (channel, payload) => {
       if (channel !== 'telemetry:sample') return;
       const win = getWindow();

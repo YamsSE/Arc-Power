@@ -135,6 +135,7 @@ html, body {
   background: var(--text-dim);
 }
 .status-ok { background: var(--success); box-shadow: 0 0 6px rgba(52, 211, 153, 0.6); }
+.status-warning { background: var(--warn); box-shadow: 0 0 6px rgba(251, 191, 36, 0.5); } /* IGS service blocking OC writes */
 .status-degraded { background: var(--warn); box-shadow: 0 0 6px rgba(251, 191, 36, 0.5); }
 .status-error { background: var(--error); box-shadow: 0 0 6px rgba(248, 113, 113, 0.6); }
 .status-searching { background: var(--text-dim); } /* neutral until the first health report */

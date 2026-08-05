@@ -17,6 +17,7 @@ import {
   seedWaiverState,
 } from '../src/main/ipc-core.js';
 import { MockBackend } from '../src/main/backend/mock-backend.js';
+import { createMockIgs } from '../src/main/igs-service.js';
 
 // ---------------------------------------------------------------------------
 // deviceId validation
@@ -291,4 +292,88 @@ test('telemetry-start emits samples through the injected emit channel', async ()
   assert.ok(emitted.length >= 2, `expected >= 2 telemetry samples, got ${emitted.length}`);
   assert.equal(emitted[0][0], 'telemetry:sample');
   assert.equal(typeof emitted[0][1].t, 'number');
+});
+
+// ---------------------------------------------------------------------------
+// IGS service channels (M2a extension)
+// ---------------------------------------------------------------------------
+
+/** Construct a mock IGS adapter from an env value and restore env afterwards. */
+function makeEnvIgs(envValue) {
+  const prev = process.env.RID_MOCK_IGS_RUNNING;
+  if (envValue === undefined) delete process.env.RID_MOCK_IGS_RUNNING;
+  else process.env.RID_MOCK_IGS_RUNNING = envValue;
+  return {
+    igs: createMockIgs(),
+    restore: () => {
+      if (prev === undefined) delete process.env.RID_MOCK_IGS_RUNNING;
+      else process.env.RID_MOCK_IGS_RUNNING = prev;
+    },
+  };
+}
+
+test('igs-service channels: registered, and the no-payload channels reject payloads', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: createMockIgs() });
+  assert.equal(typeof handlers['igs-service-state'], 'function');
+  assert.equal(typeof handlers['igs-service-disable'], 'function');
+  assert.equal(typeof handlers['igs-service-enable'], 'function');
+
+  for (const channel of ['igs-service-state', 'igs-service-disable', 'igs-service-enable']) {
+    await assert.rejects(() => handlers[channel]({}), /takes no payload/, channel);
+    await assert.rejects(() => handlers[channel](0), /takes no payload/, channel);
+  }
+});
+
+test('igs-service mock: default state is running (auto) — matches this machine', async () => {
+  const env = makeEnvIgs(undefined);
+  try {
+    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
+    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: true, startType: 'auto' });
+  } finally {
+    env.restore();
+  }
+});
+
+test('igs-service mock: RID_MOCK_IGS_RUNNING=0 -> stopped (disabled)', async () => {
+  const env = makeEnvIgs('0');
+  try {
+    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
+    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: false, startType: 'disabled' });
+  } finally {
+    env.restore();
+  }
+});
+
+test('igs-service mock: disable flips to stopped+disabled, enable flips back — no spawning', async () => {
+  const env = makeEnvIgs(undefined);
+  try {
+    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
+
+    assert.deepEqual(await handlers['igs-service-disable'](), { ok: true });
+    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: false, startType: 'disabled' });
+
+    assert.deepEqual(await handlers['igs-service-enable'](), { ok: true });
+    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: true, startType: 'auto' });
+  } finally {
+    env.restore();
+  }
+});
+
+test('igs-service channels: the DEFAULT adapter is the MOCK — no injection means no elevation, ever', async () => {
+  const env = makeEnvIgs(undefined);
+  try {
+    // No `igs` injected: the default MUST be the mock adapter. With the real
+    // adapter these calls would spawn an ELEVATED helper (UAC) instead of
+    // flipping the in-memory state — so this test fails by construction if
+    // the default ever regresses to the real service.
+    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+
+    assert.deepEqual(await handlers['igs-service-disable'](), { ok: true });
+    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: false, startType: 'disabled' });
+
+    assert.deepEqual(await handlers['igs-service-enable'](), { ok: true });
+    assert.deepEqual(await handlers['igs-service-state'](), { found: true, running: true, startType: 'auto' });
+  } finally {
+    env.restore();
+  }
 });

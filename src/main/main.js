@@ -20,6 +20,7 @@ import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState } from './ipc-core.js';
 import { ProfileStore } from './store/profile-store.js';
+import { createIgs, createMockIgs } from './igs-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -86,8 +87,12 @@ async function main() {
   }
   const backend = createBackend({ kind: mock ? 'mock' : 'igcl', mock: mockOpts });
   const store = new ProfileStore();
+  // IGS service adapter: mock mode (incl. --ui-verify) never touches the real
+  // service; the real adapter only runs sc.exe probes, and disable/enable run
+  // ONLY on an explicit user click (renderer-invoked).
+  const igs = mock ? createMockIgs() : createIgs();
   // Whitelisted IPC + telemetry ownership; the renderer drives everything.
-  const teardown = registerIpc({ backend, store, getWindow: () => win });
+  const teardown = registerIpc({ backend, store, getWindow: () => win, igs });
 
   app.on('before-quit', () => {
     void teardown().catch(() => {});

@@ -103,6 +103,21 @@ export interface HealthReport {
   error?: string;
 }
 
+/** IGS (IntelGraphicsSoftwareService) state — mirrors src/main/igs-service.js. */
+export type IgsStartType = 'auto' | 'manual' | 'disabled' | 'unknown';
+
+export interface IgsServiceState {
+  found: boolean;
+  running: boolean;
+  startType: IgsStartType;
+}
+
+/** Result of the elevated disable/enable action over IPC. */
+export interface IgsActionResult {
+  ok: boolean;
+  error?: string;
+}
+
 export interface ThrottleFlags {
   power?: boolean;
   temp?: boolean;

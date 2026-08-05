@@ -9,6 +9,8 @@ import type {
   DeviceInfo,
   DeviceState,
   HealthReport,
+  IgsActionResult,
+  IgsServiceState,
   ResetResponse,
   Settings,
   TelemetrySample,
@@ -25,6 +27,9 @@ export interface ArcPowerApi {
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;
   telemetryStart(deviceId: number): Promise<void>;
   telemetryStop(deviceId: number): Promise<void>;
+  getIgsServiceState(): Promise<IgsServiceState>;
+  disableIgsService(): Promise<IgsActionResult>;
+  enableIgsService(): Promise<IgsActionResult>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
 }
 

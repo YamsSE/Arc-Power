@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('arcPower', {
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
   telemetryStart: (deviceId) => ipcRenderer.invoke('telemetry-start', deviceId),
   telemetryStop: (deviceId) => ipcRenderer.invoke('telemetry-stop', deviceId),
+  getIgsServiceState: () => ipcRenderer.invoke('igs-service-state'),
+  disableIgsService: () => ipcRenderer.invoke('igs-service-disable'),
+  enableIgsService: () => ipcRenderer.invoke('igs-service-enable'),
   onTelemetrySample: (cb) => {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);
