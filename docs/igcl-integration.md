@@ -229,6 +229,17 @@ Evidence-based conclusion:
 4. Open question: does a reboot clear the oscillation for a stable window? (Not yet tested —
    recommended next step; the M2a dist smoke cannot pass reliably while the driver flaps.)
 
+**Update 2 (06:45, after re-enabling the service):** with the service re-enabled (Manual +
+Running) and the IGS app open, all four OC writes applied and read-back-verified again
+(252 W, +5 MHz, +0.01 V, then restored to defaults) — yet the packaged smoke 2 minutes later
+failed its no-op 0-value applies (`ERROR_NOT_AVAILABLE`). Combined with the earlier data
+(worked at 06:36 with nothing running; refused at 06:40 with nothing running), the conclusion
+is: **no hard dependency on IGS either way** — the A770 driver's OC-write acceptance
+oscillates on a minutes scale. Non-zero offset sets (and voltage offset generally) are more
+often accepted than 0-value no-op sets, which is why the no-op smoke gate is the first thing
+to go red. Product note for M2b: a retry-with-backoff on `io-failed` applies, and a
+"driver busy — retry" hint, would mask most of this for real users.
+
 ## 9. Telemetry findings
 
 3 samples at ≥50 ms spacing (measured ~61–64 ms). Derived idle GPU power ≈ **38.8 W** on the final fix
