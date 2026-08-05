@@ -91,6 +91,12 @@ export async function runSmoke(backend, opts = {}) {
       // gpuLock (would switch lock modes).
       if (['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].includes(key)) continue;
       if (key === 'gpuLock' && value.voltageV === 0 && value.freqMhz === 0) continue;
+      // M2C-C: zero-valued OC scalars are refused by the driver by design
+      // (0x40000007 — verified; "0-value no-ops most refused"). A no-op round
+      // trip of the CURRENT state must not fail on values the driver refuses
+      // to write at all, so zero-valued scalars are skipped (their absence
+      // from the set is exactly what the honest refusal would report anyway).
+      if (typeof value === 'number' && value === 0) continue;
       noop[key] = value;
     }
     let applyRes;
