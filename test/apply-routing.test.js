@@ -11,6 +11,7 @@ import {
   STD_PL_MAX_W, STD_TL_MAX_C, EXTENDED_UNAVAILABLE_MSG, DELAYED_VERIFY_MS,
 } from '../src/main/apply-routing.js';
 import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
+import { loadFeatureset } from '../src/main/backend/featuresets.js';
 
 // ---------------------------------------------------------------------------
 // splitByRuntime
@@ -32,6 +33,25 @@ test('splitByRuntime: mixed applies split per control; null values are dropped',
   const { driverstore, extended } = splitByRuntime({ powerLimitW: 280, tempLimitC: 85, fanMode: 'auto', powerLimitW2: null });
   assert.deepEqual(driverstore, { tempLimitC: 85, fanMode: 'auto' });
   assert.deepEqual(extended, { powerLimitW: 280 });
+});
+
+test('M2D: splitByRuntime is unit-aware — percent-unit values are NEVER extended (B580)', () => {
+  const percentRanges = {
+    powerLimitW: { units: '%' },
+    tempLimitC: { units: '%' },
+    gpuVoltOffsetV: { units: '%' },
+  };
+  const { driverstore, extended } = splitByRuntime({ powerLimitW: 120, tempLimitC: 100, gpuVoltOffsetV: 12 }, percentRanges);
+  assert.deepEqual(driverstore, { powerLimitW: 120, tempLimitC: 100, gpuVoltOffsetV: 12 });
+  assert.deepEqual(extended, {}, '100 % is not 100 C — the DriverStore runtime handles percent units');
+  // W/C units still route above the DriverStore clamps (A770).
+  const wcRanges = { powerLimitW: { units: 'W' }, tempLimitC: { units: 'C' } };
+  const wc = splitByRuntime({ powerLimitW: 300, tempLimitC: 115 }, wcRanges);
+  assert.deepEqual(wc.driverstore, {});
+  assert.deepEqual(wc.extended, { powerLimitW: 300, tempLimitC: 115 });
+  // No ranges -> the historical threshold behavior (backward compatible).
+  const none = splitByRuntime({ powerLimitW: 300, tempLimitC: 100 });
+  assert.deepEqual(none.extended, { powerLimitW: 300, tempLimitC: 100 });
 });
 
 test('requiresExtendedRange: true only when PL > 252 or TL > 90', () => {
@@ -215,4 +235,34 @@ test('executeApply: extended fail (extendedFail mock) -> honest per-control fail
   const out = await executeApply({ backend, oldIgcl, deviceId: 0, settings: { powerLimitW: 300 } });
   assert.equal(out.result.ok, false);
   assert.equal(out.result.perControl.powerLimitW.message, EXTENDED_UNAVAILABLE_MSG);
+});
+
+test('M2D: executeApply — B580 percent apply of ALL four controls -> all driverstore, no EXTENDED_UNAVAILABLE', async () => {
+  const backend = new MockBackend({ featureset: loadFeatureset('b580') });
+  const oldIgcl = createMockOldIgcl(backend);
+  // The renderer always sends all four scalar controls (tempLimitC rides at
+  // its 100 % default) — every b580 apply must go to the DriverStore runtime.
+  const out = await executeApply({
+    backend, oldIgcl, deviceId: 0,
+    settings: { powerLimitW: 120, tempLimitC: 100, gpuVoltOffsetV: 12, gpuFreqOffsetMhz: 50 },
+  });
+  assert.equal(out.result.ok, true, 'the percent tempLimitC must not fail the whole apply');
+  for (const key of ['powerLimitW', 'tempLimitC', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz']) {
+    assert.equal(out.result.perControl[key].ok, true, `${key} applied via the DriverStore runtime`);
+    assert.notEqual(out.result.perControl[key].message, EXTENDED_UNAVAILABLE_MSG);
+  }
+  assert.equal(out.state.powerLimitW, 120);
+  assert.equal(out.state.tempLimitC, 100);
+  assert.equal(out.state.gpuVoltOffsetV, 12);
+  assert.equal(out.state.gpuFreqOffsetMhz, 50);
+});
+
+test('M2D: executeApply — A770 tempLimitC 115 (C units) still routes to the extended bucket', async () => {
+  const backend = new MockBackend({ extendedRanges: true });
+  const oldIgcl = createMockOldIgcl(backend);
+  const out = await executeApply({ backend, oldIgcl, deviceId: 0, settings: { powerLimitW: 220, tempLimitC: 115 } });
+  assert.equal(out.result.ok, true);
+  assert.equal(out.result.perControl.tempLimitC.ok, true, 'C-unit TL above 90 goes through the 2023 runtime');
+  assert.equal(out.state.tempLimitC, 115);
+  assert.equal(out.state.powerLimitW, 220, 'the in-range PL control stays on the DriverStore path');
 });

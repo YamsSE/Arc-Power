@@ -5,6 +5,7 @@
   "deviceName": "Mock Arc iGPU (fixture)",
   "pciDeviceId": "0x00007d1d",
   "driverVersion": "32.0.101.8861",
+  "driverDate": null,
   "numXeCores": 8,
   "shaders": 1024,
   "graphicsClockMHz": 2000,

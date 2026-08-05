@@ -232,4 +232,6 @@ export interface MockSwapResponse {
   caps: Capabilities;
   state: DeviceState;
   health: HealthReport;
+  /** The featureset's display-driver registry date (null when unverified). */
+  driverDate: string | null;
 }

@@ -75,8 +75,7 @@ function createWindow() {
     // Electron >= 30: the event object carries { level, message, ... }.
     const level = typeof event.level === 'number' ? event.level : 0;
     const message = typeof event.message === 'string' ? event.message : '';
-    if (uiVerify) console.log(`[renderer:${level}] ${message}`);
-    else if (level >= 2) console.error(`[renderer] ${message}`);
+    if (level >= 2) console.error(`[renderer] ${message}`);
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   return win;

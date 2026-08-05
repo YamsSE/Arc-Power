@@ -593,6 +593,18 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   }
   step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported`);
 
+  // M2D: the swap payload replaces the boot driver date — the b580 card must
+  // NOT pair 32.0.140.4109 with the a770 boot registry date (7-5-2026).
+  await js(`location.hash = '#/dashboard'`);
+  await sleep(250);
+  const b580DriverRow = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
+  if (!b580DriverRow.includes('32.0.140.4109') || b580DriverRow.includes('Jul')) {
+    fail(`M2D swap: stale driver date on the b580 card: '${b580DriverRow}'`);
+  }
+  step('fs-swap-b580-date', `swap -> b580: driver card '${b580DriverRow.trim()}' (no stale date)`);
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
+
   // Swap back: the A770 surface (W units, 210 W default) returns and the
   // app-level waiver acceptance survives (consent, not driver state).
   await swapTo('a770');
@@ -604,7 +616,14 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   const selBack = await js(`document.querySelector('.featureset-select').value`);
   if (selBack !== 'a770') fail(`M2D swap-back: dropdown selection is '${selBack}'`);
   if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) fail('M2D swap: waiver acceptance was lost across the swap');
-  step('fs-swap-back', `swap back -> a770: PL readout '210 W', W units, waiver preserved`);
+  // M2D: the a770 featureset's own registry date returns with the surface.
+  await js(`location.hash = '#/dashboard'`);
+  await sleep(250);
+  const a770DriverRow = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
+  if (!a770DriverRow.includes('Jul 05, 2026')) fail(`M2D swap-back: a770 driver date missing on the card: '${a770DriverRow}'`);
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
+  step('fs-swap-back', `swap back -> a770: PL readout '210 W', W units, waiver preserved, driver date 'Jul 05, 2026'`);
 
   // --- 6. fan editor ---------------------------------------------------------
   const fanReadonly = process.env.RID_MOCK_FAN_READONLY === '1';
@@ -1026,11 +1045,29 @@ export async function runFeaturesetVerify(win, fsId) {
     fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)}`);
   }
   step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W`);
+  // M2D: the swap payload carries the featureset driver date — the a770 card
+  // must show its own registry date even when the boot featureset had none.
+  await js(`location.hash = '#/dashboard'`);
+  await sleep(250);
+  const a770Row = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
+  if (!a770Row.includes('Jul 05, 2026')) fail(`swap to a770: driver date missing on the card: '${a770Row}'`);
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
   await swapTo(fsId);
   const backOk = fsId === 'b580'
     ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '100 %'`)
     : await waitFor(win, `document.querySelectorAll('.oc-card').length === 0`);
   if (!backOk) fail(`swap back to '${fsId}' did not restore its surface`);
+  if (fsId === 'b580') {
+    // M2D: the unverified b580 swap must clear the a770 date, not pair it
+    // with the b580 driver version.
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(250);
+    const backRow = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
+    if (backRow.includes('Jul')) fail(`swap back to b580: stale driver date on the card: '${backRow}'`);
+    await js(`location.hash = '#/overclocking'`);
+    await sleep(250);
+  }
   step('swap-back', `swap back -> '${fsId}': original surface restored`);
 
   // --- b580 percent-unit apply round trip -----------------------------------
@@ -1056,13 +1093,22 @@ export async function runFeaturesetVerify(win, fsId) {
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) {
       fail('b580 percent apply success toast missing');
     }
+    // NIT 3 (M2D): a per-control routing failure (tempLimitC 100 % routed to
+    // the 2023 runtime) would toast an error even when the PL toast is
+    // green — assert the whole apply succeeded: no error toast + ALL four
+    // scalar controls read back their applied values.
+    if (await js(`!!document.querySelector('.toast-error')`)) fail('b580 percent apply showed a per-control error toast');
     const applied = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(applied.powerLimitW - 120) > 1e-6) fail(`b580 percent apply did not stick: ${applied.powerLimitW}`);
+    if (applied.tempLimitC !== 100 || applied.gpuVoltOffsetV !== 0 || applied.gpuFreqOffsetMhz !== 0) {
+      fail(`b580 percent apply: driverstore controls not all applied: ${JSON.stringify(applied)}`);
+    }
     await clearToasts();
     await setSlider(100);
     if (!(await clickApply())) fail('floating Apply did not reappear for the b580 restore');
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('b580 percent restore did not apply');
-    step('b580-apply', `b580 percent apply round trip: 120 % -> read-back ${applied.powerLimitW} %, restored to 100 %`);
+    if (await js(`!!document.querySelector('.toast-error')`)) fail('b580 percent restore showed a per-control error toast');
+    step('b580-apply', `b580 percent apply round trip: 120 % -> read-back ${applied.powerLimitW} %, restored to 100 % (all 4 controls driverstore, no error toast)`);
   }
 
   console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));

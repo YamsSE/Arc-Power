@@ -71,7 +71,10 @@ export class MockBackend {
     // across live swaps — they describe the verify session, not the device.
     this._extendedOverlay = opts.extendedRanges !== undefined ? opts.extendedRanges === true : undefined;
     this._fanOverlay = opts.fanCanControl !== undefined ? opts.fanCanControl === true : undefined;
-    this._energyStepJ = opts.energyStepJ ?? this._featureset.telemetry.powerW * this._intervalS;
+    // The energy step override is a session knob too — _applyFeatureset
+    // recomputes the step from the ACTIVE featureset's powerW (M2D: after a
+    // swap the monitoring power readout must derive from the new device).
+    this._energyStepOverride = opts.energyStepJ !== undefined ? opts.energyStepJ : null;
     this._applyFeatureset(this._featureset);
     // Constructor-injected failures land AFTER _applyFeatureset (which resets
     // the fail maps — a featureset swap clears dev-injected failures).
@@ -95,6 +98,12 @@ export class MockBackend {
   /** Apply one featureset: rebuild caps, device fixture and state. */
   _applyFeatureset(fs) {
     this._featureset = fs;
+    // M2D: the energy step derives from the ACTIVE featureset (powerW *
+    // interval) so the monitoring power readout follows a swap; a
+    // constructor-injected override (test knob) stays a session constant.
+    this._energyStepJ = this._energyStepOverride !== null
+      ? this._energyStepOverride
+      : fs.telemetry.powerW * this._intervalS;
     this._extended = this._extendedOverlay !== undefined
       ? this._extendedOverlay
       : fs.extendedRanges === true;
@@ -106,6 +115,10 @@ export class MockBackend {
     this._state = this._buildState(fs);
     this._failOn = {};
     this._failOnce = {};
+    // A swap is a fresh device: the telemetry timeline restarts (one
+    // no-power sample while the energy counter resets, then the new
+    // featureset's wattage — never a blended value).
+    this._tick = 0;
   }
 
   _buildCaps(fs) {
@@ -236,6 +249,10 @@ export class MockBackend {
       devices: await this.listDevices(),
       caps: await this.getCapabilities(0),
       state: await this.getCurrentSettings(0),
+      // M2D: the featureset's own driver date (null when unverified) — the
+      // renderer replaces the boot date so the card never pairs the new
+      // driver version with a stale boot date.
+      driverDate: featureset.driverDate ?? null,
       // collectHealth adds the `backend` kind — the renderer gates the
       // dropdown on it, so the swap health must match the boot health.
       health: await collectHealth(this),

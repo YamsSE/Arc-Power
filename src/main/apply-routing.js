@@ -34,16 +34,29 @@ const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * Split one Settings payload into the DriverStore-runtime part and the
  * extended (2023-runtime) part, per control. Null/absent values are dropped.
+ *
+ * M2D: the split is unit-aware — the 2023 runtime speaks W/C only. When the
+ * capability ranges are known and a control's units are NOT W/C (percent-unit
+ * Battlemage mock: volt/PL/TL as %), a numerically large value (e.g. a 100%
+ * temp limit) can never be an extended-range request: it goes to the
+ * DriverStore runtime like any other percent value. Unknown ranges (no caps
+ * available) keep the historical threshold behavior.
  * @param {Record<string, unknown>} settings
+ * @param {Record<string, { units?: string }>} [ranges]
  * @returns {{ driverstore: Record<string, unknown>, extended: Record<string, unknown> }}
  */
-export function splitByRuntime(settings) {
+export function splitByRuntime(settings, ranges = null) {
   const driverstore = {};
   const extended = {};
+  const isWcUnits = (key) => {
+    const units = ranges?.[key]?.units ?? null;
+    if (units === null || units === undefined) return true; // unknown -> historical behavior
+    return key === 'powerLimitW' ? units === 'W' : units === 'C';
+  };
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
-    if (key === 'powerLimitW' && value > STD_PL_MAX_W) extended[key] = value;
-    else if (key === 'tempLimitC' && value > STD_TL_MAX_C) extended[key] = value;
+    if (key === 'powerLimitW' && value > STD_PL_MAX_W && isWcUnits('powerLimitW')) extended[key] = value;
+    else if (key === 'tempLimitC' && value > STD_TL_MAX_C && isWcUnits('tempLimitC')) extended[key] = value;
     else driverstore[key] = value;
   }
   return { driverstore, extended };
@@ -106,14 +119,15 @@ export function isMomentaryLieCandidate(per) {
  *   log?: (s: string) => void,
  *   delayedVerifyMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
+ *   ranges?: Record<string, { units?: string }> | null, // M2D: unit-aware split
  * }} deps
  * @returns {Promise<{
  *   result: { ok: boolean, perControl: Record<string, { ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean, silentNoop?: boolean }> },
  *   attempts: number,
  * }>}
  */
-export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep }) {
-  const { driverstore, extended } = splitByRuntime(settings);
+export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null }) {
+  const { driverstore, extended } = splitByRuntime(settings, ranges);
   const perControl = {};
 
   if (Object.keys(driverstore).length > 0) {
@@ -186,7 +200,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
       ? clampAndSnap(value, range)
       : value;
   }
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep });
+  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   return { result: out.result, state };

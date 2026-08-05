@@ -92,7 +92,7 @@ Architecture notes and the IGCL integration write-up (struct mappings, capabilit
 - [x] M2a — UI core (design system, overclocking, fan)
 - [x] M2b — Monitoring, profiles, tray, UX redesign
 - [x] M2C — OC reliability, instant apply, elevation-aware extended range
-- [ ] M2D — Mock distribution files (A770 / B580 / Pro B50 / iGPU feature sets)
+- [x] M2D — Mock distribution files (A770 / B580 / Pro B50 / iGPU feature sets)
 - [ ] M3 — Registry hacks module (MPO disable and other reversible tweaks)
 - [ ] M4 — Battlemage enablement, hardening, installer, published releases
 

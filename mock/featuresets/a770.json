@@ -5,6 +5,7 @@
   "deviceName": "Mock Arc A770 Graphics (fixture)",
   "pciDeviceId": "0x000056a0",
   "driverVersion": "32.0.101.8861",
+  "driverDate": "7-5-2026",
   "numXeCores": 32,
   "shaders": 4096,
   "graphicsClockMHz": 2100,

@@ -178,7 +178,7 @@ export function assertNoPayload(args, channel) {
  *                                // (real mode) the mock:* channels are NOT
  *                                // registered at all — an honest 404.
  *     listFeaturesets: () => Promise<{ featuresets: Array<{id: string, name: string, tag: string}>, current: string }>,
- *     setFeatureset: (id: string) => Promise<{ featureset: object, devices: object[], caps: object, state: object, health: object }>,
+ *     setFeatureset: (id: string) => Promise<{ featureset: object, devices: object[], caps: object, state: object, health: object, driverDate: string | null }>,
  *   } | null,
  * }} ctx
  */

@@ -66,6 +66,12 @@ export function validateFeatureset(raw, expectedId) {
   if (!isNonEmptyString(fs.name)) throw new Error(`featureset '${fs.id}': name must be a non-empty string`);
   if (!isNonEmptyString(fs.deviceName)) throw new Error(`featureset '${fs.id}': deviceName must be a non-empty string`);
   if (!isNonEmptyString(fs.driverVersion)) throw new Error(`featureset '${fs.id}': driverVersion must be a non-empty string`);
+  // M2D: the display-driver registry date ("7-5-2026") is optional — null or
+  // absent when unverified (estimated featuresets), the swap payload then
+  // nulls the card date instead of pairing a stale boot date.
+  if (fs.driverDate !== undefined && fs.driverDate !== null && !isNonEmptyString(fs.driverDate)) {
+    throw new Error(`featureset '${fs.id}': driverDate must be a non-empty string or null`);
+  }
   if (!Number.isInteger(fs.numXeCores) || fs.numXeCores <= 0) {
     throw new Error(`featureset '${fs.id}': numXeCores must be a positive integer`);
   }

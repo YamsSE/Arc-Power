@@ -38,6 +38,10 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
         state: out.state,
         health: out.health,
         featuresetId: out.featureset.id,
+        // M2D: the swap replaces the boot registry date with the featureset's
+        // own (null when unverified) — the device card must never pair the
+        // new driver version with the boot featureset's stale date.
+        driverDate: out.driverDate ?? null,
       });
       renderPage(currentPage());
     } catch (err) {

@@ -14,9 +14,10 @@ import {
 } from '../src/main/backend/featuresets.js';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createMockIgs } from '../src/main/igs-service.js';
+import { TelemetryService } from '../src/main/telemetry/telemetry-service.js';
 import { formatValue, snapToRange } from '../src/renderer/pure/slider.ts';
 import { computePresets } from '../src/renderer/pure/presets.ts';
-import { validateSettingsPayload, clampExposedRange } from '../src/renderer/pure/settings.ts';
+import { validateSettingsPayload, clampExposedRange, requiresExtendedRangeConfirm } from '../src/renderer/pure/settings.ts';
 
 const ALL_IDS = ['a770', 'arc-igpu', 'b580', 'pro-b50'];
 
@@ -120,6 +121,24 @@ test('M2D: telemetry derives from the featureset (a770: base clock 600, mem 2187
   assert.ok(Math.abs(s1.gpuEnergyJ - s0.gpuEnergyJ - 19.4) < 1e-6, '38.8 W @ 0.5 s');
 });
 
+test('M2D: the monitoring power readout derives from the ACTIVE featureset — a swap changes the wattage', async () => {
+  const b = new MockBackend();
+  const svc = new TelemetryService(b, 0, { pollMs: 50 });
+  const samples = [];
+  svc.onSample((s) => samples.push(s));
+  svc.handleSample(await b.sampleRawTelemetry(0));
+  svc.handleSample(await b.sampleRawTelemetry(0));
+  assert.ok(Math.abs(samples[1].powerW - 38.8) < 1e-6, `a770 power readout: ${samples[1].powerW}`);
+  await b.setFeatureset('b580'); // 45 W
+  svc.handleSample(await b.sampleRawTelemetry(0));
+  svc.handleSample(await b.sampleRawTelemetry(0));
+  assert.ok(Math.abs(samples[3].powerW - 45) < 1e-6, `b580 power readout after the swap: ${samples[3].powerW}`);
+  await b.setFeatureset('arc-igpu'); // 8 W
+  svc.handleSample(await b.sampleRawTelemetry(0));
+  svc.handleSample(await b.sampleRawTelemetry(0));
+  assert.ok(Math.abs(samples[5].powerW - 8) < 1e-6, `iGPU power readout after the swap: ${samples[5].powerW}`);
+});
+
 // ---------------------------------------------------------------------------
 // b580 — percent units, vfCurve R/W, no gpuLock
 // ---------------------------------------------------------------------------
@@ -172,6 +191,29 @@ test('M2D: b580 percent values flow through apply/presets/format/validation', as
   // the renderer W/C pins must NOT clamp percent-unit ranges (M2D)
   assert.equal(clampExposedRange(range, 'powerLimitW')?.max, 150);
   assert.equal(clampExposedRange({ min: 0, max: 100, step: 1, default: 100, units: '%' }, 'tempLimitC')?.max, 100);
+});
+
+test('M2D: requiresExtendedRangeConfirm is unit-aware — percent values never count as extended', () => {
+  const percentCaps = {
+    ranges: {
+      powerLimitW: { min: 0, max: 150, step: 1, default: 100, units: '%' },
+      tempLimitC: { min: 0, max: 100, step: 1, default: 100, units: '%' },
+    },
+  };
+  // b580 defaults/applies: no extended confirm even though 100 > 90 numerically.
+  assert.equal(requiresExtendedRangeConfirm({ powerLimitW: 120, tempLimitC: 100 }, percentCaps), false);
+  // W-unit caps keep the M2C-C gate.
+  const wCaps = {
+    ranges: {
+      powerLimitW: { min: 105, max: 315, step: 1, default: 210, units: 'W' },
+      tempLimitC: { min: 60, max: 115, step: 1, default: 90, units: 'C' },
+    },
+  };
+  assert.equal(requiresExtendedRangeConfirm({ powerLimitW: 300 }, wCaps), true);
+  assert.equal(requiresExtendedRangeConfirm({ tempLimitC: 100 }, wCaps), true);
+  assert.equal(requiresExtendedRangeConfirm({ powerLimitW: 220, tempLimitC: 90 }, wCaps), false);
+  // no caps -> the historical behavior (backward compatible).
+  assert.equal(requiresExtendedRangeConfirm({ tempLimitC: 100 }), true);
 });
 
 test('M2D: b580 vfCurve applies (R/W) and gpuLock applies fail unsupported', async () => {
@@ -263,6 +305,17 @@ test('M2D: setFeatureset with an unknown id falls back to a770 (never crashes)',
   const out = await b.setFeatureset('no-such-gpu');
   assert.equal(out.featureset.id, 'a770');
   assert.equal(out.state.powerLimitW, 210);
+});
+
+test('M2D: the swap payload carries the featureset driver date — no stale boot date on the card', async () => {
+  const b = new MockBackend(); // boot: a770, registry date 7-5-2026
+  assert.equal(b._featureset.driverDate, '7-5-2026');
+  // b580: unverified driver -> the swap must NULL the card date.
+  const out = await b.setFeatureset('b580');
+  assert.equal(out.driverDate, null, 'estimated featureset: no driver date');
+  // back to a770: the verified date returns with the a770 surface.
+  const back = await b.setFeatureset('a770');
+  assert.equal(back.driverDate, '7-5-2026', 'a770: the verified registry date');
 });
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@
   "deviceName": "Mock Arc Pro B50 Graphics (fixture)",
   "pciDeviceId": "0x0000e275",
   "driverVersion": "32.0.140.4109",
+  "driverDate": null,
   "numXeCores": 20,
   "shaders": 2560,
   "graphicsClockMHz": 2400,
