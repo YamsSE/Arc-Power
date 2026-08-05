@@ -6,3 +6,4 @@ out/
 # Dev-only artifacts (kept locally for the pipeline; never committed)
 pipeline/
 tools/validate/
+.opencode/
