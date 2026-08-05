@@ -1,0 +1,211 @@
+// Arc Power — Overclocking page: one card per supported control (slider,
+// clamps, presets, per-card reset), Advanced disclosure for expert controls,
+// page-level Apply with per-control result toasts and the warranty-waiver
+// gate. All limits come from Capabilities.ranges — never hardcoded.
+
+import { el, clear } from '../dom.ts';
+import type { Page, PageContext } from '../router.ts';
+import { api } from '../ipc.ts';
+import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid, computeDirty } from '../pure/slider.ts';
+import { computePresets } from '../pure/presets.ts';
+import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
+import { buildScalarSettings, validateSettingsPayload } from '../pure/settings.ts';
+import { ensureWaiver } from '../components/waiver-dialog.ts';
+import { toast } from '../components/toast.ts';
+import type { RangeInfo, Capabilities, DeviceState } from '../types.ts';
+
+// Display order only — support comes from caps.ranges, limits from the ranges.
+const CONTROL_ORDER = ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'powerLimitW', 'tempLimitC'];
+const EXPERT_CONTROLS: Array<{ key: string; label: string }> = [
+  { key: 'gpuLock', label: 'GPU lock (voltage/frequency pair)' },
+  { key: 'vfCurve', label: 'Custom VF curve' },
+  { key: 'vramFreqOffsetGts', label: 'VRAM frequency offset' },
+  { key: 'vramVoltOffsetV', label: 'VRAM voltage offset' },
+];
+
+function supportedScalars(caps: Capabilities): string[] {
+  return CONTROL_ORDER.filter((k) => caps.ranges[k] !== undefined);
+}
+
+export const overclockingPage: Page = {
+  id: 'overclocking',
+
+  render(container: HTMLElement, ctx: PageContext) {
+    const s = ctx.store.get();
+    const caps = s.caps;
+    const state = s.state;
+    clear(container);
+
+    if (!caps || !state) {
+      container.append(el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
+      return;
+    }
+    if (s.deviceId === null) {
+      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
+      return;
+    }
+
+    const controls = supportedScalars(caps);
+    // Slider state: start from the driver's current values, snapped to step.
+    const values: Record<string, number> = {};
+    for (const key of controls) {
+      const cur = state[key as keyof DeviceState];
+      values[key] = snapToRange(typeof cur === 'number' ? cur : caps.ranges[key].default, caps.ranges[key]);
+    }
+
+    const cards = new Map<string, HTMLElement>();
+    const valueNodes = new Map<string, HTMLElement>();
+    // Mutable current-state reference: refreshed from every apply response so
+    // the "Unapplied" chips never go stale (F4).
+    let currentState: DeviceState = state;
+
+    const refreshCard = (key: string) => {
+      const range = caps.ranges[key];
+      const value = values[key];
+      const input = cards.get(key)?.querySelector<HTMLInputElement>(`input[type="range"]`);
+      const fill = cards.get(key)?.querySelector<HTMLElement>('.oc-track-fill');
+      const valueNode = valueNodes.get(key);
+      const dirty = cards.get(key)?.querySelector<HTMLElement>('.oc-dirty');
+      if (input) input.value = String(value);
+      if (fill) fill.style.width = `${normalizedPosition(value, range) * 100}%`;
+      if (valueNode) valueNode.textContent = formatValue(value, range.units);
+      if (dirty) dirty.hidden = !computeDirty(values, currentState, [key])[key];
+    };
+
+    const buildCard = (key: string): HTMLElement => {
+      const range: RangeInfo = caps.ranges[key];
+      const rawDriver = state[key as keyof DeviceState];
+      const driverValue = typeof rawDriver === 'number' ? rawDriver : null;
+      const driverText = formatDriverValue(driverValue, range);
+      const offGrid = isOffGrid(driverValue, range);
+      const presets = computePresets(range);
+
+      const card = el('section', { class: 'card oc-card', dataset: { control: key } }, [
+        el('div', { class: 'oc-card-head' }, [
+          el('h2', { class: 'card-title', text: CONTROL_LABELS[key] ?? key }),
+          el('span', { class: 'oc-driver', title: offGrid ? 'Off-grid value reported by the driver (snap applies on move)' : undefined },
+            [el('span', { class: 'oc-driver-label', text: 'Driver: ' }), el('span', { text: driverText })]),
+        ]),
+        el('div', { class: 'oc-slider-row' }, [
+          el('div', { class: 'oc-slider' }, [
+            el('div', { class: 'oc-track-fill' }),
+            el('input', {
+              type: 'range',
+              min: range.min,
+              max: range.max,
+              step: range.step,
+              value: values[key],
+              oninput: (e: Event) => {
+                const raw = Number((e.target as HTMLInputElement).value);
+                values[key] = snapToRange(raw, range);
+                refreshCard(key);
+              },
+            }),
+          ]),
+          el('div', { class: 'oc-value', text: formatValue(values[key], range.units) }),
+        ]),
+        el('div', { class: 'oc-meta' }, [
+          el('span', { class: 'oc-range', text: `${range.min} – ${range.max} ${range.units} · step ${range.step}` }),
+          el('div', { class: 'chips oc-presets' }, presets.map((p) =>
+            el('button', {
+              class: 'chip chip-btn',
+              text: p.name,
+              onClick: () => {
+                values[key] = p.value;
+                refreshCard(key);
+              },
+            }),
+          )),
+        ]),
+        el('div', { class: 'oc-card-actions' }, [
+          el('span', { class: 'oc-dirty chip chip-warn', hidden: true, text: 'Unapplied' }),
+          el('button', {
+            class: 'btn btn-ghost btn-sm',
+            text: 'Reset to default',
+            onClick: () => {
+              values[key] = snapToRange(range.default, range);
+              refreshCard(key);
+            },
+          }),
+        ]),
+      ]);
+
+      valueNodes.set(key, card.querySelector<HTMLElement>('.oc-value') as HTMLElement);
+      cards.set(key, card);
+      refreshCard(key);
+      return card;
+    };
+
+    const apply = async () => {
+      const live = ctx.store.get();
+      const deviceId = live.deviceId;
+      const caps = live.caps;
+      if (deviceId === null || !caps) return;
+      const settings = buildScalarSettings(values);
+      if (!validateSettingsPayload(settings)) {
+        toast('error', 'Apply aborted', 'The settings payload failed validation — this is a bug.');
+        return;
+      }
+      const deviceName = caps.deviceName || 'this GPU';
+      const decision = await ensureWaiver(deviceId, caps.waiverAccepted, deviceName);
+      if (decision === 'cancelled') {
+        toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
+        return;
+      }
+      try {
+        const { result, state: fresh } = await api.applySettings(deviceId, settings);
+        // M1 risk note: IGS may change OC state — refresh after every apply.
+        currentState = fresh;
+        ctx.store.set({ state: fresh });
+        for (const [key, per] of Object.entries(result.perControl)) {
+          const range = caps.ranges[key];
+          if (per.ok) {
+            const applied = values[key];
+            toast('success', `${CONTROL_LABELS[key] ?? key} applied`, range ? formatValue(applied, range.units) : '');
+          } else {
+            toast('error', `${CONTROL_LABELS[key] ?? key} failed`, errorMessage(per.errorCode, key));
+          }
+        }
+        // Recompute dirty chips against the fresh read-back so a control that
+        // just applied stops showing "Unapplied".
+        for (const key of controls) refreshCard(key);
+        if (!result.ok) {
+          // The waiver may have been lost on the device (e.g. driver reset).
+          const freshCaps = await api.getCapabilities(deviceId);
+          ctx.store.set({ caps: freshCaps });
+        } else {
+          ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
+        }
+      } catch (err) {
+        toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    container.append(
+      el('h1', { class: 'page-title', text: 'Overclocking' }),
+      el('p', { class: 'page-subtitle', text: 'Values are clamped to the range reported by this GPU. Changes apply on demand — nothing is applied until you press Apply.' }),
+      el('div', { class: 'card-stack' }, controls.map(buildCard)),
+
+      el('details', { class: 'card advanced-card' }, [
+        el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),
+        el('div', { class: 'card-body' }, EXPERT_CONTROLS.map(({ key, label }) => {
+          const supported = caps.controls[key] === true;
+          const cur = state[key as keyof DeviceState];
+          const current = key === 'gpuLock'
+            ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
+            : cur === null || cur === undefined ? '—' : JSON.stringify(cur);
+          return el('div', { class: 'expert-row' }, [
+            el('span', { class: 'expert-label', text: label }),
+            el('span', { class: 'expert-value', text: String(current) }),
+            el('span', { class: 'expert-status', text: supported ? 'Supported — editing arrives in M4' : 'Unsupported on this GPU' }),
+          ]);
+        })),
+      ]),
+
+      el('div', { class: 'page-actions' }, [
+        el('button', { class: 'btn btn-primary btn-lg', text: 'Apply changes', onClick: () => void apply() }),
+        el('span', { class: 'page-actions-note', text: 'Apply writes every card above. Each control reports its own result.' }),
+      ]),
+    );
+  },
+};

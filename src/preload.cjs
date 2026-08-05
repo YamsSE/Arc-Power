@@ -1,0 +1,23 @@
+// Arc Power — sandboxed preload bridge (CommonJS: sandboxed preloads cannot
+// be ESM). Exposes a typed, whitelisted surface to the renderer; every
+// channel is validated in src/main/ipc-core.js before reaching the backend.
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('arcPower', {
+  health: () => ipcRenderer.invoke('health'),
+  listDevices: () => ipcRenderer.invoke('list-devices'),
+  getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
+  getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
+  applySettings: (deviceId, settings) => ipcRenderer.invoke('apply-settings', deviceId, settings),
+  resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
+  waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
+  waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
+  telemetryStart: (deviceId) => ipcRenderer.invoke('telemetry-start', deviceId),
+  telemetryStop: (deviceId) => ipcRenderer.invoke('telemetry-stop', deviceId),
+  onTelemetrySample: (cb) => {
+    const listener = (_event, sample) => cb(sample);
+    ipcRenderer.on('telemetry:sample', listener);
+    return () => ipcRenderer.removeListener('telemetry:sample', listener);
+  },
+});

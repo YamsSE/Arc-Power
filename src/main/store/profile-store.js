@@ -1,0 +1,150 @@
+// Arc Power — M1 ProfileStore: profiles.json + settings.json at
+// %APPDATA%\ArcPower, schemaVersion'd, migrated on load, written
+// atomically (temp file + rename) so a crash mid-write can never corrupt
+// the real file. Unknown/newer schema versions are refused with a clear
+// error — never clobbered.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { migrateStoreData, SCHEMA_VERSION } from './migrations.js';
+
+function defaultDataDir() {
+  return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
+}
+
+/**
+ * @typedef {import('../backend/backend.interface.js').Profile} Profile
+ */
+
+export class ProfileStore {
+  /**
+   * @param {{ dir?: string }} opts — dir defaults to %APPDATA%\ArcPower
+   */
+  constructor(opts = {}) {
+    this.dir = opts.dir ?? defaultDataDir();
+    this.profilesPath = path.join(this.dir, 'profiles.json');
+    this.settingsPath = path.join(this.dir, 'settings.json');
+  }
+
+  _ensureDir() {
+    fs.mkdirSync(this.dir, { recursive: true });
+  }
+
+  /**
+   * Atomic write: temp file in the same directory, fsync'd, then renamed
+   * over the target (same volume -> atomic replace). The fsync before the
+   * rename guarantees the renamed file is flushed to disk — a power loss
+   * right after the rename cannot leave an empty/unflushed target. A stale
+   * .tmp from a previous crash is cleaned up.
+   * @param {string} filePath
+   * @param {object} data
+   */
+  _writeAtomic(filePath, data) {
+    this._ensureDir();
+    const tmp = `${filePath}.tmp`;
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeFileSync(fd, JSON.stringify(data, null, 2));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, filePath);
+  }
+
+  /**
+   * Read + migrate a store file. Missing file -> null; newer/unknown schema
+   * -> throw; corrupt JSON -> throw. When a migration actually ran, the
+   * migrated data is persisted back (one-time upgrade on load).
+   * @param {string} filePath
+   * @param {'profiles'|'settings'} kind
+   * @returns {object|null}
+   */
+  _readMigrated(filePath, kind) {
+    if (!fs.existsSync(filePath)) return null;
+    // Clean up any stale temp from a crashed writer before the next write.
+    const tmp = `${filePath}.tmp`;
+    if (fs.existsSync(tmp)) { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
+    const raw = fs.readFileSync(filePath, 'utf8');
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(`Cannot load ${path.basename(filePath)}: invalid JSON (${err.message})`);
+    }
+    const pre = data.schemaVersion ?? 0;
+    const migrated = migrateStoreData(data, kind);
+    if (pre !== migrated.schemaVersion) this._writeAtomic(filePath, migrated);
+    return migrated;
+  }
+
+  /**
+   * @returns {Promise<Profile[]>}
+   */
+  async loadProfiles() {
+    const data = this._readMigrated(this.profilesPath, 'profiles');
+    if (data === null) return [];
+    if (!Array.isArray(data.profiles)) {
+      throw new Error('profiles.json is missing the "profiles" array');
+    }
+    return data.profiles;
+  }
+
+  /**
+   * @param {Profile[]} profiles
+   */
+  async saveProfiles(profiles) {
+    this._writeAtomic(this.profilesPath, { schemaVersion: SCHEMA_VERSION, profiles });
+  }
+
+  /**
+   * @param {Profile} profile
+   */
+  async saveProfile(profile) {
+    const profiles = await this.loadProfiles();
+    const idx = profiles.findIndex((p) => p.id === profile.id);
+    if (idx >= 0) profiles[idx] = { ...profile, schemaVersion: SCHEMA_VERSION };
+    else profiles.push({ ...profile, schemaVersion: SCHEMA_VERSION });
+    await this.saveProfiles(profiles);
+  }
+
+  /**
+   * @param {string} id
+   * @returns {Promise<boolean>} true when a profile was deleted
+   */
+  async deleteProfile(id) {
+    const profiles = await this.loadProfiles();
+    const next = profiles.filter((p) => p.id !== id);
+    if (next.length === profiles.length) return false;
+    await this.saveProfiles(next);
+    return true;
+  }
+
+  /**
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null }>}
+   */
+  async loadSettings() {
+    const data = this._readMigrated(this.settingsPath, 'settings');
+    if (data === null) {
+      return { waiverAccepted: false, ocOnBoot: false, activeProfileId: null };
+    }
+    return {
+      waiverAccepted: data.waiverAccepted === true,
+      ocOnBoot: data.ocOnBoot === true,
+      activeProfileId: typeof data.activeProfileId === 'string' ? data.activeProfileId : null,
+    };
+  }
+
+  /**
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null }} settings
+   */
+  async saveSettings(settings) {
+    this._writeAtomic(this.settingsPath, {
+      schemaVersion: SCHEMA_VERSION,
+      waiverAccepted: settings.waiverAccepted === true,
+      ocOnBoot: settings.ocOnBoot === true,
+      activeProfileId: settings.activeProfileId ?? null,
+    });
+  }
+}
