@@ -1,20 +1,22 @@
 // Arc Power — dev-only UI verification (`electron . --ui-verify`).
 //
 // Drives the REAL window (renderer + preload + IPC + MockBackend) through
-// the M2a/M2b-B/M2C-B product flows and asserts the outcomes:
-//   1. shell renders (sidebar + header); M2C-B B7: the sidebar brand shows
-//      the blue "AP" logo before "Arc Power";
+// the M2a/M2b-B/M2C-B/M2D/M3-A product flows and asserts the outcomes:
+//   1. shell renders (sidebar + header); M3-A: the sidebar brand is the
+//      "Arc Power" text with the small blue accent bar BELOW it (the user's
+//      preferred variant — no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
 //       0.1.0" (app:version IPC) — the driver version + date live in the
 //       dashboard device card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); no PCI ID anywhere;
 //       M2C-B B2: NO capsSummary chips footer on the device card; M2C-B B8:
 //       a 'Memory clock' kv row next to 'Graphics clock'; memory-clock
-//       readout next to core clock, ONE merged "Service Status" card,
-//       "Xe Cores 32 - Shader Units 4096";
-//   1c. IGS state card (M2a.5): the merged status card keeps the dot, the
-//       half-state note and the toggle; env knobs RID_MOCK_IGS_RUNNING /
-//       RID_MOCK_IGS_APP fixture the four-combination matrix;
+//       readout next to core clock; M3-A: the header has NO status dot and
+//       NO "Service Status" label (the IGS indicator is gone);
+//   1c. M3-A: the dashboard shows the general GPU HEALTH card (five rows:
+//       Driver installed / Device detected / Clocks normal / OC working /
+//       Arc Power working) — the merged Service Status card is GONE, as is
+//       everything IGS (dot, half-state note, toggle button);
 //   2. overclocking cards render from capability ranges; M2b-B: the card
 //      label is "Core offset", the floating Apply is hidden when clean and
 //      appears when dirty;
@@ -61,6 +63,10 @@
 //      runFeaturesetVerify — a reduced flow per device line (OC cards /
 //      no-OC note, fan editor / read-only / no-fan, monitoring, swap round
 //      trip, b580 percent-unit apply).
+//  16. M3-A Tweaks page: the registry-hacks catalog renders with live
+//      (mock) states — mpo=Off, hags=Active, game-dvr=Default,
+//      fullscreen-optimizations=Active — read-only (apply buttons disabled,
+//      "Requires administrator (M3-B)" note).
 // This script is dev tooling only — it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
@@ -108,10 +114,19 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
-  // M2C-B B7: the blue "AP" logo img sits before the "Arc Power" line.
-  const logoSrc = await js(`document.querySelector('.sidebar-brand img.sidebar-logo')?.getAttribute('src') ?? ''`);
-  if (!logoSrc.includes('icon.png')) fail(`sidebar brand logo missing: src='${logoSrc}'`);
-  step('boot', `shell rendered; brand with logo (${logoSrc}); mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
+  // M3-A: the logo IMAGE is gone — the user's preferred variant is the text
+  // with the small blue accent bar BELOW it (the ::after pseudo-element).
+  if (await js(`!!document.querySelector('.sidebar-brand img.sidebar-logo')`)) {
+    fail('M3-A: the sidebar logo image is still rendered (the blue-bar variant was requested)');
+  }
+  if (!(await js(`(() => {
+    const brand = document.querySelector('.sidebar-brand');
+    const bar = brand ? getComputedStyle(brand, '::after') : null;
+    return !!bar && bar.width === '22px' && bar.display !== 'none';
+  })()`))) {
+    fail('M3-A: the blue accent bar below the "Arc Power" text is missing');
+  }
+  step('boot', `shell rendered; brand '${brand.trim()}' + blue accent bar (no logo img); mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
 
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
@@ -123,11 +138,12 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
   if (!favicon.includes('favicon.png')) fail(`favicon link is '${favicon}'`);
   if (await js(`document.body.textContent.includes('PCI')`)) fail('PCI ID is still shown somewhere in the UI');
-  // Top-right indicator: just the dot + the static 'Service Status' label.
-  const headerIndicator = await js(`document.querySelector('.gpu-status-text')?.textContent ?? ''`);
-  if (!headerIndicator.includes('Service Status')) fail(`header indicator is '${headerIndicator}' (expected 'Service Status')`);
-  if (headerIndicator.includes('OC control OK')) fail(`header indicator still shows the verbose IGS text: '${headerIndicator}'`);
-  step('version-line', `header line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; indicator='${headerIndicator.trim()}'`);
+  // M3-A: the header status indicator is REMOVED — no dot, no 'Service
+  // Status' label anywhere (IGS is no longer a status item).
+  if (await js(`!!document.querySelector('.gpu-header .status-dot')`)) fail('M3-A: the header still renders a status dot');
+  if (await js(`document.body.textContent.includes('Service Status')`)) fail('M3-A: "Service Status" is still rendered somewhere');
+  if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS is still surfaced as a status item');
+  step('version-line', `header line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; no status dot / Service Status label`);
 
   // Device card: driver version kv (B3 move), compute line, no persistent
   // waiver row, NO capsSummary chips footer (B2).
@@ -162,64 +178,30 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   }
   step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
 
-  // ONE merged Service Status card; no Level Zero item.
-  if (!(await waitFor(win, `document.querySelectorAll('.status-card').length === 1`))) fail('expected exactly one merged Service Status card');
-  const statusTitle = await js(`document.querySelector('.status-card .card-title')?.textContent ?? ''`);
-  if (statusTitle.trim() !== 'Service Status') fail(`merged card title is '${statusTitle}'`);
-  if (await js(`document.querySelector('.status-card')?.textContent.includes('Level Zero')`)) fail('Level Zero is still a status item');
-  if (await js(`document.querySelector('.status-card')?.textContent.includes('IGCL runtime')`)) fail('IGCL line shown in the healthy state (degraded-only)');
-  step('status-card', `one merged 'Service Status' card; no Level Zero item; IGCL detail hidden while healthy`);
-
-  // --- 1c. IGS state matrix on the merged card (M2a.5 semantics) -----------
-  // The verified rule (docs/igcl-integration.md §8a): half-states (service
-  // and app disagree) block OC writes -> warning + note; fully-on and
-  // fully-off -> ok, no note. The toggle flips ONLY the service part.
-  const svcRunning = process.env.RID_MOCK_IGS_RUNNING !== '0';
-  const appRunning = process.env.RID_MOCK_IGS_APP !== '0';
-  const igsBtnText = () => js(`document.querySelector('.igs-toggle')?.textContent ?? ''`);
-
-  const expectIgsUi = async (svc, app) => {
-    const level = svc === app ? 'ok' : 'warning';
-    if (!(await waitFor(win, `!!document.querySelector('.status-${level}')`))) {
-      fail(`status dot is not ${level} for svc=${svc} app=${app}`);
-    }
-    const note = await js(`document.querySelector('.igs-note')?.textContent ?? ''`);
-    if (svc !== app) {
-      if (!note.includes('partially running')) fail(`IGS half-state note missing: '${note}'`);
-    } else if (note !== '') {
-      fail(`IGS note shown in the fully-${svc ? 'on' : 'off'} state: '${note}'`);
-    }
-    const btn = await igsBtnText();
-    const expectedBtn = svc ? 'Disable IGS service' : 'Re-enable IGS service';
-    if (btn.trim() !== expectedBtn) fail(`IGS button is '${btn}' (expected '${expectedBtn}')`);
-    const state = await js(`window.arcPower.getIgsServiceState()`);
-    if (state.service.running !== svc || state.appRunning !== app || state.service.startType !== (svc ? 'auto' : 'disabled')) {
-      fail(`mock IGS state: ${JSON.stringify(state)} (expected svc=${svc} app=${app})`);
-    }
-  };
-
-  const comboName = (svc, app) => {
-    if (svc && app) return 'fully on';
-    if (!svc && !app) return 'fully off';
-    return svc ? 'half (service on, app off)' : 'half (app on, service off)';
-  };
-
-  await expectIgsUi(svcRunning, appRunning);
-  step('igs', `status card: initial ${comboName(svcRunning, appRunning)} — dot ${svcRunning === appRunning ? 'ok' : 'warning'}, note ${svcRunning !== appRunning ? 'shown' : 'absent'}, '${(await igsBtnText()).trim()}'`);
-
-  await js(`document.querySelector('.igs-toggle')?.click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`))) fail('IGS toggle success toast missing');
-  await expectIgsUi(!svcRunning, appRunning);
-  step('igs-toggle', `IGS toggle (mock): svc ${svcRunning ? 'disabled' : 'enabled'} -> ${comboName(!svcRunning, appRunning)}, toast ok`);
-
-  await clearToasts();
-  await js(`document.querySelector('.igs-toggle')?.click()`);
-  if (!(await waitFor(win, `(document.querySelector('.igs-toggle')?.textContent ?? '').trim() === '${svcRunning ? 'Disable IGS service' : 'Re-enable IGS service'}'`))) {
-    fail('button did not flip back after the second toggle');
+  // ONE general GPU HEALTH card (M3-A): five rows, honest per-row state,
+  // no Level Zero item, no IGCL detail line (the old Service Status card +
+  // IGS half-state + toggle are gone).
+  if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) fail('expected exactly one GPU Health card');
+  const statusTitle = await js(`document.querySelector('.health-card .card-title')?.textContent ?? ''`);
+  if (statusTitle.trim() !== 'GPU Health') fail(`health card title is '${statusTitle}'`);
+  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
+    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
   }
-  await expectIgsUi(svcRunning, appRunning);
-  await clearToasts();
-  step('igs-roundtrip', `IGS toggle round trip (mock): back to ${comboName(svcRunning, appRunning)}`);
+  const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
+  if (rowIds !== 'driver,device,clocks,oc,app') fail(`health card rows are '${rowIds}' (expected driver,device,clocks,oc,app)`);
+  const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
+  for (const want of ['Driver installed', 'Device detected', 'Clocks normal', 'OC working', 'Arc Power working']) {
+    if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
+  }
+  // The mock boot state: driver + device + app rows ok, OC row unknown
+  // (nothing applied yet in this session), clocks ok (waiting for telemetry
+  // or live).
+  const dots = await js(`Array.from(document.querySelectorAll('.health-card .health-row .status-dot')).map((d) => d.className).join('|')`);
+  if (!/status-ok/.test(dots)) fail(`no ok dot on the health card: '${dots}'`);
+  if (!/status-unknown/.test(dots)) fail(`no unknown dot (OC never applied) on the health card: '${dots}'`);
+  if (await js(`document.querySelector('.health-card')?.textContent.includes('Level Zero')`)) fail('Level Zero is still a health item');
+  if (await js(`!!document.querySelector('.igs-toggle')`)) fail('M3-A: the IGS toggle button is still rendered');
+  step('health-card', `one 'GPU Health' card: rows '${rowLabels}', dots '${dots.split(' ').filter((c) => c.startsWith('status-')).join(',')}'`);
 
   // --- 2. overclocking cards ------------------------------------------------
   await js(`location.hash = '#/overclocking'`);
@@ -374,7 +356,8 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   // --- 5b. M2C-B F3 instant apply: ONE attempt, composed refusal toasts,
   // --- no retry note, no progress label. M2C-B B5: chips + floating Apply
   // --- clear per-`result.ok` even while the driver read-back lags. --------
-  const igsOff = !svcRunning && !appRunning;
+  // (M3-A: the IGS-on/IGS-off refusal variants are unified — IGS is no
+  // longer a status item, and the refusal wording never named IGS anyway.)
 
   // B5 first: simulate a read-back that LAGS (the driver write succeeded,
   // the read-back still reports the old value). After the successful apply
@@ -408,80 +391,52 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (!(await floatingHidden())) fail('floating Apply visible on a clean re-render');
   step('b5-fresh', 'B5: fresh re-render is clean (applied reference is per-render state)');
 
-  if (igsOff) {
-    // IGS fully off: an io-failed powerLimit apply fails INSTANTLY and the
-    // toast is the plain driver message + code (M2C-C: the IGS-on wording is
-    // REMOVED — the real gate was elevation, docs §8c).
-    backend.injectFail('powerLimitW', 'io-failed');
-    await setSlider(220);
-    await clearToasts();
-    await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
-      fail('io-failed error toast missing (instant apply, IGS off)');
-    }
-    const errMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
-    if (!/refused the change/.test(errMsg)) fail(`IGS-off refusal toast is not the plain message: '${errMsg}'`);
-    if (/Intel Graphics Software/.test(errMsg)) fail(`M2C-C: refusal toast still names IGS (obsolete wording): '${errMsg}'`);
-    if (!/\(io-failed\)/.test(errMsg)) fail(`M2C-C: refusal toast is missing the error code: '${errMsg}'`);
-    if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
-    // The "Applying — retry N/9" surface is gone: the button never shows it.
-    const btnLabel = await js(`document.querySelector('.floating-apply')?.textContent ?? ''`);
-    if (btnLabel.includes('retry')) fail(`floating Apply shows a retry label: '${btnLabel}'`);
-    // A one-shot io-failed backend (would succeed on a retry) must STILL
-    // fail instantly — no retry attempt ever happens.
-    backend.injectFail('powerLimitW', 'io-failed', true);
-    await clearToasts();
-    await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
-      fail('one-shot io-failed apply did not fail instantly (a retry must never happen)');
-    }
-    await sleep(300);
-    if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply: retry note appeared');
-    const oneShotState = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(oneShotState.powerLimitW - 210) > 1e-6) fail(`instant apply changed the driver state: ${oneShotState.powerLimitW}`);
-    backend.injectFail('powerLimitW', null);
-    // Recover: apply the requested value cleanly, then restore 210 W so the
-    // later profile-load step sees the same baseline in every variant.
-    await clearToasts();
-    await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('recovery apply did not succeed');
-    const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(recovered.powerLimitW - 220) > 1e-6) fail(`recovery did not apply 220 W: ${recovered.powerLimitW}`);
-    await clearToasts();
-    await setSlider(210);
-    await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('baseline restore (210 W) did not apply');
-    const baseline = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(baseline.powerLimitW - 210) > 1e-6) fail(`baseline is not 210 W: ${baseline.powerLimitW}`);
-    await clearToasts();
-    step('instant-igs-off', `IGS-off: io-failed -> ONE attempt, plain refusal toast ('${errMsg.trim()}'), no retry note, no progress label; recovery + baseline applied`);
-  } else {
-    // IGS fully on (or half-state): a refusal there is rare -> plain + code.
-    backend.injectFail('powerLimitW', 'io-failed');
-    await setSlider(220);
-    await clearToasts();
-    await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
-      fail('io-failed error toast missing (instant apply, IGS on)');
-    }
-    const errMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
-    if (!/refused the change/.test(errMsg)) fail(`IGS-on refusal toast is '${errMsg}' (expected plain + code)`);
-    if (/Intel Graphics Software/.test(errMsg)) fail(`IGS-on refusal toast wrongly names IGS: '${errMsg}'`);
-    if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
-    backend.injectFail('powerLimitW', null);
-    // Recovery: the driver read-back already reports 210 (the refusal never
-    // wrote) — the settings are clean, so the button hides and nothing more
-    // is applied (no-op suppression in action).
-    await setSlider(210);
-    await clearToasts();
-    if (!(await floatingHidden())) fail('floating Apply visible while clean after the refusal');
-    await clickApply();
-    await sleep(300);
-    const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(recovered.powerLimitW - 210) > 1e-6) fail(`recovery did not restore 210 W: ${recovered.powerLimitW}`);
-    await clearToasts();
-    step('instant-igs-on', `IGS-on: io-failed -> ONE attempt, plain refusal toast ('${errMsg.trim()}'), no retry note; recovery clean (210 W)`);
+  // An io-failed powerLimit apply fails INSTANTLY and the toast is the plain
+  // driver message + code (M2C-C: the IGS-naming wording is REMOVED — the
+  // real gate was elevation, docs §8c).
+  backend.injectFail('powerLimitW', 'io-failed');
+  await setSlider(220);
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
+    fail('io-failed error toast missing (instant apply)');
   }
+  const refusalMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
+  if (!/refused the change/.test(refusalMsg)) fail(`refusal toast is not the plain message: '${refusalMsg}'`);
+  if (/Intel Graphics Software/.test(refusalMsg)) fail(`M2C-C: refusal toast still names IGS (obsolete wording): '${refusalMsg}'`);
+  if (!/\(io-failed\)/.test(refusalMsg)) fail(`M2C-C: refusal toast is missing the error code: '${refusalMsg}'`);
+  if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
+  // The "Applying — retry N/9" surface is gone: the button never shows it.
+  const btnLabel = await js(`document.querySelector('.floating-apply')?.textContent ?? ''`);
+  if (btnLabel.includes('retry')) fail(`floating Apply shows a retry label: '${btnLabel}'`);
+  // A one-shot io-failed backend (would succeed on a retry) must STILL
+  // fail instantly — no retry attempt ever happens.
+  backend.injectFail('powerLimitW', 'io-failed', true);
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
+    fail('one-shot io-failed apply did not fail instantly (a retry must never happen)');
+  }
+  await sleep(300);
+  if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply: retry note appeared');
+  const oneShotState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(oneShotState.powerLimitW - 210) > 1e-6) fail(`instant apply changed the driver state: ${oneShotState.powerLimitW}`);
+  backend.injectFail('powerLimitW', null);
+  // Recover: apply the requested value cleanly, then restore 210 W so the
+  // later profile-load step sees the same baseline in every variant.
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('recovery apply did not succeed');
+  const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(recovered.powerLimitW - 220) > 1e-6) fail(`recovery did not apply 220 W: ${recovered.powerLimitW}`);
+  await clearToasts();
+  await setSlider(210);
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('baseline restore (210 W) did not apply');
+  const baseline = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(baseline.powerLimitW - 210) > 1e-6) fail(`baseline is not 210 W: ${baseline.powerLimitW}`);
+  await clearToasts();
+  step('instant-apply', `io-failed -> ONE attempt, plain refusal toast ('${refusalMsg.trim()}'), no retry note, no progress label; recovery + baseline applied`);
 
   // --- 5c. M2C-C extended-range variant: full slider range, confirm dialog,
   // --- worker-apply elevation toast (RID_MOCK_EXTENDED_RANGES=1, optional
@@ -901,6 +856,43 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (leftover !== 0) fail(`cleanup left ${leftover} ui-verify profiles`);
   step('profiles-cleanup', `ui-verify profile cleanup: ${leftover} leftovers`);
 
+  // --- 16. M3-A Tweaks page: the registry-hacks catalog renders with the
+  // --- live (mock) states — read-only, no apply channel ---------------------
+  await js(`location.hash = '#/tweaks'`);
+  if (!(await waitFor(win, `document.querySelectorAll('.tweak-card').length === 4`))) {
+    fail(`tweaks page did not render 4 catalog cards (got ${await js(`document.querySelectorAll('.tweak-card').length`)})`);
+  }
+  const tweakIds = await js(`Array.from(document.querySelectorAll('.tweak-card')).map((c) => c.dataset.tweak).join(',')`);
+  if (tweakIds !== 'mpo,hags,game-dvr,fullscreen-optimizations') fail(`tweak cards are '${tweakIds}'`);
+  // The mock fixture covers the whole vocabulary: mpo=Off, hags=Active,
+  // game-dvr=Default, fullscreen-optimizations=Active.
+  const tweakStateOf = (id) => js(`document.querySelector('.tweak-card[data-tweak="${id}"] .tweak-state-label')?.textContent ?? ''`);
+  if (!(await waitFor(win, `(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-state-label')?.textContent ?? '').trim() === 'Off'`))) {
+    fail(`mpo state is '${await tweakStateOf('mpo')}' (expected 'Off' — the fixture default)`);
+  }
+  if ((await tweakStateOf('hags')).trim() !== 'Active') fail(`hags state is '${await tweakStateOf('hags')}' (expected 'Active')`);
+  if ((await tweakStateOf('game-dvr')).trim() !== 'Default') fail(`game-dvr state is '${await tweakStateOf('game-dvr')}' (expected 'Default')`);
+  if ((await tweakStateOf('fullscreen-optimizations')).trim() !== 'Active') fail(`fullscreen state is '${await tweakStateOf('fullscreen-optimizations')}' (expected 'Active')`);
+  // Read-side only: every apply button is disabled with the M3-B note.
+  const applyBtns = await js(`Array.from(document.querySelectorAll('.tweak-card .tweak-apply')).map((b) => ({ disabled: b.disabled, text: b.textContent.trim() }))`);
+  if (applyBtns.length !== 4 || applyBtns.some((b) => !b.disabled)) fail(`M3-A: apply buttons must be disabled (read-side only): ${JSON.stringify(applyBtns)}`);
+  if (applyBtns.some((b) => !b.text.includes('Requires administrator (M3-B)'))) fail(`apply buttons must carry the M3-B note: ${JSON.stringify(applyBtns)}`);
+  // The read values render honestly (hags shows HwSchMode=0x2; the
+  // enumerate read shows the flagged-app detail).
+  if (!(await js(`(document.querySelector('.tweak-card[data-tweak="hags"] .tweak-read-path')?.textContent ?? '').includes('HwSchMode')`))) {
+    fail('hags read path missing HwSchMode');
+  }
+  if (!(await js(`(document.querySelector('.tweak-card[data-tweak="hags"] .tweak-read-data')?.textContent ?? '').includes('0x2')`))) {
+    fail(`hags read value is '${await js(`document.querySelector('.tweak-card[data-tweak="hags"] .tweak-read-data')?.textContent ?? ''`)}' (expected 0x2)`);
+  }
+  if (!(await js(`(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-read-data')?.textContent ?? '').includes('not present')`))) {
+    fail('mpo reads must show "not present" for the absent values');
+  }
+  // The page is read-side only at the IPC level too.
+  const catalog = await js(`window.arcPower.registryCatalog()`);
+  if (catalog.entries.length !== 4 || catalog.states.length !== 4) fail(`registry-catalog IPC returned ${catalog.entries.length} entries / ${catalog.states.length} states`);
+  step('tweaks', `Tweaks: ${tweakIds} rendered; mpo=Off, hags=Active (HwSchMode=0x2), game-dvr=Default, fullscreen=Active; apply disabled ('Requires administrator (M3-B)')`);
+
   console.log('\nUI VERIFY OK\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }
@@ -937,6 +929,11 @@ export async function runFeaturesetVerify(win, fsId) {
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
     fail('sidebar did not render (6 nav links expected)');
   }
+  // M3-A (shared shell): the brand is text + blue bar (no logo image), and
+  // the IGS indicator is gone everywhere.
+  if (await js(`!!document.querySelector('.sidebar-brand img.sidebar-logo')`)) fail('M3-A: sidebar logo image still rendered');
+  if (await js(`document.body.textContent.includes('Service Status')`)) fail('M3-A: "Service Status" still rendered');
+  if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS still surfaced as a status item');
   if (!(await waitFor(win, `!!document.querySelector('.badge-mock')`))) fail('mock badge missing');
   if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) fail('featureset dropdown missing in mock mode');
   const options = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);

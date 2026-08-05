@@ -6,6 +6,7 @@ import { app, ipcMain } from 'electron';
 import { createIpcHandlers } from './ipc-core.js';
 import { createStartup } from './startup.js';
 import { createDriverInfo } from './driver-info.js';
+import { createRegistryCatalog } from './registry-catalog.js';
 import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
 
 /**
@@ -15,9 +16,9 @@ import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   getWindow: () => import('electron').BrowserWindow,
- *   igs: import('./igs-service.js').IgsService,
  *   startup?: import('./startup.js').RunKeyStartup,
  *   driverInfo?: ReturnType<typeof createDriverInfo>,
+ *   registryCatalog?: ReturnType<typeof createRegistryCatalog>,
  *   presentmon?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
  *   rebuildTray?: () => Promise<unknown>,
  *   oldIgcl?: object,
@@ -27,13 +28,13 @@ import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), registryCatalog = createRegistryCatalog(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
-    igs,
     startup,
     driverInfo,
+    registryCatalog,
     presentmon,
     rebuildTray,
     appVersion: app.getVersion(),

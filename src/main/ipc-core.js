@@ -23,7 +23,7 @@ import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
-import { createMockIgs } from './igs-service.js';
+import { createMockRegistryCatalog } from './registry-catalog.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { executeApply, createNullOldIgcl } from './apply-routing.js';
@@ -165,9 +165,9 @@ export function assertNoPayload(args, channel) {
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
- *   igs?: { getState: () => Promise<unknown>, disable: () => Promise<unknown>, enable: () => Promise<unknown> },
  *   startup?: { get: () => Promise<unknown>, set: (enabled: boolean, profileId: string | null) => Promise<unknown> },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
+ *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   presentmon?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null> },
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -186,9 +186,12 @@ export function createIpcHandlers({
   backend,
   store,
   emit,
-  igs = createMockIgs(),
   startup = createMockStartup(),
   driverInfo = createMockDriverInfo(),
+  // M3-A: the registry-catalog adapter. The DEFAULT is the MOCK (never runs
+  // reg.exe); ipc.js injects the real adapter in the product path. The
+  // catalog is read-side only — there is no apply channel in M3-A (M3-B).
+  registryCatalog = createMockRegistryCatalog(),
   // M2b-B: the FPS adapter. The DEFAULT is the mock (always unavailable —
   // never loads koffi/PresentMonAPI2); ipc.js injects the real client in the
   // product path. On this machine the real client degrades to null anyway
@@ -349,23 +352,13 @@ export function createIpcHandlers({
         }
       },
 
-      // IGS service (M2a extension): state probe is read-only; disable/enable
-      // spawn an ELEVATED helper — they run ONLY on an explicit user click.
-      // The adapter defaults to the MOCK (never the real service): real
-      // elevation is unreachable unless ipc.js explicitly injects it.
-      'igs-service-state': async (...args) => {
-        assertNoPayload(args, 'igs-service-state');
-        return igs.getState();
-      },
-
-      'igs-service-disable': async (...args) => {
-        assertNoPayload(args, 'igs-service-disable');
-        return igs.disable();
-      },
-
-      'igs-service-enable': async (...args) => {
-        assertNoPayload(args, 'igs-service-enable');
-        return igs.enable();
+      // M3-A: the registry-hacks catalog (Tweaks page) — read-side only.
+      // Real reg.exe queries in the product path (no elevation); the default
+      // adapter is the MOCK so tests and --ui-verify never touch the real
+      // registry. There is deliberately NO apply channel in M3-A (M3-B).
+      'registry-catalog': async (...args) => {
+        assertNoPayload(args, 'registry-catalog');
+        return registryCatalog.get();
       },
 
       // Run-key (apply-on-startup) state (M2b). startup-set writes the HKCU

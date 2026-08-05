@@ -227,6 +227,26 @@ export const overclockingPage: Page = {
         // M1 risk note: IGS may change OC state — refresh after every apply.
         currentState = fresh;
         ctx.store.set({ state: fresh });
+        // M3-A: record the outcome for the dashboard "OC working" health row
+        // (honest: ok with what changed / failed with the first error).
+        {
+          const changed = Object.entries(result.perControl)
+            .filter(([k, per]) => per.ok && !isNoopApply(k, settings, before))
+            .map(([k]) => CONTROL_LABELS[k] ?? k);
+          const failed = Object.entries(result.perControl)
+            .filter(([, per]) => !per.ok)
+            .map(([k, per]) => `${CONTROL_LABELS[k] ?? k}: ${per.message ?? per.errorCode ?? 'failed'}`)
+            .join('; ');
+          ctx.store.set({
+            lastApply: {
+              ok: result.ok,
+              at: Date.now(),
+              detail: result.ok
+                ? (changed.length > 0 ? `${changed.join(', ')} applied` : 'OC apply ok (nothing changed)')
+                : failed,
+            },
+          });
+        }
         for (const [key, per] of Object.entries(result.perControl)) {
           const range = caps.ranges[key];
           if (!per.ok) {
@@ -259,6 +279,7 @@ export const overclockingPage: Page = {
         // M2C-C: a declined/denied UAC prompt surfaces here with the honest
         // message (Apply requires administrator approval).
         const msg = err instanceof Error ? err.message : String(err);
+        ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
         if (msg.includes('administrator approval') || msg.includes('Administrator approval')) {
           toast('error', 'Apply requires administrator approval', msg);
         } else {

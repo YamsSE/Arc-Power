@@ -1,6 +1,7 @@
-// M2a — header status dot logic (pure; DOM rendering is covered by
-// --ui-verify). F9: no health report yet must read as the neutral
-// "Searching…" state, not "Error". M2C-B B3: the version line below the GPU
+// M2a — header pure helpers (DOM rendering is covered by --ui-verify). M3-A:
+// the header status dot + "Service Status" label are GONE (IGS is no longer
+// a status item); the health-level mapping lives in pure/status.ts and is
+// re-exported here as healthStatus. M2C-B B3: the version line below the GPU
 // name is the app version ("Arc Power Ver. X.XX").
 
 import { test } from 'node:test';
@@ -16,8 +17,8 @@ const report = (patch: Partial<HealthReport>): HealthReport => ({
   ...patch,
 });
 
-test('healthStatus: null health is the neutral searching state (F9 regression)', () => {
-  assert.equal(healthStatus(null), 'searching');
+test('healthStatus: null health is unknown (boot in progress)', () => {
+  assert.equal(healthStatus(null), 'unknown');
 });
 
 test('healthStatus: a healthy report is ok', () => {
@@ -28,9 +29,9 @@ test('healthStatus: a report with an error is error', () => {
   assert.equal(healthStatus(report({ igclLoaded: false, driverVersion: null, levelZeroOk: false, error: 'ctlInit failed' })), 'error');
 });
 
-test('healthStatus: missing igcl/level-zero is degraded, never ok', () => {
-  assert.equal(healthStatus(report({ igclLoaded: false, driverVersion: null })), 'degraded');
-  assert.equal(healthStatus(report({ levelZeroOk: false })), 'degraded');
+test('healthStatus: missing igcl/level-zero is warn, never ok', () => {
+  assert.equal(healthStatus(report({ igclLoaded: false, driverVersion: null })), 'warn');
+  assert.equal(healthStatus(report({ levelZeroOk: false })), 'warn');
 });
 
 // M2C-B B3 — the header version line replaces the driver line.

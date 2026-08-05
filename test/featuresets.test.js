@@ -13,7 +13,6 @@ import {
   validateFeatureset,
 } from '../src/main/backend/featuresets.js';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
-import { createMockIgs } from '../src/main/igs-service.js';
 import { TelemetryService } from '../src/main/telemetry/telemetry-service.js';
 import { formatValue, snapToRange } from '../src/renderer/pure/slider.ts';
 import { computePresets } from '../src/renderer/pure/presets.ts';
@@ -323,7 +322,7 @@ test('M2D: the swap payload carries the featureset driver date — no stale boot
 // ---------------------------------------------------------------------------
 
 test('M2D: mock:list-featuresets / mock:set-featureset exist ONLY in mock mode', async () => {
-  const real = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: createMockIgs() });
+  const real = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
   assert.equal('mock:list-featuresets' in real.handlers, false, 'real mode: no such channel (honest 404)');
   assert.equal('mock:set-featureset' in real.handlers, false);
 
@@ -332,7 +331,7 @@ test('M2D: mock:list-featuresets / mock:set-featureset exist ONLY in mock mode',
     listFeaturesets: () => b.listFeaturesets(),
     setFeatureset: (id) => b.setFeatureset(id),
   };
-  const mock = createIpcHandlers({ backend: b, store: fakeStore(), emit: () => {}, igs: createMockIgs(), mock: mockCtl });
+  const mock = createIpcHandlers({ backend: b, store: fakeStore(), emit: () => {}, mock: mockCtl });
   assert.ok('mock:list-featuresets' in mock.handlers);
   assert.ok('mock:set-featureset' in mock.handlers);
 });
@@ -343,7 +342,7 @@ test('M2D: the swap round-trips through the IPC handler (caps + state + store pa
     listFeaturesets: () => b.listFeaturesets(),
     setFeatureset: (id) => b.setFeatureset(id),
   };
-  const { handlers } = createIpcHandlers({ backend: b, store: fakeStore(), emit: () => {}, igs: createMockIgs(), mock: mockCtl });
+  const { handlers } = createIpcHandlers({ backend: b, store: fakeStore(), emit: () => {}, mock: mockCtl });
   const list = await handlers['mock:list-featuresets']();
   assert.equal(list.current, 'a770');
   assert.equal(list.featuresets.length, 4);

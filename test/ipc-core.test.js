@@ -20,7 +20,6 @@ import {
 import { MockBackend } from '../src/main/backend/mock-backend.js';
 import { IgclBackend } from '../src/main/backend/igcl-backend.js';
 import { CTL_RESULT } from '../src/main/backend/igcl-bindings.js';
-import { createMockIgs } from '../src/main/igs-service.js';
 import { createMockStartup } from '../src/main/startup.js';
 
 // ---------------------------------------------------------------------------
@@ -299,153 +298,45 @@ test('telemetry-start emits samples through the injected emit channel', async ()
 });
 
 // ---------------------------------------------------------------------------
-// IGS service channels (M2a extension)
+// Registry-catalog channel (M3-A) — read-side only: the default adapter is
+// the MOCK (never runs reg.exe), and there is NO apply channel.
 // ---------------------------------------------------------------------------
 
-/** Construct a mock IGS adapter from env knobs and restore the env afterwards. */
-function makeEnvIgs({ running, app } = {}) {
-  const prev = {
-    RID_MOCK_IGS_RUNNING: process.env.RID_MOCK_IGS_RUNNING,
-    RID_MOCK_IGS_APP: process.env.RID_MOCK_IGS_APP,
+test('registry-catalog channel: registered, takes no payload, default adapter is the mock', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['registry-catalog'], 'function');
+  await assert.rejects(() => handlers['registry-catalog']({}), /takes no payload/);
+
+  const out = await handlers['registry-catalog']();
+  assert.equal(out.entries.length, 4);
+  assert.deepEqual(out.states.map((s) => s.id), out.entries.map((e) => e.id));
+  // The fixture covers the whole vocabulary: disabled / enabled / default /
+  // enabled (mpo / hags / game-dvr / fullscreen-optimizations).
+  const byId = Object.fromEntries(out.states.map((s) => [s.id, s]));
+  assert.equal(byId.mpo.state, 'disabled');
+  assert.equal(byId.hags.state, 'enabled');
+  assert.equal(byId['game-dvr'].state, 'default');
+  assert.equal(byId['fullscreen-optimizations'].state, 'enabled');
+});
+
+test('registry-catalog channel: an injected adapter is used (never the real registry in tests)', async () => {
+  const injected = {
+    get: async () => ({ entries: [{ id: 'x', name: 'X', description: 'd', requiresElevation: true, absentLabel: 'a', reads: [] }], states: [] }),
   };
-  for (const [k, v] of Object.entries({ RID_MOCK_IGS_RUNNING: running, RID_MOCK_IGS_APP: app })) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  return {
-    igs: createMockIgs(),
-    restore: () => {
-      for (const [k, v] of Object.entries(prev)) {
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
-    },
-  };
-}
-
-test('igs-service channels: registered, and the no-payload channels reject payloads', async () => {
-  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: createMockIgs() });
-  assert.equal(typeof handlers['igs-service-state'], 'function');
-  assert.equal(typeof handlers['igs-service-disable'], 'function');
-  assert.equal(typeof handlers['igs-service-enable'], 'function');
-
-  for (const channel of ['igs-service-state', 'igs-service-disable', 'igs-service-enable']) {
-    await assert.rejects(() => handlers[channel]({}), /takes no payload/, channel);
-    await assert.rejects(() => handlers[channel](0), /takes no payload/, channel);
-  }
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, registryCatalog: injected });
+  const out = await handlers['registry-catalog']();
+  assert.equal(out.entries[0].id, 'x');
 });
 
-test('igs-service mock: default state is fully on (service + app running) — matches this machine', async () => {
-  const env = makeEnvIgs();
-  try {
-    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: true, startType: 'auto' },
-      appRunning: true,
-    });
-  } finally {
-    env.restore();
-  }
-});
-
-test('igs-service mock: RID_MOCK_IGS_RUNNING=0 -> service stopped (disabled), app still running', async () => {
-  const env = makeEnvIgs({ running: '0' });
-  try {
-    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: false, startType: 'disabled' },
-      appRunning: true,
-    });
-  } finally {
-    env.restore();
-  }
-});
-
-test('igs-service mock: RID_MOCK_IGS_APP=0 -> app not running, service still running', async () => {
-  const env = makeEnvIgs({ app: '0' });
-  try {
-    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: true, startType: 'auto' },
-      appRunning: false,
-    });
-  } finally {
-    env.restore();
-  }
-});
-
-test('igs-service mock: both knobs =0 -> fully off', async () => {
-  const env = makeEnvIgs({ running: '0', app: '0' });
-  try {
-    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: false, startType: 'disabled' },
-      appRunning: false,
-    });
-  } finally {
-    env.restore();
-  }
-});
-
-test('igs-service mock: disable/enable flip ONLY the service part — appRunning untouched — no spawning', async () => {
-  const env = makeEnvIgs({ app: '0' }); // app off: must STAY off through the toggle
-  try {
-    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, igs: env.igs });
-
-    assert.deepEqual(await handlers['igs-service-disable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: false, startType: 'disabled' },
-      appRunning: false,
-    });
-
-    assert.deepEqual(await handlers['igs-service-enable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: true, startType: 'auto' },
-      appRunning: false,
-    });
-  } finally {
-    env.restore();
-  }
-});
-
-test('igs-service channels: the DEFAULT adapter is the MOCK — no injection means no elevation, ever', async () => {
-  const env = makeEnvIgs();
-  try {
-    // No `igs` injected: the default MUST be the mock adapter. With the real
-    // adapter these calls would spawn an ELEVATED helper (UAC) instead of
-    // flipping the in-memory state — so this test fails by construction if
-    // the default ever regresses to the real service.
-    const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
-
-    assert.deepEqual(await handlers['igs-service-disable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: false, startType: 'disabled' },
-      appRunning: true,
-    });
-
-    assert.deepEqual(await handlers['igs-service-enable'](), { ok: true });
-    assert.deepEqual(await handlers['igs-service-state'](), {
-      service: { found: true, running: true, startType: 'auto' },
-      appRunning: true,
-    });
-  } finally {
-    env.restore();
-  }
+test('registry-catalog channel: read-side only — no apply/enable channel exists (M3-B)', () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(handlers['registry-catalog-apply'], undefined);
+  assert.equal(handlers['registry-catalog-enable'], undefined);
 });
 
 // ---------------------------------------------------------------------------
 // F3 instant apply (M2C-B) — replaces the M2C-A retry-with-verify policy
 // ---------------------------------------------------------------------------
-
-/** Fully-off IGS stub: refusals compose the IGS-on message for PL/freq. */
-function fullyOffIgs() {
-  return { getState: async () => ({ service: { found: true, running: false, startType: 'disabled' }, appRunning: false }) };
-}
-
-/** Fully-on IGS stub (matches the default mock adapter). */
-function fullyOnIgs() {
-  return { getState: async () => ({ service: { found: true, running: true, startType: 'auto' }, appRunning: true }) };
-}
 
 function countingBackend() {
   const backend = new MockBackend();
@@ -460,7 +351,7 @@ function countingBackend() {
 test('apply-settings: a refusal is instant — exactly ONE backend call, honest result', async () => {
   const { backend, calls } = countingBackend();
   const store = fakeStore();
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
 
   // The backend would succeed on a retry — it must never get one.
   let attempts = 0;
@@ -487,7 +378,7 @@ test('apply-settings: a refusal is instant — exactly ONE backend call, honest 
 test('apply-settings: silent no-op (SUCCESS + unchanged read-back) fails instantly, NEVER applied', async () => {
   const backend = new MockBackend();
   const store = fakeStore();
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
 
   backend.applySettings = async () => ({
     ok: false,
@@ -506,7 +397,7 @@ test('apply-settings: hard errors are instant with the errorCode kept (no refusa
   const { backend, calls } = countingBackend();
   backend.injectFail('powerLimitW', 'waiver-not-set');
   const store = fakeStore();
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
 
   const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
   assert.equal(calls.apply, 1);
@@ -537,7 +428,7 @@ test('apply-settings: refusal message composition — every refusal is plain + c
     n += 1;
     return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed' } } };
   };
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOnIgs() });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
   const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
   assert.equal(result.perControl.powerLimitW.message, 'The GPU driver refused the change. (io-failed)');
   assert.equal(n, 1);
@@ -546,7 +437,7 @@ test('apply-settings: refusal message composition — every refusal is plain + c
 test('apply-settings: a volt/temp refusal gets the plain driver message + code (M2C-C)', async () => {
   const backend = new MockBackend();
   const store = fakeStore();
-  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
   backend.injectFail('gpuVoltOffsetV', 'io-failed');
   const { result } = await handlers['apply-settings'](0, { gpuVoltOffsetV: 0.05 });
   assert.equal(result.ok, false);

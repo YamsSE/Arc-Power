@@ -389,6 +389,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       const before = ctx.store.get().state as DeviceState;
       const { result, state: fresh } = await api.applySettings(deviceId, p.settings);
       ctx.store.set({ state: fresh });
+      // M3-A: record the outcome for the dashboard "OC working" health row.
+      {
+        const failed = Object.entries(result.perControl)
+          .filter(([, per]) => !per.ok)
+          .map(([k, per]) => `${CONTROL_LABELS[k] ?? k}: ${per.message ?? per.errorCode ?? 'failed'}`)
+          .join('; ');
+        ctx.store.set({
+          lastApply: {
+            ok: result.ok,
+            at: Date.now(),
+            detail: result.ok ? `Profile "${p.name}" applied` : (failed || `Profile "${p.name}" failed`),
+          },
+        });
+      }
       let changed = 0;
       for (const [key, per] of Object.entries(result.perControl)) {
         if (!per.ok) {
@@ -413,6 +427,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       await refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
       if (/administrator approval/i.test(msg)) {
         toast('error', 'Load requires administrator approval', msg);
       } else {

@@ -112,26 +112,16 @@ export interface HealthReport {
 }
 
 /**
- * IGS state — mirrors src/main/igs-service.js. The verified rule
- * (docs/igcl-integration.md §8a): OC writes are refused in the half-states
- * (service.running !== appRunning); fully-on (app + service) and fully-off
- * both work.
+ * The last OC apply outcome (M3-A "OC working" health row). Recorded by the
+ * overclocking/fan/profiles pages after every apply attempt — honest: the
+ * row reads 'never applied' until the first attempt, then ok/failed.
  */
-export type IgsStartType = 'auto' | 'manual' | 'disabled' | 'unknown';
-
-export interface IgsServiceState {
-  service: {
-    found: boolean;
-    running: boolean;
-    startType: IgsStartType;
-  };
-  appRunning: boolean;
-}
-
-/** Result of the elevated disable/enable action over IPC. */
-export interface IgsActionResult {
+export interface LastApply {
   ok: boolean;
-  error?: string;
+  /** Epoch ms of the attempt. */
+  at: number;
+  /** Short human detail (what changed / what failed). */
+  detail?: string;
 }
 
 /** M2C-C elevation state (app-elevated IPC). */
@@ -141,6 +131,61 @@ export interface ElevationState {
   /** Applies go through the elevated self-worker (product path, not elevated) —
    *  the renderer shows the "Administrator approval is needed" toast then. */
   workerApply: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// M3-A — registry hacks catalog (read-side only; applying is M3-B)
+// ---------------------------------------------------------------------------
+
+/** One registry value the catalog reads (mirrors src/main/registry-catalog.js). */
+export interface RegistryRead {
+  path: string;
+  /** Value name; null = enumerate the key (fullscreen-optimizations style). */
+  value: string | null;
+  type: 'DWORD' | 'REG_SZ';
+  /** The value (or token) meaning "the tweak is active" for this read. */
+  on: string;
+  /** The value meaning "the tweak is off" (null when only `on` is meaningful). */
+  off?: string;
+}
+
+export type RegistryState = 'enabled' | 'disabled' | 'unknown' | 'default';
+
+/** One catalog entry: what it is, what it reads, how to interpret it. */
+export interface RegistryEntry {
+  id: string;
+  name: string;
+  description: string;
+  /** Requires administrator to change (all of the M3-A catalog does — M3-B). */
+  requiresElevation: boolean;
+  /** Shown when no read is configured (never in the current catalog). */
+  reads: RegistryRead[];
+  /** The per-entry label for the absent-everywhere state. */
+  absentLabel: string;
+}
+
+/** One read's live result + interpretation. */
+export interface RegistryReadState {
+  read: RegistryRead;
+  found: boolean;
+  value: string | null;
+  state: RegistryState;
+  /** Raw read detail for the UI ("0x1" / "not present" / token match). */
+  detail: string;
+}
+
+/** One entry's live state. */
+export interface RegistryEntryState {
+  id: string;
+  state: RegistryState;
+  detail: string;
+  reads: RegistryReadState[];
+}
+
+/** The registry-catalog IPC envelope. */
+export interface RegistryCatalogResponse {
+  entries: RegistryEntry[];
+  states: RegistryEntryState[];
 }
 
 /** apply-on-startup state (startup-get IPC). `mechanism` reports which

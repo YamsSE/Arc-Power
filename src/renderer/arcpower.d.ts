@@ -11,13 +11,12 @@ import type {
   ElevationState,
   FpsSample,
   HealthReport,
-  IgsActionResult,
-  IgsServiceState,
   MockFeaturesetsResponse,
   MockSwapResponse,
   Profile,
   ProfilesEnvelope,
   ProfileSettingsState,
+  RegistryCatalogResponse,
   ResetResponse,
   Settings,
   StartupState,
@@ -35,9 +34,8 @@ export interface ArcPowerApi {
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;
   telemetryStart(deviceId: number): Promise<void>;
   telemetryStop(deviceId: number): Promise<void>;
-  getIgsServiceState(): Promise<IgsServiceState>;
-  disableIgsService(): Promise<IgsActionResult>;
-  enableIgsService(): Promise<IgsActionResult>;
+  /** M3-A (read-side only): the registry-hacks catalog + live states. */
+  registryCatalog(): Promise<RegistryCatalogResponse>;
   startupGet(): Promise<StartupState>;
   startupSet(enabled: boolean, profileId: string | null): Promise<StartupState>;
   driverInfo(): Promise<{ driverDate: string | null }>;

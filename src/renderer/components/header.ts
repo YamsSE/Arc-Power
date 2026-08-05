@@ -1,5 +1,6 @@
-// Arc Power — GPU header: device name, app version line, health status dot,
-// mock-mode badge. Rendered once, updated by store subscriptions.
+// Arc Power — GPU header: device name, app version line, mock-mode badge,
+// featureset dropdown (mock mode). Rendered once, updated by store
+// subscriptions.
 //
 // M2b-B dashboard redesign:
 //   - the driver line moved OUT of the header (M2C-B B3): the line below the
@@ -7,27 +8,23 @@
 //     `app:version` IPC); the driver version + registry date stay in the
 //     dashboard device card ('Driver version' kv, driver-info IPC);
 //   - PCI ID is gone;
-//   - the top-right indicator is just the colored dot + the static
-//     "Service Status" label (the verbose IGS text moved into the dot's
-//     tooltip and the dashboard's merged status card).
+//   - M3-A: the top-right status dot + "Service Status" label are REMOVED
+//     (with the M2C-C elevation gate, IGS state is no longer relevant to
+//     OC-applicability — the general GPU Health card on the dashboard
+//     carries the status now). The header keeps the GPU name + version line
+//     + the mock badge + the mock featureset dropdown.
 //
-// The status mapping (health + IGS service -> level + label) lives in
-// pure/status.ts and is shared with the dashboard; this module re-exports
-// the legacy health-only surface (healthStatus / STATUS_LABEL) so existing
-// import sites and tests keep working. driverLine (driver version + date)
-// is kept here for the dashboard device card.
+// The health-only level mapping (healthLevel -> 'ok'/'warn'/'error'/'unknown')
+// lives in pure/status.ts; this module re-exports the legacy healthStatus
+// surface so existing import sites and tests keep working. driverLine
+// (driver version + date) is kept here for the dashboard device card.
 
 import { el, clear } from '../dom.ts';
 import type { Store } from '../router.ts';
-import { mapStatus, STATUS_LABEL } from '../pure/status.ts';
 import { decodeDriverVersion, formatDriverDate } from '../pure/driver.ts';
 
-export { STATUS_LABEL };
 export { healthLevel as healthStatus } from '../pure/status.ts';
-export type { StatusLevel } from '../pure/status.ts';
-
-/** M2b-B: the static label next to the status dot (pinned by --ui-verify). */
-export const SERVICE_STATUS_LABEL = 'Service Status';
+export type { HealthLevel as StatusLevel } from '../pure/status.ts';
 
 /** M2C-B B3: the header line below the GPU name. */
 export function versionLine(version: string | null | undefined): string {
@@ -63,8 +60,6 @@ export class GpuHeader {
     const s = this.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
     const health = s.health;
-    const { level, label } = mapStatus(health, s.igsState);
-    const dot = el('span', { class: `status-dot status-${level}`, title: label });
     // M2D: the featureset dropdown — mock mode only (empty list in real mode
     // because the store only fills it from the mock-only IPC).
     const mockBadge = health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null;
@@ -89,11 +84,7 @@ export class GpuHeader {
           el('div', { class: 'gpu-name', text: device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power') }),
           el('div', { class: 'gpu-meta', text: s.bootError ?? versionLine(s.appVersion) }),
         ]),
-        el('div', { class: 'gpu-status' }, [
-          fsSelect,
-          mockBadge,
-          el('span', { class: 'gpu-status-text' }, [dot, el('span', { class: 'gpu-status-label', text: SERVICE_STATUS_LABEL })]),
-        ]),
+        el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),
       ]),
     );
   }

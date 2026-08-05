@@ -1,6 +1,15 @@
 // Arc Power — hash router + app-wide state store.
 
-import type { Capabilities, DeviceInfo, DeviceState, FeaturesetInfo, HealthReport, IgsServiceState, TelemetrySample } from './types.ts';
+import type {
+  Capabilities,
+  DeviceInfo,
+  DeviceState,
+  FeaturesetInfo,
+  HealthReport,
+  LastApply,
+  RegistryCatalogResponse,
+  TelemetrySample,
+} from './types.ts';
 
 export type PageId = 'dashboard' | 'overclocking' | 'fan' | 'monitoring' | 'profiles' | 'tweaks';
 
@@ -57,7 +66,8 @@ export interface AppState {
   caps: Capabilities | null;
   state: DeviceState | null;
   latestSample: TelemetrySample | null;
-  igsState: IgsServiceState | null;
+  /** M3-A: the last OC apply outcome (dashboard "OC working" health row). */
+  lastApply: LastApply | null;
   /** Display-driver registry date ("7-5-2026") from the driver-info IPC. */
   driverDate: string | null;
   /** M2C-B B3: app version for the header line (app:version IPC). */
@@ -72,6 +82,10 @@ export interface AppState {
    *  the header dropdown. Empty in real mode (no dropdown, no channel). */
   featuresets: FeaturesetInfo[];
   featuresetId: string | null;
+  /** M3-A: the registry-hacks catalog + live read states (Tweaks page).
+   *  Null until the first fetch (page shows 'Loading…'); a failed fetch
+   *  degrades to an empty response so the page renders the error note. */
+  catalog: RegistryCatalogResponse | null;
 }
 
 const INITIAL: AppState = {
@@ -81,7 +95,7 @@ const INITIAL: AppState = {
   caps: null,
   state: null,
   latestSample: null,
-  igsState: null,
+  lastApply: null,
   driverDate: null,
   appVersion: '0.0.0',
   elevated: false,
@@ -89,6 +103,7 @@ const INITIAL: AppState = {
   bootError: null,
   featuresets: [],
   featuresetId: null,
+  catalog: null,
 };
 
 export class Store {

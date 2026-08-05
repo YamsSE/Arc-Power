@@ -28,7 +28,6 @@ import { executeApply } from './apply-routing.js';
  *   profileId: string,
  *   log?: (s: string) => void,
  *   requireOcOnBoot?: boolean,   // boot path only; explicit actions skip it
- *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
  *   oldIgcl?: object,            // M2C-C: bundled-2023-runtime adapter (null in tests that never extend)
  *   applyRunner?: object | null, // M2C-C: elevation-aware apply runner (null = in-process)
  * }} ctx
@@ -40,7 +39,7 @@ import { executeApply } from './apply-routing.js';
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, getIgsState = null, oldIgcl = null, applyRunner = null }) {
+export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
@@ -155,7 +154,6 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  *   store: import('./store/profile-store.js').ProfileStore,
  *   profileId: string,
  *   log?: (s: string) => void,
- *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
  *   oldIgcl?: object,
  *   applyRunner?: object | null,
  * }} ctx
@@ -167,8 +165,8 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileOnBoot({ backend, store, profileId, log = () => {}, getIgsState = null, oldIgcl = null, applyRunner = null }) {
-  return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true, getIgsState, oldIgcl, applyRunner });
+export async function applyProfileOnBoot({ backend, store, profileId, log = () => {}, oldIgcl = null, applyRunner = null }) {
+  return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true, oldIgcl, applyRunner });
 }
 
 /**
@@ -185,7 +183,6 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   profileId: string,
  *   setupTray: () => Promise<{ displayBalloon: (o: { title: string, content: string }) => void }>,
  *   log?: (s: string) => void,
- *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
  *   oldIgcl?: object,
  * }} ctx
  * @returns {Promise<{
@@ -196,10 +193,10 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   state?: unknown,
  * }>}
  */
-export async function runApplyOnStartup({ backend, store, profileId, setupTray, log = () => {}, getIgsState = null, oldIgcl = null }) {
+export async function runApplyOnStartup({ backend, store, profileId, setupTray, log = () => {}, oldIgcl = null }) {
   let out;
   try {
-    out = await applyProfileOnBoot({ backend, store, profileId, log, getIgsState, oldIgcl });
+    out = await applyProfileOnBoot({ backend, store, profileId, log, oldIgcl });
   } catch (err) {
     out = { applied: false, reason: err.message };
   }

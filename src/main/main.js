@@ -24,9 +24,9 @@ import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState } from './ipc-core.js';
 import { ProfileStore } from './store/profile-store.js';
-import { createIgs, createMockIgs } from './igs-service.js';
 import { createStartup, createMockStartup } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
+import { createRegistryCatalog, createMockRegistryCatalog } from './registry-catalog.js';
 import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
 import { applyProfile, runApplyOnStartup } from './apply-on-boot.js';
 import { createTray, buildTrayMenuTemplate, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
@@ -318,12 +318,6 @@ async function main() {
     };
   }
   const store = new ProfileStore();
-  // IGS service adapter: mock mode (incl. --ui-verify) never touches the real
-  // service; the real adapter only runs sc.exe probes, and disable/enable run
-  // ONLY on an explicit user click (renderer-invoked). The mock default is
-  // fully ON (this machine); the ui-verify refusal-message variant runs the
-  // IGS-off scenario via RID_MOCK_IGS_RUNNING=0 RID_MOCK_IGS_APP=0.
-  const igs = mock ? createMockIgs() : createIgs();
   // Run-key adapter: the real one writes HKCU only on an explicit user click
   // (startup-set IPC); mock mode (incl. --ui-verify) never touches the
   // registry.
@@ -331,6 +325,11 @@ async function main() {
   // Driver-date adapter: real reg.exe query in the product path; mock mode
   // (incl. --ui-verify) returns the fixture date and never spawns reg.exe.
   const driverInfo = mock ? createMockDriverInfo() : createDriverInfo();
+  // M3-A registry-catalog adapter (Tweaks page, read-side only): real
+  // read-only reg.exe queries in the product path; mock mode (incl.
+  // --ui-verify) returns the fixture states and never spawns reg.exe. There
+  // is no apply channel in M3-A (that is M3-B's elevated surface).
+  const registryCatalog = mock ? createMockRegistryCatalog() : createRegistryCatalog();
   // FPS adapter: mock mode reports unavailable (never loads koffi/PresentMon);
   // the product path starts the real client lazily on the first fps-poll.
   // On this machine the real client degrades to unavailable too (no
@@ -398,9 +397,9 @@ async function main() {
     backend,
     store,
     getWindow: () => win,
-    igs,
     startup,
     driverInfo,
+    registryCatalog,
     presentmon,
     oldIgcl,
     applyRunner,

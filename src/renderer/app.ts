@@ -13,7 +13,7 @@ import { overclockingPage } from './pages/overclocking.ts';
 import { fanPage } from './pages/fan.ts';
 import { monitoringPage } from './pages/monitoring.ts';
 import { profilesPage } from './pages/profiles.ts';
-import { tweaksPage } from './pages/placeholder.ts';
+import { tweaksPage } from './pages/tweaks.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -70,11 +70,10 @@ function renderSidebar() {
   const active = currentPage();
   clear(nav);
   nav.append(
-    // M2C-B B7: the blue "AP" logo in front of the "Arc Power" line.
-    el('div', { class: 'sidebar-brand' }, [
-      el('img', { class: 'sidebar-logo', src: '../assets/icon.png', alt: 'Arc Power' }),
-      el('span', { text: 'Arc Power' }),
-    ]),
+    // M3-A: the user's preferred variant — no logo image, just the "Arc
+    // Power" text with the small blue accent bar below (the ::after bar in
+    // styles.css). The window/EXE/tray/favicon icons (M2C-B B6) are kept.
+    el('div', { class: 'sidebar-brand', text: 'Arc Power' }),
     el('nav', { class: 'sidebar-nav' }, PAGE_IDS.map((id) =>
       el('a', {
         class: `sidebar-link${id === active ? ' active' : ''}`,
@@ -157,13 +156,15 @@ async function boot() {
     store.set({ driverDate: null });
   }
 
-  // IGS state probe at boot (read-only). Failure degrades to
-  // not-detected — the app must not go red because the probe failed.
+  // M3-A: the registry-hacks catalog (Tweaks page, read-side). Read-only
+  // reg queries; a failure degrades to an empty catalog so the page can
+  // render the error note. The IGS service probe is no longer surfaced as a
+  // status item (igs-service.js stays for diagnostics + elevation helpers).
   try {
-    const igsState = await api.getIgsServiceState();
-    store.set({ igsState });
+    const catalog = await api.registryCatalog();
+    store.set({ catalog: catalog ?? { entries: [], states: [] } });
   } catch {
-    store.set({ igsState: { service: { found: false, running: false, startType: 'unknown' }, appRunning: false } });
+    store.set({ catalog: { entries: [], states: [] } });
   }
 
   // M2C-C elevation state (cached koffi probe — never spawns). Failure

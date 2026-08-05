@@ -1,27 +1,24 @@
-// Arc Power — Dashboard page (M2b-B redesign): device card (dotted driver
-// version + registry date, Xe cores + shader units, max core clock + memory
-// clock rows, no PCI ID, no persistent waiver status, no capsSummary chips
-// footer — M2C-B B2), ONE merged Service Status card (dot + label,
-// degraded-only IGCL line, half-state note, IGS toggle button), and a
-// compact live readout (core clock, memory clock, temp, power, fan).
+// Arc Power — Dashboard page (M2b-B redesign + M3-A): device card (dotted
+// driver version + registry date, Xe cores + shader units, max core clock +
+// memory clock rows, no PCI ID, no persistent waiver status, no capsSummary
+// chips footer — M2C-B B2), the general GPU HEALTH card (five honest rows:
+// driver installed, device detected, clocks normal, OC working, Arc Power
+// working — the M3-A replacement for the merged Service Status card, which
+// is gone: IGS is no longer a status item), and a compact live readout
+// (core clock, memory clock, temp, power, fan).
 //
 // The page re-renders fully only when a status slot changes (boot probe,
-// IGS toggle refresh, boot errors); telemetry ticks refresh the readout grid
-// in place — no per-tick DOM churn (the decision lives in
+// boot errors); telemetry ticks refresh the readout grid + the health card's
+// clocks row in place — no per-tick DOM churn (the decision lives in
 // pure/status.ts::dashboardNeedsFullRender, unit-tested).
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
-import { mapStatus, igsHalfState, IGS_NOTE, dashboardNeedsFullRender, labelForLevel } from '../pure/status.ts';
-import type { DashboardSig } from '../pure/status.ts';
+import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
+import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { driverLine } from '../components/header.ts';
 import { shaderUnits } from '../pure/driver.ts';
-import { api } from '../ipc.ts';
-import { toast } from '../components/toast.ts';
-import type { IgsServiceState, TelemetrySample } from '../types.ts';
-
-const DISABLE_BTN = 'Disable IGS service';
-const REENABLE_BTN = 'Re-enable IGS service';
+import type { TelemetrySample } from '../types.ts';
 
 function statTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   const clock = sample?.gpuClockMhz;
@@ -38,105 +35,58 @@ function statTiles(sample: TelemetrySample | null): Array<{ label: string; value
   ];
 }
 
-function igsStateText(igs: IgsServiceState | null): string {
-  if (!igs?.service.found) return 'not detected';
-  const svc = igs.service;
-  return `${svc.running ? 'running' : 'stopped'} (${svc.startType}) · app ${igs.appRunning ? 'running' : 'not running'}`;
-}
-
 /** The store slots that decide whether the dashboard must fully re-render. */
 function currentSig(ctx: PageContext): DashboardSig {
   const s = ctx.store.get();
-  return { igsState: s.igsState, health: s.health, caps: s.caps, bootError: s.bootError, driverDate: s.driverDate };
+  return { health: s.health, caps: s.caps, bootError: s.bootError, driverDate: s.driverDate };
 }
 
 /** Last full-render signature (module state — telemetry ticks never touch it). */
 let lastSig: DashboardSig | null = null;
 
-/**
- * Toggle the IGS service (disable when running, enable when stopped). The
- * real action runs elevated (UAC) — this is the ONLY trigger, a user click.
- * Afterwards refresh the IGS state + health/caps so the status indicator and
- * the card update.
- */
-async function runIgsToggle(ctx: PageContext): Promise<void> {
+/** One health row: dot (level-colored) + label + detail line. */
+function healthRowEl(row: HealthRow): HTMLElement {
+  return el('div', { class: `health-row`, 'data-row': row.id }, [
+    el('span', { class: `status-dot health-dot status-${row.level}`, title: row.detail }),
+    el('span', { class: 'health-row-label', text: row.label }),
+    el('span', { class: `health-row-detail text-${row.level}`, text: row.detail }),
+  ]);
+}
+
+/** M3-A: the general GPU Health card (replaces the merged Service Status card). */
+function healthCard(ctx: PageContext): HTMLElement {
   const s = ctx.store.get();
-  const igs = s.igsState;
-  if (!igs?.service.found) return;
-  const disable = igs.service.running;
-  const result = disable ? await api.disableIgsService() : await api.enableIgsService();
-  toast(
-    result.ok ? 'success' : 'error',
-    result.ok
-      ? (disable ? 'IGS service disabled' : 'IGS service enabled')
-      : (disable ? 'Failed to disable IGS service' : 'Failed to enable IGS service'),
-    result.error ?? '',
-  );
-  try { ctx.store.set({ igsState: await api.getIgsServiceState() }); } catch { /* probe failure keeps the stale state */ }
-  try { ctx.store.set({ health: await api.health() }); } catch { /* keep the current health */ }
-  if (s.deviceId !== null) {
-    try { ctx.store.set({ caps: await api.getCapabilities(s.deviceId) }); } catch { /* keep the current caps */ }
-  }
-  const container = document.getElementById('page') as HTMLElement;
-  dashboardPage.render(container, ctx);
+  const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
+  const rows = healthRows({ health: s.health, device, sample: s.latestSample, lastApply: s.lastApply, bootError: s.bootError });
+
+  return el('section', { class: 'card health-card' }, [
+    el('h2', { class: 'card-title', text: 'GPU Health' }),
+    el('div', { class: 'card-body' }, rows.map(healthRowEl)),
+  ]);
 }
 
 /**
- * The merged "Service Status" card (M2b-B): dot + label, IGCL health shown
- * only when degraded, the half-state warning only when actually half-state,
- * the IGS toggle button. Driver version and Level Zero are gone.
+ * Refresh the health card's clocks row in place (telemetry tick — NOT a full
+ * re-render). The row's `data-row="clocks"` cell carries the live sample.
  */
-function statusCard(ctx: PageContext): HTMLElement {
+function refreshClocksRow(container: HTMLElement, ctx: PageContext): void {
+  const row = container.querySelector<HTMLElement>('.health-card .health-row[data-row="clocks"]');
+  if (!row) return;
   const s = ctx.store.get();
-  const health = s.health;
-  const igs = s.igsState;
-  // Half-state = the verified OC blocker: service and app disagree (NOT gated
-  // on service.found — a failed probe with the app running still blocks OC
-  // writes; the note must agree with the header warning). Fully-on and
-  // fully-off both accept OC writes — no warning note.
-  const halfState = igsHalfState(igs);
-  const svcRunning = igs?.service.running === true;
-  const igclDegraded = !health?.igclLoaded || !health?.levelZeroOk;
-  const { level, label } = mapStatus(health, igs);
-  // NIT 3: the verbose label renders only for warning/degraded/error — the
-  // fully-on/off (and searching) states show just the dot; the label moves
-  // to the dot tooltip (same convention as the header indicator).
-  const visibleLabel = labelForLevel(level);
-
-  return el('section', { class: 'card status-card' }, [
-    el('h2', { class: 'card-title', text: 'Service Status' }),
-    el('div', { class: 'card-body' }, [
-      el('div', { class: 'kv-status' }, [
-        el('span', { class: `status-dot status-${level}`, title: label }),
-        visibleLabel !== null ? el('span', { class: 'status-label', text: visibleLabel }) : null,
-      ]),
-      // IGCL detail line ONLY when degraded (healthy = no detail noise).
-      igclDegraded
-        ? el('div', { class: 'kv', 'data-label': 'IGCL runtime' }, [
-            el('span', { class: 'text-error', text: health?.error ?? 'Not loaded' }),
-          ])
-        : null,
-      health?.error && !igclDegraded
-        ? el('div', { class: 'kv', 'data-label': 'Backend' }, [el('span', { class: 'text-error', text: health.error })])
-        : null,
-    ]),
-    halfState
-      ? el('p', { class: 'card-note igs-note', text: IGS_NOTE })
-      : null,
-    igs?.service.found
-      ? el('div', { class: 'card-footer' }, [
-          el('button', {
-            class: svcRunning ? 'btn btn-danger btn-sm igs-toggle' : 'btn btn-sm igs-toggle',
-            text: svcRunning ? DISABLE_BTN : REENABLE_BTN,
-            title: igsStateText(igs),
-            onClick: (ev: Event) => {
-              (ev.currentTarget as HTMLButtonElement).disabled = true;
-              void runIgsToggle(ctx);
-            },
-          }),
-        ])
-      : null,
-  ]);
+  const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
+  const next = healthRows({ health: s.health, device, sample: s.latestSample, lastApply: s.lastApply, bootError: s.bootError })
+    .find((r) => r.id === 'clocks');
+  if (!next) return;
+  const dot = row.querySelector<HTMLElement>('.health-dot');
+  if (dot) {
+    dot.className = `status-dot health-dot status-${next.level}`;
+    dot.title = next.detail;
+  }
+  const detail = row.querySelector<HTMLElement>('.health-row-detail');
+  if (detail) {
+    detail.className = `health-row-detail text-${next.level}`;
+    detail.textContent = next.detail;
+  }
 }
 
 export const dashboardPage: Page = {
@@ -171,8 +121,8 @@ export const dashboardPage: Page = {
             : el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' }),
         ]),
 
-        // --- merged Service Status card (health + IGS in one) ---
-        statusCard(ctx),
+        // --- M3-A: the general GPU Health card (was the Service Status card) ---
+        healthCard(ctx),
       ]),
 
       // --- live readout (compact, M2b-B) ---
@@ -190,9 +140,9 @@ export const dashboardPage: Page = {
   },
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
-    // Full re-render only when a status slot changed (boot probe, IGS toggle
-    // refresh, boot errors) — NOT on telemetry ticks. A tick (or any other
-    // non-status change) refreshes only the live readout grid in place.
+    // Full re-render only when a status slot changed (boot probe, boot
+    // errors) — NOT on telemetry ticks. A tick (or any other non-status
+    // change) refreshes only the live readout grid + the clocks row in place.
     const sig = currentSig(ctx);
     if (dashboardNeedsFullRender(lastSig, sig)) {
       lastSig = sig;
@@ -219,5 +169,7 @@ export const dashboardPage: Page = {
       const mem = ctx.store.get().latestSample?.memClockMhz;
       memValue.textContent = `${mem !== undefined ? mem : '--'} MHz`;
     }
+    // M3-A: the health card's clocks row tracks the latest sample in place.
+    refreshClocksRow(container, ctx);
   },
 };

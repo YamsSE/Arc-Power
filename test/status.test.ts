@@ -1,114 +1,174 @@
-// M2a.5 extension — shared status mapping (health + combined IGS state ->
-// level/label). The verified rule (docs/igcl-integration.md §8a): OC writes
-// are refused in the IGS half-states (service.running !== appRunning); fully
-// on (app + service) and fully off both work. So:
-//   - half-states read as `warning` with the direction-specific label;
-//   - fully-on and fully-off read as `ok` with their own labels;
-//   - degraded/error/searching still win over the warning.
+// M3-A — GPU health row model (pure). The IGS-era combined mapping
+// (mapStatus / IGS_LABELS / igsHalfState / IGS_NOTE) is REMOVED: with the
+// M2C-C elevation gate, IGS state is no longer relevant to OC-applicability,
+// so the dashboard's merged Service Status card became the general GPU
+// HEALTH card with five honest rows:
+//   driver ("Driver installed"), device ("Device detected"),
+//   clocks ("Clocks normal"), oc ("OC working"), app ("Arc Power working").
+// Each row: level (ok/warn/error/unknown) + a human detail line. The health
+// card re-renders on the same status slots (health/caps/bootError/driverDate)
+// — telemetry ticks only refresh the clocks row in place.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapStatus, STATUS_LABEL, IGS_LABELS, IGS_NOTE, igsHalfState, healthLevel, dashboardNeedsFullRender, labelForLevel } from '../src/renderer/pure/status.ts';
-import type { DashboardSig } from '../src/renderer/pure/status.ts';
-import type { Capabilities, HealthReport, IgsServiceState } from '../src/renderer/types.ts';
+import {
+  healthLevel,
+  healthRows,
+  driverRow,
+  deviceRow,
+  clocksRow,
+  ocRow,
+  appRow,
+  overallHealthLevel,
+  worstLevel,
+  dashboardNeedsFullRender,
+} from '../src/renderer/pure/status.ts';
+import type { DashboardSig, HealthInput, HealthLevel } from '../src/renderer/pure/status.ts';
+import type { Capabilities, DeviceInfo, HealthReport, LastApply, TelemetrySample } from '../src/renderer/types.ts';
 
-const okHealth: HealthReport = { backend: 'mock', igclLoaded: true, driverVersion: '32.0.101.8861', levelZeroOk: true };
-// The four combinations: service running/stopped x app process running/stopped.
-const igsFullyOn: IgsServiceState = { service: { found: true, running: true, startType: 'auto' }, appRunning: true };
-const igsFullyOff: IgsServiceState = { service: { found: true, running: false, startType: 'disabled' }, appRunning: false };
-const igsHalfSvc: IgsServiceState = { service: { found: true, running: true, startType: 'auto' }, appRunning: false };
-const igsHalfApp: IgsServiceState = { service: { found: true, running: false, startType: 'disabled' }, appRunning: true };
-const igsNotDetected: IgsServiceState = { service: { found: false, running: false, startType: 'unknown' }, appRunning: false };
+const okHealth: HealthReport = { backend: 'igcl', igclLoaded: true, driverVersion: '32.0.101.8861', levelZeroOk: true };
+const mockHealth: HealthReport = { backend: 'mock', igclLoaded: true, driverVersion: '32.0.101.8861', levelZeroOk: true };
+const device: DeviceInfo = {
+  id: 0, name: 'Intel Arc A770', type: 'discrete', pciVendorId: '8086', pciDeviceId: '56a0', revId: 5,
+  bdf: { bus: 1, device: 0, function: 0 }, driverVersion: '0x002000000065229d', graphicsClockMHz: 2400, numXeCores: 32,
+};
+const sample = (clock?: number): TelemetrySample | null => (clock === undefined
+  ? null
+  : { t: 0, gpuClockMhz: clock, throttle: {} });
 
-test('mapStatus: 4-combination matrix — fully on and fully off are ok with their labels', () => {
-  assert.deepEqual(mapStatus(okHealth, igsFullyOn), { level: 'ok', label: IGS_LABELS.fullyOn });
-  assert.deepEqual(mapStatus(okHealth, igsFullyOff), { level: 'ok', label: IGS_LABELS.fullyOff });
+const input = (patch: Partial<HealthInput> = {}): HealthInput => ({
+  health: okHealth,
+  device,
+  sample: null,
+  lastApply: null,
+  bootError: null,
+  ...patch,
 });
 
-test('mapStatus: 4-combination matrix — half-states warn with the direction-specific label', () => {
-  // service on, app off -> "service running without the app"
-  assert.deepEqual(mapStatus(okHealth, igsHalfSvc), { level: 'warning', label: IGS_LABELS.serviceWithoutApp });
-  // service off, app on -> "app running without the service"
-  assert.deepEqual(mapStatus(okHealth, igsHalfApp), { level: 'warning', label: IGS_LABELS.appWithoutService });
+const apply = (ok: boolean, detail?: string): LastApply => ({ ok, at: 1, detail });
+
+// ---------------------------------------------------------------------------
+// healthLevel (legacy health-only mapping, kept for the header test contract)
+// ---------------------------------------------------------------------------
+
+test('healthLevel: null health is unknown (boot in progress)', () => {
+  assert.equal(healthLevel(null), 'unknown');
 });
 
-test('mapStatus: the four user-facing label texts are pinned', () => {
-  assert.equal(IGS_LABELS.serviceWithoutApp, 'IGS service running without the app — OC changes may not apply');
-  assert.equal(IGS_LABELS.appWithoutService, 'IGS app running without the service — OC changes may not apply');
-  assert.equal(IGS_LABELS.fullyOn, 'IGS fully active — OC control OK');
-  assert.equal(IGS_LABELS.fullyOff, 'IGS fully off — OC control OK');
-  assert.equal(STATUS_LABEL.warning, IGS_LABELS.serviceWithoutApp);
-});
-
-test('mapStatus: degraded and error still win over the half-state warning', () => {
-  const degraded: HealthReport = { backend: 'mock', igclLoaded: false, driverVersion: null, levelZeroOk: true };
-  const error: HealthReport = { backend: 'mock', igclLoaded: false, driverVersion: null, levelZeroOk: false, error: 'ctlInit failed' };
-  assert.equal(mapStatus(degraded, igsHalfSvc).level, 'degraded');
-  assert.equal(mapStatus(error, igsHalfSvc).level, 'error');
-});
-
-test('mapStatus: healthy + service not detected / probe pending -> ok', () => {
-  assert.equal(mapStatus(okHealth, igsNotDetected).level, 'ok');
-  assert.equal(mapStatus(okHealth, null).level, 'ok');
-});
-
-test('mapStatus: service probe failed (found:false) but the app runs — still the half-state warning', () => {
-  // Reachable on a partial sc probe failure (non-1060 exit) with the IGS app
-  // still running: the mapping must warn exactly like the app-without-service
-  // half-state, so the dashboard card and the header stay in agreement.
-  const igs: IgsServiceState = { service: { found: false, running: false, startType: 'unknown' }, appRunning: true };
-  assert.deepEqual(mapStatus(okHealth, igs), { level: 'warning', label: IGS_LABELS.appWithoutService });
-});
-
-test('igsHalfState: NOT gated on service.found — a failed probe with the app running is still a half-state', () => {
-  // Regression: the card gated its note on `service.found`, so found:false +
-  // appRunning:true showed "not detected" with no note while the header
-  // warned — the disagreement this predicate fixes.
-  const probeFailedAppOn: IgsServiceState = { service: { found: false, running: false, startType: 'unknown' }, appRunning: true };
-  assert.equal(igsHalfState(probeFailedAppOn), true);
-  assert.equal(igsHalfState(igsHalfSvc), true);
-  assert.equal(igsHalfState(igsHalfApp), true);
-  assert.equal(igsHalfState(igsFullyOn), false);
-  assert.equal(igsHalfState(igsFullyOff), false);
-  assert.equal(igsHalfState(igsNotDetected), false);
-  assert.equal(igsHalfState(null), false);
-});
-
-test('IGS_NOTE: exact full user-facing sentence pinned (not just a substring)', () => {
-  assert.equal(
-    IGS_NOTE,
-    'Intel Graphics Software is partially running. For OC changes to apply, either disable IGS completely or run it fully with the Tuning tab enabled.',
-  );
-});
-
-test('mapStatus: null health stays searching even in a half-state', () => {
-  assert.equal(mapStatus(null, igsHalfSvc).level, 'searching');
-  assert.equal(mapStatus(null, null).label, 'Searching…');
-});
-
-test('healthLevel keeps the F9 semantics (null -> searching)', () => {
-  assert.equal(healthLevel(null), 'searching');
+test('healthLevel: healthy -> ok; error -> error; missing igcl/level-zero -> warn', () => {
   assert.equal(healthLevel(okHealth), 'ok');
-});
-
-// M2b step-5 NIT 3 — the dashboard status card renders the verbose label
-// ONLY for warning/degraded/error; fully-on/fully-off (and searching) show
-// just the dot, with the label carried by the dot tooltip.
-test('labelForLevel: label only for warning/degraded/error — ok/searching show just the dot', () => {
-  assert.equal(labelForLevel('warning'), STATUS_LABEL.warning);
-  assert.equal(labelForLevel('degraded'), STATUS_LABEL.degraded);
-  assert.equal(labelForLevel('error'), STATUS_LABEL.error);
-  assert.equal(labelForLevel('ok'), null);
-  assert.equal(labelForLevel('searching'), null);
+  assert.equal(healthLevel({ ...okHealth, error: 'ctlInit failed' }), 'error');
+  assert.equal(healthLevel({ ...okHealth, igclLoaded: false, driverVersion: null }), 'warn');
+  assert.equal(healthLevel({ ...okHealth, levelZeroOk: false }), 'warn');
 });
 
 // ---------------------------------------------------------------------------
-// Dashboard re-render scoping (M2a.5-5): full re-render on status changes
-// only — telemetry ticks must not rebuild the page.
+// The five health rows
+// ---------------------------------------------------------------------------
+
+test('driverRow: ok when IGCL is loaded AND a driver version is known', () => {
+  assert.deepEqual(driverRow(input()), { id: 'driver', label: 'Driver installed', level: 'ok', detail: 'IGCL loaded, driver 32.0.101.8861' });
+});
+
+test('driverRow: not loaded -> error (with the backend error text)', () => {
+  const degraded: HealthInput = input({ health: { backend: 'igcl', igclLoaded: false, driverVersion: null, levelZeroOk: true } });
+  assert.deepEqual(driverRow(degraded), { id: 'driver', label: 'Driver installed', level: 'error', detail: 'IGCL runtime not loaded' });
+  const error: HealthInput = input({ health: { backend: 'igcl', igclLoaded: false, driverVersion: null, levelZeroOk: false, error: 'ctlInit failed' } });
+  assert.deepEqual(driverRow(error), { id: 'driver', label: 'Driver installed', level: 'error', detail: 'ctlInit failed' });
+});
+
+test('driverRow: loaded but no driver version -> warn (never a false ok)', () => {
+  const noVer: HealthInput = input({ health: { backend: 'igcl', igclLoaded: true, driverVersion: null, levelZeroOk: true } });
+  assert.deepEqual(driverRow(noVer), { id: 'driver', label: 'Driver installed', level: 'warn', detail: 'IGCL loaded, driver version unknown' });
+});
+
+test('driverRow: no report yet -> unknown, or error when the boot failed', () => {
+  assert.equal(driverRow(input({ health: null })).level, 'unknown');
+  const bootFailed: HealthInput = input({ health: null, bootError: 'No Intel Arc GPU detected' });
+  assert.deepEqual(driverRow(bootFailed), { id: 'driver', label: 'Driver installed', level: 'error', detail: 'No Intel Arc GPU detected' });
+});
+
+test('deviceRow: device present -> ok with its name; boot error -> error; else unknown', () => {
+  assert.deepEqual(deviceRow(input()), { id: 'device', label: 'Device detected', level: 'ok', detail: 'Intel Arc A770' });
+  const noDev: HealthInput = input({ device: null });
+  assert.equal(deviceRow(noDev).level, 'unknown');
+  const bootFailed: HealthInput = input({ device: null, bootError: 'No Intel Arc GPU detected' });
+  assert.deepEqual(deviceRow(bootFailed), { id: 'device', label: 'Device detected', level: 'error', detail: 'No Intel Arc GPU detected' });
+});
+
+test('clocksRow: sane advertised clock + in-range telemetry clock -> ok', () => {
+  assert.equal(clocksRow(input({ sample: sample(2100) })).level, 'ok');
+  assert.equal(clocksRow(input({ sample: sample(2100) })).detail, '2100 MHz live');
+});
+
+test('clocksRow: no telemetry yet -> ok but "waiting" (never a false alarm)', () => {
+  assert.equal(clocksRow(input()).level, 'ok');
+  assert.match(clocksRow(input()).detail, /waiting for live telemetry/);
+});
+
+test('clocksRow: zero/absent advertised clock or insane telemetry clock -> warn', () => {
+  const noAdvertised: HealthInput = input({ device: { ...device, graphicsClockMHz: 0 } });
+  assert.equal(clocksRow(noAdvertised).level, 'warn');
+  for (const bad of [0, -5, NaN, 99999]) {
+    assert.equal(clocksRow(input({ sample: sample(bad) })).level, 'warn', `clock ${bad}`);
+  }
+});
+
+test('clocksRow: no device -> unknown / boot-error', () => {
+  assert.equal(clocksRow(input({ device: null })).level, 'unknown');
+  assert.equal(clocksRow(input({ device: null, bootError: 'boom' })).level, 'error');
+});
+
+test('ocRow: honest tri-state — never applied / last ok / last failed', () => {
+  assert.deepEqual(ocRow(input()), { id: 'oc', label: 'OC working', level: 'unknown', detail: 'No OC apply yet in this session' });
+  assert.deepEqual(ocRow(input({ lastApply: apply(true, 'Power limit applied') })), { id: 'oc', label: 'OC working', level: 'ok', detail: 'Power limit applied' });
+  assert.deepEqual(ocRow(input({ lastApply: apply(false, 'gpuFreqOffsetMhz: io-failed') })), { id: 'oc', label: 'OC working', level: 'error', detail: 'gpuFreqOffsetMhz: io-failed' });
+  assert.deepEqual(ocRow(input({ lastApply: apply(false) })), { id: 'oc', label: 'OC working', level: 'error', detail: 'Last apply failed' });
+});
+
+test('appRow: booted backend -> ok (mock named honestly); boot failure -> error; else unknown', () => {
+  assert.match(appRow(input()).detail, /App running, backend igcl/);
+  assert.equal(appRow(input()).level, 'ok');
+  assert.match(appRow(input({ health: mockHealth })).detail, /mock backend/);
+  assert.equal(appRow(input({ health: null, bootError: 'Health check failed' })).level, 'error');
+  assert.equal(appRow(input({ health: null })).level, 'unknown');
+});
+
+test('healthRows: all five rows in display order (pinned by --ui-verify)', () => {
+  const rows = healthRows(input());
+  assert.deepEqual(rows.map((r) => r.id), ['driver', 'device', 'clocks', 'oc', 'app']);
+  assert.deepEqual(rows.map((r) => r.label), [
+    'Driver installed', 'Device detected', 'Clocks normal', 'OC working', 'Arc Power working',
+  ]);
+});
+
+// ---------------------------------------------------------------------------
+// Aggregation
+// ---------------------------------------------------------------------------
+
+test('worstLevel: error > warn > unknown > ok', () => {
+  assert.equal(worstLevel(['ok']), 'ok');
+  assert.equal(worstLevel(['ok', 'unknown']), 'unknown');
+  assert.equal(worstLevel(['unknown', 'warn']), 'warn');
+  assert.equal(worstLevel(['warn', 'error']), 'error');
+});
+
+test('overallHealthLevel: the worst of the five rows drives the card level', () => {
+  // All-ok needs an applied OC row (never-applied reads as unknown).
+  const healthy: HealthInput = input({ lastApply: apply(true) });
+  assert.equal(overallHealthLevel(healthRows(healthy)), 'ok');
+  const failed: HealthInput = input({ lastApply: apply(false) });
+  assert.equal(overallHealthLevel(healthRows(failed)), 'error');
+  const searching: HealthInput = input({ health: null });
+  assert.equal(overallHealthLevel(healthRows(searching)), 'unknown');
+});
+
+// ---------------------------------------------------------------------------
+// Dashboard re-render scoping (M2a.5-5, M3-A): full re-render on status
+// changes only — telemetry ticks must not rebuild the page.
 // ---------------------------------------------------------------------------
 
 const dashSig = (patch: Partial<DashboardSig> = {}): DashboardSig => ({
-  igsState: igsFullyOn,
   health: okHealth,
   caps: null,
   bootError: null,
@@ -116,15 +176,15 @@ const dashSig = (patch: Partial<DashboardSig> = {}): DashboardSig => ({
   ...patch,
 });
 
-test('dashboardNeedsFullRender: a telemetry tick (only latestSample changed) does NOT re-render', () => {
+test('dashboardNeedsFullRender: an identical signature (telemetry tick) does NOT re-render', () => {
   const sig = dashSig();
-  // latestSample is not part of the signature — the store keeps the same
-  // object references for the status slots across telemetry ticks.
+  // latestSample / lastApply are not part of the signature — the store keeps
+  // the same object references for the status slots across telemetry ticks.
   assert.equal(dashboardNeedsFullRender(sig, sig), false);
   assert.equal(dashboardNeedsFullRender(sig, dashSig()), false);
 });
 
-test('dashboardNeedsFullRender: igsState / health / caps / bootError / driverDate changes DO re-render', () => {
+test('dashboardNeedsFullRender: health / caps / bootError / driverDate changes DO re-render (IGS slot is gone)', () => {
   const sig = dashSig();
   const caps: Capabilities = {
     oemName: 'oem',
@@ -134,7 +194,6 @@ test('dashboardNeedsFullRender: igsState / health / caps / bootError / driverDat
     ranges: {},
     fan: { canControl: false, modes: [], maxRpm: 0, maxCurvePoints: 0 },
   };
-  assert.equal(dashboardNeedsFullRender(sig, dashSig({ igsState: igsFullyOff })), true);
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ health: null })), true);
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ caps })), true);
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ bootError: 'No Intel Arc GPU detected' })), true);
@@ -143,4 +202,9 @@ test('dashboardNeedsFullRender: igsState / health / caps / bootError / driverDat
 
 test('dashboardNeedsFullRender: the first update always renders', () => {
   assert.equal(dashboardNeedsFullRender(null, dashSig()), true);
+});
+
+test('healthLevel type is the health model level set (ok/warn/error/unknown)', () => {
+  const levels: HealthLevel[] = ['ok', 'warn', 'error', 'unknown'];
+  assert.deepEqual(levels, ['ok', 'warn', 'error', 'unknown']);
 });

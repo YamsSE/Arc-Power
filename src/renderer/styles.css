@@ -82,23 +82,15 @@ html, body {
   scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
 
+/* M3-A: the sidebar brand is text + a small blue accent bar BELOW the line
+   (the user's preferred variant — the M2C-B logo image is gone). The bar is
+   the ::after pseudo-element, so .sidebar-brand is a block, not a flex row. */
 .sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
   font-size: 17px;
   font-weight: 700;
   letter-spacing: 0.04em;
   padding: 0 10px;
   color: var(--text);
-}
-
-/* M2C-B B7: the blue "AP" logo in front of the "Arc Power" line. */
-.sidebar-logo {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  flex-shrink: 0;
 }
 
 .sidebar-brand::after {
@@ -162,16 +154,6 @@ html, body {
   font-size: 13px;
 }
 
-.gpu-status-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.gpu-status-label { font-weight: 600; color: var(--text); }
-
-.status-label { color: var(--text); font-size: 13.5px; font-weight: 600; }
-
 .status-dot {
   width: 9px;
   height: 9px;
@@ -179,11 +161,59 @@ html, body {
   display: inline-block;
   background: var(--text-dim);
 }
+/* M3-A health levels: ok / warn / error / unknown (the old IGS-era
+   warning/degraded/searching levels are gone). */
 .status-ok { background: var(--success); box-shadow: 0 0 6px rgba(52, 211, 153, 0.6); }
-.status-warning { background: var(--warn); box-shadow: 0 0 6px rgba(251, 191, 36, 0.5); } /* IGS service blocking OC writes */
-.status-degraded { background: var(--warn); box-shadow: 0 0 6px rgba(251, 191, 36, 0.5); }
+.status-warn { background: var(--warn); box-shadow: 0 0 6px rgba(251, 191, 36, 0.5); }
 .status-error { background: var(--error); box-shadow: 0 0 6px rgba(248, 113, 113, 0.6); }
-.status-searching { background: var(--text-dim); } /* neutral until the first health report */
+.status-unknown { background: var(--text-dim); }
+
+/* M3-A: the dashboard GPU Health card rows (dot + label + detail). */
+.health-card .card-body { gap: 9px; }
+.health-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.health-row-label { font-weight: 600; color: var(--text); flex-shrink: 0; min-width: 128px; }
+.health-row-detail { color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
+
+.text-ok { color: var(--success); }
+.text-warn { color: var(--warn); }
+.text-unknown { color: var(--text-dim); }
+
+/* ------------------------------------------------------------------ tweaks */
+
+.tweak-card .card-body { gap: 10px; }
+.tweak-title { display: flex; align-items: center; gap: 8px; }
+.tweak-desc { color: var(--text-muted); font-size: 12.5px; line-height: 1.5; margin: 0; max-width: 720px; }
+.tweak-state {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.tweak-state-label { font-weight: 700; font-size: 13.5px; }
+.tweak-state-detail { color: var(--text-muted); font-size: 12.5px; }
+
+.tweak-reads {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.tweak-read {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.tweak-read-path { color: var(--text-muted); font-family: var(--mono); overflow-wrap: anywhere; }
+.tweak-read-data { color: var(--text); font-family: var(--mono); flex-shrink: 0; }
 
 /* ------------------------------------------------------------------- page */
 
@@ -683,14 +713,6 @@ html, body {
 
 .fan-mode-toggle { margin-bottom: 14px; }
 .fan-apply-row { margin-top: 18px; }
-
-/* -------------------------------------------------------------- placeholder */
-
-.placeholder {
-  padding: 48px 8px;
-  text-align: center;
-}
-.placeholder .page-title { margin-bottom: 8px; }
 
 .text-error { color: var(--error); }
 

@@ -349,6 +349,12 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
     try {
       const { result, state: fresh } = await api.applySettings(deviceId, settings);
       ctx.store.set({ state: fresh });
+      // M3-A: record the outcome for the dashboard "OC working" health row.
+      const failedFan = Object.entries(result.perControl)
+        .filter(([, per]) => !per.ok)
+        .map(([k, per]) => `${k}: ${per.message ?? per.errorCode ?? 'failed'}`)
+        .join('; ');
+      ctx.store.set({ lastApply: { ok: result.ok, at: Date.now(), detail: result.ok ? 'Fan settings applied' : failedFan } });
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) toast('success', `${key === 'fanMode' ? 'Fan mode' : 'Fan curve'} applied`, '');
         // F3 instant: refusals carry the composed actionable message; hard
@@ -357,6 +363,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       }
       ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
     } catch (err) {
+      ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: err instanceof Error ? err.message : String(err) } });
       toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
     }
   };
