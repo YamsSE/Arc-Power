@@ -330,6 +330,17 @@ contract from fixture data. Wire/fixture tests pin the mapping.
   - Tuning/Overclocking tab made compact (denser cards, no scrolling to reach Apply).
   - Floating **Apply** button anchored bottom-left (tab side), appearing only when settings are dirty/changed; disappears when clean.
   - Remove the Electron menu bar (autoHideMenuBar) — an Alt-key shortcut can reveal it later if ever needed.
+- **Dashboard redesign (user request — cleaner, less bloated):**
+  - Driver version shown as `32.0.101.8861 - Jul 05, 2026` (version + date; decode the IGCL uint64 driver_version to dotted form; date from the Windows display-driver registry `DriverDate` key matched to the Arc adapter, or the DriverStore INF file date as fallback). Used in the GPU header below the card name.
+  - Remove PCI ID entirely (header + status card).
+  - Add Memory Clock readout next to Core Clock in the live readout.
+  - OC waiver: no persistent status display — keep only a small disclaimer shown the first time the user sets OC settings (the existing first-apply dialog).
+  - Rename the readout label `Frequency Offset` → `Core Offset` (value/units unchanged).
+  - Xe Cores line becomes `Xe Cores 32 - Shader Units 4096` (shaders = numXeCores × 16 EUs × 8 shader units per EU; verify against the A770's real 4096).
+  - Merge "Service Health" and "IGS" into ONE status source/card (the IGS-specific stuff may become obsolete if the LZ Sysman path lands).
+  - Remove Driver Version from the Service Health card; remove Level Zero as a status item.
+  - Top-right indicator: just the colored dot + label `Service Status` (drop the verbose "IGS fully off — OC control OK" text; keep a compact inline half-state warning line ONLY when actually half-state, and keep the Disable/Re-enable button functional).
+  - Bottom monitoring part more compact; Monitoring-page graphs (M2b) live in a drop-down/collapsible per segment.
 - **IGS-independent OC apply path (user request — replaces the flaky IGS-dependent path if proven):**
   - Research first (skatterbencher Arc OC Tool, Acer Predator tool mechanisms; **Level Zero Sysman overclocking API** — `zesDeviceOverclockSet`/`zesFrequencyOverclockSet` etc., ze_loader.dll already present; IGCL registered-UID question). Determine a documented interface that applies clocks/power/offsets/fan without IGS components running.
   - Prototype the winning path behind the existing `IOCBackend` seam (new backend impl or a swapped apply layer), fixture-test the structs, live-probe on the A770 with IGS fully off (service + app) and fully on; keep the IGCL path as fallback.
