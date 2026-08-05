@@ -323,16 +323,20 @@ contract from fixture data. Wire/fixture tests pin the mapping.
 - Acceptance: on the real A770: set power limit in Arc Power → value appears
   in IGS; reset restores; clamps enforced; waiver flow works.
 
-### M2b — Monitoring, profiles, tray (implementer run; checkpointed)
-- Monitoring page (readout grid + Canvas graphs) driven by
-  TelemetryService; `PresentMonClient` (koffi → PresentMonAPI2.dll);
-  Profiles panel (save/load/rename/delete, ocOnBoot with waiver gate);
-  tray + apply-on-startup (`--apply-profile <id>`); error toasts.
-- Checkpoints: after PresentMonClient fixture-buffer tests (build+tests);
-  after live-capture checkpoint on the A770 (build+tests); after
-  Monitoring + Profiles + tray (build+tests); full test+build.
-- Acceptance: graphs show live data incl. FPS; profile round trip works;
-  apply-on-startup applies and falls back safely.
+### M2b — Monitoring, profiles, tray + IGS-independent OC apply (implementer run; checkpointed)
+- Monitoring page (readout grid + Canvas graphs) driven by TelemetryService; PresentMonClient (koffi → PresentMonAPI2.dll); Profiles panel (save/load/rename/delete, ocOnBoot with waiver gate); tray + apply-on-startup (`--apply-profile <id>`); error toasts.
+- **UX refinements (user request):**
+  - No-op applies: applying a value identical to the driver's current read-back must NOT show a success toast (silent success; error toasts unchanged).
+  - Tuning/Overclocking tab made compact (denser cards, no scrolling to reach Apply).
+  - Floating **Apply** button anchored bottom-left (tab side), appearing only when settings are dirty/changed; disappears when clean.
+  - Remove the Electron menu bar (autoHideMenuBar) — an Alt-key shortcut can reveal it later if ever needed.
+- **IGS-independent OC apply path (user request — replaces the flaky IGS-dependent path if proven):**
+  - Research first (skatterbencher Arc OC Tool, Acer Predator tool mechanisms; **Level Zero Sysman overclocking API** — `zesDeviceOverclockSet`/`zesFrequencyOverclockSet` etc., ze_loader.dll already present; IGCL registered-UID question). Determine a documented interface that applies clocks/power/offsets/fan without IGS components running.
+  - Prototype the winning path behind the existing `IOCBackend` seam (new backend impl or a swapped apply layer), fixture-test the structs, live-probe on the A770 with IGS fully off (service + app) and fully on; keep the IGCL path as fallback.
+  - If no independent path is provable, document why (evidence) and keep IGCL + the half-state warning.
+  - **Research verdict (2026-08-05, delegated lane):** (1) Shamino's Arc OC Tool is a thin GUI over the SAME IGCL runtime we use — its "works without IGS" is pre-IGS-era evidence, not a different mechanism (skatterbencher.com/arc-oc-tool). (2) Acer BiFrost is a closed UWP with a JSON-profile power-limit injection trick that drivers were already restricting in mid-2023 — dead end. (3) Third-party IGCL UID registration does not exist (zero-UID is the only third-party option; the runtime rejects invented UIDs). (4) **The one structurally different, publicly spec-documented path: direct Level Zero Sysman (`ze_loader.dll` → `zes*`)** — `zesDeviceSetOverclockWaiver`, `zesDeviceEnumOverclockDomains`, `zesOverclockSetControlUserValue` (FREQ_OFFSET/VMAX_OFFSET/POWER_SUSTAINED|BURST|PEAK_LIMIT/TEMP_LIMIT), `zesPowerSetLimits`, `zesFanSetSpeedTableMode`; `ze_loader.dll` ships in System32 with the driver (no oneAPI SDK installed — fetch headers from oneapi-src/level-zero). This bypasses IntelControlLib's UID/arbitration layer; the M2b prototype's key experiment distinguishes runtime arbitration (bypassable) from KMD arbitration (not bypassable by any userspace tool). Intel support article 000100556 documents that IGS's own Tuning tab is service-mediated — consistent with our empirical flap.
+- Checkpoints: (1) Sysman/alternate-path research + fixture tests green; (2) live probe on the A770 (IGS off AND on) green; (3) UX refinements (toast suppression, compact tab, floating Apply, menu bar) build+tests; (4) Monitoring + Profiles + tray; full test+build.
+- Acceptance: graphs show live data incl. FPS; profile round trip works; apply-on-startup applies and falls back safely; no-op apply shows no toast; floating Apply appears only when dirty; no menu bar; OC applies verified without IGS (or evidence-documented limitation).
 
 ### M3 — Registry hacks module
 - Catalog (MPO disable first; 2–3 more well-known, reversible toggles),
