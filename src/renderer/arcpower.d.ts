@@ -8,9 +8,13 @@ import type {
   Capabilities,
   DeviceInfo,
   DeviceState,
+  FpsSample,
   HealthReport,
   IgsActionResult,
   IgsServiceState,
+  Profile,
+  ProfilesEnvelope,
+  ProfileSettingsState,
   ResetResponse,
   Settings,
   TelemetrySample,
@@ -30,6 +34,16 @@ export interface ArcPowerApi {
   getIgsServiceState(): Promise<IgsServiceState>;
   disableIgsService(): Promise<IgsActionResult>;
   enableIgsService(): Promise<IgsActionResult>;
+  startupGet(): Promise<{ enabled: boolean; profileId: string | null; value: string | null }>;
+  startupSet(enabled: boolean, profileId: string | null): Promise<{ enabled: boolean; profileId: string | null; value: string | null }>;
+  driverInfo(): Promise<{ driverDate: string | null }>;
+  fpsPoll(deviceId: number): Promise<FpsSample | null>;
+  profilesList(): Promise<ProfilesEnvelope>;
+  profilesSave(profile: Partial<Profile> & { id: string; name: string; settings: Settings; ocOnBoot: boolean }): Promise<ProfilesEnvelope>;
+  profilesDelete(id: string): Promise<ProfilesEnvelope>;
+  profilesRename(id: string, name: string): Promise<ProfilesEnvelope>;
+  profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
+  trayRebuild(): Promise<{ ok: boolean }>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
 }
 

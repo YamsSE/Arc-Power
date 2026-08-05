@@ -23,6 +23,10 @@ import { collectHealth } from './health.js';
 import { CONTROLS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
 import { createMockIgs } from './igs-service.js';
+import { createMockStartup } from './startup.js';
+import { createMockDriverInfo } from './driver-info.js';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const SCALAR_CONTROLS = new Set([
   'powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC',
@@ -34,6 +38,12 @@ const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
 const RESET_VERIFY_EPS = 1e-6;
+// io-failed apply retry policy (M2b): the A770 driver's OC-write acceptance
+// flaps on a minutes scale (docs/igcl-integration.md §8a) — a transient
+// io-failed apply is retried with backoff. User-fixable errors (waiver,
+// out-of-range, locked-mode) are NEVER retried.
+const APPLY_RETRY_BACKOFF_MS = 800;
+const APPLY_MAX_RETRIES = 2;
 
 /**
  * @param {unknown} v
@@ -149,15 +159,47 @@ export function assertNoPayload(args, channel) {
 }
 
 /**
+ * True when an ApplyResult has at least one io-failed control (the only
+ * transient failure class worth retrying — the driver flaps on a minutes
+ * scale; waiver/out-of-range/locked-mode are user-fixable and NOT retried).
+ * @param {{ ok: boolean, perControl: Record<string, { errorCode?: string }> }} result
+ */
+export function hasIoFailed(result) {
+  return result.ok === false
+    && Object.values(result.perControl ?? {}).some((p) => p.errorCode === 'io-failed');
+}
+
+/**
  * Build the handler map for every whitelisted channel.
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
  *   igs?: { getState: () => Promise<unknown>, disable: () => Promise<unknown>, enable: () => Promise<unknown> },
+ *   startup?: { get: () => Promise<unknown>, set: (enabled: boolean, profileId: string | null) => Promise<unknown> },
+ *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
+ *   presentmon?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null> },
+ *   rebuildTray?: () => Promise<unknown>,
+ *   applyRetryBackoffMs?: number,
+ *   applyMaxRetries?: number,
  * }} ctx
  */
-export function createIpcHandlers({ backend, store, emit, igs = createMockIgs() }) {
+export function createIpcHandlers({
+  backend,
+  store,
+  emit,
+  igs = createMockIgs(),
+  startup = createMockStartup(),
+  driverInfo = createMockDriverInfo(),
+  // M2b-B: the FPS adapter. The DEFAULT is the mock (always unavailable —
+  // never loads koffi/PresentMonAPI2); ipc.js injects the real client in the
+  // product path. On this machine the real client degrades to null anyway
+  // (no PresentMon service), so mock and product agree on 'unavailable'.
+  presentmon = { poll: async () => null },
+  rebuildTray = async () => {},
+  applyRetryBackoffMs = APPLY_RETRY_BACKOFF_MS,
+  applyMaxRetries = APPLY_MAX_RETRIES,
+}) {
   /** @type {Map<number, TelemetryService>} */
   const telemetry = new Map();
 
@@ -198,7 +240,17 @@ export function createIpcHandlers({ backend, store, emit, igs = createMockIgs() 
         const settings = sanitizeSettings(payload);
         const caps = await backend.getCapabilities(deviceId);
         const clamped = clampSettings(settings, caps.ranges);
-        const result = await backend.applySettings(deviceId, clamped);
+        let result = await backend.applySettings(deviceId, clamped);
+        let retried = false;
+        // io-failed retry policy: transient driver flakiness gets up to
+        // `applyMaxRetries` re-attempts with backoff; user-fixable errors are
+        // returned as-is (never retried).
+        for (let attempt = 0; hasIoFailed(result) && attempt < applyMaxRetries; attempt++) {
+          await sleep(applyRetryBackoffMs);
+          result = await backend.applySettings(deviceId, clamped);
+          retried = true;
+        }
+        if (retried) result = { ...result, retried: true };
         // IGS may change OC state between runs — always re-read after apply.
         const state = await backend.getCurrentSettings(deviceId);
         return { result, state };
@@ -277,6 +329,138 @@ export function createIpcHandlers({ backend, store, emit, igs = createMockIgs() 
       'igs-service-enable': async (...args) => {
         assertNoPayload(args, 'igs-service-enable');
         return igs.enable();
+      },
+
+      // Run-key (apply-on-startup) state (M2b). startup-set writes the HKCU
+      // Run key ONLY on an explicit user click (the future Profiles UI
+      // toggle); the default adapter is the MOCK so tests/ui-verify never
+      // touch the real registry.
+      'startup-get': async (...args) => {
+        assertNoPayload(args, 'startup-get');
+        return startup.get();
+      },
+
+      'startup-set': async (enabled, profileId) => {
+        if (typeof enabled !== 'boolean') throw new Error('startup-set: enabled must be a boolean');
+        if (enabled) {
+          if (typeof profileId !== 'string' || profileId.length === 0) {
+            throw new Error('startup-set: profileId is required when enabling');
+          }
+          // M2b review F6: the Run-key value is space-delimited
+          // (buildRunValue/parseRunValue require \S+) — a whitespace id
+          // would silently break the startup-get round trip.
+          if (!/^\S+$/.test(profileId)) {
+            throw new Error('startup-set: profileId must not contain whitespace');
+          }
+        } else if (profileId !== null && profileId !== undefined) {
+          throw new Error('startup-set: profileId must be null when disabling');
+        }
+        await startup.set(enabled, enabled ? profileId : null);
+        return startup.get();
+      },
+
+      // Display-driver registry date (M2b-B, read-only): never touches the
+      // registry in mock mode — the default adapter returns the fixture.
+      'driver-info': async (...args) => {
+        assertNoPayload(args, 'driver-info');
+        return driverInfo.get();
+      },
+
+      // FPS via PresentMon (M2b-B). The default adapter is the mock (always
+      // null); the product path injects the real client, which itself
+      // degrades to null when the DLL/service is unavailable. Never throws.
+      'fps-poll': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        return presentmon.poll(deviceId);
+      },
+
+      // Profiles (M2b-B). Every channel returns the full envelope
+      // { profiles, settings } so the renderer can re-render from one
+      // response. `settings` mirrors ProfileStore.loadSettings() (the
+      // persisted ocOnBoot / activeProfileId — the Run-key truth lives in
+      // startup-get). Payloads are validated before touching the store.
+      'profiles-list': async (...args) => {
+        assertNoPayload(args, 'profiles-list');
+        return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
+      },
+
+      'profiles-save': async (profile) => {
+        if (typeof profile !== 'object' || profile === null || Array.isArray(profile)) {
+          throw new Error('profiles-save: profile must be an object');
+        }
+        if (typeof profile.id !== 'string' || profile.id.length === 0) {
+          throw new Error('profiles-save: id must be a non-empty string');
+        }
+        // M2b review F6: profile ids become Run-key values (startup-set) —
+        // whitespace would silently break the startup-get round trip.
+        if (!/^\S+$/.test(profile.id)) {
+          throw new Error('profiles-save: id must not contain whitespace');
+        }
+        if (typeof profile.name !== 'string' || profile.name.trim().length === 0) {
+          throw new Error('profiles-save: name must be a non-empty string');
+        }
+        if (typeof profile.ocOnBoot !== 'boolean') {
+          throw new Error('profiles-save: ocOnBoot must be a boolean');
+        }
+        const settings = sanitizeSettings(profile.settings ?? {});
+        const existing = (await store.loadProfiles()).find((p) => p.id === profile.id);
+        await store.saveProfile({
+          id: profile.id,
+          name: profile.name.trim(),
+          createdAt: existing?.createdAt ?? (typeof profile.createdAt === 'string' ? profile.createdAt : new Date().toISOString()),
+          settings,
+          ocOnBoot: profile.ocOnBoot,
+        });
+        return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
+      },
+
+      'profiles-delete': async (id) => {
+        if (typeof id !== 'string' || id.length === 0) {
+          throw new Error('profiles-delete: id must be a non-empty string');
+        }
+        await store.deleteProfile(id);
+        return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
+      },
+
+      'profiles-rename': async (id, name) => {
+        if (typeof id !== 'string' || id.length === 0) {
+          throw new Error('profiles-rename: id must be a non-empty string');
+        }
+        if (typeof name !== 'string' || name.trim().length === 0) {
+          throw new Error('profiles-rename: name must be a non-empty string');
+        }
+        const profiles = await store.loadProfiles();
+        const profile = profiles.find((p) => p.id === id);
+        if (!profile) throw new Error(`profiles-rename: profile '${id}' not found`);
+        await store.saveProfile({ ...profile, name: name.trim() });
+        return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
+      },
+
+      // Persisted-settings patch (activeProfileId / ocOnBoot). Read-modify-
+      // write in main so the renderer can never clobber waiverAccepted.
+      'profiles-settings-save': async (patch) => {
+        if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+          throw new Error('profiles-settings-save: patch must be an object');
+        }
+        const cur = await store.loadSettings();
+        const next = {
+          waiverAccepted: cur.waiverAccepted,
+          ocOnBoot: patch.ocOnBoot === undefined ? cur.ocOnBoot : patch.ocOnBoot === true,
+          activeProfileId: patch.activeProfileId === undefined
+            ? cur.activeProfileId
+            : (typeof patch.activeProfileId === 'string' && patch.activeProfileId.length > 0 ? patch.activeProfileId : null),
+        };
+        await store.saveSettings(next);
+        return next;
+      },
+
+      // Rebuild the tray menu after any profile change (M2b-B). The product
+      // path injects the tray ref; the default is a no-op so tests and
+      // --ui-verify never depend on a tray existing.
+      'tray-rebuild': async (...args) => {
+        assertNoPayload(args, 'tray-rebuild');
+        await rebuildTray();
+        return { ok: true };
       },
     },
     stopAllTelemetry,

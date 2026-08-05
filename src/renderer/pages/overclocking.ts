@@ -1,15 +1,21 @@
-// Arc Power — Overclocking page: one card per supported control (slider,
-// clamps, presets, per-card reset), Advanced disclosure for expert controls,
-// page-level Apply with per-control result toasts and the warranty-waiver
-// gate. All limits come from Capabilities.ranges — never hardcoded.
+// Arc Power — Overclocking page (M2b-B UX): one card per supported control
+// (slider, clamps, presets, per-card reset), Advanced disclosure for expert
+// controls, and a floating Apply button anchored bottom-left that appears
+// ONLY when a setting differs from the loaded driver state (dirty) and
+// disappears when clean. Apply writes every dirty control with per-control
+// result toasts: no-op controls (value == driver read-back before the
+// apply) stay silent, errors always toast, and a retried apply shows the
+// "driver was busy — applied on retry" note. All limits come from
+// Capabilities.ranges — never hardcoded.
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
-import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid, computeDirty } from '../pure/slider.ts';
+import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
+import { computeDirty as perControlDirty } from '../pure/slider.ts';
 import { computePresets } from '../pure/presets.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, computeDirty, isNoopApply, shouldShowRetryNote } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { toast } from '../components/toast.ts';
 import type { RangeInfo, Capabilities, DeviceState } from '../types.ts';
@@ -22,6 +28,8 @@ const EXPERT_CONTROLS: Array<{ key: string; label: string }> = [
   { key: 'vramFreqOffsetGts', label: 'VRAM frequency offset' },
   { key: 'vramVoltOffsetV', label: 'VRAM voltage offset' },
 ];
+
+export const APPLY_BTN_TEXT = 'Apply';
 
 function supportedScalars(caps: Capabilities): string[] {
   return CONTROL_ORDER.filter((k) => caps.ranges[k] !== undefined);
@@ -56,8 +64,15 @@ export const overclockingPage: Page = {
     const cards = new Map<string, HTMLElement>();
     const valueNodes = new Map<string, HTMLElement>();
     // Mutable current-state reference: refreshed from every apply response so
-    // the "Unapplied" chips never go stale (F4).
+    // the "Unapplied" chips and the floating Apply never go stale (F4).
     let currentState: DeviceState = state;
+
+    // --- floating Apply (M2b-B): bottom-left, dirty-only -------------------
+    const applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
+    applyBtn.addEventListener('click', () => void apply());
+    const updateFloating = () => {
+      applyBtn.hidden = !computeDirty(buildScalarSettings(values), currentState);
+    };
 
     const refreshCard = (key: string) => {
       const range = caps.ranges[key];
@@ -69,7 +84,8 @@ export const overclockingPage: Page = {
       if (input) input.value = String(value);
       if (fill) fill.style.width = `${normalizedPosition(value, range) * 100}%`;
       if (valueNode) valueNode.textContent = formatValue(value, range.units);
-      if (dirty) dirty.hidden = !computeDirty(values, currentState, [key])[key];
+      if (dirty) dirty.hidden = !perControlDirty(values, currentState, [key])[key];
+      updateFloating();
     };
 
     const buildCard = (key: string): HTMLElement => {
@@ -153,22 +169,34 @@ export const overclockingPage: Page = {
         return;
       }
       try {
+        // M2b-B no-op suppression compares against the PRE-apply state: a
+        // control whose value already equals the driver read-back stays
+        // silent on success.
+        const before = currentState;
         const { result, state: fresh } = await api.applySettings(deviceId, settings);
         // M1 risk note: IGS may change OC state — refresh after every apply.
         currentState = fresh;
         ctx.store.set({ state: fresh });
         for (const [key, per] of Object.entries(result.perControl)) {
           const range = caps.ranges[key];
-          if (per.ok) {
-            const applied = values[key];
-            toast('success', `${CONTROL_LABELS[key] ?? key} applied`, range ? formatValue(applied, range.units) : '');
-          } else {
+          if (!per.ok) {
             toast('error', `${CONTROL_LABELS[key] ?? key} failed`, errorMessage(per.errorCode, key));
+          } else if (!isNoopApply(key, settings, before)) {
+            const applied = settings[key as keyof typeof settings];
+            toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof applied === 'number' && range ? formatValue(applied, range.units) : '');
           }
+          // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
         }
-        // Recompute dirty chips against the fresh read-back so a control that
-        // just applied stops showing "Unapplied".
+        // The retry note only claims success when the retried apply
+        // actually succeeded (M2b review F3): an apply that exhausted its
+        // retries and failed must not show "applied on the retry attempt".
+        if (shouldShowRetryNote(result)) {
+          toast('warn', 'Applied on retry', 'The driver was busy — the value was applied on the retry attempt.');
+        }
+        // Recompute dirty chips + the floating button against the fresh
+        // read-back so a control that just applied stops showing "Unapplied".
         for (const key of controls) refreshCard(key);
+        updateFloating();
         if (!result.ok) {
           // The waiver may have been lost on the device (e.g. driver reset).
           const freshCaps = await api.getCapabilities(deviceId);
@@ -184,7 +212,7 @@ export const overclockingPage: Page = {
     container.append(
       el('h1', { class: 'page-title', text: 'Overclocking' }),
       el('p', { class: 'page-subtitle', text: 'Values are clamped to the range reported by this GPU. Changes apply on demand — nothing is applied until you press Apply.' }),
-      el('div', { class: 'card-stack' }, controls.map(buildCard)),
+      el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard)),
 
       el('details', { class: 'card advanced-card' }, [
         el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),
@@ -202,10 +230,9 @@ export const overclockingPage: Page = {
         })),
       ]),
 
-      el('div', { class: 'page-actions' }, [
-        el('button', { class: 'btn btn-primary btn-lg', text: 'Apply changes', onClick: () => void apply() }),
-        el('span', { class: 'page-actions-note', text: 'Apply writes every card above. Each control reports its own result.' }),
-      ]),
+      applyBtn,
     );
+
+    updateFloating();
   },
 };

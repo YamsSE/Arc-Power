@@ -6,7 +6,7 @@ import type { OcErrorCode } from '../types.ts';
 export const CONTROL_LABELS: Record<string, string> = {
   powerLimitW: 'Power limit',
   gpuVoltOffsetV: 'Voltage offset',
-  gpuFreqOffsetMhz: 'GPU frequency offset',
+  gpuFreqOffsetMhz: 'Core offset',
   tempLimitC: 'Temperature limit',
   vramFreqOffsetGts: 'VRAM frequency offset',
   vramVoltOffsetV: 'VRAM voltage offset',

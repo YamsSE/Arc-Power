@@ -40,6 +40,17 @@ export const STATUS_LABEL: Record<StatusLevel, string> = {
 /** Exact user-facing partial-running note (pinned by unit tests and --ui-verify). */
 export const IGS_NOTE = 'Intel Graphics Software is partially running. For OC changes to apply, either disable IGS completely or run it fully with the Tuning tab enabled.';
 
+/**
+ * Verbose-label visibility in the dashboard status card (M2b step-5 NIT 3):
+ * the label renders next to the dot ONLY for warning/degraded/error levels —
+ * fully-on/fully-off (and the transient searching state) show just the dot,
+ * with the full label carried by the dot's tooltip.
+ */
+export function labelForLevel(level: StatusLevel): string | null {
+  if (level === 'warning' || level === 'degraded' || level === 'error') return STATUS_LABEL[level];
+  return null;
+}
+
 /** Health-only level (kept separate so the header test contract stays exact). */
 export function healthLevel(h: HealthReport | null): StatusLevel {
   if (!h) return 'searching'; // no health report yet — boot in progress
@@ -87,15 +98,17 @@ export function mapStatus(health: HealthReport | null, igs: IgsServiceState | nu
 
 /**
  * The store slots that drive the dashboard's static content (device card,
- * health card, IGS card). Telemetry ticks only touch `latestSample` — those
+ * merged status card). Telemetry ticks only touch `latestSample` — those
  * must NOT trigger a full page rebuild; the dashboard refreshes the readout
- * grid in place instead.
+ * grid in place instead. driverDate is fetched once at boot (it can arrive
+ * after the first render, so it counts as a status slot).
  */
 export interface DashboardSig {
   igsState: IgsServiceState | null;
   health: HealthReport | null;
   caps: Capabilities | null;
   bootError: string | null;
+  driverDate: string | null;
 }
 
 /**
@@ -108,5 +121,6 @@ export function dashboardNeedsFullRender(prev: DashboardSig | null, next: Dashbo
   return prev.igsState !== next.igsState
     || prev.health !== next.health
     || prev.caps !== next.caps
-    || prev.bootError !== next.bootError;
+    || prev.bootError !== next.bootError
+    || prev.driverDate !== next.driverDate;
 }

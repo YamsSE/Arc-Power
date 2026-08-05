@@ -1,5 +1,14 @@
-// Arc Power — GPU header: device name, driver version, health status dot,
-// mock-mode badge. Rendered once, updated by store subscriptions.
+// Arc Power — GPU header: device name, driver version + date line, health
+// status dot, mock-mode badge. Rendered once, updated by store subscriptions.
+//
+// M2b-B dashboard redesign:
+//   - the driver line is the dotted version + the display-driver registry
+//     date ("32.0.101.8861 - Jul 05, 2026"); the date is omitted when the
+//     registry lookup failed;
+//   - PCI ID is gone;
+//   - the top-right indicator is just the colored dot + the static
+//     "Service Status" label (the verbose IGS text moved into the dot's
+//     tooltip and the dashboard's merged status card).
 //
 // The status mapping (health + IGS service -> level + label) lives in
 // pure/status.ts and is shared with the dashboard; this module re-exports
@@ -9,10 +18,26 @@
 import { el, clear } from '../dom.ts';
 import type { Store } from '../router.ts';
 import { mapStatus, STATUS_LABEL } from '../pure/status.ts';
+import { decodeDriverVersion, formatDriverDate } from '../pure/driver.ts';
 
 export { STATUS_LABEL };
 export { healthLevel as healthStatus } from '../pure/status.ts';
 export type { StatusLevel } from '../pure/status.ts';
+
+/** M2b-B: the static label next to the status dot (pinned by --ui-verify). */
+export const SERVICE_STATUS_LABEL = 'Service Status';
+
+/**
+ * The driver line below the GPU name: dotted version + optional registry
+ * date ("32.0.101.8861 - Jul 05, 2026"). Null when nothing is known yet.
+ */
+export function driverLine(device: { driverVersion: string } | null | undefined, driverDate: string | null): string | null {
+  if (!device) return null;
+  const version = decodeDriverVersion(device.driverVersion);
+  if (!version) return null;
+  const date = formatDriverDate(driverDate);
+  return date ? `${version} - ${date}` : version;
+}
 
 export class GpuHeader {
   private readonly mount: HTMLElement;
@@ -29,19 +54,20 @@ export class GpuHeader {
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
     const health = s.health;
     const { level, label } = mapStatus(health, s.igsState);
+    const line = driverLine(device, s.driverDate);
     const dot = el('span', { class: `status-dot status-${level}`, title: label });
     clear(this.mount);
     this.mount.append(
       el('div', { class: 'gpu-header' }, [
         el('div', { class: 'gpu-identity' }, [
           el('div', { class: 'gpu-name', text: device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power') }),
-          device
-            ? el('div', { class: 'gpu-meta', text: `Driver ${device.driverVersion} · PCI ${device.pciVendorId}:${device.pciDeviceId}` })
+          line
+            ? el('div', { class: 'gpu-meta', text: line })
             : el('div', { class: 'gpu-meta', text: s.bootError ?? 'Searching for a graphics device…' }),
         ]),
         el('div', { class: 'gpu-status' }, [
           health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null,
-          el('span', { class: 'gpu-status-text', text: label }, [dot]),
+          el('span', { class: 'gpu-status-text' }, [dot, el('span', { class: 'gpu-status-label', text: SERVICE_STATUS_LABEL })]),
         ]),
       ]),
     );

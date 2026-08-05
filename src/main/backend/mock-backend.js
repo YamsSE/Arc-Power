@@ -79,6 +79,7 @@ export class MockBackend {
   constructor(opts = {}) {
     this.kind = 'mock';
     this._failOn = opts.failOn ?? {};
+    this._failOnce = {};
     this._intervalS = opts.telemetryIntervalS ?? 0.5;
     this._energyStepJ = opts.energyStepJ ?? 19.4;
     this._fanCanControl = opts.fanCanControl !== false;
@@ -91,10 +92,24 @@ export class MockBackend {
     this._telemetryCbs = new Set();
   }
 
-  /** Dev-only knob: force `control` to fail with `errorCode` (null clears). */
-  injectFail(control, errorCode) {
-    if (errorCode) this._failOn[control] = errorCode;
-    else delete this._failOn[control];
+  /**
+   * Dev-only knob: force `control` to fail with `errorCode` (null clears).
+   * `once: true` fails only the NEXT apply that touches the control — lets
+   * tests/ui-verify exercise the success-after-retry path deterministically
+   * (M2b review F3) while a persistent failure pins the exhausted-retry path.
+   */
+  injectFail(control, errorCode, once = false) {
+    if (errorCode) {
+      this._failOn[control] = errorCode;
+      this._failOnce[control] = once === true;
+    } else {
+      delete this._failOn[control];
+      delete this._failOnce[control];
+    }
+  }
+
+  _consumeFailOnce(control) {
+    if (this._failOnce[control]) this.injectFail(control, null);
   }
 
   async init() {
@@ -146,6 +161,7 @@ export class MockBackend {
       if (this._failOn[canonicalName]) {
         result.perControl[canonicalName] = { ok: false, errorCode: this._failOn[canonicalName], message: `injected failure (${canonicalName})` };
         result.ok = false;
+        this._consumeFailOnce(canonicalName);
         return;
       }
       const range = caps.ranges[canonicalName];
@@ -215,6 +231,7 @@ export class MockBackend {
         if (this._failOn.fanCurve) {
           result.perControl.fanCurve = { ok: false, errorCode: this._failOn.fanCurve, message: `injected failure (fanCurve)` };
           result.ok = false;
+          this._consumeFailOnce('fanCurve');
         } else {
           this._state.fanCurve = normalizeFanCurve(settings.fanCurve, caps.fan.maxCurvePoints);
           this._state.fanMode = 'curve';
@@ -227,6 +244,7 @@ export class MockBackend {
         if (this._failOn.fixedFanPct) {
           result.perControl.fixedFanPct = { ok: false, errorCode: this._failOn.fixedFanPct, message: `injected failure (fixedFanPct)` };
           result.ok = false;
+          this._consumeFailOnce('fixedFanPct');
         } else {
           this._state.fixedFanPct = clampFanPct(settings.fixedFanPct);
           this._state.fanMode = 'fixed';
@@ -239,6 +257,7 @@ export class MockBackend {
         if (this._failOn.fanMode) {
           result.perControl.fanMode = { ok: false, errorCode: this._failOn.fanMode, message: `injected failure (fanMode)` };
           result.ok = false;
+          this._consumeFailOnce('fanMode');
         } else {
           this._state.fanMode = 'auto';
           result.perControl.fanMode = { ok: true, readBackEqual: true };

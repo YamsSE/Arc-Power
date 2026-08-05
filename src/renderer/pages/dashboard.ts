@@ -1,6 +1,8 @@
-// Arc Power — Dashboard page: device card, health status, IGS service status,
-// live telemetry readouts. Rolling graphs are M2b — deliberately not built
-// here.
+// Arc Power — Dashboard page (M2b-B redesign): device card (dotted driver
+// version + registry date, Xe cores + shader units, no PCI ID, no persistent
+// waiver status), ONE merged Service Status card (dot + label, degraded-only
+// IGCL line, half-state note, IGS toggle button), and a compact live
+// readout (core clock, memory clock, temp, power, fan).
 //
 // The page re-renders fully only when a status slot changes (boot probe,
 // IGS toggle refresh, boot errors); telemetry ticks refresh the readout grid
@@ -9,8 +11,10 @@
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
-import { mapStatus, igsHalfState, IGS_NOTE, dashboardNeedsFullRender } from '../pure/status.ts';
+import { mapStatus, igsHalfState, IGS_NOTE, dashboardNeedsFullRender, labelForLevel } from '../pure/status.ts';
 import type { DashboardSig } from '../pure/status.ts';
+import { driverLine } from '../components/header.ts';
+import { shaderUnits } from '../pure/driver.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import type { DeviceState, IgsServiceState, TelemetrySample } from '../types.ts';
@@ -23,7 +27,7 @@ function capsSummary(state: DeviceState): string[] {
   const out: string[] = [];
   if (state.powerLimitW !== null) out.push(`Power limit ${state.powerLimitW} W`);
   if (state.gpuVoltOffsetV !== null) out.push(`Voltage offset ${formatValue(state.gpuVoltOffsetV, 'V')}`);
-  if (state.gpuFreqOffsetMhz !== null) out.push(`Frequency offset ${state.gpuFreqOffsetMhz} MHz`);
+  if (state.gpuFreqOffsetMhz !== null) out.push(`Core offset ${state.gpuFreqOffsetMhz} MHz`);
   if (state.tempLimitC !== null) out.push(`Temp limit ${state.tempLimitC} °C`);
   if (state.fanCurve) out.push(`Fan curve ${state.fanCurve.length} points`);
   return out;
@@ -31,11 +35,13 @@ function capsSummary(state: DeviceState): string[] {
 
 function statTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   const clock = sample?.gpuClockMhz;
+  const memClock = sample?.memClockMhz;
   const temp = sample?.tempC;
   const power = sample?.powerW;
   const rpm = sample?.fanRpm?.[0];
   return [
-    { label: 'GPU clock', value: clock !== undefined ? String(Math.round(clock)) : '—', unit: 'MHz' },
+    { label: 'Core clock', value: clock !== undefined ? String(Math.round(clock)) : '—', unit: 'MHz' },
+    { label: 'Memory clock', value: memClock !== undefined ? String(Math.round(memClock)) : '—', unit: 'MHz' },
     { label: 'Temperature', value: temp !== undefined ? String(Math.round(temp)) : '—', unit: '°C' },
     { label: 'Power draw', value: power !== undefined ? power.toFixed(1) : '—', unit: 'W' },
     { label: 'Fan speed', value: rpm !== undefined ? String(Math.round(rpm)) : '—', unit: 'RPM' },
@@ -51,7 +57,7 @@ function igsStateText(igs: IgsServiceState | null): string {
 /** The store slots that decide whether the dashboard must fully re-render. */
 function currentSig(ctx: PageContext): DashboardSig {
   const s = ctx.store.get();
-  return { igsState: s.igsState, health: s.health, caps: s.caps, bootError: s.bootError };
+  return { igsState: s.igsState, health: s.health, caps: s.caps, bootError: s.bootError, driverDate: s.driverDate };
 }
 
 /** Last full-render signature (module state — telemetry ticks never touch it). */
@@ -85,20 +91,44 @@ async function runIgsToggle(ctx: PageContext): Promise<void> {
   dashboardPage.render(container, ctx);
 }
 
-function igsCard(ctx: PageContext): HTMLElement {
-  const igs = ctx.store.get().igsState;
+/**
+ * The merged "Service Status" card (M2b-B): dot + label, IGCL health shown
+ * only when degraded, the half-state warning only when actually half-state,
+ * the IGS toggle button. Driver version and Level Zero are gone.
+ */
+function statusCard(ctx: PageContext): HTMLElement {
+  const s = ctx.store.get();
+  const health = s.health;
+  const igs = s.igsState;
   // Half-state = the verified OC blocker: service and app disagree (NOT gated
   // on service.found — a failed probe with the app running still blocks OC
   // writes; the note must agree with the header warning). Fully-on and
   // fully-off both accept OC writes — no warning note.
   const halfState = igsHalfState(igs);
   const svcRunning = igs?.service.running === true;
-  return el('section', { class: 'card' }, [
-    el('h2', { class: 'card-title', text: 'System status' }),
-    el('div', { class: 'card-body kv-grid' }, [
-      el('div', { class: 'kv', 'data-label': 'IGS service' }, [
-        el('span', { text: igsStateText(igs) }),
+  const igclDegraded = !health?.igclLoaded || !health?.levelZeroOk;
+  const { level, label } = mapStatus(health, igs);
+  // NIT 3: the verbose label renders only for warning/degraded/error — the
+  // fully-on/off (and searching) states show just the dot; the label moves
+  // to the dot tooltip (same convention as the header indicator).
+  const visibleLabel = labelForLevel(level);
+
+  return el('section', { class: 'card status-card' }, [
+    el('h2', { class: 'card-title', text: 'Service Status' }),
+    el('div', { class: 'card-body' }, [
+      el('div', { class: 'kv-status' }, [
+        el('span', { class: `status-dot status-${level}`, title: label }),
+        visibleLabel !== null ? el('span', { class: 'status-label', text: visibleLabel }) : null,
       ]),
+      // IGCL detail line ONLY when degraded (healthy = no detail noise).
+      igclDegraded
+        ? el('div', { class: 'kv', 'data-label': 'IGCL runtime' }, [
+            el('span', { class: 'text-error', text: health?.error ?? 'Not loaded' }),
+          ])
+        : null,
+      health?.error && !igclDegraded
+        ? el('div', { class: 'kv', 'data-label': 'Backend' }, [el('span', { class: 'text-error', text: health.error })])
+        : null,
     ]),
     halfState
       ? el('p', { class: 'card-note igs-note', text: IGS_NOTE })
@@ -106,8 +136,9 @@ function igsCard(ctx: PageContext): HTMLElement {
     igs?.service.found
       ? el('div', { class: 'card-footer' }, [
           el('button', {
-            class: svcRunning ? 'btn btn-danger igs-toggle' : 'btn igs-toggle',
+            class: svcRunning ? 'btn btn-danger btn-sm igs-toggle' : 'btn btn-sm igs-toggle',
             text: svcRunning ? DISABLE_BTN : REENABLE_BTN,
+            title: igsStateText(igs),
             onClick: (ev: Event) => {
               (ev.currentTarget as HTMLButtonElement).disabled = true;
               void runIgsToggle(ctx);
@@ -125,9 +156,6 @@ export const dashboardPage: Page = {
     lastSig = currentSig(ctx);
     const s = ctx.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-    const health = s.health;
-    const { level, label } = mapStatus(health, s.igsState);
-    const caps = s.caps;
     const state = s.state;
 
     clear(container);
@@ -140,13 +168,12 @@ export const dashboardPage: Page = {
           el('h2', { class: 'card-title', text: device?.name ?? 'No GPU detected' }),
           device
             ? el('div', { class: 'card-body kv-grid' }, [
-                el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: device.driverVersion })]),
-                el('div', { class: 'kv', 'data-label': 'PCI ID' }, [el('span', { text: `${device.pciVendorId}:${device.pciDeviceId}` })]),
-                el('div', { class: 'kv', 'data-label': 'Xe cores' }, [el('span', { text: String(device.numXeCores) })]),
+                el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: driverLine(device, s.driverDate) ?? device.driverVersion })]),
+                // M2b-B: no PCI ID, no persistent waiver status.
+                device.numXeCores > 0
+                  ? el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}` })])
+                  : null,
                 el('div', { class: 'kv', 'data-label': 'Graphics clock' }, [el('span', { text: `${device.graphicsClockMHz} MHz` })]),
-                el('div', { class: 'kv', 'data-label': 'OC waiver' }, [
-                  el('span', { text: caps?.waiverAccepted ? 'Accepted' : 'Not accepted' }),
-                ]),
               ])
             : el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' }),
           state
@@ -154,28 +181,11 @@ export const dashboardPage: Page = {
             : null,
         ]),
 
-        // --- health card ---
-        el('section', { class: 'card' }, [
-          el('h2', { class: 'card-title', text: 'Service health' }),
-          el('div', { class: 'card-body kv-grid' }, [
-            el('div', { class: 'kv', 'data-label': 'Status' }, [
-              el('span', { class: 'kv-status' }, [
-                el('span', { class: `status-dot status-${level}` }),
-                el('span', { text: label }),
-              ]),
-            ]),
-            el('div', { class: 'kv', 'data-label': 'IGCL runtime' }, [el('span', { text: health?.igclLoaded ? 'Loaded' : 'Not loaded' })]),
-            el('div', { class: 'kv', 'data-label': 'Level Zero' }, [el('span', { text: health?.levelZeroOk ? 'OK' : 'Failed' })]),
-            health?.driverVersion ? el('div', { class: 'kv', 'data-label': 'Driver' }, [el('span', { text: health.driverVersion })]) : null,
-            health?.error ? el('div', { class: 'kv', 'data-label': 'Error' }, [el('span', { class: 'text-error', text: health.error })]) : null,
-          ]),
-        ]),
-
-        // --- IGS service card ---
-        igsCard(ctx),
+        // --- merged Service Status card (health + IGS in one) ---
+        statusCard(ctx),
       ]),
 
-      // --- live readout ---
+      // --- live readout (compact, M2b-B) ---
       el('section', { class: 'card readout-card' }, [
         el('h2', { class: 'card-title', text: 'Live readout' }),
         el('div', { class: 'readout-grid', id: 'dash-readout' }, statTiles(s.latestSample).map((t) =>
@@ -185,7 +195,6 @@ export const dashboardPage: Page = {
             el('div', { class: 'stat-label', text: t.label }),
           ]),
         )),
-        el('p', { class: 'card-note', text: 'Rolling graphs arrive in M2b.' }),
       ]),
     );
   },

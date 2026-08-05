@@ -180,6 +180,27 @@ test('injectFail: dev-only knob forces a control failure and clears', async () =
   assert.equal(ok.perControl.fanCurve.ok, true);
 });
 
+// M2b review F3 — one-shot fail mode: the failure fires on the NEXT apply
+// that touches the control, then clears (lets the retry succeed).
+test('injectFail: once:true fails only the next apply (one-shot)', async () => {
+  const b = new MockBackend();
+  b.injectFail('powerLimitW', 'io-failed', true);
+  const first = await b.applySettings(0, { powerLimitW: 220 });
+  assert.equal(first.ok, false);
+  assert.equal(first.perControl.powerLimitW.errorCode, 'io-failed');
+  const second = await b.applySettings(0, { powerLimitW: 220 });
+  assert.equal(second.ok, true);
+  assert.equal(second.perControl.powerLimitW.ok, true);
+  const s = await b.getCurrentSettings(0);
+  assert.equal(s.powerLimitW, 220);
+  // A one-shot fan failure clears too.
+  b.injectFail('fanCurve', 'io-failed', true);
+  const fanFail = await b.applySettings(0, { fanCurve: [{ t: 20, speedPct: 20 }] });
+  assert.equal(fanFail.perControl.fanCurve.errorCode, 'io-failed');
+  const fanOk = await b.applySettings(0, { fanCurve: [{ t: 20, speedPct: 20 }] });
+  assert.equal(fanOk.perControl.fanCurve.ok, true);
+});
+
 test('offGridFreqMhz: mock can report a driver value off the 1 MHz grid (ui-verify)', async () => {
   const b = new MockBackend({ offGridFreqMhz: 48.3 });
   const s = await b.getCurrentSettings(0);

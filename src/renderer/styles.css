@@ -127,6 +127,10 @@ html, body {
   gap: 6px;
 }
 
+.gpu-status-label { font-weight: 600; color: var(--text); }
+
+.status-label { color: var(--text); font-size: 13.5px; font-weight: 600; }
+
 .status-dot {
   width: 9px;
   height: 9px;
@@ -317,25 +321,26 @@ html, body {
 
 .readout-card { margin-top: 2px; }
 
+/* M2b-B: the dashboard live readout got a tighter layout (smaller tiles). */
 .readout-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
 }
 
 .stat-tile {
   background: var(--bg-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 12px 14px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
-.stat-value { font-size: 22px; font-weight: 700; font-family: var(--mono); }
-.stat-unit { font-size: 12px; color: var(--accent); font-family: var(--mono); }
-.stat-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.stat-value { font-size: 18px; font-weight: 700; font-family: var(--mono); }
+.stat-unit { font-size: 11.5px; color: var(--accent); font-family: var(--mono); }
+.stat-label { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
 
 /* ------------------------------------------------------------ overclocking */
 
@@ -589,3 +594,150 @@ html, body {
 .placeholder .page-title { margin-bottom: 8px; }
 
 .text-error { color: var(--error); }
+
+/* ----------------------------------------------------- floating Apply (M2b-B) */
+
+/* Anchored bottom-left, on the sidebar/tab side. The page container is
+   position:static so the fixed positioning is viewport-relative. */
+.floating-apply {
+  position: fixed;
+  bottom: 20px;
+  left: 246px;
+  z-index: 600;
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  padding: 10px 30px;
+}
+
+/* ------------------------------------------------- compact OC cards (M2b-B) */
+
+.oc-stack { gap: 10px; }
+
+.oc-card { padding: 12px 16px; }
+.oc-card-head { margin-bottom: 6px; }
+.oc-card .card-title { font-size: 14px; }
+.oc-slider-row { gap: 12px; }
+.oc-meta { margin-top: 4px; }
+.oc-card-actions { margin-top: 6px; }
+.oc-value { font-size: 14px; min-width: 80px; }
+
+/* ------------------------------------------------------------ monitoring */
+
+.seg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.seg-card { padding: 0; overflow: hidden; }
+
+.seg-head {
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  text-align: left;
+}
+.seg-head:hover { background: var(--bg-inset); }
+
+.seg-chevron {
+  color: var(--text-muted);
+  font-size: 11px;
+  width: 12px;
+}
+
+.seg-unit {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.seg-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px 4px;
+}
+
+.seg-canvas {
+  width: 100%;
+  height: 110px;
+  display: block;
+}
+
+.mon-fps-note { margin: 6px 0 0; }
+
+/* -------------------------------------------------------------- profiles */
+
+.profiles-root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.boot-row { display: flex; align-items: center; gap: 8px; }
+
+.boot-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13.5px;
+}
+.boot-toggle input:disabled + span { color: var(--text-dim); cursor: not-allowed; }
+
+.boot-checkbox { accent-color: var(--accent-strong); width: 15px; height: 15px; }
+
+.boot-hint { color: var(--warn); }
+
+.profile-list { display: flex; flex-direction: column; gap: 8px; }
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+.profile-row.profile-active { border-color: var(--accent); background: var(--accent-soft); }
+
+.profile-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 160px;
+}
+.profile-name { font-weight: 650; font-size: 13.5px; }
+.profile-badge { background: rgba(76, 194, 255, 0.15); color: var(--accent); border: 1px solid rgba(76, 194, 255, 0.4); }
+
+.profile-chips { flex: 1; }
+
+.profile-actions { display: inline-flex; gap: 6px; }
+
+.btn-danger-text { color: var(--error); }
+.btn-danger-text:hover { border-color: var(--error); }
+
+.modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+}
+.modal-input:focus { outline: none; border-color: var(--accent); }
+.modal-body { margin-bottom: 16px; }

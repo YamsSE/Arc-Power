@@ -4,6 +4,9 @@
 
 import { ipcMain } from 'electron';
 import { createIpcHandlers } from './ipc-core.js';
+import { createStartup } from './startup.js';
+import { createDriverInfo } from './driver-info.js';
+import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -13,14 +16,22 @@ import { createIpcHandlers } from './ipc-core.js';
  *   store: import('./store/profile-store.js').ProfileStore,
  *   getWindow: () => import('electron').BrowserWindow,
  *   igs: import('./igs-service.js').IgsService,
+ *   startup?: import('./startup.js').RunKeyStartup,
+ *   driverInfo?: ReturnType<typeof createDriverInfo>,
+ *   presentmon?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
+ *   rebuildTray?: () => Promise<unknown>,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, igs }) {
+export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {} }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
     igs,
+    startup,
+    driverInfo,
+    presentmon,
+    rebuildTray,
     emit: (channel, payload) => {
       if (channel !== 'telemetry:sample') return;
       const win = getWindow();
@@ -30,5 +41,9 @@ export function registerIpc({ backend, store, getWindow, igs }) {
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, (_event, ...args) => fn(...args));
   }
-  return stopAllTelemetry;
+  const stopPresentmon = () => presentmon.stop?.().catch(() => {});
+  return async () => {
+    await stopAllTelemetry();
+    await stopPresentmon();
+  };
 }

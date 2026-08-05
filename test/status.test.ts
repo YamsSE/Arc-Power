@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapStatus, STATUS_LABEL, IGS_LABELS, IGS_NOTE, igsHalfState, healthLevel, dashboardNeedsFullRender } from '../src/renderer/pure/status.ts';
+import { mapStatus, STATUS_LABEL, IGS_LABELS, IGS_NOTE, igsHalfState, healthLevel, dashboardNeedsFullRender, labelForLevel } from '../src/renderer/pure/status.ts';
 import type { DashboardSig } from '../src/renderer/pure/status.ts';
 import type { Capabilities, HealthReport, IgsServiceState } from '../src/renderer/types.ts';
 
@@ -91,6 +91,17 @@ test('healthLevel keeps the F9 semantics (null -> searching)', () => {
   assert.equal(healthLevel(okHealth), 'ok');
 });
 
+// M2b step-5 NIT 3 — the dashboard status card renders the verbose label
+// ONLY for warning/degraded/error; fully-on/fully-off (and searching) show
+// just the dot, with the label carried by the dot tooltip.
+test('labelForLevel: label only for warning/degraded/error — ok/searching show just the dot', () => {
+  assert.equal(labelForLevel('warning'), STATUS_LABEL.warning);
+  assert.equal(labelForLevel('degraded'), STATUS_LABEL.degraded);
+  assert.equal(labelForLevel('error'), STATUS_LABEL.error);
+  assert.equal(labelForLevel('ok'), null);
+  assert.equal(labelForLevel('searching'), null);
+});
+
 // ---------------------------------------------------------------------------
 // Dashboard re-render scoping (M2a.5-5): full re-render on status changes
 // only — telemetry ticks must not rebuild the page.
@@ -101,6 +112,7 @@ const dashSig = (patch: Partial<DashboardSig> = {}): DashboardSig => ({
   health: okHealth,
   caps: null,
   bootError: null,
+  driverDate: null,
   ...patch,
 });
 
@@ -112,7 +124,7 @@ test('dashboardNeedsFullRender: a telemetry tick (only latestSample changed) doe
   assert.equal(dashboardNeedsFullRender(sig, dashSig()), false);
 });
 
-test('dashboardNeedsFullRender: igsState / health / caps / bootError changes DO re-render', () => {
+test('dashboardNeedsFullRender: igsState / health / caps / bootError / driverDate changes DO re-render', () => {
   const sig = dashSig();
   const caps: Capabilities = {
     oemName: 'oem',
@@ -126,6 +138,7 @@ test('dashboardNeedsFullRender: igsState / health / caps / bootError changes DO 
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ health: null })), true);
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ caps })), true);
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ bootError: 'No Intel Arc GPU detected' })), true);
+  assert.equal(dashboardNeedsFullRender(sig, dashSig({ driverDate: '7-5-2026' })), true);
 });
 
 test('dashboardNeedsFullRender: the first update always renders', () => {

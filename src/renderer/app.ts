@@ -11,7 +11,9 @@ import { toast } from './components/toast.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { overclockingPage } from './pages/overclocking.ts';
 import { fanPage } from './pages/fan.ts';
-import { monitoringPage, profilesPage, tweaksPage } from './pages/placeholder.ts';
+import { monitoringPage } from './pages/monitoring.ts';
+import { profilesPage } from './pages/profiles.ts';
+import { tweaksPage } from './pages/placeholder.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -28,6 +30,9 @@ let current: Page | null = null;
 
 function renderPage(id: PageId) {
   const container = document.getElementById('page') as HTMLElement;
+  // M2b review F4: the page being left stops its timers/subscriptions
+  // (e.g. Monitoring's FPS poll) before the next page renders.
+  current?.leave?.();
   current = PAGES[id] ?? dashboardPage;
   try {
     current.render(container, { store });
@@ -97,6 +102,15 @@ async function boot() {
 
   const deviceId = devices[0].id;
   store.set({ deviceId });
+
+  // Display-driver registry date (M2b-B, read-only): a lookup failure
+  // degrades to null and the header shows the driver version alone.
+  try {
+    const info = await api.driverInfo();
+    store.set({ driverDate: info?.driverDate ?? null });
+  } catch {
+    store.set({ driverDate: null });
+  }
 
   // IGS state probe at boot (read-only). Failure degrades to
   // not-detected — the app must not go red because the probe failed.

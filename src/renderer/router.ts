@@ -38,6 +38,12 @@ export interface Page {
   render(container: HTMLElement, ctx: PageContext): void;
   /** Lightweight refresh on store changes (telemetry ticks etc.). */
   onUpdate?(container: HTMLElement, ctx: PageContext): void;
+  /**
+   * Called by the router right before navigating away (M2b review F4):
+   * pages that own timers/subscriptions stop them here so they never leak
+   * onto other pages (e.g. Monitoring's 1 s FPS poll).
+   */
+  leave?(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +58,8 @@ export interface AppState {
   state: DeviceState | null;
   latestSample: TelemetrySample | null;
   igsState: IgsServiceState | null;
+  /** Display-driver registry date ("7-5-2026") from the driver-info IPC. */
+  driverDate: string | null;
   bootError: string | null;
 }
 
@@ -63,6 +71,7 @@ const INITIAL: AppState = {
   state: null,
   latestSample: null,
   igsState: null,
+  driverDate: null,
   bootError: null,
 };
 

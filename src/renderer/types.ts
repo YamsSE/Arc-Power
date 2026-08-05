@@ -71,6 +71,8 @@ export interface PerControlResult {
 export interface ApplyResult {
   ok: boolean;
   perControl: Record<string, PerControlResult>;
+  /** M2b: true when an io-failed apply was retried with backoff before the final result. */
+  retried?: boolean;
 }
 
 export interface ApplyResponse {
@@ -149,4 +151,34 @@ export interface TelemetrySample {
   utilPct?: number;
   powerW?: number;
   throttle: ThrottleFlags;
+}
+
+/** A saved profile (mirrors the main-process Profile typedef). */
+export interface Profile {
+  id: string;
+  name: string;
+  createdAt: string;
+  schemaVersion: number;
+  settings: Settings;
+  ocOnBoot: boolean;
+}
+
+/** Persisted profile-settings envelope (ocOnBoot / activeProfileId). */
+export interface ProfileSettingsState {
+  waiverAccepted: boolean;
+  ocOnBoot: boolean;
+  activeProfileId: string | null;
+}
+
+/** Profiles IPC envelope: the list + the persisted settings in one response. */
+export interface ProfilesEnvelope {
+  profiles: Profile[];
+  settings: ProfileSettingsState;
+}
+
+/** Result of one PresentMon fps-poll (null when FPS is unavailable). */
+export interface FpsSample {
+  fps: number | null;
+  frameTimeMs: number | null;
+  gpuBusy: number | null;
 }

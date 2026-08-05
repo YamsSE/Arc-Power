@@ -15,9 +15,11 @@ import {
   clampSettings,
   createIpcHandlers,
   seedWaiverState,
+  hasIoFailed,
 } from '../src/main/ipc-core.js';
 import { MockBackend } from '../src/main/backend/mock-backend.js';
 import { createMockIgs } from '../src/main/igs-service.js';
+import { createMockStartup } from '../src/main/startup.js';
 
 // ---------------------------------------------------------------------------
 // deviceId validation
@@ -427,4 +429,314 @@ test('igs-service channels: the DEFAULT adapter is the MOCK — no injection mea
   } finally {
     env.restore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// io-failed retry/backoff (M2b)
+// ---------------------------------------------------------------------------
+
+test('hasIoFailed: true only when ok=false with an io-failed control', () => {
+  assert.equal(hasIoFailed({ ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed' } } }), true);
+  assert.equal(hasIoFailed({ ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } }), false);
+  assert.equal(hasIoFailed({ ok: true, perControl: {} }), false);
+  assert.equal(hasIoFailed({ ok: false, perControl: {} }), false);
+});
+
+function countingBackend() {
+  const backend = new MockBackend();
+  const calls = { apply: 0 };
+  backend.applySettings = async function applyCounting(deviceId, settings) {
+    calls.apply += 1;
+    return MockBackend.prototype.applySettings.call(this, deviceId, settings);
+  };
+  return { backend, calls };
+}
+
+test('apply-settings: an io-failed apply is retried with backoff and marked retried on success', async () => {
+  const { backend, calls } = countingBackend();
+  const store = fakeStore();
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRetryBackoffMs: 1 });
+
+  // Fail io-failed twice, then succeed on the third attempt.
+  const realApply = backend.applySettings.bind(backend);
+  let fails = 2;
+  let attempts = 0;
+  backend.applySettings = async (deviceId, settings) => {
+    attempts += 1;
+    if (fails > 0) {
+      fails -= 1;
+      return { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'io-failed', message: 'driver busy' } } };
+    }
+    return realApply(deviceId, settings);
+  };
+
+  const { result, state } = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(attempts, 3); // initial + 2 retries
+  assert.equal(calls.apply, 1); // only the final attempt reached the backend
+  assert.equal(result.ok, true);
+  assert.equal(result.retried, true);
+  assert.equal(state.powerLimitW, 220);
+});
+
+test('apply-settings: an always-io-failed apply returns the LAST attempt with retried: true', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRetryBackoffMs: 1 });
+
+  backend.applySettings = async () => ({
+    ok: false,
+    perControl: { powerLimitW: { ok: false, errorCode: 'io-failed', message: 'driver busy' } },
+  });
+  const attemptCount = { n: 0 };
+  const orig = backend.applySettings.bind(backend);
+  backend.applySettings = async (d, s) => { attemptCount.n += 1; return orig(d, s); };
+
+  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(attemptCount.n, 3); // initial + 2 retries
+  assert.equal(result.ok, false);
+  assert.equal(result.retried, true);
+  assert.equal(result.perControl.powerLimitW.errorCode, 'io-failed');
+});
+
+test('apply-settings: non-io-failed errors are NEVER retried (waiver/out-of-range are user-fixable)', async () => {
+  const { backend, calls } = countingBackend();
+  backend.injectFail('powerLimitW', 'waiver-not-set');
+  const store = fakeStore();
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRetryBackoffMs: 1 });
+
+  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(calls.apply, 1);
+  assert.equal(result.retried, undefined);
+  assert.equal(result.perControl.powerLimitW.errorCode, 'waiver-not-set');
+});
+
+test('apply-settings: success on the first attempt is not marked retried', async () => {
+  const { backend, calls } = countingBackend();
+  const store = fakeStore();
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
+
+  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(calls.apply, 1);
+  assert.equal(result.retried, undefined);
+  assert.equal(result.ok, true);
+});
+
+test('apply-settings: mixed failure (io-failed + waiver) retries and keeps the retry flag', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRetryBackoffMs: 1 });
+
+  let n = 0;
+  backend.applySettings = async (d, s) => {
+    n += 1;
+    if (n < 3) {
+      return {
+        ok: false,
+        perControl: {
+          powerLimitW: { ok: false, errorCode: 'io-failed', message: 'driver busy' },
+          tempLimitC: { ok: false, errorCode: 'waiver-not-set', message: 'waiver' },
+        },
+      };
+    }
+    return { ok: true, perControl: { powerLimitW: { ok: true }, tempLimitC: { ok: true } } };
+  };
+  const { result } = await handlers['apply-settings'](0, { powerLimitW: 220, tempLimitC: 85 });
+  assert.equal(n, 3);
+  assert.equal(result.retried, true);
+  assert.equal(result.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// startup channels (M2b) — the default adapter is the MOCK (never the
+// registry), and payloads are validated
+// ---------------------------------------------------------------------------
+
+test('startup channels: registered; startup-get takes no payload', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['startup-get'], 'function');
+  assert.equal(typeof handlers['startup-set'], 'function');
+  await assert.rejects(() => handlers['startup-get']({}), /takes no payload/);
+});
+
+test('startup channels: default adapter is the mock — get/set round trip without any registry access', async () => {
+  const startup = createMockStartup();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, startup });
+
+  assert.deepEqual(await handlers['startup-get'](), { enabled: false, profileId: null, value: null });
+  const setOut = await handlers['startup-set'](true, 'p1');
+  assert.equal(setOut.enabled, true);
+  assert.equal(setOut.profileId, 'p1');
+  assert.match(setOut.value, /--apply-profile p1/);
+  assert.deepEqual(await handlers['startup-get'](), setOut);
+
+  assert.deepEqual(await handlers['startup-set'](false, null), { enabled: false, profileId: null, value: null });
+});
+
+test('startup-set: validation — enabled must be boolean; enabling needs a profileId; disabling takes null', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  await assert.rejects(() => handlers['startup-set']('yes', 'p1'), /enabled must be a boolean/);
+  await assert.rejects(() => handlers['startup-set'](true, null), /profileId is required/);
+  await assert.rejects(() => handlers['startup-set'](true, ''), /profileId is required/);
+  await assert.rejects(() => handlers['startup-set'](false, 'p1'), /profileId must be null/);
+  await assert.rejects(() => handlers['startup-set'](1, 'p1'), /enabled must be a boolean/);
+});
+
+// M2b review F6 — a whitespace profileId would silently break the startup-get
+// round trip (the Run-key value is space-delimited); reject it up front.
+test('startup-set: rejects whitespace profileIds (Run-key round trip stays intact)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  await assert.rejects(() => handlers['startup-set'](true, 'profile 1'), /must not contain whitespace/);
+  await assert.rejects(() => handlers['startup-set'](true, ' p1'), /must not contain whitespace/);
+  await assert.rejects(() => handlers['startup-set'](true, 'p1 '), /must not contain whitespace/);
+  // A legal id still round-trips.
+  const out = await handlers['startup-set'](true, 'profile-1');
+  assert.equal(out.enabled, true);
+  assert.equal(out.profileId, 'profile-1');
+});
+
+// ---------------------------------------------------------------------------
+// M2b-B: driver-info, fps-poll, profiles + tray-rebuild channels
+// ---------------------------------------------------------------------------
+
+function fakeProfileStore(initialProfiles = []) {
+  const profiles = [...initialProfiles];
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null };
+  return {
+    profiles,
+    async loadProfiles() { return [...profiles]; },
+    async saveProfiles(next) { profiles.splice(0, profiles.length, ...next); },
+    async saveProfile(p) {
+      const idx = profiles.findIndex((x) => x.id === p.id);
+      if (idx >= 0) profiles[idx] = { ...p, schemaVersion: 1 };
+      else profiles.push({ ...p, schemaVersion: 1 });
+    },
+    async deleteProfile(id) {
+      const next = profiles.filter((p) => p.id !== id);
+      if (next.length === profiles.length) return false;
+      profiles.splice(0, profiles.length, ...next);
+      return true;
+    },
+    async loadSettings() { return { ...settings }; },
+    async saveSettings(s) { settings = { ...s }; },
+  };
+}
+
+test('driver-info channel: no payload; the DEFAULT adapter returns the fixture date (no reg.exe)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['driver-info'], 'function');
+  await assert.rejects(() => handlers['driver-info']({}), /takes no payload/);
+  assert.deepEqual(await handlers['driver-info'](), { driverDate: '7-5-2026' });
+});
+
+test('driver-info channel: an injected adapter is used (registry failure -> null)', async () => {
+  const driverInfo = { get: async () => ({ driverDate: null }) };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, driverInfo });
+  assert.deepEqual(await handlers['driver-info'](), { driverDate: null });
+});
+
+test('fps-poll channel: the DEFAULT adapter reports unavailable (never loads PresentMon)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['fps-poll'], 'function');
+  assert.equal(await handlers['fps-poll'](0), null);
+  await assert.rejects(() => handlers['fps-poll'](-1), /invalid device id/);
+});
+
+test('fps-poll channel: an injected adapter returns its sample (never null when present)', async () => {
+  const presentmon = { poll: async () => ({ fps: 144, frameTimeMs: 6.9, gpuBusy: 0.7 }) };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, presentmon });
+  assert.deepEqual(await handlers['fps-poll'](0), { fps: 144, frameTimeMs: 6.9, gpuBusy: 0.7 });
+});
+
+test('profiles channels: list -> save (create) -> rename -> delete round trip with validation', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null } });
+  await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
+
+  const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
+  assert.equal(afterSave.profiles.length, 1);
+  assert.equal(afterSave.profiles[0].name, 'My Profile'); // trimmed
+  assert.deepEqual(afterSave.profiles[0].settings, { powerLimitW: 220 });
+  assert.equal(typeof afterSave.profiles[0].createdAt, 'string');
+
+  const afterRename = await handlers['profiles-rename']('p1', 'Renamed');
+  assert.equal(afterRename.profiles[0].name, 'Renamed');
+  // Rename preserves createdAt and settings.
+  assert.equal(afterRename.profiles[0].createdAt, afterSave.profiles[0].createdAt);
+
+  const afterDelete = await handlers['profiles-delete']('p1');
+  assert.deepEqual(afterDelete.profiles, []);
+});
+
+test('profiles-save: overwrite keeps createdAt, validates settings + name + id + ocOnBoot', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+
+  const created = await handlers['profiles-save']({ id: 'p1', name: 'First', settings: { powerLimitW: 220 }, ocOnBoot: false });
+  const overwritten = await handlers['profiles-save']({ id: 'p1', name: 'Second', settings: { tempLimitC: 85 }, ocOnBoot: true });
+  assert.equal(overwritten.profiles.length, 1);
+  assert.equal(overwritten.profiles[0].createdAt, created.profiles[0].createdAt);
+  assert.deepEqual(overwritten.profiles[0].settings, { tempLimitC: 85 });
+  assert.equal(overwritten.profiles[0].ocOnBoot, true);
+
+  for (const bad of [null, 5, 'x', [], { id: '' }, { id: 'p', name: '' }, { id: 'p', name: '  ' }]) {
+    await assert.rejects(() => handlers['profiles-save'](bad), /profiles-save/, JSON.stringify(bad));
+  }
+  await assert.rejects(() => handlers['profiles-save']({ id: 'p', name: 'n', settings: { evil: 1 }, ocOnBoot: false }), /unknown control: evil/);
+  await assert.rejects(() => handlers['profiles-save']({ id: 'p', name: 'n', settings: { powerLimitW: 'x' }, ocOnBoot: false }), /finite number/);
+  await assert.rejects(() => handlers['profiles-save']({ id: 'p', name: 'n', settings: {}, ocOnBoot: 'yes' }), /ocOnBoot must be a boolean/);
+});
+
+// M2b review F6 — profile ids become Run-key values (startup-set); reject
+// whitespace so the startup-get round trip can never break.
+test('profiles-save: rejects whitespace profile ids (Run-key round trip stays intact)', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+  for (const badId of ['profile 1', ' p1', 'p1 ', 'a\tb']) {
+    await assert.rejects(
+      () => handlers['profiles-save']({ id: badId, name: 'n', settings: {}, ocOnBoot: false }),
+      /must not contain whitespace/,
+      JSON.stringify(badId),
+    );
+  }
+  assert.equal(store.profiles.length, 0);
+});
+
+test('profiles-delete / profiles-rename: reject empty ids and unknown profiles', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeProfileStore(), emit: () => {} });
+  await assert.rejects(() => handlers['profiles-delete'](''), /non-empty string/);
+  await assert.rejects(() => handlers['profiles-rename']('', 'x'), /non-empty string/);
+  await assert.rejects(() => handlers['profiles-rename']('missing', 'x'), /not found/);
+});
+
+test('profiles-settings-save: read-modify-write never clobbers waiverAccepted', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+
+  // Seed an accepted waiver (as waiver-accept would).
+  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+
+  const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1' });
+  const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+
+  for (const bad of [null, 5, 'x', []]) {
+    await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
+  }
+});
+
+test('tray-rebuild channel: no payload; calls the injected hook', async () => {
+  let calls = 0;
+  const rebuildTray = async () => { calls += 1; };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, rebuildTray });
+  await assert.rejects(() => handlers['tray-rebuild']({}), /takes no payload/);
+  assert.deepEqual(await handlers['tray-rebuild'](), { ok: true });
+  assert.equal(calls, 1);
+});
+
+test('tray-rebuild channel: the default hook is a no-op (never throws without a tray)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.deepEqual(await handlers['tray-rebuild'](), { ok: true });
 });

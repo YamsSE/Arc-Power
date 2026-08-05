@@ -1,4 +1,5 @@
-// Arc Power — placeholder pages for milestones not yet delivered.
+// Arc Power — placeholder pages for milestones not yet delivered (M2b-B:
+// only Tweaks remains a placeholder — Monitoring and Profiles are real).
 
 import { el } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
@@ -17,6 +18,4 @@ export function makePlaceholder(title: string, note: string): Page {
   };
 }
 
-export const monitoringPage = makePlaceholder('Monitoring', 'Live readouts and rolling graphs arrive in M2b.');
-export const profilesPage = makePlaceholder('Profiles', 'Save / load / rename profiles with apply-on-startup arrive in M2b.');
 export const tweaksPage = makePlaceholder('Tweaks', 'Registry hacks (MPO disable and friends) arrive in M3.');
