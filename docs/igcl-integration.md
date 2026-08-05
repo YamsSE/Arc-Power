@@ -212,6 +212,23 @@ Implications:
 - Product note (M2b+): when applies fail, the UI should hint at the IGS service (documented
   workaround), and the dist smoke should be run with the service stopped or IGS OC engaged.
 
+**Update (same day, after the M2a.5 disable-button feature):** the picture is more complex than
+"the service is the blocker". With the service DISABLED (via the app's elevated button), the IGS
+app processes killed, and nothing Intel-related running, power/freq/temp writes still flapped:
+applied-and-verified at 06:36, refused (SUCCESS-but-ignored / 0-set → 0x40000007) at 06:40,
+reproduced repeatedly. `ctlOverclockResetToDefault` failed with `0x40000013 ERROR_DATA_WRITE`
+while refused. Voltage offset remained writable throughout.
+
+Evidence-based conclusion:
+1. The IGCL apply path in Arc Power is correct (voltage offset applies reliably; all four
+   controls applied and read-back-verified when the KMD accepts).
+2. The A770 driver (32.0.101.8861) has an OC-acceptance state machine that oscillates on its
+   own (minutes-scale), independent of IGS: with IGS running it was mostly blocked; with IGS
+   fully removed it still flapped.
+3. The app never lies: refused writes surface as `io-failed` per-control toasts.
+4. Open question: does a reboot clear the oscillation for a stable window? (Not yet tested —
+   recommended next step; the M2a dist smoke cannot pass reliably while the driver flaps.)
+
 ## 9. Telemetry findings
 
 3 samples at ≥50 ms spacing (measured ~61–64 ms). Derived idle GPU power ≈ **38.8 W** on the final fix
