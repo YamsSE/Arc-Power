@@ -2,3 +2,7 @@ node_modules/
 dist/
 out/
 *.log
+
+# Dev-only artifacts (kept locally for the pipeline; never committed)
+pipeline/
+tools/validate/
