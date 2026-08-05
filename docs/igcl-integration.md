@@ -188,6 +188,30 @@ enforcing the UID whitelist inside the runtime itself.
 - `ctlOverclockResetToDefault` was **not** called — the probe changed nothing (`changed=false`).
 - `ctlClose` returned `SUCCESS_STILL_OPEN_BY_ANOTHER_CALLER` (IGS service holds the runtime) — clean shutdown.
 
+## 8a. IGS service blocks OC writes (verified 2026-08-05, driver 32.0.101.8861)
+
+**Decisive experiment** (M2a diagnostics): while `IntelGraphicsSoftwareService` is **Running** and IGS
+has no OC values applied, IGCL OC setters for power/freq/temp are silently refused
+(`ctlOverclockGpuFrequencyOffsetSet` returns SUCCESS but the read-back never changes; setting 0
+returns undocumented `0x40000007 ERROR_NOT_AVAILABLE`; `PowerLimitSet` returns SUCCESS but is
+ignored). The IGCL spec documents NO enable step beyond the waiver (the waiver is accepted, 0x0);
+the official Overclocking sample (github.com/intel/drivers.gpu.control-library, master) uses exactly
+our call sequence and no more. `CTL_INIT_FLAG_IGSC_FUL` and `ctlSetRuntimePath`/`UnlockID` are
+documented for firmware-update/Intel-loader use — not OC enablement.
+
+**With `IntelGraphicsSoftwareService` stopped** (elevated `Stop-Service`, then restart), ALL OC
+writes work immediately: powerLimit 252 W, gpuFreqOffset +5 MHz, gpuVoltOffset +0.01 V all
+set-and-read-back verified, and restore to defaults works. Service restarted afterwards; the
+blockade returned (causality confirmed in both directions). `gpuVoltOffset` is the only control
+that works with the service running.
+
+Implications:
+- The KMD/IGCL path is healthy; the IGS service is the blocker (it enforces/reverts OC state).
+- Arc Power works fully when the IGS service is stopped/disabled; with it running, power/freq/temp
+  applies fail honestly via read-back (`io-failed` toasts in the UI).
+- Product note (M2b+): when applies fail, the UI should hint at the IGS service (documented
+  workaround), and the dist smoke should be run with the service stopped or IGS OC engaged.
+
 ## 9. Telemetry findings
 
 3 samples at ≥50 ms spacing (measured ~61–64 ms). Derived idle GPU power ≈ **38.8 W** on the final fix
