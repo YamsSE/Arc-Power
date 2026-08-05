@@ -351,6 +351,191 @@ contract from fixture data. Wire/fixture tests pin the mapping.
 - Checkpoints: (1) Sysman/alternate-path research + fixture tests green; (2) live probe on the A770 (IGS off AND on) green; (3) UX refinements (toast suppression, compact tab, floating Apply, menu bar) build+tests; (4) Monitoring + Profiles + tray; full test+build.
 - Acceptance: graphs show live data incl. FPS; profile round trip works; apply-on-startup applies and falls back safely; no-op apply shows no toast; floating Apply appears only when dirty; no menu bar; OC applies verified without IGS (or evidence-documented limitation).
 
+### M2C - Make overclocking actually work + UI polish (user-mandated; BLOCKS M3)
+
+User decision (2026-08-05): M3 cannot start until the OC controls (Core
+Offset, Voltage Offset, Power Limit, Temperature Limit) are fixed. M2C
+splits into M2C-A (OC reliability/capability - vital, first) and
+M2C-B (UI/UX polish). The user explicitly requires **status updates at
+every phase boundary** (brainstorm, experiments, implementation, tests).
+
+#### M2C-A - OC apply reliability (vital)
+
+**Problem statement.** On the real A770, writes are refused in IGS
+half-states and flap on a minute scale even fully on/off (0x40000007 /
+0x40000009 family); PL > 252 W is refused with 0x44000004 (zero-UID
+client) and via Sysman (KMD verdict - but see E0/E1: that verdict is
+API-level evidence, not yet end-to-end proof). The user's premise: the
+Arc OC Tool applies OC reliably without IGS - so a way MUST exist.
+Prior binary inspection says ArcTool = same IGCL API + 2023 runtime
+(v1.0.100) and its GUID is not registered - but the tool was never
+actually RUN on this machine, so the premise is unverified empirically.
+
+**Phase A1 - Decisive experiments (probes + host-run, user-assisted GUI where needed; status update after).**
+- E0 BiFrost reality check: with IGS fully off, read back the device
+  power limit under exactly the reachable configurations: (a) the state
+  left by the logon `PredatorVGAHelper -checkAutoLaunch` task (currently
+  228 W), (b) each BiFrost preset XML in %APPDATA%\PredatorBifrost\Presets
+  re-applied manually if the helper alone cannot, (c) our own apply
+  battery (E4) at PL 252. Does ANY of these push the device PL read-back
+  above 252 W? Settles whether a >252 W userspace path exists on this
+  card at all.
+- E1 Run the REAL ArcTool.exe (extracted copy) on this machine: can it
+  apply core offset / freq offset / PL / PT today (IGS off; then IGS
+  on)? Drive it via PowerShell UIAutomation or user clicks; observe
+  read-backs with our IGCL probe while its UI runs. Three defined
+  outcomes: (a) it applies values our tool is refused - the difference
+  is real and huntable; (b) it refuses or caps at 252 like us - the
+  premise is busted; (c) it cannot be started/driven at all (Jan-2023
+  Qt app, WinRing0 + ASUS libs, weak Qt UIA support, possible driver-era
+  refusal) - route through E3 (mechanistic decider with correct 2023-era
+  init args) + A2 evidence; if both fail in driver-era-attributable
+  ways, surface the old-driver-reinstall test as an explicit user
+  decision in A2 rather than silently dropping the premise. For (b) and
+  (c) document with the same harness so the user can see it.
+- E2 While E1 runs: capture ArcTool's loaded modules (CIM), child
+  processes, service state, %APPDATA% file writes, registry writes -
+  what does it actually use (bundled runtime vs driver-store DLL vs
+  IGS)?
+- E3 Old-runtime init-args reconstruction: load ArcTool's bundled
+  IntelControlLib.dll with 2023-era init structs (version fields its
+  runtime expects, from igcl repo history around Jan-2023) + its GUID
+  e8e10f95-... and attempt OC writes. (Earlier probe used OUR init args
+  - 0x40000009; layout matches per oldest header, so only the version
+  fields differ.)
+- E4 Baseline failure table: our tool, IGS fully off: apply
+  {core offset +100, freq offset +100, PL 252, PT 92} x {V1, V2} x
+  {cold, after wake-render} - record accept/refuse, codes, read-backs,
+  repeated runs.
+- E5 OC-authorize hunt: enumerate EVERY OC control type in the igcl
+  repo headers looking for an enable/authorize/session control (the
+  flapping smells like a missing OC authorization handshake that IGS
+  normally performs); test each on-device for an acceptance change.
+- E6 Idle-wake hypothesis: GPU low-power (idle/RC6) states reject OC
+  writes. Scope: sustained multi-second 3D load (not a single blit -
+  one blit may not exit RC6 long enough to disambiguate) and
+  apply-during-load; re-run E4's battery under load.
+- E7 V1-vs-V2 path comparison for PL/PT specifically.
+
+**Phase A2 - Documentation & archaeology (status update after).**
+- Intel docs: igcl repo README/docs OC sections; Intel ISV OC/UID
+  registration process (is a registered UID obtainable/forgeable at
+  all?); public issues/community threads on 0x44000004, 0x40000007,
+  OC-authorize; skatterbencher's Arc OC guide (does he do an explicit
+  OC enable?).
+- PowerPlay clarification: PowerPlay is AMD terminology; the Intel
+  analog is the GFX firmware power budget - no public Windows
+  power-table tool for Arc exists; document honestly.
+- Deep strings/exports pass on ArcTool's IntelControlLib.dll +
+  ControlLib.dll for private escapes/IOCTL names, section names, version
+  strings - any non-IGCL path?
+- Decide the winning fix candidate(s) (F1..F5) from evidence; confirm
+  with the user before implementing.
+- Old-driver reinstall question (only if E1 outcome (c) and E3 both fail
+  in driver-era-attributable ways): propose to the user as an explicit
+  decision whether to test against an older driver package - never
+  silently dropped.
+
+**Phase A3 - Implementation (implementer, main-process, checkpointed build+tests; status update after each landing).**
+- F1 (if E5 confirms): OC-enable/authorize step in the apply path before
+  the first write.
+- F2 (if E6 confirms): GPU wake before apply.
+- F3 (universal, lands regardless): state-aware apply - extend retry
+  beyond io-failed to refusal codes with backoff (bounded); when IGS is
+  half-state, queue the apply and auto-fire when the state transitions
+  to fully-on/fully-off. Shared by UI Apply, tray, apply-on-startup.
+  Queued applies get a renderer-visible state: toast + pending indicator
+  on the Apply button ("queued - waiting for a workable window") and a
+  matching tray/apply-on-startup message; never a dead click.
+- F4 (only if E1+E3 unlock something the driver-store DLL cannot):
+  isolated legacy-runtime module with documented provenance, or the
+  registered-UID path if one exists.
+- F5 (last resort, user sign-off only): private escape/IOCTL from A2
+  strings - only with a concrete verifiable path and explicit user
+  approval of undocumented-API risk.
+- Deliverable: `tools/validate/m2c-acceptance.js` real-device harness
+  (battery above) with a pass table: all four controls accepted AND
+  read-back matches across >=3 sessions in the fully-off window and >=3
+  in the fully-on window, refuse rates documented before/after.
+
+**Phase A4 - Acceptance.** DoD, three reachable branches:
+1. Harness green in the fully-off AND fully-on windows (all four
+   controls accepted + read-back matches, >=3 sessions each) -> M2C-A
+   done, M3 unblocked.
+2. Cap proven universal (E0/E1): proof table (same harness, ArcTool
+   included), F3 + confirmed fixes shipped, refuse-rate table
+   before/after -> the user's sign-off covers BOTH the >252 W cap AND
+   any residual four-control refusal, explicitly.
+3. Neither: evidence table (same harness, ArcTool included),
+   refuse-rate before/after, F3 + every confirmed fix shipped, and an
+   explicit user decision on the residual four-control refusals
+   (harness-green required, or sign-off with documented rates) -> that
+   decision is the gate, not an implicit loop.
+M3 stays blocked until one branch's gate is met.
+
+- Checkpoints: (1) probe code builds + fixture tests green, THEN
+  E0-E4 hardware results recorded; (2) E5/E6/E7 + docs findings
+  recorded; (3) F1/F2 landing: build+tests; (4) F3 landing: build+tests
+  + harness green; (5) acceptance table.
+- Acceptance: as DoD below; updates posted to the user at every phase
+  boundary.
+
+#### M2C-B - UI/UX polish (renderer + assets; after M2C-A acceptance; one implementer run, checkpoint after pure helpers)
+
+- B1 Fan curve graph: 0-100% scale as a RIGHT-SIDE axis (mirror of the
+  bottom temp axis), labels OUT of the plot (fan.ts: the fan-label texts
+  currently sit inside the SVG at x:99/x:1); grid/ticks aligned; pure
+  helper updates + tests.
+- B2 Dashboard device card: remove the footer chips entirely - the
+  "Fan curve N points" chip AND the "Power limit / Voltage offset /
+  Core offset / Temp limit" notes are all the `capsSummary` chips footer
+  (dashboard.ts:26-34). Overclocking tab stays untouched (user
+  confirmed: this point is dashboard-only).
+- B3 Header (below the GPU name): replace the driver version line with
+  `Arc Power Ver. X.XX` (app version via a new `app:version` IPC +
+  preload + types; regression test). Decide the fate of the now-orphaned
+  `driver-info` IPC channel and `pure/driver.ts` decode helpers
+  (header.ts is their only consumer after this): keep-if-still-used,
+  else remove with tests - call the decision out in the report.
+- B4 Styled scrollbars inside the client matching the theme
+  (::-webkit-scrollbar + scrollbar-color; blue accent).
+- B5 Overclocking tab: fix the "Unapplied" chip that does not clear
+  after a successful apply. Two separate references (do NOT merge):
+  (a) the dirty reference for chips AND the floating Apply button -
+  per-`result.ok` control it becomes the applied value (chip clears +
+  button hides even when the driver read-back lags); (b) the no-op
+  suppression comparison stays against the driver read-back (`before`,
+  untouched) so M2b-B's silent-success rule survives. Regression tests:
+  chip clears while read-back lags; repeat-apply of an identical value
+  stays silent (no "applied" toast for a no-op).
+- B6 NEW blue "AP (Arc Power)" icon, designed to look cool and fit the
+  program, used EVERYWHERE: a pure-JS PNG/ICO generator script (no new
+  deps) producing 16/32/64/128/256 px + .ico; wire into BrowserWindow
+  icon, electron-builder icon (package.json build config), the tray icon
+  (replaces the current circle-A base64), the sidebar brand, and the
+  page favicon. Icon assets committed; generator script tracked.
+- B7 Sidebar: blue logo in front of the "Arc Power" line (sidebar-brand
+  in app.ts).
+- B8 Dashboard device card: keep the max core clock ("Graphics clock")
+  row and ADD a "Memory clock" row next to it.
+- B9 Dashboard live readout: more compact - 5 tiles, shorter height,
+  tighter padding, larger values.
+- Visual confirmation by the user at the end.
+
+- Checkpoints: (1) pure helpers (B1 axis math, B5 dirty reference, B3
+  version formatting) + tests green; (2) full UI + asset wiring; build,
+  `npm test`, `--ui-verify` all variants; (3) user visual check.
+- Acceptance: each B item visibly done in the dev tree + ui-verify; new
+  icon visible in window, tray, EXE, sidebar.
+
+#### M2C ordering & gates
+- M2C-A first (vital; blocks M3), then M2C-B. Separate milestone commits
+  `M2C-A: ...` / `M2C-B: ...`, each with `npm run dist` + packaged
+  `--headless` smoke (exit 0, in a workable IGS window) before commit.
+- pipeline/ + tools/validate/ stay gitignored; icon assets + generator
+  script are tracked.
+- Deferred (unchanged): NIT4 tooltip, PresentMon DLL in dist, anything
+  not listed above stays untouched.
 ### M3 — Registry hacks module
 - Catalog (MPO disable first; 2–3 more well-known, reversible toggles),
   named revert, elevation relaunch, current-state display.
