@@ -20,10 +20,12 @@ import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
  *   driverInfo?: ReturnType<typeof createDriverInfo>,
  *   presentmon?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
  *   rebuildTray?: () => Promise<unknown>,
+ *   applyRetryBackoffs?: number[],
+ *   applyBudgetMs?: number,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {} }) {
+export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, applyRetryBackoffs, applyBudgetMs }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -32,8 +34,12 @@ export function registerIpc({ backend, store, getWindow, igs, startup = createSt
     driverInfo,
     presentmon,
     rebuildTray,
+    applyRetryBackoffs,
+    applyBudgetMs,
     emit: (channel, payload) => {
-      if (channel !== 'telemetry:sample') return;
+      // Only push-style channels cross the window boundary; request/response
+      // channels return their payload via the invoke promise.
+      if (channel !== 'telemetry:sample' && channel !== 'apply:progress') return;
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },

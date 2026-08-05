@@ -25,8 +25,7 @@ import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
 import { createMockIgs } from './igs-service.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+import { applyWithRetry, ApplyToken, APPLY_BUDGET_MS, APPLY_BACKOFF_MS } from './apply-retry.js';
 
 const SCALAR_CONTROLS = new Set([
   'powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC',
@@ -38,12 +37,13 @@ const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
 const RESET_VERIFY_EPS = 1e-6;
-// io-failed apply retry policy (M2b): the A770 driver's OC-write acceptance
-// flaps on a minutes scale (docs/igcl-integration.md §8a) — a transient
-// io-failed apply is retried with backoff. User-fixable errors (waiver,
-// out-of-range, locked-mode) are NEVER retried.
-const APPLY_RETRY_BACKOFF_MS = 800;
-const APPLY_MAX_RETRIES = 2;
+// M2C-A F3 retry-with-verify policy (plan F3): the A770 driver's OC-write
+// acceptance flaps on a minutes scale and can SILENTLY NO-OP (SUCCESS with
+// unchanged read-back). Retryable outcomes (io-failed incl. NOT_AVAILABLE,
+// silent no-ops) retry with backoff up to the apply budget; hard outcomes
+// (waiver, out-of-range, locked-mode, reset-required, unsupported) are
+// NEVER retried. The IGS-fully-on state takes a single attempt (100% proven).
+const APPLY_RETRY_BACKOFFS = APPLY_BACKOFF_MS;
 
 /**
  * @param {unknown} v
@@ -159,17 +159,6 @@ export function assertNoPayload(args, channel) {
 }
 
 /**
- * True when an ApplyResult has at least one io-failed control (the only
- * transient failure class worth retrying — the driver flaps on a minutes
- * scale; waiver/out-of-range/locked-mode are user-fixable and NOT retried).
- * @param {{ ok: boolean, perControl: Record<string, { errorCode?: string }> }} result
- */
-export function hasIoFailed(result) {
-  return result.ok === false
-    && Object.values(result.perControl ?? {}).some((p) => p.errorCode === 'io-failed');
-}
-
-/**
  * Build the handler map for every whitelisted channel.
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
@@ -180,8 +169,8 @@ export function hasIoFailed(result) {
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
  *   presentmon?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null> },
  *   rebuildTray?: () => Promise<unknown>,
- *   applyRetryBackoffMs?: number,
- *   applyMaxRetries?: number,
+ *   applyRetryBackoffs?: number[],
+ *   applyBudgetMs?: number,
  * }} ctx
  */
 export function createIpcHandlers({
@@ -197,11 +186,15 @@ export function createIpcHandlers({
   // (no PresentMon service), so mock and product agree on 'unavailable'.
   presentmon = { poll: async () => null },
   rebuildTray = async () => {},
-  applyRetryBackoffMs = APPLY_RETRY_BACKOFF_MS,
-  applyMaxRetries = APPLY_MAX_RETRIES,
+  applyRetryBackoffs = APPLY_RETRY_BACKOFFS,
+  applyBudgetMs = APPLY_BUDGET_MS,
 }) {
   /** @type {Map<number, TelemetryService>} */
   const telemetry = new Map();
+  // In-flight apply abort tokens, one per device (F3). Starting a new apply
+  // cancels the previous in-flight one; 'apply-cancel' aborts the current.
+  /** @type {Map<number, ApplyToken>} */
+  const applyTokens = new Map();
 
   const startTelemetry = async (deviceId) => {
     if (telemetry.has(deviceId)) return;
@@ -240,20 +233,42 @@ export function createIpcHandlers({
         const settings = sanitizeSettings(payload);
         const caps = await backend.getCapabilities(deviceId);
         const clamped = clampSettings(settings, caps.ranges);
-        let result = await backend.applySettings(deviceId, clamped);
-        let retried = false;
-        // io-failed retry policy: transient driver flakiness gets up to
-        // `applyMaxRetries` re-attempts with backoff; user-fixable errors are
-        // returned as-is (never retried).
-        for (let attempt = 0; hasIoFailed(result) && attempt < applyMaxRetries; attempt++) {
-          await sleep(applyRetryBackoffMs);
-          result = await backend.applySettings(deviceId, clamped);
-          retried = true;
+        // F3 IGS fast path probe: fully-on => single attempt (100% success
+        // proven, no delay). A degraded/failed probe is NOT fully on ->
+        // retries stay enabled (safe direction).
+        let igsState = null;
+        try { igsState = await igs.getState(); } catch { /* degraded probe */ }
+        // A new apply on the same device cancels the in-flight one (abort
+        // semantics: the old caller gets its honest partial result).
+        const prev = applyTokens.get(deviceId);
+        if (prev) prev.abort();
+        const token = new ApplyToken();
+        applyTokens.set(deviceId, token);
+        let out;
+        try {
+          out = await applyWithRetry({
+            backend,
+            deviceId,
+            settings: clamped,
+            opts: { igsState, budgetMs: applyBudgetMs, backoffs: applyRetryBackoffs },
+            signal: token,
+            onProgress: (p) => emit('apply:progress', { deviceId, ...p }),
+          });
+        } finally {
+          if (applyTokens.get(deviceId) === token) applyTokens.delete(deviceId);
         }
-        if (retried) result = { ...result, retried: true };
         // IGS may change OC state between runs — always re-read after apply.
         const state = await backend.getCurrentSettings(deviceId);
-        return { result, state };
+        return { result: out.result, state };
+      },
+
+      // F3 cancel: abort the in-flight apply for this device. The running
+      // handler returns its honest partial result (cancelled: true).
+      'apply-cancel': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        const token = applyTokens.get(deviceId);
+        if (token) token.abort();
+        return { ok: true };
       },
 
       'reset-to-defaults': async (deviceId) => {

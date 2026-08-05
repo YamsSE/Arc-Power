@@ -137,7 +137,7 @@ test('apply-on-boot: failure -> defaults restored + fallbackApplied flag (never 
     });
     // The profile asks for 240 W; the driver (mock) refuses with io-failed.
     backend.injectFail('powerLimitW', 'io-failed');
-    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1' });
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1', budgetMs: 10 });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, true);
     assert.equal(out.result.ok, false);
@@ -162,7 +162,7 @@ test('apply-on-boot: failure AND failed defaults restore -> fallbackApplied fals
       profiles: [PROFILE],
     });
     backend.injectFail('powerLimitW', 'io-failed');
-    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1' });
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1', budgetMs: 10 });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, false);
   } finally {
@@ -311,7 +311,7 @@ test('F2: apply failure -> ONE tray instance reused for the failure balloon (nev
     });
     backend.injectFail('powerLimitW', 'io-failed');
     const { setupTray, calls } = countingTray();
-    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray });
+    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray, budgetMs: 10 });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, true); // defaults were restored
     assert.equal(calls.setup, 1); // F2 regression: exactly ONE setupTray call
@@ -387,7 +387,7 @@ test('NIT5: read-back throw after the defaults fallback -> failure still reporte
       profiles: [PROFILE],
     });
     const { setupTray, calls } = countingTray();
-    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray });
+    const out = await runApplyOnStartup({ backend, store, profileId: 'p1', setupTray, budgetMs: 10 });
     assert.equal(out.applied, false);
     assert.equal(out.fallbackApplied, true); // the restore itself ran
     assert.equal(out.state, null);

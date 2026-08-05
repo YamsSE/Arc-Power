@@ -138,6 +138,15 @@ export function normalizeFanCurve(points, maxPoints) {
 export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
 
 /**
+ * Hard ceiling for the exposed temperature limit (M2C-A F3 PT fix). The A770
+ * driver's OC properties report 60–90 °C, but applying a value above 90 is
+ * refused with 0x44000005 (TEMPERATURE_OUTSIDE_RANGE) while the props may
+ * drift on other driver versions — so the exposed max is pinned here and
+ * applied by every backend + the renderer. Never expose/apply above this.
+ */
+export const TEMP_LIMIT_MAX_C = 90;
+
+/**
  * Clamp a gpuLock pair to sane bounds before it reaches the driver:
  *   - voltageV -> [0, gpuVoltOffsetV.max] when that range exists (the only
  *     documented voltage bound available; absolute lock voltages outside it

@@ -440,23 +440,58 @@ actually RUN on this machine, so the premise is unverified empirically.
 - F1 (if E5 confirms): OC-enable/authorize step in the apply path before
   the first write.
 - F2 (if E6 confirms): GPU wake before apply.
-- F3 (universal, lands regardless): state-aware apply - extend retry
-  beyond io-failed to refusal codes with backoff (bounded); when IGS is
-  half-state, queue the apply and auto-fire when the state transitions
-  to fully-on/fully-off. Shared by UI Apply, tray, apply-on-startup.
-  Queued applies get a renderer-visible state: toast + pending indicator
-  on the Apply button ("queued - waiting for a workable window") and a
-  matching tray/apply-on-startup message; never a dead click.
+- F3 (universal, lands regardless - USER-CONSTRAINED design, 2026-08-05):
+  "must not require any additional programs to be running; must work for
+  clock/voltage offsets AND power limit AND temp limit." The A1 evidence
+  (E4c: IGS fully ON = 100% success; E4a: IGS off = PL/PT silent no-op;
+  E1: ArcTool landed one off-state success -> the off-state flaps open on
+  its own, minute-scale) therefore defines F3 as **retry-with-verify**,
+  NOT queue-on-IGS-transition:
+  - Apply anywhere, in any IGS state; never start or stop IGS from code.
+  - Outcome per control: ok / hard-error (OUTSIDE_RANGE family,
+    WAIVER, validation - instant fail, honest message) / retryable
+    (refusal codes AND silent no-op = SUCCESS with read-back mismatch).
+  - Retryable outcomes retry with backoff (1s,2s,4s,... bounded, ~60 s
+    total budget), live "retrying N/M" state on the Apply button
+    (cancellable), shared by UI Apply, tray, apply-on-startup.
+  - When IGS is fully ON: single attempt (100% success, no delay).
+  - PT range fix: driver caps TL at 90 C (props say 60-90); our exposed
+    max 92 causes 0x44000005 - find where 92 enters (capability query vs
+    props) and clamp the exposed range to 90.
+- F2/F1/F4/F5: killed by evidence (wake = no effect; no authorize
+  control exists - all 29 OC exports bound; old runtime+AppVersion
+  1.0+ArcTool GUID unlocks nothing, 315 W claim is a client-gated lie,
+  KMD enforces 252; no private surface found).
 - F4 (only if E1+E3 unlock something the driver-store DLL cannot):
   isolated legacy-runtime module with documented provenance, or the
-  registered-UID path if one exists.
+  registered-UID path if one exists. - KILLED (E3: nothing unlocked).
 - F5 (last resort, user sign-off only): private escape/IOCTL from A2
   strings - only with a concrete verifiable path and explicit user
-  approval of undocumented-API risk.
+  approval of undocumented-API risk. - KILLED (no surface found).
 - Deliverable: `tools/validate/m2c-acceptance.js` real-device harness
   (battery above) with a pass table: all four controls accepted AND
   read-back matches across >=3 sessions in the fully-off window and >=3
   in the fully-on window, refuse rates documented before/after.
+
+**Phase A1/A2 outcomes (2026-08-05, run + status updates delivered):**
+E0: no BiFrost config reaches >252 W (presets cap at 252/YoYo; device
+200 W with helper dead). E1: ArcTool runs on today's driver, applied
+PL 252 once via OCR-driven UI (device read-back confirmed) while our
+identical calls no-op'd - but its own docs say the range is limited to
+Arc Control's, its props read the same 252 cap, and the single success
+cannot be separated from the off-state flap -> the >252 W premise is
+dead on every public path. E2: ArcTool loads its bundled 2022-09
+runtime app-dir-first, installs WinRing0 (removed after the run), writes
+nothing to %APPDATA%/registry, never touches IGS. E3: old runtime
+initializes with AppVersion 1.0 + zero UID; 315 W claim is client-gated
+(real sets no-op at KMD); GUID combos fail; identical write behavior.
+E4: IGS fully ON = 100% success; IGS off = PL/PT silent no-op (SUCCESS,
+read-back unchanged) - matches documented RESET_REQUIRED semantics.
+E5: ResetToDefault itself fails (DATA_WRITE) with IGS off; locks always
+unlocked; props V0 vs V1 identical; all 29 ctlOverclock* exports bound.
+E6/E7: wake/load and V1-vs-V2 make no difference. A2: zero-UID is the
+documented default; registered-UID path does not exist; OC is
+discrete-GPU-only by driver design (igcl issue #129).
 
 **Phase A4 - Acceptance.** DoD, three reachable branches:
 1. Harness green in the fully-off AND fully-on windows (all four
@@ -465,7 +500,10 @@ actually RUN on this machine, so the premise is unverified empirically.
 2. Cap proven universal (E0/E1): proof table (same harness, ArcTool
    included), F3 + confirmed fixes shipped, refuse-rate table
    before/after -> the user's sign-off covers BOTH the >252 W cap AND
-   any residual four-control refusal, explicitly.
+   any residual four-control refusal, explicitly. **USER SIGNED OFF the
+   >252 W verdict on 2026-08-05 (accepted: cap is environmental, DoD
+   branch 2). Remaining: F3 + PT clamp shipped, harness refuse-rate
+   table, final sign-off on residual refusals.**
 3. Neither: evidence table (same harness, ArcTool included),
    refuse-rate before/after, F3 + every confirmed fix shipped, and an
    explicit user decision on the residual four-control refusals

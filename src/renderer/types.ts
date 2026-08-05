@@ -10,6 +10,7 @@ export type OcErrorCode =
   | 'reset-required'
   | 'unsupported'
   | 'unavailable-symbol'
+  | 'invalid-argument'
   | 'io-failed';
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
@@ -66,6 +67,8 @@ export interface PerControlResult {
   errorCode?: OcErrorCode;
   message?: string;
   readBackEqual?: boolean;
+  /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op — must NOT be reported as applied). */
+  silentNoop?: boolean;
 }
 
 export interface ApplyResult {
@@ -73,6 +76,21 @@ export interface ApplyResult {
   perControl: Record<string, PerControlResult>;
   /** M2b: true when an io-failed apply was retried with backoff before the final result. */
   retried?: boolean;
+  /** F3: total backend attempts (1 = never retried). */
+  attempts?: number;
+  /** F3: retryable controls remained after the budget was exhausted. */
+  gaveUp?: boolean;
+  /** F3: the apply was cancelled by the user (honest partial result). */
+  cancelled?: boolean;
+}
+
+/** F3 push event while an apply is retrying (drives the live Apply-button state). */
+export interface ApplyProgress {
+  deviceId: number;
+  attempt: number;
+  retryOf: number;
+  controls: string[];
+  elapsedMs: number;
 }
 
 export interface ApplyResponse {

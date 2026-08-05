@@ -11,8 +11,12 @@ import {
   isControlDirty,
   shouldShowRetryNote,
   profileApplyOutcome,
+  clampExposedRange,
+  applyGiveUpSummary,
+  TEMP_LIMIT_MAX_C,
 } from '../src/renderer/pure/settings.ts';
-import type { DeviceState, Settings } from '../src/renderer/types.ts';
+import { computePresets } from '../src/renderer/pure/presets.ts';
+import type { DeviceState, RangeInfo, Settings } from '../src/renderer/types.ts';
 
 test('validateSettingsPayload: accepts a full legal payload', () => {
   const payload: unknown = {
@@ -150,4 +154,37 @@ test('profileApplyOutcome: partial failure never marks active or claims applied'
   assert.deepEqual(full, { markActive: true, toast: '"Game Boost" applied to the GPU.' });
   const noop = profileApplyOutcome({ ok: true }, 'Game Boost', 0);
   assert.deepEqual(noop, { markActive: true, toast: '"Game Boost" matches the current GPU state — nothing changed.' });
+});
+
+// ---------------------------------------------------------------------------
+// M2C-A F3 — PT clamp (92 -> 90) + honest give-up summary
+// ---------------------------------------------------------------------------
+
+test('F3 PT clamp: the renderer ceiling is 90 C', () => {
+  assert.equal(TEMP_LIMIT_MAX_C, 90);
+});
+
+test('F3 PT clamp: clampExposedRange pins the temp-limit max to 90 (sliders + presets)', () => {
+  const drifted = { min: 60, max: 92, step: 1, default: 90, units: 'C' };
+  const clamped = clampExposedRange(drifted, 'tempLimitC');
+  assert.equal(clamped?.max, 90);
+  // Presets derive from the clamped range: no chip may ever exceed 90.
+  const presets = computePresets(clamped as RangeInfo);
+  assert.ok(presets.every((p) => p.value <= 90), JSON.stringify(presets));
+  assert.equal(Math.max(...presets.map((p) => p.value)), 90);
+});
+
+test('F3 PT clamp: an already-legal range and other controls pass through untouched', () => {
+  const legal = { min: 60, max: 90, step: 1, default: 90, units: 'C' };
+  assert.equal(clampExposedRange(legal, 'tempLimitC'), legal, 'same object when already legal');
+  const pl = { min: 105, max: 252, step: 1, default: 210, units: 'W' };
+  assert.equal(clampExposedRange(pl, 'powerLimitW'), pl);
+  assert.equal(clampExposedRange(undefined, 'tempLimitC'), undefined);
+});
+
+test('F3: applyGiveUpSummary reports the honest give-up text with the attempt count', () => {
+  assert.equal(applyGiveUpSummary({ gaveUp: true, attempts: 5 }), 'The driver kept refusing after 5 attempts — no more retries within the apply budget.');
+  assert.equal(applyGiveUpSummary({ gaveUp: true, attempts: 1 }), 'The driver kept refusing after 1 attempt — no more retries within the apply budget.');
+  assert.equal(applyGiveUpSummary({ gaveUp: false, attempts: 5 }), null);
+  assert.equal(applyGiveUpSummary({}), null);
 });

@@ -609,6 +609,17 @@ html, body {
   padding: 10px 30px;
 }
 
+/* F3 retry-in-progress state: still clickable (a click cancels the apply). */
+.floating-apply.applying {
+  animation: oc-pulse 1.2s ease-in-out infinite;
+  cursor: pointer;
+}
+
+@keyframes oc-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
 /* ------------------------------------------------- compact OC cards (M2b-B) */
 
 .oc-stack { gap: 10px; }

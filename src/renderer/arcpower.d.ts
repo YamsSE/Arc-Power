@@ -4,6 +4,7 @@
 // live in src/main/ipc-core.js — this type mirrors that contract.
 
 import type {
+  ApplyProgress,
   ApplyResponse,
   Capabilities,
   DeviceInfo,
@@ -26,6 +27,8 @@ export interface ArcPowerApi {
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
   applySettings(deviceId: number, settings: Settings): Promise<ApplyResponse>;
+  /** F3: abort the in-flight apply for a device (live Apply button). */
+  cancelApply(deviceId: number): Promise<{ ok: boolean }>;
   resetToDefaults(deviceId: number): Promise<ResetResponse>;
   waiverGet(deviceId: number): Promise<{ accepted: boolean }>;
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;
@@ -45,6 +48,8 @@ export interface ArcPowerApi {
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
   trayRebuild(): Promise<{ ok: boolean }>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
+  /** F3: live retry progress while an apply is running (deviceId-scoped). */
+  onApplyProgress(cb: (progress: ApplyProgress) => void): () => void;
 }
 
 declare global {

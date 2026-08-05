@@ -13,7 +13,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { isNoopApply, shouldShowRetryNote, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
+import { isNoopApply, shouldShowRetryNote, validateSettingsPayload, profileApplyOutcome, applyGiveUpSummary } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
 import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings } from '../types.ts';
 
@@ -226,22 +226,37 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     root.append(bootCard, listCard);
   };
 
-  const profileRow = (p: Profile, active: boolean, activeId: string | null): HTMLElement => el('div', {
-    class: `profile-row${active ? ' profile-active' : ''}`,
-    dataset: { id: p.id },
-  }, [
-    el('div', { class: 'profile-info' }, [
-      el('span', { class: 'profile-name', text: p.name }),
-      active ? el('span', { class: 'badge profile-badge', text: 'Active' }) : null,
-    ]),
-    el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps).map((t) => el('span', { class: 'chip', text: t }))),
-    el('div', { class: 'profile-actions' }, [
-      el('button', { class: 'btn btn-primary btn-sm', text: 'Load', onClick: () => void onLoad(p) }),
-      el('button', { class: 'btn btn-ghost btn-sm', text: 'Save', title: 'Overwrite this profile with the current driver settings', onClick: () => void onSave(p) }),
-      el('button', { class: 'btn btn-ghost btn-sm', text: 'Rename', onClick: () => void onRename(p) }),
-      el('button', { class: 'btn btn-ghost btn-sm btn-danger-text', text: 'Delete', onClick: () => void onDelete(p) }),
-    ]),
-  ]);
+  const profileRow = (p: Profile, active: boolean, activeId: string | null): HTMLElement => {
+    // F3: the Load button is the single click surface — while a load is
+    // retrying it shows the live attempt state and a click CANCELS it.
+    const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load' });
+    let loadInFlight = false;
+    loadBtn.addEventListener('click', () => {
+      if (loadInFlight) {
+        void api.cancelApply(s.deviceId ?? -1).catch(() => {});
+        toast('info', 'Cancelling…', 'Stopping further retries — controls already applied stay applied.');
+        return;
+      }
+      loadInFlight = true;
+      void onLoad(p, loadBtn, () => { loadInFlight = false; });
+    });
+    return el('div', {
+      class: `profile-row${active ? ' profile-active' : ''}`,
+      dataset: { id: p.id },
+    }, [
+      el('div', { class: 'profile-info' }, [
+        el('span', { class: 'profile-name', text: p.name }),
+        active ? el('span', { class: 'badge profile-badge', text: 'Active' }) : null,
+      ]),
+      el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps).map((t) => el('span', { class: 'chip', text: t }))),
+      el('div', { class: 'profile-actions' }, [
+        loadBtn,
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Save', title: 'Overwrite this profile with the current driver settings', onClick: () => void onSave(p) }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Rename', onClick: () => void onRename(p) }),
+        el('button', { class: 'btn btn-ghost btn-sm btn-danger-text', text: 'Delete', onClick: () => void onDelete(p) }),
+      ]),
+    ]);
+  };
 
   const onBootToggle = async (checked: boolean): Promise<void> => {
     const box = root.querySelector('.boot-checkbox') as HTMLInputElement | null;
@@ -348,16 +363,29 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     }
   };
 
-  const onLoad = async (p: Profile): Promise<void> => {
+  const onLoad = async (p: Profile, btn: HTMLElement, done: () => void): Promise<void> => {
     const deviceId = s.deviceId;
     if (deviceId === null) return;
     const decision = await ensureWaiver(deviceId, caps.waiverAccepted, caps.deviceName || 'this GPU');
     if (decision === 'cancelled') {
+      done();
       toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
       return;
     }
+    let unsubProgress: (() => void) | null = null;
+    const setLoading = (on: boolean, label = 'Load') => {
+      btn.textContent = label;
+      if (!on) done();
+    };
     try {
       const before = ctx.store.get().state as DeviceState;
+      setLoading(true, 'Loading…');
+      // F3 live retry state on the Load button (same push events as the
+      // Overclocking Apply button; never a dead click).
+      unsubProgress = api.onApplyProgress((ev) => {
+        if (ev.deviceId !== deviceId) return;
+        setLoading(true, `Loading — retry ${ev.attempt}/${ev.retryOf}…`);
+      });
       const { result, state: fresh } = await api.applySettings(deviceId, p.settings);
       ctx.store.set({ state: fresh });
       let changed = 0;
@@ -369,11 +397,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
         }
       }
-      // The retry note only claims success when the retried apply actually
-      // succeeded (M2b review F3) — a failed retry shows only the errors.
-      if (shouldShowRetryNote(result)) {
+      if (result.cancelled) {
+        toast('info', 'Load cancelled', 'Controls already applied stay applied; the rest were not written.');
+      } else if (shouldShowRetryNote(result)) {
+        // The retry note only claims success when the retried apply actually
+        // succeeded (M2b review F3) — a failed retry shows only the errors.
         toast('warn', 'Applied on retry', 'The driver was busy — the profile was applied on the retry attempt.');
       }
+      const giveUp = applyGiveUpSummary(result);
+      if (giveUp) toast('error', 'Profile load failed', giveUp);
       ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
       // M2b step-5 NIT 2: only a fully-successful apply (result.ok) may mark
       // the profile active and claim "applied to the GPU" — a partially-
@@ -387,6 +419,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       await refresh();
     } catch (err) {
       toast('error', 'Profile load failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      unsubProgress?.();
+      setLoading(false);
     }
   };
 

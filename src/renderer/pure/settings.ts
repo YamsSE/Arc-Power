@@ -6,8 +6,23 @@
 // authoritative gate; this module keeps the UI honest before it ever sends a
 // payload, and builds the payload from slider state.
 
-import type { DeviceState, FanMode, Settings } from '../types.ts';
+import type { DeviceState, FanMode, RangeInfo, Settings } from '../types.ts';
 import { MAX_CURVE_POINTS } from './curve.ts';
+
+// F3 PT clamp (M2C-A): the driver setter refuses temp limits above 90 C
+// (0x44000005); the exposed max is pinned here on top of the backend clamp so
+// sliders/presets can never offer an un-appliable value.
+export const TEMP_LIMIT_MAX_C = 90;
+
+/**
+ * Clamp the exposed range for tempLimitC to TEMP_LIMIT_MAX_C (F3). Other
+ * controls pass through untouched. Backend capabilities are already capped,
+ * but a stale cache or a future driver props drift must not widen the slider.
+ */
+export function clampExposedRange(range: RangeInfo | undefined, key: string): RangeInfo | undefined {
+  if (!range || key !== 'tempLimitC' || range.max <= TEMP_LIMIT_MAX_C) return range;
+  return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
+}
 
 const SCALAR_KEYS = new Set([
   'powerLimitW',
@@ -136,6 +151,17 @@ export function isNoopApply(control: string, settings: Settings, beforeState: De
  */
 export function shouldShowRetryNote(result: { retried?: boolean; ok?: boolean }): boolean {
   return result.retried === true && result.ok === true;
+}
+
+/**
+ * F3 honest give-up summary: when the retry budget was exhausted with
+ * retryable controls still refusing, surface exactly that — never a generic
+ * "failed" that hides how patient the app already was.
+ */
+export function applyGiveUpSummary(result: { gaveUp?: boolean; attempts?: number }): string | null {
+  if (result.gaveUp !== true) return null;
+  const n = typeof result.attempts === 'number' ? result.attempts : 1;
+  return `The driver kept refusing after ${n} attempt${n === 1 ? '' : 's'} — no more retries within the apply budget.`;
 }
 
 /**

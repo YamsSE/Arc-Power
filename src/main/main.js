@@ -96,7 +96,7 @@ async function setupTray({ getWindow, backend, store }) {
           // renderer's Load button) but keeps the waiver gates. The balloon
           // only claims "defaults restored" when a restore actually ran
           // (M2b review F1) — gate refusals get a reason-specific message.
-          const out = await applyProfile({ backend, store, profileId: activeProfileId });
+          const out = await applyProfile({ backend, store, profileId: activeProfileId, getIgsState: () => igs.getState() });
           if (!out.applied && trayRef && !trayRef.isDestroyed()) {
             let name = 'unknown';
             try {
@@ -155,7 +155,11 @@ async function main() {
   const store = new ProfileStore();
   // IGS service adapter: mock mode (incl. --ui-verify) never touches the real
   // service; the real adapter only runs sc.exe probes, and disable/enable run
-  // ONLY on an explicit user click (renderer-invoked).
+  // ONLY on an explicit user click (renderer-invoked). The mock default is
+  // fully ON (this machine); the ui-verify retry scenarios run the IGS-off
+  // variant via RID_MOCK_IGS_RUNNING=0 RID_MOCK_IGS_APP=0 (the fully-on fast
+  // path legitimately takes a single attempt, so the retry UI only exercises
+  // in the off variant).
   const igs = mock ? createMockIgs() : createIgs();
   // Run-key adapter: the real one writes HKCU only on an explicit user click
   // (startup-set IPC); mock mode (incl. --ui-verify) never touches the
@@ -205,6 +209,7 @@ async function main() {
       profileId: applyProfileId,
       setupTray: () => setupTray({ getWindow: () => null, backend, store }),
       log: (s) => console.log(s),
+      getIgsState: () => igs.getState(),
     });
     return;
   }
@@ -221,6 +226,10 @@ async function main() {
     startup,
     driverInfo,
     presentmon,
+    // --ui-verify: short retry schedule so the io-failed retry scenarios
+    // finish within the verification waits (persistent failure gives up fast
+    // instead of holding the UI ~60 s). The product path uses the defaults.
+    ...(uiVerify ? { applyRetryBackoffs: [100, 200, 300, 400, 500, 600, 700, 800], applyBudgetMs: 2500 } : {}),
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach

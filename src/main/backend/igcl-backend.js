@@ -23,7 +23,7 @@ import {
   describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem,
 } from './igcl-bindings.js';
 import { igclErrorCode } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve, nearlyEqual } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C } from './units.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -325,6 +325,13 @@ export class IgclBackend {
             };
           }
         }
+        // F3 PT range fix (M2C-A): the driver setter refuses temp limits
+        // above 90 C with 0x44000005 even if the props ever drift above it —
+        // pin the EXPOSED max to TEMP_LIMIT_MAX_C so the UI/presets/validation
+        // can never offer an un-appliable value (plan.md M2C-A F3).
+        if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
+          caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
+        }
         // gpuLock: supported when the symbol pair exists (0,0 pair = dynamic,
         // still supported).
         caps.controls.gpuLock = !this._isUnavailable(lib.ctlOverclockGpuLockGet)
@@ -556,7 +563,17 @@ export class IgclBackend {
         readBackEqual = nearlyEqual(readBack, clamped);
         message = readBackEqual ? undefined : `read-back ${readBack} != requested ${clamped}`;
       }
-      result.perControl[canonicalName] = { ok: readBackEqual, errorCode: readBackEqual ? undefined : 'io-failed', message, readBackEqual };
+      result.perControl[canonicalName] = {
+        ok: readBackEqual,
+        errorCode: readBackEqual ? undefined : 'io-failed',
+        message,
+        readBackEqual,
+        // F3 silent no-op (plan M2C-A): the setter returned SUCCESS but the
+        // read-back did not change — the driver accepted nothing. This is a
+        // retryable failure, NEVER "applied"; the retry core keys off
+        // silentNoop to classify it before the generic io-failed class.
+        silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+      };
       if (!readBackEqual) result.ok = false;
     };
 
@@ -591,7 +608,14 @@ export class IgclBackend {
         readBackEqual = nearlyEqual(got.Voltage, bounded.voltageV) && nearlyEqual(got.Frequency, bounded.freqMhz);
         message = readBackEqual ? undefined : `read-back ${got.Voltage}V/${got.Frequency}MHz != requested`;
       }
-      result.perControl.gpuLock = { ok: readBackEqual, errorCode: readBackEqual ? undefined : 'io-failed', message, readBackEqual };
+      result.perControl.gpuLock = {
+        ok: readBackEqual,
+        errorCode: readBackEqual ? undefined : 'io-failed',
+        message,
+        readBackEqual,
+        // F3 silent no-op: SUCCESS from the setter with an unchanged pair.
+        silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+      };
       if (!readBackEqual) result.ok = false;
     };
 
@@ -812,7 +836,14 @@ export class IgclBackend {
               }
             }
           }
-          result.perControl.vfCurve = { ok: v.ok, readBackEqual: v.ok, errorCode: v.ok ? undefined : 'io-failed', message: v.message };
+          result.perControl.vfCurve = {
+            ok: v.ok,
+            readBackEqual: v.ok,
+            errorCode: v.ok ? undefined : 'io-failed',
+            message: v.message,
+            // F3 silent no-op: SUCCESS from the write with a mismatch on re-read.
+            silentNoop: setResult === CTL_RESULT.SUCCESS && !v.ok,
+          };
           if (!v.ok) result.ok = false;
         }
       }

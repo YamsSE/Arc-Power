@@ -323,45 +323,74 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (Math.abs(afterReset.powerLimitW - 210) > 1e-6) fail(`reset apply failed: ${afterReset.powerLimitW}`);
   step('reset', `reset to default 210 W applied, read-back ${afterReset.powerLimitW} W`);
 
-  // --- 5b. M2b-B retry note (M2b review F3): the "Applied on retry" warn is
-  // --- shown ONLY when the retried apply succeeded --------------------------
-  // First: a PERSISTENT io-failed apply exhausts its retries and fails — the
-  // error toast appears and the warn note must NOT (it would be a lie).
-  backend.injectFail('powerLimitW', 'io-failed');
-  await setSlider(220);
-  await clearToasts();
-  await clickApply();
-  if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
-    fail('io-failed error toast missing (always-fail retry)');
+  // --- 5b. M2b-B retry note (M2b review F3) + F3 retry-with-verify ---------
+  // The "Applied on retry" warn is shown ONLY when the retried apply
+  // succeeded; a persistent io-failed apply exhausts its retries, fails, and
+  // must show the error toast with NO warn note. F3 (M2C-A): when the mock
+  // IGS is fully ON the fast path takes a single attempt by design — then we
+  // assert the no-retry behavior instead (success without any retry note,
+  // honest failure without retries on an always-failing backend).
+  if (svcRunning && appRunning) {
+    // Fast path: one attempt, immediate honest outcome, no retry note.
+    backend.injectFail('powerLimitW', 'io-failed');
+    await setSlider(220);
+    await clearToasts();
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
+      fail('io-failed error toast missing on the IGS-on fast path');
+    }
+    await sleep(300);
+    if (await js(`!!document.querySelector('.toast-warn')`)) {
+      fail('fast path must NOT retry — a retry note appeared on the IGS-on apply');
+    }
+    backend.injectFail('powerLimitW', null);
+    await setSlider(210);
+    await clearToasts();
+    await clickApply();
+    await sleep(400);
+    const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(recovered.powerLimitW - 210) > 1e-6) fail(`recovery did not restore 210 W: ${recovered.powerLimitW}`);
+    await clearToasts();
+    step('retry-note', 'IGS-on fast path: io-failed -> single attempt, error toast, NO retry note; recovery applied');
+  } else {
+    // First: a PERSISTENT io-failed apply exhausts its retries and fails — the
+    // error toast appears and the warn note must NOT (it would be a lie).
+    backend.injectFail('powerLimitW', 'io-failed');
+    await setSlider(220);
+    await clearToasts();
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
+      fail('io-failed error toast missing (always-fail retry)');
+    }
+    await sleep(300);
+    if (await js(`!!document.querySelector('.toast-warn')`)) {
+      fail('fully-failed retried apply must NOT show the "Applied on retry" note');
+    }
+    backend.injectFail('powerLimitW', null);
+    // Then: a ONE-SHOT io-failed apply retries and succeeds — the note IS
+    // shown and the read-back lands on the requested value.
+    backend.injectFail('powerLimitW', 'io-failed', true);
+    await clearToasts();
+    await clickApply();
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-warn')).some((t) => (t.textContent ?? '').includes('Applied on retry'))`, 10000))) {
+      fail('retried-and-succeeded apply did not show the "Applied on retry" note');
+    }
+    await sleep(300);
+    if (await js(`!!document.querySelector('.toast-error')`)) {
+      fail('one-shot retry ended in failure — an error toast appeared next to the note');
+    }
+    const retriedState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(retriedState.powerLimitW - 220) > 1e-6) fail(`one-shot retry did not apply 220 W: ${retriedState.powerLimitW}`);
+    // Recover: restore defaults via the OC UI.
+    await setSlider(210);
+    await clearToasts();
+    await clickApply();
+    await sleep(400);
+    const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(recovered.powerLimitW - 210) > 1e-6) fail(`recovery did not restore 210 W: ${recovered.powerLimitW}`);
+    await clearToasts();
+    step('retry-note', 'io-failed apply: failed retry -> error toast only (no warn); one-shot retry -> "Applied on retry" note + 220 W read back');
   }
-  await sleep(300);
-  if (await js(`!!document.querySelector('.toast-warn')`)) {
-    fail('fully-failed retried apply must NOT show the "Applied on retry" note');
-  }
-  backend.injectFail('powerLimitW', null);
-  // Then: a ONE-SHOT io-failed apply retries and succeeds — the note IS
-  // shown and the read-back lands on the requested value.
-  backend.injectFail('powerLimitW', 'io-failed', true);
-  await clearToasts();
-  await clickApply();
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-warn')).some((t) => (t.textContent ?? '').includes('Applied on retry'))`, 10000))) {
-    fail('retried-and-succeeded apply did not show the "Applied on retry" note');
-  }
-  await sleep(300);
-  if (await js(`!!document.querySelector('.toast-error')`)) {
-    fail('one-shot retry ended in failure — an error toast appeared next to the note');
-  }
-  const retriedState = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (Math.abs(retriedState.powerLimitW - 220) > 1e-6) fail(`one-shot retry did not apply 220 W: ${retriedState.powerLimitW}`);
-  // Recover: restore defaults via the OC UI.
-  await setSlider(210);
-  await clearToasts();
-  await clickApply();
-  await sleep(400);
-  const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (Math.abs(recovered.powerLimitW - 210) > 1e-6) fail(`recovery did not restore 210 W: ${recovered.powerLimitW}`);
-  await clearToasts();
-  step('retry-note', 'io-failed apply: failed retry -> error toast only (no warn); one-shot retry -> "Applied on retry" note + 220 W read back');
 
   // --- 6. fan editor ---------------------------------------------------------
   const fanReadonly = process.env.RID_MOCK_FAN_READONLY === '1';

@@ -13,6 +13,7 @@
 // actually ran (fallbackApplied !== undefined).
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
+import { applyWithRetry, APPLY_BUDGET_MS, APPLY_BUDGET_MS_BOOT } from './apply-retry.js';
 
 /**
  * @param {{
@@ -21,6 +22,8 @@ import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
  *   profileId: string,
  *   log?: (s: string) => void,
  *   requireOcOnBoot?: boolean,   // boot path only; explicit actions skip it
+ *   budgetMs?: number,           // apply retry budget (boot: 20 s; tray/UI: 60 s)
+ *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -30,7 +33,7 @@ import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false }) {
+export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, budgetMs = APPLY_BUDGET_MS, getIgsState = null }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
@@ -67,10 +70,27 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
     return { applied: false, reason: `profile '${profileId}' not found` };
   }
 
-  log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId}`);
+  log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId} (retry budget ${budgetMs} ms)`);
+  // F3 retry-with-verify: shared with the UI apply path. Boot/tray applies
+  // get the same patient, honest treatment; the boot path caps its budget
+  // (20 s) so boot is never blocked indefinitely, and the IGS fully-on fast
+  // path (single attempt) applies whenever the probe reports it.
+  let igsState = null;
+  if (getIgsState) {
+    try { igsState = await getIgsState(); } catch { /* degraded probe -> retries enabled */ }
+  }
   let result;
   try {
-    result = await backend.applySettings(deviceId, profile.settings);
+    const out = await applyWithRetry({
+      backend,
+      deviceId,
+      settings: profile.settings,
+      opts: { budgetMs, igsState },
+      onProgress: (p) => log(`[apply-on-boot] attempt ${p.attempt}/${p.retryOf} for [${p.controls.join(', ')}] (${p.elapsedMs} ms elapsed)`),
+    });
+    result = out.result;
+    if (out.gaveUp) log(`[apply-on-boot] gave up after ${out.attempts} attempt(s) within the ${budgetMs} ms budget`);
+    if (out.cancelled) log(`[apply-on-boot] apply cancelled`);
   } catch (err) {
     return { applied: false, reason: `apply threw: ${err.message}` };
   }
@@ -114,11 +134,15 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
 
 /**
  * Boot-gated variant (`--apply-profile`): additionally requires ocOnBoot.
+ * The retry budget is capped at 20 s so boot is never blocked indefinitely
+ * (`budgetMs` injectable for tests / the acceptance harness).
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   profileId: string,
  *   log?: (s: string) => void,
+ *   budgetMs?: number,
+ *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -128,8 +152,8 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileOnBoot({ backend, store, profileId, log = () => {} }) {
-  return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true });
+export async function applyProfileOnBoot({ backend, store, profileId, log = () => {}, budgetMs = APPLY_BUDGET_MS_BOOT, getIgsState = null }) {
+  return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true, budgetMs, getIgsState });
 }
 
 /**
@@ -146,6 +170,8 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   profileId: string,
  *   setupTray: () => Promise<{ displayBalloon: (o: { title: string, content: string }) => void }>,
  *   log?: (s: string) => void,
+ *   budgetMs?: number,
+ *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -155,10 +181,10 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   state?: unknown,
  * }>}
  */
-export async function runApplyOnStartup({ backend, store, profileId, setupTray, log = () => {} }) {
+export async function runApplyOnStartup({ backend, store, profileId, setupTray, log = () => {}, budgetMs = APPLY_BUDGET_MS_BOOT, getIgsState = null }) {
   let out;
   try {
-    out = await applyProfileOnBoot({ backend, store, profileId, log });
+    out = await applyProfileOnBoot({ backend, store, profileId, log, budgetMs, getIgsState });
   } catch (err) {
     out = { applied: false, reason: err.message };
   }

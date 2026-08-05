@@ -15,7 +15,7 @@ import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffG
 import { computeDirty as perControlDirty } from '../pure/slider.ts';
 import { computePresets } from '../pure/presets.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, computeDirty, isNoopApply, shouldShowRetryNote } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, computeDirty, isNoopApply, shouldShowRetryNote, applyGiveUpSummary, clampExposedRange } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { toast } from '../components/toast.ts';
 import type { RangeInfo, Capabilities, DeviceState } from '../types.ts';
@@ -68,9 +68,32 @@ export const overclockingPage: Page = {
     let currentState: DeviceState = state;
 
     // --- floating Apply (M2b-B): bottom-left, dirty-only -------------------
+    // F3 (M2C-A): while an apply is retrying, the button shows the live
+    // attempt state ("Applying — retry 3/9…") and clicking it CANCELS the
+    // in-flight apply — never a dead click. Progress arrives via push events
+    // from main; the final result is reported honestly (give-up summary).
     const applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
-    applyBtn.addEventListener('click', () => void apply());
+    let applying = false;
+    let unsubProgress: (() => void) | null = null;
+    applyBtn.addEventListener('click', () => {
+      if (applying) {
+        const dev = ctx.store.get().deviceId;
+        if (dev !== null) {
+          void api.cancelApply(dev).catch(() => {});
+          toast('info', 'Cancelling…', 'Stopping further retries — controls already applied stay applied.');
+        }
+        return;
+      }
+      void apply();
+    });
+    const setApplying = (on: boolean, label = APPLY_BTN_TEXT) => {
+      applying = on;
+      applyBtn.textContent = label;
+      applyBtn.classList.toggle('applying', on);
+      applyBtn.disabled = false; // always clickable: a click cancels while in flight
+    };
     const updateFloating = () => {
+      if (applying) return;
       applyBtn.hidden = !computeDirty(buildScalarSettings(values), currentState);
     };
 
@@ -89,7 +112,9 @@ export const overclockingPage: Page = {
     };
 
     const buildCard = (key: string): HTMLElement => {
-      const range: RangeInfo = caps.ranges[key];
+      // F3 PT clamp: the temp-limit range is pinned to 90 C max (driver
+      // refuses above with 0x44000005) — sliders/presets never exceed it.
+      const range: RangeInfo = clampExposedRange(caps.ranges[key], key) as RangeInfo;
       const rawDriver = state[key as keyof DeviceState];
       const driverValue = typeof rawDriver === 'number' ? rawDriver : null;
       const driverText = formatDriverValue(driverValue, range);
@@ -173,6 +198,11 @@ export const overclockingPage: Page = {
         // control whose value already equals the driver read-back stays
         // silent on success.
         const before = currentState;
+        setApplying(true, `${APPLY_BTN_TEXT}…`);
+        unsubProgress = api.onApplyProgress((p) => {
+          if (p.deviceId !== deviceId) return;
+          setApplying(true, `Applying — retry ${p.attempt}/${p.retryOf}…`);
+        });
         const { result, state: fresh } = await api.applySettings(deviceId, settings);
         // M1 risk note: IGS may change OC state — refresh after every apply.
         currentState = fresh;
@@ -187,12 +217,20 @@ export const overclockingPage: Page = {
           }
           // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
         }
-        // The retry note only claims success when the retried apply
-        // actually succeeded (M2b review F3): an apply that exhausted its
-        // retries and failed must not show "applied on the retry attempt".
-        if (shouldShowRetryNote(result)) {
+        if (result.cancelled) {
+          // F3 abort semantics: the user stopped the retries; report the
+          // honest partial state (controls already applied stay applied).
+          toast('info', 'Apply cancelled', 'Controls already applied stay applied; the rest were not written.');
+        } else if (shouldShowRetryNote(result)) {
+          // The retry note only claims success when the retried apply
+          // actually succeeded (M2b review F3): an apply that exhausted its
+          // retries and failed must not show "applied on the retry attempt".
           toast('warn', 'Applied on retry', 'The driver was busy — the value was applied on the retry attempt.');
         }
+        // F3 honest give-up: the driver kept refusing across the whole
+        // budget — say exactly that, never a generic failure.
+        const giveUp = applyGiveUpSummary(result);
+        if (giveUp) toast('error', 'Apply failed', giveUp);
         // Recompute dirty chips + the floating button against the fresh
         // read-back so a control that just applied stops showing "Unapplied".
         for (const key of controls) refreshCard(key);
@@ -206,6 +244,10 @@ export const overclockingPage: Page = {
         }
       } catch (err) {
         toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
+      } finally {
+        unsubProgress?.();
+        unsubProgress = null;
+        setApplying(false);
       }
     };
 

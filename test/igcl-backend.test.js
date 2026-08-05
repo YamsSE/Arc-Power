@@ -67,6 +67,7 @@ function makeFakeLib(opts = {}) {
   const encodeOc = (buf) => {
     const obj = { Size: koffi.sizeof('ctl_oc_properties_t'), Version: 1, bSupported: true };
     const matrix = { ...OC_MATRIX };
+    if (opts.tempLimitMax !== undefined) matrix.temperatureLimit = { ...matrix.temperatureLimit, max: opts.tempLimitMax };
     if (units.powerLimit !== 4) matrix.powerLimit = { ...matrix.powerLimit, units: units.powerLimit, min: 105000, max: 252000, step: 1000, Default: 210000 };
     if (units.gpuVoltageOffset !== 3) matrix.gpuVoltageOffset = { ...matrix.gpuVoltageOffset, units: units.gpuVoltageOffset, min: 0, max: 234, step: 5, Default: 0 };
     for (const [k, v] of Object.entries(matrix)) obj[k] = v;
@@ -75,13 +76,13 @@ function makeFakeLib(opts = {}) {
 
   const getters = {
     ctlOverclockPowerLimitGetV2: (h, buf) => { koffi.encode(buf, 'double', units.powerLimit === 4 ? state.powerLimitW : state.powerLimitW * 1000); return 0; },
-    ctlOverclockPowerLimitSetV2: (h, v) => { calls.sets.push(['powerLimit', v]); state.powerLimitW = units.powerLimit === 4 ? v : v / 1000; return 0; },
+    ctlOverclockPowerLimitSetV2: (h, v) => { calls.sets.push(['powerLimit', v]); if (!opts.silentNoop) state.powerLimitW = units.powerLimit === 4 ? v : v / 1000; return 0; },
     ctlOverclockGpuMaxVoltageOffsetGetV2: (h, buf) => { koffi.encode(buf, 'double', units.gpuVoltageOffset === 3 ? state.gpuVoltOffsetV : state.gpuVoltOffsetV * 1000); return 0; },
-    ctlOverclockGpuMaxVoltageOffsetSetV2: (h, v) => { calls.sets.push(['gpuVoltOffset', v]); state.gpuVoltOffsetV = units.gpuVoltageOffset === 3 ? v : v / 1000; return 0; },
+    ctlOverclockGpuMaxVoltageOffsetSetV2: (h, v) => { calls.sets.push(['gpuVoltOffset', v]); if (!opts.silentNoop) state.gpuVoltOffsetV = units.gpuVoltageOffset === 3 ? v : v / 1000; return 0; },
     ctlOverclockGpuFrequencyOffsetGetV2: (h, buf) => { koffi.encode(buf, 'double', state.gpuFreqOffsetMhz); return 0; },
-    ctlOverclockGpuFrequencyOffsetSetV2: (h, v) => { calls.sets.push(['gpuFreqOffset', v]); state.gpuFreqOffsetMhz = v; return 0; },
+    ctlOverclockGpuFrequencyOffsetSetV2: (h, v) => { calls.sets.push(['gpuFreqOffset', v]); if (!opts.silentNoop) state.gpuFreqOffsetMhz = v; return 0; },
     ctlOverclockTemperatureLimitGetV2: (h, buf) => { koffi.encode(buf, 'double', state.tempLimitC); return 0; },
-    ctlOverclockTemperatureLimitSetV2: (h, v) => { calls.sets.push(['tempLimit', v]); state.tempLimitC = v; return 0; },
+    ctlOverclockTemperatureLimitSetV2: (h, v) => { calls.sets.push(['tempLimit', v]); if (!opts.silentNoop) state.tempLimitC = v; return 0; },
     ctlOverclockVramMemSpeedLimitGetV2: () => CTL_RESULT.ERROR_UNSUPPORTED_FEATURE,
     ctlOverclockVramMemSpeedLimitSetV2: () => CTL_RESULT.ERROR_UNSUPPORTED_FEATURE,
     ctlOverclockVramVoltageOffsetGetV2: () => CTL_RESULT.ERROR_UNSUPPORTED_FEATURE,
@@ -657,6 +658,42 @@ test('applySettings: read-back mismatch after set marks the control failed', asy
   assert.equal(res.perControl.powerLimitW.ok, false);
   assert.equal(res.ok, false);
   lib.ctlOverclockPowerLimitSetV2 = orig;
+});
+
+test('F3: a SILENT NO-OP (SUCCESS + unchanged read-back) is flagged silentNoop, never reported applied', async () => {
+  // E4 evidence shape: the setter returns SUCCESS but the read-back never
+  // changes (docs §8a). The backend must flag silentNoop so the retry core
+  // treats it as retryable — never as "applied".
+  const lib = makeFakeLib({ silentNoop: true });
+  const b = makeBackend(lib);
+  const res = await b.applySettings(0, { powerLimitW: 220 });
+  const per = res.perControl.powerLimitW;
+  assert.equal(per.ok, false);
+  assert.equal(per.readBackEqual, false);
+  assert.equal(per.silentNoop, true);
+  assert.equal(per.errorCode, 'io-failed');
+  assert.equal(res.ok, false);
+  assert.equal(lib.__state.powerLimitW, 252, 'device value unchanged (the no-op really was a no-op)');
+});
+
+test('F3 PT clamp: capabilities expose temp-limit max 90 even if the props report more', async () => {
+  const lib = makeFakeLib({ tempLimitMax: 92 }); // props drift above the accepted max
+  const b = makeBackend(lib);
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.ranges.tempLimitC.max, 90);
+  assert.equal(caps.ranges.tempLimitC.default, 90);
+  assert.equal(caps.ranges.powerLimitW.max, 252, 'other ranges are untouched');
+});
+
+test('F3 PT clamp: applying temp-limit 92 is clamped to 90 before the driver write', async () => {
+  const lib = makeFakeLib({ tempLimitMax: 92 });
+  const b = makeBackend(lib);
+  const res = await b.applySettings(0, { tempLimitC: 92 });
+  assert.equal(res.ok, true);
+  // The driver never saw 92 (it would refuse with 0x44000005) — it saw 90.
+  assert.deepEqual(lib.__calls.sets.at(-1), ['tempLimit', 90]);
+  const s = await b.getCurrentSettings(0);
+  assert.equal(s.tempLimitC, 90);
 });
 
 test('applySettings: gpuLock round trip', async () => {

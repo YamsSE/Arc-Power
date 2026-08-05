@@ -281,3 +281,82 @@ card (bSupported=false). Throttle flags all false at idle. Full dump: `tools/pro
    Version ≥ 1; the probe passes 1 (matching Intel's sample). Confirm on Battlemage.
 7. **Telemetry cadence** — samples <50 ms apart return stale/cached data; TelemetryService must enforce the
    rate (500 ms poll is fine).
+
+## 8b. F3 retry-with-verify + temp-limit clamp (M2C-A, implemented 2026-08-05)
+
+**Design (user-constrained, 2026-08-05):** the fix must NOT require any
+additional programs to be running and must work for clock/voltage offsets AND
+power limit AND temp limit. Evidence basis: IGS fully ON = 100% apply success
+(E4c); IGS OFF = PL/PT silent no-op (SUCCESS + read-back unchanged; E4a) with
+minute-scale flaps that open on their own. Therefore F3 never starts or stops
+IGS from code; the apply path is patient and honest:
+
+- Outcome per control (shared core `src/main/apply-retry.js`,
+  `applyWithRetry`  -  the seam where UI Apply, tray apply and apply-on-startup
+  converge): `ok` (set + read-back match) / `hard` (OUTSIDE_RANGE family
+  0x44000004/05/06/07, waiver-not-set, invalid-argument 0x4000000b,
+  unsupported  -  instant honest failure, NO retry) / `retryable` (io-failed
+  incl. NOT_AVAILABLE 0x40000007, and the SILENT NO-OP: SUCCESS returned but
+  read-back unchanged  -  flagged `silentNoop` by the backend, NEVER reported
+  "applied", retried).
+- Retry schedule: 1 s, 2 s, 4 s, 8 s, 12 s, 12 s -  capped, bounded by a total
+  budget (60 s UI/tray, 20 s apply-on-startup so boot is never blocked; the
+  boot path always exits). Every retried attempt re-sends ONLY the failed
+  controls (partial re-apply) and re-verifies each by read-back.
+- IGS fast path: when the IGS service + app are fully ON, a single attempt is
+  made (100% success proven, no delay); any other state retries.
+- Abort semantics: the Apply/Load button shows live "Applying  -  retry N/9 - "
+  state and a click cancels (`apply-cancel` IPC ? ApplyToken); cancelled
+  applies report the honest partial result. Give-up reports "the driver kept
+  refusing after N attempts"  -  never a silent failure.
+- **PT range fix:** the driver setter refuses temp limits above 90 C with
+  0x44000005 even in the fully-on window (E4c: TL 92 ? 0x44000005 both V1 and
+  V2; the 92 entered the pipeline via the E4 battery/plan test value, the
+  product always clamped to the capability max). The exposed max is now
+  pinned to 90 C (`TEMP_LIMIT_MAX_C` in `units.js`, applied in
+  `igcl-backend.getCapabilities` + backend apply clamp + renderer
+  `clampExposedRange` for sliders/presets + main-process validation).
+
+**Harness (`tools/validate/m2c-acceptance.js`, gitignored):** battery
+{volt +0.02 V, freq +100 MHz, PL 252 W, TL 90 C} applied one at a time through
+the real F3 core, plus a RAW 300 W cell (direct IGCL V2 set bypassing the
+product clamp) to prove the cap. Every attempt records timestamp, IGS state,
+control, value, result (ok / code / silent-noop), read-back, retries, elapsed.
+
+**Off-window results (3 sessions, IGS fully off  -  run 2026-08-05):**
+
+| control | accepted/total | accept rate | silent no-ops | dominant outcome |
+|---|---|---|---|---|
+| gpuVoltOffsetV +0.02 | 3/3 | 100% | 0 | applied, read-back 0.02 |
+| gpuFreqOffsetMhz +100 | 0/3 | 0% | 3 | io-failed after 4 retries (15 s), read-back stayed 0 |
+| powerLimitW 252 | 0/3 | 0% | 3 | io-failed after 4 retries (15 s), read-back stayed 200 |
+| tempLimitC 90 | 3/3 | 100% | 0 | same-value no-op (device already at 90) |
+
+Raw 300 W cell: **0x44000004 ERROR_CORE_OVERCLOCK_POWER_OUTSIDE_RANGE in all 3
+sessions** (read-back unchanged)  -  the 252 W cap is enforced at runtime for
+the zero-UID client; no userspace path exists (matches E0/E1/plan verdict,
+user signed off 2026-08-05).
+
+Session hygiene: `ctlOverclockResetToDefault` fails with 0x40000013
+DATA_WRITE in the off window (documented E5 behavior)  -  the harness restores
+the as-found baseline per control instead; final state == as-found baseline in
+all 3 sessions; IGS start/end stopped + disabled + no app (restore verified).
+
+**On-window sessions:** COMPLETED 2026-08-05 12:32 (elevated user-run, one
+UAC approval; full log pipeline/run-m2c-acceptance.log). Sessions 4-6,
+IGS fully on: all four controls 100% accepted with read-back match, single
+attempt each; raw 300 W refused 0x44000004 in all 3 on-sessions (and all
+3 off-sessions - cap enforced at runtime in every window). Teardown
+restored the service to STOPPED + DISABLED + no app (verified in the log).
+
+| control | off (s1-3) | on (s4-6) |
+|---|---|---|
+| gpuVoltOffsetV | 3/3 ok | 3/3 ok |
+| gpuFreqOffsetMhz | 0/3 (3 silent no-ops) | 3/3 ok |
+| powerLimitW | 0/3 (3 silent no-ops) | 3/3 ok |
+| tempLimitC | 3/3 ok | 3/3 ok |
+| raw 300 W | 0x44000004 x3 | 0x44000004 x3 |
+
+The harness table aggregates all completed sessions
+(`node tools/validate/m2c-acceptance.js --table`).
+
