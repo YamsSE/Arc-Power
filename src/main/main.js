@@ -4,13 +4,17 @@
 //   electron .                -> UI (M2a: design system, Dashboard, OC, Fan)
 //   electron . --headless     -> M1 smoke sequence on the real A770, exit 0/1
 //   electron . --headless --mock -> smoke against MockBackend (no hardware)
+//   electron . --apply-worker <reqFile> <outFile> -> M2C-C elevated
+//     self-worker: hidden (no window/tray), never re-elevates, exits after
+//     writing the result file. Spawned by the non-elevated app via
+//     Start-Process -Verb RunAs (one UAC per apply).
 //
 // The smoke path constructs the backend with allowAutoWaiver: true — the
 // ONLY place product code may do that (developer's own machine, no value
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
@@ -26,6 +30,12 @@ import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
 import { applyProfile, runApplyOnStartup } from './apply-on-boot.js';
 import { createTray, buildTrayMenuTemplate, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
+import { isElevated as isElevatedReal } from './elevation.js';
+import { OldIgcl } from './old-igcl.js';
+import { executeApply, requiresExtendedRange } from './apply-routing.js';
+import { runApplyWorker } from './apply-worker.js';
+import { createApplyRunner } from './elevated-apply.js';
+import { createMockOldIgcl } from './backend/mock-backend.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +46,10 @@ const uiVerify = process.argv.includes('--ui-verify');
 const mock = process.argv.includes('--mock') || process.env.RID_BACKEND === 'mock' || uiVerify;
 const applyProfileIdx = process.argv.indexOf('--apply-profile');
 const applyProfileId = applyProfileIdx >= 0 ? process.argv[applyProfileIdx + 1] : null;
+// M2C-C apply-worker mode: `--apply-worker <reqFile> <outFile>`.
+const applyWorkerIdx = process.argv.indexOf('--apply-worker');
+const workerReqFile = applyWorkerIdx >= 0 ? process.argv[applyWorkerIdx + 1] : null;
+const workerOutFile = applyWorkerIdx >= 0 ? process.argv[applyWorkerIdx + 2] : null;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -71,7 +85,7 @@ function createWindow() {
 // The menu is rebuilt from the persisted active profile at boot; M2b-B can
 // rebuild it when the profile changes.
 let trayRef = null;
-async function setupTray({ getWindow, backend, store }) {
+async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner }) {
   const menuTemplate = async () => {
     let hasActiveProfile = false;
     try {
@@ -93,17 +107,50 @@ async function setupTray({ getWindow, backend, store }) {
       },
       onApplyProfile: async () => {
         try {
-          const activeProfileId = (await store.loadSettings()).activeProfileId;
+          const settings = await store.loadSettings();
+          const profiles = await store.loadProfiles();
+          const profile = profiles.find((p) => p.id === settings.activeProfileId);
+          // M2C-C gating: extended-range values (>252 W / >90 C) need the
+          // explicit confirm dialog even from the tray (an explicit user
+          // action) — the boot path applies its saved profile without one.
+          if (profile && requiresExtendedRange(profile.settings)) {
+            const win = getWindow();
+            const btn = win
+              ? await dialog.showMessageBox(win, {
+                  type: 'warning',
+                  title: 'Extended range',
+                  message: `Apply "${profile.name}" with extended power/temperature limits?`,
+                  detail: 'This goes beyond Intel\'s standard limit for the GPU. Whether the card accepts it depends on the card and driver (the Acer BiFrost profile used 300 W).',
+                  buttons: ['Cancel', 'Apply'],
+                  defaultId: 0,
+                  cancelId: 0,
+                })
+              : await dialog.showMessageBox({
+                  type: 'warning',
+                  title: 'Extended range',
+                  message: `Apply "${profile.name}" with extended power/temperature limits?`,
+                  detail: 'This goes beyond Intel\'s standard limit for the GPU. Whether the card accepts it depends on the card and driver (the Acer BiFrost profile used 300 W).',
+                  buttons: ['Cancel', 'Apply'],
+                  defaultId: 0,
+                  cancelId: 0,
+                });
+            if (btn.response !== 1) {
+              if (trayRef && !trayRef.isDestroyed()) {
+                trayRef.displayBalloon({ title: 'Arc Power', content: `Arc Power: profile '${profile.name}' not applied — extended range needs confirmation` });
+              }
+              return;
+            }
+          }
           // Explicit user action: skips the ocOnBoot gate (like the
           // renderer's Load button) but keeps the waiver gates. The balloon
           // only claims "defaults restored" when a restore actually ran
           // (M2b review F1) — gate refusals get a reason-specific message.
-          const out = await applyProfile({ backend, store, profileId: activeProfileId, getIgsState: () => igs.getState() });
+          const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, oldIgcl, applyRunner });
           if (!out.applied && trayRef && !trayRef.isDestroyed()) {
             let name = 'unknown';
             try {
-              const profiles = await store.loadProfiles();
-              const p = profiles.find((x) => x.id === activeProfileId);
+              const ps = await store.loadProfiles();
+              const p = ps.find((x) => x.id === settings.activeProfileId);
               if (p) name = p.name;
             } catch { /* best effort name */ }
             const content = trayBalloonForOutcome(out, name);
@@ -111,6 +158,9 @@ async function setupTray({ getWindow, backend, store }) {
           }
         } catch (err) {
           console.error(`[tray] apply active profile failed: ${err.message}`);
+          if (trayRef && !trayRef.isDestroyed()) {
+            trayRef.displayBalloon({ title: 'Arc Power', content: `Arc Power: profile apply failed — ${err.message}` });
+          }
         }
       },
       onQuit: () => app.quit(),
@@ -125,10 +175,47 @@ async function setupTray({ getWindow, backend, store }) {
 }
 
 async function main() {
+  // --- M2C-C apply-worker mode (`--apply-worker <req> <out>`): ------------
+  // hidden (no window, no tray), never re-elevates, exits after writing the
+  // result file. Runs the SAME routed instant-apply core as the UI path.
+  if (workerReqFile) {
+    if (!workerOutFile) {
+      console.error('--apply-worker requires <reqFile> <outFile>');
+      app.exit(1);
+      return;
+    }
+    // M2C-C S1: the extended-capability probe is constructed BEFORE the
+    // backend and injected — the worker's getCapabilities (its clamp ranges)
+    // must report the same extended ranges the UI path does.
+    const workerOldIgcl = new OldIgcl();
+    const code = await runApplyWorker({
+      reqPath: workerReqFile,
+      outPath: workerOutFile,
+      backend: createBackend({
+        kind: 'igcl',
+        igcl: { extended: { isCapable: () => workerOldIgcl.isCapable() } },
+      }),
+      oldIgcl: workerOldIgcl,
+      log: (s) => console.log(`[apply-worker] ${s}`),
+    });
+    app.exit(code);
+    return;
+  }
+
   if (headless) {
+    // M2C-C S1: the smoke path is a real-backend path too — same probe wiring
+    // as the app/worker so its caps match the product path. The bundled
+    // 2023-runtime probe degrades safely here: a missing/unloadable DLL makes
+    // OldIgcl.isCapable() return false (cached), so the smoke's caps stay in
+    // the standard range and every health line still runs — the smoke never
+    // fails on the probe alone.
+    const smokeOldIgcl = mock ? null : new OldIgcl();
     const backend = createBackend({
       kind: mock ? 'mock' : 'igcl',
-      igcl: { allowAutoWaiver: true }, // smoke/tests only (plan §9 M1 waiver clause)
+      igcl: {
+        allowAutoWaiver: true, // smoke/tests only (plan §9 M1 waiver clause)
+        extended: smokeOldIgcl ? { isCapable: () => smokeOldIgcl.isCapable() } : undefined,
+      },
       mock: {},
     });
     try {
@@ -153,7 +240,76 @@ async function main() {
   if (uiVerify && process.env.RID_MOCK_OFFGRID_FREQ_MHZ !== undefined) {
     mockOpts.offGridFreqMhz = Number(process.env.RID_MOCK_OFFGRID_FREQ_MHZ);
   }
-  const backend = createBackend({ kind: mock ? 'mock' : 'igcl', mock: mockOpts });
+  // M2C-C ui-verify variants: extended ranges (PL max 315 / TL max 115) and
+  // the old-runtime honest-fail path.
+  if (uiVerify && process.env.RID_MOCK_EXTENDED_RANGES === '1') mockOpts.extendedRanges = true;
+  if (uiVerify && process.env.RID_MOCK_EXTENDED_FAIL === '1') mockOpts.extendedFail = true;
+  // M2C-C S1: the real bundled-2023-runtime adapter is constructed BEFORE
+  // the backend (mock mode leaves it null — the mock adapter wraps the
+  // backend instead). The backend's extended probe consults it lazily
+  // (isCapable runs on the first caps query).
+  const realOldIgcl = mock ? null : new OldIgcl();
+  const backend = createBackend({
+    kind: mock ? 'mock' : 'igcl',
+    igcl: realOldIgcl
+      ? { extended: { isCapable: () => realOldIgcl.isCapable() } }
+      : {},
+    mock: mockOpts,
+  });
+  // M2C-C: the bundled 2023 IGCL runtime adapter (extended-range writes).
+  // Mock mode (incl. --ui-verify) uses the mock adapter — the real DLL is
+  // never loaded there. In the real path the OLD runtime is probed lazily
+  // (isCapable runs on the first extended write or caps query) and both
+  // runtimes can coexist in one process (probe-verified, §8c). S1: the real
+  // adapter is constructed BEFORE the backend so the backend's extended
+  // probe (above) can consult it — the extended ranges are wired into
+  // getCapabilities on hardware, never dead code.
+  const oldIgcl = mock ? createMockOldIgcl(backend) : realOldIgcl;
+  // M2C-C elevation probe: real detection in the product path; ui-verify
+  // knobs let the mock report elevated (RID_MOCK_ELEVATED=1) so the
+  // elevated-in-app UI state is verifiable without elevation. Declared HERE
+  // (before the applyRunner block below) — the runner's deps evaluate this
+  // identifier eagerly, so any later declaration would be a TDZ crash on the
+  // real product path (step-5 S1).
+  const isElevated = mock
+    ? () => process.env.RID_MOCK_ELEVATED === '1'
+    : isElevatedReal;
+  // M2C-C: the elevation-aware apply runner. The product path (non-mock)
+  // delegates applies to the elevated self-worker when not elevated; mock
+  // mode applies in-process (applyRunner null) — ui-verify's worker-apply
+  // toast variant injects a FAKE runner (never spawns anything).
+  let applyRunner = null;
+  if (!mock) {
+    applyRunner = createApplyRunner({
+      isElevated,
+      execPath: process.execPath,
+      // Dev mode (`electron .`): process.execPath is electron.exe — the
+      // worker spawn must pass the app path along. Packaged EXEs ignore it.
+      appPath: process.defaultApp ? app.getAppPath() : null,
+      inProcess: {
+        apply: async ({ deviceId, settings }) => executeApply({ backend, oldIgcl, deviceId, settings }),
+        waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
+        reset: async (deviceId) => {
+          await backend.resetToDefaults(deviceId);
+          const state = await backend.getCurrentSettings(deviceId);
+          return { state };
+        },
+      },
+      log: (s) => console.log(s),
+    });
+  } else if (uiVerify && process.env.RID_MOCK_WORKER_APPLY === '1') {
+    // Dev-only: report the worker-apply path (elevation toast UX) while
+    // still applying in-process — never spawns a worker in mock mode.
+    applyRunner = {
+      needsWorker: () => true,
+      apply: async ({ deviceId, settings }) => executeApply({ backend, oldIgcl, deviceId, settings }),
+      waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
+      reset: async (deviceId) => {
+        await backend.resetToDefaults(deviceId);
+        return { ok: true, state: await backend.getCurrentSettings(deviceId) };
+      },
+    };
+  }
   const store = new ProfileStore();
   // IGS service adapter: mock mode (incl. --ui-verify) never touches the real
   // service; the real adapter only runs sc.exe probes, and disable/enable run
@@ -183,6 +339,7 @@ async function main() {
   app.on('before-quit', () => {
     void teardown?.().catch(() => {});
     void backend.close().catch(() => {});
+    void oldIgcl?.close?.().catch(() => {});
   });
 
   // Boot-time health + waiver seeding (shared by the window path and the
@@ -203,13 +360,17 @@ async function main() {
     await bootBackend();
     // M2b review F2: the flow creates exactly ONE tray (it keeps the app
     // alive in this tray-only mode) and reuses it for the failure balloon.
+    // M2C-C: the boot task runs with /rl highest (elevated) so applies are
+    // in-process here (applyRunner stays null — a manual non-elevated run
+    // fails honestly per control instead of prompting).
+    const bootOldIgcl = mock ? createMockOldIgcl(backend) : new OldIgcl();
     await runApplyOnStartup({
       backend,
       store,
       profileId: applyProfileId,
-      setupTray: () => setupTray({ getWindow: () => null, backend, store }),
+      oldIgcl: bootOldIgcl,
+      setupTray: () => setupTray({ getWindow: () => null, backend, store, oldIgcl: bootOldIgcl, applyRunner: null }),
       log: (s) => console.log(s),
-      getIgsState: () => igs.getState(),
     });
     return;
   }
@@ -226,6 +387,9 @@ async function main() {
     startup,
     driverInfo,
     presentmon,
+    oldIgcl,
+    applyRunner,
+    isElevated,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach
@@ -254,7 +418,7 @@ async function main() {
   const health = await collectHealth(backend);
   console.log(`[health] ${JSON.stringify(health)}`);
 
-  await setupTray({ getWindow: () => win, backend, store });
+  await setupTray({ getWindow: () => win, backend, store, oldIgcl, applyRunner });
 }
 
 main().catch((err) => {

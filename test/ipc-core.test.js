@@ -9,6 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import koffi from 'koffi';
 import {
   assertValidDeviceId,
   sanitizeSettings,
@@ -17,6 +18,8 @@ import {
   seedWaiverState,
 } from '../src/main/ipc-core.js';
 import { MockBackend } from '../src/main/backend/mock-backend.js';
+import { IgclBackend } from '../src/main/backend/igcl-backend.js';
+import { CTL_RESULT } from '../src/main/backend/igcl-bindings.js';
 import { createMockIgs } from '../src/main/igs-service.js';
 import { createMockStartup } from '../src/main/startup.js';
 
@@ -474,8 +477,10 @@ test('apply-settings: a refusal is instant — exactly ONE backend call, honest 
   assert.equal(calls.apply, 0, 'the retried backend call never happened');
   assert.equal(result.ok, false);
   assert.equal(result.perControl.powerLimitW.errorCode, 'io-failed');
-  // IGS off + powerLimit refusal -> the composed message names IGS.
-  assert.match(result.perControl.powerLimitW.message, /Intel Graphics Software/);
+  // M2C-C: refusals carry the PLAIN driver message + code — the IGS-naming
+  // requirement is gone (the real gate was elevation, docs §8c).
+  assert.match(result.perControl.powerLimitW.message, /The GPU driver refused the change\. \(io-failed\)/);
+  assert.doesNotMatch(result.perControl.powerLimitW.message, /Intel Graphics Software/);
   assert.equal(state.powerLimitW, 210, 'driver state untouched (read-back unchanged)');
 });
 
@@ -492,7 +497,8 @@ test('apply-settings: silent no-op (SUCCESS + unchanged read-back) fails instant
   assert.equal(result.ok, false, 'a silent no-op is NEVER "applied"');
   assert.equal(result.perControl.powerLimitW.silentNoop, true);
   assert.equal(result.perControl.powerLimitW.ok, false);
-  assert.match(result.perControl.powerLimitW.message, /Intel Graphics Software/);
+  assert.match(result.perControl.powerLimitW.message, /The GPU driver refused the change\. \(io-failed\)/);
+  assert.doesNotMatch(result.perControl.powerLimitW.message, /Intel Graphics Software/);
   assert.equal(state.powerLimitW, 210);
 });
 
@@ -521,8 +527,9 @@ test('apply-settings: success on the single attempt reports ok + fresh state', a
   assert.equal(state.powerLimitW, 220);
 });
 
-test('apply-settings: refusal message composition — PL with IGS on is plain + code, volt is plain', async () => {
-  // Default mock igs = fully on: a refusal there is rare -> plain + code.
+test('apply-settings: refusal message composition — every refusal is plain + code (M2C-C)', async () => {
+  // M2C-C: the IGS state no longer composes messages — a refusal anywhere
+  // is the plain driver message + error code.
   const backend = new MockBackend();
   const store = fakeStore();
   let n = 0;
@@ -536,14 +543,14 @@ test('apply-settings: refusal message composition — PL with IGS on is plain + 
   assert.equal(n, 1);
 });
 
-test('apply-settings: a volt/temp refusal with IGS off gets the plain driver message', async () => {
+test('apply-settings: a volt/temp refusal gets the plain driver message + code (M2C-C)', async () => {
   const backend = new MockBackend();
   const store = fakeStore();
   const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, igs: fullyOffIgs() });
   backend.injectFail('gpuVoltOffsetV', 'io-failed');
   const { result } = await handlers['apply-settings'](0, { gpuVoltOffsetV: 0.05 });
   assert.equal(result.ok, false);
-  assert.equal(result.perControl.gpuVoltOffsetV.message, 'The GPU driver refused the change.');
+  assert.equal(result.perControl.gpuVoltOffsetV.message, 'The GPU driver refused the change. (io-failed)');
 });
 
 // ---------------------------------------------------------------------------
@@ -562,14 +569,14 @@ test('startup channels: default adapter is the mock — get/set round trip witho
   const startup = createMockStartup();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, startup });
 
-  assert.deepEqual(await handlers['startup-get'](), { enabled: false, profileId: null, value: null });
+  assert.deepEqual(await handlers['startup-get'](), { enabled: false, profileId: null, value: null, mechanism: null });
   const setOut = await handlers['startup-set'](true, 'p1');
   assert.equal(setOut.enabled, true);
   assert.equal(setOut.profileId, 'p1');
   assert.match(setOut.value, /--apply-profile p1/);
   assert.deepEqual(await handlers['startup-get'](), setOut);
 
-  assert.deepEqual(await handlers['startup-set'](false, null), { enabled: false, profileId: null, value: null });
+  assert.deepEqual(await handlers['startup-set'](false, null), { enabled: false, profileId: null, value: null, mechanism: null });
 });
 
 test('startup-set: validation — enabled must be boolean; enabling needs a profileId; disabling takes null', async () => {
@@ -754,4 +761,264 @@ test('tray-rebuild channel: no payload; calls the injected hook', async () => {
 test('tray-rebuild channel: the default hook is a no-op (never throws without a tray)', async () => {
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
   assert.deepEqual(await handlers['tray-rebuild'](), { ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// M2C-C elevation: the app-elevated channel + the apply-runner delegation
+// ---------------------------------------------------------------------------
+
+test('app-elevated: reports elevated + workerApply from the injected deps', async () => {
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(), store: fakeStore(), emit: () => {},
+    isElevated: () => true,
+    applyRunner: { needsWorker: () => false },
+  });
+  assert.deepEqual(await handlers['app-elevated'](), { elevated: true, workerApply: false });
+});
+
+test('app-elevated: a runner that needs the worker reports workerApply true', async () => {
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(), store: fakeStore(), emit: () => {},
+    isElevated: () => false,
+    applyRunner: { needsWorker: () => true, apply: async () => ({}), waiverAccept: async () => {}, reset: async () => ({}) },
+  });
+  assert.deepEqual(await handlers['app-elevated'](), { elevated: false, workerApply: true });
+});
+
+test('app-elevated: takes no payload', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  await assert.rejects(() => handlers['app-elevated']({}), /takes no payload/);
+});
+
+test('apply-settings: a non-elevated runner delegates the apply (worker path), returning the worker envelope', async () => {
+  const backend = new MockBackend({ extendedRanges: true });
+  const store = fakeStore();
+  let delegated = null;
+  const applyRunner = {
+    needsWorker: () => true,
+    apply: async (req) => {
+      delegated = req;
+      return { worker: true, result: { ok: true, perControl: { powerLimitW: { ok: true, readBackEqual: true } } }, state: { powerLimitW: 300 } };
+    },
+    waiverAccept: async () => {},
+    reset: async () => ({}),
+  };
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRunner });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
+  assert.deepEqual(delegated.settings, { powerLimitW: 300 });
+  assert.equal(out.result.ok, true);
+  assert.equal(out.state.powerLimitW, 300);
+});
+
+test('apply-settings: a runner that throws (UAC canceled) propagates the honest error', async () => {
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(), store: fakeStore(), emit: () => {},
+    applyRunner: { needsWorker: () => true, apply: async () => { throw new Error('Apply requires administrator approval.'); }, waiverAccept: async () => {}, reset: async () => ({}) },
+  });
+  await assert.rejects(() => handlers['apply-settings'](0, { powerLimitW: 220 }), /administrator approval/);
+});
+
+test('waiver-accept: a non-elevated runner delegates to the elevated worker', async () => {
+  const store = fakeStore();
+  let delegated = null;
+  const applyRunner = {
+    needsWorker: () => true,
+    apply: async () => ({}),
+    waiverAccept: async (deviceId) => { delegated = deviceId; },
+    reset: async () => ({}),
+  };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {}, applyRunner });
+  const out = await handlers['waiver-accept'](0);
+  assert.equal(out.accepted, true);
+  assert.equal(delegated, 0, 'the elevated worker accepted the waiver');
+  assert.equal(store.saved.at(-1).waiverAccepted, true, 'the persisted settings record the acceptance');
+});
+
+test('waiver-accept: a declined runner surfaces the honest error (nothing persisted)', async () => {
+  const store = fakeStore();
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(), store, emit: () => {},
+    applyRunner: { needsWorker: () => true, waiverAccept: async () => { throw new Error('Apply requires administrator approval.'); }, apply: async () => ({}), reset: async () => ({}) },
+  });
+  await assert.rejects(() => handlers['waiver-accept'](0), /administrator approval/);
+  assert.equal(store.saved.length, 0, 'nothing persisted after a declined UAC');
+});
+
+test('reset-to-defaults: a non-elevated runner delegates the reset and verifies the worker state', async () => {
+  const store = fakeStore();
+  let delegated = false;
+  const applyRunner = {
+    needsWorker: () => true,
+    apply: async () => ({}),
+    waiverAccept: async () => {},
+    reset: async (deviceId) => {
+      delegated = true;
+      return { ok: true, state: await new MockBackend().getCurrentSettings(deviceId) };
+    },
+  };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {}, applyRunner });
+  const out = await handlers['reset-to-defaults'](0);
+  assert.equal(delegated, true);
+  assert.equal(out.state.powerLimitW, 210);
+});
+
+test('reset-to-defaults: a runner that throws (UAC canceled) propagates', async () => {
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(), store: fakeStore(), emit: () => {},
+    applyRunner: { needsWorker: () => true, reset: async () => { throw new Error('Apply requires administrator approval.'); }, apply: async () => ({}), waiverAccept: async () => {} },
+  });
+  await assert.rejects(() => handlers['reset-to-defaults'](0), /administrator approval/);
+});
+
+// ---------------------------------------------------------------------------
+// M2C-C S1: the extended probe wired into the REAL backend — the ipc-core
+// clamp path must pass 300 W through un-capped when the probe reports
+// capable (the "silent cap" regression), and clamp to 252 W without it.
+// ---------------------------------------------------------------------------
+
+// Minimal fake IGCL lib: enough surface for IgclBackend.init/device-enum +
+// getCapabilities (PL/TL V2 pairs supported) — no fan, no lock, no VF curve.
+function makeFakeIgclLib() {
+  const devHandle = koffi.alloc('uint8', 1);
+  return {
+    ctlInit: (_args, apiBuf) => { koffi.encode(apiBuf, 'void*', devHandle); return CTL_RESULT.SUCCESS; },
+    ctlClose: () => CTL_RESULT.SUCCESS,
+    ctlEnumerateDevices: (_api, countBuf, listBuf) => {
+      koffi.encode(countBuf, 'uint32', 1);
+      if (listBuf !== null) koffi.encode(listBuf, 'void*', devHandle);
+      return CTL_RESULT.SUCCESS;
+    },
+    ctlGetDeviceProperties: (_h, propsBuf) => {
+      koffi.encode(propsBuf, 'ctl_device_adapter_properties_t', {
+        Size: koffi.sizeof('ctl_device_adapter_properties_t'),
+        Version: 3,
+        pci_vendor_id: 0x8086,
+        pci_device_id: 0x56a0,
+        rev_id: 8,
+        driver_version: BigInt('0x002000000065229d'),
+        name: 'Fake Arc GPU',
+        Frequency: 2100,
+        num_xe_cores: 32,
+      });
+      return CTL_RESULT.SUCCESS;
+    },
+    ctlOverclockGetProperties: (_h, ocBuf) => {
+      const control = (bSupported, units, min, max, step, Default) => ({ bSupported, bRelative: false, bReference: false, units, min, max, step, Default, reference: 0 });
+      koffi.encode(ocBuf, 'ctl_oc_properties_t', {
+        Size: koffi.sizeof('ctl_oc_properties_t'),
+        Version: 1,
+        bSupported: true,
+        gpuFrequencyOffset: control(false, 0, 0, 0, 0, 0),
+        gpuVoltageOffset: control(false, 3, 0, 0, 0, 0),
+        vramFrequencyOffset: control(false, 0, 0, 0, 0, 0),
+        vramVoltageOffset: control(false, 0, 0, 0, 0, 0),
+        powerLimit: control(true, 4, 105, 252, 1, 210),
+        temperatureLimit: control(true, 5, 60, 90, 1, 90),
+      });
+      return CTL_RESULT.SUCCESS;
+    },
+    ctlOverclockPowerLimitGetV2: (_h, buf) => { koffi.encode(buf, 'double', 252); return CTL_RESULT.SUCCESS; },
+    ctlOverclockPowerLimitSetV2: () => CTL_RESULT.SUCCESS,
+    ctlOverclockTemperatureLimitGetV2: (_h, buf) => { koffi.encode(buf, 'double', 90); return CTL_RESULT.SUCCESS; },
+    ctlOverclockTemperatureLimitSetV2: () => CTL_RESULT.SUCCESS,
+  };
+}
+
+const capturingRunner = (result) => ({
+  needsWorker: () => true,
+  apply: async (req) => {
+    capturingRunner.delegated = req;
+    return result ?? { worker: true, result: { ok: true, perControl: {} }, state: {} };
+  },
+  waiverAccept: async () => {},
+  reset: async () => ({}),
+});
+
+test('S1: a capable extended probe on the REAL backend reports the extended ranges (PL max 315 / TL max 115 + flag)', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib(), extended: { isCapable: async () => true } });
+  await backend.init();
+  const caps = await backend.getCapabilities(0);
+  assert.equal(caps.extendedRanges, true);
+  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.tempLimitC.max, 115);
+  assert.equal(caps.ranges.powerLimitW.min, 105, 'min/default stay the DriverStore values');
+});
+
+test('S1: WITHOUT the probe the real backend reports the standard ranges (no flag, 252 W / 90 C)', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib() });
+  await backend.init();
+  const caps = await backend.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined);
+  assert.equal(caps.ranges.powerLimitW.max, 252);
+  assert.equal(caps.ranges.tempLimitC.max, 90);
+});
+
+test('S1: the ipc-core clamp path passes 300 W through UN-CAPPED under a capable probe (the silent cap is gone)', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib(), extended: { isCapable: async () => true } });
+  await backend.init();
+  const { handlers } = createIpcHandlers({ backend, store: fakeStore(), emit: () => {}, applyRunner: capturingRunner() });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
+  assert.equal(out.result.ok, true);
+  assert.equal(capturingRunner.delegated.settings.powerLimitW, 300, '300 W must reach the apply unchanged');
+});
+
+test('S1: without a probe the ipc-core clamp path silently caps 300 W to 252 (standard ranges)', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib() });
+  await backend.init();
+  const { handlers } = createIpcHandlers({ backend, store: fakeStore(), emit: () => {}, applyRunner: capturingRunner() });
+  await handlers['apply-settings'](0, { powerLimitW: 300 });
+  assert.equal(capturingRunner.delegated.settings.powerLimitW, 252);
+});
+
+// ---------------------------------------------------------------------------
+// M2C-C S2: waiver state across the worker boundary
+// ---------------------------------------------------------------------------
+
+test('S2: the delegation request carries the parent-side waiverAccepted flag', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true);
+  const { handlers } = createIpcHandlers({ backend, store: fakeStore(), emit: () => {}, applyRunner: capturingRunner() });
+  await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(capturingRunner.delegated.waiverAccepted, true, 'an accepted parent flag rides in the request');
+});
+
+test('S2: an UN-accepted parent flag is carried as waiverAccepted:false (never omitted)', async () => {
+  const backend = new MockBackend(); // never accepted
+  const { handlers } = createIpcHandlers({ backend, store: fakeStore(), emit: () => {}, applyRunner: capturingRunner() });
+  await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(capturingRunner.delegated.waiverAccepted, false);
+});
+
+test('S2: waiver-accept THROUGH the worker sets the parent-side in-memory flag (no split-brain)', async () => {
+  const backend = new MockBackend();
+  const { handlers } = createIpcHandlers({
+    backend, store: fakeStore(), emit: () => {},
+    applyRunner: { needsWorker: () => true, apply: async () => ({}), waiverAccept: async () => {}, reset: async () => ({}) },
+  });
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, false);
+  const out = await handlers['waiver-accept'](0);
+  assert.equal(out.accepted, true);
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, true, 'the parent flag must reflect the worker acceptance');
+});
+
+test('S2: the G2 wedge is closed — a waiver-not-set worker result clears the parent flag so the dialog re-shows', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true); // stale seeded-true parent flag
+  const { handlers } = createIpcHandlers({
+    backend, store: fakeStore(), emit: () => {},
+    applyRunner: {
+      needsWorker: () => true,
+      apply: async () => ({
+        worker: true,
+        // the driver lost the waiver mid-session: every control fails
+        result: { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } },
+        state: {},
+      }),
+      waiverAccept: async () => {},
+      reset: async () => ({}),
+    },
+  });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(out.result.ok, false);
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, false, 'getCapabilities must re-report unaccepted — the dialog re-shows');
 });

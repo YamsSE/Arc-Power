@@ -6,22 +6,50 @@
 // authoritative gate; this module keeps the UI honest before it ever sends a
 // payload, and builds the payload from slider state.
 
-import type { DeviceState, FanMode, RangeInfo, Settings } from '../types.ts';
+import type { Capabilities, DeviceState, FanMode, RangeInfo, Settings } from '../types.ts';
 import { MAX_CURVE_POINTS } from './curve.ts';
 
 // F3 PT clamp (M2C-A): the driver setter refuses temp limits above 90 C
 // (0x44000005); the exposed max is pinned here on top of the backend clamp so
-// sliders/presets can never offer an un-appliable value.
+// sliders/presets can never offer an un-appliable value. M2C-C: the pin
+// yields to the extended range (115 C) when the device reports
+// caps.extendedRanges — values above 90 C then route to the bundled 2023
+// IGCL runtime.
 export const TEMP_LIMIT_MAX_C = 90;
+export const EXTENDED_PL_MAX_W = 315;
+export const EXTENDED_TL_MAX_C = 115;
+// The DriverStore-runtime clamps: applies above these route to the bundled
+// 2023 runtime and need the extended-range confirm dialog.
+export const STD_PL_MAX_W = 252;
+export const STD_TL_MAX_C = 90;
 
 /**
  * Clamp the exposed range for tempLimitC to TEMP_LIMIT_MAX_C (F3). Other
  * controls pass through untouched. Backend capabilities are already capped,
  * but a stale cache or a future driver props drift must not widen the slider.
+ * M2C-C: when the device reports extended ranges, the temp slider may go up
+ * to 115 C (the backend range already says so — pass it through).
  */
-export function clampExposedRange(range: RangeInfo | undefined, key: string): RangeInfo | undefined {
-  if (!range || key !== 'tempLimitC' || range.max <= TEMP_LIMIT_MAX_C) return range;
-  return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
+export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
+  if (!range) return range;
+  if (key === 'powerLimitW' && !caps?.extendedRanges && range.max > STD_PL_MAX_W) {
+    return { ...range, max: STD_PL_MAX_W, default: Math.min(range.default, STD_PL_MAX_W) };
+  }
+  if (key === 'tempLimitC' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
+    return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
+  }
+  return range;
+}
+
+/**
+ * M2C-C: true when the pending settings contain an extended-range value
+ * (PL > 252 W or TL > 90 C) — the apply must pass the extended-range confirm
+ * dialog first (honest warning: beyond Intel's standard limit; card/driver
+ * dependent; the Acer BiFrost profile used 300 W).
+ */
+export function requiresExtendedRangeConfirm(settings: Settings): boolean {
+  return (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W)
+    || (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C);
 }
 
 const SCALAR_KEYS = new Set([

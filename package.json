@@ -24,10 +24,12 @@
     "icon": "build/icon.ico",
     "files": [
       "src/**/*",
+      "THIRD_PARTY_NOTICES.txt",
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/koffi/**"
+      "node_modules/koffi/**",
+      "src/main/backend/igcl2023/**"
     ],
     "win": {
       "target": "portable"

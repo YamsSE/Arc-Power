@@ -368,8 +368,35 @@ off-window outcome - freq/PL 0/3 with retries, IGS-on 100% single
 attempt). New design: ONE attempt, instant result, honest per-control
 error with an actionable driver-refusal message (name the IGS-on
 requirement for PL/freq). Ships WITH M2C-B as one milestone.
-Also: user asleep - NO UAC prompts during M2C-B; anything needing
-elevation (harness on-window re-runs, etc.) is postponed to M3.
+
+**ROOT-CAUSE REVISION 2026-08-05 (live-machine diagnosis, after M2C-B):**
+the IGS-on/off story was WRONG - the real gate is ELEVATION. Live
+evidence (this machine, driver 32.0.101.8861, elevated vs non-elevated
+probes, delayed read-backs):
+- Non-elevated IGCL OC writes NEVER persist (SUCCESS + momentary
+  read-back match, then revert; the M2C-A/M2C-B harness "on-window 100%"
+  and all earlier "success" evidence was this momentary lie - never
+  persistence-verified).
+- ELEVATED writes STICK for every control, with IGS fully on AND fully
+  off (resetToDefaults also works elevated).
+- The >252 W cap is a CLIENT-SIDE clamp in the DriverStore runtime only:
+  the 2023 IGCL runtime (bundled in Arc OC Tool, v1.0.100, AppVersion
+  1.0, zero UID, waiver set) + elevation writes 280/300/315 W - all
+  SUCCESS, persisted, confirmed via the DriverStore runtime's reads in
+  separate processes. KMD accepts 315 W. TL likewise: 100/110 C stick;
+  125 clamps to 115 C (KMD ceiling). Freq/volt ranges identical.
+- Arc OC Tool "works without IGS" because it SELF-ELEVATES; IGS works
+  because it runs elevated. The user's Acer hint (BiFrost profile XML
+  300 W) was correct that >252 W is reachable; the profile-apply path
+  itself is dead (UWP uninstalled, leftover task applies nothing) - but
+  the old-runtime+elevation path is OUR unlock.
+- Remaining honesty item: 0-value writes are refused even elevated
+  (freq 0 / volt 0 no-op) - cleanup uses elevated resetToDefaults.
+
+=> NEW MILESTONE **M2C-C: elevation-aware instant apply + extended
+range via the 2023 IGCL runtime** (user-requested: "make one that's
+instant"; "no additional programs required"; user awake - UAC prompts
+allowed again).
 
 #### M2C-A - OC apply reliability (vital)
 
@@ -573,16 +600,70 @@ M3 stays blocked until one branch's gate is met.
 - Acceptance: each B item visibly done in the dev tree + ui-verify; new
   icon visible in window, tray, EXE, sidebar.
 
+#### M2C-C - Elevation-aware instant apply + extended range (2023 runtime)
+
+Root-cause revision above (the gate is ELEVATION, not IGS state; the
+>252 W cap is a DriverStore-runtime client clamp - the 2023 runtime +
+elevation reaches 315 W / 115 C, verified on this machine). User
+confirmed 2026-08-05: expose the FULL verified range (PL 315 W,
+TL 115 C) with an extra confirm warning above 252 W / 90 C.
+
+**Scope:**
+1. Elevation detection (koffi -> shell32 IsUserAnAdmin, cached, exposed
+   via IPC). No per-apply process spawn for detection.
+2. Elevate-on-apply: non-elevated app spawns an elevated self-worker
+   (`--apply-worker <reqFile> <outFile>`, hidden, no tray/window, never
+   re-elevates) via PowerShell Start-Process -Verb RunAs -Wait; request
+   file = {deviceId, settings, profileName?, requestId}; result file =
+   {requestId, ok, perControl, error?}; parent shows a transient
+   "Applying..." state (no retry UI), then the existing honest toasts.
+   UAC cancel/deny -> "Apply requires administrator approval" toast.
+   Elevated app applies in-process (no worker).
+3. Per-control runtime routing in the shared apply core: values within
+   the DriverStore range (<=252 W / <=90 C) go through the DriverStore
+   runtime; PL >252 / TL >90 go through the bundled 2023 IGCL runtime
+   (v1.0.100, AppVersion 1.0, zero UID, waiver set; V1 mW/C setters;
+   ctl_oc_properties_old_t; delayed verify read ~400 ms - the
+   momentary-lie lesson). Old-runtime failure on future drivers degrades
+   honestly per-control with a clear message. Extended capability flag
+   on getCapabilities; ranges exposed as PL max 315 (min 105, default
+   210), TL max 115 (min 60, default 90).
+4. Bundle IntelControlLib.dll v1.0.100 (Intel's own BSD-3-Clause IGCL
+   from the Arc OC Tool extraction; THIRD_PARTY_NOTICES.txt attribution;
+   tracked, asarUnpack'd with koffi). Verify the DLL survives the
+   packaged EXE (the known koffi failure mode).
+5. apply-on-startup: scheduled task with /rl highest (schtasks create
+   at enable-time with ONE UAC; delete at disable; startup-get reports
+   the mechanism) so boot applies run elevated silently. Boot worker =
+   existing --apply-profile path + worker semantics.
+6. Messaging/UX: remove the now-obsolete IGS-naming refusal text (plain
+   driver message + code); "extended range" confirm dialog when any
+   control exceeds 252 W / 90 C; first-apply elevation explanation.
+7. Tests: elevation detect, worker contract (no recursion, hidden mode,
+   UAC-cancel path), old-runtime binding fixtures (init/waiver/V1 unit
+   conversions), routing (<=252 -> driverstore; >252 -> old; old-fail
+   honest), caps exposure + flag, confirm-dialog gating, messaging.
+   Live: user-approved UAC apply + real old-runtime 300 W session.
+8. Dist: DLL packaged + elevated packaged smoke (user approves one UAC
+   at dist time); non-elevated smoke asserts the honest elevation path.
+
+**User sign-off items (M2C-C closes):** residual-refusal DoD item is
+superseded (elevation fixes it); the >252 W verdict is REVISED to
+"reachable via the 2023 runtime + elevation" (user confirmed exposure).
+- Checkpoints: (1) elevation+worker+old-runtime bindings + tests green;
+  (2) routing/caps/messaging + full suite green; (3) live UAC apply
+  verified by user; dist + packaged smoke.
+- Acceptance: user applies PL 300 W via the app (UAC) and the read-back
+  sticks; extended range visible in the UI; boot apply via elevated
+  task works (next logon); all tests green; dist smoke green.
+
 #### M2C ordering & gates
 - M2C-A first (vital; blocks M3), then M2C-B. M2C-B ships WITH the F3
   instant-apply revision (user feedback, 2026-08-05) as one milestone
   commit `M2C-B: ...`, with `npm run dist` + packaged `--headless`
   smoke (exit 0, in a workable IGS window) before commit.
-- NO UAC prompts during M2C-B (user asleep). Postponed to M3: any
-  elevation-needing steps (e.g. harness IGS-on window re-runs after the
-  instant-apply change - not required for acceptance since on-window
-  evidence is already 100% single-attempt; off-window behavior is
-  unchanged by the revision: instant fail instead of fail-after-60s).
+- M2C-C (elevation + extended range) is the final M2C milestone;
+  commit `M2C-C: ...` after review + dist + packaged smoke.
 - pipeline/ + tools/validate/ stay gitignored; icon assets + generator
   script are tracked.
 - Deferred (unchanged): NIT4 tooltip, PresentMon DLL in dist, anything

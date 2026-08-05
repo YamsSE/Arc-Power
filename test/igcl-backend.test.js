@@ -104,7 +104,7 @@ function makeFakeLib(opts = {}) {
       return 0;
     },
     ctlGetDeviceProperties: (h, propsBuf) => { encodeProps(propsBuf); return 0; },
-    ctlOverclockGetProperties: (h, ocBuf) => { encodeOc(ocBuf); return 0; },
+    ctlOverclockGetProperties: (h, ocBuf) => { if (opts.noProps) return CTL_RESULT.ERROR_UNSUPPORTED_FEATURE; encodeOc(ocBuf); return 0; },
     ctlOverclockWaiverSet: () => { calls.waiver++; return 0; },
     ctlOverclockResetToDefault: () => { calls.reset++; return 0; },
     ...getters,
@@ -694,6 +694,73 @@ test('F3 PT clamp: applying temp-limit 92 is clamped to 90 before the driver wri
   assert.deepEqual(lib.__calls.sets.at(-1), ['tempLimit', 90]);
   const s = await b.getCurrentSettings(0);
   assert.equal(s.tempLimitC, 90);
+});
+
+// ---------------------------------------------------------------------------
+// M2C-C extended ranges (bundled 2023 runtime capable -> full verified range)
+// ---------------------------------------------------------------------------
+
+test('M2C-C: no extended probe -> standard ranges, no flag', async () => {
+  const b = makeBackend(makeFakeLib());
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.ranges.powerLimitW.max, 252);
+  assert.equal(caps.ranges.tempLimitC.max, 90);
+  assert.equal(caps.extendedRanges, undefined);
+});
+
+test('M2C-C: extended probe capable -> PL max 315 / TL max 115 + the flag', async () => {
+  const b = new IgclBackend({
+    lib: makeFakeLib(),
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => true },
+  });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, true);
+  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.powerLimitW.min, 105, 'min stays the DriverStore value');
+  assert.equal(caps.ranges.powerLimitW.default, 210, 'default stays the DriverStore value');
+  assert.equal(caps.ranges.tempLimitC.max, 115);
+  assert.equal(caps.ranges.tempLimitC.min, 60);
+  assert.equal(caps.ranges.tempLimitC.default, 90);
+});
+
+test('M2C-C: extended probe NOT capable -> standard ranges, no flag (the degradation path)', async () => {
+  const b = new IgclBackend({
+    lib: makeFakeLib(),
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => false },
+  });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined);
+  assert.equal(caps.ranges.powerLimitW.max, 252);
+  assert.equal(caps.ranges.tempLimitC.max, 90);
+});
+
+test('M2C-C: the extended ranges are cached with the caps (queried once)', async () => {
+  let probes = 0;
+  const b = new IgclBackend({
+    lib: makeFakeLib(),
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => { probes += 1; return true; } },
+  });
+  await b.getCapabilities(0);
+  await b.getCapabilities(0);
+  assert.equal(probes, 1, 'the capability cache keeps the extended probe at one call');
+});
+
+test('M2C-C: no OC props (unsupported device) -> extended ranges stay off even when capable', async () => {
+  const lib = makeFakeLib({ noProps: true });
+  const b = new IgclBackend({
+    lib,
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => true },
+  });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined, 'no powerLimit control -> nothing to extend');
 });
 
 test('applySettings: gpuLock round trip', async () => {

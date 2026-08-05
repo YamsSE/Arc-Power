@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   startupSet: (enabled, profileId) => ipcRenderer.invoke('startup-set', enabled, profileId),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
+  appElevated: () => ipcRenderer.invoke('app-elevated'),
   fpsPoll: (deviceId) => ipcRenderer.invoke('fps-poll', deviceId),
   profilesList: () => ipcRenderer.invoke('profiles-list'),
   profilesSave: (profile) => ipcRenderer.invoke('profiles-save', profile),

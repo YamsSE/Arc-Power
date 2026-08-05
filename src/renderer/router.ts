@@ -62,6 +62,11 @@ export interface AppState {
   driverDate: string | null;
   /** M2C-B B3: app version for the header line (app:version IPC). */
   appVersion: string;
+  /** M2C-C: this process runs as administrator (app-elevated IPC). */
+  elevated: boolean;
+  /** M2C-C: applies go through the elevated self-worker (UAC prompt) —
+   *  the elevation toast fires before the apply when true. */
+  workerApply: boolean;
   bootError: string | null;
 }
 
@@ -75,6 +80,8 @@ const INITIAL: AppState = {
   igsState: null,
   driverDate: null,
   appVersion: '0.0.0',
+  elevated: false,
+  workerApply: false,
   bootError: null,
 };
 

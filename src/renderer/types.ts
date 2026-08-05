@@ -60,6 +60,9 @@ export interface Capabilities {
   controls: Record<string, boolean>;
   ranges: Record<string, RangeInfo>;
   fan: { canControl: boolean; modes: string[]; maxRpm: number; maxCurvePoints: number };
+  /** M2C-C: the bundled 2023 IGCL runtime loaded — PL/TL ranges are extended
+   *  (max 315 W / 115 C) and applies above the DriverStore clamp route to it. */
+  extendedRanges?: boolean;
 }
 
 export interface PerControlResult {
@@ -129,6 +132,25 @@ export interface IgsServiceState {
 export interface IgsActionResult {
   ok: boolean;
   error?: string;
+}
+
+/** M2C-C elevation state (app-elevated IPC). */
+export interface ElevationState {
+  /** This process runs as administrator. */
+  elevated: boolean;
+  /** Applies go through the elevated self-worker (product path, not elevated) —
+   *  the renderer shows the "Administrator approval is needed" toast then. */
+  workerApply: boolean;
+}
+
+/** apply-on-startup state (startup-get IPC). `mechanism` reports which
+ *  registration is active: the M2C-C elevated scheduled task or the legacy
+ *  Run key. */
+export interface StartupState {
+  enabled: boolean;
+  profileId: string | null;
+  value: string | null;
+  mechanism: 'task' | 'run-key' | null;
 }
 
 export interface ThrottleFlags {

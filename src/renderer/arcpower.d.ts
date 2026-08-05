@@ -8,6 +8,7 @@ import type {
   Capabilities,
   DeviceInfo,
   DeviceState,
+  ElevationState,
   FpsSample,
   HealthReport,
   IgsActionResult,
@@ -17,6 +18,7 @@ import type {
   ProfileSettingsState,
   ResetResponse,
   Settings,
+  StartupState,
   TelemetrySample,
 } from './types.ts';
 
@@ -34,11 +36,13 @@ export interface ArcPowerApi {
   getIgsServiceState(): Promise<IgsServiceState>;
   disableIgsService(): Promise<IgsActionResult>;
   enableIgsService(): Promise<IgsActionResult>;
-  startupGet(): Promise<{ enabled: boolean; profileId: string | null; value: string | null }>;
-  startupSet(enabled: boolean, profileId: string | null): Promise<{ enabled: boolean; profileId: string | null; value: string | null }>;
+  startupGet(): Promise<StartupState>;
+  startupSet(enabled: boolean, profileId: string | null): Promise<StartupState>;
   driverInfo(): Promise<{ driverDate: string | null }>;
   /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
   appVersion(): Promise<{ version: string }>;
+  /** M2C-C: elevation state (cached koffi probe, no spawn). */
+  appElevated(): Promise<ElevationState>;
   fpsPoll(deviceId: number): Promise<FpsSample | null>;
   profilesList(): Promise<ProfilesEnvelope>;
   profilesSave(profile: Partial<Profile> & { id: string; name: string; settings: Settings; ocOnBoot: boolean }): Promise<ProfilesEnvelope>;

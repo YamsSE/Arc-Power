@@ -1,5 +1,5 @@
-// Arc Power — M2b apply-on-startup flow (`--apply-profile <id>`) and the
-// shared profile-apply flow (tray "Apply active profile").
+// Arc Power — M2b/M2C-C apply-on-startup flow (`--apply-profile <id>`) and
+// the shared profile-apply flow (tray "Apply active profile").
 //
 // Electron-free so the whole flow is testable under plain `node --test`
 // with MockBackend. Gates: the persisted settings must have waiverAccepted
@@ -7,13 +7,19 @@
 // before this at boot). The ocOnBoot gate applies ONLY to the boot path:
 // an explicit user action (tray click, renderer Load) skips it but keeps
 // the waiver gates. Applies the profile with read-back verification (the
-// backend's per-control read-back); on failure applies defaults
-// (resetToDefaults) and reports the fallback — never a silent partial
-// apply. The "defaults restored" claim is only ever made when a restore
-// actually ran (fallbackApplied !== undefined).
+// backend's per-control read-back + the routing layer's delayed re-read);
+// on failure applies defaults (resetToDefaults) and reports the fallback —
+// never a silent partial apply. The "defaults restored" claim is only ever
+// made when a restore actually ran (fallbackApplied !== undefined).
+//
+// M2C-C: the apply goes through the ROUTED core (DriverStore runtime for
+// values within range, bundled 2023 runtime above 252 W / 90 C) and through
+// the elevation-aware apply runner — the boot task runs elevated (/rl
+// highest), so its runner applies in-process; a manually-launched
+// non-elevated instance fails honestly per control.
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-import { applyOnce } from './apply-once.js';
+import { executeApply } from './apply-routing.js';
 
 /**
  * @param {{
@@ -23,6 +29,8 @@ import { applyOnce } from './apply-once.js';
  *   log?: (s: string) => void,
  *   requireOcOnBoot?: boolean,   // boot path only; explicit actions skip it
  *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
+ *   oldIgcl?: object,            // M2C-C: bundled-2023-runtime adapter (null in tests that never extend)
+ *   applyRunner?: object | null, // M2C-C: elevation-aware apply runner (null = in-process)
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -32,7 +40,7 @@ import { applyOnce } from './apply-once.js';
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, getIgsState = null }) {
+export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, getIgsState = null, oldIgcl = null, applyRunner = null }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
@@ -70,32 +78,39 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   }
 
   log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId} — single attempt`);
-  // F3 instant apply (M2C-B): ONE attempt, shared with the UI apply path.
-  // Boot/tray applies get the same honest treatment; the IGS state is probed
-  // only to compose the per-control refusal messages.
-  let igsState = null;
-  if (getIgsState) {
-    try { igsState = await getIgsState(); } catch { /* degraded probe */ }
-  }
+  // F3 instant apply (M2C-B) + M2C-C routing/elevation: ONE attempt, shared
+  // with the UI apply path. A non-elevated parent delegates to the elevated
+  // self-worker; the boot task runs elevated and applies in-process.
   let result;
+  let state = null;
   try {
-    const out = await applyOnce({
-      backend,
-      deviceId,
-      settings: profile.settings,
-      opts: { igsState },
-    });
-    result = out.result;
+    if (applyRunner?.needsWorker?.()) {
+      // S2: the runner request carries the device-side waiver state so the
+      // worker's in-memory flag matches what the user accepted.
+      const out = await applyRunner.apply({
+        deviceId,
+        settings: profile.settings,
+        profileName: profile.name,
+        waiverAccepted: caps.waiverAccepted === true,
+      });
+      result = out.result;
+      state = out.state;
+    } else {
+      const out = await executeApply({ backend, oldIgcl, deviceId, settings: profile.settings, log });
+      result = out.result;
+      state = out.state;
+    }
     log(`[apply-on-boot] single attempt completed with ${Object.keys(result.perControl).length} per-control result(s)`);
   } catch (err) {
     return { applied: false, reason: `apply threw: ${err.message}` };
   }
-  let state = null;
-  try {
-    state = await backend.getCurrentSettings(deviceId);
-  } catch {
-    // Read-back failure (M2b step-5 NIT 5): degrade to a null state — the
-    // outcome is still reported from `result`; never crash the flow.
+  if (!state) {
+    try {
+      state = await backend.getCurrentSettings(deviceId);
+    } catch {
+      // Read-back failure (M2b step-5 NIT 5): degrade to a null state — the
+      // outcome is still reported from `result`; never crash the flow.
+    }
   }
 
   if (result.ok === true) {
@@ -107,7 +122,12 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} — restoring defaults`);
   let fallbackApplied = true;
   try {
-    await backend.resetToDefaults(deviceId);
+    if (applyRunner?.needsWorker?.()) {
+      const out = await applyRunner.reset(deviceId);
+      if (!out.ok) throw new Error('reset via elevated worker failed');
+    } else {
+      await backend.resetToDefaults(deviceId);
+    }
   } catch (err) {
     fallbackApplied = false;
     log(`[apply-on-boot] defaults restore FAILED: ${err.message}`);
@@ -136,6 +156,8 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  *   profileId: string,
  *   log?: (s: string) => void,
  *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
+ *   oldIgcl?: object,
+ *   applyRunner?: object | null,
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -145,8 +167,8 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileOnBoot({ backend, store, profileId, log = () => {}, getIgsState = null }) {
-  return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true, getIgsState });
+export async function applyProfileOnBoot({ backend, store, profileId, log = () => {}, getIgsState = null, oldIgcl = null, applyRunner = null }) {
+  return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true, getIgsState, oldIgcl, applyRunner });
 }
 
 /**
@@ -164,6 +186,7 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   setupTray: () => Promise<{ displayBalloon: (o: { title: string, content: string }) => void }>,
  *   log?: (s: string) => void,
  *   getIgsState?: () => Promise<{ service: { running: boolean }, appRunning: boolean }>,
+ *   oldIgcl?: object,
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -173,10 +196,10 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   state?: unknown,
  * }>}
  */
-export async function runApplyOnStartup({ backend, store, profileId, setupTray, log = () => {}, getIgsState = null }) {
+export async function runApplyOnStartup({ backend, store, profileId, setupTray, log = () => {}, getIgsState = null, oldIgcl = null }) {
   let out;
   try {
-    out = await applyProfileOnBoot({ backend, store, profileId, log, getIgsState });
+    out = await applyProfileOnBoot({ backend, store, profileId, log, getIgsState, oldIgcl });
   } catch (err) {
     out = { applied: false, reason: err.message };
   }

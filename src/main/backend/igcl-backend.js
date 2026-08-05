@@ -24,6 +24,7 @@ import {
 } from './igcl-bindings.js';
 import { igclErrorCode } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C } from './units.js';
+import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -50,6 +51,7 @@ export class IgclBackend {
    *   allowAutoWaiver?: boolean,      // smoke/tests only — never in product paths
    *   lib?: object|null,              // injected bound lib (tests); loaded at init() otherwise
    *   findDll?: () => string|null,    // injectable discovery (tests)
+   *   extended?: { isCapable: () => Promise<boolean> },  // M2C-C bundled-2023-runtime probe
    * }} opts
    */
   constructor(opts = {}) {
@@ -58,6 +60,7 @@ export class IgclBackend {
     this._allowAutoWaiver = opts.allowAutoWaiver === true;
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
+    this._extended = opts.extended ?? null;
     this._apiHandle = null;
     this._levelZeroOk = false;
     this._initError = null;
@@ -328,9 +331,28 @@ export class IgclBackend {
         // F3 PT range fix (M2C-A): the driver setter refuses temp limits
         // above 90 C with 0x44000005 even if the props ever drift above it —
         // pin the EXPOSED max to TEMP_LIMIT_MAX_C so the UI/presets/validation
-        // can never offer an un-appliable value (plan.md M2C-A F3).
+        // can never offer an un-appliable value (plan.md M2C-A F3). M2C-C:
+        // the pin yields to the extended range when the bundled 2023 runtime
+        // is capable (values above 90 C then route to that runtime).
         if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
           caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
+        }
+        // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
+        // this driver, report the FULL verified range (PL max 315 W, TL max
+        // 115 C — min/default stay the DriverStore values) + the
+        // extendedRanges flag. The UI exposes those maxes; applies above the
+        // DriverStore clamp route to the 2023 runtime (apply-routing.js).
+        const extendedCapable = this._extended
+          ? await this._extended.isCapable()
+          : false;
+        if (extendedCapable) {
+          if (caps.ranges.powerLimitW) {
+            caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: EXTENDED_PL_MAX_W };
+          }
+          if (caps.ranges.tempLimitC) {
+            caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
+          }
+          caps.extendedRanges = true;
         }
         // gpuLock: supported when the symbol pair exists (0,0 pair = dynamic,
         // still supported).

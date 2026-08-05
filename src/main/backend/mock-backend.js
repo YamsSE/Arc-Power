@@ -9,6 +9,8 @@
 // A770 read-only fan fixture (used to verify the read-only UI path).
 
 import { clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve } from './units.js';
+import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
+import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
 
 const DEFAULT_STATE = Object.freeze({
   powerLimitW: 210,
@@ -74,6 +76,8 @@ export class MockBackend {
    *   offGridFreqMhz?: number,           // report a driver freq offset off the 1 MHz grid (ui-verify only)
    *   telemetryIntervalS?: number,       // mock wall-clock between samples (default 0.5)
    *   energyStepJ?: number,              // energy added per sample (default 19.4 -> 38.8 W @ 0.5 s)
+   *   extendedRanges?: boolean,          // M2C-C: report the extended ranges (PL max 315 / TL max 115)
+   *   extendedFail?: boolean,            // M2C-C: extended applies fail with the honest unavailable message
    * }} opts
    */
   constructor(opts = {}) {
@@ -83,13 +87,43 @@ export class MockBackend {
     this._intervalS = opts.telemetryIntervalS ?? 0.5;
     this._energyStepJ = opts.energyStepJ ?? 19.4;
     this._fanCanControl = opts.fanCanControl !== false;
+    this._extended = opts.extendedRanges === true;
+    this._extendedFail = opts.extendedFail === true;
     this._state = { ...DEFAULT_STATE, gpuLock: { ...DEFAULT_STATE.gpuLock }, fanCurve: [...DEFAULT_STATE.fanCurve] };
     if (opts.offGridFreqMhz !== undefined) this._state.gpuFreqOffsetMhz = opts.offGridFreqMhz;
     this._caps = JSON.parse(JSON.stringify(DEFAULT_CAPS));
     if (this._fanCanControl) this._caps.fan = { ...FAN_EDITABLE };
+    if (this._extended) {
+      this._caps.ranges.powerLimitW = { ...this._caps.ranges.powerLimitW, max: EXTENDED_PL_MAX_W };
+      this._caps.ranges.tempLimitC = { ...this._caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
+      this._caps.extendedRanges = true;
+    }
     this._waiverAccepted = false;
     this._tick = 0;
     this._telemetryCbs = new Set();
+  }
+
+  /** M2C-C: the mock's extended-capability flag (mirrors OldIgcl.isCapable). */
+  get extendedCapable() {
+    return this._extended;
+  }
+
+  /**
+   * M2C-C mock of the bundled 2023 runtime's extended setters: applies the
+   * value to the mock state when extended ranges are enabled; otherwise (or
+   * with extendedFail) answers with the honest unavailable message.
+   * @param {'powerLimitW'|'tempLimitC'} control
+   * @param {number} value
+   * @returns {Promise<{ ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean }>}
+   */
+  async extendedApply(control, value) {
+    if (!this._extended || this._extendedFail) {
+      return { ok: false, errorCode: 'unsupported', readBackEqual: false, message: EXTENDED_UNAVAILABLE_MSG };
+    }
+    const range = this._caps.ranges[control];
+    const clamped = clampAndSnap(value, range);
+    this._state[control] = clamped;
+    return { ok: true, readBackEqual: true };
   }
 
   /**
@@ -341,4 +375,20 @@ export class MockBackend {
       levelZeroOk: true,
     };
   }
+}
+
+/**
+ * M2C-C: the mock bundled-2023-runtime adapter (OldIgcl duck type). Routes
+ * extended-range writes back into the MockBackend's extendedApply so the
+ * mock's read-back reflects them. Tests and --ui-verify use this — the real
+ * OldIgcl never loads in mock mode.
+ * @param {MockBackend} backend
+ */
+export function createMockOldIgcl(backend) {
+  return {
+    isCapable: async () => backend.extendedCapable,
+    setPowerLimitW: async (w) => backend.extendedApply('powerLimitW', w),
+    setTempLimitC: async (c) => backend.extendedApply('tempLimitC', c),
+    close: async () => {},
+  };
 }

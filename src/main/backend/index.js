@@ -10,6 +10,10 @@ import { MockBackend } from './mock-backend.js';
  * Selection order: opts.kind -> RID_BACKEND env -> 'igcl'.
  *   kind 'mock' -> MockBackend (fixtures / demo / tests)
  *   kind 'igcl' -> IgclBackend (koffi -> IntelControlLib.dll)
+ * IgclBackend opts (opts.igcl): dllPath / allowAutoWaiver / lib / findDll /
+ *   extended — the M2C-C extended-capability probe
+ *   ({ extended: { isCapable: () => oldIgcl.isCapable() } }), forwarded
+ *   verbatim by this factory.
  * @param {{ kind?: 'igcl'|'mock', igcl?: object, mock?: object }} opts
  * @returns {import('./backend.interface.js').IOCBackend}
  */

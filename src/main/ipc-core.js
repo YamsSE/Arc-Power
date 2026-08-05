@@ -26,7 +26,8 @@ import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
 import { createMockIgs } from './igs-service.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
-import { applyOnce } from './apply-once.js';
+import { executeApply, createNullOldIgcl } from './apply-routing.js';
+import { isElevated as detectElevated } from './elevation.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -170,6 +171,9 @@ export function assertNoPayload(args, channel) {
  *   presentmon?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null> },
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
+ *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
+ *   applyRunner?: object|null,   // elevation-aware apply runner (elevated-apply)
+ *   isElevated?: () => boolean,  // elevation probe for the app-elevated channel
  * }} ctx
  */
 export function createIpcHandlers({
@@ -186,6 +190,12 @@ export function createIpcHandlers({
   presentmon = { poll: async () => null },
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
+  // M2C-C: the 2023-runtime adapter + the elevation-aware apply runner.
+  // Defaults: a no-op old runtime (never loads the DLL) and no runner
+  // (applies run in-process) — safe for tests and mock mode.
+  oldIgcl = createNullOldIgcl(),
+  applyRunner = null,
+  isElevated = detectElevated,
 }) {
   /** @type {Map<number, TelemetryService>} */
   const telemetry = new Map();
@@ -227,35 +237,63 @@ export function createIpcHandlers({
         const settings = sanitizeSettings(payload);
         const caps = await backend.getCapabilities(deviceId);
         const clamped = clampSettings(settings, caps.ranges);
-        // F3 instant apply (M2C-B): ONE attempt, zero waiting, no progress,
-        // no cancellation. The IGS state is probed live only to compose the
-        // refusal messages (IGS-on requirement vs plain driver message).
-        let igsState = null;
-        try { igsState = await igs.getState(); } catch { /* degraded probe */ }
-        const out = await applyOnce({ backend, deviceId, settings: clamped, opts: { igsState } });
-        // IGS may change OC state between runs — always re-read after apply.
-        const state = await backend.getCurrentSettings(deviceId);
-        return { result: out.result, state };
+        // M2C-C elevation gate: a non-elevated app delegates the apply to
+        // the elevated self-worker (one UAC prompt); the elevated app (and
+        // mock mode, where applyRunner is null) applies in-process through
+        // the routed core (DriverStore runtime <=252 W / <=90 C, bundled
+        // 2023 runtime above). The worker runs the SAME core.
+        if (applyRunner?.needsWorker?.()) {
+          // S2: the request carries the parent-side waiver flag so the
+          // worker's in-memory state (its clamp caps + apply gate) matches
+          // what the user already accepted.
+          const out = await applyRunner.apply({
+            deviceId,
+            settings: clamped,
+            waiverAccepted: caps.waiverAccepted === true,
+          });
+          // S2 G2 mirror: when the driver lost the waiver, the worker's
+          // per-control results carry waiver-not-set. Clear the parent-side
+          // in-memory flag so the next getCapabilities reports unaccepted
+          // and the waiver dialog re-shows — the wedge (stale-true parent
+          // flag with failing applies) must never happen.
+          if (Object.values(out.result?.perControl ?? {})
+            .some((p) => p?.errorCode === 'waiver-not-set')) {
+            await backend.restoreWaiverState(deviceId, false);
+          }
+          return { result: out.result, state: out.state };
+        }
+        const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped });
+        return { result: out.result, state: out.state };
       },
 
       'reset-to-defaults': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        await backend.resetToDefaults(deviceId);
-        // No success claims without verification (plan §5): re-read after
-        // the reset and confirm the supported OC controls moved to their
-        // capability defaults (tolerance-aware). ctlOverclockResetToDefault
-        // does NOT touch fan config, so only OC controls are checked.
-        // gpuLock is expected unlocked (0,0) after a reset.
+        // M2C-C: the reset write needs elevation like any other OC write
+        // (0-value writes are refused even elevated — reset runs
+        // ctlOverclockResetToDefault, which works elevated only). The
+        // non-elevated app delegates to the elevated self-worker.
+        let state;
+        if (applyRunner?.needsWorker?.()) {
+          const out = await applyRunner.reset(deviceId);
+          state = out.state;
+        } else {
+          await backend.resetToDefaults(deviceId);
+          state = await backend.getCurrentSettings(deviceId);
+        }
+        // No success claims without verification (plan §5): confirm the
+        // supported OC controls moved to their capability defaults
+        // (tolerance-aware). ctlOverclockResetToDefault does NOT touch fan
+        // config, so only OC controls are checked. gpuLock is expected
+        // unlocked (0,0) after a reset.
         const caps = await backend.getCapabilities(deviceId);
-        const state = await backend.getCurrentSettings(deviceId);
         const mismatched = [];
         for (const [key, range] of Object.entries(caps.ranges)) {
-          const value = state[key];
+          const value = state?.[key];
           if (value !== null && value !== undefined && range && !nearlyEqual(value, range.default, RESET_VERIFY_EPS)) {
             mismatched.push(`${key}: read-back ${value} != default ${range.default}`);
           }
         }
-        if (caps.controls.gpuLock && state.gpuLock
+        if (caps.controls.gpuLock && state?.gpuLock
           && (!nearlyEqual(state.gpuLock.voltageV, 0, RESET_VERIFY_EPS) || !nearlyEqual(state.gpuLock.freqMhz, 0, RESET_VERIFY_EPS))) {
           mismatched.push(`gpuLock: read-back ${state.gpuLock.voltageV}V/${state.gpuLock.freqMhz}MHz != unlocked (0,0)`);
         }
@@ -274,7 +312,18 @@ export function createIpcHandlers({
       'waiver-accept': async (deviceId) => {
         assertValidDeviceId(deviceId);
         // Product path: explicit user acceptance ONLY. Never auto-accept.
-        await backend.setWaiverAccepted(deviceId);
+        // M2C-C: the driver-side waiver write needs elevation like any other
+        // OC write — the non-elevated app delegates to the elevated worker.
+        if (applyRunner?.needsWorker?.()) {
+          await applyRunner.waiverAccept(deviceId);
+          // S2: the worker accepted on the driver — mirror the acceptance
+          // into the parent's in-memory flag so getCapabilities/waiver-get
+          // reflect it for the whole session (the worker's state is not
+          // visible across the boundary).
+          await backend.restoreWaiverState(deviceId, true);
+        } else {
+          await backend.setWaiverAccepted(deviceId);
+        }
         const settings = await store.loadSettings();
         await store.saveSettings({ ...settings, waiverAccepted: true });
         return { accepted: true };
@@ -354,6 +403,17 @@ export function createIpcHandlers({
       'app-version': async (...args) => {
         assertNoPayload(args, 'app-version');
         return { version: appVersion };
+      },
+
+      // M2C-C elevation state (read-only, cached koffi probe — no spawn):
+      // `elevated` = this process runs as administrator; `workerApply` =
+      // applies go through the elevated self-worker (product path, not
+      // elevated). The renderer uses `workerApply` to show the
+      // "Administrator approval is needed" toast before the UAC prompt.
+      'app-elevated': async (...args) => {
+        assertNoPayload(args, 'app-elevated');
+        const elevated = isElevated();
+        return { elevated, workerApply: applyRunner?.needsWorker?.() === true };
       },
 
       // FPS via PresentMon (M2b-B). The default adapter is the mock (always

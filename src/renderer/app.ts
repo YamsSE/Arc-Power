@@ -134,6 +134,16 @@ async function boot() {
     store.set({ igsState: { service: { found: false, running: false, startType: 'unknown' }, appRunning: false } });
   }
 
+  // M2C-C elevation state (cached koffi probe — never spawns). Failure
+  // degrades to not-elevated + no worker (the UI then behaves as a plain
+  // elevated-in-process app — the apply either works or fails honestly).
+  try {
+    const e = await api.appElevated();
+    store.set({ elevated: e?.elevated === true, workerApply: e?.workerApply === true });
+  } catch {
+    store.set({ elevated: false, workerApply: false });
+  }
+
   try {
     const caps = await api.getCapabilities(deviceId);
     const state = await api.getCurrentSettings(deviceId);

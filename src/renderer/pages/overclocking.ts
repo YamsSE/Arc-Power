@@ -21,8 +21,9 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { computePresets } from '../pure/presets.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, clampExposedRange, computeDirtyVsApplied, isScalarDirtyVsApplied } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, clampExposedRange, computeDirtyVsApplied, isScalarDirtyVsApplied, requiresExtendedRangeConfirm } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
+import { showExtendedRangeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
 import type { RangeInfo, Capabilities, DeviceState } from '../types.ts';
 
@@ -36,6 +37,11 @@ const EXPERT_CONTROLS: Array<{ key: string; label: string }> = [
 ];
 
 export const APPLY_BTN_TEXT = 'Apply';
+export const APPLY_BTN_BUSY_TEXT = 'Applying…';
+// M2C-C first-apply elevation explanation: shown right before the UAC prompt
+// (a short toast — the prompt itself is the OS's, this explains why).
+export const ELEVATION_TOAST_TEXT = 'Administrator approval is needed to apply GPU settings.';
+export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 
 function supportedScalars(caps: Capabilities): string[] {
   return CONTROL_ORDER.filter((k) => caps.ranges[k] !== undefined);
@@ -80,12 +86,19 @@ export const overclockingPage: Page = {
     // --- floating Apply (M2b-B): bottom-left, dirty-only -------------------
     // F3 instant apply (M2C-B): one attempt, immediate result; the button is
     // just a trigger (a reentry guard swallows a double-click mid-apply).
+    // M2C-C: the button shows a transient "Applying…" state while an apply
+    // is pending (e.g. waiting on the UAC prompt) — disabled, no retry UI.
     const applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
     let applying = false;
     applyBtn.addEventListener('click', () => {
       if (applying) return;
       void apply();
     });
+    const setBusy = (busy: boolean) => {
+      applying = busy;
+      applyBtn.disabled = busy;
+      applyBtn.textContent = busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
+    };
     const updateFloating = () => {
       if (applying) return;
       applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values), currentState, applied);
@@ -106,9 +119,11 @@ export const overclockingPage: Page = {
     };
 
     const buildCard = (key: string): HTMLElement => {
-      // F3 PT clamp: the temp-limit range is pinned to 90 C max (driver
-      // refuses above with 0x44000005) — sliders/presets never exceed it.
-      const range: RangeInfo = clampExposedRange(caps.ranges[key], key) as RangeInfo;
+      // F3 PT clamp (M2C-A) / M2C-C extended ranges: the temp-limit range is
+      // pinned to 90 C max unless the device reports extended ranges (then
+      // the backend already says 115 C); the power slider is pinned to 252 W
+      // unless extended — sliders/presets never exceed what can be applied.
+      const range: RangeInfo = clampExposedRange(caps.ranges[key], key, caps) as RangeInfo;
       const rawDriver = state[key as keyof DeviceState];
       const driverValue = typeof rawDriver === 'number' ? rawDriver : null;
       const driverText = formatDriverValue(driverValue, range);
@@ -187,12 +202,26 @@ export const overclockingPage: Page = {
         toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
         return;
       }
+      // M2C-C: extended-range values (>252 W / >90 C) need the honest
+      // confirm dialog before anything is sent.
+      if (requiresExtendedRangeConfirm(settings)) {
+        const confirmed = await showExtendedRangeConfirm(deviceName);
+        if (!confirmed) {
+          toast('info', 'Apply cancelled', 'Extended power/temperature limits were not confirmed.');
+          return;
+        }
+      }
+      // M2C-C: a non-elevated product app delegates the apply to the
+      // elevated self-worker (one UAC prompt) — explain BEFORE the prompt.
+      if (ctx.store.get().workerApply) {
+        toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
+      }
       try {
         // M2b-B no-op suppression compares against the PRE-apply state: a
         // control whose value already equals the driver read-back stays
         // silent on success.
         const before = currentState;
-        applying = true;
+        setBusy(true);
         const { result, state: fresh } = await api.applySettings(deviceId, settings);
         // M1 risk note: IGS may change OC state — refresh after every apply.
         currentState = fresh;
@@ -226,9 +255,16 @@ export const overclockingPage: Page = {
           ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
         }
       } catch (err) {
-        toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
+        // M2C-C: a declined/denied UAC prompt surfaces here with the honest
+        // message (Apply requires administrator approval).
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('administrator approval') || msg.includes('Administrator approval')) {
+          toast('error', 'Apply requires administrator approval', msg);
+        } else {
+          toast('error', 'Apply failed', msg);
+        }
       } finally {
-        applying = false;
+        setBusy(false);
         updateFloating();
       }
     };

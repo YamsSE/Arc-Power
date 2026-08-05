@@ -26,8 +26,8 @@
 //   5. per-card reset-to-default + apply round-trips the default;
 //   5b. M2C-B F3 instant apply: ONE attempt, no retry note, no progress
 //       label — an io-failed apply fails instantly with the composed
-//       refusal toast (IGS-on requirement when IGS is off; plain + code
-//       when fully on); M2C-B B5: the "Unapplied" chips + floating Apply
+//       refusal toast (plain "The GPU driver refused the change" + the
+//       error code); M2C-B B5: the "Unapplied" chips + floating Apply
 //       clear per-`result.ok` even while the driver read-back lags;
 //   6. fan editor: mode toggle, add point, preset, apply; M2C-B B1: the
 //       right-side 0-100% axis renders outside the plot;
@@ -45,6 +45,14 @@
 //  11. with RID_MOCK_OFFGRID_FREQ_MHZ=48.3, the driver readout line renders
 //      the off-grid value with an extra decimal, distinct from the snapped
 //      slider value.
+//  12. M2C-C extended-range variant (RID_MOCK_EXTENDED_RANGES=1): the power
+//      slider max is 315 W and the temp slider max 115 C; setting PL 300 and
+//      applying shows the extended-range confirm dialog; Cancel aborts
+//      (device untouched); Apply anyway applies and the read-back sticks at
+//      300 W; restored to 210 W afterwards.
+//  13. M2C-C worker-apply toast variant (RID_MOCK_WORKER_APPLY=1, runs on
+//      top of the extended variant): before the apply, an info toast
+//      explains "Administrator approval is needed to apply GPU settings."
 // This script is dev tooling only — it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
@@ -394,7 +402,8 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
 
   if (igsOff) {
     // IGS fully off: an io-failed powerLimit apply fails INSTANTLY and the
-    // toast names the IGS-on requirement (composed in main).
+    // toast is the plain driver message + code (M2C-C: the IGS-on wording is
+    // REMOVED — the real gate was elevation, docs §8c).
     backend.injectFail('powerLimitW', 'io-failed');
     await setSlider(220);
     await clearToasts();
@@ -403,7 +412,9 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
       fail('io-failed error toast missing (instant apply, IGS off)');
     }
     const errMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
-    if (!/Intel Graphics Software/.test(errMsg)) fail(`IGS-off refusal toast does not name IGS: '${errMsg}'`);
+    if (!/refused the change/.test(errMsg)) fail(`IGS-off refusal toast is not the plain message: '${errMsg}'`);
+    if (/Intel Graphics Software/.test(errMsg)) fail(`M2C-C: refusal toast still names IGS (obsolete wording): '${errMsg}'`);
+    if (!/\(io-failed\)/.test(errMsg)) fail(`M2C-C: refusal toast is missing the error code: '${errMsg}'`);
     if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
     // The "Applying — retry N/9" surface is gone: the button never shows it.
     const btnLabel = await js(`document.querySelector('.floating-apply')?.textContent ?? ''`);
@@ -435,7 +446,7 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     const baseline = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(baseline.powerLimitW - 210) > 1e-6) fail(`baseline is not 210 W: ${baseline.powerLimitW}`);
     await clearToasts();
-    step('instant-igs-off', `IGS-off: io-failed -> ONE attempt, IGS-on refusal toast ('${errMsg.trim()}'), no retry note, no progress label; recovery + baseline applied`);
+    step('instant-igs-off', `IGS-off: io-failed -> ONE attempt, plain refusal toast ('${errMsg.trim()}'), no retry note, no progress label; recovery + baseline applied`);
   } else {
     // IGS fully on (or half-state): a refusal there is rare -> plain + code.
     backend.injectFail('powerLimitW', 'io-failed');
@@ -462,6 +473,78 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     if (Math.abs(recovered.powerLimitW - 210) > 1e-6) fail(`recovery did not restore 210 W: ${recovered.powerLimitW}`);
     await clearToasts();
     step('instant-igs-on', `IGS-on: io-failed -> ONE attempt, plain refusal toast ('${errMsg.trim()}'), no retry note; recovery clean (210 W)`);
+  }
+
+  // --- 5c. M2C-C extended-range variant: full slider range, confirm dialog,
+  // --- worker-apply elevation toast (RID_MOCK_EXTENDED_RANGES=1, optional
+  // --- RID_MOCK_WORKER_APPLY=1 on top) -------------------------------------
+  const extendedRanges = process.env.RID_MOCK_EXTENDED_RANGES === '1';
+  const workerApply = process.env.RID_MOCK_WORKER_APPLY === '1';
+  if (extendedRanges) {
+    const setPlSlider = (value) => js(`(() => {
+      const card = document.querySelector('.oc-card[data-control="powerLimitW"]');
+      const input = card.querySelector('input[type="range"]');
+      input.value = '${value}';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return card.querySelector('.oc-value').textContent;
+    })()`);
+    const modalTitle = () => js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`);
+
+    // The extended ranges are exposed: slider maxes 315 W / 115 C.
+    const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
+    if (plMax !== '315') fail(`M2C-C: power slider max is '${plMax}' (expected 315)`);
+    const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
+    if (tlMax !== '115') fail(`M2C-C: temp slider max is '${tlMax}' (expected 115)`);
+    step('extended-ranges', `extended ranges exposed: PL slider max ${plMax} W, TL slider max ${tlMax} C`);
+
+    // 300 W -> apply -> the extended-range confirm dialog.
+    await setPlSlider(300);
+    if (await floatingHidden()) fail('floating Apply did not appear for the extended value');
+    await clearToasts();
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.modal')`))) fail('extended-range confirm dialog did not appear');
+    if (!(await modalTitle()).includes('Extended power/temperature limit')) {
+      fail(`extended-range dialog title is '${await modalTitle()}'`);
+    }
+    const dialogText = await js(`document.querySelector('.modal .modal-text')?.textContent ?? ''`);
+    if (!/beyond Intel/.test(dialogText) || !/300 W/.test(dialogText)) {
+      fail(`extended-range warning text is '${dialogText}' (expected the honest beyond-standard warning mentioning the BiFrost 300 W)`);
+    }
+    step('extended-confirm', 'extended-range confirm dialog shown with the honest beyond-standard warning');
+
+    // Cancel: nothing applies.
+    await js(`document.querySelector('.modal button.btn-ghost')?.click()`);
+    await sleep(300);
+    const canceledState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(canceledState.powerLimitW - 210) > 1e-6) fail(`extended apply ran after Cancel! powerLimit=${canceledState.powerLimitW}`);
+    step('extended-cancel', 'extended-range Cancel: apply aborted, device untouched (210 W)');
+
+    // Accept: the apply proceeds; with the worker-apply variant an info
+    // toast explains the UAC prompt BEFORE the apply.
+    await clearToasts();
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.modal')`))) fail('extended-range confirm dialog did not reappear');
+    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    if (workerApply) {
+      if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-info')).some((t) => (t.textContent ?? '').includes('Administrator approval is needed'))`, 5000))) {
+        fail('M2C-C: the elevation explanation toast did not appear before the worker apply');
+      }
+      step('elevation-toast', `elevation explanation toast shown before the UAC prompt ('${await js(`Array.from(document.querySelectorAll('.toast-info')).find((t) => (t.textContent ?? '').includes('Administrator approval is needed'))?.querySelector('.toast-message')?.textContent ?? ''`)}')`);
+    }
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('extended apply success toast missing');
+    const extendedState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(extendedState.powerLimitW - 300) > 1e-6) fail(`extended apply did not stick: powerLimit=${extendedState.powerLimitW}`);
+    step('extended-apply', `extended apply (300 W) accepted through the confirm dialog, read-back ${extendedState.powerLimitW} W`);
+    await clearToasts();
+
+    // Restore the standard baseline for the later steps.
+    await setPlSlider(210);
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('extended baseline restore (210 W) did not apply');
+    const baseline = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(baseline.powerLimitW - 210) > 1e-6) fail(`extended baseline is not 210 W: ${baseline.powerLimitW}`);
+    await clearToasts();
+    step('extended-restore', 'extended baseline restored to 210 W');
   }
 
   // --- 6. fan editor ---------------------------------------------------------

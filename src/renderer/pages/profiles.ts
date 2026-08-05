@@ -13,10 +13,11 @@ import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
+import { showExtendedRangeConfirm } from '../components/confirm-dialog.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
+import { isNoopApply, validateSettingsPayload, profileApplyOutcome, requiresExtendedRangeConfirm } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
-import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings } from '../types.ts';
+import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings, StartupState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 
@@ -157,7 +158,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   }
 
   let envelope: ProfilesEnvelope;
-  let bootState: { enabled: boolean; profileId: string | null; value: string | null } | null = null;
+  let bootState: StartupState | null = null;
   try {
     [envelope, bootState] = await Promise.all([api.profilesList(), api.startupGet()]);
   } catch (err) {
@@ -202,7 +203,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       !waiverAccepted
         ? el('p', { class: 'card-note', text: 'Accept the warranty waiver to enable start-at-boot.' })
         : activeProfile
-          ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot.` })
+          ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot${bootState?.mechanism === 'task' ? ' (elevated task — no prompt at logon)' : ''}.` })
           : el('p', { class: 'card-note', text: 'Load a profile first — start-at-boot applies the active profile.' }),
       bootMismatch
         ? el('p', { class: 'card-note boot-hint', text: 'The Run key and the saved settings disagree — the toggle reflects the Run key.' })
@@ -369,6 +370,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
       return;
     }
+    // M2C-C: extended-range values need the honest confirm dialog.
+    if (requiresExtendedRangeConfirm(p.settings)) {
+      const confirmed = await showExtendedRangeConfirm(caps.deviceName || 'this GPU');
+      if (!confirmed) {
+        done();
+        toast('info', 'Load cancelled', 'Extended power/temperature limits were not confirmed.');
+        return;
+      }
+    }
+    // M2C-C: a non-elevated product app delegates to the elevated worker —
+    // explain before the UAC prompt.
+    if (ctx.store.get().workerApply) {
+      toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
+    }
     try {
       const before = ctx.store.get().state as DeviceState;
       const { result, state: fresh } = await api.applySettings(deviceId, p.settings);
@@ -396,7 +411,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }
       await refresh();
     } catch (err) {
-      toast('error', 'Profile load failed', err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/administrator approval/i.test(msg)) {
+        toast('error', 'Load requires administrator approval', msg);
+      } else {
+        toast('error', 'Profile load failed', msg);
+      }
     } finally {
       done();
     }

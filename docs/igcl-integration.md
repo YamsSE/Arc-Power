@@ -365,3 +365,112 @@ restored the service to STOPPED + DISABLED + no app (verified in the log).
 The harness table aggregates all completed sessions
 (`node tools/validate/m2c-acceptance.js --table`).
 
+
+## 8c. M2C-C: the elevation gate + the extended range via the bundled 2023 IGCL runtime (2026-08-05)
+
+### The root-cause revision: the gate is ELEVATION, not IGS state
+
+The M2C-A/B "IGS fully on = 100% success / IGS off = refusal" story was
+WRONG. Live-machine diagnosis (driver 32.0.101.8861, elevated vs
+non-elevated probes, delayed read-backs, tools/validate/m2c-elev-*.js):
+
+- **Non-elevated IGCL OC writes NEVER persist.** The setter returns SUCCESS
+  and an IMMEDIATE read-back matches, then the value reverts � the
+  "momentary lie". Every earlier "success" (the M2C-B harness on-window
+  100%, all M2a cross-validations) was this lie: never persistence-verified
+  with a delayed read.
+- **Elevated writes STICK** for every control, with IGS fully on AND fully
+  off; `ctlOverclockResetToDefault` also works elevated only.
+- 0-value writes are refused even elevated (freq 0 / volt 0 no-op) �
+  cleanup uses elevated resetToDefaults.
+
+### The >252 W cap is a CLIENT-SIDE clamp in the DriverStore runtime
+
+The bundled 2023 IGCL runtime (IntelControlLib.dll v1.0.100, 2022-09-29,
+from the Arc OC Tool distribution � vendored at
+`src/main/backend/igcl2023/`, THIRD_PARTY_NOTICES.txt) + AppVersion 1.0 +
+zero UID + `ctlOverclockWaiverSet` + ELEVATION writes:
+
+| value | DriverStore runtime (zero-UID) | 2023 runtime + elevation |
+|---|---|---|
+| PL 280/300/315 W | 0x44000004 refused | SUCCESS, **persisted** (verified via separate DriverStore-runtime processes, after the old-runtime process exited) |
+| TL 100/110 C | 0x44000005 refused | SUCCESS, persisted |
+| TL 125 C | � | clamps to **115 C** (KMD ceiling) |
+| freq/volt ranges | identical to the driverstore | identical |
+
+KMD accepts 315 W; the 252 W cap lived only in the v1.2 runtime's client
+code. The Acer hint (BiFrost profile XML, 300 W) was right that >252 W is
+reachable; the profile-apply path itself is dead (UWP uninstalled) � the
+old-runtime + elevation path is OUR unlock.
+
+### Design (M2C-C)
+
+1. **Elevation detection** (`src/main/elevation.js`): koffi -> shell32
+   `IsUserAnAdmin`, cached once, no process spawn. Exposed via the
+   `app-elevated` IPC channel (`{ elevated, workerApply }`).
+2. **Elevate-on-apply**: a non-elevated app delegates every OC action
+   (apply, waiver-accept, reset) to an elevated SELF-WORKER
+   (`--apply-worker <reqFile> <outFile>`, hidden, never re-elevates, exits
+   after writing the result file) via PowerShell `Start-Process -Verb
+   RunAs -Wait` (`src/main/elevated-apply.js`). UAC cancel/deny (missing
+   result file) -> honest "Apply requires administrator approval." The
+   elevated app applies in-process.
+3. **Per-control runtime routing** (`src/main/apply-routing.js`):
+   PL <= 252 W / TL <= 90 C -> DriverStore runtime; above -> the bundled
+   2023 runtime (V1 mW/C setters, `ctl_oc_properties_old_t`, delayed
+   verification). Both runtimes can coexist in one process (probe-verified;
+   E3 loaded both in one process). Old-runtime failure on a future driver
+   degrades honestly per control ("extended power/temp limit requires the
+   bundled 2023 IGCL runtime - it failed to load on this driver").
+4. **The momentary-lie guard everywhere**: every apply is verified by an
+   immediate read-back; on mismatch ONE delayed re-read after ~400 ms � a
+   match = the write persisted, still mismatched = honest per-control fail.
+5. **Extended capability**: `getCapabilities` reports `extendedRanges:
+   true` + PL max 315 (min 105, default 210) / TL max 115 (min 60, default
+   90) when the 2023 runtime loads. The UI exposes those maxes; applies
+   above 252 W / 90 C require the extended-range confirm dialog (honest
+   beyond-standard warning; the BiFrost profile used 300 W).
+6. **apply-on-startup**: the HKCU Run key is replaced by a scheduled task
+   (`schtasks /create /tn ArcPowerApplyOnBoot /sc onlogon /rl highest /tr
+   "<exe>" --apply-profile <id>`) so boot applies run elevated silently;
+   ONE UAC at enable time. startup-get reports the mechanism
+   (`task` | `run-key` | null).
+
+### Degradation plan
+
+- 2023 runtime fails to load (future driver): extended values fail honestly
+  per control; the standard 252 W / 90 C range keeps working through the
+  DriverStore runtime; the extended confirm dialog never appears
+  (extendedRanges stays off).
+- Non-elevated manual `--apply-profile` run (outside the task): applies
+  fail honestly per control (the momentary-lie guard reports the revert),
+  the defaults-restore attempt fails, the tray balloon reports the failure.
+- Elevation probe failure degrades to "not elevated" (the safe direction:
+  applies go through the elevated worker, which always works).
+- KMD ceilings (315 W / 115 C) are never exceeded � the old-runtime module
+  clamps to the verified bounds.
+- The real `--headless` smoke path loads the same bundled-2023-runtime probe
+  as the product app (`main.js` smoke branch — caps match the app). This is
+  safe by construction: a missing/unloadable DLL makes `OldIgcl.isCapable()`
+  return `false` (cached), the smoke's caps stay in the standard 252 W / 90 C
+  range, and every health line still runs — the smoke never fails on the
+  probe alone.
+### Deferred live verification (2026-08-05, user away � NO UAC for the hour)
+
+The live worker-mode verification (apply PL 300 W through the real elevated
+self-worker and confirm the read-back STICKS via separate DriverStore-runtime
+processes, then restore 228 W) and the elevated packaged smoke are DEFERRED
+to **M3-B**. Probe: `tools/validate/m2c-c-live-worker.js` (gitignored dev
+tooling) � writes the request file, spawns the worker via
+`Start-Process -Verb RunAs -Wait`, reads the result file, verifies with
+immediate + delayed separate-process reads, then restores PL 228 W.
+
+**CP3a finding already applied to product code:** Start-Process -ArgumentList
+cannot pass a space-containing APP path to electron (electron's own CLI
+parsing hangs; reproduced live). The product launcher
+(`src/main/elevated-apply.js` `buildWorkerLaunch`) therefore passes the app
+directory via `-WorkingDirectory` and names it `.` � no spaces in the arg
+list; the packaged portable EXE passes no app path at all. The `--apply-worker`
+mode itself was verified non-elevated (writes the result file, reads back the
+device state, exits 0); only the elevated persistence of an extended value is
+pending live confirmation.

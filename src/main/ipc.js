@@ -20,10 +20,13 @@ import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
  *   driverInfo?: ReturnType<typeof createDriverInfo>,
  *   presentmon?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
  *   rebuildTray?: () => Promise<unknown>,
+ *   oldIgcl?: object,
+ *   applyRunner?: object | null,
+ *   isElevated?: () => boolean,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {} }) {
+export function registerIpc({ backend, store, getWindow, igs, startup = createStartup(), driverInfo = createDriverInfo(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -33,6 +36,9 @@ export function registerIpc({ backend, store, getWindow, igs, startup = createSt
     presentmon,
     rebuildTray,
     appVersion: app.getVersion(),
+    oldIgcl,
+    applyRunner,
+    isElevated,
     emit: (channel, payload) => {
       // Only push-style channels cross the window boundary; request/response
       // channels return their payload via the invoke promise.

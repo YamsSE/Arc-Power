@@ -297,3 +297,68 @@ test('close: unsubscribes subscribers', async () => {
   await b.sampleRawTelemetry(0);
   assert.equal(seen.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// M2C-C extended ranges (the mock's bundled-2023-runtime fixture)
+// ---------------------------------------------------------------------------
+
+import { createMockOldIgcl } from '../src/main/backend/mock-backend.js';
+import { EXTENDED_UNAVAILABLE_MSG } from '../src/main/apply-routing.js';
+
+test('M2C-C: extendedRanges:true exposes PL max 315 / TL max 115 + the flag', async () => {
+  const b = new MockBackend({ extendedRanges: true });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, true);
+  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.tempLimitC.max, 115);
+  assert.equal(caps.ranges.powerLimitW.default, 210, 'default unchanged');
+  assert.equal(b.extendedCapable, true);
+});
+
+test('M2C-C: default mock has standard ranges and is NOT extended-capable', async () => {
+  const b = new MockBackend();
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined);
+  assert.equal(caps.ranges.powerLimitW.max, 252);
+  assert.equal(b.extendedCapable, false);
+});
+
+test('M2C-C: mock old runtime applies extended values into the state (read-back matches)', async () => {
+  const b = new MockBackend({ extendedRanges: true });
+  const old = createMockOldIgcl(b);
+  assert.equal(await old.isCapable(), true);
+  const per = await old.setPowerLimitW(300);
+  assert.equal(per.ok, true);
+  assert.equal(b._state.powerLimitW, 300);
+  const per2 = await old.setTempLimitC(100);
+  assert.equal(per2.ok, true);
+  assert.equal(b._state.tempLimitC, 100);
+  assert.equal((await b.getCurrentSettings(0)).powerLimitW, 300);
+});
+
+test('M2C-C: mock old runtime clamps to the extended max (315 W / 115 C)', async () => {
+  const b = new MockBackend({ extendedRanges: true });
+  const old = createMockOldIgcl(b);
+  await old.setPowerLimitW(999);
+  assert.equal(b._state.powerLimitW, 315);
+  await old.setTempLimitC(999);
+  assert.equal(b._state.tempLimitC, 115);
+});
+
+test('M2C-C: mock old runtime NOT capable -> honest unavailable message', async () => {
+  const b = new MockBackend(); // standard ranges
+  const old = createMockOldIgcl(b);
+  assert.equal(await old.isCapable(), false);
+  const per = await old.setPowerLimitW(300);
+  assert.equal(per.ok, false);
+  assert.equal(per.message, EXTENDED_UNAVAILABLE_MSG);
+});
+
+test('M2C-C: extendedFail -> the old-runtime mock answers with the honest failure', async () => {
+  const b = new MockBackend({ extendedRanges: true, extendedFail: true });
+  const old = createMockOldIgcl(b);
+  const per = await old.setPowerLimitW(300);
+  assert.equal(per.ok, false);
+  assert.equal(per.message, EXTENDED_UNAVAILABLE_MSG);
+  assert.equal(b._state.powerLimitW, 210, 'device untouched');
+});
