@@ -53,6 +53,14 @@
 //  13. M2C-C worker-apply toast variant (RID_MOCK_WORKER_APPLY=1, runs on
 //      top of the extended variant): before the apply, an info toast
 //      explains "Administrator approval is needed to apply GPU settings."
+//  14. M2D featureset dropdown (mock mode): present with all 4 files, the
+//      live swap round trip swaps the whole UI surface to b580 percent
+//      units and back (waiver preserved); the mem-clock pins track the
+//      a770 featureset (2187 MHz).
+//  15. M2D featureset variants (RID_MOCK_FEATURESET=b580|pro-b50|arc-igpu):
+//      runFeaturesetVerify — a reduced flow per device line (OC cards /
+//      no-OC note, fan editor / read-only / no-fan, monitoring, swap round
+//      trip, b580 percent-unit apply).
 // This script is dev tooling only — it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
@@ -136,21 +144,21 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (gridChips !== 0) fail(`B2: device card chips footer still renders ${gridChips} chips`);
   step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no OC waiver row, no PCI row, no chips footer');
 
-  // M2C-B B8: 'Memory clock' kv row next to 'Graphics clock' (mock
-  // telemetry memClockMhz = 2000).
+  // M2C-B B8: 'Memory clock' kv row next to 'Graphics clock' (a770
+  // featureset telemetry memClockMhz = 2187).
   if (!(await waitFor(win, `(() => {
     const rows = Array.from(document.querySelectorAll('.card-grid .kv'));
     const mem = rows.find((k) => (k.getAttribute('data-label') ?? '') === 'Memory clock');
     const gfx = rows.find((k) => (k.getAttribute('data-label') ?? '') === 'Graphics clock');
-    return !!mem && !!gfx && (mem.textContent ?? '').includes('2000');
+    return !!mem && !!gfx && (mem.textContent ?? '').includes('2187');
   })()`))) {
-    fail(`memory clock kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Memory clock"]')?.textContent ?? ''`)}' (expected '2000 MHz')`);
+    fail(`memory clock kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Memory clock"]')?.textContent ?? ''`)}' (expected '2187 MHz')`);
   }
   step('mem-clock-kv', `device card memory clock kv = ${await js(`document.querySelector('.card-grid .kv[data-label="Memory clock"]')?.textContent ?? ''`)} (next to Graphics clock)`);
 
-  // Memory clock readout next to core clock (mock telemetry: 2000 MHz).
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2000')`))) {
-    fail('memory-clock readout missing or not 2000 MHz');
+  // Memory clock readout next to core clock (a770 featureset: 2187 MHz).
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2187')`))) {
+    fail('memory-clock readout missing or not 2187 MHz');
   }
   step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
 
@@ -547,6 +555,57 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     step('extended-restore', 'extended baseline restored to 210 W');
   }
 
+  // --- 5d. M2D mock featureset swap: the header dropdown round-trips the
+  // --- WHOLE UI surface (mock mode only; absent in real mode) ---------------
+  if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) {
+    fail('M2D: featureset dropdown missing in mock mode');
+  }
+  const fsOptions = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
+  if (fsOptions.length !== 4) fail(`M2D: dropdown lists ${fsOptions.length} featuresets (expected 4)`);
+  for (const want of ['a770', 'b580', 'pro-b50', 'arc-igpu']) {
+    if (!fsOptions.includes(want)) fail(`M2D: dropdown options are '${fsOptions.join(',')}' (missing '${want}')`);
+  }
+  const fsSelected = await js(`document.querySelector('.featureset-select').value`);
+  if (fsSelected !== 'a770') fail(`M2D: current selection is '${fsSelected}' (expected a770)`);
+  step('fs-boot', `featureset dropdown present in mock mode: ${fsOptions.length} options, current '${fsSelected}'`);
+
+  const swapTo = (id) => js(`(() => {
+    try {
+      const s = document.querySelector('.featureset-select');
+      s.value = '${id}';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    } catch (e) { return 'ERR: ' + (e && e.stack ? e.stack : String(e)); }
+  })()`);
+
+  // Swap to the Battlemage featureset via the dropdown: the OC page
+  // re-renders live with percent units + the b580 defaults/control set.
+  await swapTo('b580');
+  if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '100 %'`))) {
+    fail(`M2D swap: PL readout is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' (expected '100 %')`);
+  }
+  const b580Caps = await js(`window.arcPower.getCapabilities(0)`);
+  if (b580Caps.ranges.powerLimitW.units !== '%' || b580Caps.ranges.tempLimitC.units !== '%' || b580Caps.ranges.gpuVoltOffsetV.units !== '%') {
+    fail(`M2D swap: b580 percent units not applied: ${JSON.stringify(b580Caps.ranges)}`);
+  }
+  if (b580Caps.controls.gpuLock === true || b580Caps.controls.vfCurve !== true) {
+    fail(`M2D swap: b580 control set wrong: ${JSON.stringify(b580Caps.controls)}`);
+  }
+  step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported`);
+
+  // Swap back: the A770 surface (W units, 210 W default) returns and the
+  // app-level waiver acceptance survives (consent, not driver state).
+  await swapTo('a770');
+  if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`))) {
+    fail(`M2D swap-back: PL readout is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' (expected '210 W')`);
+  }
+  const a770Caps = await js(`window.arcPower.getCapabilities(0)`);
+  if (a770Caps.ranges.powerLimitW.units !== 'W') fail(`M2D swap-back: units not back to W: ${JSON.stringify(a770Caps.ranges.powerLimitW)}`);
+  const selBack = await js(`document.querySelector('.featureset-select').value`);
+  if (selBack !== 'a770') fail(`M2D swap-back: dropdown selection is '${selBack}'`);
+  if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) fail('M2D swap: waiver acceptance was lost across the swap');
+  step('fs-swap-back', `swap back -> a770: PL readout '210 W', W units, waiver preserved`);
+
   // --- 6. fan editor ---------------------------------------------------------
   const fanReadonly = process.env.RID_MOCK_FAN_READONLY === '1';
   await js(`location.hash = '#/fan'`);
@@ -824,5 +883,188 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   step('profiles-cleanup', `ui-verify profile cleanup: ${leftover} leftovers`);
 
   console.log('\nUI VERIFY OK\n' + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// M2D — featureset variants (RID_MOCK_FEATURESET=b580|pro-b50|arc-igpu)
+// ---------------------------------------------------------------------------
+//
+// The full default flow is pinned to A770 values (W units, 210 W, editable
+// fan, 315 W extended, ...) so a different featureset gets a REDUCED flow
+// instead: boot + dropdown, the per-featureset OC/fan/monitoring surface,
+// a live swap round trip through the dropdown, and (b580 only) a
+// percent-unit apply round trip. Runs against MockBackend like the default.
+
+/**
+ * @param {import('electron').BrowserWindow} win
+ * @param {string} fsId the RID_MOCK_FEATURESET value driving this run
+ */
+export async function runFeaturesetVerify(win, fsId) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+  const noOc = fsId === 'pro-b50' || fsId === 'arc-igpu';
+
+  // --- boot: shell + dropdown -----------------------------------------------
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
+    fail('sidebar did not render (6 nav links expected)');
+  }
+  if (!(await waitFor(win, `!!document.querySelector('.badge-mock')`))) fail('mock badge missing');
+  if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) fail('featureset dropdown missing in mock mode');
+  const options = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
+  if (options.length !== 4) fail(`dropdown lists ${options.length} featuresets (expected 4)`);
+  const selected = await js(`document.querySelector('.featureset-select').value`);
+  if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
+  step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
+
+  // --- boot: wait for caps + state in the store -----------------------------
+  // The renderer boot (health -> devices -> probes -> caps -> telemetry)
+  // finishes AFTER the shell renders; the dashboard full-renders when caps
+  // arrive (its render signature includes caps) — the device-card 'Compute'
+  // row is the signal. Navigating to a caps-driven page before this leaves
+  // it stuck on 'Loading device capabilities…' (no page onUpdate).
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+    fail(`boot did not deliver caps: page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)}'`);
+  }
+  step('boot-caps', `boot delivered caps (device card 'Compute' row)`);
+
+  // --- overclocking surface per featureset ----------------------------------
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
+
+  if (noOc) {
+    const cards = await waitFor(win, `document.querySelectorAll('.oc-card').length === 0`, 8000)
+      ? 0
+      : await js(`document.querySelectorAll('.oc-card').length`);
+    if (cards !== 0) fail(`expected 0 OC cards on '${fsId}', got ${cards}`);
+    if (!(await waitFor(win, `document.body.textContent.includes('No overclocking controls are available')`))) {
+      fail(`no-OC note missing for '${fsId}'`);
+    }
+    const floatingHidden = await js(`(() => { const b = document.querySelector('.floating-apply'); return !b || b.hidden === true; })()`);
+    if (!floatingHidden) fail('floating Apply visible on a no-OC device');
+    step('oc-none', `'${fsId}': 0 OC cards, no-OC note, no floating Apply`);
+  } else {
+    if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length === 4`, 8000))) {
+      fail(`expected 4 OC cards on '${fsId}', got ${await js(`document.querySelectorAll('.oc-card').length`)}; page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 300)`)}'`);
+    }
+    const plRange = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-meta .oc-range')?.textContent ?? ''`);
+    const plValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
+    if (fsId === 'b580') {
+      if (!plRange.includes('%')) fail(`b580 PL range does not show % units: '${plRange}'`);
+      if (plValue.trim() !== '100 %') fail(`b580 PL readout is '${plValue}' (expected '100 %')`);
+      const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
+      if (plMax !== '150') fail(`b580 PL slider max is '${plMax}' (expected 150)`);
+      const presetTexts = await js(`Array.from(document.querySelectorAll('.oc-card[data-control="powerLimitW"] .oc-presets .chip')).map((c) => c.textContent).join(',')`);
+      if (!/Stock/.test(presetTexts) || !/Max/.test(presetTexts)) fail(`b580 percent presets missing: '${presetTexts}'`);
+      const adv = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
+      if (!adv.includes('Unsupported on this GPU')) fail(`b580 advanced: an expert control is not marked unsupported: '${adv}'`);
+      if (!adv.includes('Supported — editing arrives in M4')) fail(`b580 advanced: vfCurve not marked supported: '${adv}'`);
+      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', presets '${presetTexts}', gpuLock unsupported / vfCurve supported`);
+    } else {
+      step('oc-generic', `'${fsId}': ${cards} OC cards render`);
+    }
+  }
+
+  // --- fan surface per featureset -------------------------------------------
+  await js(`location.hash = '#/fan'`);
+  await sleep(250);
+  const fanReadonly = process.env.RID_MOCK_FAN_READONLY === '1';
+  if (fsId === 'arc-igpu') {
+    if (!(await waitFor(win, `document.body.textContent.includes('does not expose a fan')`))) {
+      fail('iGPU fan page does not show the no-fan note');
+    }
+    if (await js(`!!document.querySelector('.fan-dot')`)) fail('iGPU fan page rendered editor dots');
+    step('fan-igpu', 'arc-igpu: no-fan note, no editor');
+  } else if (fanReadonly) {
+    if (!(await waitFor(win, `!!document.querySelector('.fan-card')`))) fail('fan card did not render');
+    const note = await js(`document.querySelector('.fan-card .card-note')?.textContent ?? ''`);
+    if (!/read-only/i.test(note)) fail(`read-only note missing: '${note}'`);
+    step('fan-readonly', `'${fsId}' + RID_MOCK_FAN_READONLY: read-only fan rendered`);
+  } else {
+    if (!(await waitFor(win, `!!document.querySelector('.fan-dot')`))) fail('fan editor dots did not render');
+    step('fan-editor', `'${fsId}': fan editor rendered`);
+  }
+
+  // --- monitoring readouts render per featureset ----------------------------
+  await js(`location.hash = '#/monitoring'`);
+  await sleep(250);
+  if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === 5`))) {
+    fail(`expected 5 monitoring segments, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
+  }
+  const fanTile = await js(`Array.from(document.querySelectorAll('.mon-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Fan')?.querySelector('.stat-value')?.textContent ?? ''`);
+  if (fsId === 'arc-igpu') {
+    if (fanTile !== '—') fail(`iGPU fan tile should read '—' (no fan), got '${fanTile}'`);
+    step('mon-igpu', `arc-igpu: monitoring renders, fan tile '${fanTile}'`);
+  } else {
+    step('mon', `'${fsId}': monitoring readouts render (fan tile '${fanTile}')`);
+  }
+
+  // --- live swap round trip through the dropdown ----------------------------
+  const swapTo = (id) => js(`(() => {
+    const s = document.querySelector('.featureset-select');
+    s.value = '${id}';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
+  await swapTo('a770');
+  if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`))) {
+    fail('swap to a770 did not re-render the OC page with W units');
+  }
+  const a770Caps = await js(`window.arcPower.getCapabilities(0)`);
+  if (a770Caps.ranges.powerLimitW.units !== 'W' || a770Caps.ranges.powerLimitW.max !== 315) {
+    fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)}`);
+  }
+  step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W`);
+  await swapTo(fsId);
+  const backOk = fsId === 'b580'
+    ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '100 %'`)
+    : await waitFor(win, `document.querySelectorAll('.oc-card').length === 0`);
+  if (!backOk) fail(`swap back to '${fsId}' did not restore its surface`);
+  step('swap-back', `swap back -> '${fsId}': original surface restored`);
+
+  // --- b580 percent-unit apply round trip -----------------------------------
+  if (fsId === 'b580') {
+    const setSlider = (value) => js(`(() => {
+      const card = document.querySelector('.oc-card[data-control="powerLimitW"]');
+      const input = card.querySelector('input[type="range"]');
+      input.value = '${value}';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return card.querySelector('.oc-value').textContent;
+    })()`);
+    const clickApply = () => js(`(() => { const b = document.querySelector('.floating-apply'); if (b && !b.hidden) { b.click(); return true; } return false; })()`);
+    if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) {
+      await setSlider(120);
+      await clearToasts();
+      if (!(await clickApply())) fail('floating Apply did not appear for the b580 percent apply');
+      if (!(await waitFor(win, `!!document.querySelector('.modal')`))) fail('waiver dialog did not appear for the first b580 apply');
+      await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    } else {
+      await setSlider(120);
+      if (!(await clickApply())) fail('floating Apply did not appear for the b580 percent apply');
+    }
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) {
+      fail('b580 percent apply success toast missing');
+    }
+    const applied = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(applied.powerLimitW - 120) > 1e-6) fail(`b580 percent apply did not stick: ${applied.powerLimitW}`);
+    await clearToasts();
+    await setSlider(100);
+    if (!(await clickApply())) fail('floating Apply did not reappear for the b580 restore');
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('b580 percent restore did not apply');
+    step('b580-apply', `b580 percent apply round trip: 120 % -> read-back ${applied.powerLimitW} %, restored to 100 %`);
+  }
+
+  console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }

@@ -1,0 +1,21 @@
+{
+  "id": "arc-igpu",
+  "name": "Arc iGPU (Core Ultra / Lunar Lake)",
+  "tag": "estimated - verify on hardware",
+  "deviceName": "Mock Arc iGPU (fixture)",
+  "pciDeviceId": "0x00007d1d",
+  "driverVersion": "32.0.101.8861",
+  "numXeCores": 8,
+  "shaders": 1024,
+  "graphicsClockMHz": 2000,
+  "memClockMHz": 1067,
+  "hasFan": false,
+  "fanCanControl": false,
+  "fanMaxCurvePoints": 0,
+  "extendedRanges": false,
+  "extended": { "plMax": 0, "tlMax": 0 },
+  "ranges": {},
+  "supportedControls": [],
+  "telemetry": { "gpuClockBaseMhz": 350, "memClockMhz": 1067, "tempCBase": 45, "fanRpm": null, "powerW": 8 },
+  "notes": "Estimated - verify on hardware. Integrated Arc GPU (Core Ultra / Lunar Lake): telemetry-only, no fan (fanRpm null), no OC controls."
+}

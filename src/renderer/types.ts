@@ -207,3 +207,29 @@ export interface FpsSample {
   frameTimeMs: number | null;
   gpuBusy: number | null;
 }
+
+// ---------------------------------------------------------------------------
+// M2D — mock featuresets (mock mode only)
+// ---------------------------------------------------------------------------
+
+/** One mock distribution file (mock/featuresets/<id>.json). */
+export interface FeaturesetInfo {
+  id: string;
+  name: string;
+  tag: string;
+}
+
+/** mock:list-featuresets response (channel absent in real mode). */
+export interface MockFeaturesetsResponse {
+  featuresets: FeaturesetInfo[];
+  current: string;
+}
+
+/** mock:set-featureset response — everything the UI renders from one swap. */
+export interface MockSwapResponse {
+  featureset: FeaturesetInfo;
+  devices: DeviceInfo[];
+  caps: Capabilities;
+  state: DeviceState;
+  health: HealthReport;
+}

@@ -14,7 +14,12 @@ test('listDevices: one A770-matching fixture device', async () => {
 });
 
 test('getCapabilities: A770 matrix (same ranges/units as the real card)', async () => {
-  const b = new MockBackend();
+  // The editable-fan overlay (M2D): the a770 featureset base carries the
+  // REAL read-only fan; ui-verify/tests opt into the editable fixture with
+  // fanCanControl:true so the fan editor stays fully testable. The standard
+  // (non-extended) ranges are the extendedRanges:false overlay — the
+  // featureset base carries the extended maxes natively (M2C-C verified).
+  const b = new MockBackend({ fanCanControl: true, extendedRanges: false });
   const caps = await b.getCapabilities(0);
   assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: 0, max: 300, step: 1, default: 0, units: 'MHz' });
   assert.deepEqual(caps.ranges.powerLimitW, { min: 105, max: 252, step: 1, default: 210, units: 'W' });
@@ -22,14 +27,24 @@ test('getCapabilities: A770 matrix (same ranges/units as the real card)', async 
   assert.ok(Math.abs(caps.ranges.gpuVoltOffsetV.max - 0.234) < 1e-9);
   assert.equal(caps.controls.vramFreqOffset, false);
   assert.equal(caps.controls.vfCurve, false);
-  // M2a: the mock default reports an EDITABLE fan (canControl=true) so the
-  // fan editor is fully testable in mock mode; pass fanCanControl:false for
-  // the exact A770 read-only fixture (covered below).
+  // the editable-fan overlay: canControl=true with modes auto/curve/fixed.
   assert.equal(caps.fan.canControl, true);
   assert.deepEqual(caps.fan.modes, ['auto', 'curve', 'fixed']);
   assert.equal(caps.fan.maxRpm, 3000);
   assert.equal(caps.fan.maxCurvePoints, 10);
   assert.equal(caps.waiverAccepted, false);
+});
+
+test('getCapabilities: M2D — the DEFAULT mock is the a770 featureset (read-only fan + extended ranges)', async () => {
+  const b = new MockBackend();
+  const caps = await b.getCapabilities(0);
+  // the featureset base drives the fan (real A770: read-only) and the
+  // extended ranges (the bundled 2023 runtime is verified on this machine).
+  assert.equal(caps.fan.canControl, false);
+  assert.deepEqual(caps.fan.modes, ['fixed']);
+  assert.equal(caps.extendedRanges, true);
+  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.tempLimitC.max, 115);
 });
 
 test('getCapabilities: fanCanControl:false reproduces the A770 read-only fan fixture', async () => {
@@ -80,7 +95,8 @@ test('applySettings: clamps to fixture ranges', async () => {
   const res = await b.applySettings(0, { powerLimitW: 999, tempLimitC: 10 });
   assert.equal(res.ok, true);
   const s = await b.getCurrentSettings(0);
-  assert.equal(s.powerLimitW, 252);
+  // M2D: the a770 featureset carries the extended ranges natively (max 315).
+  assert.equal(s.powerLimitW, 315);
   assert.equal(s.tempLimitC, 60);
 });
 
@@ -110,7 +126,7 @@ test('applySettings: fan requests fail unsupported on the A770 read-only fixture
 });
 
 test('applySettings: editable fan — curve apply sorts, clamps count and %, switches mode', async () => {
-  const b = new MockBackend();
+  const b = new MockBackend({ fanCanControl: true });
   const res = await b.applySettings(0, {
     fanMode: 'curve',
     fanCurve: [
@@ -129,7 +145,7 @@ test('applySettings: editable fan — curve apply sorts, clamps count and %, swi
 });
 
 test('applySettings: editable fan — point count clamped to maxCurvePoints', async () => {
-  const b = new MockBackend();
+  const b = new MockBackend({ fanCanControl: true });
   const many = Array.from({ length: 30 }, (_, i) => ({ t: 20 + i * 2, speedPct: 20 + i }));
   const res = await b.applySettings(0, { fanCurve: many });
   assert.equal(res.ok, true);
@@ -138,7 +154,7 @@ test('applySettings: editable fan — point count clamped to maxCurvePoints', as
 });
 
 test('applySettings: editable fan — fixedFanPct clamps to 0..100 and switches mode', async () => {
-  const b = new MockBackend();
+  const b = new MockBackend({ fanCanControl: true });
   const res = await b.applySettings(0, { fixedFanPct: 150 });
   assert.equal(res.ok, true);
   const s = await b.getCurrentSettings(0);
@@ -147,7 +163,7 @@ test('applySettings: editable fan — fixedFanPct clamps to 0..100 and switches 
 });
 
 test('applySettings: editable fan — auto mode switches to auto', async () => {
-  const b = new MockBackend();
+  const b = new MockBackend({ fanCanControl: true });
   const res = await b.applySettings(0, { fanMode: 'auto' });
   assert.equal(res.ok, true);
   const s = await b.getCurrentSettings(0);
@@ -155,7 +171,7 @@ test('applySettings: editable fan — auto mode switches to auto', async () => {
 });
 
 test('applySettings: injected failOn returns the canned error code', async () => {
-  const b = new MockBackend({ failOn: { powerLimitW: 'out-of-range' } });
+  const b = new MockBackend({ failOn: { powerLimitW: 'out-of-range' }, extendedRanges: false });
   const res = await b.applySettings(0, { powerLimitW: 220 });
   assert.equal(res.ok, false);
   assert.equal(res.perControl.powerLimitW.errorCode, 'out-of-range');
@@ -171,7 +187,7 @@ test('applySettings: gpuLock extremes are clamped like the real backend (F1 regr
 });
 
 test('injectFail: dev-only knob forces a control failure and clears', async () => {
-  const b = new MockBackend();
+  const b = new MockBackend({ fanCanControl: true });
   b.injectFail('fanCurve', 'out-of-range');
   const res = await b.applySettings(0, { fanCurve: [{ t: 20, speedPct: 20 }] });
   assert.equal(res.perControl.fanCurve.errorCode, 'out-of-range');
@@ -183,7 +199,7 @@ test('injectFail: dev-only knob forces a control failure and clears', async () =
 // M2b review F3 — one-shot fail mode: the failure fires on the NEXT apply
 // that touches the control, then clears (lets the retry succeed).
 test('injectFail: once:true fails only the next apply (one-shot)', async () => {
-  const b = new MockBackend();
+  const b = new MockBackend({ fanCanControl: true });
   b.injectFail('powerLimitW', 'io-failed', true);
   const first = await b.applySettings(0, { powerLimitW: 220 });
   assert.equal(first.ok, false);
@@ -316,7 +332,9 @@ test('M2C-C: extendedRanges:true exposes PL max 315 / TL max 115 + the flag', as
 });
 
 test('M2C-C: default mock has standard ranges and is NOT extended-capable', async () => {
-  const b = new MockBackend();
+  // M2D: the a770 featureset carries extendedRanges natively — the standard
+  // fixture is the explicit overlay (extendedRanges:false).
+  const b = new MockBackend({ extendedRanges: false });
   const caps = await b.getCapabilities(0);
   assert.equal(caps.extendedRanges, undefined);
   assert.equal(caps.ranges.powerLimitW.max, 252);
@@ -346,7 +364,7 @@ test('M2C-C: mock old runtime clamps to the extended max (315 W / 115 C)', async
 });
 
 test('M2C-C: mock old runtime NOT capable -> honest unavailable message', async () => {
-  const b = new MockBackend(); // standard ranges
+  const b = new MockBackend({ extendedRanges: false }); // standard ranges
   const old = createMockOldIgcl(b);
   assert.equal(await old.isCapable(), false);
   const per = await old.setPowerLimitW(300);

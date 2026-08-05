@@ -371,7 +371,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
     // M2C-C: extended-range values need the honest confirm dialog.
-    if (requiresExtendedRangeConfirm(p.settings)) {
+    // M2D: unit-aware — percent featuresets never count as extended.
+    if (requiresExtendedRangeConfirm(p.settings, caps)) {
       const confirmed = await showExtendedRangeConfirm(caps.deviceName || 'this GPU');
       if (!confirmed) {
         done();

@@ -76,6 +76,17 @@ export const fanPage: Page = {
       }),
     );
 
+    // M2D: a fan-less device (mock iGPU featureset) has no modes, no curve,
+    // no RPM — render the honest note instead of an empty read-only view.
+    if (caps.fan.modes.length === 0) {
+      container.append(
+        el('section', { class: 'card fan-card' }, [
+          el('p', { class: 'card-note', text: 'This GPU does not expose a fan (telemetry-only device).' }),
+        ]),
+      );
+      return;
+    }
+
     if (!canControl) {
       renderReadOnly(container, ctx, initial, state.fanMode);
       return;

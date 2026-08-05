@@ -1,111 +1,186 @@
 // Arc Power — M1 MockBackend: deterministic fixture implementation of
-// IOCBackend matching the verified A770 capability matrix (same ranges,
-// units), with telemetry that ramps deterministically. Used by tests and
-// demo mode (RID_BACKEND=mock / `--mock`).
+// IOCBackend, driven by the M2D mock distribution file (mock/featuresets/
+// *.json — RID_MOCK_FEATURESET=<id> selects the device line, default a770).
+// Every cap, range, control, fan config and telemetry constant derives from
+// the featureset; env knobs (RID_MOCK_FAN_READONLY, RID_MOCK_OFFGRID_FREQ_MHZ,
+// RID_MOCK_EXTENDED_RANGES, RID_MOCK_EXTENDED_FAIL) and constructor opts act
+// as OVERLAYS on top of the featureset base. Used by tests, demo mode
+// (RID_BACKEND=mock / `--mock`) and --ui-verify.
 //
 // Fan difference vs the real A770 (deliberate, per the M2a prompt): the mock
-// reports canControl=true with modes auto/curve/fixed so the fan editor is
-// fully testable in mock mode. Pass `fanCanControl: false` to get the exact
-// A770 read-only fan fixture (used to verify the read-only UI path).
+// default used to report canControl=true so the fan editor is fully testable
+// in mock mode. The a770 featureset now carries the REAL read-only value;
+// the editable fixture is restored via the `fanCanControl` overlay
+// (ui-verify passes it unless RID_MOCK_FAN_READONLY=1).
 
 import { clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve } from './units.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
-import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
+import { collectHealth } from '../health.js';
+import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
 
-const DEFAULT_STATE = Object.freeze({
-  powerLimitW: 210,
-  gpuVoltOffsetV: 0,
-  gpuFreqOffsetMhz: 0,
-  tempLimitC: 90,
-  vramFreqOffsetGts: null,
-  vramVoltOffsetV: null,
-  gpuLock: { voltageV: 0, freqMhz: 0 },
-  vfCurve: null,
-  fanMode: 'curve',
-  fanCurve: [
-    { t: 20, speedPct: 20 }, { t: 55, speedPct: 23 }, { t: 70, speedPct: 28 },
-    { t: 78, speedPct: 30 }, { t: 80, speedPct: 30 }, { t: 82, speedPct: 40 },
-    { t: 84, speedPct: 50 }, { t: 86, speedPct: 78 }, { t: 88, speedPct: 100 },
-    { t: 90, speedPct: 100 },
-  ],
-  fixedFanPct: null,
-});
+// The mock's default driver fan curve (10 points) — reported by every
+// fan-bearing featureset and restored by resetToDefaults.
+const DEFAULT_FAN_CURVE = [
+  { t: 20, speedPct: 20 }, { t: 55, speedPct: 23 }, { t: 70, speedPct: 28 },
+  { t: 78, speedPct: 30 }, { t: 80, speedPct: 30 }, { t: 82, speedPct: 40 },
+  { t: 84, speedPct: 50 }, { t: 86, speedPct: 78 }, { t: 88, speedPct: 100 },
+  { t: 90, speedPct: 100 },
+];
 
-// A770 read-only fan fixture (canControl=false).
-const FAN_READONLY = Object.freeze({ canControl: false, modes: ['fixed'], maxRpm: -1, maxCurvePoints: 10 });
-// Editable fan fixture (mock default): full mode set + a sane maxRPM for the
-// RPM marker math.
+// Editable fan fixture (mock overlay): full mode set + a sane maxRPM for the
+// RPM marker math. Read-only / no-fan shapes are derived in _fanConfig.
 const FAN_EDITABLE = Object.freeze({ canControl: true, modes: ['auto', 'curve', 'fixed'], maxRpm: 3000, maxCurvePoints: 10 });
 
-const DEFAULT_CAPS = Object.freeze({
-  oemName: 'Intel (mock)',
-  deviceName: 'Mock Arc A770 Graphics (fixture)',
-  waiverAccepted: false,
-  controls: {
-    gpuFreqOffset: true, gpuVoltOffset: true, gpuLock: true,
-    vramFreqOffset: false, vramVoltOffset: false,
-    powerLimit: true, tempLimit: true, vfCurve: false,
-  },
-  ranges: {
-    gpuFreqOffsetMhz: { min: 0, max: 300, step: 1, default: 0, units: 'MHz' },
-    gpuVoltOffsetV: { min: 0, max: 0.234, step: 0.005, default: 0, units: 'V' },
-    powerLimitW: { min: 105, max: 252, step: 1, default: 210, units: 'W' },
-    tempLimitC: { min: 60, max: 90, step: 1, default: 90, units: 'C' },
-  },
-  fan: FAN_READONLY,
-});
-
-const DEVICE_FIXTURE = Object.freeze({
-  id: 0,
-  name: 'Mock Arc A770 Graphics (fixture)',
-  type: 'GRAPHICS',
-  pciVendorId: '0x00008086',
-  pciDeviceId: '0x000056a0',
-  revId: 8,
-  bdf: { bus: 3, device: 0, function: 0 },
-  driverVersion: '0x002000000065229d',
-  graphicsClockMHz: 2100,
-  numXeCores: 32,
-});
+// ctl_vf_curve table cap — mirrors pure/curve.ts MAX_CURVE_POINTS.
+const MAX_VF_POINTS = 32;
 
 export class MockBackend {
   /**
    * @param {{
+   *   featureset?: object,               // M2D: injectable featureset object (tests);
+   *                                      // absent -> RID_MOCK_FEATURESET env, default a770
    *   failOn?: Record<string, string>,   // control -> errorCode to force (tests)
-   *   fanCanControl?: boolean,           // false -> exact A770 read-only fan fixture (default true)
+   *   fanCanControl?: boolean,           // overlay: false -> read-only fan (ui-verify
+   *                                      // RID_MOCK_FAN_READONLY); a hasFan:false
+   *                                      // featureset always stays fan-less
    *   offGridFreqMhz?: number,           // report a driver freq offset off the 1 MHz grid (ui-verify only)
    *   telemetryIntervalS?: number,       // mock wall-clock between samples (default 0.5)
-   *   energyStepJ?: number,              // energy added per sample (default 19.4 -> 38.8 W @ 0.5 s)
-   *   extendedRanges?: boolean,          // M2C-C: report the extended ranges (PL max 315 / TL max 115)
-   *   extendedFail?: boolean,            // M2C-C: extended applies fail with the honest unavailable message
+   *   energyStepJ?: number,              // energy added per sample (default from the
+   *                                      // featureset powerW: powerW * intervalS)
+   *   extendedRanges?: boolean,          // overlay on the featureset extendedRanges flag
+   *   extendedFail?: boolean,            // extended applies fail with the honest unavailable message
    * }} opts
    */
   constructor(opts = {}) {
     this.kind = 'mock';
-    this._failOn = opts.failOn ?? {};
     this._failOnce = {};
     this._intervalS = opts.telemetryIntervalS ?? 0.5;
-    this._energyStepJ = opts.energyStepJ ?? 19.4;
-    this._fanCanControl = opts.fanCanControl !== false;
-    this._extended = opts.extendedRanges === true;
     this._extendedFail = opts.extendedFail === true;
-    this._state = { ...DEFAULT_STATE, gpuLock: { ...DEFAULT_STATE.gpuLock }, fanCurve: [...DEFAULT_STATE.fanCurve] };
-    if (opts.offGridFreqMhz !== undefined) this._state.gpuFreqOffsetMhz = opts.offGridFreqMhz;
-    this._caps = JSON.parse(JSON.stringify(DEFAULT_CAPS));
-    if (this._fanCanControl) this._caps.fan = { ...FAN_EDITABLE };
-    if (this._extended) {
-      this._caps.ranges.powerLimitW = { ...this._caps.ranges.powerLimitW, max: EXTENDED_PL_MAX_W };
-      this._caps.ranges.tempLimitC = { ...this._caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
-      this._caps.extendedRanges = true;
+    this._featuresetWarning = null;
+    if (opts.featureset) {
+      this._featureset = opts.featureset;
+    } else {
+      const { featureset, warning } = loadFeaturesetOrFallback();
+      this._featureset = featureset;
+      if (warning) {
+        this._featuresetWarning = warning;
+        console.error(`[mock-backend] ${warning}`);
+      }
     }
+    // Session overlays on the featureset base (ui-verify env knobs). Kept
+    // across live swaps — they describe the verify session, not the device.
+    this._extendedOverlay = opts.extendedRanges !== undefined ? opts.extendedRanges === true : undefined;
+    this._fanOverlay = opts.fanCanControl !== undefined ? opts.fanCanControl === true : undefined;
+    this._energyStepJ = opts.energyStepJ ?? this._featureset.telemetry.powerW * this._intervalS;
+    this._applyFeatureset(this._featureset);
+    // Constructor-injected failures land AFTER _applyFeatureset (which resets
+    // the fail maps — a featureset swap clears dev-injected failures).
+    this._failOn = opts.failOn ?? {};
+    if (opts.offGridFreqMhz !== undefined) this._state.gpuFreqOffsetMhz = opts.offGridFreqMhz;
     this._waiverAccepted = false;
     this._tick = 0;
     this._telemetryCbs = new Set();
   }
 
+  /** M2D: the active featureset id (the swap dropdown selection). */
+  get featuresetId() {
+    return this._featureset.id;
+  }
+
   /** M2C-C: the mock's extended-capability flag (mirrors OldIgcl.isCapable). */
   get extendedCapable() {
     return this._extended;
+  }
+
+  /** Apply one featureset: rebuild caps, device fixture and state. */
+  _applyFeatureset(fs) {
+    this._featureset = fs;
+    this._extended = this._extendedOverlay !== undefined
+      ? this._extendedOverlay
+      : fs.extendedRanges === true;
+    this._fanCanControl = fs.hasFan && (this._fanOverlay !== undefined
+      ? this._fanOverlay
+      : fs.fanCanControl === true);
+    this._caps = this._buildCaps(fs);
+    this._device = this._buildDevice(fs);
+    this._state = this._buildState(fs);
+    this._failOn = {};
+    this._failOnce = {};
+  }
+
+  _buildCaps(fs) {
+    // Parity with IgclBackend: every control key is emitted explicitly
+    // (supported -> true, otherwise false) so consumers never see undefined.
+    const controls = {
+      gpuFreqOffset: false, gpuVoltOffset: false, gpuLock: false,
+      vramFreqOffset: false, vramVoltOffset: false,
+      powerLimit: false, tempLimit: false, vfCurve: false,
+    };
+    for (const c of fs.supportedControls) controls[c] = true;
+    const ranges = JSON.parse(JSON.stringify(fs.ranges));
+    if (this._extended && ranges.powerLimitW && fs.extended?.plMax) {
+      ranges.powerLimitW.max = fs.extended.plMax;
+    }
+    if (this._extended && ranges.tempLimitC && fs.extended?.tlMax) {
+      ranges.tempLimitC.max = fs.extended.tlMax;
+    }
+    const caps = {
+      oemName: 'Intel (mock)',
+      deviceName: fs.deviceName,
+      waiverAccepted: false,
+      controls,
+      ranges,
+      fan: this._buildFanCaps(fs),
+    };
+    // M2C-C: the bundled-2023-runtime flag — the UI exposes the extended
+    // maxes only when it is set.
+    if (this._extended) caps.extendedRanges = true;
+    return caps;
+  }
+
+  _buildFanCaps(fs) {
+    if (!fs.hasFan) {
+      return { canControl: false, modes: [], maxRpm: -1, maxCurvePoints: 0 };
+    }
+    if (this._fanCanControl) {
+      return { ...FAN_EDITABLE, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
+    }
+    return { canControl: false, modes: ['fixed'], maxRpm: -1, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
+  }
+
+  _buildDevice(fs) {
+    return {
+      id: 0,
+      name: fs.deviceName,
+      type: 'GRAPHICS',
+      pciVendorId: '0x00008086',
+      pciDeviceId: fs.pciDeviceId ?? '0x000056a0',
+      revId: 8,
+      bdf: { bus: 3, device: 0, function: 0 },
+      driverVersion: fs.driverVersion,
+      graphicsClockMHz: fs.graphicsClockMHz,
+      numXeCores: fs.numXeCores,
+    };
+  }
+
+  _buildState(fs) {
+    const state = {
+      gpuLock: fs.supportedControls.includes('gpuLock') ? { voltageV: 0, freqMhz: 0 } : null,
+      vfCurve: null,
+      fanMode: null,
+      fanCurve: null,
+      fixedFanPct: null,
+    };
+    for (const [control, canonical] of Object.entries(CONTROL_TO_CANONICAL)) {
+      state[canonical] = fs.supportedControls.includes(control) && fs.ranges[canonical]
+        ? fs.ranges[canonical].default
+        : null;
+    }
+    if (fs.hasFan) {
+      state.fanMode = 'curve';
+      state.fanCurve = DEFAULT_FAN_CURVE.map((p) => ({ ...p }));
+    }
+    return state;
   }
 
   /**
@@ -124,6 +199,47 @@ export class MockBackend {
     const clamped = clampAndSnap(value, range);
     this._state[control] = clamped;
     return { ok: true, readBackEqual: true };
+  }
+
+  // ---------------------------------------------------------------------------
+  // M2D — featureset list + live swap (mock mode only; the IPC surface exists
+  // only when the app runs with a mock backend)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The distribution files + the active selection (drives the header
+   * dropdown in mock mode).
+   * @returns {Promise<{ featuresets: Array<{id: string, name: string, tag: string}>, current: string }>}
+   */
+  async listFeaturesets() {
+    return { featuresets: listFeaturesetFiles(), current: this._featureset.id };
+  }
+
+  /**
+   * Swap the mock device line. Re-reads the fresh caps/state/device/health so
+   * the renderer can re-render the WHOLE UI surface from one response. The
+   * in-memory waiver acceptance is preserved across swaps (it is app
+   * consent, not a driver-side per-device state); state resets to the new
+   * featureset's defaults (a fresh device).
+   * @param {string} id
+   * @returns {Promise<{ featureset: {id: string, name: string, tag: string}, devices: object[], caps: object, state: object, health: object }>}
+   */
+  async setFeatureset(id) {
+    const { featureset, warning } = loadFeaturesetOrFallback(id);
+    if (warning) {
+      this._featuresetWarning = warning;
+      console.error(`[mock-backend] ${warning}`);
+    }
+    this._applyFeatureset(featureset);
+    return {
+      featureset: { id: featureset.id, name: featureset.name, tag: featureset.tag ?? '' },
+      devices: await this.listDevices(),
+      caps: await this.getCapabilities(0),
+      state: await this.getCurrentSettings(0),
+      // collectHealth adds the `backend` kind — the renderer gates the
+      // dropdown on it, so the swap health must match the boot health.
+      health: await collectHealth(this),
+    };
   }
 
   /**
@@ -156,7 +272,7 @@ export class MockBackend {
   }
 
   async listDevices() {
-    return [{ ...DEVICE_FIXTURE }];
+    return [{ ...this._device }];
   }
 
   async getCapabilities() {
@@ -174,10 +290,10 @@ export class MockBackend {
       tempLimitC: s.tempLimitC,
       vramFreqOffsetGts: s.vramFreqOffsetGts,
       vramVoltOffsetV: s.vramVoltOffsetV,
-      gpuLock: { ...s.gpuLock },
+      gpuLock: s.gpuLock ? { ...s.gpuLock } : null,
       vfCurve: s.vfCurve ? s.vfCurve.map((p) => ({ ...p })) : null,
       fanMode: s.fanMode,
-      fanCurve: s.fanCurve.map((p) => ({ ...p })),
+      fanCurve: s.fanCurve ? s.fanCurve.map((p) => ({ ...p })) : null,
       fixedFanPct: s.fixedFanPct,
     };
   }
@@ -226,8 +342,17 @@ export class MockBackend {
     }
 
     if (settings.vfCurve) {
-      result.perControl.vfCurve = { ok: false, errorCode: 'unsupported', message: 'custom VF curve not supported on this device' };
-      result.ok = false;
+      if (!caps.controls.vfCurve) {
+        result.perControl.vfCurve = { ok: false, errorCode: 'unsupported', message: 'custom VF curve not supported on this device' };
+        result.ok = false;
+      } else {
+        // M2D (b580 featureset): vfCurve R/W — store a sanitized copy (the
+        // driver curve table cap), mirroring the driver accepting the write.
+        this._state.vfCurve = settings.vfCurve
+          .slice(0, MAX_VF_POINTS)
+          .map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
+        result.perControl.vfCurve = { ok: true, readBackEqual: true };
+      }
     }
 
     // Fan: read-only fixture (A770-style, canControl=false) — any fan
@@ -319,7 +444,7 @@ export class MockBackend {
   }
 
   async resetToDefaults() {
-    this._state = { ...DEFAULT_STATE, gpuLock: { ...DEFAULT_STATE.gpuLock }, fanCurve: [...DEFAULT_STATE.fanCurve] };
+    this._state = this._buildState(this._featureset);
   }
 
   async setWaiverAccepted() {
@@ -340,17 +465,19 @@ export class MockBackend {
 
   async sampleRawTelemetry() {
     const tick = this._tick++;
+    const tel = this._featureset.telemetry;
     // Deterministic ramp: energy +intervalS-interval per tick; clock/temp
-    // climb; throttle flag fires on every 10th tick (temp limited).
+    // climb; throttle flag fires on every 10th tick (temp limited). Bases
+    // come from the featureset.
     const sample = {
       t: 9662.768701 + tick * this._intervalS,
-      gpuClockMhz: 600 + tick * 100,
-      memClockMhz: 2000,
-      tempC: 36 + (tick % 30),
-      vramTempC: 44 + (tick % 10),
+      gpuClockMhz: tel.gpuClockBaseMhz + tick * 100,
+      memClockMhz: tel.memClockMhz,
+      tempC: tel.tempCBase + (tick % 30),
+      vramTempC: tel.tempCBase + 8 + (tick % 10),
       gpuVoltageV: 0.652,
       gpuEnergyJ: 395809.938172 + tick * this._energyStepJ,
-      fanRpm: [1030],
+      fanRpm: tel.fanRpm,
       throttle: {
         power: false,
         temp: tick % 10 === 9,
@@ -371,7 +498,7 @@ export class MockBackend {
   async health() {
     return {
       igclLoaded: true,
-      driverVersion: '32.0.101.8861 (mock fixture)',
+      driverVersion: `${this._featureset.driverVersion} (mock fixture)`,
       levelZeroOk: true,
     };
   }

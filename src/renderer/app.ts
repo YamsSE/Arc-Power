@@ -25,7 +25,26 @@ const PAGES: Record<PageId, Page> = {
 };
 
 const store = new Store();
-const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElement, store);
+const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElement, store, {
+  // M2D: the mock featureset swap re-reads caps + state + device + health in
+  // main (one mock:set-featureset round trip) and re-renders the whole page
+  // so ranges/units/controls/monitoring all update live. Mock mode only.
+  onFeaturesetSwap: async (id: string) => {
+    try {
+      const out = await api.mockSetFeatureset(id);
+      store.set({
+        devices: out.devices,
+        caps: out.caps,
+        state: out.state,
+        health: out.health,
+        featuresetId: out.featureset.id,
+      });
+      renderPage(currentPage());
+    } catch (err) {
+      toast('error', 'Featureset swap failed', err instanceof Error ? err.message : String(err));
+    }
+  },
+});
 let current: Page | null = null;
 
 function renderPage(id: PageId) {
@@ -89,6 +108,15 @@ async function boot() {
     return;
   }
   store.set({ health });
+
+  // M2D: in mock mode fill the featureset dropdown (the mock-only IPC; real
+  // mode has no channel — the catch keeps the dropdown hidden).
+  if (health.backend === 'mock') {
+    try {
+      const fx = await api.mockListFeaturesets();
+      store.set({ featuresets: fx.featuresets, featuresetId: fx.current });
+    } catch { /* the dropdown stays hidden */ }
+  }
 
   let devices;
   try {

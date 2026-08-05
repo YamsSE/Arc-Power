@@ -13,6 +13,8 @@ import type {
   HealthReport,
   IgsActionResult,
   IgsServiceState,
+  MockFeaturesetsResponse,
+  MockSwapResponse,
   Profile,
   ProfilesEnvelope,
   ProfileSettingsState,
@@ -50,6 +52,12 @@ export interface ArcPowerApi {
   profilesRename(id: string, name: string): Promise<ProfilesEnvelope>;
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
   trayRebuild(): Promise<{ ok: boolean }>;
+  /** M2D (mock mode only): the featureset list + current selection for the
+   *  header dropdown. The channel is absent in real mode (invoke rejects). */
+  mockListFeaturesets(): Promise<MockFeaturesetsResponse>;
+  /** M2D (mock mode only): swap the mock device featureset live; the whole
+   *  UI surface (caps/ranges/units/telemetry) re-renders from the response. */
+  mockSetFeatureset(id: string): Promise<MockSwapResponse>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
 }
 

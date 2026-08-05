@@ -29,13 +29,16 @@ export const STD_TL_MAX_C = 90;
  * but a stale cache or a future driver props drift must not widen the slider.
  * M2C-C: when the device reports extended ranges, the temp slider may go up
  * to 115 C (the backend range already says so — pass it through).
+ * M2D: the W/C pins apply ONLY to canonical-unit ranges — percent-unit
+ * featuresets (Battlemage mock: volt/PL/TL as %) are not DriverStore W/C
+ * limits and must pass through untouched.
  */
 export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
   if (!range) return range;
-  if (key === 'powerLimitW' && !caps?.extendedRanges && range.max > STD_PL_MAX_W) {
+  if (key === 'powerLimitW' && range.units === 'W' && !caps?.extendedRanges && range.max > STD_PL_MAX_W) {
     return { ...range, max: STD_PL_MAX_W, default: Math.min(range.default, STD_PL_MAX_W) };
   }
-  if (key === 'tempLimitC' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
+  if (key === 'tempLimitC' && range.units === 'C' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
     return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
   }
   return range;
@@ -46,10 +49,15 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
  * (PL > 252 W or TL > 90 C) — the apply must pass the extended-range confirm
  * dialog first (honest warning: beyond Intel's standard limit; card/driver
  * dependent; the Acer BiFrost profile used 300 W).
+ * M2D: the extended-range concept is W/C-only — when the device caps are
+ * known, percent-unit ranges (Battlemage mock: volt/PL/TL as %) never count
+ * as extended (e.g. a 100% temp limit is not 100 C).
  */
-export function requiresExtendedRangeConfirm(settings: Settings): boolean {
-  return (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W)
-    || (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C);
+export function requiresExtendedRangeConfirm(settings: Settings, caps?: Capabilities): boolean {
+  const plRange = caps?.ranges?.powerLimitW;
+  const tlRange = caps?.ranges?.tempLimitC;
+  return (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W && (!plRange || plRange.units === 'W'))
+    || (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C && (!tlRange || tlRange.units === 'C'));
 }
 
 const SCALAR_KEYS = new Set([

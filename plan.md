@@ -668,12 +668,86 @@ superseded (elevation fixes it); the >252 W verdict is REVISED to
   script are tracked.
 - Deferred (unchanged): NIT4 tooltip, PresentMon DLL in dist, anything
   not listed above stays untouched.
-### M3 — Registry hacks module
-- Catalog (MPO disable first; 2–3 more well-known, reversible toggles),
-  named revert, elevation relaunch, current-state display.
-- Checkpoints: catalog tests; MPO enable/disable/revert e2e on this
-  machine; build+tests.
-- Acceptance: MPO toggle verified here; UI shows state.
+### M2D - Mock Distribution File: featureset swap (A770 / B580 / Pro B50 / iGPU)
+
+User request (2026-08-05): a mock distribution file with a SWAP between
+the featuresets of the A770, B580, an Arc Pro B50, and possibly an Arc
+iGPU - so the UI can be developed/tested against every product line
+without the hardware.
+
+**Scope:**
+1. `mock/featuresets/*.json` - one file per device, the single source of
+   truth for the mock backend: deviceName, driverVersion (dotted),
+   numXeCores/shaders, graphicsClockMHz, memClockMHz, fan canControl,
+   ranges per control (units/min/max/step/default), supported controls,
+   extendedRanges (PL/TL max when the 2023 runtime applies), gpuLock/
+   vfCurve/vram support, telemetry behavior. Confidence tags per value
+   (verified on A770 hardware / estimated-for-mock for B580, Pro B50,
+   iGPU - documented as estimates).
+   - A770 (Alchemist): current real caps (PL 105-252/ext 315, TL 60-90/
+     ext 115, freq 0-300, volt 0-0.234 step 0.005, fan canControl=false,
+     gpuLock yes, no VRAM/VF, extendedRanges true, 32 Xe / 4096 shaders).
+   - B580 (Battlemage): percent units for volt/PL/TL (BMG non-G31),
+     vramMemSpeedLimit in Gbps, VF curve R/W, NO gpuLock, fan
+     canControl=true, 20 Xe / 2560 shaders (values = estimates, marked).
+   - Arc Pro B50 (BMG pro): OC likely locked - telemetry + fan only,
+     no OC controls (estimate, marked).
+   - Arc iGPU (Core Ultra / Lunar Lake): telemetry-only, no fan, no OC
+     (estimate, marked).
+2. Mock backend loads the featureset (RID_MOCK_FEATURESET=<id> env,
+   default a770); all caps/ranges/telemetry derive from the file.
+3. UI swap: in mock mode a small dropdown (header or dashboard) lists
+   the featuresets and swaps live via a new IPC (mock:set-featureset).
+   Hidden in real mode.
+4. Tests: each featureset parses + yields the right caps/controls; the
+   swap round-trips; real mode unaffected; ui-verify exercises B580
+   percent units + Pro B50 no-OC + iGPU telemetry-only variants.
+- Checkpoints: (1) featureset files + parser + tests green; (2) swap
+   UI + mock wiring + full suite + ui-verify.
+- Acceptance: dropdown swaps the whole UI's feature surface per device;
+   every variant renders without errors; tests green.
+
+### M3 — Registry hacks module (SPLIT: M3-A no-UAC / M3-B UAC)
+
+USER INSTRUCTIONS (2026-08-05): NO UAC for the next hour - anything
+needing UAC goes to M3-B, everything else is M3-A. M3-B design question
+answered (host): the IGS Status Indicator is REMOVED - with the
+elevation gate, IGS state is no longer relevant to OC-applicability;
+the general GPU Health indicator stays and is extended to cover:
+driver installed correctly, device detected, clocks normal, OC applies
+working, app working.
+
+#### M3-A (no UAC needed)
+- UI cleanup (user: "clean up the UI some more, especially the AP Logo
+  needs work - it looks very very bad right now; I liked the prior
+  variant where the Logo was gone and the small blue Bar was below the
+  'Arc Power' line"): REMOVE the sidebar logo image; restore the small
+  blue accent bar below the "Arc Power" sidebar text. Also: remove the
+  IGS status indicator (header dot + "Service Status" label); convert
+  the dashboard merged Service Status card into the general GPU HEALTH
+  card (driver installed, device detected, clocks sane, OC applies
+  working, app healthy); drop the IGS half-state line + Disable/
+  Re-enable button; the IGS service probe stays for diagnostics but is
+  no longer surfaced as a status item.
+- Registry hacks CATALOG + UI + current-state display (read-side only;
+  applying = M3-B).
+- Checkpoints: UI cleanup + health card + catalog read-side + tests;
+  ui-verify all variants.
+- Acceptance: header/sidebar match the user's liked variant; no IGS
+  indicator anywhere; the health card shows the health items; catalog
+  renders + reads current state.
+
+#### M3-B (needs UAC - done when the user is back)
+- Apply/enable the registry hacks (MPO disable first; 2-3 more
+  well-known, reversible toggles), named revert, elevation relaunch,
+  current-state display (apply side).
+- M2C-C deferred verifications: live 300 W worker apply (read-back
+  sticks), elevated packaged smoke, startup-task live logon test,
+  harness re-run, DLL-in-dist re-check with a REAL apply.
+- Checkpoints: MPO enable/disable/revert e2e on this machine; elevated
+  smoke green; live 300 W verified.
+- Acceptance: MPO toggle verified here; UI shows state; M2C-C live
+  verifications all green.
 
 ### M4 — Battlemage enablement, hardening, packaging
 - B580/B570 on the same IGCL path. **Conditional:** no B5xx hardware is

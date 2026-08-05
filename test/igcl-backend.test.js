@@ -502,7 +502,9 @@ test('applySettings: fan payload parity — igcl and mock normalize identically 
   assert.equal(igclRes.ok, true);
   const igclTable = lib.__state.fanTable.map((p) => ({ t: p.temperature, speedPct: p.speed.speed }));
 
-  const mock = new MockBackend();
+  // M2D: the a770 featureset base is the read-only fan — the parity test
+  // opts into the editable-fan overlay explicitly.
+  const mock = new MockBackend({ fanCanControl: true });
   const mockRes = await mock.applySettings(0, payload);
   assert.equal(mockRes.ok, true);
   const mockTable = (await mock.getCurrentSettings(0)).fanCurve.map((p) => ({ t: p.t, speedPct: p.speedPct }));

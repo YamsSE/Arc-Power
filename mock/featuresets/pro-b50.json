@@ -1,0 +1,21 @@
+{
+  "id": "pro-b50",
+  "name": "Arc Pro B50 (Battlemage pro)",
+  "tag": "estimated - verify on hardware",
+  "deviceName": "Mock Arc Pro B50 Graphics (fixture)",
+  "pciDeviceId": "0x0000e275",
+  "driverVersion": "32.0.140.4109",
+  "numXeCores": 20,
+  "shaders": 2560,
+  "graphicsClockMHz": 2400,
+  "memClockMHz": 2250,
+  "hasFan": true,
+  "fanCanControl": true,
+  "fanMaxCurvePoints": 10,
+  "extendedRanges": false,
+  "extended": { "plMax": 0, "tlMax": 0 },
+  "ranges": {},
+  "supportedControls": [],
+  "telemetry": { "gpuClockBaseMhz": 700, "memClockMhz": 2250, "tempCBase": 35, "fanRpm": [950], "powerW": 30 },
+  "notes": "Estimated - verify on hardware. Arc Pro (BMG pro) is OC-locked: NO overclocking controls (ranges empty), telemetry + fan only. fanCanControl=true is an estimate - pro cards may expose a read-only fan."
+}

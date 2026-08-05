@@ -52,14 +52,19 @@ export function splitByRuntime(settings) {
 /**
  * Pure gating predicate (main-side mirror of the renderer helper): true when
  * the settings contain an extended-range value (PL > 252 W or TL > 90 C)
- * that needs the confirm dialog before applying.
+ * that needs the confirm dialog before applying. When `ranges` is given,
+ * the check is unit-aware (M2D): percent-unit ranges (Battlemage mock) are
+ * never extended — the real hardware path always passes W/C ranges.
  * @param {Record<string, unknown>} settings
+ * @param {Record<string, { units?: string }>} [ranges]
  * @returns {boolean}
  */
-export function requiresExtendedRange(settings) {
+export function requiresExtendedRange(settings, ranges = null) {
   if (!settings || typeof settings !== 'object') return false;
-  return (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W)
-    || (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C);
+  const plRange = ranges?.powerLimitW;
+  const tlRange = ranges?.tempLimitC;
+  return (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W && (!plRange || plRange.units === 'W'))
+    || (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C && (!tlRange || tlRange.units === 'C'));
 }
 
 /**

@@ -1,6 +1,6 @@
 // Arc Power — hash router + app-wide state store.
 
-import type { Capabilities, DeviceInfo, DeviceState, HealthReport, IgsServiceState, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, FeaturesetInfo, HealthReport, IgsServiceState, TelemetrySample } from './types.ts';
 
 export type PageId = 'dashboard' | 'overclocking' | 'fan' | 'monitoring' | 'profiles' | 'tweaks';
 
@@ -68,6 +68,10 @@ export interface AppState {
    *  the elevation toast fires before the apply when true. */
   workerApply: boolean;
   bootError: string | null;
+  /** M2D (mock mode only): the mock featureset list + active selection for
+   *  the header dropdown. Empty in real mode (no dropdown, no channel). */
+  featuresets: FeaturesetInfo[];
+  featuresetId: string | null;
 }
 
 const INITIAL: AppState = {
@@ -83,6 +87,8 @@ const INITIAL: AppState = {
   elevated: false,
   workerApply: false,
   bootError: null,
+  featuresets: [],
+  featuresetId: null,
 };
 
 export class Store {

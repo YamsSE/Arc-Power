@@ -174,6 +174,12 @@ export function assertNoPayload(args, channel) {
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
  *   applyRunner?: object|null,   // elevation-aware apply runner (elevated-apply)
  *   isElevated?: () => boolean,  // elevation probe for the app-elevated channel
+ *   mock?: {                     // M2D: mock-only featureset control. When null
+ *                                // (real mode) the mock:* channels are NOT
+ *                                // registered at all — an honest 404.
+ *     listFeaturesets: () => Promise<{ featuresets: Array<{id: string, name: string, tag: string}>, current: string }>,
+ *     setFeatureset: (id: string) => Promise<{ featureset: object, devices: object[], caps: object, state: object, health: object }>,
+ *   } | null,
  * }} ctx
  */
 export function createIpcHandlers({
@@ -196,6 +202,7 @@ export function createIpcHandlers({
   oldIgcl = createNullOldIgcl(),
   applyRunner = null,
   isElevated = detectElevated,
+  mock = null,
 }) {
   /** @type {Map<number, TelemetryService>} */
   const telemetry = new Map();
@@ -216,9 +223,8 @@ export function createIpcHandlers({
     telemetry.clear();
   };
 
-  return {
-    handlers: {
-      'health': async () => collectHealth(backend),
+  const handlers = {
+    'health': async () => collectHealth(backend),
 
       'list-devices': async () => backend.listDevices(),
 
@@ -512,7 +518,23 @@ export function createIpcHandlers({
         await rebuildTray();
         return { ok: true };
       },
-    },
-    stopAllTelemetry,
-  };
+    };
+
+    // M2D: the mock-featureset channels exist ONLY in mock mode (mock ctx
+    // injected by ipc.js/main.js). Real mode has no such channel — invoking
+    // it rejects with the honest "No handler registered" 404.
+    if (mock) {
+      handlers['mock:list-featuresets'] = async (...args) => {
+        assertNoPayload(args, 'mock:list-featuresets');
+        return mock.listFeaturesets();
+      };
+      handlers['mock:set-featureset'] = async (id) => {
+        if (typeof id !== 'string' || id.length === 0) {
+          throw new Error('mock:set-featureset: id must be a non-empty string');
+        }
+        return mock.setFeatureset(id);
+      };
+    }
+
+    return { handlers, stopAllTelemetry };
 }

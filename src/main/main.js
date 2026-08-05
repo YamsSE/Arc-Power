@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState } from './ipc-core.js';
@@ -75,7 +75,8 @@ function createWindow() {
     // Electron >= 30: the event object carries { level, message, ... }.
     const level = typeof event.level === 'number' ? event.level : 0;
     const message = typeof event.message === 'string' ? event.message : '';
-    if (level >= 2) console.error(`[renderer] ${message}`);
+    if (uiVerify) console.log(`[renderer:${level}] ${message}`);
+    else if (level >= 2) console.error(`[renderer] ${message}`);
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   return win;
@@ -230,18 +231,25 @@ async function main() {
   }
 
   await app.whenReady();
-  // --ui-verify runs against MockBackend; RID_MOCK_FAN_READONLY=1 switches
-  // the mock to the A770 read-only fan fixture (verifies the read-only UI);
-  // RID_MOCK_OFFGRID_FREQ_MHZ makes the mock report a freq offset off the
-  // 1 MHz grid (verifies the off-grid driver readout). Both knobs are
-  // mock-only dev tooling.
+  // --ui-verify runs against MockBackend; the env knobs act as OVERLAYS on
+  // the featureset base (mock/featuresets/*.json, RID_MOCK_FEATURESET):
+  //   - the ui-verify DEFAULT variant opts into the EDITABLE fan fixture so
+  //     the fan editor flow stays fully testable (the a770 featureset base
+  //     is the real read-only card); RID_MOCK_FAN_READONLY=1 flips it to the
+  //     exact A770 read-only fixture (a hasFan:false featureset always stays
+  //     fan-less regardless of the overlay);
+  //   - RID_MOCK_OFFGRID_FREQ_MHZ makes the mock report a freq offset off the
+  //     1 MHz grid (verifies the off-grid driver readout);
+  //   - RID_MOCK_EXTENDED_RANGES / RID_MOCK_EXTENDED_FAIL are session knobs
+  //     on top of the featureset extendedRanges flag (a770 carries it
+  //     natively).
   const mockOpts = {};
-  if (uiVerify && process.env.RID_MOCK_FAN_READONLY === '1') mockOpts.fanCanControl = false;
+  if (uiVerify) {
+    mockOpts.fanCanControl = process.env.RID_MOCK_FAN_READONLY !== '1';
+  }
   if (uiVerify && process.env.RID_MOCK_OFFGRID_FREQ_MHZ !== undefined) {
     mockOpts.offGridFreqMhz = Number(process.env.RID_MOCK_OFFGRID_FREQ_MHZ);
   }
-  // M2C-C ui-verify variants: extended ranges (PL max 315 / TL max 115) and
-  // the old-runtime honest-fail path.
   if (uiVerify && process.env.RID_MOCK_EXTENDED_RANGES === '1') mockOpts.extendedRanges = true;
   if (uiVerify && process.env.RID_MOCK_EXTENDED_FAIL === '1') mockOpts.extendedFail = true;
   // M2C-C S1: the real bundled-2023-runtime adapter is constructed BEFORE
@@ -376,6 +384,14 @@ async function main() {
   }
 
   const win = createWindow();
+  // M2D: the mock-featureset IPC surface exists ONLY in mock mode — real
+  // mode has no such channel (the renderer's dropdown never renders either).
+  const mockCtl = mock
+    ? {
+        listFeaturesets: () => backend.listFeaturesets(),
+        setFeatureset: (id) => backend.setFeatureset(id),
+      }
+    : null;
   // Whitelisted IPC + telemetry ownership; the renderer drives everything.
   // --ui-verify never creates a tray, so rebuildTray guards the null ref.
   let trayRebuilds = 0;
@@ -390,6 +406,7 @@ async function main() {
     oldIgcl,
     applyRunner,
     isElevated,
+    mock: mockCtl,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach
@@ -410,7 +427,15 @@ async function main() {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
     });
-    await runUiVerify(win, backend, () => trayRebuilds, () => fpsPolls);
+    // M2D featureset variant: RID_MOCK_FEATURESET=<id> (b580 / pro-b50 /
+    // arc-igpu) runs the reduced per-featureset verification flow — the full
+    // default flow is pinned to A770 values.
+    const fsVariant = process.env.RID_MOCK_FEATURESET;
+    if (fsVariant && fsVariant !== 'a770') {
+      await runFeaturesetVerify(win, fsVariant);
+    } else {
+      await runUiVerify(win, backend, () => trayRebuilds, () => fpsPolls);
+    }
     return;
   }
 

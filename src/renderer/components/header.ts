@@ -50,10 +50,12 @@ export function driverLine(device: { driverVersion: string } | null | undefined,
 export class GpuHeader {
   private readonly mount: HTMLElement;
   private readonly store: Store;
+  private readonly onFeaturesetSwap: ((id: string) => void) | undefined;
 
-  constructor(mount: HTMLElement, store: Store) {
+  constructor(mount: HTMLElement, store: Store, opts: { onFeaturesetSwap?: (id: string) => void } = {}) {
     this.mount = mount;
     this.store = store;
+    this.onFeaturesetSwap = opts.onFeaturesetSwap;
     this.render();
   }
 
@@ -63,6 +65,23 @@ export class GpuHeader {
     const health = s.health;
     const { level, label } = mapStatus(health, s.igsState);
     const dot = el('span', { class: `status-dot status-${level}`, title: label });
+    // M2D: the featureset dropdown — mock mode only (empty list in real mode
+    // because the store only fills it from the mock-only IPC).
+    const mockBadge = health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null;
+    const fsSelect = health?.backend === 'mock' && s.featuresets.length > 0
+      ? el('select', {
+          class: 'featureset-select',
+          title: 'Mock device featureset (dev only)',
+          onchange: (e: Event) => {
+            const id = (e.target as HTMLSelectElement).value;
+            void this.onFeaturesetSwap?.(id);
+          },
+        }, s.featuresets.map((f) => {
+          const opt = el('option', { value: f.id, text: `${f.id} · ${f.name}` });
+          if (f.id === s.featuresetId) opt.selected = true;
+          return opt;
+        }))
+      : null;
     clear(this.mount);
     this.mount.append(
       el('div', { class: 'gpu-header' }, [
@@ -71,7 +90,8 @@ export class GpuHeader {
           el('div', { class: 'gpu-meta', text: s.bootError ?? versionLine(s.appVersion) }),
         ]),
         el('div', { class: 'gpu-status' }, [
-          health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null,
+          fsSelect,
+          mockBadge,
           el('span', { class: 'gpu-status-text' }, [dot, el('span', { class: 'gpu-status-label', text: SERVICE_STATUS_LABEL })]),
         ]),
       ]),

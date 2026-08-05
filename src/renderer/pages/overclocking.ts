@@ -203,8 +203,9 @@ export const overclockingPage: Page = {
         return;
       }
       // M2C-C: extended-range values (>252 W / >90 C) need the honest
-      // confirm dialog before anything is sent.
-      if (requiresExtendedRangeConfirm(settings)) {
+      // confirm dialog before anything is sent. M2D: unit-aware — percent
+      // featuresets never count as extended.
+      if (requiresExtendedRangeConfirm(settings, caps)) {
         const confirmed = await showExtendedRangeConfirm(deviceName);
         if (!confirmed) {
           toast('info', 'Apply cancelled', 'Extended power/temperature limits were not confirmed.');
@@ -271,8 +272,15 @@ export const overclockingPage: Page = {
 
     container.append(
       el('h1', { class: 'page-title', text: 'Overclocking' }),
-      el('p', { class: 'page-subtitle', text: 'Values are clamped to the range reported by this GPU. Changes apply on demand — nothing is applied until you press Apply.' }),
-      el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard)),
+      el('p', {
+        class: 'page-subtitle',
+        text: controls.length === 0
+          ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
+          : 'Values are clamped to the range reported by this GPU. Changes apply on demand — nothing is applied until you press Apply.',
+      }),
+      controls.length > 0
+        ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
+        : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
 
       el('details', { class: 'card advanced-card' }, [
         el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),

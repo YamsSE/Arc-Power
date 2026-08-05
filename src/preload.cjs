@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('arcPower', {
   profilesRename: (id, name) => ipcRenderer.invoke('profiles-rename', id, name),
   profilesSettingsSave: (patch) => ipcRenderer.invoke('profiles-settings-save', patch),
   trayRebuild: () => ipcRenderer.invoke('tray-rebuild'),
+  // M2D: mock-only featureset control. The channels exist ONLY in mock mode
+  // (real mode rejects with "No handler registered" — the renderer never
+  // calls them there: the dropdown renders only when health.backend === 'mock').
+  mockListFeaturesets: () => ipcRenderer.invoke('mock:list-featuresets'),
+  mockSetFeatureset: (id) => ipcRenderer.invoke('mock:set-featureset', id),
   onTelemetrySample: (cb) => {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);
