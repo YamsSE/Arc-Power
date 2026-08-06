@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Arc Power logo">
+  <defs>
+    <linearGradient id="ap-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2132"/>
+      <stop offset="1" stop-color="#0f131f"/>
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="24" fill="url(#ap-bg)"/>
+  <path d="M50 16 L22 80 H78 Z M50 35.2 L34.6 70.4 H65.4 Z" fill="#4cc2ff" fill-rule="evenodd"/>
+  <rect x="36" y="45.5" width="28" height="6" fill="#4cc2ff"/>
+</svg>
