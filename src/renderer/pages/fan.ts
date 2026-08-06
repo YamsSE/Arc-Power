@@ -77,6 +77,10 @@ export const fanPage: Page = {
       }),
     );
 
+    // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+    // GPU Health card — this page keeps no waiver UI beyond the apply-time
+    // dialog gate (ensureWaiver in applyFan).
+
     // M2D: a fan-less device (mock iGPU featureset) has no modes, no curve,
     // no RPM — render the honest note instead of an empty read-only view.
     if (caps.fan.modes.length === 0) {
@@ -347,6 +351,16 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before changing fan settings.');
       return;
     }
+    // M4-A: an in-page acceptance patches the store caps IMMEDIATELY (not
+    // only post-apply) — the dashboard's waiver health row flips green on
+    // the next caps-change re-render, and stays green even if the apply
+    // below then fails/throws.
+    {
+      const cur = ctx.store.get();
+      if (cur.caps && cur.caps.waiverAccepted !== true) {
+        ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
+      }
+    }
     try {
       const { result, state: fresh } = await api.applySettings(deviceId, settings);
       // M3-C review F2: only store a NON-NULL fresh state — a refusal
@@ -364,7 +378,18 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
         // errors keep the errorCode mapping (same as the OC page).
         else toast('error', 'Fan apply failed', per.message ?? errorMessage(per.errorCode, key));
       }
-      ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
+      // M4-A G2 mirror (the OC page's !result.ok branch): a failed apply can
+      // mean the DRIVER lost the waiver (waiver-not-set) — re-fetch the caps
+      // so the store flag flips back to unaccepted and the NEXT apply
+      // re-shows the waiver dialog (previously the stale accepted flag made
+      // every subsequent apply fail WITHOUT a prompt). Never force-accept
+      // the store flag on a failed apply.
+      if (result.ok) {
+        ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
+      } else {
+        const freshCaps = await api.getCapabilities(deviceId);
+        ctx.store.set({ caps: freshCaps });
+      }
     } catch (err) {
       ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: err instanceof Error ? err.message : String(err) } });
       toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));

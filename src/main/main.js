@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, seedOcMode } from './ipc-core.js';
@@ -340,6 +340,49 @@ async function main() {
     } catch (err) {
       console.log(`[boot] oc-mode session seed skipped: ${err.message}`);
     }
+    // M4-A: deterministic waiver session seed — every mock session boots
+    // UNACCEPTED so the boot waiver prompt appears exactly once (ui-verify
+    // F4: the prompt would otherwise hit every variant unpredictably, and a
+    // previous run's persisted acceptance would suppress it). The
+    // RID_MOCK_WAIVER_PERSISTED=1 ui-verify variant seeds an ACCEPTED store
+    // instead — its boot-step then asserts NO boot prompt.
+    try {
+      const cur = await store.loadSettings();
+      await store.saveSettings({ ...cur, waiverAccepted: process.env.RID_MOCK_WAIVER_PERSISTED === '1' });
+    } catch (err) {
+      console.log(`[boot] waiver session seed skipped: ${err.message}`);
+    }
+    // M4-A review F2: seed the backend's IN-MEMORY waiver flag HERE, before
+    // createWindow — the renderer's FIRST getCapabilities (right after the
+    // window loads) must already see the seeded flag. A post-window seed
+    // races the renderer boot: the persisted variant would show the boot
+    // prompt despite the accepted store. Same pattern as seedOcMode above
+    // (seedWaiverState only touches the in-memory flag — safe pre-init in
+    // mock mode; listDevices is fixture-backed).
+    try {
+      await seedWaiverState(backend, store);
+    } catch (err) {
+      console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
+    }
+  } else {
+    // M4-A review F1: the REAL path must pre-seed the waiver flag BEFORE
+    // createWindow too — the renderer's FIRST getCapabilities (right after
+    // the window loads) must already see a persisted acceptance, or a
+    // persisted-accepted session shows the boot prompt spuriously (nothing
+    // orders bootBackend's later seed against the renderer's first caps
+    // query). backend.init() is idempotent and bootBackend re-runs it below;
+    // an init failure here degrades into the health system (collectHealth
+    // reports the init error and the window stays up degraded).
+    try {
+      await backend.init();
+    } catch {
+      // health() reports the init error; the window stays up degraded.
+    }
+    try {
+      await seedWaiverState(backend, store);
+    } catch (err) {
+      console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
+    }
   }
   // M3-C review F3: seed the persisted OC mode into the backend BEFORE the
   // window and the IPC surface exist — the renderer's FIRST getCapabilities
@@ -484,13 +527,9 @@ async function main() {
   });
 
   if (uiVerify) {
-    // Dev-only end-to-end check against MockBackend (never hardware).
+    // Dev-only end-to-end check against MockBackend (never hardware). The
+    // waiver flag is already seeded above (pre-window, F2) — no re-seed.
     await backend.init();
-    // Seed a persisted waiver acceptance (F1) so the dialog does not re-show
-    // across runs that share the settings.json data dir.
-    try { await seedWaiverState(backend, store); } catch (err) {
-      console.log(`[boot] waiver seeding skipped: ${err.message}`);
-    }
     await new Promise((resolve) => {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
@@ -506,6 +545,12 @@ async function main() {
       // no elevation) — enable/disable/revert round trips, per-step toasts,
       // the partial-failure + UAC-cancel honesty paths.
       await runTweaksApplyVerify(win);
+    } else if (process.env.RID_MOCK_FAN_GATE === '1') {
+      // M4-A fan-gate variant: the unaccepted-waiver fan apply regression —
+      // dialog -> Cancel aborts with the honest toast, dialog -> Accept
+      // lands, and the G2 self-heal re-shows the dialog after the driver
+      // loses the waiver (the "fan applies fail without a prompt" bug).
+      await runFanGateVerify(win, backend);
     } else {
       await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls);
     }

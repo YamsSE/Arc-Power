@@ -13,6 +13,9 @@
 //            (driverLine: "32.0.101.8861 - Jul 05, 2026");
 //   device — "Device detected": a GPU is enumerated (or the boot error);
 //   oc — "OC working": the last apply outcome (ok / failed / never applied);
+//   waiver — "OC waiver": the LIVE waiver status (Accepted ok / Not Accepted
+//            error) — the ONLY persistent waiver display in the app (user
+//            correction, mid-M4-A: not on the OC or Fan pages);
 //   app — "Arc Power working": booted, backend live — healthy detail reads
 //         "App & Service Running" (app-only, NO IGS probe).
 //
@@ -25,8 +28,8 @@ import { decodeDriverVersion, formatDriverDate } from './driver.ts';
 
 export type HealthLevel = 'ok' | 'warn' | 'error' | 'unknown';
 
-/** The four health-card rows (pinned by unit tests and --ui-verify). */
-export type HealthRowId = 'driver' | 'device' | 'oc' | 'app';
+/** The five health-card rows (pinned by unit tests and --ui-verify). */
+export type HealthRowId = 'driver' | 'device' | 'oc' | 'waiver' | 'app';
 
 export interface HealthRow {
   id: HealthRowId;
@@ -45,6 +48,12 @@ export interface HealthInput {
   bootError: string | null;
   /** M3-C-I: the display-driver registry date for the driver row detail. */
   driverDate: string | null;
+  /**
+   * M4-A: the LIVE waiver flag (caps.waiverAccepted); null while no device
+   * caps have landed (the row then reads "Waiting for device…" — never a
+   * false Accepted/Not Accepted).
+   */
+  waiverAccepted: boolean | null;
 }
 
 /** Legacy health-only level (kept so the header test contract stays exact). */
@@ -119,6 +128,23 @@ export function ocRow(input: HealthInput): HealthRow {
 }
 
 /**
+ * M4-A: "OC waiver" — the LIVE waiver acceptance status, the ONLY persistent
+ * waiver display in the app (user correction, mid-M4-A: the dashboard's GPU
+ * Health card, NOT the OC/Fan pages). Reads caps.waiverAccepted at render
+ * time; the dashboard full-re-renders on caps changes (its sig includes
+ * caps), so an accept-time store patch refreshes this row. Unknown while no
+ * caps have landed.
+ */
+export function waiverRow(input: HealthInput): HealthRow {
+  if (input.waiverAccepted === null) {
+    return { id: 'waiver', label: 'OC waiver', level: 'unknown', detail: 'Waiting for device…' };
+  }
+  return input.waiverAccepted
+    ? { id: 'waiver', label: 'OC waiver', level: 'ok', detail: 'Accepted' }
+    : { id: 'waiver', label: 'OC waiver', level: 'error', detail: 'Not Accepted' };
+}
+
+/**
  * "Arc Power working": the app booted and the backend answered. M3-C-I: the
  * healthy detail reads "App & Service Running" (app-only — the app's own
  * engine/backend; NO IGS probe, per the user's decision). Honest warn/error
@@ -134,9 +160,10 @@ export function appRow(input: HealthInput): HealthRow {
   return { id: 'app', label: 'Arc Power working', level: 'unknown', detail: 'Booting…' };
 }
 
-/** All health rows in display order (M3-C-I: the clocks row is removed). */
+/** All health rows in display order (M3-C-I: the clocks row is removed;
+ *  M4-A: the waiver row sits between the OC and app rows). */
 export function healthRows(input: HealthInput): HealthRow[] {
-  return [driverRow(input), deviceRow(input), ocRow(input), appRow(input)];
+  return [driverRow(input), deviceRow(input), ocRow(input), waiverRow(input), appRow(input)];
 }
 
 /** Overall health-card level: the worst of the five rows. */

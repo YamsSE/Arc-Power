@@ -6,7 +6,8 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant — no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       0.2.0" (app:version IPC) — the driver version + date live in the
+//       0.9.10 Alpha" (app:version IPC + the display Alpha suffix — the IPC
+//       keeps the bare semver) — the driver version + date live in the
 //       dashboard device card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); no PCI ID anywhere;
 //       M2C-B B2: NO capsSummary chips footer on the device card; M2C-B B8:
@@ -82,6 +83,28 @@
 //      toasts + state refresh; with RID_MOCK_REGAPPLY_FAIL='<id>:<action>'
 //      the honest partial-failure path, with RID_MOCK_REGAPPLY_CANCEL=1 the
 //      honest UAC-decline path.
+//  18. M4-A waiver-prompt variants: every mock session boots with a
+//      DETERMINISTIC waiver state (session-seeded in main.js, pre-window —
+//      the persisted variant never races the renderer's first caps query) —
+//      the boot waiver prompt appears exactly once and is CANCELLED here
+//      (default / stock / extended / worker / featureset / tweaks variants),
+//      ACCEPTED under RID_MOCK_WAIVER_BOOT_ACCEPT=1 (row green, no dialog
+//      anywhere after), or must NOT appear under RID_MOCK_WAIVER_PERSISTED=1
+//      (the persisted-acceptance variant). The waiver STATUS lives ONLY in
+//      the dashboard GPU Health card row ("OC waiver: Accepted / Not
+//      Accepted", green/red — user correction, mid-M4-A): the OC and Fan
+//      pages render NO waiver status (the apply-time dialog gate only); the
+//      unaccepted row is clickable (opens the waiver dialog; Cancel leaves
+//      it red and the next apply still gates), the accepted row has no click
+//      action, and the row flips green IN PLACE on the caps-change
+//      re-render.
+//  19. M4-A fan-gate variant (RID_MOCK_FAN_GATE=1): the unaccepted-waiver fan
+//      apply regression — the waiver dialog appears on the first fan apply
+//      (Cancel -> aborted with the honest toast, device untouched; Accept ->
+//      the apply lands and the dashboard waiver row flips green), plus the
+//      G2 self-heal: after a waiver-not-set failure the store flag flips
+//      back to unaccepted (row red again) and the NEXT apply re-shows the
+//      dialog (the "fan applies fail without a prompt" bug).
 // This script is dev tooling only — it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
@@ -98,6 +121,52 @@ async function waitFor(win, expr, timeoutMs = 10000) {
     await sleep(150);
   }
   return false;
+}
+
+// M4-A: the shared waiver boot-step — MUST run in EVERY ui-verify variant
+// BEFORE its own assertions (F4: the extended/stock/featureset variants
+// assert modal absence around applies; the boot prompt would otherwise be
+// the modal being clicked or asserted there). Every mock session boots with
+// a deterministic waiver state (session-seeded in main.js BEFORE the window
+// exists — the persisted variant never races the renderer's first caps
+// query, F2):
+//   - RID_MOCK_WAIVER_PERSISTED=1 -> the store is ACCEPTED at boot: the boot
+//     prompt must NOT appear (the persisted-acceptance variant asserts its
+//     absence once the boot delivered caps);
+//   - RID_MOCK_WAIVER_BOOT_ACCEPT=1 -> the prompt appears exactly once and
+//     this step ACCEPTS it (health row green, no dialog anywhere after);
+//   - default -> the prompt appears exactly once and this step CANCELS it
+//     (row red, the first apply re-shows the dialog — the classic flow).
+// Returns true when the session booted with the waiver accepted.
+async function bootWaiverStep(win, js, waitFor) {
+  const persisted = process.env.RID_MOCK_WAIVER_PERSISTED === '1';
+  const bootAccept = process.env.RID_MOCK_WAIVER_BOOT_ACCEPT === '1';
+  if (persisted) {
+    // Wait for the boot to deliver caps (the dashboard device-card 'Compute'
+    // row), then assert the boot prompt never appeared.
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+      throw new UiVerifyFailure(`boot did not deliver caps: page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+    }
+    await sleep(300);
+    if (await js(`!!document.querySelector('.modal')`)) {
+      throw new UiVerifyFailure('the boot waiver prompt appeared despite a persisted acceptance (RID_MOCK_WAIVER_PERSISTED=1)');
+    }
+    return true;
+  }
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 10000))) {
+    throw new UiVerifyFailure(`the boot waiver prompt did not appear (unaccepted session): page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+  }
+  await js(`document.querySelector('.modal button.${bootAccept ? 'btn-danger' : 'btn-ghost'}')?.click()`);
+  if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) {
+    throw new UiVerifyFailure('the boot waiver prompt did not close');
+  }
+  // Exactly once per boot: nothing else may pop a modal spontaneously after
+  // the prompt is handled (a stray dialog would mean a re-prompt bug).
+  await sleep(500);
+  if (await js(`!!document.querySelector('.modal')`)) {
+    throw new UiVerifyFailure('a second modal appeared after the boot prompt was handled (the boot prompt must appear exactly once)');
+  }
+  return bootAccept;
 }
 
 export class UiVerifyFailure extends Error {}
@@ -146,11 +215,33 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('boot', `shell rendered; brand '${brand.trim()}' + blue accent bar (no logo img); mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
 
+  // M4-A: the shared waiver boot-step — the boot prompt appears exactly once
+  // when the session boots unaccepted (Cancel here; Accept under
+  // RID_MOCK_WAIVER_BOOT_ACCEPT=1), or must NOT appear under
+  // RID_MOCK_WAIVER_PERSISTED=1 (the persisted-acceptance variant).
+  const bootAcceptedAtBoot = await bootWaiverStep(win, js, waitFor);
+  step('waiver-boot', process.env.RID_MOCK_WAIVER_PERSISTED === '1'
+    ? 'persisted acceptance at boot: NO boot prompt'
+    : `boot waiver prompt handled: ${bootAcceptedAtBoot ? 'Accepted (no dialog anywhere after)' : 'Cancelled (first apply re-shows the dialog)'}`);
+
+  // --- waiver gate seed state (used by every waiver-flow section below) ----
+  // M3-C review F4: the persisted state read must use the SESSION store — a
+  // default-dir ProfileStore would read the REAL settings.json while the
+  // mock session reads/writes its isolated dir (the check would always see
+  // a mismatch). bootAccepted is the device-side flag (waiver-get) — the
+  // source the renderer's health row reads.
+  const persistedWaiver = (await store.loadSettings()).waiverAccepted === true;
+  const bootAccepted = (await js(`window.arcPower.waiverGet(0)`)).accepted === true;
+  if (persistedWaiver && !bootAccepted) {
+    fail('boot did not seed the persisted waiver acceptance (settings.json says accepted)');
+  }
+  step('waiver-seed', `boot waiver state: store=${persistedWaiver ? 'accepted' : 'not accepted'}, backend=${bootAccepted ? 'accepted' : 'not accepted'}`);
+
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
   // the driver line moved to the dashboard device card.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.2.0'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.2.0')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.10 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.10 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -163,20 +254,23 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS is still surfaced as a status item');
   step('version-line', `header line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; no status dot / Service Status label`);
 
-  // Device card: driver version kv (B3 move), compute line, no persistent
-  // waiver row, NO capsSummary chips footer (B2).
+  // Device card: driver version kv (B3 move), compute line, the waiver
+  // status is a HEALTH-CARD ROW (M4-A user correction — never on the device
+  // card), NO capsSummary chips footer (B2).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.getAttribute('data-label') ?? '') === 'Driver version' && (k.textContent ?? '').includes('32.0.101.8861 - Jul 05, 2026'))`))) {
     fail(`device card driver version kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`)}' (expected '32.0.101.8861 - Jul 05, 2026')`);
   }
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
     fail('Xe cores / shader units line missing');
   }
-  if (await js(`document.body.textContent.includes('OC waiver')`)) fail('persistent waiver status is still shown');
+  // The waiver status row lives in the HEALTH card (below), not on the
+  // device card: no 'OC waiver' text in any device-card kv row.
+  if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Health card)');
   // B2: the chips footer ("Fan curve N points", power/volt/freq/temp notes)
   // is GONE from the device card — no chips inside the card grid at all.
   const gridChips = await js(`document.querySelectorAll('.card-grid .chip').length`);
   if (gridChips !== 0) fail(`B2: device card chips footer still renders ${gridChips} chips`);
-  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no OC waiver row, no PCI row, no chips footer');
+  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row, no chips footer');
 
   // M2C-B B8: 'Memory clock' kv row next to 'Graphics clock' (a770
   // featureset telemetry memClockMhz = 2187).
@@ -196,20 +290,21 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
 
-  // ONE general GPU HEALTH card (M3-A + M3-C-I): FOUR rows, honest per-row
-  // state, no Level Zero item, no IGCL detail line, NO clocks row (the
-  // user's dashboard picture); driver row detail = version + date like the
-  // device card; app row healthy detail = "App & Service Running".
+  // ONE general GPU HEALTH card (M3-A + M3-C-I + M4-A): FIVE rows, honest
+  // per-row state, no Level Zero item, no IGCL detail line, NO clocks row
+  // (the user's dashboard picture); driver row detail = version + date like
+  // the device card; app row healthy detail = "App & Service Running"; the
+  // M4-A waiver row is the ONLY persistent waiver display in the app.
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) fail('expected exactly one GPU Health card');
   const statusTitle = await js(`document.querySelector('.health-card .card-title')?.textContent ?? ''`);
   if (statusTitle.trim() !== 'GPU Health') fail(`health card title is '${statusTitle}'`);
-  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 4`)) {
-    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 4)`);
+  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
+    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'driver,device,oc,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,app — the clocks row is removed)`);
+  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app — the clocks row is removed)`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Driver installed', 'Device detected', 'OC working', 'Arc Power working']) {
+  for (const want of ['Driver installed', 'Device detected', 'OC working', 'OC waiver', 'Arc Power working']) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   if (rowLabels.includes('Clocks normal')) fail('M3-C-I: the "Clocks normal" health row is still rendered');
@@ -229,6 +324,43 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (await js(`document.querySelector('.health-card')?.textContent.includes('Level Zero')`)) fail('Level Zero is still a health item');
   if (await js(`!!document.querySelector('.igs-toggle')`)) fail('M3-A: the IGS toggle button is still rendered');
   step('health-card', `one 'GPU Health' card: rows '${rowLabels}', driver '${driverDetail.trim()}', app '${appDetail.trim()}'`);
+
+  // --- M4-A (user correction): the waiver STATUS row in the health card ---
+  // The ONLY persistent waiver display in the app: green "Accepted" when the
+  // store caps say accepted, red "Not Accepted" otherwise — read LIVE at
+  // render (the dashboard re-renders on caps changes). Unaccepted -> the row
+  // is CLICKABLE (opens the waiver dialog); accepted -> no click action.
+  // The boot-accept variant accepted via the boot prompt while the dashboard
+  // was CURRENT, so this waitFor doubles as the "flips green IN PLACE" pin
+  // (the caps-change re-render happened with no navigation).
+  const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
+  const waiverExpected = bootAccepted ? 'Accepted' : 'Not Accepted';
+  if (!(await waitFor(win, `(${waiverDetailExpr}).trim() === '${waiverExpected}'`, 5000))) {
+    fail(`M4-A: the health-card waiver row reads '${await js(waiverDetailExpr)}' (expected '${waiverExpected}')`);
+  }
+  const waiverDot = await js(`document.querySelector('.health-card .health-row[data-row="waiver"] .status-dot')?.className ?? ''`);
+  if (!(bootAccepted ? /status-ok/ : /status-error/).test(waiverDot)) {
+    fail(`M4-A: the waiver row dot is '${waiverDot}' (expected ${bootAccepted ? 'ok (green)' : 'error (red)'})`);
+  }
+  const waiverClickable = await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.classList.contains('health-row-clickable')`);
+  if (waiverClickable === bootAccepted) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${!bootAccepted} — clickable only while unaccepted)`);
+  step('waiver-row', `health-card waiver row: 'OC waiver — ${waiverExpected}' (${bootAccepted ? 'green, no click action' : 'red, clickable'})`);
+
+  if (!bootAccepted) {
+    // M4-A review F1: the unaccepted row is CLICKABLE — click it: the waiver
+    // dialog appears; Cancel closes it; the row STAYS red (no store patch on
+    // a cancel) and the first OC apply below still gates.
+    await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.click()`);
+    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
+      fail('M4-A: clicking the dashboard waiver row did not open the waiver dialog');
+    }
+    await js(`document.querySelector('.modal button.btn-ghost')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('M4-A: the row-click waiver dialog did not close on Cancel');
+    if (!(await waitFor(win, `(${waiverDetailExpr}).trim() === 'Not Accepted'`, 5000))) {
+      fail('M4-A: the waiver row flipped after a Cancel (must stay Not Accepted)');
+    }
+    step('waiver-row-cancel', 'dashboard waiver row click -> dialog -> Cancel -> row stays Not Accepted (the first apply below still gates)');
+  }
 
   // --- 2. overclocking cards ------------------------------------------------
   await js(`location.hash = '#/overclocking'`);
@@ -287,16 +419,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
 
   // --- 3. waiver gate: persisted acceptance must skip the dialog (F1) --------
-  // M3-C review F4: the persisted state read must use the SESSION store — a
-  // default-dir ProfileStore would read the REAL settings.json while the
-  // mock session reads/writes its isolated dir (the check would always see
-  // a mismatch).
-  const persistedWaiver = (await store.loadSettings()).waiverAccepted === true;
-  const bootAccepted = (await js(`window.arcPower.waiverGet(0)`)).accepted === true;
-  if (persistedWaiver && !bootAccepted) {
-    fail('boot did not seed the persisted waiver acceptance (settings.json says accepted)');
-  }
-  step('waiver-seed', `boot waiver state: store=${persistedWaiver ? 'accepted' : 'not accepted'}, backend=${bootAccepted ? 'accepted' : 'not accepted'}`);
+  // (bootAccepted / persistedWaiver were read right after the boot step —
+  // the dashboard health-row section already consumed them.)
 
   // ocOnBoot gate check (M2b-B): with an unaccepted waiver the start-at-boot
   // checkbox must be disabled; after acceptance it is enabled.
@@ -320,17 +444,25 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (readoutBefore.trim() !== '220 W') fail(`slider readout is '${readoutBefore}' (expected '220 W')`);
   step('slider', `power slider set to 220 W (readout '${readoutBefore}')`);
 
+  // --- M4-A (user correction): the OC page renders NO waiver status --------
+  // The status row lives ONLY in the dashboard GPU Health card; this page
+  // keeps nothing but the apply-time dialog gate (exercised below).
+  if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
+    fail('M4-A: the OC page still renders the waiver status (dashboard health card only)');
+  }
+  step('waiver-absent-oc', 'OC page has no waiver status row (dashboard health card only)');
+
   if (bootAccepted) {
     // Count toasts AFTER a clean slate: the apply below must produce exactly
     // `expectedToasts` success toasts (see the count check after both arms).
     await clearToasts();
     await clickApply();
     await sleep(400);
-    if (await js(`!!document.querySelector('.modal')`)) fail('waiver dialog appeared despite a persisted acceptance (F1)');
+    if (await js(`!!document.querySelector('.modal')`)) fail('waiver dialog appeared despite the acceptance (F1)');
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`))) fail('success toast missing after apply');
     const state = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
-    step('waiver-persisted', `persisted acceptance seeded at boot: apply without dialog -> read-back ${state.powerLimitW} W`);
+    step('waiver-persisted', `waiver accepted at boot (persisted or boot-accept): apply without dialog -> read-back ${state.powerLimitW} W`);
   } else {
     // M3-C review F4: with the isolated mock data dir the unaccepted branch
     // is reachable on a FRESH store (pre-fix, the shared real settings.json
@@ -359,6 +491,23 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
     step('apply', `accept -> apply -> toast -> read-back refreshed to ${state.powerLimitW} W`);
   }
+
+  // M4-A: the dashboard health row now reflects the acceptance — the
+  // accept-time + post-apply store re-sets ({ ...caps, waiverAccepted })
+  // trigger the dashboard's caps-change full re-render, flipping the row
+  // green. The M3-C-G chip checks below prove the OC page did NOT
+  // full-re-render on the caps change (a re-render would clear the
+  // applied-reference chips).
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `(${waiverDetailExpr}).trim() === 'Accepted'`, 5000))) {
+    fail(`M4-A: the dashboard waiver row did not flip to Accepted: '${await js(waiverDetailExpr)}'`);
+  }
+  if (await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.classList.contains('health-row-clickable')`)) {
+    fail('M4-A: the waiver row is still clickable once accepted');
+  }
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
+  step('waiver-row-live', 'dashboard waiver row flipped to Accepted (re-render on the caps patch)');
 
   // M3-C-F: the "Driver:" readout refreshes from the FRESH state after the
   // apply — WITHOUT navigating away (previously built once at render, the
@@ -699,6 +848,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('B1: fan axis edge ticks are not edge-clamped (their outer half is clipped by .fan-stage)');
   }
   step('fan-axis', `B1: right-side axis '${axisTicks}' outside the plot, aligned to the grid, edge ticks clamped`);
+  // M4-A (user correction): the Fan page renders NO waiver status — the row
+  // lives only in the dashboard GPU Health card (the waiver was accepted
+  // during the OC flow; the fan apply-time dialog gate is unaffected).
+  if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
+    fail('M4-A: the fan page still renders the waiver status (dashboard health card only)');
+  }
+  step('waiver-absent-fan', 'fan page has no waiver status row (dashboard health card only)');
   if (fanReadonly) {
     if (!(await waitFor(win, `!!document.querySelector('.fan-card')`))) fail('fan card did not render');
     const dots = await js(`document.querySelectorAll('.fan-dot').length`);
@@ -1063,6 +1219,13 @@ export async function runFeaturesetVerify(win, fsId) {
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
 
+  // M4-A: the shared waiver boot-step — the boot prompt appears exactly once
+  // (unaccepted session); Cancel it BEFORE the per-featureset assertions
+  // (F4: the b580 apply-dialog section below must see a clean page, not the
+  // boot modal).
+  const bootAccepted = await bootWaiverStep(win, js, waitFor);
+  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: NO prompt' : 'cancelled'})`);
+
   // --- boot: wait for caps + state in the store -----------------------------
   // The renderer boot (health -> devices -> probes -> caps -> telemetry)
   // finishes AFTER the shell renders; the dashboard full-renders when caps
@@ -1074,6 +1237,34 @@ export async function runFeaturesetVerify(win, fsId) {
     fail(`boot did not deliver caps: page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)}'`);
   }
   step('boot-caps', `boot delivered caps (device card 'Compute' row)`);
+
+  // M4-A review F2: the featureset variants must not drift from the shared
+  // waiver display — the dashboard GPU Health card + waiver row are pinned
+  // here like the default flow (5 rows, live per-caps waiver detail).
+  if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) {
+    fail('expected exactly one GPU Health card');
+  }
+  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
+    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
+  }
+  const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
+  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app)`);
+  const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
+  for (const want of ['Driver installed', 'Device detected', 'OC working', 'OC waiver', 'Arc Power working']) {
+    if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
+  }
+  const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
+  const waiverExpected = bootAccepted ? 'Accepted' : 'Not Accepted';
+  if (!(await waitFor(win, `(${waiverDetailExpr}).trim() === '${waiverExpected}'`, 5000))) {
+    fail(`M4-A: the health-card waiver row reads '${await js(waiverDetailExpr)}' (expected '${waiverExpected}')`);
+  }
+  const waiverDot = await js(`document.querySelector('.health-card .health-row[data-row="waiver"] .status-dot')?.className ?? ''`);
+  if (!(bootAccepted ? /status-ok/ : /status-error/).test(waiverDot)) {
+    fail(`M4-A: the waiver row dot is '${waiverDot}' (expected ${bootAccepted ? 'ok (green)' : 'error (red)'})`);
+  }
+  const waiverClickable = await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.classList.contains('health-row-clickable')`);
+  if (waiverClickable === bootAccepted) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${!bootAccepted} — clickable only while unaccepted)`);
+  step('health-card', `GPU Health card: 5 rows '${rowLabels}'; waiver row 'OC waiver — ${waiverExpected}' (${bootAccepted ? 'green, no click action' : 'red, clickable'})`);
 
   // --- overclocking surface per featureset ----------------------------------
   await js(`location.hash = '#/overclocking'`);
@@ -1112,6 +1303,13 @@ export async function runFeaturesetVerify(win, fsId) {
       step('oc-generic', `'${fsId}': ${cards} OC cards render`);
     }
   }
+  // M4-A review F2: the OC page renders NO waiver status (the row lives only
+  // in the dashboard GPU Health card — the apply-time dialog gate below is
+  // unaffected).
+  if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
+    fail('M4-A: the OC page still renders the waiver status (dashboard health card only)');
+  }
+  step('waiver-absent-oc', 'OC page has no waiver status row (dashboard health card only)');
 
   // --- fan surface per featureset -------------------------------------------
   await js(`location.hash = '#/fan'`);
@@ -1132,6 +1330,12 @@ export async function runFeaturesetVerify(win, fsId) {
     if (!(await waitFor(win, `!!document.querySelector('.fan-dot')`))) fail('fan editor dots did not render');
     step('fan-editor', `'${fsId}': fan editor rendered`);
   }
+  // M4-A review F2: the Fan page renders NO waiver status either (the row
+  // lives only in the dashboard GPU Health card).
+  if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
+    fail('M4-A: the fan page still renders the waiver status (dashboard health card only)');
+  }
+  step('waiver-absent-fan', 'fan page has no waiver status row (dashboard health card only)');
 
   // --- monitoring readouts render per featureset ----------------------------
   await js(`location.hash = '#/monitoring'`);
@@ -1272,6 +1476,11 @@ export async function runTweaksApplyVerify(win) {
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
     fail('sidebar did not render (6 nav links expected)');
   }
+  // M4-A: the shared waiver boot-step — the boot prompt appears exactly once
+  // (unaccepted session); Cancel it BEFORE the tweaks flow (F4: no stray
+  // modal may sit over the page while the tweaks assertions run).
+  await bootWaiverStep(win, js, waitFor);
+  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: NO prompt' : 'cancelled'})`);
   await js(`location.hash = '#/tweaks'`);
   if (!(await waitFor(win, `document.querySelectorAll('.tweak-card').length === 4`))) {
     fail(`tweaks page did not render 4 catalog cards (got ${await js(`document.querySelectorAll('.tweak-card').length`)})`);
@@ -1330,8 +1539,12 @@ export async function runTweaksApplyVerify(win) {
     if (!/Partial apply/.test(msg)) fail(`partial-failure toast is not honest: '${msg}'`);
     if (!/1 of 2 step\(s\) landed, step 2 failed/.test(msg)) fail(`partial-failure toast misses the landed/failed steps: '${msg}'`);
     if (!/Nothing was rolled back automatically — use Revert/.test(msg)) fail(`partial-failure toast misses the no-auto-revert note: '${msg}'`);
-    // The state refresh reflects what actually landed (step 1 wrote HKLM).
-    if ((await stateLabelOf(failEntry)).trim() !== 'Off') fail(`partial apply state is '${await stateLabelOf(failEntry)}' (expected Off — one hive landed)`);
+    // The state refresh reflects what actually landed: the knob fails at the
+    // action's LAST step (the mock clamps it there), so for mpo enable the
+    // HKLM hive landed (MPOHack=1 -> 'Active') while the failing HKCU step
+    // never ran. The two single-step actions (hags/game-dvr) fail their only
+    // step -> nothing lands, the fixture state stays.
+    if ((await stateLabelOf(failEntry)).trim() !== 'Active') fail(`partial apply state is '${await stateLabelOf(failEntry)}' (expected Active — the landed HKLM hive)`);
     await clearToasts();
     // The user can still Revert (a real revert works — the failure knob is
     // per-action).
@@ -1393,5 +1606,177 @@ export async function runTweaksApplyVerify(win) {
   if (catalog.entries.length !== 4 || catalog.states.length !== 4) fail('registry-catalog IPC mismatch after the apply flow');
 
   console.log(`\nUI VERIFY OK (tweaks-apply${failKnob ? `, fail=${failKnob}` : ''}${cancelKnob ? ', cancel' : ''})\n` + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// M4-A — fan-gate regression variant (RID_MOCK_FAN_GATE=1)
+// ---------------------------------------------------------------------------
+//
+// The user report: fan-curve applies FAIL without a waiver prompt. This
+// variant regression-tests the unaccepted-waiver fan apply through the mock
+// (the fan editor is the product apply surface — the dialog gate lives in
+// the renderer, so it is exercised end-to-end here, not unit-testable):
+//   1. unaccepted boot (shared boot-step cancels the boot prompt); the
+//      dashboard health-card waiver row reads Not Accepted (red, clickable);
+//   2. first fan apply: the waiver dialog appears -> Cancel -> the apply is
+//      ABORTED with the honest info toast and the device stays untouched;
+//   3. second fan apply: dialog -> Accept -> the apply LANDS (read-back
+//      reflects the edited curve) and the dashboard waiver row flips green;
+//   4. G2 self-heal (root cause): with the driver-side waiver LOST
+//      (injected waiver-not-set), a failed apply must re-fetch the caps so
+//      the store flag flips back to unaccepted (dashboard row red again) —
+//      the NEXT apply re-shows the dialog instead of failing silently
+//      without a prompt.
+// The packaged always-elevated path applies in-process (waiver-accept +
+// apply run inside the EXE — pinned by elevated-apply.test.js); this
+// variant never elevates (mock adapters).
+
+/**
+ * @param {import('electron').BrowserWindow} win
+ * @param {import('./backend/mock-backend.js').MockBackend} backend
+ */
+export async function runFanGateVerify(win, backend) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
+    fail('sidebar did not render (6 nav links expected)');
+  }
+  // The shared boot-step: the session boots unaccepted -> the boot prompt
+  // appears exactly once -> Cancel it (the fan gate below then sees a clean
+  // page with a still-unaccepted waiver).
+  await bootWaiverStep(win, js, waitFor);
+  step('waiver-boot', 'boot waiver prompt handled (cancelled — the fan gate runs unaccepted)');
+
+  const pointsCount = () => js(`document.querySelectorAll('.fan-dot').length`);
+  const clickApply = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings')); if (!b) return false; b.click(); return true; })()`);
+  const clickRemove = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Remove point')); if (!b) return false; b.click(); return true; })()`);
+  // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+  // GPU Health card — assert the row state there (red + clickable while
+  // unaccepted, green + no click action once accepted).
+  const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
+  const expectRow = async (detail, clickable) => {
+    if (!(await waitFor(win, `(${waiverDetailExpr}).trim() === '${detail}'`, 5000))) {
+      fail(`M4-A: the dashboard waiver row is '${await js(waiverDetailExpr)}' (expected '${detail}')`);
+    }
+    const clickableNow = await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.classList.contains('health-row-clickable')`);
+    if (clickableNow !== clickable) fail(`M4-A: the waiver row clickability is '${clickableNow}' (expected ${clickable})`);
+  };
+  const rowDotOk = () => js(`document.querySelector('.health-card .health-row[data-row="waiver"] .status-dot')?.className ?? ''`);
+  const goDashboard = async (label) => {
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(250);
+    step(label, `navigated to the dashboard (waiver row state check)`);
+  };
+  const goFan = async () => {
+    await js(`location.hash = '#/fan'`);
+    await sleep(250);
+  };
+
+  // --- 1. the dashboard health row shows the unaccepted state ---------------
+  await goDashboard('fan-gate-dashboard');
+  if (!(await waitFor(win, `document.querySelectorAll('.health-card .health-row').length === 5`))) fail('health card did not render the 5 rows');
+  await expectRow('Not Accepted', true);
+  if (!/status-error/.test(await rowDotOk())) fail('M4-A: the waiver row dot is not red while unaccepted');
+  step('fan-gate-row', 'dashboard waiver row: Not Accepted (red) + clickable (unaccepted boot)');
+  // The fan page itself renders NO waiver status (dashboard health card only).
+  await goFan();
+  if (!(await waitFor(win, `!!document.querySelector('.fan-dot')`))) fail('fan editor dots did not render');
+  if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
+    fail('M4-A: the fan page still renders the waiver status (dashboard health card only)');
+  }
+  step('fan-gate-no-pill', 'fan page has no waiver status row (dashboard health card only)');
+
+  // Make the pending curve a REAL change (10 -> 9 points) so the apply is
+  // never a silent no-op.
+  const pointsBefore = await pointsCount();
+  await clickRemove();
+  if (!(await waitFor(win, `document.querySelectorAll('.fan-dot').length === ${pointsBefore - 1}`))) fail('fan point removal did not render');
+  step('fan-gate-dirty', `curve edited: ${pointsBefore} -> ${pointsBefore - 1} points`);
+
+  // --- 2. cancel flow: dialog -> Cancel -> aborted + honest toast ---------
+  await clickApply();
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`))) {
+    fail('fan apply did not show the waiver dialog while unaccepted');
+  }
+  step('fan-gate-dialog', 'fan apply shows the waiver dialog (unaccepted store)');
+  await clearToasts();
+  await js(`document.querySelector('.modal button.btn-ghost')?.click()`);
+  if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('waiver dialog did not close on Cancel');
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-info')).some((t) => (t.textContent ?? '').includes('The warranty waiver must be accepted before changing fan settings.'))`, 5000))) {
+    fail('fan apply Cancel: honest info toast missing');
+  }
+  const untouched = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (untouched.fanCurve?.length !== pointsBefore || untouched.fanMode !== 'curve') {
+    fail(`fan apply ran after Cancel! read-back=${JSON.stringify({ mode: untouched.fanMode, points: untouched.fanCurve?.length })}`);
+  }
+  step('fan-gate-cancel', `Cancel: apply aborted, device untouched (${untouched.fanCurve?.length} points), honest toast`);
+
+  // --- 3. accept flow: dialog -> Accept -> the apply LANDS -----------------
+  await clickApply();
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`))) {
+    fail('fan apply did not re-show the waiver dialog after Cancel');
+  }
+  await clearToasts();
+  await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+  if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('waiver dialog did not close on Accept');
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing after Accept');
+  const landed = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (landed.fanCurve?.length !== pointsBefore - 1 || landed.fanMode !== 'curve') {
+    fail(`fan apply did not land: read-back=${JSON.stringify({ mode: landed.fanMode, points: landed.fanCurve?.length })}`);
+  }
+  // The dashboard row flipped green — the accept-time + post-apply store
+  // re-sets trigger the caps-change re-render.
+  await goDashboard('fan-gate-row-accepted');
+  await expectRow('Accepted', false);
+  if (!/status-ok/.test(await rowDotOk())) fail('M4-A: the waiver row dot is not green once accepted');
+  if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) fail('waiver not accepted on the device after the fan Accept');
+  step('fan-gate-accept', `Accept -> apply landed (${landed.fanCurve?.length} points read back), dashboard waiver row flipped to Accepted (green, not clickable)`);
+  await goFan();
+
+  // --- 4. G2 self-heal: the driver loses the waiver mid-session ------------
+  // The injected ONE-SHOT waiver-not-set mirrors the real driver losing the
+  // waiver (the mock clears its in-memory flag exactly like IgclBackend —
+  // G2): the first apply fails, then the failure is gone — like a real
+  // driver whose waiver the re-accept restores.
+  backend.injectFail('fanCurve', 'waiver-not-set', true);
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 5000))) fail('waiver-not-set fan apply error toast missing');
+  // The failed apply must re-fetch the caps: the store flag flips back to
+  // unaccepted and the dashboard row goes red IN PLACE (re-render on the
+  // caps re-set).
+  await goDashboard('fan-gate-g2-dashboard');
+  await expectRow('Not Accepted', true);
+  if (!/status-error/.test(await rowDotOk())) fail('M4-A G2: the waiver row dot is not red after the waiver-not-set failure');
+  if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== false) fail('G2: the mock waiver flag did not clear on the waiver-not-set apply');
+  step('fan-gate-g2', `G2: waiver-not-set apply failed honestly; store flag flipped back to unaccepted, row red + clickable`);
+  await goFan();
+  // THE USER BUG: the next apply must re-show the dialog — never fail
+  // silently without a prompt.
+  await clickApply();
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
+    fail('M4-A G2: the next fan apply did NOT re-show the waiver dialog (the stale-flag bug: applies fail without a prompt)');
+  }
+  step('fan-gate-reprompt', 'the next fan apply re-shows the waiver dialog (never a silent failure)');
+  await clearToasts();
+  await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+  if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('waiver dialog did not close on the re-prompt Accept');
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing after the re-prompt accept');
+  await goDashboard('fan-gate-heal-dashboard');
+  await expectRow('Accepted', false);
+  step('fan-gate-heal', 're-prompt accept -> apply landed, dashboard waiver row green again (self-healed)');
+
+  console.log('\nUI VERIFY OK (fan-gate)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }

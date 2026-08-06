@@ -179,6 +179,12 @@ html, body {
 .health-row-label { font-weight: 600; color: var(--text); flex-shrink: 0; min-width: 128px; }
 .health-row-detail { color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
 
+/* M4-A: the dashboard waiver health row is CLICKABLE while unaccepted (it
+   opens the waiver dialog); the pointer affordance disappears once accepted
+   (the class is only applied to the unaccepted row). */
+.health-row-clickable { cursor: pointer; }
+.health-row-clickable:hover .health-row-label { color: var(--accent); }
+
 .text-ok { color: var(--success); }
 .text-warn { color: var(--warn); }
 .text-unknown { color: var(--text-dim); }

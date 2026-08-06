@@ -1,12 +1,15 @@
-// M3-A + M3-C-I — GPU health row model (pure). The IGS-era combined mapping
-// (mapStatus / IGS_LABELS / igsHalfState / IGS_NOTE) is REMOVED: with the
-// M2C-C elevation gate, IGS state is no longer relevant to OC-applicability,
-// so the dashboard's merged Service Status card became the general GPU
-// HEALTH card. M3-C-I trims it to FOUR honest rows (the "Clocks normal" row
-// is removed per the user's dashboard picture):
+// M3-A + M3-C-I + M4-A — GPU health row model (pure). The IGS-era combined
+// mapping (mapStatus / IGS_LABELS / igsHalfState / IGS_NOTE) is REMOVED:
+// with the M2C-C elevation gate, IGS state is no longer relevant to
+// OC-applicability, so the dashboard's merged Service Status card became the
+// general GPU HEALTH card. M3-C-I trims it to FOUR honest rows (the "Clocks
+// normal" row is removed per the user's dashboard picture); M4-A adds the
+// FIVEth row — "OC waiver" (Accepted ok / Not Accepted error, the ONLY
+// persistent waiver display — user correction, mid-M4-A):
 //   driver ("Driver installed" — detail = driver version + date like the
 //           device card), device ("Device detected"), oc ("OC working"),
-//   app ("Arc Power working" — healthy detail "App & Service Running").
+//   waiver ("OC waiver" — LIVE caps.waiverAccepted), app ("Arc Power
+//   working" — healthy detail "App & Service Running").
 // Each row: level (ok/warn/error/unknown) + a human detail line. The health
 // card re-renders on the same status slots (health/caps/bootError/driverDate)
 // — telemetry ticks only refresh the live readout grid.
@@ -19,6 +22,7 @@ import {
   driverRow,
   deviceRow,
   ocRow,
+  waiverRow,
   appRow,
   overallHealthLevel,
   worstLevel,
@@ -41,6 +45,7 @@ const input = (patch: Partial<HealthInput> = {}): HealthInput => ({
   lastApply: null,
   bootError: null,
   driverDate: null,
+  waiverAccepted: null,
   ...patch,
 });
 
@@ -102,6 +107,12 @@ test('deviceRow: device present -> ok with its name; boot error -> error; else u
   assert.deepEqual(deviceRow(bootFailed), { id: 'device', label: 'Device detected', level: 'error', detail: 'No Intel Arc GPU detected' });
 });
 
+test('M4-A: waiverRow — LIVE caps.waiverAccepted drives Accepted/Not Accepted (unknown before caps land)', () => {
+  assert.deepEqual(waiverRow(input()), { id: 'waiver', label: 'OC waiver', level: 'unknown', detail: 'Waiting for device…' });
+  assert.deepEqual(waiverRow(input({ waiverAccepted: true })), { id: 'waiver', label: 'OC waiver', level: 'ok', detail: 'Accepted' });
+  assert.deepEqual(waiverRow(input({ waiverAccepted: false })), { id: 'waiver', label: 'OC waiver', level: 'error', detail: 'Not Accepted' });
+});
+
 test('M3-C-I: the "Clocks normal" row is REMOVED (clocksRow no longer exists)', () => {
   const rows = healthRows(input());
   assert.ok(!rows.some((r) => r.id === 'clocks' as never), 'no clocks row');
@@ -122,11 +133,11 @@ test('M3-C-I: appRow healthy detail reads "App & Service Running" (app-only, NO 
   assert.equal(appRow(input({ health: null })).level, 'unknown');
 });
 
-test('healthRows: all four rows in display order (pinned by --ui-verify)', () => {
+test('healthRows: all five rows in display order (pinned by --ui-verify)', () => {
   const rows = healthRows(input());
-  assert.deepEqual(rows.map((r) => r.id), ['driver', 'device', 'oc', 'app']);
+  assert.deepEqual(rows.map((r) => r.id), ['driver', 'device', 'oc', 'waiver', 'app']);
   assert.deepEqual(rows.map((r) => r.label), [
-    'Driver installed', 'Device detected', 'OC working', 'Arc Power working',
+    'Driver installed', 'Device detected', 'OC working', 'OC waiver', 'Arc Power working',
   ]);
 });
 
@@ -141,12 +152,15 @@ test('worstLevel: error > warn > unknown > ok', () => {
   assert.equal(worstLevel(['warn', 'error']), 'error');
 });
 
-test('overallHealthLevel: the worst of the four rows drives the card level', () => {
-  // All-ok needs an applied OC row (never-applied reads as unknown).
-  const healthy: HealthInput = input({ lastApply: apply(true) });
+test('overallHealthLevel: the worst of the five rows drives the card level', () => {
+  // All-ok needs an applied OC row AND an accepted waiver (never-applied
+  // reads as unknown; an unaccepted waiver reads as error).
+  const healthy: HealthInput = input({ lastApply: apply(true), waiverAccepted: true });
   assert.equal(overallHealthLevel(healthRows(healthy)), 'ok');
   const failed: HealthInput = input({ lastApply: apply(false) });
   assert.equal(overallHealthLevel(healthRows(failed)), 'error');
+  const unaccepted: HealthInput = input({ lastApply: apply(true), waiverAccepted: false });
+  assert.equal(overallHealthLevel(healthRows(unaccepted)), 'error');
   const searching: HealthInput = input({ health: null });
   assert.equal(overallHealthLevel(healthRows(searching)), 'unknown');
 });

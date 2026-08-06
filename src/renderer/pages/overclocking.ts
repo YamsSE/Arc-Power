@@ -312,6 +312,16 @@ export const overclockingPage: Page = {
         toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
         return;
       }
+      // M4-A: an in-page acceptance patches the store caps IMMEDIATELY (not
+      // only post-apply) — the dashboard's waiver health row flips green on
+      // the next caps-change re-render, and stays green even if the apply
+      // below then fails/throws.
+      {
+        const cur = ctx.store.get();
+        if (cur.caps && cur.caps.waiverAccepted !== true) {
+          ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
+        }
+      }
       // M3-C-D: no per-apply extended-range confirm — the mode gate in main
       // is the honesty (stock refuses, advanced already warned at enable).
       // M2C-C: a non-elevated product app delegates the apply to the
@@ -412,6 +422,9 @@ export const overclockingPage: Page = {
           : 'Values are clamped to the range reported by this GPU. Changes apply on demand — nothing is applied until you press Apply.',
       }),
     ];
+    // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+    // GPU Health card — this page keeps no waiver UI beyond the apply-time
+    // dialog gate (ensureWaiver above).
     if (controls.length > 0) body.push(modeToggle(s.ocMode));
     body.push(
       controls.length > 0

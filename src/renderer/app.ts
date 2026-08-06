@@ -8,6 +8,7 @@ import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
 import { GpuHeader } from './components/header.ts';
 import { toast } from './components/toast.ts';
+import { ensureWaiver } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { overclockingPage } from './pages/overclocking.ts';
 import { fanPage } from './pages/fan.ts';
@@ -190,6 +191,23 @@ async function boot() {
     const caps = await api.getCapabilities(deviceId);
     const state = await api.getCurrentSettings(deviceId);
     store.set({ caps, state });
+    // M4-A: the waiver prompt at open — shown exactly once per boot when the
+    // device waiver is not accepted (never auto-accepted: the smoke-only
+    // allowAutoWaiver path never reaches this renderer). NON-BLOCKING: the
+    // boot sequence continues; a declined prompt must not break it. Accept
+    // patches the store caps so the dashboard GPU Health card row flips to
+    // Accepted in place (the waiver pill is gone — the health row is the
+    // only persistent waiver display).
+    if (caps.waiverAccepted !== true) {
+      void (async () => {
+        const decision = await ensureWaiver(deviceId, false, caps.deviceName || 'this GPU');
+        if (decision !== 'accepted') return;
+        const live = store.get();
+        if (live.caps && live.caps.waiverAccepted !== true) {
+          store.set({ caps: { ...live.caps, waiverAccepted: true } });
+        }
+      })();
+    }
   } catch (err) {
     store.set({ bootError: `Could not read device state: ${err instanceof Error ? err.message : String(err)}` });
     toast('error', 'Device state failed', err instanceof Error ? err.message : String(err));

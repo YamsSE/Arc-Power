@@ -5,8 +5,10 @@
 // M2b-B dashboard redesign:
 //   - the driver line moved OUT of the header (M2C-B B3): the line below the
 //     GPU name is now "Arc Power Ver. X.XX" (the app version via the
-//     `app:version` IPC); the driver version + registry date stay in the
-//     dashboard device card ('Driver version' kv, driver-info IPC);
+//     `app:version` IPC; M4-A: the DISPLAY label carries the " Alpha"
+//     suffix — the IPC keeps the bare semver); the driver version + registry
+//     date stay in the dashboard device card ('Driver version' kv, driver-info
+//     IPC);
 //   - PCI ID is gone;
 //   - M3-A: the top-right status dot + "Service Status" label are REMOVED
 //     (with the M2C-C elevation gate, IGS state is no longer relevant to
@@ -82,7 +84,9 @@ export class GpuHeader {
       el('div', { class: 'gpu-header' }, [
         el('div', { class: 'gpu-identity' }, [
           el('div', { class: 'gpu-name', text: device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power') }),
-          el('div', { class: 'gpu-meta', text: s.bootError ?? versionLine(s.appVersion) }),
+          // M4-A: the display label carries the " Alpha" suffix; the app:version
+          // IPC keeps the bare semver (test/ipc-core pins '0.9.10').
+          el('div', { class: 'gpu-meta', text: s.bootError ?? `${versionLine(s.appVersion)} Alpha` }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),
       ]),

@@ -1,11 +1,11 @@
 // Arc Power — Dashboard page (M2b-B redesign + M3-A + M3-C-I): device card
 // (dotted driver version + registry date, Xe cores + shader units, max core
-// clock + memory clock rows, no PCI ID, no persistent waiver status, no
-// capsSummary chips footer — M2C-B B2), the general GPU HEALTH card (four
-// honest rows: driver installed, device detected, OC working, Arc Power
-// working — M3-C-I removed the "Clocks normal" row per the user's dashboard
-// picture), and a compact live readout (core clock, memory clock, temp,
-// power, fan).
+// clock + memory clock rows, no PCI ID, no capsSummary chips footer —
+// M2C-B B2), the general GPU HEALTH card (five honest rows: driver
+// installed, device detected, OC working, OC waiver — the ONLY persistent
+// waiver display (M4-A user correction), Arc Power working — M3-C-I removed
+// the "Clocks normal" row per the user's dashboard picture), and a compact
+// live readout (core clock, memory clock, temp, power, fan).
 //
 // The page re-renders fully only when a status slot changes (boot probe,
 // boot errors); telemetry ticks refresh the readout grid in place — no
@@ -16,6 +16,7 @@ import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
+import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { driverLine } from '../components/header.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import type { TelemetrySample } from '../types.ts';
@@ -44,24 +45,56 @@ function currentSig(ctx: PageContext): DashboardSig {
 /** Last full-render signature (module state — telemetry ticks never touch it). */
 let lastSig: DashboardSig | null = null;
 
-/** One health row: dot (level-colored) + label + detail line. */
-function healthRowEl(row: HealthRow): HTMLElement {
-  return el('div', { class: `health-row`, 'data-row': row.id }, [
+/** One health row: dot (level-colored) + label + detail line. The M4-A
+ *  "OC waiver" row is CLICKABLE while unaccepted (error level): the click
+ *  opens the waiver dialog; on Accept the store caps are patched
+ *  (waiverAccepted: true) and the dashboard's caps-change full re-render
+ *  flips the row green IN PLACE. Accepted -> no click action. */
+function healthRowEl(row: HealthRow, ctx: PageContext): HTMLElement {
+  const node = el('div', { class: 'health-row', 'data-row': row.id }, [
     el('span', { class: `status-dot health-dot status-${row.level}`, title: row.detail }),
     el('span', { class: 'health-row-label', text: row.label }),
     el('span', { class: `health-row-detail text-${row.level}`, text: row.detail }),
   ]);
+  if (row.id === 'waiver' && row.level === 'error') {
+    node.classList.add('health-row-clickable');
+    node.title = 'Warranty waiver not accepted — click to review and accept';
+    node.addEventListener('click', () => void openWaiverFromRow(ctx));
+  }
+  return node;
+}
+
+/** M4-A: the dashboard waiver-row click -> the SAME dialog the apply paths
+ *  use (ensureWaiver); on Accept, patch the store caps so the row flips
+ *  green via the existing caps-change re-render. Cancel just closes. */
+async function openWaiverFromRow(ctx: PageContext) {
+  const live = ctx.store.get();
+  if (live.deviceId === null || !live.caps || live.caps.waiverAccepted === true) return;
+  const decision = await ensureWaiver(live.deviceId, false, live.caps.deviceName || 'this GPU');
+  if (decision !== 'accepted') return;
+  const cur = ctx.store.get();
+  if (cur.caps && cur.caps.waiverAccepted !== true) {
+    ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
+  }
 }
 
 /** M3-A: the general GPU Health card (replaces the merged Service Status card). */
 function healthCard(ctx: PageContext): HTMLElement {
   const s = ctx.store.get();
   const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-  const rows = healthRows({ health: s.health, device, sample: s.latestSample, lastApply: s.lastApply, bootError: s.bootError, driverDate: s.driverDate });
+  const rows = healthRows({
+    health: s.health,
+    device,
+    sample: s.latestSample,
+    lastApply: s.lastApply,
+    bootError: s.bootError,
+    driverDate: s.driverDate,
+    waiverAccepted: s.caps?.waiverAccepted ?? null,
+  });
 
   return el('section', { class: 'card health-card' }, [
     el('h2', { class: 'card-title', text: 'GPU Health' }),
-    el('div', { class: 'card-body' }, rows.map(healthRowEl)),
+    el('div', { class: 'card-body' }, rows.map((row) => healthRowEl(row, ctx))),
   ]);
 }
 

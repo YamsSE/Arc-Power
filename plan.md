@@ -749,24 +749,380 @@ working, app working.
 - Acceptance: MPO toggle verified here; UI shows state; M2C-C live
   verifications all green.
 
-### M4 — Battlemage enablement, hardening, packaging
-- B580/B570 on the same IGCL path. **Conditional:** no B5xx hardware is
-  available in this environment — if none becomes available, record
-  "unverified on hardware", pin capability-matrix fixture expectations
-  from the docs/community reports instead, and do not block the release.
-- Hardening: driver-version detection + friendly warnings; retry/backoff;
-  telemetry edge-case hardening; self-contained .NET sidecar publish if
-  the M0 decision picked the fallback.
-- M2a review note (deferred): when gpuLock editing lands, drop the
-  voltage clamp in `clampGpuLock` (units.js — the voltage-offset max is
-  the wrong bound for absolute lock voltages; leave voltage to driver
-  validation or derive a proper bound) and keep the frequency ceiling.
-- Packaging: NSIS installer (electron-builder); README with
-  supported-GPU table and "unverified" status markers.
-- Checkpoints: hardening + migration tests green (build+tests); sidecar
-  publish smoke (if applicable); installer smoke on a clean Windows env.
-- Acceptance: full manual checklist on the A770; B5xx per availability
-  above.
+### M4 — Version 0.9.10 Alpha + user-requested feature batch (Battlemage conditional)
+
+User requirements (2026-08-06): the milestone is named **0.9.10 Alpha**;
+B580/B570 hardware is a possibility (keep M4-E conditional); the OC tab
+needs negative territory for the voltage and clock-offset sliders plus a
+toggle that turns the clock offset into an actual clock setting
+(AMD-Wattman-style, e.g. "1400 MHz runs at ~1400 MHz"); the OC waiver must
+be prompted when the program opens and shown as a status
+"Accepted"/"Not Accepted" (green/red) — fan-curve applies currently fail
+when the waiver is not accepted because it is not prompted; the Fan tab
+gets a "Fixed" speed tab, per-point hover+move readouts (% and temp), and
+small input boxes below the graph to set each point's % and temp manually
+(hover readouts also on the Monitoring page's lines); the Dashboard gets a
+CPU card (CPU, cores/threads, clock speed, RAM size + speed) in front of
+the GPU card; a new Settings tab with "Start with Windows" and "Start
+minimized" toggles. Follow-up requirement (same day): on a machine
+without an Intel GPU, detect and display whatever GPU is present in the
+device card, show "not an Intel Arc GPU — overclocking won't work" as an
+error in the GPU Health card, grey out the Tuning (Overclocking) and Fan
+tabs, and remove every other error path about this condition (M4-D2).
+The M3-D icon ("new minimal mark") is approved — no icon work in M4.
+**Environment note (user, mid-M4)**: NO UAC during the whole M4 process —
+the user is unavailable for elevated prompts. All live verifications that
+would raise a UAC prompt (M4-B negative-write probe on the A770, M4-C
+fixed-mode live probe / live fan apply, M4-D live task create/delete, the
+packaged elevated EXE headless smoke) are SKIPPED and recorded as
+"deferred live verification (user UAC)" items in the milestone report.
+Dev-tree verification that needs no elevation (npm test, typecheck,
+build:renderer, electron --ui-verify variants, dev headless smoke) runs
+normally. **User add-ons for M4-B**: rename the dashboard health row
+"OC working" to "OC Status", and append the GPU VRAM amount to the GPU
+display name (e.g. "Intel Arc A770 16 GB") — see M4-B.
+
+#### M4-A — Version 0.9.10 Alpha + waiver prompt-at-open + status pill
+- **Version**: `npm version 0.9.10` (syncs package-lock.json;
+  tools/probe/package.json is a SEPARATE tool package — leave it, per the
+  M3-D precedent). Header display `Arc Power Ver. 0.9.10 Alpha` (display
+  label carries the Alpha suffix; the `app:version` IPC keeps the bare
+  semver; dist artifact stays Arc-Power-0.9.10.exe). Pins that move:
+  test/ipc-core.test.js:594 ('0.2.0' -> '0.9.10'), ui-verify.js:152-153
+  ('Arc Power Ver. 0.2.0' -> 'Arc Power Ver. 0.9.10 Alpha').
+- **Waiver prompt at open**: in the renderer boot sequence (app.ts, after
+  caps land), when `deviceId !== null && caps.waiverAccepted !== true`,
+  show the existing waiver dialog (components/waiver-dialog.ts) — Accept
+  calls the existing `waiver-accept` IPC (elevated worker in dev /
+  in-process in the always-elevated EXE — no UAC in the packaged app),
+  Cancel just closes the dialog. Never auto-accept (the smoke
+  `allowAutoWaiver` path stays smoke-only). Boot is non-blocking: a
+  declined boot prompt must not break the boot sequence.
+- **Waiver status row — Dashboard Health card ONLY (user correction,
+  mid-M4-A)**: the persistent waiver status is a row in the Dashboard's
+  GPU Health card ("OC waiver: Accepted" green / "Not Accepted" red),
+  NOT on the Overclocking or Fan page (the user: "only be displayed on
+  the Dashboard in the Health Card. Not in the Tuning or Fan Tab").
+  When unaccepted, clicking the row opens the waiver dialog (the same
+  pop-up that also fires on an apply attempt). Live refresh: the
+  dashboard already full-re-renders on caps changes (DashboardSig
+  includes caps — dashboardNeedsFullRender), so an accept-time store
+  patch (`caps.waiverAccepted: true`) refreshes the row with no new
+  helper. **Pins that change**: ui-verify.js:174 (body-wide 'OC waiver'
+  fail — M2C-B B2) is reworked to assert the row exists in the health
+  card and is ABSENT from the OC/Fan pages; the pill assertions on the
+  OC/Fan pages (ui-verify.js:404-405/455-457/1575/1623) move to the
+  dashboard health row; the boot-accept flow still patches the store
+  caps.
+  **Round-1 F2 (live-refresh mechanism — REVISED by the user correction)**
+  : the original pill plan needed a `waiverChanged` helper + onUpdate
+  branches on both pages; with the status row moved to the Dashboard
+  health card, the dashboard's existing full-render-on-caps-change path
+  covers the refresh (DashboardSig includes caps). The OC/Fan pages keep
+  NO waiver UI beyond the apply-time dialog gate. The boot-prompt Accept
+  path (waiver-accept IPC, ipc-core.js:398) never patches the store caps
+  — the boot-accept flow must still patch `caps.waiverAccepted: true`
+  (and the in-page accepts). `waiverChanged` is only kept if the health
+  row needs it; otherwise remove it and its tests.
+  **Round-1 F1 (ui-verify waiver-flow rework)**: the existing waiver-flow
+  section (ui-verify.js:313-392: "first Apply shows the dialog", cancel
+  flow, accept flow, "second apply: no dialog") runs with an unaccepted
+  store — the boot prompt now shows the modal BEFORE the apply. Rework:
+  (a) boot-accept variant — prompt at boot, Accept → pill green, first
+  Apply skips the dialog (the "second apply: no dialog" semantics move to
+  "no dialog anywhere after boot accept"); (b) boot-cancel variant —
+  Cancel at boot → pill stays red, first Apply shows the dialog (cancel /
+  accept flows unchanged); (c) the persisted-acceptance variant
+  (ui-verify.js:289-299) must assert NO boot prompt.
+  **Round-2 F4 (the boot prompt hits EVERY variant)**: all mock sessions
+  boot with an unaccepted store + isolated settings.json, so the boot
+  modal would appear in the extended variant (:545 asserts no modal),
+  the stock variant (:595), and the featureset-swap variants (:1206-1207
+  — the accept click there would close the BOOT prompt, not an apply
+  dialog). Rework: a shared deterministic boot-step in EVERY variant —
+  assert the prompt appeared once at boot, then Cancel it (Accept in the
+  boot-accept variant) BEFORE that variant's own assertions; the
+  featureset variant's apply-dialog assertions then see a clean page.
+- **Fan-apply gate fix**: the user reports fan-curve applies failing
+  without a waiver prompt. Current fan apply (fan.ts:345) already calls
+  ensureWaiver — regression-test the unaccepted-waiver fan apply through
+  the mock (dialog -> accept -> apply lands; cancel -> apply aborted with
+  the honest toast) and verify the packaged always-elevated path applies
+  in-process. Root-cause any remaining failure with evidence (the elevated
+  worker path is the suspect: waiver-accept in dev is elevated, but the
+  packaged app applies in-process).
+- Checkpoints: (1) version + pins + suite; (2) boot dialog + status pill
+  + fan-gate regression (ui-verify: unaccepted store shows the pill and
+  the apply dialog; accepted store skips both); (3) dist + packaged
+  smoke — DEFERRED (the EXE requires elevation, no UAC this milestone,
+  environment note) + commit + push.
+
+#### M4-B — OC tab: negative territory + absolute-clock toggle (+ gpuLock editor)
+- **Negative ranges**: extend the offset ranges into the negative
+  half-plane. Mock/featureset mirrors: a770.json gpuFreqOffsetMhz
+  0..300 -> -300..300 and gpuVoltOffsetV 0..0.234 -> -0.234..0.234
+  (mirrored mins); b580.json gpuFreqOffsetMhz 0..500 -> -500..500 and
+  gpuVoltOffsetV 0..100 -> -100..100 (mock %, same mirror rule). The UI
+  math (snapToRange / formatValue / clampExposedRange) is range-driven and
+  already handles negatives; the REAL ranges come from the IGCL
+  properties, which stay the honest bound. **Live probe on the A770 —
+  DEFERRED (no UAC during M4, see the environment note)**: write -100 MHz
+  and -0.050 V through the app's apply path, read back. If the driver
+  refuses, clamp with an honest toast + log and keep the driver-reported
+  range — never fake negative support. (Recorded as a deferred live
+  verification; the mock mirror + unit tests carry the milestone.)
+- **Display-name add-ons (user, mid-M4)**: (1) rename the dashboard
+  health row "OC working" to "OC Status" (pure/status.ts healthRows +
+  any ui-verify pin); (2) append the VRAM amount to the GPU display name
+  everywhere the device name is shown (device card, OC-page dialogs,
+  waiver dialog, header) as e.g. "Intel Arc A770 16 GB" — source: the
+  backend's device memory info where IGCL exposes it (verify what
+  ctlDeviceProperties/ctlGetMemoryInfo give; fallback: sysinfo
+  Win32_VideoController AdapterRAM with an honest caveat; no suffix when
+  unavailable). Mock/featuresets gain a vramBytes value; the name is
+  formatted once in a pure helper (unit-tested) and cached at listDevices
+  time (never per-render).
+- **Absolute-clock toggle (Wattman-style)**: on the GPU-frequency-offset
+  card only, a segmented toggle "Offset / Clock". In Clock mode the slider
+  sets a TARGET clock (MHz) and the app converts target -> offset =
+  target - baseClock before applying (IGCL only accepts offsets);
+  baseClock = the device's default max clock (device.graphicsClockMHz —
+  the same value the Dashboard device card shows; captured at render,
+  stable per session). Readout, Driver line, and chip show the absolute
+  clock (base + offset) in Clock mode. Pure conversion (pure/settings.ts
+  or a small pure/clock.ts): clockToOffset / offsetToClock, clamped to the
+  range bounds translated by baseClock, rounded at step 1 MHz + unit
+  tests. Mock: identical behavior (base from the featureset). Voltage
+  offset keeps offset-only semantics (no toggle — the user asked the
+  toggle for the clock).
+- **gpuLock editor (the M2a deferred note lands here)**: the backend apply
+  already exists (igcl-backend.js:810-839 applyLock, mock-backend.js:
+  382-389, ipc-core.js:84-87/126); ship the UI — a card in the Advanced
+  section with Voltage (V) + Frequency (MHz) inputs + Apply/Reset, gated
+  on caps.controls.gpuLock. **Round-1 F3: replace, don't drop, the
+  clampGpuLock voltage bound (units.js:150-167)**: the gpuVoltOffsetV.max
+  (0.234 V, an offset bound) is nonsense for an absolute lock voltage
+  (real locks are ~0.7-1.2 V; the current clamp makes any real lock
+  impossible) — but unbounded passthrough of a user-typed voltage into
+  `ctlOverclockGpuLockSet` would be a defense-depth regression across all
+  three call sites (igcl-backend.js:820, mock-backend.js:388,
+  ipc-core.js:126). Ship a documented absolute ceiling + floor:
+  `GPU_LOCK_VOLT_MAX_V` ~ 1.5 V, min 0 (0 = "don't touch voltage"), keep
+  the frequency ceiling; update units.test.js:86-102 pins accordingly.
+  **Round-1 F6 (expert-row text)**: overclocking.ts:432 renders "editing
+  arrives in M4" for ALL supported expert controls — after the editor
+  ships, the gpuLock row must switch to an honest post-M4-B text (e.g.
+  "Editing available" + the card sits in the Advanced section); only the
+  vfCurve/vram rows say "M5".
+- **vfCurve + vram offsets stay read-only** (no apply path exists): honest
+  expert-row text change "editing arrives in M4" -> "M5" for those rows;
+  the absolute-clock toggle covers the Wattman-style need for now.
+- Checkpoints: (1) pure conversions + clamp removal + tests; (2) UI +
+  mock e2e (ui-verify: negative slider reachable, Clock-mode readout +
+  chip); (3) live A770 probe of negative writes — DEFERRED (no UAC,
+  environment note); (4) dist + smoke + commit + push.
+
+#### M4-C — Fan: Fixed tab + point hover/manual boxes + Monitor hover popups
+- **Fixed tab**: the editor already renders a Fixed mode chip, but the
+  M3-D probe learned the real A770's modes as ['auto','curve'] (fixed
+  writes were UNSUPPORTED_FEATURE, so the derivation never offers it).
+  The user wants the tab regardless: render "Fixed" ALWAYS in the mode
+  toggle; when 'fixed' is not in caps.fan.modes, show it disabled with the
+  honest note "Fixed speed is not supported on this GPU". Extend the M3-D
+  probe with a fixed-write sub-probe (one reversible 50% write +
+  read-back + restore-to-default): on SUCCESS add 'fixed' to the learned
+  modes (mock a770 editable overlay gains 'fixed'); on FAILURE keep
+  ['auto','curve'] (existing evidence says failure is expected on the
+  A770 — live-verify once, honestly). **Round-1 F7 (sub-probe lifecycle)**:
+  the sub-probe MUST share the M3-D one-per-device probe cache
+  (igcl-backend.js:282-292 — never a re-probe per caps read), follow the
+  write-accepted rule for learned modes, and reuse the restore-retry
+  semantics so a failed fixed write NEVER leaves the fan at 50% fixed
+  (restore failure = probe failure, honest read-only). **Round-2 F6
+  (probe result shape)**: the M3-D cache holds one promise per device
+  returning `{probeOk, writeAccepted}` — the fixed sub-probe must extend
+  the SAME cached result (e.g. `{probeOk, writeAccepted, fixedOk}`) so
+  the fixed probe also runs once per device per session; update the
+  fake-lib fixtures (igcl-backend.test.js) and the mock a770 editable
+  overlay for the new shape. The Fixed UI
+  itself exists (fan.ts:194-210, 0-100% slider) — wire the tab into the
+  existing buildFanSettings apply unchanged.
+- **Point hover + drag readout**: hovering OR dragging a curve dot shows
+  a floating readout (near the dot, above the plot): "85% @ 72 °C" (+
+  point index), live-updated during the drag. Hover via the existing dots
+  layer (pointerover/out); no math changes.
+- **Manual per-point boxes**: a row under the SVG — one input pair (Temp
+  °C, Speed %) per point + a per-point remove button; typing updates the
+  curve through the existing pure helpers (movePoint for clamp/ascending-
+  temp enforcement, point-count clamp), and the selected dot + tooltip
+  sync. All math stays in pure/curve.ts (unit tests for the input-driven
+  path).
+- **Monitor hover popups**: on each Monitoring canvas, pointer-move shows
+  a crosshair + popup at the nearest sample on the line (value + relative
+  time, e.g. "1410 MHz · 12 s ago"); hidden on pointer-leave; only when
+  the segment is expanded. Nearest-sample lookup as a pure helper in
+  pure/graph.ts (x-position index -> series point) + unit tests.
+- Checkpoints: (1) curve/graph helpers + tests; (2) fan UI (fixed tab,
+  hover readout, manual boxes) + ui-verify variants (editable overlay
+  gains fixed; RID_MOCK_FAN_READONLY unchanged); (3) monitor hover; (4)
+  live fan apply — DEFERRED (no UAC, environment note) + dist + smoke +
+  commit + push.
+
+#### M4-D — Dashboard CPU card + Settings tab
+- **CPU card** (BEFORE the GPU card in the dashboard card-grid): CPU name,
+  cores / threads (physical + logical), max clock speed, RAM total +
+  speed. New main-process sysinfo module: PowerShell CIM
+  (Win32_Processor Name / NumberOfCores / NumberOfLogicalProcessors /
+  MaxClockSpeed; Win32_ComputerSystem TotalPhysicalMemory;
+  Win32_PhysicalMemory ConfiguredClockSpeed), cached at boot, new IPC
+  channel `sysinfo:get`; fallback to Node os.cpus()/os.totalmem() when
+  PowerShell fails (RAM speed row degrades honestly to "—"). Mock
+  fixture for ui-verify (fixed values); the dashboard sig
+  (dashboardNeedsFullRender) gains sysinfo so the card re-renders when it
+  lands.
+- **Settings tab** (new page + router entry + NAV label):
+  - **Start with Windows**: reuse the M2C-C scheduled-task mechanism
+    (schtasks onlogon /rl highest — the packaged EXE is always-elevated
+    (M3-C-B), so a plain Run key would UAC at EVERY logon; the task runs
+    elevated silently) with a NEW task name (ArcPowerAppOnBoot) launching
+    the exe WITHOUT --apply-profile; disable deletes the task + the legacy
+    Run key. Startup module gains a plain-app variant (or a sibling
+    module) + mock adapter; settings.json persists `startWithWindows`.
+    **Round-1 F4 (two-task coexistence)**: the apply-on-boot task
+    (ArcPowerApplyOnBoot) and the app task are both `onlogon /rl
+    highest` — both enabled would launch the app twice at logon. The
+    startup module's parse helpers (startup.js:44-84) regex-require
+    `--apply-profile <id>`, so the plain-app entry needs its own parse
+    support, and startup-get must report BOTH tasks distinctly. The
+    Settings toggle shows both states and enabling one disables the
+    other (they cannot coexist).
+  - **Start minimized**: persisted setting (`startMinimized`); at boot
+    the window starts minimized to the tray (tray exists — tray.js):
+    minimize after ready-to-show, tray-click restores. **Round-1 F5
+    (tray restore)**: main.js:106-107 toggles on `win.isVisible()` — a
+    minimized window reports VISIBLE, so the first tray click would hide
+    it instead of restoring. Pin the explicit
+    `win.isMinimized() → restore()` branch before the visibility toggle.
+    Never show-hidden-then-silent (the user must always be able to
+    restore).
+  - Settings.json schema: add both fields in profile-store.js
+    loadSettings/saveSettings defaults. **Round-1 F8 (migrations)**: the
+    fields ride the absent-field defaults mechanism (like ocMode) — NO
+    SCHEMA_VERSION bump; just update the migrations v0 comment.
+  - The tab shows both toggles with honest current-state lines (startup
+    queried read-only like startup-get; enabling needs ONE UAC in dev —
+    existing helper) + the app version row.
+- Checkpoints: (1) sysinfo module + tests; (2) settings tab + toggles +
+  store fields + ui-verify; (3) live task create/delete — DEFERRED (no
+  UAC, environment note; start-minimized boot verified via ui-verify
+  instead); (4) dist + smoke + commit + push.
+
+#### M4-D2 — Non-Intel GPU detection + honest error state (user requirement)
+
+User requirement (2026-08-06, follow-up): when the app starts on a
+machine without an Intel GPU, detect and display whatever GPU is present
+in the device card ("GPU tab"), show an error in the GPU Health card that
+this is not an Intel Arc GPU and overclocking won't work, grey out the
+Tuning (Overclocking) and Fan tabs, and remove every other error path
+about this condition.
+
+- **Detection**: IGCL enumerates only Intel adapters, so a non-Intel GPU
+  yields zero devices. The M4-D sysinfo module's video-controller query
+  (Win32_VideoController: Name, AdapterRAM, VideoProcessor, PNPDeviceID)
+  identifies the actual GPU. Boot flow (app.ts): when
+  `devices.length === 0` after a healthy health check, use the sysinfo
+  video-controller list — first (primary) controller becomes a new store
+  slot `nonIntelDevice: { name, vendor?, vramBytes? } | null`. If sysinfo
+  also fails or finds nothing, keep a generic bootError as the last
+  resort. **Round-2 F1 (the throw paths)**: `devices.length === 0` is not
+  the only non-Intel arrival — on a machine with no Intel driver the
+  IGCL init can THROW, which today routes to the generic bootError
+  ('Device enumeration failed' app.ts:127-131, 'Health check failed'
+  app.ts:107-111). Route ALL THREE early-return paths (health throw,
+  enumeration throw, zero devices) through the sysinfo video-controller
+  detection BEFORE the legacy bootError, and add a test fixture where
+  listDevices throws to pin the flow.
+- **Dashboard device card**: shows the detected non-Intel GPU (name +
+  vendor + VRAM when available) with an "Unsupported" chip — replaces
+  the current 'No Intel Arc GPU detected. Install the driver or run with
+  RID_BACKEND=mock…' bootError text (that text goes away; it is one of
+  the "other errors" the user wants removed). **GPU Health card**: a red
+  error row "Not an Intel Arc GPU — overclocking won't work" (level
+  error) replaces the failing "Device detected" row wording. Remove other
+  error surfaces tied to the missing-Intel-GPU case (healthRows
+  pure/status.ts wording + any pinned text in ui-verify).
+  **Round-2 F2 (dashboard re-render)**: DashboardSig /
+  dashboardNeedsFullRender (pure/status.ts:161-178) keys on
+  health/caps/bootError/driverDate only — a standalone `nonIntelDevice`
+  store.set would leave the device card on "Searching for a graphics
+  device…" (dashboard.ts:97). Add `nonIntelDevice` (+ sysinfo for the
+  CPU card) to DashboardSig, and set the slot in the SAME store.set that
+  changes the sig.
+- **Greyed-out tabs**: the Overclocking and Fan sidebar links render
+  disabled (class + tooltip "Requires an Intel Arc GPU"), the pages
+  themselves still render the honest no-Intel note if reached directly
+  (hash). Monitoring stays enabled (renders its unavailable states),
+  Profiles/Tweaks unaffected.
+  **Round-2 F3 (sidebar render trigger)**: renderSidebar (app.ts:68-85)
+  runs once at boot start + on hashchange only and does not read the
+  store — the slot lands after the first call, so the links stay enabled.
+  renderSidebar must read `s.nonIntelDevice` (disabled class + tooltip on
+  the two links) and boot must re-invoke it when the slot lands.
+  **Round-2 F5 (the 'No GPU available.' texts)**: the pages currently
+  render 'No GPU available.' (overclocking.ts:164, fan.ts:62,
+  profiles.ts:155) and 'Loading device capabilities…' — the user asked to
+  remove EVERY error path about this condition, and Profiles is one.
+  When `nonIntelDevice` is set, ONE shared honest note ("No Intel Arc GPU
+  detected — overclocking and fan control are unavailable. Detected
+  GPU: …") replaces all three texts; ui-verify pins those texts updated.
+  **Round-3 F1 (branch ordering)**: on OC and Fan the caps-null branch
+  renders FIRST ('Loading device capabilities…' overclocking.ts:159-160 /
+  'Loading fan state…' fan.ts:57-59) — the non-Intel boot never lands
+  caps, so those pages would show the Loading texts, not the honest note.
+  The shared note must be the FIRST render branch on overclocking.ts,
+  fan.ts, and profiles.ts (keyed on `nonIntelDevice`, before the caps-null
+  check), pinned in the ui-verify non-Intel variant.
+  **Minor (non-blocking, still do it)**: in the non-Intel state the
+  Monitoring FPS note switches to the unavailable note immediately (it
+  currently stays "Checking FPS…" forever — monitoring.ts:155 early-
+  returns), and the tray's apply-profile balloon on a non-Intel machine
+  gets the same honest note instead of a raw failure.
+- **Mock + tests**: a mock overlay variant (e.g. RID_MOCK_NON_INTEL_GPU=1)
+  that empties the device list and fills the sysinfo fixture with an
+  NVIDIA card (modeled on the RID_MOCK_FAN_READONLY overlay precedent —
+  main.js:238 mockOpts / mock-backend.js:78 _fanOverlay); a second
+  fixture where listDevices throws (F1 pin). The ui-verify variant
+  asserts: device card shows the fixture GPU, health card shows the red
+  row, OC + Fan links disabled, no legacy bootError text. Real-mode live
+  verification is impossible on this machine (A770 present) — the mock
+  variants + honest wording are the verification, noted in the milestone
+  report.
+- Checkpoints: (1) sysinfo video-controller query + mock fixtures +
+  tests (incl. the throw fixture); (2) boot state (all three paths) +
+  dashboard/health + greyed tabs + shared note + ui-verify variant;
+  (3) dist + smoke + commit + push.
+
+#### M4-E — Battlemage enablement (conditional) + hardening + packaging
+- B580/B570 on the same IGCL path. **Conditional** (user: "a
+  possibility"): no B5xx hardware is confirmed in this environment — if
+  B5xx arrives, live-verify and pin capability-matrix fixture
+  expectations; otherwise record "unverified on hardware" and pin from
+  docs/community reports (the M2D b580 mock exists and stays
+  fixture-derived; the M4-B range mirrors apply to it). Do not block the
+  release.
+- Hardening leftovers (trimmed by M2C-M3D evidence): driver-version
+  detection + friendly warnings; retry/backoff; telemetry edge-case
+  hardening — the implementer reviews what remains and ships with tests.
+- Packaging: NSIS installer (electron-builder); README supported-GPU
+  table with "unverified" status markers.
+- Checkpoints: hardening + migration tests green (build+tests); installer
+  smoke on a clean Windows env — DEFERRED (would need elevation/no-UAC
+  rule; documented-absence fallback applies); full manual checklist on
+  the A770 — DEFERRED (no UAC); dist + dev smoke + commit + push.
+- Acceptance: M4 closes with the 0.9.10 Alpha EXE passing the dev-tree
+  headless smoke + the full ui-verify matrix; the elevated packaged
+  smoke, the A770 manual checklist, and the B5xx checks are recorded as
+  deferred live verifications (user UAC); B5xx per availability above.
 
 ### M3-C — Elevation rework, apply-failure fix, OC UX overhaul, monitoring fixes
 
@@ -1151,7 +1507,7 @@ A770, not just fixed mode. Deep check done by the host, all live-verified:
 
 ## 11. Deferred reviewer notes
 
-(none — M3-C/M3-D plan findings folded into the plan sections; M3-D
-round-3 VERDICT: APPROVED)
+(none — M3-C/M3-D/M4 plan findings folded into the plan sections; M4
+round-3 VERDICT: APPROVED after 2 review rounds, 15 findings folded in)
 M0 findings folded into §4a; open M0 risks tracked there (fan
 canControl=false interplay, future-driver registered-UID requirement).
