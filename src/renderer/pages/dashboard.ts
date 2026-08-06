@@ -1,16 +1,16 @@
-// Arc Power — Dashboard page (M2b-B redesign + M3-A): device card (dotted
-// driver version + registry date, Xe cores + shader units, max core clock +
-// memory clock rows, no PCI ID, no persistent waiver status, no capsSummary
-// chips footer — M2C-B B2), the general GPU HEALTH card (five honest rows:
-// driver installed, device detected, clocks normal, OC working, Arc Power
-// working — the M3-A replacement for the merged Service Status card, which
-// is gone: IGS is no longer a status item), and a compact live readout
-// (core clock, memory clock, temp, power, fan).
+// Arc Power — Dashboard page (M2b-B redesign + M3-A + M3-C-I): device card
+// (dotted driver version + registry date, Xe cores + shader units, max core
+// clock + memory clock rows, no PCI ID, no persistent waiver status, no
+// capsSummary chips footer — M2C-B B2), the general GPU HEALTH card (four
+// honest rows: driver installed, device detected, OC working, Arc Power
+// working — M3-C-I removed the "Clocks normal" row per the user's dashboard
+// picture), and a compact live readout (core clock, memory clock, temp,
+// power, fan).
 //
 // The page re-renders fully only when a status slot changes (boot probe,
-// boot errors); telemetry ticks refresh the readout grid + the health card's
-// clocks row in place — no per-tick DOM churn (the decision lives in
-// pure/status.ts::dashboardNeedsFullRender, unit-tested).
+// boot errors); telemetry ticks refresh the readout grid in place — no
+// per-tick DOM churn (the decision lives in pure/status.ts::
+// dashboardNeedsFullRender, unit-tested).
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
@@ -57,36 +57,12 @@ function healthRowEl(row: HealthRow): HTMLElement {
 function healthCard(ctx: PageContext): HTMLElement {
   const s = ctx.store.get();
   const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-  const rows = healthRows({ health: s.health, device, sample: s.latestSample, lastApply: s.lastApply, bootError: s.bootError });
+  const rows = healthRows({ health: s.health, device, sample: s.latestSample, lastApply: s.lastApply, bootError: s.bootError, driverDate: s.driverDate });
 
   return el('section', { class: 'card health-card' }, [
     el('h2', { class: 'card-title', text: 'GPU Health' }),
     el('div', { class: 'card-body' }, rows.map(healthRowEl)),
   ]);
-}
-
-/**
- * Refresh the health card's clocks row in place (telemetry tick — NOT a full
- * re-render). The row's `data-row="clocks"` cell carries the live sample.
- */
-function refreshClocksRow(container: HTMLElement, ctx: PageContext): void {
-  const row = container.querySelector<HTMLElement>('.health-card .health-row[data-row="clocks"]');
-  if (!row) return;
-  const s = ctx.store.get();
-  const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-  const next = healthRows({ health: s.health, device, sample: s.latestSample, lastApply: s.lastApply, bootError: s.bootError })
-    .find((r) => r.id === 'clocks');
-  if (!next) return;
-  const dot = row.querySelector<HTMLElement>('.health-dot');
-  if (dot) {
-    dot.className = `status-dot health-dot status-${next.level}`;
-    dot.title = next.detail;
-  }
-  const detail = row.querySelector<HTMLElement>('.health-row-detail');
-  if (detail) {
-    detail.className = `health-row-detail text-${next.level}`;
-    detail.textContent = next.detail;
-  }
 }
 
 export const dashboardPage: Page = {
@@ -142,7 +118,8 @@ export const dashboardPage: Page = {
   onUpdate(container: HTMLElement, ctx: PageContext) {
     // Full re-render only when a status slot changed (boot probe, boot
     // errors) — NOT on telemetry ticks. A tick (or any other non-status
-    // change) refreshes only the live readout grid + the clocks row in place.
+    // change) refreshes only the live readout grid in place (M3-C-I: the
+    // clocks health row is gone, so no in-place health-row refresh).
     const sig = currentSig(ctx);
     if (dashboardNeedsFullRender(lastSig, sig)) {
       lastSig = sig;
@@ -169,7 +146,5 @@ export const dashboardPage: Page = {
       const mem = ctx.store.get().latestSample?.memClockMhz;
       memValue.textContent = `${mem !== undefined ? mem : '--'} MHz`;
     }
-    // M3-A: the health card's clocks row tracks the latest sample in place.
-    refreshClocksRow(container, ctx);
   },
 };

@@ -315,6 +315,9 @@ html, body {
 
 .chip-warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
 
+/* M3-C-G: the green "Applied" chip (per-control apply status). */
+.chip-ok { color: var(--success); border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.08); }
+
 .badge {
   padding: 3px 9px;
   border-radius: 999px;
@@ -530,6 +533,47 @@ html, body {
   font-family: var(--mono);
   font-size: 15px;
   font-weight: 650;
+}
+
+/* ------------------------------------------- OC-mode toggle (M3-C-E) ---- */
+
+.oc-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 12px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  width: fit-content;
+}
+
+.oc-mode-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 0 10px;
+}
+
+.oc-mode-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.oc-mode-btn:hover { color: var(--text); }
+
+.oc-mode-btn.active {
+  background: var(--accent);
+  color: #06121d;
 }
 
 .oc-meta {
@@ -751,15 +795,20 @@ html, body {
 
 /* ------------------------------------------------- compact OC cards (M2b-B) */
 
-.oc-stack { gap: 10px; }
+.oc-stack { gap: 8px; }
 
-.oc-card { padding: 12px 16px; }
-.oc-card-head { margin-bottom: 6px; }
-.oc-card .card-title { font-size: 14px; }
-.oc-slider-row { gap: 12px; }
-.oc-meta { margin-top: 4px; }
-.oc-card-actions { margin-top: 6px; }
-.oc-value { font-size: 14px; min-width: 80px; }
+/* M3-C-J: tighter cards/rows — preset-chip removal (M3-C-G) freed the meta
+   row; the slider row + value stay inline, the meta is a single line. */
+.oc-card { padding: 10px 14px; }
+.oc-card-head { margin-bottom: 4px; }
+.oc-card .card-title { font-size: 13.5px; }
+.oc-slider-row { gap: 12px; min-height: 26px; }
+.oc-meta { margin-top: 2px; }
+.oc-card-actions { margin-top: 4px; gap: 8px; }
+.oc-value { font-size: 13.5px; min-width: 76px; }
+.oc-driver { font-size: 12px; }
+.oc-range { font-size: 11.5px; }
+.oc-chip-status { font-size: 11px; padding: 2px 9px; }
 
 /* ------------------------------------------------------------ monitoring */
 

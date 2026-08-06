@@ -5,25 +5,28 @@
 // gate, IGS state is no longer relevant to OC-applicability — the user's
 // decision, docs). The old health + IGS combined mapping (mapStatus /
 // IGS_LABELS / igsHalfState / IGS_NOTE) is gone; the general GPU HEALTH card
-// replaces the merged Service Status card with five honest rows:
+// replaces the merged Service Status card. M3-C-I trims it to four honest
+// rows (the "Clocks normal" row is REMOVED per the user's dashboard picture):
 //
 //   driver — "Driver installed": the IGCL runtime loaded + a driver version;
+//            the detail shows the driver version + date like the device card
+//            (driverLine: "32.0.101.8861 - Jul 05, 2026");
 //   device — "Device detected": a GPU is enumerated (or the boot error);
-//   clocks — "Clocks normal": the device clock is sane and the live telemetry
-//            clock reads in range (refreshed in place on telemetry ticks);
 //   oc — "OC working": the last apply outcome (ok / failed / never applied);
-//   app — "Arc Power working": booted, backend live, mock badge when mock.
+//   app — "Arc Power working": booted, backend live — healthy detail reads
+//         "App & Service Running" (app-only, NO IGS probe).
 //
 // Each row carries a level (ok/warn/error/unknown) + a human detail line.
 // The legacy health-only level mapping (healthLevel) stays for the header
 // test contract.
 
 import type { Capabilities, DeviceInfo, HealthReport, LastApply, TelemetrySample } from '../types.ts';
+import { decodeDriverVersion, formatDriverDate } from './driver.ts';
 
 export type HealthLevel = 'ok' | 'warn' | 'error' | 'unknown';
 
-/** The five health-card rows (pinned by unit tests and --ui-verify). */
-export type HealthRowId = 'driver' | 'device' | 'clocks' | 'oc' | 'app';
+/** The four health-card rows (pinned by unit tests and --ui-verify). */
+export type HealthRowId = 'driver' | 'device' | 'oc' | 'app';
 
 export interface HealthRow {
   id: HealthRowId;
@@ -40,6 +43,8 @@ export interface HealthInput {
   sample: TelemetrySample | null;
   lastApply: LastApply | null;
   bootError: string | null;
+  /** M3-C-I: the display-driver registry date for the driver row detail. */
+  driverDate: string | null;
 }
 
 /** Legacy health-only level (kept so the header test contract stays exact). */
@@ -60,8 +65,9 @@ export function worstLevel(levels: HealthLevel[]): HealthLevel {
 
 /**
  * "Driver installed": the IGCL runtime loaded AND a driver version is known.
- * A boot error with no report reads as an error (the app is up, the driver
- * side is not).
+ * The ok detail shows the driver version + date exactly like the device card
+ * does (driverLine: "32.0.101.8861 - Jul 05, 2026") — M3-C-I. A boot error
+ * with no report reads as an error (the app is up, the driver side is not).
  */
 export function driverRow(input: HealthInput): HealthRow {
   const h = input.health;
@@ -76,7 +82,14 @@ export function driverRow(input: HealthInput): HealthRow {
   if (!h.driverVersion) {
     return { id: 'driver', label: 'Driver installed', level: 'warn', detail: 'IGCL loaded, driver version unknown' };
   }
-  return { id: 'driver', label: 'Driver installed', level: 'ok', detail: `IGCL loaded, driver ${h.driverVersion}` };
+  // M3-C-I: version + date like the device card (driverLine). Prefer the
+  // device's own driverVersion (the device card's source — the mock device
+  // reports a clean dotted string while the health report appends a mock
+  // suffix), fall back to the health report's.
+  const raw = input.device?.driverVersion ?? h.driverVersion;
+  const version = decodeDriverVersion(raw) ?? raw;
+  const date = formatDriverDate(input.driverDate);
+  return { id: 'driver', label: 'Driver installed', level: 'ok', detail: date ? `${version} - ${date}` : version };
 }
 
 /** "Device detected": the GPU is enumerated (or the boot error says why not). */
@@ -88,31 +101,6 @@ export function deviceRow(input: HealthInput): HealthRow {
     return { id: 'device', label: 'Device detected', level: 'error', detail: input.bootError };
   }
   return { id: 'device', label: 'Device detected', level: 'unknown', detail: 'Searching for a graphics device…' };
-}
-
-/**
- * "Clocks normal": the device's advertised graphics clock is sane (> 0) and
- * the latest telemetry sample (when present) reads a plausible in-range
- * clock. The telemetry clock is read at render time; the dashboard refreshes
- * this row in place on telemetry ticks (it is NOT a full-render slot).
- */
-export function clocksRow(input: HealthInput): HealthRow {
-  if (!input.device) {
-    return input.bootError
-      ? { id: 'clocks', label: 'Clocks normal', level: 'error', detail: input.bootError }
-      : { id: 'clocks', label: 'Clocks normal', level: 'unknown', detail: 'No device yet' };
-  }
-  const saneBase = input.device.graphicsClockMHz > 0;
-  const clock = input.sample?.gpuClockMhz;
-  if (!saneBase) {
-    return { id: 'clocks', label: 'Clocks normal', level: 'warn', detail: 'Device reports no graphics clock' };
-  }
-  if (clock !== undefined && !(Number.isFinite(clock) && clock > 0 && clock <= 4000)) {
-    return { id: 'clocks', label: 'Clocks normal', level: 'warn', detail: `Telemetry clock reads ${clock} MHz` };
-  }
-  return clock === undefined
-    ? { id: 'clocks', label: 'Clocks normal', level: 'ok', detail: `${input.device.graphicsClockMHz} MHz (waiting for live telemetry)` }
-    : { id: 'clocks', label: 'Clocks normal', level: 'ok', detail: `${Math.round(clock)} MHz live` };
 }
 
 /**
@@ -131,13 +119,14 @@ export function ocRow(input: HealthInput): HealthRow {
 }
 
 /**
- * "Arc Power working": the app booted, the backend answered, and (mock mode)
- * the mock badge is reported honestly.
+ * "Arc Power working": the app booted and the backend answered. M3-C-I: the
+ * healthy detail reads "App & Service Running" (app-only — the app's own
+ * engine/backend; NO IGS probe, per the user's decision). Honest warn/error
+ * states as before.
  */
 export function appRow(input: HealthInput): HealthRow {
   if (input.health) {
-    const mock = input.health.backend === 'mock' ? ' — mock backend' : '';
-    return { id: 'app', label: 'Arc Power working', level: 'ok', detail: `App running, backend ${input.health.backend}${mock}` };
+    return { id: 'app', label: 'Arc Power working', level: 'ok', detail: 'App & Service Running' };
   }
   if (input.bootError) {
     return { id: 'app', label: 'Arc Power working', level: 'error', detail: input.bootError };
@@ -145,9 +134,9 @@ export function appRow(input: HealthInput): HealthRow {
   return { id: 'app', label: 'Arc Power working', level: 'unknown', detail: 'Booting…' };
 }
 
-/** All five health rows in display order. */
+/** All health rows in display order (M3-C-I: the clocks row is removed). */
 export function healthRows(input: HealthInput): HealthRow[] {
-  return [driverRow(input), deviceRow(input), clocksRow(input), ocRow(input), appRow(input)];
+  return [driverRow(input), deviceRow(input), ocRow(input), appRow(input)];
 }
 
 /** Overall health-card level: the worst of the five rows. */

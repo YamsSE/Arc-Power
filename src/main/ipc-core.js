@@ -27,7 +27,7 @@ import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } 
 import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
-import { executeApply, createNullOldIgcl } from './apply-routing.js';
+import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODES } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 
 const require = createRequire(import.meta.url);
@@ -151,6 +151,29 @@ export async function seedWaiverState(backend, store) {
 }
 
 /**
+ * M3-C review F3: seed the backend's OC mode from the persisted settings
+ * (settings.json via the store). Must run BEFORE the window/IPC exist — the
+ * renderer's FIRST getCapabilities must already see the right range set (a
+ * persisted-advanced session must never render 252 W / 90 C sliders until a
+ * later self-heal). setOcMode is an in-memory caps-cache invalidation, safe
+ * before init(). Returns the seeded mode, or null when the store read fails
+ * (degraded: the backend keeps its construction default — bootBackend's own
+ * seeding runs again later, and the mode toggle re-seeds on demand).
+ * @param {import('./backend/backend.interface.js').IOCBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ * @returns {Promise<'stock'|'advanced'|null>}
+ */
+export async function seedOcMode(backend, store) {
+  try {
+    const s = await store.loadSettings();
+    if (typeof backend.setOcMode === 'function') backend.setOcMode(s.ocMode);
+    return s.ocMode;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Channels that take no payload must never receive one (the preload only
  * calls them bare, but the whitelist is the enforcement point).
  */
@@ -260,13 +283,50 @@ export function createIpcHandlers({
       'apply-settings': async (deviceId, payload) => {
         assertValidDeviceId(deviceId);
         const settings = sanitizeSettings(payload);
+        // M3-C-E: the OC-mode gate runs BEFORE every clamp — an explicit
+        // pre-clamp REFUSAL, never a clamp. Stock mode refuses anything
+        // beyond the standard limits (252 W / 90 C) with the mode message;
+        // advanced mode refuses only above the extended ceiling (315 W /
+        // 115 C — never clamps, so a >315 W request is reported honestly).
+        // A config-refusal is NOT a hardware failure: it must never trigger
+        // the reset-to-defaults fallback anywhere downstream.
+        const ocMode = (await store.loadSettings()).ocMode;
+        const refusal = ocModeRefusal(ocMode, settings);
+        if (refusal) {
+          // M3-C review F2: the refusal envelope carries the FRESH device
+          // state (getCurrentSettings is cheap — the refusal never touched
+          // the GPU). A null state would be stored by the renderer
+          // unconditionally and null out its device state (the OC page
+          // renders 'Loading device capabilities…' forever and the dirty
+          // helpers throw on it). Degraded to null only if the read itself
+          // fails — the renderer's non-null guard covers that too.
+          let state = null;
+          try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+          return { result: { ok: false, perControl: refusalPerControl(refusal) }, state, ocModeRefused: true };
+        }
         const caps = await backend.getCapabilities(deviceId);
+        // M3-C step-5 F1: advanced mode + a NOT-capable bundled 2023 runtime
+        // (the future-driver degradation EXTENDED_UNAVAILABLE_MSG exists
+        // for) must refuse extended values BEFORE any clamp — clamping
+        // 300 W to 252 W and reporting ok:true would be a false success
+        // claim. Keyed on caps.extendedRanges (the capability probe is
+        // identical on both sides of the worker boundary), never on the
+        // mode. Same refusal envelope as the mode gate: fresh state, never
+        // a defaults-restore downstream.
+        const unavailable = extendedUnavailableRefusal(settings, caps);
+        if (unavailable) {
+          let state = null;
+          try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+          return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state, extendedUnavailable: true };
+        }
         const clamped = clampSettings(settings, caps.ranges);
         // M2C-C elevation gate: a non-elevated app delegates the apply to
         // the elevated self-worker (one UAC prompt); the elevated app (and
         // mock mode, where applyRunner is null) applies in-process through
         // the routed core (DriverStore runtime <=252 W / <=90 C, bundled
-        // 2023 runtime above). The worker runs the SAME core.
+        // 2023 runtime above). The worker runs the SAME core + gate (the
+        // request file carries ocMode — the worker's own caps always report
+        // extendedRanges, so a caps-keyed gate there would silently clamp).
         if (applyRunner?.needsWorker?.()) {
           // S2: the request carries the parent-side waiver flag so the
           // worker's in-memory state (its clamp caps + apply gate) matches
@@ -275,6 +335,7 @@ export function createIpcHandlers({
             deviceId,
             settings: clamped,
             waiverAccepted: caps.waiverAccepted === true,
+            ocMode,
           });
           // S2 G2 mirror: when the driver lost the waiver, the worker's
           // per-control results carry waiver-not-set. Clear the parent-side
@@ -533,9 +594,35 @@ export function createIpcHandlers({
           activeProfileId: patch.activeProfileId === undefined
             ? cur.activeProfileId
             : (typeof patch.activeProfileId === 'string' && patch.activeProfileId.length > 0 ? patch.activeProfileId : null),
+          // M3-C-E: the OC mode is never touched by the profiles patch.
+          ocMode: cur.ocMode,
         };
         await store.saveSettings(next);
         return next;
+      },
+
+      // M3-C-E: the OC mode (stock | advanced), persisted in settings.json.
+      // The mode drives which limits getCapabilities exposes (extended
+      // ranges only in advanced) and the shared pre-clamp refusal gate in
+      // every apply path.
+      'oc-mode-get': async (...args) => {
+        assertNoPayload(args, 'oc-mode-get');
+        const s = await store.loadSettings();
+        return { ocMode: s.ocMode };
+      },
+
+      'oc-mode-set': async (ocMode) => {
+        if (!OC_MODES.includes(ocMode)) {
+          throw new Error(`oc-mode-set: ocMode must be one of ${OC_MODES.join(', ')}`);
+        }
+        const cur = await store.loadSettings();
+        await store.saveSettings({ ...cur, ocMode });
+        // Invalidate the backend's per-device caps cache: getCapabilities
+        // re-derives the extended ranges from the new mode on the next call.
+        if (typeof backend.setOcMode === 'function') {
+          await backend.setOcMode(ocMode);
+        }
+        return { ocMode };
       },
 
       // Rebuild the tray menu after any profile change (M2b-B). The product

@@ -25,7 +25,7 @@ test('mW <-> W conversions', () => {
   assert.equal(mwToW(280000), 280);
 });
 
-test('extended ceilings are the verified KMD limits', () => {
+test('extended ceilings are the M3-C-D exposed limits (PL 315 / TL 115)', () => {
   assert.equal(EXTENDED_PL_MAX_W, 315);
   assert.equal(EXTENDED_PL_MIN_W, 105);
   assert.equal(EXTENDED_TL_MAX_C, 115);
@@ -219,12 +219,18 @@ test('setter refusal (0x44000004 power outside range) maps to out-of-range', asy
   assert.match(per.message, /IGCL ERROR_CORE_OVERCLOCK_POWER_OUTSIDE_RANGE/);
 });
 
-test('values are clamped to the verified ceilings (never above 315 W / 115 C)', async () => {
+test('values are clamped to the extended ceilings (never above 315 W / 115 C)', async () => {
   const { lib, state } = fakeLib();
   const old = withRead(new OldIgcl({ lib, sleep: async () => {} }), () => mwToW(state.powerMw));
   const per = await old.setPowerLimitW(999);
   assert.equal(per.ok, true);
-  assert.equal(state.powerMw, 315000, 'clamped to 315 W — the KMD ceiling');
+  // M3-C-D: the exposed ceiling is 315 W — LIVE-VERIFIED (2026-08-06 probe:
+  // 400/350/330 W refused with 0x44000004, 315 W persisted). The user's
+  // 400 W request is answered by this verified ceiling + the honest refusal
+  // for anything above it; this test pins the RUNTIME clamp at the exposed
+  // 315 (the refusal path lives in the M3-C-E oc-mode gate, which refuses
+  // above-ceiling requests BEFORE the clamp ever runs).
+  assert.equal(state.powerMw, 315000, 'clamped to 315 W — the M3-C-D live-verified ceiling');
 
   const f2 = fakeLib();
   const old2 = withRead(new OldIgcl({ lib: f2.lib, sleep: async () => {} }), () => f2.state.tempC);

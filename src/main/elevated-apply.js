@@ -304,9 +304,9 @@ export function createApplyRunner({
      * Run one apply. Returns the {result, state} envelope the renderer
      * expects, or throws APPLY_CANCELED_ERROR when the UAC prompt was
      * canceled/denied.
-     * @param {{ deviceId: number, settings: object, profileName?: string, waiverAccepted?: boolean }} req
+     * @param {{ deviceId: number, settings: object, profileName?: string, waiverAccepted?: boolean, ocMode?: 'stock'|'advanced' }} req
      */
-    async apply({ deviceId, settings, profileName, waiverAccepted }) {
+    async apply({ deviceId, settings, profileName, waiverAccepted, ocMode }) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
         const out = await inProcess.apply({ deviceId, settings });
@@ -314,6 +314,9 @@ export function createApplyRunner({
       }
       // S2: the parent-side waiver flag rides in the request so the worker
       // restores it into its own in-memory state (apply-worker.js).
+      // M3-C-E: the parent-side ocMode rides too — the worker's own backend
+      // always reports extendedRanges, so ITS refusal gate is keyed on the
+      // request's ocMode (a caps-keyed gate there would silently clamp).
       const { result } = await runWorker({
         requestId: randomUUID(),
         op: 'apply',
@@ -321,6 +324,7 @@ export function createApplyRunner({
         settings,
         profileName,
         waiverAccepted,
+        ocMode,
       });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);

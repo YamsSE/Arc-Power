@@ -1,6 +1,7 @@
-# PresentMon integration — M2b (FPS / frame-time)
+# PresentMon integration — M2b/M3-C-L (FPS / frame-time)
 
-Date: 2026-08-05. Client: `src/main/presentmon/presentmon-client.js`.
+Date: 2026-08-05 (M2b), updated 2026-08-06 (M3-C-L).
+Client: `src/main/presentmon/presentmon-client.js`.
 
 ## API version and provenance
 
@@ -12,11 +13,13 @@ The client uses the **PresentMon v2.5.1 session API** (PresentMonAPI2.dll
 - Header: `PresentMonAPI2/include/PresentMonAPI.h` from the v2.5.1 tag
   (`https://raw.githubusercontent.com/GameTechDev/PresentMon/v2.5.1/IntelPresentMon/PresentMonAPI2/PresentMonAPI.h`)
   — the v2.5.1 MSI ships the same header at `Intel\PresentMon\SDK\PresentMonAPI.h`.
-- DLL: extracted from `PresentMon-v2.5.1.msi` → `Intel\PresentMonSharedService\PresentMonAPI2.dll`,
-  vendored (gitignored) at `tools/presentmon/PresentMonAPI2.dll`. The MSI also
-  contains `PresentMonService.exe` (the service) and
-  `PresentMonAPI2Loader.dll` (a registry-based loader — NOT used; we load the
-  DLL directly via koffi).
+- Binaries (M3-C-L: now TRACKED and SHIPPED in the EXE, same-version
+  guarantee): extracted from `PresentMon-v2.5.1.msi` →
+  `Intel\PresentMonSharedService\{PresentMonAPI2.dll, PresentMonService.exe}`,
+  vendored at `tools/presentmon/`. The "shared service" implementation
+  lives IN PresentMonAPI2.dll (the service exe hosts it) — there is NO
+  `PresentMonSharedService.dll` in v2.5.1. `PresentMonAPI2Loader.dll` (a
+  registry-based loader) is NOT used — we load the DLL directly via koffi.
 
 > **API note (deviation from the M2b prompt):** the prompt's
 > `PMInitialize` / `PMRegisterForFrameEvents` / `PMGetLatestFrameEvent` /
@@ -73,29 +76,54 @@ Device IDs: fps/frame-time metrics are **universal** (`deviceId = 0`,
 `kUniversalDeviceId`); CPU/system telemetry = 65536 (`kSystemDeviceId`).
 Unavailable values are NaN in the blob — the decoder maps NaN → null.
 
-## Service requirement
+## Service requirement + lifecycle (M3-C-L verdict)
 
 `PresentMonAPI2.dll` is a client of the **PresentMonService** process (named
-pipe + shared memory). The service is installed by the MSI as "Intel
-PresentMon Service". It also runs as a plain console app (no install, no
-elevation): `PresentMonService.exe` (same folder as the DLL). If the service
-is missing/stopped, `pmOpenSession` fails (SERVICE_ERROR) and the client
-reports unavailable — never a crash.
+pipe + shared memory). M3-C-L feasibility (probe
+`tools/validate/m3c-presentmon-probe.js`, run 2026-08-06, NON-elevated
+shell): **the v2.5.1 service runs STANDALONE as a per-user child process** —
+`PresentMonService.exe --shm-name-prefix Local\pm_svc_shm` (the `Global\`
+default prefix needs elevation; the session-local prefix works both
+non-elevated and elevated) → `pmOpenSession` SUCCESS →
+`pmStartTrackingProcess` SUCCESS → `pmRegisterFrameQuery` SUCCESS →
+`pmConsumeFrames` SUCCESS (0 frames — the known environment finding below).
+The client learns the shm prefix/salt from the service over the control
+pipe (no hardcoded names on the client side). No `sc create`/`sc start`
+needed; dev mode degrades to the honest "FPS unavailable" when the spawn or
+session fails.
+
+Lifecycle: the adapter (`createPresentmonAdapter`) spawns the service lazily
+on the first fps-poll with a session-local prefix and kills it on stop()
+(app quit). The pipe/shm names are fixed (`\\.\pipe\sharedpresentmonsvcnamedpipe`,
+`Local\pm_svc_shm_*`) — one app instance per session is the assumption.
+
+## Tracking mechanism (M3-C-L)
+
+v2.5.1 has **NO `pmStartTrackingAllProcesses`** — tracking is per-pid only
+(`pmStartTrackingProcess` / per-pid `pmConsumeFrames`). The client tracks
+the **foreground-window pid**: `GetForegroundWindow` +
+`GetWindowThreadProcessId` (koffi user32, verified resolvable on this
+machine) re-resolved on every poll; a focus change stops the old pid and
+starts the new on the SAME session/query (`PresentMonClient.retarget`). The
+app's own pid is never a target (it presents nothing); when the desktop is
+focused, tracking moves back to the own pid so stale frames from a
+backgrounded game are never reported. Process-enumeration aggregation is
+explicitly out of scope (documented enhancement).
 
 ## Runtime DLL discovery
 
 `findPresentMonDll()` tries, in order: `PM_API2_DLL_PATH` env override →
-`tools/presentmon/PresentMonAPI2.dll` relative to cwd (dev) → relative to the
-app dir → `PresentMonAPI2.dll` in the app dir (packaged deployments drop it
-next to the EXE). The binary is gitignored (`tools/presentmon/`).
+the packaged `resources/app.asar.unpacked/tools/presentmon/` (asarUnpack —
+native DLLs need real files) → `tools/presentmon/` relative to cwd (dev) →
+relative to the app dir → `PresentMonAPI2.dll` in the app dir.
+`findPresentMonService()` looks for `PresentMonService.exe` NEXT TO the DLL
+(same-version guarantee). The binaries are TRACKED (un-gitignored in
+M3-C-L) and shipped in the EXE (build.files + asarUnpack), with the MIT
+license in THIRD_PARTY_NOTICES.txt.
 
-> **Packaged EXE note (M2b review F8):** `tools/presentmon/` is gitignored and
-> excluded from electron-builder's `files`, so the packaged EXE ships with no
-> DLL — `findPresentMonDll()` falls through to the app-dir candidates, finds
-> nothing, and FPS reads "unavailable" in dist builds unless
-> `PresentMonAPI2.dll` is manually dropped next to the EXE. This is graceful
-> by design: `poll()` returns null and the Monitoring page shows the
-> unavailable note, never an error — not a packaging regression.
+> **Packaged EXE note (superseded):** M2b's F8 note ("tools/presentmon/ is
+> gitignored and excluded from the build") is GONE since M3-C-L — the DLL +
+> service exe ship in the EXE and the adapter spawns the service itself.
 
 ## Live-capture checkpoint results (2026-08-05, A770, driver 32.0.101.8861)
 

@@ -177,6 +177,15 @@ async function boot() {
     store.set({ elevated: false, workerApply: false });
   }
 
+  // M3-C-E: the persisted OC mode (stock|advanced). Failure degrades to the
+  // safe default ('stock' — main keeps its own default; the toggle re-syncs).
+  try {
+    const m = await api.ocModeGet();
+    store.set({ ocMode: m?.ocMode === 'advanced' ? 'advanced' : 'stock' });
+  } catch {
+    store.set({ ocMode: 'stock' });
+  }
+
   try {
     const caps = await api.getCapabilities(deviceId);
     const state = await api.getCurrentSettings(deviceId);

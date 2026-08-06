@@ -49,3 +49,40 @@ test('S1: the non-mock isElevated binding is the imported real probe, never unde
   const block = src.slice(blockStart, blockEnd);
   assert.match(block, /\n\s*isElevated,/, 'the runner deps must include the isElevated probe');
 });
+
+// M3-C review F3 — the oc-mode boot pre-seed ORDERING. The bug: the window
+// + IPC were registered before bootBackend() seeded setOcMode, so a
+// persisted-advanced session's first getCapabilities returned stock ranges
+// (252 W / 90 C sliders until a self-heal). The seeding must run BEFORE
+// createWindow and BEFORE registerIpc.
+
+test('F3: the oc-mode pre-seed (seedOcMode) runs BEFORE createWindow and registerIpc', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const seedLine = findLineNumber(src, 'seedOcMode(backend, store)');
+  const winLine = findLineNumber(src, 'const win = createWindow()');
+  const ipcLine = findLineNumber(src, 'registerIpc({');
+  assert.ok(
+    seedLine < winLine && winLine < ipcLine,
+    `ordering: seedOcMode at main.js:${seedLine} must precede createWindow at main.js:${winLine} which must precede registerIpc at main.js:${ipcLine} — the renderer's first get-capabilities must already see the persisted mode`,
+  );
+});
+
+// M3-C review F4 — mock/ui-verify sessions must NEVER write the real
+// %APPDATA%\ArcPower\settings.json. The ProfileStore must be constructed
+// with an ISOLATED temp data dir in mock mode, and that construction must
+// happen before the window exists (so every mock IPC/store write is
+// isolated).
+
+test('F4: the ProfileStore construction uses an ISOLATED mock data dir and precedes createWindow', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const storeLine = findLineNumber(src, 'new ProfileStore({');
+  const winLine = findLineNumber(src, 'const win = createWindow()');
+  assert.ok(storeLine < winLine, `the store must be constructed before the window (store at main.js:${storeLine}, window at main.js:${winLine})`);
+  // The isolated dir is derived from the mock flag.
+  const segment = src.slice(src.indexOf('new ProfileStore({') - 200, src.indexOf('new ProfileStore({') + 120);
+  assert.match(segment, /arcpower-mock/, 'the mock data dir must be an isolated temp dir');
+  assert.match(segment, /dir:\s*mockDataDir/, 'the store must receive the isolated dir in mock mode');
+  // The variant-to-variant session seed must still exist AFTER the store.
+  const seedIdx = src.indexOf("oc-mode session seed");
+  assert.ok(seedIdx > src.indexOf('new ProfileStore({'), 'the mock session seed must still run after the store construction');
+});

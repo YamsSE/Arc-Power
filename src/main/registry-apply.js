@@ -128,9 +128,15 @@ export function buildRegApplyScript(entry, action, outPath) {
     const args = buildRegArgs(step).map((a) => `'${psSingleQuote(a)}'`).join(' ');
     lines.push(`& $reg ${args} | Out-Null`);
     lines.push(`$res += ,@{ step = ${i}; ok = ($LASTEXITCODE -eq 0) }`);
-    lines.push(`if ($LASTEXITCODE -ne 0) { ConvertTo-Json -Compress -InputObject $res | Out-File -Encoding utf8 $out; exit 1 }`);
+    lines.push(`if ($LASTEXITCODE -ne 0) { ConvertTo-Json -Compress -InputObject $res | Out-File -Encoding ascii $out; exit 1 }`);
   }
-  lines.push(`ConvertTo-Json -Compress -InputObject $res | Out-File -Encoding utf8 $out`);
+  // M3-C-A (BOM fix): the result file is written with `-Encoding ascii`, NOT
+  // utf8 — PowerShell 5.1's `-Encoding utf8` emits a UTF-8 BOM (EF BB BF,
+  // reproduced live) whose leading \uFEFF makes the parent's JSON.parse
+  // reject the whole file, so every real tweak apply was reported as
+  // failed/never-run while the reg writes had actually landed. The content
+  // is pure ASCII (step indices + booleans), so ascii never BOMs.
+  lines.push(`ConvertTo-Json -Compress -InputObject $res | Out-File -Encoding ascii $out`);
   lines.push('exit 0');
   return lines.join('; ');
 }
@@ -145,7 +151,12 @@ export function buildRegApplyScript(entry, action, outPath) {
 export function parseApplyOutcome(raw) {
   let parsed;
   try {
-    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    // M3-C-A: defensively strip a leading UTF-8 BOM (\uFEFF) before parsing —
+    // guards any future result-file writer that BOMs (PS 5.1 `-Encoding
+    // utf8` was one; the current writer uses ascii, but the parse must not
+    // depend on the writer staying perfect).
+    const text = typeof raw === 'string' && raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+    parsed = typeof text === 'string' ? JSON.parse(text) : text;
   } catch {
     return null;
   }
@@ -227,9 +238,15 @@ async function unlinkIfExists(filePath) {
 }
 
 /**
- * Real adapter — injected into the IPC handlers in the product path. Every
- * apply spawns the elevated PowerShell (ONE UAC per action); the reg
- * commands themselves run ONLY elevated.
+ * Real adapter — injected into the IPC handlers in the product path.
+ *
+ * M3-C-B (elevation-aware): when the current process runs as administrator
+ * (the packaged EXE always does — portable.requestExecutionLevel: admin),
+ * reg.exe is executed DIRECTLY (no PowerShell, no RunAs, no result file):
+ * each step runs through the injected execFile with per-step honest
+ * reporting, stopping at the first failure exactly like the elevated script
+ * does. The non-elevated fallback (dev mode) keeps the PowerShell RunAs
+ * chain — one UAC prompt per action.
  * @param {import('./registry-catalog.js').RegistryEntry[]} [catalog]
  * @param {{
  *   execFile?: typeof execFile,
@@ -238,6 +255,7 @@ async function unlinkIfExists(filePath) {
  *   log?: (s: string) => void,
  *   timeoutMs?: number,   // launcher bound (default REG_APPLY_TIMEOUT_MS)
  *   graceMs?: number,     // result-file poll window after a timeout (default REG_APPLY_GRACE_MS)
+ *   isElevated?: () => boolean,  // M3-C-B: in-process elevation probe (default false = dev fallback)
  * }} [deps]
  */
 export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
@@ -247,9 +265,38 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
   const log = deps.log ?? (() => {});
   const timeoutMs = deps.timeoutMs ?? REG_APPLY_TIMEOUT_MS;
   const graceMs = deps.graceMs ?? REG_APPLY_GRACE_MS;
+  const isElevated = deps.isElevated ?? (() => false);
+
+  /**
+   * M3-C-B direct path: the process is ALREADY elevated — run the reg
+   * commands directly with the injected execFile. Per-step honest reporting
+   * (same assembleResult envelope as the script path), stop at the first
+   * failed step, NO result file, NO PowerShell, NO RunAs (the UAC-decline
+   * wording is unreachable here by construction — the process holds the
+   * privilege already).
+   */
+  async function applyDirect(entry, action, steps) {
+    log(`[registry-apply] ${entry.id} ${action}: ${steps.length} step(s) via direct reg.exe (elevated process)`);
+    const executed = [];
+    for (const [i, step] of steps.entries()) {
+      try {
+        await exec('reg', buildRegArgs(step), { windowsHide: true, timeout: timeoutMs });
+        executed.push({ step: i, ok: true });
+      } catch (err) {
+        log(`[registry-apply] ${entry.id} ${action}: step ${i + 1} failed (${err?.code ?? err?.message ?? 'reg.exe error'})`);
+        executed.push({ step: i, ok: false });
+        break;
+      }
+    }
+    return assembleResult(entry, action, steps, executed, false);
+  }
+
   return {
     /**
-     * Apply one catalog action elevated. Never throws for expected
+     * Apply one catalog action. When the current process is elevated the
+     * action runs DIRECTLY (reg.exe via the injected execFile, per-step
+     * honest reporting); otherwise the PowerShell RunAs chain elevates a
+     * per-apply PowerShell (one UAC prompt). Never throws for expected
      * outcomes: UAC decline, partial failure and full success all return
      * the {ok, canceled, message, perStep} envelope. Throws only for
      * validation errors (unknown entry / read-only entry / bad action).
@@ -266,6 +313,7 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
         throw new Error(`registry-apply: '${entryId}' is read-only (no ${action} commands)`);
       }
       const steps = entry.apply.actions[action];
+      if (isElevated()) return applyDirect(entry, action, steps);
       const outPath = path.join(tmpdir(), `arcpower-reg-${randomUUID()}.json`);
       const script = buildRegApplyScript(entry, action, outPath);
       log(`[registry-apply] ${entryId} ${action}: ${steps.length} step(s) via elevated PowerShell`);

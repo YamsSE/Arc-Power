@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runApplyWorker, findStaleSiblingToken } from '../src/main/apply-worker.js';
 import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
+import { EXTENDED_UNAVAILABLE_MSG } from '../src/main/apply-routing.js';
 
 function testDir(name) {
   return path.join(os.tmpdir(), `arcpower-worker-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -52,8 +53,11 @@ test('worker: extended values route through the bundled-2023-runtime mock in the
   try {
     const reqPath = path.join(dir, 'req.json');
     const outPath = path.join(dir, 'out.json');
+    // M3-C-E: the request carries the parent's ocMode — the worker's own
+    // backend always reports extendedRanges, so ITS gate keys on the
+    // request's mode (a caps-keyed gate would silently clamp).
     await fs.promises.writeFile(reqPath, JSON.stringify({
-      requestId: 'req-2', op: 'apply', deviceId: 0, settings: { powerLimitW: 300 },
+      requestId: 'req-2', op: 'apply', deviceId: 0, ocMode: 'advanced', settings: { powerLimitW: 300 },
     }));
     const backend = new MockBackend({ extendedRanges: true });
     await backend.restoreWaiverState(0, true);
@@ -62,6 +66,117 @@ test('worker: extended values route through the bundled-2023-runtime mock in the
     const result = await readJson(outPath);
     assert.equal(result.ok, true);
     assert.equal(result.state.powerLimitW, 300, 'the worker reads back the persisted value');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M3-C-E: the worker REFUSES extended values in stock mode (request ocMode) — never clamps', async () => {
+  const dir = testDir('ocmode-refuse');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const reqPath = path.join(dir, 'req.json');
+    const outPath = path.join(dir, 'out.json');
+    // Stock mode + 300 W: the worker's backend would accept it (mock caps
+    // report extended ranges), but the request-level gate refuses.
+    await fs.promises.writeFile(reqPath, JSON.stringify({
+      requestId: 'req-5', op: 'apply', deviceId: 0, ocMode: 'stock', settings: { powerLimitW: 300 },
+    }));
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    const code = await runApplyWorker({ reqPath, outPath, backend, oldIgcl: createMockOldIgcl(backend), log: () => {} });
+    assert.equal(code, 0, 'a refusal is still a written result');
+    const result = await readJson(outPath);
+    assert.equal(result.ok, false);
+    assert.equal(result.ocModeRefused, true);
+    assert.equal(result.perControl.powerLimitW.ok, false);
+    assert.match(result.perControl.powerLimitW.message, /Advanced OC Mode/);
+    // M3-C review F2: the refusal carries the FRESH device state, never
+    // null — the parent renderer stores the envelope's state into its store
+    // (a null would null the store's device state and crash the dirty
+    // helpers).
+    assert.ok(result.state !== null, 'the refusal envelope must not null the state');
+    assert.equal(result.state.powerLimitW, 210, 'the refusal read-back is the untouched device state');
+    assert.equal(backend._state.powerLimitW, 210, 'the refusal must never touch the device state');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M3-C-D: the worker REFUSES above-ceiling values in advanced mode — never clamps', async () => {
+  const dir = testDir('ceiling-refuse');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const reqPath = path.join(dir, 'req.json');
+    const outPath = path.join(dir, 'out.json');
+    await fs.promises.writeFile(reqPath, JSON.stringify({
+      requestId: 'req-6', op: 'apply', deviceId: 0, ocMode: 'advanced', settings: { powerLimitW: 401 },
+    }));
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    const code = await runApplyWorker({ reqPath, outPath, backend, oldIgcl: createMockOldIgcl(backend), log: () => {} });
+    assert.equal(code, 0);
+    const result = await readJson(outPath);
+    assert.equal(result.ok, false);
+    assert.equal(result.perControl.powerLimitW.ok, false);
+    assert.equal(result.perControl.powerLimitW.errorCode, 'out-of-range');
+    assert.ok(!/clamp/.test(result.perControl.powerLimitW.message), 'the refusal message never claims a clamp');
+    assert.equal(backend._state.powerLimitW, 210, 'the above-ceiling refusal never clamps into the device state');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('F1: the worker REFUSES extended values in advanced mode when its caps report NO extended ranges — never a silent clamp', async () => {
+  const dir = testDir('extended-unavailable');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const reqPath = path.join(dir, 'req.json');
+    const outPath = path.join(dir, 'out.json');
+    // Advanced mode + a NOT-capable 2023 runtime: the worker's caps derive
+    // from the SAME isCapable probe as the parent's, so they report standard
+    // ranges — the capability refusal must fire BEFORE the clamp.
+    await fs.promises.writeFile(reqPath, JSON.stringify({
+      requestId: 'req-f1', op: 'apply', deviceId: 0, ocMode: 'advanced', settings: { powerLimitW: 300, tempLimitC: 100 },
+    }));
+    const backend = new MockBackend({ extendedRanges: false }); // not-capable degradation
+    await backend.restoreWaiverState(0, true);
+    const code = await runApplyWorker({ reqPath, outPath, backend, oldIgcl: createMockOldIgcl(backend), log: () => {} });
+    assert.equal(code, 0, 'a refusal is still a written result');
+    const result = await readJson(outPath);
+    assert.equal(result.ok, false, 'a not-capable runtime must never report ok:true');
+    assert.equal(result.extendedUnavailable, true);
+    assert.equal(result.perControl.powerLimitW.ok, false);
+    assert.equal(result.perControl.tempLimitC.ok, false);
+    assert.equal(result.perControl.powerLimitW.errorCode, 'unsupported');
+    assert.equal(result.perControl.powerLimitW.message, EXTENDED_UNAVAILABLE_MSG);
+    assert.equal(result.perControl.tempLimitC.message, EXTENDED_UNAVAILABLE_MSG);
+    // The refusal never touches the device and carries the fresh state.
+    assert.ok(result.state !== null, 'the refusal envelope must not null the state');
+    assert.equal(result.state.powerLimitW, 210, 'the refusal read-back is the untouched device state');
+    assert.equal(backend._state.powerLimitW, 210, 'the clamp never ran');
+    assert.equal(backend._state.tempLimitC, 90, 'the clamp never ran');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('F1: the worker still applies 300 W in advanced mode when its caps DO report extended ranges', async () => {
+  const dir = testDir('extended-capable');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const reqPath = path.join(dir, 'req.json');
+    const outPath = path.join(dir, 'out.json');
+    await fs.promises.writeFile(reqPath, JSON.stringify({
+      requestId: 'req-f1b', op: 'apply', deviceId: 0, ocMode: 'advanced', settings: { powerLimitW: 300 },
+    }));
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    const code = await runApplyWorker({ reqPath, outPath, backend, oldIgcl: createMockOldIgcl(backend), log: () => {} });
+    assert.equal(code, 0);
+    const result = await readJson(outPath);
+    assert.equal(result.ok, true);
+    assert.equal(result.state.powerLimitW, 300, '300 W lands unclamped when the runtime is capable');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

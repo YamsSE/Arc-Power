@@ -35,16 +35,32 @@ test('getCapabilities: A770 matrix (same ranges/units as the real card)', async 
   assert.equal(caps.waiverAccepted, false);
 });
 
-test('getCapabilities: M2D — the DEFAULT mock is the a770 featureset (read-only fan + extended ranges)', async () => {
+test('getCapabilities: M2D — the DEFAULT mock is the a770 featureset (read-only fan + extended ranges, advanced mode)', async () => {
   const b = new MockBackend();
   const caps = await b.getCapabilities(0);
   // the featureset base drives the fan (real A770: read-only) and the
   // extended ranges (the bundled 2023 runtime is verified on this machine).
+  // M3-C-E: the mock default OC mode is advanced (the extended-flow pins).
   assert.equal(caps.fan.canControl, false);
   assert.deepEqual(caps.fan.modes, ['fixed']);
   assert.equal(caps.extendedRanges, true);
-  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.powerLimitW.max, 315); // M3-C-D: live-verified ceiling
   assert.equal(caps.ranges.tempLimitC.max, 115);
+});
+
+test('M3-C-E: mock stock mode exposes only the standard ranges (no flag)', async () => {
+  const b = new MockBackend({ ocMode: 'stock' });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined);
+  assert.equal(caps.ranges.powerLimitW.max, 252);
+  assert.equal(caps.ranges.tempLimitC.max, 90);
+  // setOcMode flips live, exactly like the real backend's cache invalidation.
+  b.setOcMode('advanced');
+  const adv = await b.getCapabilities(0);
+  assert.equal(adv.extendedRanges, true);
+  assert.equal(adv.ranges.powerLimitW.max, 315);
+  b.setOcMode('stock');
+  assert.equal((await b.getCapabilities(0)).extendedRanges, undefined);
 });
 
 test('getCapabilities: fanCanControl:false reproduces the A770 read-only fan fixture', async () => {
@@ -95,7 +111,8 @@ test('applySettings: clamps to fixture ranges', async () => {
   const res = await b.applySettings(0, { powerLimitW: 999, tempLimitC: 10 });
   assert.equal(res.ok, true);
   const s = await b.getCurrentSettings(0);
-  // M2D: the a770 featureset carries the extended ranges natively (max 315).
+  // M2D: the a770 featureset carries the extended ranges natively (max 315
+  // per M3-C-D — the live-verified KMD ceiling) and the mock default mode is advanced.
   assert.equal(s.powerLimitW, 315);
   assert.equal(s.tempLimitC, 60);
 });
@@ -321,11 +338,11 @@ test('close: unsubscribes subscribers', async () => {
 import { createMockOldIgcl } from '../src/main/backend/mock-backend.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../src/main/apply-routing.js';
 
-test('M2C-C: extendedRanges:true exposes PL max 315 / TL max 115 + the flag', async () => {
+test('M2C-C: extendedRanges:true exposes PL max 315 / TL max 115 + the flag (mock default advanced)', async () => {
   const b = new MockBackend({ extendedRanges: true });
   const caps = await b.getCapabilities(0);
   assert.equal(caps.extendedRanges, true);
-  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.powerLimitW.max, 315); // M3-C-D: live-verified ceiling
   assert.equal(caps.ranges.tempLimitC.max, 115);
   assert.equal(caps.ranges.powerLimitW.default, 210, 'default unchanged');
   assert.equal(b.extendedCapable, true);

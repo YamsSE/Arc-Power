@@ -13,9 +13,8 @@ import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
-import { showExtendedRangeConfirm } from '../components/confirm-dialog.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { isNoopApply, validateSettingsPayload, profileApplyOutcome, requiresExtendedRangeConfirm } from '../pure/settings.ts';
+import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
 import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings, StartupState } from '../types.ts';
 
@@ -364,31 +363,35 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onLoad = async (p: Profile, done: () => void): Promise<void> => {
     const deviceId = s.deviceId;
     if (deviceId === null) return;
-    const decision = await ensureWaiver(deviceId, caps.waiverAccepted, caps.deviceName || 'this GPU');
+    // M3-C review F4: the waiver gate reads the LIVE store's caps — an
+    // in-session acceptance must not re-prompt (the mount-time caps lag
+    // until a re-render).
+    const liveCaps = ctx.store.get().caps;
+    const decision = await ensureWaiver(deviceId, liveCaps?.waiverAccepted === true, caps.deviceName || 'this GPU');
     if (decision === 'cancelled') {
       done();
       toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
       return;
     }
-    // M2C-C: extended-range values need the honest confirm dialog.
-    // M2D: unit-aware — percent featuresets never count as extended.
-    if (requiresExtendedRangeConfirm(p.settings, caps)) {
-      const confirmed = await showExtendedRangeConfirm(caps.deviceName || 'this GPU');
-      if (!confirmed) {
-        done();
-        toast('info', 'Load cancelled', 'Extended power/temperature limits were not confirmed.');
-        return;
-      }
-    }
+    // M3-C-D (double-dialog decision): NO per-apply extended-range confirm
+    // on the Profiles page — in Advanced mode the mode-enable confirm
+    // already warned; in Stock mode the shared oc-mode gate refuses
+    // extended values with the per-control mode-message toasts below
+    // (never a dead-end confirm).
     // M2C-C: a non-elevated product app delegates to the elevated worker —
-    // explain before the UAC prompt.
-    if (ctx.store.get().workerApply) {
+    // explain before the UAC prompt. M3-C-B: gated on !elevated — the
+    // always-elevated packaged EXE applies in-process, never a prompt.
+    if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }
     try {
       const before = ctx.store.get().state as DeviceState;
       const { result, state: fresh } = await api.applySettings(deviceId, p.settings);
-      ctx.store.set({ state: fresh });
+      // M3-C review F2: only store a NON-NULL fresh state — a refusal
+      // envelope's null state must never null out the store's device state
+      // (that renders the OC page 'Loading device capabilities…' forever
+      // and throws in the dirty helpers).
+      if (fresh) ctx.store.set({ state: fresh });
       // M3-A: record the outcome for the dashboard "OC working" health row.
       {
         const failed = Object.entries(result.perControl)

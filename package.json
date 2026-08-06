@@ -24,18 +24,21 @@
     "icon": "build/icon.ico",
     "files": [
       "src/**/*",
+      "tools/presentmon/**",
       "THIRD_PARTY_NOTICES.txt",
       "package.json"
     ],
     "asarUnpack": [
       "node_modules/koffi/**",
-      "src/main/backend/igcl2023/**"
+      "src/main/backend/igcl2023/**",
+      "tools/presentmon/**"
     ],
     "win": {
       "target": "portable"
     },
     "portable": {
-      "artifactName": "Arc-Power-${version}.exe"
+      "artifactName": "Arc-Power-${version}.exe",
+      "requestExecutionLevel": "admin"
     },
     "directories": {
       "output": "dist"

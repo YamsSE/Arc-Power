@@ -13,10 +13,12 @@ import {
   isControlDirtyVsApplied,
   computeDirtyVsApplied,
   isScalarDirtyVsApplied,
+  ocStateChanged,
+  ocCapsChanged,
   TEMP_LIMIT_MAX_C,
 } from '../src/renderer/pure/settings.ts';
 import { computePresets } from '../src/renderer/pure/presets.ts';
-import type { DeviceState, RangeInfo, Settings } from '../src/renderer/types.ts';
+import type { Capabilities, DeviceState, RangeInfo, Settings } from '../src/renderer/types.ts';
 
 test('validateSettingsPayload: accepts a full legal payload', () => {
   const payload: unknown = {
@@ -218,4 +220,67 @@ test('B5: computeDirtyVsApplied is any-dirty across the payload', () => {
   const applied = { powerLimitW: 220 };
   assert.equal(computeDirtyVsApplied({ powerLimitW: 220, gpuFreqOffsetMhz: 0 }, laggingState, applied), false);
   assert.equal(computeDirtyVsApplied({ powerLimitW: 220, gpuFreqOffsetMhz: 50 }, laggingState, applied), true);
+});
+
+// M3-C review F2 — a null device state (the store was never populated / a
+// refusal landed no state) must NEVER throw: the dirty helpers treat it as
+// "nothing applied yet" (missing controls not dirty). Before the fix the
+// renderer stored the refusal envelope's state:null unconditionally, and
+// updateFloating/computeDirtyVsApplied crashed on the null state.
+test('F2: the dirty helpers are NULL-SAFE — a null state never throws and is never dirty', () => {
+  assert.equal(computeDirtyVsApplied({ powerLimitW: 220 }, null, {}), false, 'no applied reference, null state -> not dirty');
+  assert.equal(computeDirtyVsApplied({ powerLimitW: 220, gpuFreqOffsetMhz: 50 }, null, {}), false);
+  assert.equal(isControlDirty('powerLimitW', { powerLimitW: 220 }, null), false);
+  assert.equal(isControlDirty('fanCurve', { fanCurve: [{ t: 20, speedPct: 20 }] }, null), false);
+  assert.equal(isNoopApply('powerLimitW', { powerLimitW: 220 }, null), true, 'null state -> no-op (nothing to compare)');
+  assert.equal(isScalarDirtyVsApplied('powerLimitW', 220, null, {}), false);
+  assert.equal(isScalarDirtyVsApplied('powerLimitW', 230, null, {}), false);
+  // The APPLIED reference still decides when it covers the control.
+  assert.equal(isScalarDirtyVsApplied('powerLimitW', 220, null, { powerLimitW: 220 }), false);
+  assert.equal(isScalarDirtyVsApplied('powerLimitW', 230, null, { powerLimitW: 220 }), true);
+  assert.equal(isControlDirtyVsApplied('powerLimitW', { powerLimitW: 230 }, null, { powerLimitW: 220 }), true);
+  assert.equal(isControlDirtyVsApplied('powerLimitW', { powerLimitW: 220 }, null, { powerLimitW: 220 }), false);
+});
+
+// ---------------------------------------------------------------------------
+// M3-C-F — the OC-page refresh signatures (pure)
+// ---------------------------------------------------------------------------
+
+const baseState: DeviceState = {
+  powerLimitW: 210, gpuVoltOffsetV: 0, gpuFreqOffsetMhz: 0, tempLimitC: 90,
+  vramFreqOffsetGts: null, vramVoltOffsetV: null,
+  gpuLock: { voltageV: 0, freqMhz: 0 }, vfCurve: null,
+  fanMode: 'curve', fanCurve: [{ t: 20, speedPct: 20 }], fixedFanPct: null,
+};
+
+test('M3-C-F: ocStateChanged — the same reference / identical content does NOT refresh', () => {
+  assert.equal(ocStateChanged(null, null), false);
+  assert.equal(ocStateChanged(baseState, baseState), false);
+  assert.equal(ocStateChanged(baseState, { ...baseState }), false, 'deep-equal copies are not a change');
+  assert.equal(ocStateChanged({ ...baseState }, { ...baseState }), false);
+});
+
+test('M3-C-F: ocStateChanged — a scalar / nested / null-vs-value change DOES refresh', () => {
+  assert.equal(ocStateChanged(null, baseState), true);
+  assert.equal(ocStateChanged(baseState, null), true);
+  assert.equal(ocStateChanged(baseState, { ...baseState, powerLimitW: 220 }), true);
+  assert.equal(ocStateChanged(baseState, { ...baseState, fanCurve: [{ t: 30, speedPct: 40 }] }), true, 'nested content');
+  assert.equal(ocStateChanged(baseState, { ...baseState, gpuLock: { voltageV: 0.9, freqMhz: 2100 } }), true);
+  assert.equal(ocStateChanged(baseState, { ...baseState, vramFreqOffsetGts: 2 }), true, 'null -> value');
+});
+
+test('M3-C-F: ocCapsChanged — content comparison, the post-apply waiver re-set is NOT a surface change', () => {
+  const caps: Capabilities = {
+    oemName: 'o', deviceName: 'd', waiverAccepted: false, controls: { powerLimit: true },
+    ranges: { powerLimitW: { min: 105, max: 252, step: 1, default: 210, units: 'W' } },
+    fan: { canControl: false, modes: [], maxRpm: -1, maxCurvePoints: 0 },
+  };
+  assert.equal(ocCapsChanged(null, null), false);
+  assert.equal(ocCapsChanged(null, caps), true);
+  assert.equal(ocCapsChanged(caps, caps), false);
+  assert.equal(ocCapsChanged(caps, { ...caps }), false, 'identical content, new reference');
+  assert.equal(ocCapsChanged(caps, { ...caps, waiverAccepted: true }), false, 'the post-apply waiver re-set must NOT re-render');
+  assert.equal(ocCapsChanged(caps, { ...caps, extendedRanges: true }), true);
+  const extended = { ...caps, ranges: { ...caps.ranges, powerLimitW: { ...caps.ranges.powerLimitW, max: 315 } }, extendedRanges: true };
+  assert.equal(ocCapsChanged(caps, extended), true, 'a mode toggle changed the ranges');
 });

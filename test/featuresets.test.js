@@ -46,7 +46,7 @@ test('M2D: every distribution file parses + validates (id/name/ranges/units)', (
   const a770 = loadFeatureset('a770');
   assert.match(a770.tag, /verified/);
   assert.equal(a770.extendedRanges, true);
-  assert.equal(a770.extended.plMax, 315);
+  assert.equal(a770.extended.plMax, 315); // M3-C-D: live-verified KMD ceiling (2026-08-06 probe)
   assert.equal(a770.extended.tlMax, 115);
   assert.equal(a770.fanCanControl, false);
   assert.equal(a770.numXeCores, 32);
@@ -87,7 +87,8 @@ test('M2D: default mock = a770 featureset (verified matrix)', async () => {
   const caps = await b.getCapabilities(0);
   assert.equal(b.featuresetId, 'a770');
   assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: 0, max: 300, step: 1, default: 0, units: 'MHz' });
-  // the a770 featureset carries the extended maxes natively (M2C-C verified)
+  // the a770 featureset carries the extended maxes natively (M2C-C verified;
+  // PL max = the live-verified 315 W KMD ceiling, M3-C-D)
   assert.deepEqual(caps.ranges.powerLimitW, { min: 105, max: 315, step: 1, default: 210, units: 'W' });
   assert.deepEqual(caps.ranges.tempLimitC, { min: 60, max: 115, step: 1, default: 90, units: 'C' });
   assert.ok(Math.abs(caps.ranges.gpuVoltOffsetV.max - 0.234) < 1e-9);

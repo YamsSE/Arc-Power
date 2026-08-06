@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sanitizeSettings, clampSettings } from './ipc-core.js';
-import { executeApply } from './apply-routing.js';
+import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl } from './apply-routing.js';
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -144,7 +144,44 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       return 1;
     }
     const settings = sanitizeSettings(req.settings);
+    // M3-C-E: the OC-mode gate runs BEFORE the clamp. The request carries
+    // the parent's ocMode — the worker's own caps always report the mode's
+    // extended ranges (its backend is pinned to advanced by main.js), so a
+    // caps-keyed MODE gate here would silently clamp extended values in
+    // stock mode: exactly the forbidden behavior. The gate's refusal reports
+    // the mode message only and never touches the GPU (no defaults restore
+    // downstream — the parent's applyProfile path gates BEFORE delegating,
+    // and a direct worker request refuses here the same way).
+    const refusal = ocModeRefusal(req.ocMode, settings);
+    if (refusal) {
+      log(`[apply-worker] oc-mode refusal: ${refusal.message} (${refusal.controls.join(', ')})`);
+      // M3-C review F2: the refusal carries the FRESH device state, never
+      // null — the parent renderer stores the envelope's state into its
+      // store (a null would null the store's device state and crash the
+      // dirty helpers). The refusal never touched the GPU, so the read-back
+      // is the state before the refused apply. Degraded to null only if the
+      // read itself fails.
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      await finish({ ok: false, perControl: refusalPerControl(refusal), state, ocModeRefused: true });
+      return 0;
+    }
     const caps = await backend.getCapabilities(deviceId);
+    // M3-C step-5 F1: advanced mode + a NOT-capable bundled 2023 runtime on
+    // THIS driver -> refuse extended values BEFORE the clamp, never a silent
+    // 252 W / 90 C cap reported as ok:true. Safe here: the worker's backend
+    // derives caps from the SAME isCapable probe as the parent, so keying on
+    // caps.extendedRanges is a capability refusal — not the caps-keyed mode
+    // gate the plan forbids. The refusal never touches the GPU and carries
+    // the fresh state.
+    const unavailable = extendedUnavailableRefusal(settings, caps);
+    if (unavailable) {
+      log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) — nothing applied`);
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      await finish({ ok: false, perControl: extendedUnavailablePerControl(unavailable.controls), state, extendedUnavailable: true });
+      return 0;
+    }
     const clamped = clampSettings(settings, caps.ranges);
     const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log });
     await finish({ ok: out.result.ok, perControl: out.result.perControl, state: out.state });

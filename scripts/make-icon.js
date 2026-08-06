@@ -1,19 +1,20 @@
-// Arc Power — M2C-B B6 blue "AP" icon generator (PURE JS, no deps).
+// Arc Power — M3-C-C "new minimal mark" icon generator (PURE JS, no deps).
 //
 // Renders the brand icon procedurally and writes:
 //   build/icon.ico           — multi-size ICO for electron-builder
 //   build/icon.png           — 256 px reference PNG (build resources)
-//   src/assets/icon.png      — 256 px runtime icon (BrowserWindow + sidebar)
+//   src/assets/icon.png      — 256 px runtime icon (BrowserWindow)
 //   src/assets/tray-icon.png — 32 px runtime tray icon
 //   src/assets/favicon.png   — 16 px page favicon
 //
-// Design (for the user to approve visually later — the machine is asleep):
-//   - blue rounded square (corner radius 22%) with a vertical gradient
-//     #40b2ff (top) -> #1466b8 (bottom) — the app's accent-blue family;
-//   - a white "AP" monogram, glyph-dominant so it reads at 16 px:
-//     the 'A' is a clean triangle with a crossbar, the 'P' a stem + bowl;
-//   - a thin white arc (the fan-curve / "Arc" motif) sweeping under the
-//     letters, echoing the fan page's curve shape.
+// Design (user: "new minimal mark", M3-C-C):
+//   - a DARK rounded square (corner radius 24%) with a subtle vertical
+//     gradient #1a2132 (top) -> #0f131f (bottom) — the app's dark surface
+//     family, so the mark reads as a dark tile on any background;
+//   - a single BOLD blue "A" in #4cc2ff — EXACTLY the sidebar accent
+//     (styles.css --accent), the one brand color the app already uses;
+//     a filled triangle with a cut counter + a crossbar, so it stays a
+//     crisp "A" from 256 px down to 16 px (the favicon).
 //
 // The PNG encoder is hand-rolled (zlib for IDAT + manual chunks + CRC32)
 // and the ICO is a PNG-in-ICO container — no sharp/canvas/npm deps.
@@ -30,17 +31,18 @@ const ASSETS_DIR = path.join(ROOT, 'src', 'assets');
 
 const SIZES = [16, 32, 64, 128, 256];
 
-// Palette (RGB).
-const COLOR_TOP = [64, 178, 255];     // #40b2ff
-const COLOR_BOTTOM = [20, 102, 184];  // #1466b8
-const WHITE = [255, 255, 255];
+// Palette (RGB). ACCENT is styles.css --accent (#4cc2ff) verbatim — the
+// sidebar accent the mark must match.
+const ACCENT = [76, 194, 255];        // #4cc2ff
+const BG_TOP = [26, 33, 50];          // #1a2132
+const BG_BOTTOM = [15, 19, 31];       // #0f131f
 
 // ---------------------------------------------------------------------------
 // Shape tests (normalized 0..1 coordinates, y grows DOWN — SVG convention)
 // ---------------------------------------------------------------------------
 
 function roundedSquareAlpha(x, y) {
-  const r = 0.22;
+  const r = 0.24;
   const dx = Math.abs(x - 0.5);
   const dy = Math.abs(y - 0.5);
   if (dx > 0.5 || dy > 0.5) return 0;
@@ -49,56 +51,50 @@ function roundedSquareAlpha(x, y) {
   return cx * cx + cy * cy <= r * r ? 1 : 0;
 }
 
-function distToSegment(px, py, x1, y1, x2, y2) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
-  const qx = x1 + t * dx - px;
-  const qy = y1 + t * dy - py;
-  return Math.sqrt(qx * qx + qy * qy);
+/** Point-in-triangle (half-plane test, CCW vertices). */
+function inTriangle(px, py, a, b, c) {
+  const sign = (x1, y1, x2, y2, x3, y3) => (x1 - x3) * (y2 - y3) - (x2 - x3) * (y1 - y3);
+  const d1 = sign(px, py, a[0], a[1], b[0], b[1]);
+  const d2 = sign(px, py, b[0], b[1], c[0], c[1]);
+  const d3 = sign(px, py, c[0], c[1], a[0], a[1]);
+  const neg = d1 < 0 || d2 < 0 || d3 < 0;
+  const pos = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(neg && pos);
 }
 
-// 'A': triangle with a crossbar (apex (0.29, 0.16), base corners on y 0.72).
-function inA(x, y, t) {
-  if (distToSegment(x, y, 0.29, 0.16, 0.12, 0.72) <= t) return true;
-  if (distToSegment(x, y, 0.29, 0.16, 0.46, 0.72) <= t) return true;
-  if (x >= 0.185 && x <= 0.395 && y >= 0.44 - t && y <= 0.44 + t) return true;
-  return false;
+// The "A": apex (0.5, 0.16), base corners (0.22, 0.80) / (0.78, 0.80). The
+// counter (the hole) is the same triangle scaled toward its centroid by
+// 0.55, so the strokes stay proportional at every size. The crossbar is a
+// band between the legs at y 0.48.
+const TRI = [[0.5, 0.16], [0.22, 0.80], [0.78, 0.80]];
+const CENTROID = [(0.5 + 0.22 + 0.78) / 3, (0.16 + 0.80 + 0.80) / 3];
+const COUNTER_SCALE = 0.55;
+const INNER = TRI.map(([x, y]) => [
+  CENTROID[0] + (x - CENTROID[0]) * COUNTER_SCALE,
+  CENTROID[1] + (y - CENTROID[1]) * COUNTER_SCALE,
+]);
+
+// Crossbar: the leg x-positions at y 0.48 (0.36 / 0.64), band 0.455..0.515.
+function inCrossbar(x, y) {
+  return x >= 0.36 && x <= 0.64 && y >= 0.455 && y <= 0.515;
 }
 
-// 'P': vertical stem (x 0.56..0.645) + a bowl (half circle opening right).
-function inP(x, y, t) {
-  if (x >= 0.56 && x <= 0.56 + 2.2 * t && y >= 0.16 && y <= 0.72) return true;
-  if (x < 0.645) return false;
-  const dx = x - 0.71;
-  const dy = y - 0.365;
-  if (dx * dx + dy * dy > 0.15 * 0.15) return false;
-  if (y < 0.20 || y > 0.44) return false;
+function inA(x, y) {
+  if (!inTriangle(x, y, TRI[0], TRI[1], TRI[2])) return false;
+  if (inTriangle(x, y, INNER[0], INNER[1], INNER[2])) return false;
   return true;
 }
 
-// The fan-curve arc under the letters (center (0.5, 1.02), r 0.28, sweep
-// 215°..325° in y-down coordinates — a shallow ∪ under the monogram).
-function inArc(x, y, t) {
-  const dx = x - 0.5;
-  const dy = y - 1.02;
-  const d = Math.sqrt(dx * dx + dy * dy);
-  if (Math.abs(d - 0.28) > t) return false;
-  const ang = Math.atan2(dy, dx); // y-down: 180..360 = lower half
-  const deg = ((ang * 180) / Math.PI + 360) % 360;
-  return deg >= 215 && deg <= 325;
-}
-
-function sample(x, y, glyphT) {
-  // Color: glyph white on the blue gradient; everything else blue gradient.
+function sample(x, y) {
+  // Dark rounded square background (subtle vertical gradient); the bold
+  // accent-blue "A" on top.
   const base = [
-    COLOR_TOP[0] + (COLOR_BOTTOM[0] - COLOR_TOP[0]) * y,
-    COLOR_TOP[1] + (COLOR_BOTTOM[1] - COLOR_TOP[1]) * y,
-    COLOR_TOP[2] + (COLOR_BOTTOM[2] - COLOR_TOP[2]) * y,
+    BG_TOP[0] + (BG_BOTTOM[0] - BG_TOP[0]) * y,
+    BG_TOP[1] + (BG_BOTTOM[1] - BG_TOP[1]) * y,
+    BG_TOP[2] + (BG_BOTTOM[2] - BG_TOP[2]) * y,
   ];
-  const white = inA(x, y, glyphT) || inP(x, y, glyphT) || inArc(x, y, glyphT);
-  return { color: white ? WHITE : base, alpha: roundedSquareAlpha(x, y) };
+  const blue = inA(x, y) || inCrossbar(x, y);
+  return { color: blue ? ACCENT : base, alpha: roundedSquareAlpha(x, y) };
 }
 
 // ---------------------------------------------------------------------------
@@ -108,14 +104,12 @@ function sample(x, y, glyphT) {
 function renderIcon(size) {
   const SS = 4; // supersample factor
   const N = size * SS;
-  const glyphT = Math.max(0.062, 2.0 / size); // stroke thickness (px-normalized)
-  // Accumulate RGBA over the supersample grid.
   const acc = new Float64Array(size * size * 4);
   for (let sy = 0; sy < N; sy++) {
     for (let sx = 0; sx < N; sx++) {
       const x = (sx + 0.5) / N;
       const y = (sy + 0.5) / N;
-      const { color, alpha } = sample(x, y, glyphT);
+      const { color, alpha } = sample(x, y);
       if (alpha <= 0) continue;
       const ox = Math.floor(sx / SS);
       const oy = Math.floor(sy / SS);

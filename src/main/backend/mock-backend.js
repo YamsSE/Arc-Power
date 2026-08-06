@@ -71,6 +71,11 @@ export class MockBackend {
     // across live swaps — they describe the verify session, not the device.
     this._extendedOverlay = opts.extendedRanges !== undefined ? opts.extendedRanges === true : undefined;
     this._fanOverlay = opts.fanCanControl !== undefined ? opts.fanCanControl === true : undefined;
+    // M3-C-E: the mock's OC mode. Default ADVANCED (mock/ui-verify default
+    // per the plan — the extended-flow pins stay green); RID_MOCK_STOCK_MODE
+    // or the constructor opt flips it to stock so the refusal path is
+    // exercisable without hardware. A session knob, kept across swaps.
+    this._ocMode = opts.ocMode === 'stock' ? 'stock' : 'advanced';
     // The energy step override is a session knob too — _applyFeatureset
     // recomputes the step from the ACTIVE featureset's powerW (M2D: after a
     // swap the monitoring power readout must derive from the new device).
@@ -131,10 +136,12 @@ export class MockBackend {
     };
     for (const c of fs.supportedControls) controls[c] = true;
     const ranges = JSON.parse(JSON.stringify(fs.ranges));
-    if (this._extended && ranges.powerLimitW && fs.extended?.plMax) {
+    // M3-C-E: the extended maxes are exposed ONLY in advanced mode — stock
+    // mode reports the standard ranges (mirrors IgclBackend).
+    if (this._extended && this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax) {
       ranges.powerLimitW.max = fs.extended.plMax;
     }
-    if (this._extended && ranges.tempLimitC && fs.extended?.tlMax) {
+    if (this._extended && this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax) {
       ranges.tempLimitC.max = fs.extended.tlMax;
     }
     const caps = {
@@ -146,9 +153,25 @@ export class MockBackend {
       fan: this._buildFanCaps(fs),
     };
     // M2C-C: the bundled-2023-runtime flag — the UI exposes the extended
-    // maxes only when it is set.
-    if (this._extended) caps.extendedRanges = true;
+    // maxes only when it is set AND the OC mode is advanced (M3-C-E).
+    if (this._extended && this._ocMode === 'advanced') caps.extendedRanges = true;
     return caps;
+  }
+
+  /**
+   * M3-C-E: switch the mock's OC mode and rebuild the caps (the extended
+   * ranges appear/disappear exactly like the real backend's caps cache
+   * invalidation). Returns the effective mode.
+   * @param {'stock'|'advanced'} mode
+   * @returns {'stock'|'advanced'}
+   */
+  setOcMode(mode) {
+    const next = mode === 'stock' ? 'stock' : 'advanced';
+    if (next !== this._ocMode) {
+      this._ocMode = next;
+      this._caps = this._buildCaps(this._featureset);
+    }
+    return next;
   }
 
   _buildFanCaps(fs) {

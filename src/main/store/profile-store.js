@@ -19,10 +19,14 @@ function defaultDataDir() {
 
 export class ProfileStore {
   /**
-   * @param {{ dir?: string }} opts — dir defaults to %APPDATA%\ArcPower
+   * @param {{ dir?: string, ocModeDefault?: 'stock'|'advanced' }} opts —
+   *   dir defaults to %APPDATA%\ArcPower; ocModeDefault is the mode used
+   *   while settings.json has no persisted ocMode (M3-C-E: real product
+   *   default 'stock', mock/ui-verify default 'advanced').
    */
   constructor(opts = {}) {
     this.dir = opts.dir ?? defaultDataDir();
+    this.ocModeDefault = opts.ocModeDefault === 'advanced' ? 'advanced' : 'stock';
     this.profilesPath = path.join(this.dir, 'profiles.json');
     this.settingsPath = path.join(this.dir, 'settings.json');
   }
@@ -122,22 +126,25 @@ export class ProfileStore {
   }
 
   /**
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
     if (data === null) {
-      return { waiverAccepted: false, ocOnBoot: false, activeProfileId: null };
+      return { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: this.ocModeDefault };
     }
     return {
       waiverAccepted: data.waiverAccepted === true,
       ocOnBoot: data.ocOnBoot === true,
       activeProfileId: typeof data.activeProfileId === 'string' ? data.activeProfileId : null,
+      // M3-C-E: absent ocMode follows the store default (stock for the real
+      // product, advanced for mock/ui-verify); a persisted value always wins.
+      ocMode: data.ocMode === 'advanced' || data.ocMode === 'stock' ? data.ocMode : this.ocModeDefault,
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced' }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -145,6 +152,7 @@ export class ProfileStore {
       waiverAccepted: settings.waiverAccepted === true,
       ocOnBoot: settings.ocOnBoot === true,
       activeProfileId: settings.activeProfileId ?? null,
+      ocMode: settings.ocMode === 'advanced' || settings.ocMode === 'stock' ? settings.ocMode : this.ocModeDefault,
     });
   }
 }

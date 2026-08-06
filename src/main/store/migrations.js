@@ -5,7 +5,7 @@
 // with an unknown/newer schemaVersion is REFUSED (never silently clobbered).
 // v0 = pre-schema files that existed without a schemaVersion field.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /**
  * v0 -> v1: adopt schemaVersion and normalize.
@@ -34,6 +34,32 @@ const MIGRATIONS = [
       ocOnBoot: data.ocOnBoot === true,
       activeProfileId: typeof data.activeProfileId === 'string' ? data.activeProfileId : null,
     }),
+  },
+  // v1 -> v2 (M3-C-E): settings gains the OC mode slot. The migration does
+  // NOT write a value: an ABSENT ocMode means "follow the store default"
+  // (real product = stock, mock/ui-verify = advanced) — a hardcoded 'stock'
+  // here would leak into mock sessions and break the extended-flow pins.
+  // The first explicit toggle persists 'stock'|'advanced' and wins thereafter.
+  {
+    from: 1,
+    to: 2,
+    upProfiles: (data) => ({
+      ...data,
+      schemaVersion: 2,
+      profiles: Array.isArray(data.profiles)
+        ? data.profiles.map((p) => ({ ...p, schemaVersion: 2 }))
+        : data.profiles,
+    }),
+    upSettings: (data) => {
+      const out = {
+        schemaVersion: 2,
+        waiverAccepted: data.waiverAccepted === true,
+        ocOnBoot: data.ocOnBoot === true,
+        activeProfileId: typeof data.activeProfileId === 'string' ? data.activeProfileId : null,
+      };
+      if (data.ocMode === 'advanced' || data.ocMode === 'stock') out.ocMode = data.ocMode;
+      return out;
+    },
   },
 ];
 

@@ -1,15 +1,30 @@
-// Arc Power — M2b PresentMonClient (FPS / frame-time via PresentMonAPI2).
+// Arc Power — M2b/M3-C-L PresentMonClient (FPS / frame-time via PMAPI2).
 //
 // PresentMon v2.5.1 session API (the PMInitialize/PMGetLatestFrameEvent
 // surface from v1.x was REMOVED in v2.0 — this is the supported API).
-// Vendored DLL: tools/presentmon/PresentMonAPI2.dll (x64, v2.5.1.0) from
+// Vendored binaries: tools/presentmon/ (PresentMonAPI2.dll x64 v2.5.1.0,
+// PresentMonService.exe + the same DLL from the SAME v2.5.1 release) from
 //   https://github.com/GameTechDev/PresentMon/releases/tag/v2.5.1
-//   (PresentMon-v2.5.1.msi -> PresentMonSharedService\PresentMonAPI2.dll)
-//   the BINARY is gitignored (tools/presentmon/); at runtime the client
-//   looks for it in tools/presentmon/ relative to the app root, then in the
-//   app dir. The PresentMonService (PresentMonService.exe from the same MSI)
-//   must be running — the client reports unavailable when the session cannot
-//   open (PM_STATUS_SERVICE_ERROR etc.). Never throws, never crashes the app.
+//   (PresentMon-v2.5.1.msi -> PresentMonSharedService\{PresentMonService.exe,
+//   PresentMonAPI2.dll} — the "shared service" implementation lives IN
+//   PresentMonAPI2.dll, which the service exe hosts; there is no separate
+//   PresentMonSharedService.dll in v2.5.1).
+//
+// M3-C-L mechanism (verified live by the feasibility probe):
+//   - tracking is per-pid ONLY (pmStartTrackingProcess / per-pid
+//     pmConsumeFrames — pmStartTrackingAllProcesses does NOT exist in
+//     v2.5.1); the tracked pid is the FOREGROUND-WINDOW pid
+//     (GetForegroundWindow / GetWindowThreadProcessId via koffi user32),
+//     re-tracked on focus change (stop old pid, start new) — a game/video
+//     in the foreground shows its FPS. Process-enumeration aggregation is
+//     explicitly out of scope (documented enhancement).
+//   - the service runs STANDALONE as a per-user child process (feasibility
+//     verdict): the adapter spawns PresentMonService.exe with a
+//     SESSION-LOCAL shm prefix (--shm-name-prefix Local\... — the Global\
+//     default needs elevation, which the packaged app has anyway, but the
+//     Local prefix works in both), and pmOpenSession succeeds against it.
+//     If the spawn/session fails the client degrades to the honest "FPS
+//     unavailable" (never crashes).
 //
 // Data flow: pmOpenSession -> pmStartTrackingProcess(pid) ->
 // pmRegisterFrameQuery(elements) -> pmConsumeFrames(blob, &n) ->
@@ -20,6 +35,7 @@
 // docs/presentmon.md for the layout notes).
 
 import koffi from 'koffi';
+import { spawn as nodeSpawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -110,6 +126,10 @@ export function findPresentMonDll() {
   const appDir = path.dirname(process.execPath);
   const candidates = [
     process.env.PM_API2_DLL_PATH,
+    // Packaged: the asarUnpack'd tools/presentmon/ (native DLLs need real files).
+    typeof process.resourcesPath === 'string'
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'tools', 'presentmon', 'PresentMonAPI2.dll')
+      : null,
     path.join(process.cwd(), 'tools', 'presentmon', 'PresentMonAPI2.dll'),
     path.join(appDir, 'tools', 'presentmon', 'PresentMonAPI2.dll'),
     path.join(appDir, 'PresentMonAPI2.dll'),
@@ -118,6 +138,77 @@ export function findPresentMonDll() {
     if (c && fs.existsSync(c)) return c;
   }
   return null;
+}
+
+/**
+ * M3-C-L: locate PresentMonService.exe — always next to the DLL (the SAME
+ * v2.5.1 release guarantees the service exe + client DLL agree).
+ * @param {string} [dllPath] resolved DLL path (default findPresentMonDll)
+ * @returns {string | null}
+ */
+export function findPresentMonService(dllPath) {
+  const dll = dllPath ?? findPresentMonDll();
+  if (!dll) return null;
+  const svc = path.join(path.dirname(dll), 'PresentMonService.exe');
+  return fs.existsSync(svc) ? svc : null;
+}
+
+/**
+ * M3-C-L: the FOREGROUND-WINDOW pid — the M3-C-L tracking mechanism. The
+ * app's own pid presents nothing; a game/video in the foreground does.
+ * Pure-ish: the user32 bindings are injectable for tests (koffi.load is
+ * skipped entirely when `deps.lib` is given). Returns null when there is
+ * no foreground window (desktop focused) or the call fails — the adapter
+ * then keeps the previous target (or tracks nothing).
+ * @param {{ lib?: object }} [deps]
+ * @returns {number | null}
+ */
+export function resolveForegroundPid(deps = {}) {
+  try {
+    const user32 = deps.lib ?? koffi.load('user32.dll');
+    const getForegroundWindow = user32.func('void* GetForegroundWindow(void)');
+    const getWindowThreadProcessId = user32.func('uint32 GetWindowThreadProcessId(void* hWnd, uint32* lpdwProcessId)');
+    const hwnd = getForegroundWindow();
+    if (!hwnd) return null;
+    const pidBuf = koffi.alloc('uint32', 1);
+    koffi.encode(pidBuf, 'uint32', 0);
+    getWindowThreadProcessId(hwnd, pidBuf);
+    const pid = koffi.decode(pidBuf, 'uint32');
+    return pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * M3-C-L: spawn PresentMonService.exe standalone as a per-user child
+ * (feasibility verdict: pmOpenSession succeeds against a session-local
+ * service without elevation). The shm prefix is SESSION-LOCAL — the
+ * Global\ default needs elevation, and the Local prefix works in both the
+ * non-elevated dev run and the always-elevated packaged app.
+ * @param {{ serviceExe?: string, spawn?: typeof nodeSpawn, log?: (s: string) => void }} [deps]
+ * @returns {{ child: import('node:child_process').ChildProcess | null, reason?: string }}
+ */
+export function spawnPresentMonService(deps = {}) {
+  const exe = deps.serviceExe ?? findPresentMonService();
+  if (!exe) return { child: null, reason: 'PresentMonService.exe not found (expected next to PresentMonAPI2.dll)' };
+  try {
+    // M3-C-L F1 (review): stdio is DRAINED ('ignore' -> the service's stdio
+    // handles point at the null device). The service runs with
+    // --enable-stdio-log; with the old pipe'd stdout/stderr nobody reads, a
+    // 64 KB pipe buffer fill would BLOCK the service mid-session (no more
+    // frames, no more session responses). 'ignore' makes that impossible.
+    const child = (deps.spawn ?? nodeSpawn)(exe, [
+      '--shm-name-prefix', 'Local\\pm_svc_shm',
+      '--etw-session-name', 'PMArcPower',
+      '--enable-stdio-log',
+      '--log-level', 'warning',
+    ], { cwd: path.dirname(exe), windowsHide: true, stdio: 'ignore' });
+    child.on('error', () => { /* the session probe reports the failure honestly */ });
+    return { child };
+  } catch (err) {
+    return { child: null, reason: `PresentMonService spawn failed: ${err.message}` };
+  }
 }
 
 export function loadPresentMon(dllPath) {
@@ -191,7 +282,17 @@ export function decodeFrameSample(blob, elements) {
 export class PresentMonClient {
   constructor(opts = {}) {
     this._dllPath = opts.dllPath ?? findPresentMonDll();
-    this._lib = null;
+    // M3-C-L: injectable bound lib (tests use a fake; the product path
+    // loads the DLL lazily in start()).
+    this._lib = opts.lib ?? null;
+    // M3-C-L F1 (review): the service needs a moment to come up before the
+    // first pmOpenSession succeeds (the feasibility probe needed ~2500 ms).
+    // Retry with backoff instead of declaring the client unavailable on the
+    // first poll — a transient first failure must not kill FPS for the
+    // whole session.
+    this._openAttempts = opts.openAttempts ?? 8;
+    this._openRetryMs = opts.openRetryMs ?? 500;
+    this._sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.available = this._dllPath !== null;
     this.availableReason = this.available ? null : 'PresentMonAPI2.dll not found (expected in tools/presentmon/ or the app dir)';
     this._session = null;
@@ -214,10 +315,19 @@ export class PresentMonClient {
         }
       }
       const sessionBuf = koffi.alloc('void*', 1);
-      let st = this._lib.pmOpenSession(sessionBuf);
+      // M3-C-L F1: retry pmOpenSession with backoff (default 8 x 500 ms) —
+      // the standalone service takes ~2.5 s to be ready for a session; a
+      // first-poll SERVICE_ERROR is transient, not a dead service. Only
+      // when EVERY attempt failed do we declare the client unavailable.
+      let st = PM_STATUS.FAILURE;
+      for (let attempt = 1; attempt <= this._openAttempts; attempt++) {
+        st = this._lib.pmOpenSession(sessionBuf);
+        if (st === PM_STATUS.SUCCESS) break;
+        if (attempt < this._openAttempts) await this._sleep(this._openRetryMs);
+      }
       if (st !== PM_STATUS.SUCCESS) {
         this.available = false;
-        this.availableReason = `PresentMon service unavailable (${describePmStatus(st)})`;
+        this.availableReason = `PresentMon service unavailable (${describePmStatus(st)}) after ${this._openAttempts} attempts`;
         return { ok: false, reason: this.availableReason };
       }
       this._session = koffi.decode(sessionBuf, 'void*');
@@ -329,6 +439,46 @@ export class PresentMonClient {
     this._blob = null;
     this._elements = [];
   }
+
+  /**
+   * M3-C-L: re-track a DIFFERENT pid on the SAME session/query (focus
+   * change): stop tracking the old pid, start the new. The frame query is
+   * per-pid (pmConsumeFrames takes the pid), so the registered query
+   * survives the switch. Returns { ok: false, reason } when the new pid
+   * cannot be tracked (the previous target stays active).
+   *
+   * M3-C step-5 F2: on a start FAILURE the old tracking is already stopped
+   * but this._pid must NOT keep naming the old pid — poll() would otherwise
+   * keep calling pmConsumeFrames for a pid the session no longer tracks and
+   * silently read null until the next focus change. Reset this._pid to null
+   * so the adapter's next poll re-resolves the foreground pid and retries
+   * the start against a clean client state.
+   * @param {number} pid
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async retarget(pid) {
+    if (!this._session || !this._query || !this._lib) {
+      return { ok: false, reason: this.available ? 'not started' : this.availableReason };
+    }
+    if (pid === this._pid) return { ok: true };
+    try {
+      if (this._pid !== null && this._pid !== undefined) {
+        try { this._lib.pmStopTrackingProcess(this._session, this._pid); } catch { /* best effort */ }
+      }
+      const st = this._lib.pmStartTrackingProcess(this._session, pid);
+      if (st !== PM_STATUS.SUCCESS) {
+        // M3-C step-5 F2: the old tracking is gone; never claim to track the
+        // old pid. A null pid makes the next poll re-resolve + retry.
+        this._pid = null;
+        return { ok: false, reason: `pmStartTrackingProcess(${pid}) -> ${describePmStatus(st)}` };
+      }
+      this._pid = pid;
+      return { ok: true };
+    } catch (err) {
+      this._pid = null;
+      return { ok: false, reason: `PresentMon retarget error: ${err.message}` };
+    }
+  }
 }
 
 export function describePmStatus(code) {
@@ -336,18 +486,63 @@ export function describePmStatus(code) {
 }
 
 /**
- * M2b-B FPS adapter for the IPC layer: lazy single-client wrapper around
- * PresentMonClient. The first poll starts the client (tracking `pid`); a
- * failed start (missing DLL / service down) leaves the adapter permanently
- * unavailable and every poll returns null — never throws. `pid` defaults to
- * the main-process pid (the app's own frames; a game-tracking list is a
- * future milestone). `stop` is best-effort and resets the start latch.
- * @param {{ client?: PresentMonClient, pid?: number }} [opts]
+ * M3-C-L FPS adapter for the IPC layer: single lazy client + the PresentMon
+ * service lifecycle + FOREGROUND-WINDOW pid tracking.
+ *
+ * On the first poll the adapter spawns the bundled PresentMonService
+ * standalone (session-local shm prefix — feasibility verdict) and starts
+ * the client tracking the CURRENT foreground pid. Every poll re-resolves
+ * the foreground pid and RETARGETS the client on a focus change (stop old
+ * pid, start new) — the app's own pid is never the target (it presents
+ * nothing); when the desktop is focused, tracking moves back to the own pid
+ * so stale frames from a backgrounded game are not reported. A failed
+ * spawn/session leaves the adapter permanently unavailable and every poll
+ * returns null — never throws. `stop` is best-effort (closes the session +
+ * kills the spawned service) and resets the start latch.
+ *
+ * M3-C-L F1 (review): the first-poll start is RETRIED with backoff
+ * (default 5 x 500 ms) so a transient start failure — the service still
+ * coming up, a slow first pmOpenSession — never permanently latches FPS
+ * off for the session. The foreground pid is RE-RESOLVED on every attempt
+ * (a pid can exit between resolve and pmStartTrackingProcess -> INVALID_PID
+ * with `available` still true); when the retries are exhausted in that
+ * state, the client is dropped and the start latch reset so the next poll
+ * retries against a fresh pid. A client that declares itself PERMANENTLY
+ * unavailable (missing DLL / exhausted open-session retries) is not
+ * retried: it can never succeed.
+ * @param {{
+ *   client?: PresentMonClient,
+ *   createClient?: () => PresentMonClient,  // used when `client` is null
+ *                                          // (the initial poll / after stop)
+ *   resolvePid?: () => number | null,       // injectable foreground-pid helper
+ *   spawnService?: (deps?: object) => { child: object | null, reason?: string },
+ *   startAttempts?: number,                 // first-poll start retry count
+ *   startRetryMs?: number,                  // backoff between start attempts
+ *   sleep?: (ms: number) => Promise<void>,  // injectable sleep (tests)
+ *   log?: (s: string) => void,
+ * }} [opts]
  */
 export function createPresentmonAdapter(opts = {}) {
-  const pid = opts.pid ?? process.pid;
+  const ownPid = process.pid;
+  const resolvePid = opts.resolvePid ?? resolveForegroundPid;
+  const spawnService = opts.spawnService ?? spawnPresentMonService;
+  const createClient = opts.createClient ?? (() => new PresentMonClient());
+  const startAttempts = opts.startAttempts ?? 5;
+  const startRetryMs = opts.startRetryMs ?? 500;
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const log = opts.log ?? (() => {});
   let client = opts.client ?? null;
+  let serviceChild = null;
   let started = false;
+  let currentPid = null;
+
+  const startService = () => {
+    if (serviceChild !== null) return;
+    const out = spawnService();
+    serviceChild = out.child ?? null;
+    if (!serviceChild) log(`[presentmon] service not started: ${out.reason}`);
+  };
+
   return {
     /**
      * @param {number} deviceId
@@ -356,15 +551,73 @@ export function createPresentmonAdapter(opts = {}) {
     async poll(deviceId) {
       if (!started) {
         started = true;
-        if (!client) client = new PresentMonClient();
         try {
-          const out = await client.start(deviceId, pid);
-          if (!out.ok) client = null;
+          startService();
+          if (!client) client = createClient();
+          // M3-C-L: the initial target is the CURRENT foreground pid — never
+          // the app's own pid (it presents nothing). With no foreground
+          // window, track the own pid until a real foreground appears.
+          let lastOut = null;
+          // M3-C-L F1: retry the start with backoff. A client that reports
+          // `available === false` (missing DLL / its own open-session
+          // retries exhausted) is permanent — stop early, never burn the
+          // backoff on a failure that cannot become success.
+          for (let attempt = 1; attempt <= startAttempts; attempt++) {
+            // M3-C-L F1 (round 2): re-resolve the foreground pid on EVERY
+            // attempt. The pid resolved at loop entry can exit between
+            // resolvePid() and pmStartTrackingProcess; retrying the same
+            // dead pid can never succeed (INVALID_PID on every attempt).
+            const fg = resolvePid();
+            const target = fg !== null && fg !== ownPid ? fg : ownPid;
+            try {
+              lastOut = await client.start(deviceId, target);
+              if (lastOut.ok) {
+                currentPid = target;
+                break;
+              }
+              if (client.available === false) break;
+              log(`[presentmon] start attempt ${attempt}/${startAttempts} failed: ${lastOut.reason}`);
+            } catch (err) {
+              lastOut = { ok: false, reason: err.message };
+              log(`[presentmon] start attempt ${attempt}/${startAttempts} threw: ${err.message}`);
+            }
+            if (attempt < startAttempts) await sleep(startRetryMs);
+          }
+          if (!lastOut?.ok) {
+            // M3-C-L F1 (round 2): with the start attempts EXHAUSTED and the
+            // client still nominally available (e.g. every attempt raced a
+            // dead foreground pid — a pmStartTrackingProcess -> INVALID_PID
+            // failure does not flip `available`), the failure is transient.
+            // Drop the client AND reset the latch so the next poll re-enters
+            // this block against a fresh pid; leaving the latch set would
+            // make every later poll return null — FPS dead for the session.
+            // A client reporting `available === false` is permanent (it can
+            // never succeed) and keeps the latch set.
+            const permanent = client.available === false;
+            client = null;
+            if (!permanent) started = false;
+            return null;
+          }
+          log(`[presentmon] tracking foreground pid ${currentPid}`);
         } catch {
           client = null;
+          started = false;
+          return null;
         }
       }
       if (!client) return null;
+      // M3-C-L: re-resolve the foreground pid every poll; retarget on focus
+      // change. The desktop (null) or the app itself moves tracking back to
+      // the own pid so stale frames are never reported.
+      const fg = resolvePid();
+      const wanted = fg !== null && fg !== ownPid ? fg : ownPid;
+      if (wanted !== currentPid) {
+        const out = await client.retarget(wanted);
+        if (out.ok) {
+          currentPid = wanted;
+          log(`[presentmon] foreground changed -> pid ${wanted}`);
+        }
+      }
       try {
         return await client.poll();
       } catch {
@@ -376,7 +629,12 @@ export function createPresentmonAdapter(opts = {}) {
         try { await client.stop(); } catch { /* best effort */ }
         client = null;
       }
+      if (serviceChild) {
+        try { serviceChild.kill(); } catch { /* best effort */ }
+        serviceChild = null;
+      }
       started = false;
+      currentPid = null;
     },
   };
 }

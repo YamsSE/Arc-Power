@@ -52,6 +52,9 @@ export class IgclBackend {
    *   lib?: object|null,              // injected bound lib (tests); loaded at init() otherwise
    *   findDll?: () => string|null,    // injectable discovery (tests)
    *   extended?: { isCapable: () => Promise<boolean> },  // M2C-C bundled-2023-runtime probe
+   *   ocMode?: 'stock'|'advanced',    // M3-C-E: which range set getCapabilities
+   *                                   // exposes (default 'stock' — the real
+   *                                   // product default; mock passes advanced)
    * }} opts
    */
   constructor(opts = {}) {
@@ -61,6 +64,7 @@ export class IgclBackend {
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
     this._extended = opts.extended ?? null;
+    this._ocMode = opts.ocMode === 'advanced' ? 'advanced' : 'stock';
     this._apiHandle = null;
     this._levelZeroOk = false;
     this._initError = null;
@@ -70,6 +74,23 @@ export class IgclBackend {
     this._fanHandles = new Map(); // deviceId -> [handles]
     this._waiverAccepted = new Map(); // deviceId -> bool
     this._telemetryCbs = new Map(); // deviceId -> Set<cb>
+    this._activity = new Map(); // M3-C-L: deviceId -> { t, counter } for the utilPct delta method
+  }
+
+  /**
+   * M3-C-E: switch the OC mode and INVALIDATE the per-device caps cache —
+   * the next getCapabilities re-derives the ranges from the new mode
+   * (extended ranges exposed only in advanced). Returns the effective mode.
+   * @param {'stock'|'advanced'} mode
+   * @returns {'stock'|'advanced'}
+   */
+  setOcMode(mode) {
+    const next = mode === 'advanced' ? 'advanced' : 'stock';
+    if (next !== this._ocMode) {
+      this._ocMode = next;
+      this._caps.clear();
+    }
+    return next;
   }
 
   _libOrThrow() {
@@ -338,14 +359,16 @@ export class IgclBackend {
           caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
         }
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
-        // this driver, report the FULL verified range (PL max 315 W, TL max
-        // 115 C — min/default stay the DriverStore values) + the
-        // extendedRanges flag. The UI exposes those maxes; applies above the
-        // DriverStore clamp route to the 2023 runtime (apply-routing.js).
+        // this driver AND the OC mode is advanced (M3-C-E), report the FULL
+        // range (PL max 315 W — live-verified ceiling, TL max 115 C — min/default stay
+        // the DriverStore values) + the extendedRanges flag. The UI exposes
+        // those maxes; applies above the DriverStore clamp route to the
+        // 2023 runtime (apply-routing.js). In stock mode the extended maxes
+        // are NEVER exposed — the mode gate refuses them before any clamp.
         const extendedCapable = this._extended
           ? await this._extended.isCapable()
           : false;
-        if (extendedCapable) {
+        if (extendedCapable && this._ocMode === 'advanced') {
           if (caps.ranges.powerLimitW) {
             caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: EXTENDED_PL_MAX_W };
           }
@@ -984,8 +1007,49 @@ export class IgclBackend {
       if (sample[k] === undefined || sample[k] === null) delete sample[k];
     }
 
+    // M3-C-L: utilization from the IGCL activity counters over timestamp
+    // deltas — the DOCUMENTED sample-delta method (igcl_api.h
+    // §ctl_power_telemetry_t): globalActivityCounter / renderComputeActivity-
+    // Counter measure busy TIME IN SECONDS (accurate to 1 ms) that any GPU
+    // engine / the 3D-compute engines are busy; dividing the delta by the
+    // timestamp delta (also seconds, timeStamp = seconds since epoch) yields
+    // the average percentage utilization. The GLOBAL counter is preferred;
+    // renderCompute is the fallback — which is populated on this card is
+    // validated by the live probe (tools/validate/m3c-util-probe.js).
+    const globalActivity = item('globalActivityCounter');
+    const renderCompute = item('renderComputeActivityCounter');
+    const counter = (typeof globalActivity === 'number' && Number.isFinite(globalActivity)) ? globalActivity
+      : (typeof renderCompute === 'number' && Number.isFinite(renderCompute)) ? renderCompute
+      : undefined;
+    const utilPct = this._computeUtilPct(deviceId, sample.t, counter);
+    if (utilPct !== undefined) sample.utilPct = utilPct;
+
     this._emitTelemetry(deviceId, sample);
     return sample;
+  }
+
+  /**
+   * M3-C-L: utilization = activityCounterDelta / timestampDelta * 100.
+   * Undefined on the first sample (no delta), on missing/non-finite inputs,
+   * on a counter reset (negative delta) and on non-positive time deltas.
+   * Clamped to [0, 100] — a counter that runs slightly ahead of the
+   * timestamp never reports >100%.
+   * @param {number} deviceId
+   * @param {number} t telemetry timestamp (seconds)
+   * @param {number | undefined} counter the busy-time counter (seconds)
+   * @returns {number | undefined} utilPct
+   */
+  _computeUtilPct(deviceId, t, counter) {
+    if (typeof counter !== 'number' || typeof t !== 'number' || !Number.isFinite(t)) return undefined;
+    const prev = this._activity.get(deviceId);
+    this._activity.set(deviceId, { t, counter });
+    if (!prev || typeof prev.counter !== 'number') return undefined;
+    const dt = t - prev.t;
+    const dc = counter - prev.counter;
+    if (!Number.isFinite(dt) || !Number.isFinite(dc) || dt <= 0 || dc < 0) return undefined;
+    const util = (dc / dt) * 100;
+    if (!Number.isFinite(util)) return undefined;
+    return Math.min(100, Math.max(0, util));
   }
 
   _emitTelemetry(deviceId, sample) {

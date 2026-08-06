@@ -48,6 +48,11 @@ export interface ArcPowerApi {
   appVersion(): Promise<{ version: string }>;
   /** M2C-C: elevation state (cached koffi probe, no spawn). */
   appElevated(): Promise<ElevationState>;
+  /** M3-C-E: the persisted OC mode ('stock'|'advanced'). */
+  ocModeGet(): Promise<{ ocMode: 'stock' | 'advanced' }>;
+  /** M3-C-E: persist + activate the OC mode; invalidates the caps cache
+   *  (the renderer re-fetches caps after the toggle). */
+  ocModeSet(ocMode: 'stock' | 'advanced'): Promise<{ ocMode: 'stock' | 'advanced' }>;
   fpsPoll(deviceId: number): Promise<FpsSample | null>;
   profilesList(): Promise<ProfilesEnvelope>;
   profilesSave(profile: Partial<Profile> & { id: string; name: string; settings: Settings; ocOnBoot: boolean }): Promise<ProfilesEnvelope>;

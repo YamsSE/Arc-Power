@@ -10,17 +10,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import koffi from 'koffi';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   assertValidDeviceId,
   sanitizeSettings,
   clampSettings,
   createIpcHandlers,
   seedWaiverState,
+  seedOcMode,
 } from '../src/main/ipc-core.js';
-import { MockBackend } from '../src/main/backend/mock-backend.js';
+import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
 import { IgclBackend } from '../src/main/backend/igcl-backend.js';
 import { CTL_RESULT } from '../src/main/backend/igcl-bindings.js';
+import { EXTENDED_UNAVAILABLE_MSG } from '../src/main/apply-routing.js';
 import { createMockStartup } from '../src/main/startup.js';
+import { ProfileStore } from '../src/main/store/profile-store.js';
 
 // ---------------------------------------------------------------------------
 // deviceId validation
@@ -133,7 +139,7 @@ test('clampSettings: clamps an extreme gpuLock pair (F1 regression)', () => {
 // product-path waiver: never auto-accepted
 // ---------------------------------------------------------------------------
 
-function fakeStore(initial = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null }) {
+function fakeStore(initial = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' }) {
   const saved = [];
   return {
     saved,
@@ -544,7 +550,7 @@ test('startup-set: rejects whitespace profileIds (Run-key round trip stays intac
 
 function fakeProfileStore(initialProfiles = []) {
   const profiles = [...initialProfiles];
-  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null };
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' };
   return {
     profiles,
     async loadProfiles() { return [...profiles]; },
@@ -610,7 +616,7 @@ test('profiles channels: list -> save (create) -> rename -> delete round trip wi
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
-  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null } });
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' } });
   await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
 
   const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
@@ -669,17 +675,17 @@ test('profiles-delete / profiles-rename: reject empty ids and unknown profiles',
   await assert.rejects(() => handlers['profiles-rename']('missing', 'x'), /not found/);
 });
 
-test('profiles-settings-save: read-modify-write never clobbers waiverAccepted', async () => {
+test('profiles-settings-save: read-modify-write never clobbers waiverAccepted (nor ocMode)', async () => {
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
   // Seed an accepted waiver (as waiver-accept would).
-  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
 
   const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
-  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1' });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced' });
   const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
-  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
 
   for (const bad of [null, 5, 'x', []]) {
     await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
@@ -727,9 +733,46 @@ test('app-elevated: takes no payload', async () => {
   await assert.rejects(() => handlers['app-elevated']({}), /takes no payload/);
 });
 
+// ---------------------------------------------------------------------------
+// M3-C-E — the OC-mode channels + backend caps-cache invalidation
+// ---------------------------------------------------------------------------
+
+test('oc-mode-get: returns the persisted mode; oc-mode-set persists + invalidates the backend caps cache', async () => {
+  const backend = new MockBackend({ ocMode: 'stock' });
+  const store = fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
+  assert.deepEqual(await handlers['oc-mode-get'](), { ocMode: 'stock' });
+  // Stock -> the mock's getCapabilities reports standard ranges.
+  const stockCaps = await handlers['get-capabilities'](0);
+  assert.equal(stockCaps.extendedRanges, undefined);
+  assert.equal(stockCaps.ranges.powerLimitW.max, 252);
+  // Toggle to advanced: persisted + the caps cache is invalidated.
+  assert.deepEqual(await handlers['oc-mode-set']('advanced'), { ocMode: 'advanced' });
+  assert.equal(store.saved.at(-1).ocMode, 'advanced', 'the mode is persisted');
+  const advancedCaps = await handlers['get-capabilities'](0);
+  assert.equal(advancedCaps.extendedRanges, true);
+  assert.equal(advancedCaps.ranges.powerLimitW.max, 315);
+  // Toggle back.
+  assert.deepEqual(await handlers['oc-mode-set']('stock'), { ocMode: 'stock' });
+  const stockAgain = await handlers['get-capabilities'](0);
+  assert.equal(stockAgain.extendedRanges, undefined);
+});
+
+test('oc-mode-set: rejects anything that is not stock|advanced', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  for (const bad of ['turbo', '', null, 5, undefined]) {
+    await assert.rejects(() => handlers['oc-mode-set'](bad), /must be one of stock, advanced/);
+  }
+});
+
+test('oc-mode-get: takes no payload', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  await assert.rejects(() => handlers['oc-mode-get']({}), /takes no payload/);
+});
+
 test('apply-settings: a non-elevated runner delegates the apply (worker path), returning the worker envelope', async () => {
   const backend = new MockBackend({ extendedRanges: true });
-  const store = fakeStore();
+  const store = fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
   let delegated = null;
   const applyRunner = {
     needsWorker: () => true,
@@ -743,8 +786,103 @@ test('apply-settings: a non-elevated runner delegates the apply (worker path), r
   const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRunner });
   const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
   assert.deepEqual(delegated.settings, { powerLimitW: 300 });
+  // M3-C-E: the request carries the persisted ocMode so the worker's own
+  // gate keys on the real mode (its caps always report extendedRanges).
+  assert.equal(delegated.ocMode, 'advanced');
   assert.equal(out.result.ok, true);
   assert.equal(out.state.powerLimitW, 300);
+});
+
+test('M3-C-E: apply-settings REFUSES beyond-standard values in stock mode BEFORE any clamp/delegation', async () => {
+  const backend = new MockBackend({ extendedRanges: true });
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' });
+  let delegated = false;
+  const applyRunner = {
+    needsWorker: () => true,
+    apply: async () => { delegated = true; return { result: { ok: true, perControl: {} }, state: {} }; },
+    waiverAccept: async () => {},
+    reset: async () => ({}),
+  };
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRunner });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
+  assert.equal(delegated, false, 'the worker must never be spawned for a mode refusal');
+  assert.equal(out.result.ok, false);
+  assert.equal(out.ocModeRefused, true);
+  assert.equal(out.result.perControl.powerLimitW.ok, false);
+  assert.match(out.result.perControl.powerLimitW.message, /Advanced OC Mode/);
+  // M3-C review F2: the refusal carries the FRESH device state, never null —
+  // a null state would null the renderer store's device state (the OC page
+  // renders 'Loading…' forever and the dirty helpers throw on it).
+  assert.ok(out.state !== null, 'the refusal envelope must not null the state');
+  assert.equal(out.state.powerLimitW, 210, 'the state is the pre-apply read-back');
+  assert.equal(backend._state.powerLimitW, 210, 'the refusal never touches the device');
+});
+
+test('M3-C-D: apply-settings REFUSES above-ceiling values in advanced mode — never clamps', async () => {
+  const backend = new MockBackend({ extendedRanges: true });
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 401 });
+  assert.equal(out.result.ok, false);
+  assert.equal(out.ocModeRefused, true);
+  assert.equal(out.result.perControl.powerLimitW.errorCode, 'out-of-range');
+  assert.ok(!/clamp/.test(out.result.perControl.powerLimitW.message), 'never a silent clamp');
+  assert.equal(backend._state.powerLimitW, 210);
+});
+
+// ---------------------------------------------------------------------------
+// M3-C review F3 — the oc-mode boot pre-seed (seedOcMode): the backend's
+// FIRST getCapabilities must already expose the persisted mode's range set.
+// The boot race it fixes: the window + IPC were registered before the
+// seeding, so a persisted-advanced session rendered 252 W / 90 C sliders
+// until a later self-heal.
+// ---------------------------------------------------------------------------
+
+function ocModeStoreDir(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rid-ap-ocmode-'));
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+  return dir;
+}
+
+test('F3: seedOcMode with a persisted-advanced store — the FIRST getCapabilities already reports extended ranges', async (t) => {
+  const store = new ProfileStore({ dir: ocModeStoreDir(t), ocModeDefault: 'stock' });
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+  // The backend is constructed with the STOCK default — exactly the boot
+  // race: its caps would be cached stock without the seeding.
+  const backend = new MockBackend({ extendedRanges: true, ocMode: 'stock' });
+  assert.ok(!(await backend.getCapabilities(0)).extendedRanges,  'precondition: stock caps before the seed');
+  const seeded = await seedOcMode(backend, store);
+  assert.equal(seeded, 'advanced');
+  const caps = await backend.getCapabilities(0);
+  assert.equal(caps.extendedRanges, true, 'the FIRST caps query after seeding is advanced');
+  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.tempLimitC.max, 115);
+});
+
+test('F3: seedOcMode with a persisted-stock store keeps the first caps query stock (extended ranges hidden)', async (t) => {
+  const store = new ProfileStore({ dir: ocModeStoreDir(t), ocModeDefault: 'advanced' });
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' });
+  const backend = new MockBackend({ extendedRanges: true }); // mock default advanced
+  assert.equal((await backend.getCapabilities(0)).extendedRanges, true, 'precondition: advanced caps before the seed');
+  const seeded = await seedOcMode(backend, store);
+  assert.equal(seeded, 'stock');
+  const caps = await backend.getCapabilities(0);
+  assert.ok(!caps.extendedRanges,  'the FIRST caps query after seeding is stock');
+  assert.equal(caps.ranges.powerLimitW.max, 252);
+});
+
+test('F3: seedOcMode degrades to null (never throws) when the store read fails', async (t) => {
+  const store = new ProfileStore({ dir: ocModeStoreDir(t) });
+  fs.rmSync(path.join(store.dir, 'settings.json'), { force: true });
+  const storePath = store.settingsPath;
+  // Corrupt the settings file so loadSettings throws.
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.writeFileSync(storePath, '{ corrupt json');
+  const backend = new MockBackend({ extendedRanges: true, ocMode: 'stock' });
+  const seeded = await seedOcMode(backend, store);
+  assert.equal(seeded, null);
+  // The backend keeps its construction default — degraded, never a crash.
+  assert.ok(!(await backend.getCapabilities(0)).extendedRanges, 'the backend keeps its construction default');
 });
 
 test('apply-settings: a runner that throws (UAC canceled) propagates the honest error', async () => {
@@ -871,14 +1009,23 @@ const capturingRunner = (result) => ({
   reset: async () => ({}),
 });
 
-test('S1: a capable extended probe on the REAL backend reports the extended ranges (PL max 315 / TL max 115 + flag)', async () => {
-  const backend = new IgclBackend({ lib: makeFakeIgclLib(), extended: { isCapable: async () => true } });
+test('M3-C-E: a capable extended probe + ADVANCED mode reports the extended ranges (PL max 315 / TL max 115 + flag)', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib(), extended: { isCapable: async () => true }, ocMode: 'advanced' });
   await backend.init();
   const caps = await backend.getCapabilities(0);
   assert.equal(caps.extendedRanges, true);
-  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.powerLimitW.max, 315); // M3-C-D: live-verified ceiling
   assert.equal(caps.ranges.tempLimitC.max, 115);
   assert.equal(caps.ranges.powerLimitW.min, 105, 'min/default stay the DriverStore values');
+});
+
+test('M3-C-E: a capable probe in STOCK mode reports the standard ranges (no flag, 252 W / 90 C)', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib(), extended: { isCapable: async () => true } });
+  await backend.init();
+  const caps = await backend.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined);
+  assert.equal(caps.ranges.powerLimitW.max, 252);
+  assert.equal(caps.ranges.tempLimitC.max, 90);
 });
 
 test('S1: WITHOUT the probe the real backend reports the standard ranges (no flag, 252 W / 90 C)', async () => {
@@ -890,21 +1037,75 @@ test('S1: WITHOUT the probe the real backend reports the standard ranges (no fla
   assert.equal(caps.ranges.tempLimitC.max, 90);
 });
 
-test('S1: the ipc-core clamp path passes 300 W through UN-CAPPED under a capable probe (the silent cap is gone)', async () => {
-  const backend = new IgclBackend({ lib: makeFakeIgclLib(), extended: { isCapable: async () => true } });
+test('S1: the ipc-core clamp path passes 300 W through UN-CAPPED under a capable probe + advanced mode (the silent cap is gone)', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib(), extended: { isCapable: async () => true }, ocMode: 'advanced' });
   await backend.init();
-  const { handlers } = createIpcHandlers({ backend, store: fakeStore(), emit: () => {}, applyRunner: capturingRunner() });
+  const { handlers } = createIpcHandlers({ backend, store: fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' }), emit: () => {}, applyRunner: capturingRunner() });
   const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
   assert.equal(out.result.ok, true);
   assert.equal(capturingRunner.delegated.settings.powerLimitW, 300, '300 W must reach the apply unchanged');
 });
 
-test('S1: without a probe the ipc-core clamp path silently caps 300 W to 252 (standard ranges)', async () => {
+test('F1: without a probe (advanced) the clamp no longer silently caps — a 300 W request REFUSES with EXTENDED_UNAVAILABLE_MSG', async () => {
+  const backend = new IgclBackend({ lib: makeFakeIgclLib(), ocMode: 'advanced' });
+  await backend.init();
+  const { handlers } = createIpcHandlers({ backend, store: fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' }), emit: () => {}, applyRunner: capturingRunner() });
+  capturingRunner.delegated = undefined; // clear the shared capturing slot
+  const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
+  assert.equal(out.result.ok, false, 'never a false ok:true at the clamped 252 W');
+  assert.equal(out.extendedUnavailable, true);
+  assert.equal(capturingRunner.delegated, undefined, 'nothing is delegated for a capability refusal');
+  assert.equal(out.result.perControl.powerLimitW.ok, false);
+  assert.equal(out.result.perControl.powerLimitW.message, EXTENDED_UNAVAILABLE_MSG);
+  assert.ok(out.state !== null, 'the refusal carries the fresh state');
+  assert.equal(out.state.powerLimitW, 252, 'the device was never touched (the driver read-back)');
+});
+
+test('F1: apply-settings REFUSES 300 W in ADVANCED mode when the 2023 runtime is NOT capable — never a silent 252 W clamp', async () => {
+  const backend = new MockBackend({ extendedRanges: false }); // not-capable degradation
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+  let delegated = false;
+  const applyRunner = {
+    needsWorker: () => true,
+    apply: async () => { delegated = true; return { result: { ok: true, perControl: {} }, state: {} }; },
+    waiverAccept: async () => {},
+    reset: async () => ({}),
+  };
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRunner });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 300, tempLimitC: 100 });
+  assert.equal(delegated, false, 'the worker must never be spawned for a capability refusal');
+  assert.equal(out.result.ok, false, 'a not-capable runtime must never report ok:true');
+  assert.equal(out.extendedUnavailable, true);
+  assert.equal(out.result.perControl.powerLimitW.ok, false);
+  assert.equal(out.result.perControl.tempLimitC.ok, false);
+  assert.equal(out.result.perControl.powerLimitW.errorCode, 'unsupported');
+  assert.equal(out.result.perControl.powerLimitW.message, EXTENDED_UNAVAILABLE_MSG);
+  // The refusal carries the FRESH state and never touches the device.
+  assert.ok(out.state !== null, 'the refusal envelope must not null the state');
+  assert.equal(out.state.powerLimitW, 210, 'the state is the pre-apply read-back');
+  assert.equal(backend._state.powerLimitW, 210, 'the clamp never ran');
+  assert.equal(backend._state.tempLimitC, 90, 'the clamp never ran');
+});
+
+test('F1: apply-settings still applies 300 W in advanced mode when the 2023 runtime IS capable', async () => {
+  const backend = new MockBackend({ extendedRanges: true });
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, oldIgcl: createMockOldIgcl(backend) });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
+  assert.equal(out.result.ok, true);
+  assert.equal(out.result.perControl.powerLimitW.ok, true);
+  assert.equal(out.state.powerLimitW, 300, '300 W lands, unclamped, via the mock old runtime');
+});
+
+test('M3-C-E: STOCK mode + no probe -> a 300 W request REFUSES (the gate, not the clamp)', async () => {
   const backend = new IgclBackend({ lib: makeFakeIgclLib() });
   await backend.init();
   const { handlers } = createIpcHandlers({ backend, store: fakeStore(), emit: () => {}, applyRunner: capturingRunner() });
-  await handlers['apply-settings'](0, { powerLimitW: 300 });
-  assert.equal(capturingRunner.delegated.settings.powerLimitW, 252);
+  capturingRunner.delegated = undefined; // clear the shared capturing slot
+  const out = await handlers['apply-settings'](0, { powerLimitW: 300 });
+  assert.equal(out.result.ok, false);
+  assert.equal(capturingRunner.delegated, undefined, 'nothing is delegated for a mode refusal');
+  assert.match(out.result.perControl.powerLimitW.message, /Advanced OC Mode/);
 });
 
 // ---------------------------------------------------------------------------

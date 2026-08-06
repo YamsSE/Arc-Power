@@ -13,10 +13,12 @@
 //       a 'Memory clock' kv row next to 'Graphics clock'; memory-clock
 //       readout next to core clock; M3-A: the header has NO status dot and
 //       NO "Service Status" label (the IGS indicator is gone);
-//   1c. M3-A: the dashboard shows the general GPU HEALTH card (five rows:
-//       Driver installed / Device detected / Clocks normal / OC working /
-//       Arc Power working) — the merged Service Status card is GONE, as is
-//       everything IGS (dot, half-state note, toggle button);
+//   1c. M3-A + M3-C-I: the dashboard shows the general GPU HEALTH card (four
+//       rows: Driver installed / Device detected / OC working / Arc Power
+//       working — the "Clocks normal" row is REMOVED) — the merged Service
+//       Status card is GONE, as is everything IGS (dot, half-state note,
+//       toggle button). The driver row detail is version + date like the
+//       device card; the app row healthy detail is "App & Service Running".
 //   2. overclocking cards render from capability ranges; M2b-B: the card
 //      label is "Core offset", the floating Apply is hidden when clean and
 //      appears when dirty;
@@ -29,8 +31,11 @@
 //   5b. M2C-B F3 instant apply: ONE attempt, no retry note, no progress
 //       label — an io-failed apply fails instantly with the composed
 //       refusal toast (plain "The GPU driver refused the change" + the
-//       error code); M2C-B B5: the "Unapplied" chips + floating Apply
-//       clear per-`result.ok` even while the driver read-back lags;
+//       error code); M3-C-G: the per-control chips are hidden until the
+//       first apply, then green "Applied" (value == last applied) or warn
+//       "Unapplied" — the applied reference clears them even while the
+//       driver read-back lags (B5); M3-C-F: the "Driver:" readout refreshes
+//       from the fresh state after an apply without navigating away;
 //   6. fan editor: mode toggle, add point, preset, apply; M2C-B B1: the
 //       right-side 0-100% axis renders outside the plot;
 //   7. a failed fan apply surfaces the mapped OcErrorCode message (not the
@@ -47,11 +52,15 @@
 //  11. with RID_MOCK_OFFGRID_FREQ_MHZ=48.3, the driver readout line renders
 //      the off-grid value with an extra decimal, distinct from the snapped
 //      slider value.
-//  12. M2C-C extended-range variant (RID_MOCK_EXTENDED_RANGES=1): the power
-//      slider max is 315 W and the temp slider max 115 C; setting PL 300 and
-//      applying shows the extended-range confirm dialog; Cancel aborts
-//      (device untouched); Apply anyway applies and the read-back sticks at
-//      300 W; restored to 210 W afterwards.
+//  12. M3-C-D/E extended variant (RID_MOCK_EXTENDED_RANGES=1, mock default
+//      OC mode = advanced): the power slider max is 315 W and the temp
+//      slider max 115 C; setting PL 300 and applying SKIPS the per-apply
+//      confirm (double-dialog decision — the mode-enable confirm already
+//      warned) and the read-back sticks at 300 W; restored to 210 W after.
+//  12b. M3-C-E stock variant (RID_MOCK_STOCK_MODE=1): sliders pinned to the
+//      standard limits (252 W / 90 C), no extendedRanges flag, and a direct
+//      300 W apply REFUSES with the mode message — device untouched, no
+//      dead-end confirm dialog.
 //  13. M2C-C worker-apply toast variant (RID_MOCK_WORKER_APPLY=1, runs on
 //      top of the extended variant): before the apply, an info toast
 //      explains "Administrator approval is needed to apply GPU settings."
@@ -78,7 +87,6 @@
 // tests cannot. Profile rows created here are cleaned up before exit.
 
 import { app } from 'electron';
-import { ProfileStore } from './store/profile-store.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -97,11 +105,15 @@ export class UiVerifyFailure extends Error {}
 /**
  * @param {import('electron').BrowserWindow} win
  * @param {import('./backend/mock-backend.js').MockBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store the session
+ *   store (mock sessions use the ISOLATED data dir — the persisted-state
+ *   checks must read THIS store, never a default-dir store that would read
+ *   the real %APPDATA%\ArcPower settings.json)
  * @param {() => number} [getTrayRebuilds] dev probe: tray-rebuild invocations
  * @param {() => number} [getFpsPolls] dev probe: fps-poll invocations (M2b
  *   review F4 — asserts the Monitoring poll stops on navigation away)
  */
-export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFpsPolls = () => 0) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -184,30 +196,39 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   }
   step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
 
-  // ONE general GPU HEALTH card (M3-A): five rows, honest per-row state,
-  // no Level Zero item, no IGCL detail line (the old Service Status card +
-  // IGS half-state + toggle are gone).
+  // ONE general GPU HEALTH card (M3-A + M3-C-I): FOUR rows, honest per-row
+  // state, no Level Zero item, no IGCL detail line, NO clocks row (the
+  // user's dashboard picture); driver row detail = version + date like the
+  // device card; app row healthy detail = "App & Service Running".
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) fail('expected exactly one GPU Health card');
   const statusTitle = await js(`document.querySelector('.health-card .card-title')?.textContent ?? ''`);
   if (statusTitle.trim() !== 'GPU Health') fail(`health card title is '${statusTitle}'`);
-  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
-    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
+  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 4`)) {
+    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 4)`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'driver,device,clocks,oc,app') fail(`health card rows are '${rowIds}' (expected driver,device,clocks,oc,app)`);
+  if (rowIds !== 'driver,device,oc,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,app — the clocks row is removed)`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Driver installed', 'Device detected', 'Clocks normal', 'OC working', 'Arc Power working']) {
+  for (const want of ['Driver installed', 'Device detected', 'OC working', 'Arc Power working']) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
+  if (rowLabels.includes('Clocks normal')) fail('M3-C-I: the "Clocks normal" health row is still rendered');
+  // M3-C-I: the driver row detail is the driver version + date like the
+  // device card; the app row detail is "App & Service Running" (app-only).
+  const driverDetail = await js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
+  if (!driverDetail.includes('32.0.101.8861') || !driverDetail.includes('Jul 05, 2026')) {
+    fail(`M3-C-I: driver row detail is '${driverDetail}' (expected version + date)`);
+  }
+  const appDetail = await js(`document.querySelector('.health-card .health-row[data-row="app"] .health-row-detail')?.textContent ?? ''`);
+  if (appDetail.trim() !== 'App & Service Running') fail(`M3-C-I: app row detail is '${appDetail}' (expected 'App & Service Running')`);
   // The mock boot state: driver + device + app rows ok, OC row unknown
-  // (nothing applied yet in this session), clocks ok (waiting for telemetry
-  // or live).
+  // (nothing applied yet in this session).
   const dots = await js(`Array.from(document.querySelectorAll('.health-card .health-row .status-dot')).map((d) => d.className).join('|')`);
   if (!/status-ok/.test(dots)) fail(`no ok dot on the health card: '${dots}'`);
   if (!/status-unknown/.test(dots)) fail(`no unknown dot (OC never applied) on the health card: '${dots}'`);
   if (await js(`document.querySelector('.health-card')?.textContent.includes('Level Zero')`)) fail('Level Zero is still a health item');
   if (await js(`!!document.querySelector('.igs-toggle')`)) fail('M3-A: the IGS toggle button is still rendered');
-  step('health-card', `one 'GPU Health' card: rows '${rowLabels}', dots '${dots.split(' ').filter((c) => c.startsWith('status-')).join(',')}'`);
+  step('health-card', `one 'GPU Health' card: rows '${rowLabels}', driver '${driverDetail.trim()}', app '${appDetail.trim()}'`);
 
   // --- 2. overclocking cards ------------------------------------------------
   await js(`location.hash = '#/overclocking'`);
@@ -266,7 +287,11 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   }
 
   // --- 3. waiver gate: persisted acceptance must skip the dialog (F1) --------
-  const persistedWaiver = (await new ProfileStore().loadSettings()).waiverAccepted === true;
+  // M3-C review F4: the persisted state read must use the SESSION store — a
+  // default-dir ProfileStore would read the REAL settings.json while the
+  // mock session reads/writes its isolated dir (the check would always see
+  // a mismatch).
+  const persistedWaiver = (await store.loadSettings()).waiverAccepted === true;
   const bootAccepted = (await js(`window.arcPower.waiverGet(0)`)).accepted === true;
   if (persistedWaiver && !bootAccepted) {
     fail('boot did not seed the persisted waiver acceptance (settings.json says accepted)');
@@ -283,6 +308,13 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     await js(`location.hash = '#/overclocking'`);
     await sleep(250);
   }
+  // M3-C review F4: the navigation above re-rendered the OC page from the
+  // driver state (210 W), dropping the earlier 220 W slider move. The
+  // isolated mock data dir makes the unaccepted-waiver branch reachable on
+  // a FRESH store, so re-move the slider deterministically — the readout
+  // checks below must not depend on a persisted acceptance from a previous
+  // run.
+  await setSlider(220);
 
   const readoutBefore = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value').textContent`);
   if (readoutBefore.trim() !== '220 W') fail(`slider readout is '${readoutBefore}' (expected '220 W')`);
@@ -300,6 +332,11 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
     step('waiver-persisted', `persisted acceptance seeded at boot: apply without dialog -> read-back ${state.powerLimitW} W`);
   } else {
+    // M3-C review F4: with the isolated mock data dir the unaccepted branch
+    // is reachable on a FRESH store (pre-fix, the shared real settings.json
+    // always carried a persisted acceptance, so this branch was dead). The
+    // apply click is what triggers the dialog — it was missing here.
+    await clickApply();
     if (!(await waitFor(win, `!!document.querySelector('.modal')`))) fail('waiver dialog did not appear on first apply');
     step('waiver', 'waiver dialog shown before first apply (not auto-accepted)');
 
@@ -322,6 +359,15 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
     step('apply', `accept -> apply -> toast -> read-back refreshed to ${state.powerLimitW} W`);
   }
+
+  // M3-C-F: the "Driver:" readout refreshes from the FRESH state after the
+  // apply — WITHOUT navigating away (previously built once at render, the
+  // stale part that forced the leave-and-return dance).
+  const driverAfterApply = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-driver-value')?.textContent ?? ''`);
+  if (!driverAfterApply.includes('220')) {
+    fail(`M3-C-F: driver readout is '${driverAfterApply}' after the apply (expected the fresh 220 W)`);
+  }
+  step('oc-fresh-driver', `M3-C-F: driver readout updated in place to '${driverAfterApply.trim()}' (no navigation)`);
 
   // --- 3b. M2b-B no-op suppression: the payload carries all 4 controls, but
   // --- only power changed -> EXACTLY one success toast (the no-ops stay
@@ -367,8 +413,8 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
 
   // B5 first: simulate a read-back that LAGS (the driver write succeeded,
   // the read-back still reports the old value). After the successful apply
-  // the chip must clear and the button must hide against the APPLIED
-  // reference, even though the driver still reads 210.
+  // the chip must show 'Applied' and the button must hide against the
+  // APPLIED reference, even though the driver still reads 210.
   const realApply = backend.applySettings.bind(backend);
   backend.applySettings = async (d, s) => {
     const before = backend._state.powerLimitW;
@@ -383,10 +429,22 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   await sleep(300);
   const lagState = await js(`window.arcPower.getCurrentSettings(0)`);
   if (Math.abs(lagState.powerLimitW - 210) > 1e-6) fail(`read-back lag setup broken: ${lagState.powerLimitW}`);
-  const chipHidden = await js(`Array.from(document.querySelectorAll('.oc-card')).every((c) => c.querySelector('.oc-dirty')?.hidden !== false)`);
-  if (!chipHidden) fail('B5: an Unapplied chip is still visible after a successful apply (read-back lags)');
+  // M3-C-G: every control in the payload applied (perControl ok) -> its chip
+  // shows green 'Applied' (value == last applied); the powerLimitW chip
+  // proves the lag case (the driver still reads 210, the chip still says
+  // Applied against the applied reference).
+  const chipMap = await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-card')).map((c) => {
+    const ch = c.querySelector('.oc-chip-status');
+    return [c.dataset.control, !ch || ch.hidden === true ? 'hidden' : ch.textContent];
+  }))`);
+  const chips = JSON.parse(chipMap);
+  const plChip = chips.find(([c]) => c === 'powerLimitW');
+  if (!plChip || plChip[1] !== 'Applied') fail(`M3-C-G: powerLimitW chip is '${plChip?.[1]}' (expected 'Applied' after the successful apply)`);
+  for (const [c, s] of chips) {
+    if (s !== 'Applied') fail(`M3-C-G: chip '${c}' is '${s}' (expected 'Applied' — the control was in the applied payload)`);
+  }
   if (!(await floatingHidden())) fail('B5: floating Apply still visible after a successful apply (read-back lags)');
-  step('b5-lag', `B5: apply ok with lagging read-back (${lagState.powerLimitW} W) -> chips clear, Apply hidden`);
+  step('b5-lag', `B5/G: apply ok with lagging read-back (${lagState.powerLimitW} W) -> chip 'Applied', others hidden, Apply hidden`);
   await clearToasts();
   // Restore the real backend and re-render the OC page fresh (values snap
   // back to the 210 W read-back; the applied reference is per-page state).
@@ -395,6 +453,10 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   await js(`location.hash = '#/overclocking'`);
   await sleep(250);
   if (!(await floatingHidden())) fail('floating Apply visible on a clean re-render');
+  // M3-C-G: on a fresh re-render no control was applied in this render —
+  // every chip is hidden again.
+  const freshChips = await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-card')).map((c) => c.querySelector('.oc-chip-status')?.hidden !== false))`);
+  if (!JSON.parse(freshChips).every(Boolean)) fail('M3-C-G: a chip is visible on a clean re-render (applied reference is per-render state)');
   step('b5-fresh', 'B5: fresh re-render is clean (applied reference is per-render state)');
 
   // An io-failed powerLimit apply fails INSTANTLY and the toast is the plain
@@ -444,12 +506,18 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   await clearToasts();
   step('instant-apply', `io-failed -> ONE attempt, plain refusal toast ('${refusalMsg.trim()}'), no retry note, no progress label; recovery + baseline applied`);
 
-  // --- 5c. M2C-C extended-range variant: full slider range, confirm dialog,
-  // --- worker-apply elevation toast (RID_MOCK_EXTENDED_RANGES=1, optional
-  // --- RID_MOCK_WORKER_APPLY=1 on top) -------------------------------------
+  // --- 5c. M3-C-D/E extended + stock variants. ------------------------------
+  // RID_MOCK_EXTENDED_RANGES=1 (mock default OC mode = advanced): full slider
+  // range (315 W / 115 C), the extended apply SKIPS the per-apply confirm
+  // (the mode-enable confirm already warned — double-dialog decision);
+  // optional RID_MOCK_WORKER_APPLY=1 adds the elevation toast on top.
+  // RID_MOCK_STOCK_MODE=1: stock mode — sliders pinned to the standard
+  // limits and a direct above-limit apply REFUSES with the mode message
+  // (never clamps, never a dead-end confirm).
   const extendedRanges = process.env.RID_MOCK_EXTENDED_RANGES === '1';
   const workerApply = process.env.RID_MOCK_WORKER_APPLY === '1';
-  if (extendedRanges) {
+  const stockMode = process.env.RID_MOCK_STOCK_MODE === '1';
+  if (extendedRanges && !stockMode) {
     const setPlSlider = (value) => js(`(() => {
       const card = document.querySelector('.oc-card[data-control="powerLimitW"]');
       const input = card.querySelector('input[type="range"]');
@@ -457,43 +525,24 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
       input.dispatchEvent(new Event('input', { bubbles: true }));
       return card.querySelector('.oc-value').textContent;
     })()`);
-    const modalTitle = () => js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`);
 
     // The extended ranges are exposed: slider maxes 315 W / 115 C.
     const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
-    if (plMax !== '315') fail(`M2C-C: power slider max is '${plMax}' (expected 315)`);
+    if (plMax !== '315') fail(`M3-C-D: power slider max is '${plMax}' (expected 315 — live-verified ceiling)`);
     const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
-    if (tlMax !== '115') fail(`M2C-C: temp slider max is '${tlMax}' (expected 115)`);
-    step('extended-ranges', `extended ranges exposed: PL slider max ${plMax} W, TL slider max ${tlMax} C`);
+    if (tlMax !== '115') fail(`M3-C-D: temp slider max is '${tlMax}' (expected 115)`);
+    // The mode toggle renders with Advanced active (mock default advanced).
+    const advBtn = await js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === 'Advanced')?.classList.contains('active')`);
+    if (!advBtn) fail('M3-C-E: the OC-mode toggle does not show Advanced active (mock default)');
+    step('extended-ranges', `extended ranges exposed: PL slider max ${plMax} W, TL slider max ${tlMax} C, Advanced mode active`);
 
-    // 300 W -> apply -> the extended-range confirm dialog.
+    // 300 W -> apply -> NO confirm dialog (double-dialog decision: the
+    // mode-enable confirm already warned in Advanced mode).
     await setPlSlider(300);
     if (await floatingHidden()) fail('floating Apply did not appear for the extended value');
     await clearToasts();
     await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.modal')`))) fail('extended-range confirm dialog did not appear');
-    if (!(await modalTitle()).includes('Extended power/temperature limit')) {
-      fail(`extended-range dialog title is '${await modalTitle()}'`);
-    }
-    const dialogText = await js(`document.querySelector('.modal .modal-text')?.textContent ?? ''`);
-    if (!/beyond Intel/.test(dialogText) || !/300 W/.test(dialogText)) {
-      fail(`extended-range warning text is '${dialogText}' (expected the honest beyond-standard warning mentioning the BiFrost 300 W)`);
-    }
-    step('extended-confirm', 'extended-range confirm dialog shown with the honest beyond-standard warning');
-
-    // Cancel: nothing applies.
-    await js(`document.querySelector('.modal button.btn-ghost')?.click()`);
-    await sleep(300);
-    const canceledState = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(canceledState.powerLimitW - 210) > 1e-6) fail(`extended apply ran after Cancel! powerLimit=${canceledState.powerLimitW}`);
-    step('extended-cancel', 'extended-range Cancel: apply aborted, device untouched (210 W)');
-
-    // Accept: the apply proceeds; with the worker-apply variant an info
-    // toast explains the UAC prompt BEFORE the apply.
-    await clearToasts();
-    await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.modal')`))) fail('extended-range confirm dialog did not reappear');
-    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    if (await js(`!!document.querySelector('.modal')`)) fail('M3-C-D: a per-apply confirm dialog appeared in Advanced mode (must be skipped)');
     if (workerApply) {
       if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-info')).some((t) => (t.textContent ?? '').includes('Administrator approval is needed'))`, 5000))) {
         fail('M2C-C: the elevation explanation toast did not appear before the worker apply');
@@ -503,7 +552,10 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('extended apply success toast missing');
     const extendedState = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(extendedState.powerLimitW - 300) > 1e-6) fail(`extended apply did not stick: powerLimit=${extendedState.powerLimitW}`);
-    step('extended-apply', `extended apply (300 W) accepted through the confirm dialog, read-back ${extendedState.powerLimitW} W`);
+    // M3-C-F: the driver readout shows the fresh 300 W without navigating.
+    const extDriver = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-driver-value')?.textContent ?? ''`);
+    if (!extDriver.includes('300')) fail(`M3-C-F: extended driver readout is '${extDriver}' (expected 300)`);
+    step('extended-apply', `extended apply (300 W) applied with NO per-apply confirm, read-back ${extendedState.powerLimitW} W, driver readout '${extDriver.trim()}'`);
     await clearToasts();
 
     // Restore the standard baseline for the later steps.
@@ -514,6 +566,35 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
     if (Math.abs(baseline.powerLimitW - 210) > 1e-6) fail(`extended baseline is not 210 W: ${baseline.powerLimitW}`);
     await clearToasts();
     step('extended-restore', 'extended baseline restored to 210 W');
+  } else if (stockMode) {
+    // M3-C-E stock variant: the sliders stay within the standard limits and
+    // a DIRECT above-limit request REFUSES with the mode message — never
+    // clamps, never a confirm dialog (the mock default is advanced; this
+    // variant flipped it to stock via RID_MOCK_STOCK_MODE=1).
+    const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
+    if (plMax !== '252') fail(`M3-C-E stock: power slider max is '${plMax}' (expected 252 — standard limit)`);
+    const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
+    if (tlMax !== '90') fail(`M3-C-E stock: temp slider max is '${tlMax}' (expected 90)`);
+    const stockBtn = await js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === 'Stock')?.classList.contains('active')`);
+    if (!stockBtn) fail('M3-C-E: the OC-mode toggle does not show Stock active');
+    if (await js(`window.arcPower.getCapabilities(0).then((c) => c.extendedRanges === true)`)) {
+      fail('M3-C-E stock: getCapabilities still reports extendedRanges in stock mode');
+    }
+    step('stock-ranges', `stock mode: PL slider max ${plMax} W, TL slider max ${tlMax} C, no extendedRanges flag`);
+
+    // A direct 300 W apply (bypasses the slider — the UI cannot produce it)
+    // must REFUSE with the mode message, never clamp to 252 and never show
+    // a confirm dialog.
+    const refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: 300 })`);
+    if (refusal.result.ok !== false) fail('M3-C-E stock: a 300 W apply in stock mode did not refuse');
+    const per = refusal.result.perControl.powerLimitW;
+    if (!per || per.ok !== false) fail('M3-C-E stock: the refusal is not per-control: ' + JSON.stringify(refusal.result.perControl));
+    if (!/Advanced OC Mode/.test(per.message ?? '')) fail(`M3-C-E stock: refusal message is '${per?.message}' (expected the mode message)`);
+    const stateAfter = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(stateAfter.powerLimitW - 210) > 1e-6) fail(`M3-C-E stock: the refusal changed the device state: ${stateAfter.powerLimitW} (must stay 210)`);
+    if (await js(`!!document.querySelector('.modal')`)) fail('M3-C-E stock: a dead-end confirm dialog appeared (refusal + toast only)');
+    step('stock-refusal', `stock mode: 300 W refused with the mode message, device untouched at 210 W, no dialog`);
+    await clearToasts();
   }
 
   // --- 5d. M2D mock featureset swap: the header dropdown round-trips the
@@ -1020,12 +1101,13 @@ export async function runFeaturesetVerify(win, fsId) {
       if (plValue.trim() !== '100 %') fail(`b580 PL readout is '${plValue}' (expected '100 %')`);
       const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
       if (plMax !== '150') fail(`b580 PL slider max is '${plMax}' (expected 150)`);
-      const presetTexts = await js(`Array.from(document.querySelectorAll('.oc-card[data-control="powerLimitW"] .oc-presets .chip')).map((c) => c.textContent).join(',')`);
-      if (!/Stock/.test(presetTexts) || !/Max/.test(presetTexts)) fail(`b580 percent presets missing: '${presetTexts}'`);
+      // M3-C-G: the per-card Stock/Medium/Max preset chips are REMOVED.
+      const presetCount = await js(`document.querySelectorAll('.oc-card .oc-presets').length`);
+      if (presetCount !== 0) fail(`M3-C-G: preset chips still render (${presetCount})`);
       const adv = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
       if (!adv.includes('Unsupported on this GPU')) fail(`b580 advanced: an expert control is not marked unsupported: '${adv}'`);
       if (!adv.includes('Supported — editing arrives in M4')) fail(`b580 advanced: vfCurve not marked supported: '${adv}'`);
-      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', presets '${presetTexts}', gpuLock unsupported / vfCurve supported`);
+      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', no preset chips (M3-C-G), gpuLock unsupported / vfCurve supported`);
     } else {
       step('oc-generic', `'${fsId}': ${cards} OC cards render`);
     }

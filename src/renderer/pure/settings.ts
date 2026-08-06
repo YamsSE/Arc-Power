@@ -16,6 +16,11 @@ import { MAX_CURVE_POINTS } from './curve.ts';
 // caps.extendedRanges — values above 90 C then route to the bundled 2023
 // IGCL runtime.
 export const TEMP_LIMIT_MAX_C = 90;
+// M3-C-D: the extended PL ceiling. Live-verified 2026-08-06: 400/350/330 W
+// are refused by the runtime (0x44000004), 315 W persists — 315 W IS the
+// ceiling on this card (in lockstep with old-igcl.js / the backend ranges /
+// the mock featureset / every pinning test). Requests above it are refused
+// honestly by main, never clamped.
 export const EXTENDED_PL_MAX_W = 315;
 export const EXTENDED_TL_MAX_C = 115;
 // The DriverStore-runtime clamps: applies above these route to the bundled
@@ -145,9 +150,13 @@ function samePointArray(a: unknown, b: unknown): boolean {
  * True when one control of `settings` differs from the driver's read-back
  * `state` (a missing driver value counts as dirty — the UI must surface an
  * unapplied state it cannot verify).
+ * M3-C review F2: NULL-SAFE — a null state means "nothing applied yet"
+ * (the store's state slot was never populated / a refusal never landed a
+ * state): missing controls are NOT dirty, never a throw.
  */
-export function isControlDirty(control: string, settings: Settings, state: DeviceState): boolean {
+export function isControlDirty(control: string, settings: Settings, state: DeviceState | null): boolean {
   if (!(control in settings)) return false;
+  if (!state) return false; // nothing applied yet -> not dirty, never throw
   const wanted = (settings as Record<string, unknown>)[control];
   const driver = (state as unknown as Record<string, unknown>)[control];
   if (driver === null || driver === undefined) return true;
@@ -165,7 +174,7 @@ export function isControlDirty(control: string, settings: Settings, state: Devic
  * STAYS against the driver read-back — the silent-success rule survives the
  * applied-reference change.)
  */
-export function isNoopApply(control: string, settings: Settings, beforeState: DeviceState): boolean {
+export function isNoopApply(control: string, settings: Settings, beforeState: DeviceState | null): boolean {
   return !isControlDirty(control, settings, beforeState);
 }
 
@@ -197,8 +206,9 @@ function sameValue(a: unknown, b: unknown): boolean {
  * result.ok values from the last apply) falling back to the driver state?
  * A control in `applied` is judged against the applied value alone — the
  * lagging driver read-back cannot re-dirty a chip that just applied.
+ * M3-C review F2: null-safe via isControlDirty (a null state never throws).
  */
-export function isControlDirtyVsApplied(control: string, settings: Settings, state: DeviceState, applied: Record<string, unknown>): boolean {
+export function isControlDirtyVsApplied(control: string, settings: Settings, state: DeviceState | null, applied: Record<string, unknown>): boolean {
   if (!(control in settings)) return false;
   const wanted = (settings as Record<string, unknown>)[control];
   if (control in applied) return !sameValue(wanted, applied[control]);
@@ -207,9 +217,10 @@ export function isControlDirtyVsApplied(control: string, settings: Settings, sta
 
 /**
  * B5(a): any-dirty predicate for the floating Apply button against the
- * applied reference + driver state.
+ * applied reference + driver state. M3-C review F2: null-safe — a null
+ * state (nothing applied yet) is never dirty, never throws.
  */
-export function computeDirtyVsApplied(settings: Settings, state: DeviceState, applied: Record<string, unknown>): boolean {
+export function computeDirtyVsApplied(settings: Settings, state: DeviceState | null, applied: Record<string, unknown>): boolean {
   for (const key of Object.keys(settings)) {
     if (isControlDirtyVsApplied(key, settings, state, applied)) return true;
   }
@@ -219,9 +230,12 @@ export function computeDirtyVsApplied(settings: Settings, state: DeviceState, ap
 /**
  * B5(a): scalar variant for the per-card "Unapplied" chips (slider values
  * are numbers; the driver may report none — then it counts as dirty).
+ * M3-C review F2: null-safe — a null state with no applied reference is
+ * NOT dirty (nothing applied yet), never a throw.
  */
-export function isScalarDirtyVsApplied(control: string, value: number, state: DeviceState, applied: Record<string, unknown>): boolean {
+export function isScalarDirtyVsApplied(control: string, value: number, state: DeviceState | null, applied: Record<string, unknown>): boolean {
   if (control in applied) return value !== applied[control];
+  if (!state) return false; // nothing applied yet -> not dirty, never throw
   const driver = (state as unknown as Record<string, unknown>)[control];
   return driver === null || driver === undefined ? true : value !== driver;
 }
@@ -245,4 +259,47 @@ export function profileApplyOutcome(
       ? `"${name}" applied to the GPU.`
       : `"${name}" matches the current GPU state — nothing changed.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// M3-C-F — OC-page refresh signatures (pure, unit-tested)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the store's `state` slot changed in a way that matters to the
+ * OC cards (an apply from any path / profile load / tray apply). Reference
+ * equality short-circuits (the page's own currentState IS the store's
+ * state); nested values (gpuLock / fanCurve / vfCurve) are compared by
+ * content.
+ */
+export function ocStateChanged(prev: DeviceState | null, next: DeviceState | null): boolean {
+  if (prev === next) return false;
+  if (!prev || !next) return true;
+  const keys = new Set<keyof DeviceState>([...Object.keys(prev), ...Object.keys(next)] as (keyof DeviceState)[]);
+  for (const k of keys) {
+    const a = prev[k];
+    const b = next[k];
+    if (a === b) continue;
+    if (typeof a === 'number' || typeof b === 'number') return true;
+    if (a && b && typeof a === 'object' && typeof b === 'object') {
+      if (JSON.stringify(a) !== JSON.stringify(b)) return true;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True when the capability SURFACE changed (mode toggle / featureset swap) —
+ * the OC page must fully re-render then. Content comparison, NOT reference:
+ * the page itself re-sets caps after every apply ({ ...caps, waiverAccepted })
+ * and a full re-render on that would clobber the applied-reference chips.
+ */
+export function ocCapsChanged(prev: Capabilities | null, next: Capabilities | null): boolean {
+  if (prev === next) return false;
+  if (!prev || !next) return true;
+  return JSON.stringify(prev.ranges) !== JSON.stringify(next.ranges)
+    || JSON.stringify(prev.controls) !== JSON.stringify(next.controls)
+    || prev.extendedRanges !== next.extendedRanges;
 }

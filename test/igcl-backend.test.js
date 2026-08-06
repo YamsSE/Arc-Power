@@ -710,21 +710,60 @@ test('M2C-C: no extended probe -> standard ranges, no flag', async () => {
   assert.equal(caps.extendedRanges, undefined);
 });
 
-test('M2C-C: extended probe capable -> PL max 315 / TL max 115 + the flag', async () => {
+test('M3-C-E: extended probe capable + advanced mode -> PL max 315 / TL max 115 + the flag', async () => {
+  const b = new IgclBackend({
+    lib: makeFakeLib(),
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => true },
+    ocMode: 'advanced',
+  });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, true);
+  assert.equal(caps.ranges.powerLimitW.max, 315); // M3-C-D: live-verified ceiling
+  assert.equal(caps.ranges.powerLimitW.min, 105, 'min stays the DriverStore value');
+  assert.equal(caps.ranges.powerLimitW.default, 210, 'default stays the DriverStore value');
+  assert.equal(caps.ranges.tempLimitC.max, 115);
+  assert.equal(caps.ranges.tempLimitC.min, 60);
+  assert.equal(caps.ranges.tempLimitC.default, 90);
+});
+
+test('M3-C-E: stock mode NEVER exposes the extended ranges even with a capable probe', async () => {
+  const b = new IgclBackend({
+    lib: makeFakeLib(),
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => true },
+    // default ocMode = stock
+  });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined, 'no flag in stock mode');
+  assert.equal(caps.ranges.powerLimitW.max, 252, 'standard max in stock mode');
+  assert.equal(caps.ranges.tempLimitC.max, 90);
+});
+
+test('M3-C-E: setOcMode invalidates the caps cache — the ranges follow the mode', async () => {
   const b = new IgclBackend({
     lib: makeFakeLib(),
     findDll: () => 'C:\\fake\\IntelControlLib.dll',
     dllPath: 'C:\\fake\\IntelControlLib.dll',
     extended: { isCapable: async () => true },
   });
-  const caps = await b.getCapabilities(0);
-  assert.equal(caps.extendedRanges, true);
-  assert.equal(caps.ranges.powerLimitW.max, 315);
-  assert.equal(caps.ranges.powerLimitW.min, 105, 'min stays the DriverStore value');
-  assert.equal(caps.ranges.powerLimitW.default, 210, 'default stays the DriverStore value');
-  assert.equal(caps.ranges.tempLimitC.max, 115);
-  assert.equal(caps.ranges.tempLimitC.min, 60);
-  assert.equal(caps.ranges.tempLimitC.default, 90);
+  const stock = await b.getCapabilities(0);
+  assert.equal(stock.extendedRanges, undefined);
+  assert.equal(stock.ranges.powerLimitW.max, 252);
+  b.setOcMode('advanced');
+  const advanced = await b.getCapabilities(0);
+  assert.equal(advanced.extendedRanges, true);
+  assert.equal(advanced.ranges.powerLimitW.max, 315);
+  b.setOcMode('stock');
+  const stockAgain = await b.getCapabilities(0);
+  assert.equal(stockAgain.extendedRanges, undefined);
+  assert.equal(stockAgain.ranges.powerLimitW.max, 252);
+  // A no-op mode change does not clear the cache (waiverAccepted survives).
+  b.setOcMode('stock');
+  const cached = await b.getCapabilities(0);
+  assert.equal(cached.ranges.powerLimitW.max, 252);
 });
 
 test('M2C-C: extended probe NOT capable -> standard ranges, no flag (the degradation path)', async () => {
@@ -883,6 +922,92 @@ test('onRawTelemetry: subscriber receives samples; unsubscribe works', async () 
   unsub();
   await b.sampleRawTelemetry(0);
   assert.equal(seen.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// M3-C-L — utilization from the IGCL activity counters (sample-delta method)
+// ---------------------------------------------------------------------------
+
+function activityLib({ global = true, rampPerSample = 0.09, dt = 0.2, firstActivity = 1000.0 } = {}) {
+  const lib = makeFakeLib();
+  const st = lib.__state;
+  const sampleOnce = (telBuf) => {
+    st.telemetryT += dt;
+    st.telemetryActivity = (st.telemetryActivity ?? firstActivity) + rampPerSample;
+    koffi.encode(telBuf, 'ctl_power_telemetry_t', {
+      Size: 1024, Version: 1,
+      timeStamp: { bSupported: true, units: 7, type: 9, value: st.telemetryT },
+      gpuCurrentClockFrequency: { bSupported: true, units: 0, type: 9, value: 600 },
+      globalActivityCounter: global ? { bSupported: true, units: 7, type: 9, value: st.telemetryActivity } : { bSupported: false, units: 7, type: 9, value: 0 },
+      renderComputeActivityCounter: { bSupported: true, units: 7, type: 9, value: st.telemetryActivity },
+      gpuCurrentTemperature: { bSupported: true, units: 5, type: 9, value: 36 },
+      gpuPowerLimited: false, gpuTemperatureLimited: false, gpuCurrentLimited: false,
+      gpuVoltageLimited: false, gpuUtilizationLimited: false,
+    });
+  };
+  lib.ctlPowerTelemetryGet = (_h, telBuf) => { sampleOnce(telBuf); return 0; };
+  return lib;
+}
+
+test('M3-C-L: utilPct = activityCounterDelta / timestampDelta * 100 (documented method)', async () => {
+  // 0.09 s busy per 0.2 s -> 45%.
+  const b = makeBackend(activityLib());
+  const s0 = await b.sampleRawTelemetry(0);
+  assert.equal(s0.utilPct, undefined, 'first sample has no delta');
+  const s1 = await b.sampleRawTelemetry(0);
+  assert.ok(Math.abs(s1.utilPct - 45) < 1e-6, `utilPct = ${s1.utilPct} (expected 45)`);
+  assert.ok(s1.utilPct >= 0 && s1.utilPct <= 100);
+});
+
+test('M3-C-L: renderComputeActivityCounter is the fallback when the global counter is unpopulated', async () => {
+  const b = makeBackend(activityLib({ global: false }));
+  await b.sampleRawTelemetry(0);
+  const s1 = await b.sampleRawTelemetry(0);
+  assert.ok(Math.abs(s1.utilPct - 45) < 1e-6, `fallback utilPct = ${s1.utilPct} (expected 45)`);
+});
+
+test('M3-C-L: no populated activity counter -> utilPct stays undefined (never 0)', async () => {
+  const lib = makeFakeLib();
+  lib.ctlPowerTelemetryGet = (_h, telBuf) => {
+    const st = lib.__state;
+    st.telemetryT += 0.2;
+    koffi.encode(telBuf, 'ctl_power_telemetry_t', {
+      Size: 1024, Version: 1,
+      timeStamp: { bSupported: true, units: 7, type: 9, value: st.telemetryT },
+      gpuCurrentClockFrequency: { bSupported: true, units: 0, type: 9, value: 600 },
+      gpuPowerLimited: false, gpuTemperatureLimited: false, gpuCurrentLimited: false,
+      gpuVoltageLimited: false, gpuUtilizationLimited: false,
+    });
+    return 0;
+  };
+  const b = makeBackend(lib);
+  await b.sampleRawTelemetry(0);
+  const s1 = await b.sampleRawTelemetry(0);
+  assert.equal(s1.utilPct, undefined);
+});
+
+test('M3-C-L: a counter reset (negative delta) degrades to undefined — never a bogus value', async () => {
+  const lib = makeFakeLib();
+  const st = lib.__state;
+  let call = 0;
+  lib.ctlPowerTelemetryGet = (_h, telBuf) => {
+    call++;
+    st.telemetryT += 0.2;
+    // Second sample: the counter "reset" below the first sample's value.
+    const activity = call === 1 ? 1000.0 : 500.0;
+    koffi.encode(telBuf, 'ctl_power_telemetry_t', {
+      Size: 1024, Version: 1,
+      timeStamp: { bSupported: true, units: 7, type: 9, value: st.telemetryT },
+      globalActivityCounter: { bSupported: true, units: 7, type: 9, value: activity },
+      gpuPowerLimited: false, gpuTemperatureLimited: false, gpuCurrentLimited: false,
+      gpuVoltageLimited: false, gpuUtilizationLimited: false,
+    });
+    return 0;
+  };
+  const b = makeBackend(lib);
+  await b.sampleRawTelemetry(0);
+  const s1 = await b.sampleRawTelemetry(0);
+  assert.equal(s1.utilPct, undefined);
 });
 
 // ---------------------------------------------------------------------------

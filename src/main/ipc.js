@@ -9,6 +9,7 @@ import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
 import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
+import { isElevated as isElevatedReal } from './elevation.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -30,7 +31,7 @@ import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply({ isElevated: isElevatedReal }), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,

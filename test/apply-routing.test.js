@@ -9,9 +9,124 @@ import {
   splitByRuntime, applySettingsRouted, executeApply, requiresExtendedRange,
   isMomentaryLieCandidate, createNullOldIgcl,
   STD_PL_MAX_W, STD_TL_MAX_C, EXTENDED_UNAVAILABLE_MSG, DELAYED_VERIFY_MS,
+  ocModeRefusal, refusalPerControl, OC_MODE_REFUSAL_MSG, OC_CEILING_REFUSAL_MSG,
+  OC_MODES, extendedUnavailableRefusal, extendedUnavailablePerControl,
 } from '../src/main/apply-routing.js';
 import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
 import { loadFeatureset } from '../src/main/backend/featuresets.js';
+
+// ---------------------------------------------------------------------------
+// M3-C-E — the OC-mode gate (one shared pure refusal function)
+// ---------------------------------------------------------------------------
+
+test('ocModeRefusal: stock mode refuses anything beyond the standard limits (252 W / 90 C)', () => {
+  assert.equal(ocModeRefusal('stock', { powerLimitW: 220, tempLimitC: 90 }), null);
+  assert.equal(ocModeRefusal('stock', { gpuFreqOffsetMhz: 300 }), null);
+  assert.equal(ocModeRefusal('stock', {}), null);
+  const r1 = ocModeRefusal('stock', { powerLimitW: 253 });
+  assert.deepEqual(r1, { mode: 'stock', controls: ['powerLimitW'], message: OC_MODE_REFUSAL_MSG });
+  const r2 = ocModeRefusal('stock', { tempLimitC: 91 });
+  assert.deepEqual(r2, { mode: 'stock', controls: ['tempLimitC'], message: OC_MODE_REFUSAL_MSG });
+  const r3 = ocModeRefusal('stock', { powerLimitW: 300, tempLimitC: 100 });
+  assert.deepEqual(r3.controls.sort(), ['powerLimitW', 'tempLimitC']);
+  assert.equal(r3.message, OC_MODE_REFUSAL_MSG);
+});
+
+test('ocModeRefusal: advanced mode allows up to the extended ceiling (315 W / 115 C)', () => {
+  assert.equal(ocModeRefusal('advanced', { powerLimitW: 315, tempLimitC: 115 }), null);
+  assert.equal(ocModeRefusal('advanced', { powerLimitW: 300 }), null);
+  assert.equal(ocModeRefusal('advanced', { tempLimitC: 100 }), null);
+});
+
+test('M3-C-D: above-ceiling values REFUSE in advanced mode — never clamped', () => {
+  const r = ocModeRefusal('advanced', { powerLimitW: 401 });
+  assert.deepEqual(r, { mode: 'advanced', controls: ['powerLimitW'], message: OC_CEILING_REFUSAL_MSG });
+  const r2 = ocModeRefusal('advanced', { powerLimitW: 500, tempLimitC: 116 });
+  assert.deepEqual(r2.controls.sort(), ['powerLimitW', 'tempLimitC']);
+  assert.equal(r2.message, OC_CEILING_REFUSAL_MSG);
+  // The gate NEVER clamps: 401 stays 401 in the refusal (the clamp layer is
+  // bypassed entirely by the callers).
+  assert.equal(r.controls.length, 1);
+});
+
+test('ocModeRefusal: an unknown ocMode degrades to stock (safe direction)', () => {
+  const r = ocModeRefusal(undefined, { powerLimitW: 300 });
+  assert.equal(r.mode, 'stock');
+  const r2 = ocModeRefusal('turbo', { powerLimitW: 300 });
+  assert.equal(r2.mode, 'stock');
+});
+
+test('ocModeRefusal: null/garbage settings never refuse', () => {
+  assert.equal(ocModeRefusal('stock', null), null);
+  assert.equal(ocModeRefusal('stock', undefined), null);
+  assert.equal(ocModeRefusal('advanced', []), null);
+});
+
+test('refusalPerControl: per-control failures carry the mode message only', () => {
+  const per = refusalPerControl(ocModeRefusal('stock', { powerLimitW: 300, tempLimitC: 95 }));
+  assert.deepEqual(Object.keys(per).sort(), ['powerLimitW', 'tempLimitC']);
+  for (const p of Object.values(per)) {
+    assert.equal(p.ok, false);
+    assert.equal(p.errorCode, 'out-of-range');
+    assert.equal(p.message, OC_MODE_REFUSAL_MSG);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// M3-C step-5 F1 — the capability refusal: advanced mode + a NOT-capable
+// bundled 2023 runtime must refuse PL > 252 / TL > 90 BEFORE any clamp
+// (never a silent 252 W / 90 C cap reported as ok:true).
+// ---------------------------------------------------------------------------
+
+test('F1: extendedUnavailableRefusal refuses extended values when caps expose NO extended ranges', () => {
+  const caps = { extendedRanges: false, ranges: { powerLimitW: { units: 'W' }, tempLimitC: { units: 'C' } } };
+  const r1 = extendedUnavailableRefusal({ powerLimitW: 300 }, caps);
+  assert.deepEqual(r1, { controls: ['powerLimitW'], message: EXTENDED_UNAVAILABLE_MSG });
+  const r2 = extendedUnavailableRefusal({ tempLimitC: 100 }, caps);
+  assert.deepEqual(r2, { controls: ['tempLimitC'], message: EXTENDED_UNAVAILABLE_MSG });
+  const r3 = extendedUnavailableRefusal({ powerLimitW: 300, tempLimitC: 100 }, caps);
+  assert.deepEqual(r3.controls.sort(), ['powerLimitW', 'tempLimitC']);
+  assert.equal(r3.message, EXTENDED_UNAVAILABLE_MSG);
+  // The refusal never clamps: the requested value stays in the descriptor.
+  assert.equal(r3.controls.length, 2);
+});
+
+test('F1: extendedUnavailableRefusal never fires when the capability exists (extendedRanges true)', () => {
+  const caps = { extendedRanges: true, ranges: { powerLimitW: { units: 'W' }, tempLimitC: { units: 'C' } } };
+  assert.equal(extendedUnavailableRefusal({ powerLimitW: 300, tempLimitC: 100 }, caps), null);
+});
+
+test('F1: extendedUnavailableRefusal never fires for in-range values or non-PL/TL controls', () => {
+  const caps = { extendedRanges: false, ranges: { powerLimitW: { units: 'W' }, tempLimitC: { units: 'C' } } };
+  assert.equal(extendedUnavailableRefusal({ powerLimitW: 252, tempLimitC: 90, gpuFreqOffsetMhz: 300 }, caps), null);
+  assert.equal(extendedUnavailableRefusal({}, caps), null);
+  assert.equal(extendedUnavailableRefusal(null, caps), null);
+  // No caps at all -> the capability cannot be confirmed; the safe direction
+  // is the historical threshold behavior (refuse) — never a silent clamp.
+  assert.deepEqual(extendedUnavailableRefusal({ powerLimitW: 300 }, undefined), { controls: ['powerLimitW'], message: EXTENDED_UNAVAILABLE_MSG });
+});
+
+test('F1: extendedUnavailableRefusal is unit-aware — percent-unit values (B580) are NEVER refused', () => {
+  const percentCaps = { extendedRanges: false, ranges: { powerLimitW: { units: '%' }, tempLimitC: { units: '%' } } };
+  assert.equal(extendedUnavailableRefusal({ powerLimitW: 120, tempLimitC: 100, gpuVoltOffsetV: 12 }, percentCaps), null, '100 % is not 100 C');
+  // Unknown units keep the historical threshold behavior.
+  const unknownCaps = { extendedRanges: false, ranges: {} };
+  assert.deepEqual(extendedUnavailableRefusal({ powerLimitW: 300 }, unknownCaps), { controls: ['powerLimitW'], message: EXTENDED_UNAVAILABLE_MSG });
+});
+
+test('F1: extendedUnavailablePerControl reports the honest unsupported shape per control', () => {
+  const per = extendedUnavailablePerControl(['powerLimitW', 'tempLimitC']);
+  assert.deepEqual(Object.keys(per).sort(), ['powerLimitW', 'tempLimitC']);
+  for (const p of Object.values(per)) {
+    assert.equal(p.ok, false);
+    assert.equal(p.errorCode, 'unsupported');
+    assert.equal(p.message, EXTENDED_UNAVAILABLE_MSG);
+  }
+});
+
+test('OC_MODES: the persisted vocabulary is stock|advanced', () => {
+  assert.deepEqual(OC_MODES, ['stock', 'advanced']);
+});
 
 // ---------------------------------------------------------------------------
 // splitByRuntime
@@ -215,7 +330,7 @@ test('executeApply: clamps to the capability ranges then routes; returns the fre
   const oldIgcl = createMockOldIgcl(backend);
   const out = await executeApply({ backend, oldIgcl, deviceId: 0, settings: { powerLimitW: 999, tempLimitC: 200, gpuFreqOffsetMhz: 50 } });
   assert.equal(out.result.ok, true);
-  assert.equal(out.state.powerLimitW, 315, 'clamped to the extended max');
+  assert.equal(out.state.powerLimitW, 315, 'clamped to the extended max (M3-C-D: 315 W, live-verified)');
   assert.equal(out.state.tempLimitC, 115, 'clamped to the extended TL max');
   assert.equal(out.state.gpuFreqOffsetMhz, 50);
 });
@@ -227,6 +342,31 @@ test('executeApply: extended values land in the mock state via the mock old runt
   assert.equal(out.result.ok, true);
   assert.equal(out.result.perControl.powerLimitW.ok, true);
   assert.equal(out.state.powerLimitW, 300);
+});
+
+test('F1: executeApply REFUSES extended values when the 2023 runtime is NOT capable — never a silent 252 W clamp', async () => {
+  const backend = new MockBackend({ extendedRanges: false }); // not-capable degradation
+  const oldIgcl = createMockOldIgcl(backend);
+  const out = await executeApply({ backend, oldIgcl, deviceId: 0, settings: { powerLimitW: 300, tempLimitC: 100 } });
+  assert.equal(out.result.ok, false, 'a not-capable runtime must never report ok:true');
+  assert.equal(out.result.perControl.powerLimitW.ok, false);
+  assert.equal(out.result.perControl.tempLimitC.ok, false);
+  assert.equal(out.result.perControl.powerLimitW.errorCode, 'unsupported');
+  assert.equal(out.result.perControl.powerLimitW.message, EXTENDED_UNAVAILABLE_MSG);
+  assert.equal(out.result.perControl.tempLimitC.message, EXTENDED_UNAVAILABLE_MSG);
+  // The refusal never touches the device: the state is the untouched default.
+  assert.equal(out.state.powerLimitW, 210, 'the fresh state read-back is the untouched device state');
+  assert.equal(backend._state.powerLimitW, 210, 'the clamp never ran');
+  assert.equal(backend._state.tempLimitC, 90, 'the clamp never ran');
+});
+
+test('F1: executeApply — the extended-capable case still applies 300 W through the same path', async () => {
+  const backend = new MockBackend({ extendedRanges: true });
+  const oldIgcl = createMockOldIgcl(backend);
+  const out = await executeApply({ backend, oldIgcl, deviceId: 0, settings: { powerLimitW: 300, tempLimitC: 100 } });
+  assert.equal(out.result.ok, true);
+  assert.equal(out.state.powerLimitW, 300);
+  assert.equal(out.state.tempLimitC, 100);
 });
 
 test('executeApply: extended fail (extendedFail mock) -> honest per-control failure', async () => {

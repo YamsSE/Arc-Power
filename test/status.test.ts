@@ -1,13 +1,15 @@
-// M3-A — GPU health row model (pure). The IGS-era combined mapping
+// M3-A + M3-C-I — GPU health row model (pure). The IGS-era combined mapping
 // (mapStatus / IGS_LABELS / igsHalfState / IGS_NOTE) is REMOVED: with the
 // M2C-C elevation gate, IGS state is no longer relevant to OC-applicability,
 // so the dashboard's merged Service Status card became the general GPU
-// HEALTH card with five honest rows:
-//   driver ("Driver installed"), device ("Device detected"),
-//   clocks ("Clocks normal"), oc ("OC working"), app ("Arc Power working").
+// HEALTH card. M3-C-I trims it to FOUR honest rows (the "Clocks normal" row
+// is removed per the user's dashboard picture):
+//   driver ("Driver installed" — detail = driver version + date like the
+//           device card), device ("Device detected"), oc ("OC working"),
+//   app ("Arc Power working" — healthy detail "App & Service Running").
 // Each row: level (ok/warn/error/unknown) + a human detail line. The health
 // card re-renders on the same status slots (health/caps/bootError/driverDate)
-// — telemetry ticks only refresh the clocks row in place.
+// — telemetry ticks only refresh the live readout grid.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +18,6 @@ import {
   healthRows,
   driverRow,
   deviceRow,
-  clocksRow,
   ocRow,
   appRow,
   overallHealthLevel,
@@ -24,17 +25,14 @@ import {
   dashboardNeedsFullRender,
 } from '../src/renderer/pure/status.ts';
 import type { DashboardSig, HealthInput, HealthLevel } from '../src/renderer/pure/status.ts';
-import type { Capabilities, DeviceInfo, HealthReport, LastApply, TelemetrySample } from '../src/renderer/types.ts';
+import type { Capabilities, DeviceInfo, HealthReport, LastApply } from '../src/renderer/types.ts';
 
-const okHealth: HealthReport = { backend: 'igcl', igclLoaded: true, driverVersion: '32.0.101.8861', levelZeroOk: true };
+const okHealth: HealthReport = { backend: 'igcl', igclLoaded: true, driverVersion: '0x002000000065229d', levelZeroOk: true };
 const mockHealth: HealthReport = { backend: 'mock', igclLoaded: true, driverVersion: '32.0.101.8861', levelZeroOk: true };
 const device: DeviceInfo = {
   id: 0, name: 'Intel Arc A770', type: 'discrete', pciVendorId: '8086', pciDeviceId: '56a0', revId: 5,
   bdf: { bus: 1, device: 0, function: 0 }, driverVersion: '0x002000000065229d', graphicsClockMHz: 2400, numXeCores: 32,
 };
-const sample = (clock?: number): TelemetrySample | null => (clock === undefined
-  ? null
-  : { t: 0, gpuClockMhz: clock, throttle: {} });
 
 const input = (patch: Partial<HealthInput> = {}): HealthInput => ({
   health: okHealth,
@@ -42,6 +40,7 @@ const input = (patch: Partial<HealthInput> = {}): HealthInput => ({
   sample: null,
   lastApply: null,
   bootError: null,
+  driverDate: null,
   ...patch,
 });
 
@@ -63,11 +62,18 @@ test('healthLevel: healthy -> ok; error -> error; missing igcl/level-zero -> war
 });
 
 // ---------------------------------------------------------------------------
-// The five health rows
+// The four health rows
 // ---------------------------------------------------------------------------
 
 test('driverRow: ok when IGCL is loaded AND a driver version is known', () => {
-  assert.deepEqual(driverRow(input()), { id: 'driver', label: 'Driver installed', level: 'ok', detail: 'IGCL loaded, driver 32.0.101.8861' });
+  // M3-C-I: the ok detail is the driver version + date like the device card
+  // (decode the IGCL hex uint64; append the registry date when known).
+  assert.deepEqual(driverRow(input()), { id: 'driver', label: 'Driver installed', level: 'ok', detail: '32.0.101.8861' });
+  assert.deepEqual(driverRow(input({ driverDate: '7-5-2026' })), {
+    id: 'driver', label: 'Driver installed', level: 'ok', detail: '32.0.101.8861 - Jul 05, 2026',
+  });
+  // Already-dotted reports (mock fixture) pass through verbatim.
+  assert.equal(driverRow(input({ health: mockHealth })).detail, '32.0.101.8861');
 });
 
 test('driverRow: not loaded -> error (with the backend error text)', () => {
@@ -96,27 +102,10 @@ test('deviceRow: device present -> ok with its name; boot error -> error; else u
   assert.deepEqual(deviceRow(bootFailed), { id: 'device', label: 'Device detected', level: 'error', detail: 'No Intel Arc GPU detected' });
 });
 
-test('clocksRow: sane advertised clock + in-range telemetry clock -> ok', () => {
-  assert.equal(clocksRow(input({ sample: sample(2100) })).level, 'ok');
-  assert.equal(clocksRow(input({ sample: sample(2100) })).detail, '2100 MHz live');
-});
-
-test('clocksRow: no telemetry yet -> ok but "waiting" (never a false alarm)', () => {
-  assert.equal(clocksRow(input()).level, 'ok');
-  assert.match(clocksRow(input()).detail, /waiting for live telemetry/);
-});
-
-test('clocksRow: zero/absent advertised clock or insane telemetry clock -> warn', () => {
-  const noAdvertised: HealthInput = input({ device: { ...device, graphicsClockMHz: 0 } });
-  assert.equal(clocksRow(noAdvertised).level, 'warn');
-  for (const bad of [0, -5, NaN, 99999]) {
-    assert.equal(clocksRow(input({ sample: sample(bad) })).level, 'warn', `clock ${bad}`);
-  }
-});
-
-test('clocksRow: no device -> unknown / boot-error', () => {
-  assert.equal(clocksRow(input({ device: null })).level, 'unknown');
-  assert.equal(clocksRow(input({ device: null, bootError: 'boom' })).level, 'error');
+test('M3-C-I: the "Clocks normal" row is REMOVED (clocksRow no longer exists)', () => {
+  const rows = healthRows(input());
+  assert.ok(!rows.some((r) => r.id === 'clocks' as never), 'no clocks row');
+  assert.ok(!rows.some((r) => r.label === 'Clocks normal'), 'no clocks label');
 });
 
 test('ocRow: honest tri-state — never applied / last ok / last failed', () => {
@@ -126,19 +115,18 @@ test('ocRow: honest tri-state — never applied / last ok / last failed', () => 
   assert.deepEqual(ocRow(input({ lastApply: apply(false) })), { id: 'oc', label: 'OC working', level: 'error', detail: 'Last apply failed' });
 });
 
-test('appRow: booted backend -> ok (mock named honestly); boot failure -> error; else unknown', () => {
-  assert.match(appRow(input()).detail, /App running, backend igcl/);
-  assert.equal(appRow(input()).level, 'ok');
-  assert.match(appRow(input({ health: mockHealth })).detail, /mock backend/);
+test('M3-C-I: appRow healthy detail reads "App & Service Running" (app-only, NO IGS probe)', () => {
+  assert.deepEqual(appRow(input()), { id: 'app', label: 'Arc Power working', level: 'ok', detail: 'App & Service Running' });
+  assert.deepEqual(appRow(input({ health: mockHealth })), { id: 'app', label: 'Arc Power working', level: 'ok', detail: 'App & Service Running' });
   assert.equal(appRow(input({ health: null, bootError: 'Health check failed' })).level, 'error');
   assert.equal(appRow(input({ health: null })).level, 'unknown');
 });
 
-test('healthRows: all five rows in display order (pinned by --ui-verify)', () => {
+test('healthRows: all four rows in display order (pinned by --ui-verify)', () => {
   const rows = healthRows(input());
-  assert.deepEqual(rows.map((r) => r.id), ['driver', 'device', 'clocks', 'oc', 'app']);
+  assert.deepEqual(rows.map((r) => r.id), ['driver', 'device', 'oc', 'app']);
   assert.deepEqual(rows.map((r) => r.label), [
-    'Driver installed', 'Device detected', 'Clocks normal', 'OC working', 'Arc Power working',
+    'Driver installed', 'Device detected', 'OC working', 'Arc Power working',
   ]);
 });
 
@@ -153,7 +141,7 @@ test('worstLevel: error > warn > unknown > ok', () => {
   assert.equal(worstLevel(['warn', 'error']), 'error');
 });
 
-test('overallHealthLevel: the worst of the five rows drives the card level', () => {
+test('overallHealthLevel: the worst of the four rows drives the card level', () => {
   // All-ok needs an applied OC row (never-applied reads as unknown).
   const healthy: HealthInput = input({ lastApply: apply(true) });
   assert.equal(overallHealthLevel(healthRows(healthy)), 'ok');

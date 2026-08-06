@@ -57,8 +57,8 @@ const px = (img, x, y) => {
 function isBlueish(rgb) {
   return rgb[2] > rgb[0] && rgb[2] > 120;
 }
-function isWhiteish(rgb) {
-  return rgb[0] > 240 && rgb[1] > 240 && rgb[2] > 240;
+function isDarkish(rgb) {
+  return rgb[0] < 90 && rgb[1] < 100 && rgb[2] < 120;
 }
 
 const ASSETS = [
@@ -67,7 +67,7 @@ const ASSETS = [
   ['src/assets/favicon.png', 16],
 ];
 
-test('B6: runtime PNG assets are valid, square, and render the blue-AP design', () => {
+test('M3-C-C: runtime PNG assets are valid, square, and render the minimal dark-square + blue-A mark', () => {
   for (const [rel, size] of ASSETS) {
     const img = parsePng(readFileSync(path.join(ROOT, rel)));
     assert.equal(img.width, size, `${rel} is ${size}px`);
@@ -75,20 +75,23 @@ test('B6: runtime PNG assets are valid, square, and render the blue-AP design', 
     // outside the corner arc at every size)
     const corner = px(img, 0, 0);
     assert.equal(corner[3], 0, `${rel} corner is transparent`);
-    // top-center: blue gradient
+    // top-center: DARK rounded-square background (the new minimal mark is a
+    // dark tile, not the old blue tile)
     const top = px(img, Math.floor(size / 2), Math.floor(size * 0.05));
     assert.equal(top[3], 255, `${rel} top is opaque`);
-    assert.ok(isBlueish(top), `${rel} top is blue (${top})`);
-    // glyph area: white "AP" strokes present somewhere mid-height
+    assert.ok(isDarkish(top), `${rel} top is dark (${top})`);
+    // the bold blue "A" strokes are present mid-height: at y 0.3 the two
+    // legs cross (accent #4cc2ff — the sidebar accent, blue-dominant)
     const midRow = Math.floor(size * 0.3);
-    let white = 0;
+    let blue = 0;
     for (let x = 0; x < size; x++) {
-      if (isWhiteish(px(img, x, midRow))) white++;
+      if (isBlueish(px(img, x, midRow))) blue++;
     }
-    assert.ok(white >= Math.max(2, size / 10), `${rel} has white glyph strokes on the mid row (${white} px)`);
-    // gap between A and P (x 0.5) at mid height is blue (glyph-dominant, not a blob)
-    const gap = px(img, Math.floor(size * 0.5), Math.floor(size * 0.5));
-    assert.ok(isBlueish(gap) || gap[3] < 255, `${rel} letter gap is not solid white (${gap})`);
+    assert.ok(blue >= Math.max(2, size / 10), `${rel} has blue "A" strokes on the mid row (${blue} px)`);
+    // the A's counter (the hole between the legs below the crossbar) shows
+    // the DARK background, not a blue blob — the glyph is a real "A"
+    const hole = px(img, Math.floor(size * 0.5), Math.floor(size * 0.62));
+    assert.ok(isDarkish(hole), `${rel} counter hole is dark (${hole})`);
   }
 });
 

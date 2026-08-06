@@ -44,6 +44,10 @@ export const OLD_IGCL_FILENAME = 'IntelControlLib.dll';
 // Verified ceilings (docs/igcl-integration.md §8c): the KMD accepts 315 W
 // and 115 C; 125 C clamps to 115. These are the ONLY extended range bounds
 // the old runtime ever writes.
+// M3-C-D: the exposed extended PL ceiling. LIVE-VERIFIED 2026-08-06:
+// 400/350/330 W are refused by the runtime (0x44000004), 315 W persists —
+// 315 W IS the ceiling on this card. Requests above it are refused honestly
+// (never clamped) — the refusal regression test pins that.
 export const EXTENDED_PL_MAX_W = 315;
 export const EXTENDED_PL_MIN_W = 105;
 export const EXTENDED_TL_MAX_C = 115;

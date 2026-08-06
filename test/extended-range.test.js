@@ -30,6 +30,7 @@ test('requiresExtendedRangeConfirm: gated on PL > 252 or TL > 90', () => {
 test('requiresExtendedRangeConfirm: the standard limits are 252 W / 90 C', () => {
   assert.equal(STD_PL_MAX_W, 252);
   assert.equal(STD_TL_MAX_C, 90);
+  // M3-C-D: the extended PL ceiling is 315 W — live-verified KMD ceiling.
   assert.equal(EXTENDED_PL_MAX_W, 315);
   assert.equal(EXTENDED_TL_MAX_C, 115);
 });
@@ -41,7 +42,7 @@ test('clampExposedRange: without extended ranges the sliders stay within the sta
   assert.equal(tl.max, TEMP_LIMIT_MAX_C, 'temp slider pinned to 90 C');
 });
 
-test('clampExposedRange: with extended ranges the FULL verified maxes are exposed', () => {
+test('clampExposedRange: with extended ranges the FULL maxes are exposed (315 W / 115 C)', () => {
   const pl = clampExposedRange(PL_RANGE, 'powerLimitW', { extendedRanges: true });
   assert.equal(pl.max, EXTENDED_PL_MAX_W, 'power slider goes to 315 W');
   const tl = clampExposedRange(TL_RANGE, 'tempLimitC', { extendedRanges: true });

@@ -19,7 +19,7 @@
 // non-elevated instance fails honestly per control.
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-import { executeApply } from './apply-routing.js';
+import { executeApply, ocModeRefusal, extendedUnavailableRefusal } from './apply-routing.js';
 
 /**
  * @param {{
@@ -76,6 +76,33 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
     return { applied: false, reason: `profile '${profileId}' not found` };
   }
 
+  // M3-C-E: the OC-mode gate runs BEFORE any apply (and before the clamp).
+  // A mode refusal is a CONFIG refusal, not a hardware failure: it reports
+  // the mode message ONLY and NEVER runs the reset-to-defaults fallback —
+  // a saved 300 W profile applied at every logon in stock mode must refuse
+  // cleanly, never wipe the live OC state and never balloon "defaults
+  // restored" (fallbackApplied stays undefined -> the tray shows the
+  // reason-specific refused balloon). Same for the tray path (shared flow).
+  const refusal = ocModeRefusal(settings.ocMode, profile.settings);
+  if (refusal) {
+    log(`[apply-on-boot] oc-mode refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) — nothing applied, NO defaults restore`);
+    return { applied: false, reason: refusal.message, ocModeRefused: true };
+  }
+
+  // M3-C step-5 F1: advanced mode + a NOT-capable bundled 2023 runtime (the
+  // future-driver degradation) -> refuse the profile's extended values
+  // BEFORE any apply, never a silent 252 W / 90 C clamp reported as applied.
+  // Same refusal classification as the mode gate: no defaults-restore
+  // fallback, the live OC state survives, and the tray balloon is the
+  // reason-specific refusal (fallbackApplied stays undefined). Keyed on the
+  // capability (caps.extendedRanges), never the mode — identical probe on
+  // both sides of the worker boundary.
+  const unavailable = extendedUnavailableRefusal(profile.settings, caps);
+  if (unavailable) {
+    log(`[apply-on-boot] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) — nothing applied, NO defaults restore`);
+    return { applied: false, reason: unavailable.message, extendedUnavailable: true };
+  }
+
   log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId} — single attempt`);
   // F3 instant apply (M2C-B) + M2C-C routing/elevation: ONE attempt, shared
   // with the UI apply path. A non-elevated parent delegates to the elevated
@@ -85,12 +112,15 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   try {
     if (applyRunner?.needsWorker?.()) {
       // S2: the runner request carries the device-side waiver state so the
-      // worker's in-memory flag matches what the user accepted.
+      // worker's in-memory flag matches what the user accepted. M3-C-E: it
+      // carries the persisted ocMode so the worker's gate keys on the real
+      // mode (its own caps always report extendedRanges).
       const out = await applyRunner.apply({
         deviceId,
         settings: profile.settings,
         profileName: profile.name,
         waiverAccepted: caps.waiverAccepted === true,
+        ocMode: settings.ocMode,
       });
       result = out.result;
       state = out.state;

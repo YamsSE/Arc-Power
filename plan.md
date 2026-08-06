@@ -768,6 +768,257 @@ working, app working.
 - Acceptance: full manual checklist on the A770; B5xx per availability
   above.
 
+### M3-C — Elevation rework, apply-failure fix, OC UX overhaul, monitoring fixes
+
+User request (2026-08-06) after M3-B. Root causes already found by the host
+during recon, all evidence-based:
+
+- **Pics 1-2 (apply shows error, tweak applies):** `buildRegApplyScript`
+  writes the elevated result file with `Out-File -Encoding utf8`, which in
+  PowerShell 5.1 emits a UTF-8 **BOM** (`EF BB BF` — reproduced live). The
+  parent's `JSON.parse` rejects the BOM'd string, `parseApplyOutcome`
+  returns null, and every real tweak apply is reported as failed/never-run
+  while the reg writes actually landed. Unit tests + ui-verify never caught
+  it (mock adapter writes no file).
+- **Utilization never works:** the real backend's `sampleRawTelemetry`
+  never populates `utilPct` (only energy counters + throttle flags).
+- **FPS never works:** `tools/presentmon/PresentMonAPI2.dll` exists but
+  `PresentMonService.exe` does not -> `pmOpenSession` always fails ->
+  permanently "FPS unavailable". Additionally the adapter tracks the app's
+  own pid (presents nothing) — even a running service would show no FPS.
+
+#### M3-C-A: BOM fix (tweaks apply false-failure) — small, do first
+- `buildRegApplyScript`: write the result JSON with `-Encoding ascii`
+  (content is pure ASCII: step indices + booleans). PS 5.1's `-Encoding
+  utf8` writes a BOM (proven live); ascii never BOMs.
+- `parseApplyOutcome`: defensively strip a leading `\uFEFF` before parse
+  (guards any future writer that BOMs).
+- Regression tests: (1) `buildRegApplyScript` output contains `-Encoding
+  ascii` (pinned); (2) `parseApplyOutcome` parses a BOM-prefixed string;
+  (3) existing registry-apply tests stay green.
+- Live verification (user UAC): one real tweak apply + revert through the
+  app path; the toast must report success honestly.
+
+#### M3-C-B: Distribution EXE runs elevated — no per-action UAC prompts
+- electron-builder: **`portable.requestExecutionLevel: "admin"`** — NOT
+  `win.requestedExecutionLevel`: verified in electron-builder 26.15.3, the
+  win-level setting applies only to the inner app exe while the portable
+  wrapper is asInvoker by default and would fail to launch the elevated
+  inner exe (ERROR_ELEVATION_REQUIRED). Wrapper-level admin = one UAC at
+  launch, nothing inside.
+- Post-dist verification: inspect the portable EXE's RT_MANIFEST
+  (sigcheck/mt.exe) for requireAdministrator, not just the icon.
+- The packaged `--headless` smoke now triggers UAC — run it via the
+  elevated harness, and `m3b-elev-smoke.ps1` must itself run from an
+  elevated shell (it uses plain Start-Process, no self-elevation).
+- Product-path rework (elevation-aware, dev mode keeps the old fallbacks):
+  - OC apply: `createApplyRunner` already applies in-process when the
+    process is elevated (`needsWorker()` false) — verify + keep; the
+    renderer's "Administrator approval needed" toast must be gated on
+    `!isElevated` so it never fires in the elevated app.
+  - Registry apply: new direct path in the real adapter — when the current
+    process is elevated, run `reg.exe` directly via execFile (no
+    PowerShell, no RunAs, no result file needed; per-step exec + honest
+    per-step reporting stays, UAC-decline wording becomes unreachable in
+    the packaged app). Non-elevated fallback (dev) keeps the current
+    PowerShell RunAs chain.
+- Copy cleanup: dead "requires administrator approval" texts that can no
+  longer occur in the packaged app stay for the dev fallback path (gated,
+  not removed blindly — ui-verify still exercises the decline path via
+  mock).
+- Tests: unit tests for the direct reg path (injected execFile); elevation
+  wiring covered by existing runner tests.
+- NOTE: the IGS-service disable/enable bullets are dropped — dead code
+  since M3-A (igs-service.js is imported only for buildElevatedLaunch /
+  classifyElevationError); hygiene only, never revived here.
+
+#### M3-C-C: New minimal EXE/window/tray icon (user: "new minimal mark")
+- `scripts/make-icon.js`: draw the new brand mark — dark rounded-square
+  background + bold blue "A" (or the sidebar's blue-bar motif — implementer
+  picks the cleaner at 16-256 px; must read at small sizes), regenerate
+  `src/assets/icon.png` (window), `build/icon.ico` (multi-size, electron-
+  builder EXE icon), tray icon + favicon from the same source.
+- Wire everywhere: BrowserWindow icon, tray nativeImage, electron-builder
+  icon (already `build/icon.ico`).
+- Verify: built EXE embeds the new icon (check the ico bytes/group icon
+  resource in the portable EXE); window + tray show it in a live run.
+
+#### M3-C-D: Power Limit max 400 W + the "above Intel specs" disclaimer
+- Raise the extended PL ceiling 315 -> 400 W **in lockstep everywhere
+  BEFORE any probe**: old-igcl.js `EXTENDED_PL_MAX_W` (its `_setScalar`
+  clamp would otherwise silently cap 400 -> 315 and void the probe),
+  backend extended ranges, UI slider max, **mock/featuresets/a770.json
+  (`extended.plMax`) AND every test pinning the extended max at 315**
+  (old-igcl.test.js, extended-range.test.js, featuresets.test.js,
+  igcl-backend.test.js, ipc-core.test.js, mock-backend.test.js,
+  apply-routing.test.js AND **ui-verify.js:464 + ui-verify.js:1081** —
+  ~9+ files) — checkpoint 2 is GREEN at 400.
+  TL stays 115.
+- Live test (user UAC, elevated probe): write 400 W, read back. M2C-C
+  evidence already pins the KMD ceiling at 315 W — expected outcome: an
+  honest 400 refusal (NOT a clamp). Then **pin mock + all tests +
+  `EXTENDED_PL_MAX_W` + UI/backend back to the verified ceiling in ONE
+  pass** and document that as the answer to the user's 400 W request (the
+  "315 pins stay green" claim only holds after this final pinning).
+- Disclaimer copy: the Advanced-mode enable confirm explicitly warns:
+  beyond Intel's standard limit; depends on card/driver/PSU; the Acer
+  BiFrost profile used 300 W.
+- **Double-dialog decision (ALL apply paths)**: the per-apply extended
+  confirm is redundant in Advanced mode (mode-enable already warned) — in
+  Advanced mode the confirm is SKIPPED on the OC tab, the Profiles page
+  (profiles.ts:375-376 has the same confirm) AND the tray (main.js:117-144
+  — the tray's `requiresExtendedRange` confirm is dropped entirely);
+  Stock mode is covered by the gate's refusal + toast/balloon everywhere
+  (no dead-end confirm). In Stock mode extended values are impossible via
+  the UI and direct requests refuse (M3-C-E gate).
+  The ui-verify extended-variant assertions (RID_MOCK_EXTENDED_RANGES,
+  ui-verify.js:447-516) are rewritten to the no-dialog-in-advanced
+  behavior; the stock-mode variant exercises the refusal path instead.
+- Regression test: an above-ceiling apply fails honestly with the refusal
+  message — never silently clamps.
+
+#### M3-C-E: Intel OC Mode / Advanced OC Mode toggle
+- Persisted `ocMode: 'stock' | 'advanced'` in settings.json (ProfileStore)
+  + a settings.json **schemaVersion migration** (ProfileStore migration
+  rules). IPC get/set. Real-product default **stock** (Intel-standard
+  limits); **mock/ui-verify default advanced** (the extended-flow pins
+  stay green — see M3-C-D for the 400/315 ordering across the milestone;
+  a stock-mode ui-verify variant exercises the refusal path).
+- OC tab: segmented toggle near the top; enabling Advanced shows the
+  beyond-Intel-specs disclaimer (M3-C-D wording) + confirm.
+- Effect (single gate in main): `getCapabilities` returns the extended
+  ranges ONLY when advanced is active (the existing `extendedRanges`
+  flag). Mode change must **invalidate the IgclBackend per-device caps
+  cache** (igcl-backend.js) and the renderer must **re-fetch caps after
+  the toggle**.
+- Safety — the gate is an **explicit pre-clamp REFUSAL**, not a clamp,
+  and it is **independent of caps caching**: implement it as ONE shared
+  pure function keyed on `ocMode` + the STD limits
+  (STD_PL_MAX_W/STD_TL_MAX_C), called BEFORE every clamp in
+  ipc-core 'apply-settings', applyProfile / apply-on-boot, and
+  apply-worker. The worker request file carries `ocMode` (the worker's
+  own backend has no mode input and its caps always report extendedRanges
+  — a caps-keyed gate there would silently clamp, exactly the forbidden
+  behavior). Refusal regression tests for all four paths.
+- **Config-refusal classification (boot/tray)**: `applyProfile`'s
+  reset-to-defaults fallback runs on ANY `result.ok === false` — a
+  mode-refusal is NOT a hardware failure and must NEVER reset the GPU or
+  balloon "defaults restored". The gate's refusal reports the mode message
+  only and bypasses the reset fallback entirely, in both the boot and tray
+  paths. (Critical with the migration defaulting existing users to stock:
+  a saved 300 W profile at every logon must refuse cleanly, never wipe the
+  live OC state.)
+- Boot/tray profile applies with extended values in stock mode: refuse
+  with the mode message (tray balloon / boot log).
+
+#### M3-C-F: Dynamic refresh on the Overclocking tab
+- After an apply, refresh EVERY card from the fresh device state: the
+  "Driver:" readout text (currently built once at render — the stale part
+  that forces the leave-and-return dance), slider position, chips.
+- Page `onUpdate`: refresh cards in place when the store's state slot
+  changes (apply from any page / profile load / tray apply), no full
+  rebuild; unit-testable pure signature helper.
+- ui-verify: assert the Driver readout updates after an apply without
+  navigating away.
+
+#### M3-C-G: Remove Stock/Medium/Max presets; "Applied" green chip
+- Remove the per-card preset chips on the OC tab (computePresets call
+  site; the pure fn stays for other consumers). "Reset to default" stays.
+- Per-control chip states: hidden until the first apply of that control;
+  green "Applied" while the current value equals the last applied value;
+  warn "Unapplied" once the value differs after applying.
+- Update ui-verify OC-flow expectations.
+
+#### M3-C-H: Simplify the tweak explanations (MPO especially)
+- registry-catalog.js: shorten every entry's detail/description to 1-2
+  plain-language lines (MPO: about fixing stutter/black-screen on some
+  setups, off by default in Windows). Step labels (the reg commands —
+  pinned by ui-verify toasts) unchanged. Update tests asserting the long
+  texts. Don't regress the clean `·` separator (M3-B host fix).
+
+#### M3-C-I: Dashboard rows per the user's 3rd picture (text description)
+- Remove the "Clocks normal" health row (pure status.ts + tests +
+  ui-verify + the in-place refresh path).
+- "Driver installed" row detail: show the driver version + date like the
+  device card does (`driverLine(device, s.driverDate)`).
+- "Arc Power working" row: healthy detail reads "App & Service Running"
+  (app-only — NO IGS probe, per the user's answer; the service phrase is
+  the app's own engine/backend). Honest warn/error states as now.
+
+#### M3-C-J: Compact Overclocking tab
+- CSS: tighter cards (padding/gap/row height), slider row + value inline,
+  single-line meta; the Advanced disclosure stays. Preset-chip removal
+  frees space too. Keep every ui-verify structural assertion intact.
+
+#### M3-C-K: Alchemist fan curves — probe IGS/IGCL, live-test on the A770
+- Research + probes: (1) grep the bundled 2023 IGCL headers
+  (Temp\opencode\igcl-src) for fan-curve/speed functions; (2) inspect the
+  installed IGS app/service surface (iGfxSvc / IgsApi or similar) for a
+  fan-control endpoint (the user believes IGS can be hooked); (3) if a real
+  channel exists, live-test a curve write on the card (elevated probe).
+- Expected outcome honesty: A770 fan is firmware-managed (IGCL has no fan
+  API for Alchemist; B580 gets IGC fan control in M4). If the probes
+  confirm no channel, the Fan page keeps its honest disabled/unsupported
+  state (hasFan:false) and the finding is documented in the milestone
+  report with the evidence. If a channel exists, wire it into the Fan page
+  and live-verify. No silent "applied" claims.
+
+#### M3-C-L: Fix Utilization + FPS monitoring
+- Utilization: compute `utilPct` in the real backend's telemetry loop from
+  the IGCL activity counters + timestamp deltas (per IGCL's documented
+  sample-delta method; globalActivityCounter / renderComputeActivityCounter
+  — implementer validates which is populated on this card with a live
+  probe). Flows through the existing pipeline to Monitoring + dashboard.
+  Mock already provides utilPct; ui-verify unchanged.
+- FPS — PMAPI2 v2.5.1 reality (verified against the v2.5.1 header): NO
+  `pmStartTrackingAllProcesses`; tracking is per-pid only
+  (`pmStartTrackingProcess` / per-pid `pmConsumeFrames`). Mechanism:
+  **foreground-window pid tracking as primary** — GetForegroundWindow /
+  GetWindowThreadProcessId (koffi user32), re-track on focus change
+  (stop old pid, start new); a game/video in the foreground shows its FPS.
+  Process-enumeration aggregation is explicitly NOT in scope this
+  milestone (documented enhancement).
+- PresentMon service — the v2.5.1 PresentMonService.exe is an SCM-service
+  binary (per-user standalone run unverified). Verification step (check-
+  point 2): extract PresentMonService.exe + PresentMonSharedService.dll
+  from the v2.5.1 MSI, run standalone, confirm `pmOpenSession` succeeds.
+  If standalone fails: the always-elevated packaged app can
+  `sc create`/`sc start` it (dev mode keeps the honest "FPS unavailable"
+  degradation). Bundle DLL + service exe + shared dll from the SAME v2.5.1
+  release (same-version guarantee), ship in the EXE (asarUnpack — koffi
+  needs real files), third-party notices, stop gitignoring them.
+- Client restructure: single client, re-trackable pid (start/stop per
+  foreground change), pure helper for the pid resolution; unit tests for
+  the restructure + aggregation of the sample shape.
+- Live verification: browser video fullscreen -> FPS non-null; desktop
+  motion -> utilization > 0. Honest "FPS unavailable" stays as the
+  degradation when the service cannot start.
+
+#### Checkpoints (build + full test suite between phases)
+1. After M3-C-A (BOM fix) + M3-C-B main-side elevation rework.
+2. After M3-C-D/E (400 W ceiling in lockstep + OC mode gate in main) +
+   M3-C-L backend (utilPct) + **PresentMon feasibility probes** (MSI
+   extraction + standalone service spawn test, foreground-pid API check —
+   decides the FPS mechanism before any renderer work).
+3. After the renderer work (C/F/G/I/J) + M3-C-C icon.
+4. After M3-C-K probes + M3-C-L PresentMon bundling/lifecycle wiring; then
+   live tests with the user (400 W probe, fan probe, FPS/util live, one
+   real tweak apply + revert, one in-process OC apply with no UAC).
+
+#### Acceptance
+- Packaged EXE: always elevated (single UAC at launch), new minimal icon,
+  no per-action UAC; tweak apply toasts honest (BOM fixed, live-verified);
+  OC apply in-process with no prompt.
+- OC tab: mode toggle + disclaimer, 400 W max (or the live-verified
+  ceiling), dynamic refresh, Applied/Unapplied chips, no presets, compact.
+- Dashboard: no clocks row, driver version+date row, "App & Service
+  Running" app row.
+- Monitoring: utilization + FPS live-verified non-zero on this machine.
+- Fan: honest evidence-based outcome (working hook or documented
+  unsupported).
+- 643+ tests green, tsc 0, ui-verify variants green, dist + packaged
+  (elevated) smoke exit 0, commit + push per the pipeline.
+
 ## 10. Test strategy
 
 - `vitest` (renderer + pure modules) and `node:test` (main process).

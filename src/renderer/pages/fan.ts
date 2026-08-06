@@ -348,7 +348,9 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
     }
     try {
       const { result, state: fresh } = await api.applySettings(deviceId, settings);
-      ctx.store.set({ state: fresh });
+      // M3-C review F2: only store a NON-NULL fresh state — a refusal
+      // envelope's null state must never null out the store's device state.
+      if (fresh) ctx.store.set({ state: fresh });
       // M3-A: record the outcome for the dashboard "OC working" health row.
       const failedFan = Object.entries(result.perControl)
         .filter(([, per]) => !per.ok)

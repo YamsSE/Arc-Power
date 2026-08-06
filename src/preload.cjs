@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   appElevated: () => ipcRenderer.invoke('app-elevated'),
+  ocModeGet: () => ipcRenderer.invoke('oc-mode-get'),
+  ocModeSet: (ocMode) => ipcRenderer.invoke('oc-mode-set', ocMode),
   fpsPoll: (deviceId) => ipcRenderer.invoke('fps-poll', deviceId),
   profilesList: () => ipcRenderer.invoke('profiles-list'),
   profilesSave: (profile) => ipcRenderer.invoke('profiles-save', profile),

@@ -72,11 +72,14 @@ export interface AppState {
   driverDate: string | null;
   /** M2C-B B3: app version for the header line (app:version IPC). */
   appVersion: string;
-  /** M2C-C: this process runs as administrator (app-elevated IPC). */
+  /** M3-C: this process runs as administrator (app-elevated IPC). */
   elevated: boolean;
-  /** M2C-C: applies go through the elevated self-worker (UAC prompt) —
+  /** M3-C: applies go through the elevated self-worker (UAC prompt) —
    *  the elevation toast fires before the apply when true. */
   workerApply: boolean;
+  /** M3-C-E: the OC mode (stock|advanced) — which ranges getCapabilities
+   *  exposes and the apply gate's mode. Fetched at boot via oc-mode-get. */
+  ocMode: 'stock' | 'advanced';
   bootError: string | null;
   /** M2D (mock mode only): the mock featureset list + active selection for
    *  the header dropdown. Empty in real mode (no dropdown, no channel). */
@@ -100,6 +103,7 @@ const INITIAL: AppState = {
   appVersion: '0.0.0',
   elevated: false,
   workerApply: false,
+  ocMode: 'stock',
   bootError: null,
   featuresets: [],
   featuresetId: null,

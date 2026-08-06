@@ -15,6 +15,9 @@ export type OcErrorCode =
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
 
+/** M3-C-E: the OC mode — which limit set the device exposes + the apply gate. */
+export type OcMode = 'stock' | 'advanced';
+
 /** Apply intent; an absent field means "leave the driver value untouched". */
 export interface Settings {
   powerLimitW?: number;
@@ -280,11 +283,13 @@ export interface Profile {
   ocOnBoot: boolean;
 }
 
-/** Persisted profile-settings envelope (ocOnBoot / activeProfileId). */
+/** Persisted profile-settings envelope (ocOnBoot / activeProfileId / ocMode). */
 export interface ProfileSettingsState {
   waiverAccepted: boolean;
   ocOnBoot: boolean;
   activeProfileId: string | null;
+  /** M3-C-E: the OC mode ('stock'|'advanced'), persisted in settings.json. */
+  ocMode: OcMode;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

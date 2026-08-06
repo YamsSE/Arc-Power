@@ -202,6 +202,10 @@ test('createRegistryCatalog: real adapter factory defaults to the module execFil
 test('catalog: every entry explains itself honestly (description + absentLabel present)', () => {
   for (const entry of REGISTRY_CATALOG) {
     assert.ok(entry.absentLabel.length > 0, `${entry.id}: absentLabel`);
-    assert.ok(entry.description.length > 80, `${entry.id}: a real description (not a stub)`);
+    // M3-C-H: descriptions are 1-2 plain-language lines — a real sentence,
+    // no hard line breaks, no long canonical-location prose.
+    assert.ok(entry.description.length >= 40 && entry.description.length <= 240, `${entry.id}: description length ${entry.description.length} (M3-C-H: 1-2 lines)`);
+    assert.ok(!entry.description.includes('\n'), `${entry.id}: no hard line breaks`);
+    assert.ok(!/HKLM\\|HKCU\\|VERIFY/.test(entry.description), `${entry.id}: no raw registry paths / dev notes in the description`);
   }
 });

@@ -4,13 +4,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MockBackend } from '../src/main/backend/mock-backend.js';
+import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
 import { ProfileStore } from '../src/main/store/profile-store.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { applyProfile, applyProfileOnBoot, runApplyOnStartup } from '../src/main/apply-on-boot.js';
-import { trayBalloonProfileFailed, trayBalloonProfileRefused } from '../src/main/tray.js';
+import { EXTENDED_UNAVAILABLE_MSG } from '../src/main/apply-routing.js';
+import { trayBalloonForOutcome, trayBalloonProfileFailed, trayBalloonProfileRefused } from '../src/main/tray.js';
 
 function makeStore(dir, { settings, profiles }) {
   const store = new ProfileStore({ dir });
@@ -32,6 +33,135 @@ const PROFILE = {
   settings: { powerLimitW: 240, gpuFreqOffsetMhz: 100, tempLimitC: 85 },
   ocOnBoot: false,
 };
+
+const EXTENDED_PROFILE = {
+  id: 'p2',
+  name: '300W Boost',
+  createdAt: '2026-08-05T00:00:00Z',
+  schemaVersion: 1,
+  settings: { powerLimitW: 300, tempLimitC: 100 },
+  ocOnBoot: false,
+};
+
+// ---------------------------------------------------------------------------
+// M3-C-E — config-refusal classification (boot + tray share this flow)
+// ---------------------------------------------------------------------------
+
+test('M3-C-E: a stock-mode extended profile REFUSES with the mode message — NEVER resets to defaults', async () => {
+  const dir = testDir('ocmode-refuse');
+  try {
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p2', ocMode: 'stock' },
+      profiles: [EXTENDED_PROFILE],
+    });
+    const logs = [];
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p2', log: (s) => logs.push(s) });
+    assert.equal(out.applied, false);
+    assert.match(out.reason, /Advanced OC Mode/);
+    assert.equal(out.ocModeRefused, true);
+    // Config-refusal classification: no reset fallback — the live OC state
+    // must survive and no "defaults restored" claim may ever be made.
+    assert.equal(out.fallbackApplied, undefined, 'a mode refusal never runs the defaults restore');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'the GPU state is untouched');
+    assert.ok(logs.some((l) => l.includes('NO defaults restore')), 'the log says no restore ran');
+    // The tray balloon for this outcome is the reason-specific refusal.
+    assert.equal(trayBalloonForOutcome(out, '300W Boost'), trayBalloonProfileRefused(out.reason));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M3-C-E: the tray path (applyProfile without ocOnBoot) refuses the same way', async () => {
+  const dir = testDir('ocmode-refuse-tray');
+  try {
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'p2', ocMode: 'stock' },
+      profiles: [EXTENDED_PROFILE],
+    });
+    const out = await applyProfile({ backend, store, profileId: 'p2' });
+    assert.equal(out.applied, false);
+    assert.equal(out.ocModeRefused, true);
+    assert.equal(out.fallbackApplied, undefined, 'no defaults restore on the tray path either');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M3-C-E: the worker request carries the persisted ocMode (the worker gate keys on it)', async () => {
+  const dir = testDir('ocmode-runner');
+  try {
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'p2', ocMode: 'advanced' },
+      profiles: [EXTENDED_PROFILE],
+    });
+    let delegated = null;
+    const applyRunner = {
+      needsWorker: () => true,
+      apply: async (req) => {
+        delegated = req;
+        return { worker: true, result: { ok: true, perControl: {} }, state: { powerLimitW: 300 } };
+      },
+      reset: async () => ({ ok: true, state: null }),
+    };
+    const out = await applyProfile({ backend, store, profileId: 'p2', applyRunner });
+    assert.equal(out.applied, true);
+    assert.equal(delegated.ocMode, 'advanced', 'the worker request carries the persisted mode');
+    assert.equal(delegated.waiverAccepted, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('F1: an advanced-mode extended profile REFUSES when the 2023 runtime is NOT capable — never a silent 252 W apply', async () => {
+  const dir = testDir('f1-unavailable');
+  try {
+    const backend = new MockBackend({ extendedRanges: false }); // not-capable degradation
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p2', ocMode: 'advanced' },
+      profiles: [EXTENDED_PROFILE],
+    });
+    const logs = [];
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p2', log: (s) => logs.push(s), oldIgcl: createMockOldIgcl(backend) });
+    assert.equal(out.applied, false);
+    assert.equal(out.reason, EXTENDED_UNAVAILABLE_MSG);
+    assert.equal(out.extendedUnavailable, true);
+    // Capability-refusal classification: no reset fallback — the live OC
+    // state survives and no "defaults restored" claim may ever be made.
+    assert.equal(out.fallbackApplied, undefined, 'a capability refusal never runs the defaults restore');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'the GPU state is untouched');
+    assert.ok(logs.some((l) => l.includes('NO defaults restore')), 'the log says no restore ran');
+    // The tray balloon is the reason-specific refusal.
+    assert.equal(trayBalloonForOutcome(out, '300W Boost'), trayBalloonProfileRefused(out.reason));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('F1: an advanced-mode extended profile still APPLIES when the 2023 runtime IS capable (in-process path)', async () => {
+  const dir = testDir('f1-capable');
+  try {
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'p2', ocMode: 'advanced' },
+      profiles: [EXTENDED_PROFILE],
+    });
+    const out = await applyProfile({ backend, store, profileId: 'p2', oldIgcl: createMockOldIgcl(backend) });
+    assert.equal(out.applied, true);
+    assert.equal(out.state.powerLimitW, 300, '300 W lands via the mock old runtime');
+    assert.equal(out.state.tempLimitC, 100);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('apply-on-boot: applies when ocOnBoot + waiver accepted (read-back verified)', async () => {
   const dir = testDir('ok');

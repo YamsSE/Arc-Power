@@ -87,11 +87,15 @@ test('descriptors: fullscreen-optimizations is applyable:false with no actions',
   assert.equal(entry.apply.actions, undefined);
 });
 
-test('descriptors: mpo documents the elevated-HKCU constraint (HKCU applies run in the elevated session\'s hive)', () => {
-  // With alternate-credential UAC the elevated HKCU is the approving admin
-  // account's hive, not the logged-in user's — the card (which renders the
-  // description) must say so.
-  assert.match(entryOf('mpo').description, /HKCU applies use the elevated session's hive/);
+test('descriptors: mpo documents its plain-language purpose (M3-C-H)', () => {
+  // M3-C-H: the long canonical-location/hive-caveat prose is GONE — the
+  // description is 1-2 plain-language lines about fixing stutter/black
+  // screens, off by default in Windows.
+  const desc = entryOf('mpo').description;
+  assert.match(desc, /stutter|black-screen/);
+  assert.match(desc, /off by default in Windows/);
+  assert.ok(!desc.includes('HKCU applies use the elevated session'), 'the hive caveat prose is removed');
+  assert.ok(desc.length <= 240, '1-2 plain-language lines');
 });
 
 test('descriptors: apply targets agree with the read vocabulary (enable writes on, disable writes off)', () => {
@@ -168,8 +172,12 @@ test('buildRegApplyScript: contains the exact elevated reg commands, per-step re
   assert.match(script, /^\$reg = 'C:\\Windows\\System32\\reg\.exe'/);
   assert.match(script, /& \$reg 'add' 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' '\/v' 'HwSchMode' '\/t' 'REG_DWORD' '\/d' '1' '\/f' \| Out-Null/);
   assert.match(script, /\$res \+= ,@\{ step = 0; ok = \(\$LASTEXITCODE -eq 0\) \}/);
-  assert.match(script, /if \(\$LASTEXITCODE -ne 0\) \{ ConvertTo-Json -Compress -InputObject \$res \| Out-File -Encoding utf8 \$out; exit 1 \}/);
-  assert.match(script, /ConvertTo-Json -Compress -InputObject \$res \| Out-File -Encoding utf8 \$out/);
+  // M3-C-A (BOM fix): the result file is written with `-Encoding ascii` —
+  // PS 5.1's `-Encoding utf8` writes a BOM that broke JSON.parse in the
+  // parent (live-verified). ascii never BOMs; pinned here.
+  assert.match(script, /if \(\$LASTEXITCODE -ne 0\) \{ ConvertTo-Json -Compress -InputObject \$res \| Out-File -Encoding ascii \$out; exit 1 \}/);
+  assert.match(script, /ConvertTo-Json -Compress -InputObject \$res \| Out-File -Encoding ascii \$out/);
+  assert.ok(!script.includes('-Encoding utf8'), 'the script must never use -Encoding utf8 (BOM)');
   assert.match(script, /exit 0$/);
   // The out path rides along for the per-step JSON.
   assert.match(script, /\$out = 'C:\\temp\\out\.json'/);
@@ -201,9 +209,99 @@ test('parseApplyOutcome: array / single-object / garbage handling', () => {
   assert.deepEqual(parseApplyOutcome('[{"step":0,"ok":1}]'), null);
 });
 
+test('M3-C-A: parseApplyOutcome strips a leading BOM (\\uFEFF) before parsing', () => {
+  // PS 5.1's `-Encoding utf8` writes EF BB BF — the live bug that made every
+  // real tweak apply report as failed/never-run. The parse must survive it.
+  assert.deepEqual(parseApplyOutcome('\uFEFF[{"step":0,"ok":true},{"step":1,"ok":false}]'), [
+    { step: 0, ok: true },
+    { step: 1, ok: false },
+  ]);
+  assert.deepEqual(parseApplyOutcome('\uFEFF{"step":0,"ok":false}'), [{ step: 0, ok: false }]);
+  // The strip is defensive — BOM-prefixed garbage still fails honestly.
+  assert.deepEqual(parseApplyOutcome('\uFEFF'), null);
+});
+
 // ---------------------------------------------------------------------------
 // Real adapter orchestration (fake execFile — never spawns)
 // ---------------------------------------------------------------------------
+
+test('M3-C-B: an ELEVATED process applies DIRECTLY via reg.exe (no PowerShell, no RunAs, no result file)', async () => {
+  const dir = testDir('direct');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const calls = [];
+    let spawnedPowershell = false;
+    const exec = async (cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === POWERSHELL_EXE) spawnedPowershell = true;
+      return { stdout: '', stderr: '' };
+    };
+    const runner = createRegistryApply(REGISTRY_CATALOG, { execFile: exec, isElevated: () => true });
+    const out = await runner.apply('mpo', 'enable');
+    assert.equal(spawnedPowershell, false, 'an elevated process must never spawn PowerShell');
+    // Both steps ran DIRECTLY as reg.exe invocations with the exact args.
+    assert.deepEqual(calls.map((c) => c.cmd), ['reg', 'reg']);
+    assert.deepEqual(calls[0].args, ['add', 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', '/v', 'MPOHack', '/t', 'REG_DWORD', '/d', '1', '/f']);
+    assert.deepEqual(calls[1].args, ['add', 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', '/v', 'MPOHack', '/t', 'REG_DWORD', '/d', '1', '/f']);
+    assert.equal(out.ok, true);
+    assert.equal(out.canceled, false);
+    assert.deepEqual(out.perStep.map((p) => [p.step, p.status]), [[0, 'done'], [1, 'done']]);
+    assert.match(out.message, /MPOHack=1 written to HKLM/);
+    // No result file was ever involved.
+    assert.equal(fs.readdirSync(dir).filter((f) => f.includes('arcpower-reg-')).length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M3-C-B: direct reg path stops at the FIRST failed step with honest per-step reporting', async () => {
+  const dir = testDir('direct-fail');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const calls = [];
+    const exec = async (cmd, args) => {
+      calls.push(args);
+      if (calls.length === 1) {
+        const err = new Error('reg.exe exited 1');
+        err.code = 1;
+        throw err;
+      }
+      return { stdout: '', stderr: '' };
+    };
+    const runner = createRegistryApply(REGISTRY_CATALOG, { execFile: exec, isElevated: () => true });
+    const out = await runner.apply('mpo', 'disable');
+    assert.equal(out.ok, false);
+    assert.equal(out.canceled, false);
+    // Step 1 failed; step 2 was never run (the direct loop broke).
+    assert.equal(calls.length, 1, 'the loop must stop at the first failed step');
+    assert.deepEqual(out.perStep.map((p) => [p.step, p.status]), [[0, 'failed'], [1, 'not-run']]);
+    assert.match(out.message, /Partial apply: 0 of 2 step\(s\) landed, step 1 failed/);
+    assert.match(out.message, /Nothing was rolled back automatically/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M3-C-B: non-elevated process keeps the PowerShell RunAs chain (dev fallback)', async () => {
+  const dir = testDir('nonelev');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const calls = [];
+    const exec = async (cmd, args) => {
+      calls.push(cmd);
+      // Emulate the elevated script writing the result file.
+      const outPath = outPathOf(innerScript(args[2]));
+      fs.writeFileSync(outPath, '[{"step":0,"ok":true}]');
+      return { stdout: '', stderr: '' };
+    };
+    const runner = createRegistryApply(REGISTRY_CATALOG, { execFile: exec, tmpdir: () => dir, isElevated: () => false });
+    const out = await runner.apply('hags', 'disable');
+    assert.deepEqual(calls, [POWERSHELL_EXE], 'non-elevated: exactly one PowerShell launch');
+    assert.equal(out.ok, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('apply: spawns the elevated PowerShell launch and returns the per-step success', async () => {
   const dir = testDir('ok');

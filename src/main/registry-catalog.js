@@ -73,11 +73,10 @@ export const REGISTRY_CATALOG = [
   {
     id: 'mpo',
     name: 'Disable Multiplane Overlay (MPO)',
+    // M3-C-H: plain-language, 1-2 lines (the long canonical-location /
+    // hive-caveat prose is gone).
     description:
-      'MPO lets the compositor layer windows on dedicated planes. Some GPUs/drivers produce stutter, flicker or black screens with MPO active; the MPOHack value disables the overlay for the DirectX stack. '
-      + 'Canonical location (public knowledge): HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences with MPOHack=1 (system-wide); HKCU is the per-user variant. '
-      + 'VERIFY the exact key/value on this machine in M3-B before applying. '
-      + 'HKCU applies use the elevated session\'s hive — with alternate-credential UAC (approving as a different admin account) they write the approving account\'s HKCU, not the logged-in user\'s.',
+      'MPO lets Windows composite windows on separate planes; some GPUs/drivers stutter, flicker or black-screen with it active. Disabling it fixes that on some setups — it is off by default in Windows anyway.',
     requiresElevation: true,
     absentLabel: 'Not set — MPO follows the driver default (usually on)',
     reads: [
@@ -111,8 +110,7 @@ export const REGISTRY_CATALOG = [
     id: 'hags',
     name: 'Hardware-accelerated GPU scheduling',
     description:
-      'HAGS lets the GPU scheduler manage its own VRAM instead of the CPU driver thread. On some systems it improves input latency, on others it causes stutter. '
-      + 'The toggle is the HwSchMode value at HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers: 2 = on, 1 = off. Needs a reboot to take effect.',
+      'HAGS lets the GPU scheduler manage VRAM instead of the CPU driver thread — better input latency on some systems, stutter on others. Needs a reboot to take effect.',
     requiresElevation: true,
     absentLabel: 'Not set — follows the Windows default (on for recent builds)',
     reads: [
@@ -140,8 +138,7 @@ export const REGISTRY_CATALOG = [
     id: 'game-dvr',
     name: 'Disable Game DVR / background recording',
     description:
-      'Windows Game Bar background recording can cost a few percent of FPS. The Group-Policy key AllowGameDVR=0 disables it machine-wide. '
-      + 'When the key is absent, recording follows the per-user Game Bar setting (not shown here).',
+      'Game Bar background recording can cost a few percent of FPS; this disables it machine-wide.',
     requiresElevation: true,
     absentLabel: 'Not configured — recording follows the user setting',
     reads: [
@@ -171,9 +168,7 @@ export const REGISTRY_CATALOG = [
     id: 'fullscreen-optimizations',
     name: 'Disable fullscreen optimizations (per-app)',
     description:
-      'Fullscreen optimizations merge exclusive fullscreen with borderless behavior; some games stutter with them on. There is no single system-wide switch — '
-      + 'it is a per-app compatibility flag: the FULLSCREENOPTIMIZATIONS token in the app\'s Layers compatibility entry '
-      + '(HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers). Read-only info: the state below reports whether ANY app is flagged.',
+      'A per-app compatibility flag — some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.',
     requiresElevation: true,
     absentLabel: 'No per-app compatibility flags set',
     reads: [

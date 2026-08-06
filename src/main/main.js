@@ -16,13 +16,14 @@
 
 import { app, BrowserWindow, Tray, Menu, dialog, nativeImage } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState } from './ipc-core.js';
+import { seedWaiverState, seedOcMode } from './ipc-core.js';
 import { ProfileStore } from './store/profile-store.js';
 import { createStartup, createMockStartup } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
@@ -33,7 +34,7 @@ import { applyProfile, runApplyOnStartup } from './apply-on-boot.js';
 import { createTray, buildTrayMenuTemplate, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
-import { executeApply, requiresExtendedRange } from './apply-routing.js';
+import { executeApply } from './apply-routing.js';
 import { runApplyWorker } from './apply-worker.js';
 import { createApplyRunner } from './elevated-apply.js';
 import { createMockOldIgcl } from './backend/mock-backend.js';
@@ -111,41 +112,16 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner }) {
           const settings = await store.loadSettings();
           const profiles = await store.loadProfiles();
           const profile = profiles.find((p) => p.id === settings.activeProfileId);
-          // M2C-C gating: extended-range values (>252 W / >90 C) need the
-          // explicit confirm dialog even from the tray (an explicit user
-          // action) — the boot path applies its saved profile without one.
-          if (profile && requiresExtendedRange(profile.settings)) {
-            const win = getWindow();
-            const btn = win
-              ? await dialog.showMessageBox(win, {
-                  type: 'warning',
-                  title: 'Extended range',
-                  message: `Apply "${profile.name}" with extended power/temperature limits?`,
-                  detail: 'This goes beyond Intel\'s standard limit for the GPU. Whether the card accepts it depends on the card and driver (the Acer BiFrost profile used 300 W).',
-                  buttons: ['Cancel', 'Apply'],
-                  defaultId: 0,
-                  cancelId: 0,
-                })
-              : await dialog.showMessageBox({
-                  type: 'warning',
-                  title: 'Extended range',
-                  message: `Apply "${profile.name}" with extended power/temperature limits?`,
-                  detail: 'This goes beyond Intel\'s standard limit for the GPU. Whether the card accepts it depends on the card and driver (the Acer BiFrost profile used 300 W).',
-                  buttons: ['Cancel', 'Apply'],
-                  defaultId: 0,
-                  cancelId: 0,
-                });
-            if (btn.response !== 1) {
-              if (trayRef && !trayRef.isDestroyed()) {
-                trayRef.displayBalloon({ title: 'Arc Power', content: `Arc Power: profile '${profile.name}' not applied — extended range needs confirmation` });
-              }
-              return;
-            }
-          }
+          // M3-C-D (double-dialog decision): the per-apply extended-range
+          // confirm is DROPPED from the tray entirely — in Advanced mode the
+          // mode-enable confirm already warned; in Stock mode the shared
+          // oc-mode gate refuses extended values with a balloon (never a
+          // dead-end confirm). applyProfile below owns that honesty.
           // Explicit user action: skips the ocOnBoot gate (like the
           // renderer's Load button) but keeps the waiver gates. The balloon
           // only claims "defaults restored" when a restore actually ran
-          // (M2b review F1) — gate refusals get a reason-specific message.
+          // (M2b review F1) — gate refusals (incl. the oc-mode refusal)
+          // get a reason-specific message.
           const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, oldIgcl, applyRunner });
           if (!out.applied && trayRef && !trayRef.isDestroyed()) {
             let name = 'unknown';
@@ -188,13 +164,24 @@ async function main() {
     // M2C-C S1: the extended-capability probe is constructed BEFORE the
     // backend and injected — the worker's getCapabilities (its clamp ranges)
     // must report the same extended ranges the UI path does.
+    // M3-C-E: the worker's backend is pinned to ADVANCED mode so its caps
+    // report the extended ranges whenever the 2023 runtime is capable (the
+    // M3-C step-5 F1 capability refusal keys on the SAME probe result —
+    // when the runtime cannot load, the worker's caps report the standard
+    // ranges and extended values refuse with EXTENDED_UNAVAILABLE_MSG). The
+    // worker's MODE refusal gate keys on the request's ocMode (a stock-mode
+    // clamp here would silently cap extended values in advanced sessions:
+    // exactly the forbidden behavior).
     const workerOldIgcl = new OldIgcl();
     const code = await runApplyWorker({
       reqPath: workerReqFile,
       outPath: workerOutFile,
       backend: createBackend({
         kind: 'igcl',
-        igcl: { extended: { isCapable: () => workerOldIgcl.isCapable() } },
+        igcl: {
+          extended: { isCapable: () => workerOldIgcl.isCapable() },
+          ocMode: 'advanced',
+        },
       }),
       oldIgcl: workerOldIgcl,
       log: (s) => console.log(`[apply-worker] ${s}`),
@@ -216,6 +203,9 @@ async function main() {
       igcl: {
         allowAutoWaiver: true, // smoke/tests only (plan §9 M1 waiver clause)
         extended: smokeOldIgcl ? { isCapable: () => smokeOldIgcl.isCapable() } : undefined,
+        // M3-C-E: the smoke's no-op round trips must never clamp a device
+        // that currently holds an extended value — expose the full range.
+        ocMode: 'advanced',
       },
       mock: {},
     });
@@ -252,6 +242,11 @@ async function main() {
   }
   if (uiVerify && process.env.RID_MOCK_EXTENDED_RANGES === '1') mockOpts.extendedRanges = true;
   if (uiVerify && process.env.RID_MOCK_EXTENDED_FAIL === '1') mockOpts.extendedFail = true;
+  // M3-C-E: RID_MOCK_STOCK_MODE=1 flips the mock's OC mode to stock — the
+  // ui-verify stock variant exercises the refusal path (extended values
+  // refuse with the mode message; no confirm dialog anywhere). The mock
+  // default is advanced (the extended-flow pins stay green).
+  if (mock && process.env.RID_MOCK_STOCK_MODE === '1') mockOpts.ocMode = 'stock';
   // M2C-C S1: the real bundled-2023-runtime adapter is constructed BEFORE
   // the backend (mock mode leaves it null — the mock adapter wraps the
   // backend instead). The backend's extended probe consults it lazily
@@ -318,7 +313,43 @@ async function main() {
       },
     };
   }
-  const store = new ProfileStore();
+  // M3-C-E: the store's OC-mode default — real product stock; mock/ui-verify
+  // advanced (extended-flow pins stay green), except RID_MOCK_STOCK_MODE=1
+  // which flips the whole mock session to stock (the refusal-path variant).
+  // M3-C review F4: mock/ui-verify sessions NEVER touch the real
+  // %APPDATA%\ArcPower\settings.json — they read/write an ISOLATED temp
+  // data dir (%TEMP%\arcpower-mock). A default mock run used to silently
+  // flip the real product's persisted mode to advanced (and a stock variant
+  // made the next real launch refuse a saved 300 W profile); with the
+  // isolated dir the real settings.json stays untouched forever. Variant-to-
+  // variant isolation is kept by the explicit session seed below (each mock
+  // session seeds its own mode into the isolated store before anything
+  // reads it).
+  const mockDataDir = mock ? path.join(os.tmpdir(), 'arcpower-mock') : null;
+  const store = new ProfileStore({
+    dir: mockDataDir ?? undefined,
+    ocModeDefault: mock ? (process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced') : 'stock',
+  });
+  // Mock/ui-verify sessions seed the session mode into the ISOLATED store
+  // (never the real settings.json — F4 above). The real product path never
+  // writes at boot.
+  if (mock) {
+    try {
+      const cur = await store.loadSettings();
+      await store.saveSettings({ ...cur, ocMode: process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced' });
+    } catch (err) {
+      console.log(`[boot] oc-mode session seed skipped: ${err.message}`);
+    }
+  }
+  // M3-C review F3: seed the persisted OC mode into the backend BEFORE the
+  // window and the IPC surface exist — the renderer's FIRST getCapabilities
+  // must already expose the right range set (a persisted-advanced session
+  // must never render 252 W / 90 C sliders until a later self-heal). For
+  // mock/ui-verify this reads the ISOLATED store (the variant's mode seeded
+  // above), so the backend gets the same mode the variant expects. setOcMode
+  // is an in-memory caps-cache invalidation — safe before backend.init().
+  const seededMode = await seedOcMode(backend, store);
+  if (seededMode) console.log(`[boot] oc-mode pre-seed: ${seededMode}`);
   // Run-key adapter: the real one writes HKCU only on an explicit user click
   // (startup-set IPC); mock mode (incl. --ui-verify) never touches the
   // registry.
@@ -355,7 +386,10 @@ async function main() {
         canceledActions: process.env.RID_MOCK_REGAPPLY_CANCEL === '1' ? new Set(['mpo']) : new Set(),
         delayMs: regApplyDelay > 0 ? regApplyDelay : 0,
       })
-    : createRegistryApply();
+    : // M3-C-B: the real adapter is elevation-aware — an elevated process
+      // (the packaged EXE always is) runs reg.exe directly with per-step
+      // honest reporting; non-elevated dev keeps the PowerShell RunAs chain.
+      createRegistryApply({ isElevated });
   // FPS adapter: mock mode reports unavailable (never loads koffi/PresentMon);
   // the product path starts the real client lazily on the first fps-poll.
   // On this machine the real client degrades to unavailable too (no
@@ -384,6 +418,15 @@ async function main() {
     }
     try { await seedWaiverState(backend, store); } catch (err) {
       console.log(`[boot] waiver seeding skipped: ${err.message}`);
+    }
+    // M3-C-E: seed the backend's OC mode from the persisted settings so
+    // getCapabilities exposes the right range set from the first query (a
+    // persisted 'advanced' must not wait for the next manual toggle).
+    try {
+      const s = await store.loadSettings();
+      if (typeof backend.setOcMode === 'function') backend.setOcMode(s.ocMode);
+    } catch (err) {
+      console.log(`[boot] oc-mode seeding skipped: ${err.message}`);
     }
   };
 
@@ -464,7 +507,7 @@ async function main() {
       // the partial-failure + UAC-cancel honesty paths.
       await runTweaksApplyVerify(win);
     } else {
-      await runUiVerify(win, backend, () => trayRebuilds, () => fpsPolls);
+      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls);
     }
     return;
   }
