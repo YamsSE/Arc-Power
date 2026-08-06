@@ -149,16 +149,29 @@ generation of graphics product"). **M1 must use the V2 APIs plus capability-unit
 
 ## 6. Fan findings
 
-- `ctlEnumFans` → 1 fan. Properties: `canControl=false`, `supportedModes=0x2` (FIXED only), `supportedUnits=RPM`,
+- `ctlEnumFans` → 1 fan. Properties: `canControl=false`, `supportedModes=0x2` (the FIXED bit — but see the M3-D verdict below: live behavior contradicts it), `supportedUnits=RPM`,
   `maxRPM=-1` (unknown), `maxPoints=10`.
 - `ctlFanGetConfig` → mode **TABLE** with 10 points (20°C→20% … 90°C→100%; speeds reported in **PERCENT**
   even though supportedUnits claims RPM), fixed speed = 0 RPM (no fixed mode set).
 - `ctlFanGetState(RPM)` → **~1030 RPM** idle (1029–1036 across runs); `ctlFanGetState(PERCENT)` →
-  `ERROR_UNSUPPORTED_FEATURE`.
+  `ERROR_UNSUPPORTED_FEATURE`. Fan STATE reads are RPM-only (supportedUnits=0x1 = RPM); table mode
+  SPEAKS percent (the `ctl_fan_speed_t.units` field carries the FAN enum's PERCENT = 1).
 - Telemetry `fanSpeed[0]` → same RPM as `ctlFanGetState` (consistent).
-- **`canControl=false` means fan mode/curve/fixed setters are gated on this card** — M1 must read
-  `canControl` and degrade the Fan page to read-only if false (A770 board/BIOS may not grant control; IGS may
-  also be holding it — investigate whether toggling IGS "fan control" changes this bit in M2 cross-validation).
+- **M3-D verdict (2026-08-06): `canControl=false` is a LIE on this card.** The driver honors
+  `ctlFanSetSpeedTableMode` + `ctlFanSetDefaultMode` when the table uses the FAN enum's PERCENT units
+  (1 — NOT the general `CTL_UNITS.PERCENT` 11; earlier probes failed on exactly this) and Intel's
+  sample encoding (Size/Version filled, points ascending). Proven live twice (a 10-point sample table
+  and a realistic 4-point curve: SUCCESS, exact read-back, restore-to-default clean). Fixed-mode
+  writes are genuinely unsupported (ERROR_UNSUPPORTED_FEATURE), so the shipped `1<<mode` derivation
+  from `supportedModes=0x2` (→ `['fixed']`) is wrong on this card — the backend's reversible probe
+  (run once per device per session inside the first `getCapabilities`, promise-cached OUTSIDE the
+  caps cache) learns the real modes `['auto','curve']` whenever the probe WRITE is accepted —
+  probe-ok, and also probe-fail after an accepted write (stuck restore / IGS reapply race); a
+  write-REFUSED probe keeps the derived modes (claiming auto/curve on a genuinely fixed-only card
+  would lie). The probe runs when properties refuse control AND when they grant it but the derived
+  modes claim `'fixed'` (the one mode this card refuses; with IGS running `canControl=TRUE` and the
+  wrong derivation would still gate the Fan page to fixed-only). The effective fan gate is
+  `properties.canControl || probeOk`.
 
 ## 7. koffi vs sidecar — DECISION: koffi
 
@@ -272,8 +285,9 @@ card (bSupported=false). Throttle flags all false at idle. Full dump: `tools/pro
 2. **Units surprise** — the capability matrix and the V2 get/set APIs report power in W / voltage in V on
    this A770 (V1 is fixed mW/mV); UI and `Settings` schema must be units-aware end to end (the plan's mW
    assumption is wrong for this hardware).
-3. **Fan `canControl=false`** — fan control likely unavailable via IGCL on this card; the Fan page must be
-   read-only and M2 must check whether IGS's own fan toggle flips the bit.
+3. **Fan `canControl=false`** — RESOLVED (M3-D, 2026-08-06): the property is a lie on this card; the
+   reversible probe (FAN-enum PERCENT table encoding) unlocks table/default writes and the Fan page is
+   editable. The probe is a single write+restore per session, restore-retried, never left in table mode.
 4. **VRAM/VF-curve unsupported** — expert controls hidden on Alchemist; keep code paths for Battlemage (M4).
 5. **Loader vs runtime** — if a future driver drops the open runtime, we need a registered UID (Intel process)
    or the sidecar. Mitigation: probe re-run on driver updates (add to M4 hardening checklist).

@@ -7,11 +7,14 @@
 // as OVERLAYS on top of the featureset base. Used by tests, demo mode
 // (RID_BACKEND=mock / `--mock`) and --ui-verify.
 //
-// Fan difference vs the real A770 (deliberate, per the M2a prompt): the mock
-// default used to report canControl=true so the fan editor is fully testable
-// in mock mode. The a770 featureset now carries the REAL read-only value;
-// the editable fixture is restored via the `fanCanControl` overlay
-// (ui-verify passes it unless RID_MOCK_FAN_READONLY=1).
+// Fan fixture vs the real A770 (M3-D): the a770 featureset carries the real
+// card's TRUE capability — canControl=true + modes ['auto','curve'] — learned
+// from the LIVE reversible probe (table writes SUCCESS with the FAN enum's
+// PERCENT encoding; fixed writes are genuinely unsupported, so 'fixed' is
+// never offered). RID_MOCK_FAN_READONLY=1 (the `fanCanControl:false` overlay)
+// reproduces the read-only surface WITHOUT pretending the modes are ['fixed']
+// — the card's modes are ['auto','curve'] regardless of the control grant
+// (same honest-vs-reality principle as the real backend's probe-fail path).
 
 import { clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve } from './units.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
@@ -27,9 +30,11 @@ const DEFAULT_FAN_CURVE = [
   { t: 90, speedPct: 100 },
 ];
 
-// Editable fan fixture (mock overlay): full mode set + a sane maxRPM for the
-// RPM marker math. Read-only / no-fan shapes are derived in _fanConfig.
-const FAN_EDITABLE = Object.freeze({ canControl: true, modes: ['auto', 'curve', 'fixed'], maxRpm: 3000, maxCurvePoints: 10 });
+// Editable fan fixture (mock overlay): the real A770's LEARNED mode set
+// ['auto','curve'] (never 'fixed' — fixed writes are unsupported on this
+// card, live-verified M3-D) + a sane maxRPM for the RPM marker math.
+// Read-only / no-fan shapes are derived in _buildFanCaps.
+const FAN_EDITABLE = Object.freeze({ canControl: true, modes: ['auto', 'curve'], maxRpm: 3000, maxCurvePoints: 10 });
 
 // ctl_vf_curve table cap — mirrors pure/curve.ts MAX_CURVE_POINTS.
 const MAX_VF_POINTS = 32;
@@ -181,7 +186,11 @@ export class MockBackend {
     if (this._fanCanControl) {
       return { ...FAN_EDITABLE, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
     }
-    return { canControl: false, modes: ['fixed'], maxRpm: -1, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
+    // Read-only overlay (M3-D round-2 F1): the modes stay the card's TRUE
+    // modes ['auto','curve'] — the read-only fixture must not claim ['fixed'],
+    // which would repeat the honest-vs-reality lie. Only the control grant
+    // differs.
+    return { canControl: false, modes: ['auto', 'curve'], maxRpm: -1, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
   }
 
   _buildDevice(fs) {
@@ -395,7 +404,8 @@ export class MockBackend {
       }
     }
 
-    // Fan: read-only fixture (A770-style, canControl=false) — any fan
+    // Fan: read-only overlay (RID_MOCK_FAN_READONLY — the M3-D read-only
+    // surface: the card's true modes, control withheld) — any fan
     // request is answered with unsupported, mirroring the real-card gate.
     if (!this._fanCanControl) {
       for (const c of ['fanMode', 'fanCurve', 'fixedFanPct']) {

@@ -12,7 +12,10 @@
 //
 // Safety contract:
 //   - every apply clamps to the capability range and verifies by read-back;
-//   - fan setters are invoked ONLY when fan canControl === true;
+//   - fan setters are invoked ONLY when the EFFECTIVE fan canControl === true
+//     (properties.canControl || the live reversible probe result — M3-D: the
+//     A770's canControl=false property is a lie, the driver honors table
+//     writes with the FAN enum's PERCENT encoding);
 //   - ctlOverclockWaiverSet is called only when constructed with
 //     allowAutoWaiver: true (smoke/tests) or via setWaiverAccepted()
 //     (explicit user acceptance — M2a product path).
@@ -55,6 +58,10 @@ export class IgclBackend {
    *   ocMode?: 'stock'|'advanced',    // M3-C-E: which range set getCapabilities
    *                                   // exposes (default 'stock' — the real
    *                                   // product default; mock passes advanced)
+   *   fanProbe?: boolean,             // M3-D: run the reversible fan-capability
+   *                                   // probe on canControl=false devices
+   *                                   // (default true; tests pass false to keep
+   *                                   // read-only fixtures read-only)
    * }} opts
    */
   constructor(opts = {}) {
@@ -75,6 +82,13 @@ export class IgclBackend {
     this._waiverAccepted = new Map(); // deviceId -> bool
     this._telemetryCbs = new Map(); // deviceId -> Set<cb>
     this._activity = new Map(); // M3-C-L: deviceId -> { t, counter } for the utilPct delta method
+    // M3-D: the fan-capability probe cache — deviceId -> Promise<{probeOk,
+    // writeAccepted}>. DEDICATED: the caps cache is invalidated by ocMode
+    // flips (setOcMode), the probe result must NOT be (the card's write
+    // acceptance does not change with the app's OC mode). Promise-keyed so
+    // concurrent first caps reads share ONE probe — never a double probe.
+    this._fanProbeCache = new Map();
+    this._fanProbeEnabled = opts.fanProbe !== false;
   }
 
   /**
@@ -250,6 +264,141 @@ export class IgclBackend {
     return handles;
   }
 
+  /**
+   * M3-D: the fan-capability probe cache accessor — deviceId ->
+   * Promise<{probeOk: boolean, writeAccepted: boolean}>. The DEDICATED
+   * promise-keyed cache lives OUTSIDE the caps cache: concurrent first
+   * calls share ONE probe promise (never a double probe) and ocMode flips
+   * never re-probe (the card's write acceptance does not change with the
+   * app's OC mode). A throwing probe degrades to probeOk=false +
+   * writeAccepted=false — the fan stays read-only, never a hard crash of
+   * getCapabilities. `maxPoints` (fan properties) sizes the sample table
+   * (F3); the same device always reports the same value, so it is safe
+   * under the deviceId-keyed cache.
+   * @param {number} deviceId
+   * @param {number} [maxPoints]
+   * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean }>}
+   */
+  _probeFanCapability(deviceId, maxPoints) {
+    if (this._fanProbeCache.has(deviceId)) return this._fanProbeCache.get(deviceId);
+    const p = this._runFanProbe(deviceId, maxPoints).catch((err) => {
+      console.error(`[igcl-backend] fan capability probe threw for device ${deviceId}: ${err.message} — fan stays read-only`);
+      return { probeOk: false, writeAccepted: false };
+    });
+    this._fanProbeCache.set(deviceId, p);
+    return p;
+  }
+
+  /**
+   * M3-D: the reversible fan-capability probe (the Alchemist unlock,
+   * live-verified on the A770 2026-08-06). The driver reports
+   * canControl=false but honors table/default writes when the table uses
+   * the FAN enum's PERCENT units (1 — NOT the general CTL_UNITS.PERCENT 11;
+   * that was why earlier probes failed) and Intel's sample encoding
+   * (Size/Version filled, points ascending). Probe = write a safe 0-90%
+   * sample table of min(10, maxPoints) points (F3: a maxPoints<10 card
+   * would otherwise stay read-only despite accepting tables), read back +
+   * verify exact point match, restore default mode, verify. The restore is
+   * retried on failure — a failed probe must NEVER leave the card in table
+   * mode (a stuck table mode is itself treated as probe failure with an
+   * honest retry/report). The write outcome decides honesty — the probe is
+   * NOT gated on elevation (non-elevated writes fail -> read-only), and
+   * writeAccepted (the table write succeeded, F2) is reported separately
+   * from probeOk (full verify passed) so the caller can keep the real
+   * modes for a card that demonstrably accepts tables even when a later
+   * step failed (stuck restore, IGS reapply race).
+   * @param {number} deviceId
+   * @param {number} [maxPoints]  fan properties' maxPoints (default 10)
+   * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean }>}
+   */
+  async _runFanProbe(deviceId, maxPoints) {
+    const lib = this._libOrThrow();
+    const fanHandles = await this._fanHandlesOf(deviceId);
+    const fan = fanHandles[0];
+    if (!fan || this._isUnavailable(lib.ctlFanSetSpeedTableMode)
+      || this._isUnavailable(lib.ctlFanSetDefaultMode)
+      || this._isUnavailable(lib.ctlFanGetConfig)) {
+      return { probeOk: false, writeAccepted: false };
+    }
+
+    // Intel's sample encoding: Size/Version filled, FAN-enum PERCENT units
+    // (1), strictly ascending temps, safe speeds 0-90%. Point count honors
+    // the card's maxPoints (capped at the live-verified 10-point sample).
+    const pointCount = Number.isInteger(maxPoints) && maxPoints > 0 ? Math.min(10, maxPoints) : 10;
+    const expected = [];
+    for (let i = 0; i < pointCount; i++) expected.push({ t: 20 + i * 8, speedPct: i * 10 });
+    const table = expected.map((p) => ({
+      Size: koffi.sizeof('ctl_fan_temp_speed_t'),
+      Version: 0,
+      temperature: p.t,
+      speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: p.speedPct, units: FAN_UNITS_PERCENT },
+    }));
+    const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: table.length, table };
+
+    const setResult = lib.ctlFanSetSpeedTableMode(fan, tableObj);
+    const writeAccepted = setResult === CTL_RESULT.SUCCESS;
+    if (!writeAccepted) {
+      // The write itself failed: the card was never put in table mode, so
+      // no restore is needed — the refusal IS the honest answer.
+      console.error(`[igcl-backend] fan probe: ctlFanSetSpeedTableMode refused (${describeResult(setResult)}) — fan stays read-only`);
+      return { probeOk: false, writeAccepted };
+    }
+
+    // Read-back verify: exact point match, PERCENT units.
+    let readOk = false;
+    const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
+    koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
+    const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
+    if (getResult === CTL_RESULT.SUCCESS) {
+      const cfg = koffi.decode(cfgBuf, 'ctl_fan_config_t');
+      readOk = cfg.mode === 2 /* TABLE */
+        && cfg.speedTable.numPoints === expected.length
+        && expected.every((p, i) => {
+          const tp = cfg.speedTable.table[i];
+          return tp.speed.units === FAN_UNITS_PERCENT
+            && nearlyEqual(tp.temperature, p.t, 1)
+            && nearlyEqual(tp.speed.speed, p.speedPct, 1);
+        });
+    }
+    if (!readOk) {
+      console.error('[igcl-backend] fan probe: table read-back did not match the sample — probe fails');
+    }
+
+    // Restore default mode, retried: a failed probe must NEVER leave the
+    // card in table mode.
+    const restoreOk = await this._restoreFanDefault(fan, deviceId);
+
+    const probeOk = readOk && restoreOk;
+    console.log(`[igcl-backend] fan probe device ${deviceId}: table write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} — effective canControl=${probeOk}`);
+    return { probeOk, writeAccepted };
+  }
+
+  /**
+   * M3-D: ctlFanSetDefaultMode + read-back verify, retried once. True only
+   * when the card reads back in DEFAULT (auto) mode. A stuck table mode is
+   * reported loudly — the caller treats it as probe failure.
+   * @param {object} fan
+   * @param {number} deviceId
+   * @returns {Promise<boolean>}
+   */
+  async _restoreFanDefault(fan, deviceId) {
+    const lib = this._libOrThrow();
+    if (this._isUnavailable(lib.ctlFanSetDefaultMode) || this._isUnavailable(lib.ctlFanGetConfig)) return false;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const setResult = lib.ctlFanSetDefaultMode(fan);
+      if (setResult !== CTL_RESULT.SUCCESS) {
+        console.error(`[igcl-backend] fan probe: restore-to-default attempt ${attempt} failed (${describeResult(setResult)}) — retrying`);
+        continue;
+      }
+      const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
+      koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
+      const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
+      if (getResult === CTL_RESULT.SUCCESS && koffi.decode(cfgBuf, 'ctl_fan_config_t').mode === 0 /* DEFAULT */) return true;
+    }
+    console.error(`[igcl-backend] fan probe: restore-to-default FAILED after retries for device ${deviceId} — the card may be left in table mode`);
+    return false;
+  }
+
   async _ocUnitsOf(deviceId) {
     if (this._ocUnits.has(deviceId)) return this._ocUnits.get(deviceId);
     const dev = await this._device(deviceId);
@@ -395,14 +544,47 @@ export class IgclBackend {
       const result = lib.ctlFanGetProperties(fanHandles[0], propBuf);
       if (result === CTL_RESULT.SUCCESS) {
         const fp = koffi.decode(propBuf, 'ctl_fan_properties_t');
+        // M3-D: canControl=false is a LIE on this A770 — the driver honors
+        // table/default writes anyway (live-verified 2026-08-06). The probe
+        // is the unlock AND the mode-truth: the 1<<mode derivation from
+        // supportedModes=0x2 yields ['fixed'] — the ONE mode this card
+        // genuinely refuses — so the probe runs whenever properties refuse
+        // control OR the derived modes claim 'fixed' (F1: with the IGS
+        // app/service running canControl=TRUE and the derivation would
+        // still gate the Fan page to fixed-only in the primary usage;
+        // never gate the probe on !canControl). Reversible: write the
+        // sample table (min(10, maxPoints) points, FAN-enum PERCENT
+        // units), read back, restore default — restore retried, never left
+        // in table mode. The result is cached OUTSIDE the caps cache and
+        // shared across concurrent first calls; effective canControl =
+        // properties.canControl || probeOk. Probe-learned modes follow the
+        // WRITE-ACCEPTED rule (F2): when the table WRITE was accepted the
+        // real modes are ['auto','curve'] (the card demonstrably accepts
+        // tables — even when a later step failed, e.g. a stuck restore or
+        // an IGS reapply race); a write-REFUSED probe keeps the derived
+        // modes (claiming auto/curve on a genuinely fixed-only card would
+        // lie). The derivation stays only for cards that never probe
+        // (probe disabled, or probe symbols missing).
+        let modes = Object.entries(CTL_FAN_SPEED_MODE)
+          .filter(([v]) => (fp.supportedModes & (1 << Number(v))) !== 0)
+          .map(([v]) => FAN_MODE_CANONICAL[Number(v)]);
+        const probeRuns = this._fanProbeEnabled
+          && !this._isUnavailable(lib.ctlFanSetSpeedTableMode)
+          && !this._isUnavailable(lib.ctlFanSetDefaultMode)
+          && !this._isUnavailable(lib.ctlFanGetConfig)
+          && (!fp.canControl || modes.includes('fixed'));
+        let canControl = fp.canControl;
+        if (probeRuns) {
+          const probe = await this._probeFanCapability(deviceId, fp.maxPoints);
+          canControl = fp.canControl || probe.probeOk;
+          modes = probe.writeAccepted ? ['auto', 'curve'] : modes;
+        }
         caps.fan = {
-          canControl: fp.canControl,
+          canControl,
           // Map through the same table as fan-mode read-back so
           // caps.fan.modes and DeviceState.fanMode share one vocabulary
           // (auto|curve|fixed) — never raw IGCL names.
-          modes: Object.entries(CTL_FAN_SPEED_MODE)
-            .filter(([v]) => (fp.supportedModes & (1 << Number(v))) !== 0)
-            .map(([v]) => FAN_MODE_CANONICAL[Number(v)]),
+          modes,
           maxRpm: fp.maxRPM,
           maxCurvePoints: fp.maxPoints,
         };
@@ -506,8 +688,8 @@ export class IgclBackend {
       }
     }
 
-    // Fan read-back (read-only here even when canControl=false — the A770
-    // still reports config/state; setters stay gated).
+    // Fan read-back (read-only here even when the EFFECTIVE canControl is
+    // false — the A770 still reports config/state; setters stay gated).
     const fanHandles = await this._fanHandlesOf(deviceId);
     if (fanHandles.length > 0 && !this._isUnavailable(lib.ctlFanGetConfig)) {
       const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
@@ -670,7 +852,10 @@ export class IgclBackend {
         .filter((c) => settings[c] !== null && settings[c] !== undefined);
       if (requested.length === 0) return;
 
-      // Hard safety rule: fan setters only when canControl === true.
+      // Hard safety rule: fan setters only when the EFFECTIVE canControl is
+      // true (properties.canControl || probeOk — M3-D: the A770's property
+      // lies, the probe is the unlock). Never gated on elevation: the write
+      // outcome decides honesty.
       if (!caps.fan.canControl) {
         for (const c of requested) fail(c, 'unsupported', 'fan control is read-only on this device (canControl=false)');
         return;
@@ -687,6 +872,14 @@ export class IgclBackend {
       if (!mode) {
         if (settings.fanCurve) mode = 'curve';
         else if (settings.fixedFanPct !== undefined && settings.fixedFanPct !== null) mode = 'fixed';
+      }
+      // Mode gate (F5, mock parity): refuse modes outside caps.fan.modes —
+      // the driver genuinely refuses them (e.g. fixed writes are
+      // UNSUPPORTED_FEATURE on this card) and the mock answers the same
+      // way ('unsupported', no driver write attempted).
+      if (!caps.fan.modes.includes(mode)) {
+        for (const c of requested) fail(c, 'unsupported', `fan mode ${mode} not supported on this device`);
+        return;
       }
       if (mode === 'curve' && !settings.fanCurve) {
         fail('fanMode', 'out-of-range', 'fanCurve is required for curve mode');

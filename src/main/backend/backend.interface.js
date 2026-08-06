@@ -148,7 +148,9 @@
  * All methods are async; deviceId is the stable index returned by
  * listDevices(). Implementations must never assume the caller's settings
  * are in range: clamp to capability ranges before applying, and verify by
- * read-back. Fan setters must only be invoked when canControl === true.
+ * read-back. Fan setters must only be invoked when canControl === true —
+ * the EFFECTIVE value (properties.canControl || the M3-D reversible probe
+ * result on canControl=false devices).
  *
  * @typedef {{
  *   kind: 'igcl'|'mock'|'sidecar',

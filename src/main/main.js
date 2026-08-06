@@ -223,11 +223,11 @@ async function main() {
   await app.whenReady();
   // --ui-verify runs against MockBackend; the env knobs act as OVERLAYS on
   // the featureset base (mock/featuresets/*.json, RID_MOCK_FEATURESET):
-  //   - the ui-verify DEFAULT variant opts into the EDITABLE fan fixture so
-  //     the fan editor flow stays fully testable (the a770 featureset base
-  //     is the real read-only card); RID_MOCK_FAN_READONLY=1 flips it to the
-  //     exact A770 read-only fixture (a hasFan:false featureset always stays
-  //     fan-less regardless of the overlay);
+  //   - the a770 featureset base is the real card's TRUE editable fan fixture
+  //     (canControl=true + modes ['auto','curve'] — M3-D live-verified probe
+  //     path); RID_MOCK_FAN_READONLY=1 flips it to the read-only overlay (the
+  //     card's modes are kept, only the control grant differs — a hasFan:false
+  //     featureset always stays fan-less regardless of the overlay);
   //   - RID_MOCK_OFFGRID_FREQ_MHZ makes the mock report a freq offset off the
   //     1 MHz grid (verifies the off-grid driver readout);
   //   - RID_MOCK_EXTENDED_RANGES / RID_MOCK_EXTENDED_FAIL are session knobs

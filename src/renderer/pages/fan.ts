@@ -1,7 +1,8 @@
-// Arc Power — Fan page. Read-only on the A770 (canControl=false): mode,
-// current curve rendered in the SVG view, RPM marker. Full editor when
-// canControl=true (mock): mode toggle, draggable points, add/remove with
-// point-count clamp, ascending-temp enforcement, presets, Apply.
+// Arc Power — Fan page. Read-only (probe-failed / read-only overlay):
+// mode, current curve rendered in the SVG view, RPM marker. Full editor
+// when canControl=true (real A770 via the M3-D probe, and the mock):
+// mode toggle, draggable points, add/remove with point-count clamp,
+// ascending-temp enforcement, presets, Apply.
 // All editor math lives in pure/curve.ts; this file is the DOM view.
 
 import { el, clear, svgEl } from '../dom.ts';
@@ -129,7 +130,7 @@ export const fanPage: Page = {
 };
 
 // ---------------------------------------------------------------------------
-// Read-only view (A770: canControl=false)
+// Read-only view (probe-failed fan / read-only overlay)
 // ---------------------------------------------------------------------------
 
 function renderReadOnly(container: HTMLElement, ctx: PageContext, points: CurvePoint[], mode: FanMode | null) {
@@ -152,13 +153,13 @@ function renderReadOnly(container: HTMLElement, ctx: PageContext, points: CurveP
         ]),
         fanAxis(),
       ]),
-      el('p', { class: 'card-note', text: 'Editing is disabled: this GPU reports fan control as read-only (canControl=false). Intel Graphics Software manages the fan curve on Alchemist GPUs.' }),
+      el('p', { class: 'card-note', text: 'Editing is disabled: this GPU reports fan control as read-only (canControl=false). The fan stays under driver/IGS management on this card.' }),
     ]),
   );
 }
 
 // ---------------------------------------------------------------------------
-// Editable editor (mock: canControl=true)
+// Editable editor (canControl=true — real A770 via the M3-D probe, or mock)
 // ---------------------------------------------------------------------------
 
 function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorState, maxPoints: number) {

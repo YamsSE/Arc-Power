@@ -14,11 +14,11 @@ test('listDevices: one A770-matching fixture device', async () => {
 });
 
 test('getCapabilities: A770 matrix (same ranges/units as the real card)', async () => {
-  // The editable-fan overlay (M2D): the a770 featureset base carries the
-  // REAL read-only fan; ui-verify/tests opt into the editable fixture with
-  // fanCanControl:true so the fan editor stays fully testable. The standard
-  // (non-extended) ranges are the extendedRanges:false overlay — the
-  // featureset base carries the extended maxes natively (M2C-C verified).
+  // M3-D: the a770 featureset base now carries the REAL EDITABLE fan (the
+  // live-verified probe path — canControl=true, modes ['auto','curve']); the
+  // read-only surface is the fanCanControl:false overlay (RID_MOCK_FAN_READONLY).
+  // The standard (non-extended) ranges are the extendedRanges:false overlay —
+  // the featureset base carries the extended maxes natively (M2C-C verified).
   const b = new MockBackend({ fanCanControl: true, extendedRanges: false });
   const caps = await b.getCapabilities(0);
   assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: 0, max: 300, step: 1, default: 0, units: 'MHz' });
@@ -27,22 +27,24 @@ test('getCapabilities: A770 matrix (same ranges/units as the real card)', async 
   assert.ok(Math.abs(caps.ranges.gpuVoltOffsetV.max - 0.234) < 1e-9);
   assert.equal(caps.controls.vramFreqOffset, false);
   assert.equal(caps.controls.vfCurve, false);
-  // the editable-fan overlay: canControl=true with modes auto/curve/fixed.
+  // the editable-fan fixture: canControl=true with the learned modes
+  // auto/curve (fixed is genuinely unsupported on this card — M3-D).
   assert.equal(caps.fan.canControl, true);
-  assert.deepEqual(caps.fan.modes, ['auto', 'curve', 'fixed']);
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve']);
   assert.equal(caps.fan.maxRpm, 3000);
   assert.equal(caps.fan.maxCurvePoints, 10);
   assert.equal(caps.waiverAccepted, false);
 });
 
-test('getCapabilities: M2D — the DEFAULT mock is the a770 featureset (read-only fan + extended ranges, advanced mode)', async () => {
+test('getCapabilities: M2D — the DEFAULT mock is the a770 featureset (editable fan + extended ranges, advanced mode)', async () => {
   const b = new MockBackend();
   const caps = await b.getCapabilities(0);
-  // the featureset base drives the fan (real A770: read-only) and the
-  // extended ranges (the bundled 2023 runtime is verified on this machine).
-  // M3-C-E: the mock default OC mode is advanced (the extended-flow pins).
-  assert.equal(caps.fan.canControl, false);
-  assert.deepEqual(caps.fan.modes, ['fixed']);
+  // the featureset base drives the fan (real A770: editable via the M3-D
+  // live-verified probe path) and the extended ranges (the bundled 2023
+  // runtime is verified on this machine). M3-C-E: the mock default OC mode
+  // is advanced (the extended-flow pins).
+  assert.equal(caps.fan.canControl, true);
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve']);
   assert.equal(caps.extendedRanges, true);
   assert.equal(caps.ranges.powerLimitW.max, 315); // M3-C-D: live-verified ceiling
   assert.equal(caps.ranges.tempLimitC.max, 115);
@@ -63,11 +65,11 @@ test('M3-C-E: mock stock mode exposes only the standard ranges (no flag)', async
   assert.equal((await b.getCapabilities(0)).extendedRanges, undefined);
 });
 
-test('getCapabilities: fanCanControl:false reproduces the A770 read-only fan fixture', async () => {
+test('getCapabilities: fanCanControl:false reproduces the read-only fan overlay (the card\'s true modes kept)', async () => {
   const b = new MockBackend({ fanCanControl: false });
   const caps = await b.getCapabilities(0);
   assert.equal(caps.fan.canControl, false);
-  assert.deepEqual(caps.fan.modes, ['fixed']);
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve']);
   assert.equal(caps.fan.maxRpm, -1);
   assert.equal(caps.fan.maxCurvePoints, 10);
 });
@@ -170,13 +172,15 @@ test('applySettings: editable fan — point count clamped to maxCurvePoints', as
   assert.equal(s.fanCurve.length, 10); // maxCurvePoints
 });
 
-test('applySettings: editable fan — fixedFanPct clamps to 0..100 and switches mode', async () => {
+test('applySettings: editable fan — fixedFanPct is refused (fixed is not a real A770 mode, M3-D)', async () => {
   const b = new MockBackend({ fanCanControl: true });
   const res = await b.applySettings(0, { fixedFanPct: 150 });
-  assert.equal(res.ok, true);
+  assert.equal(res.ok, false);
+  assert.equal(res.perControl.fixedFanPct.errorCode, 'unsupported');
+  assert.match(res.perControl.fixedFanPct.message, /fan mode fixed not supported/);
   const s = await b.getCurrentSettings(0);
-  assert.equal(s.fixedFanPct, 100);
-  assert.equal(s.fanMode, 'fixed');
+  assert.equal(s.fixedFanPct, null, 'fan state untouched');
+  assert.equal(s.fanMode, 'curve', 'mode untouched');
 });
 
 test('applySettings: editable fan — auto mode switches to auto', async () => {

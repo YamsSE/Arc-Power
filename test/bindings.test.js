@@ -241,8 +241,14 @@ test('fan: properties/config round-trip with A770 fixture values', () => {
   });
   const p = koffi.decode(propBuf, 'ctl_fan_properties_t');
   assert.equal(p.Size, 24);
-  assert.equal(p.canControl, false); // THIS CARD: fan control not granted
-  assert.equal(p.supportedModes, 2); // FIXED only
+  // Raw properties: canControl=false on this card — but the property is a
+  // LIE (M3-D: the driver honors table/default writes anyway); the backend's
+  // reversible probe augments the EFFECTIVE gate (properties || probeOk).
+  assert.equal(p.canControl, false);
+  // supportedModes=0x2 claims the FIXED bit — live behavior contradicts it
+  // (fixed writes -> UNSUPPORTED_FEATURE, table writes -> SUCCESS); the
+  // backend probe learns the real modes ['auto','curve'] instead.
+  assert.equal(p.supportedModes, 2);
   assert.equal(p.maxPoints, 10);
 
   const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);

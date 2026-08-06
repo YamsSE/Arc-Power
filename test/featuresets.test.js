@@ -48,7 +48,7 @@ test('M2D: every distribution file parses + validates (id/name/ranges/units)', (
   assert.equal(a770.extendedRanges, true);
   assert.equal(a770.extended.plMax, 315); // M3-C-D: live-verified KMD ceiling (2026-08-06 probe)
   assert.equal(a770.extended.tlMax, 115);
-  assert.equal(a770.fanCanControl, false);
+  assert.equal(a770.fanCanControl, true); // M3-D: live-verified probe path (the canControl=false property is a lie on this card)
   assert.equal(a770.numXeCores, 32);
 });
 
@@ -96,7 +96,7 @@ test('M2D: default mock = a770 featureset (verified matrix)', async () => {
   assert.equal(caps.controls.gpuLock, true);
   assert.equal(caps.controls.vramFreqOffset, false);
   assert.equal(caps.controls.vfCurve, false);
-  assert.equal(caps.fan.canControl, false, 'the real card: read-only fan');
+  assert.equal(caps.fan.canControl, true, 'a770: editable fan — the live-verified M3-D probe path');
   const devices = await b.listDevices();
   assert.equal(devices[0].name, 'Mock Arc A770 Graphics (fixture)');
   assert.equal(devices[0].driverVersion, '32.0.101.8861');
@@ -361,7 +361,8 @@ test('M2D: the swap round-trips through the IPC handler (caps + state + store pa
 // ---------------------------------------------------------------------------
 
 test('M2D: the ui-verify overlays still work on the featureset base', async () => {
-  // RID_MOCK_FAN_READONLY overlay on the a770 base (already read-only -> idempotent).
+  // RID_MOCK_FAN_READONLY overlay flips the a770 base (editable by default
+  // via the M3-D probe path) to the read-only surface.
   const readonly = new MockBackend({ fanCanControl: false });
   assert.equal((await readonly.getCapabilities(0)).fan.canControl, false);
   // RID_MOCK_EXTENDED_RANGES overlay: force extended on a non-extended base.

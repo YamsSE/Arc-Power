@@ -6,7 +6,7 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant — no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       0.1.0" (app:version IPC) — the driver version + date live in the
+//       0.2.0" (app:version IPC) — the driver version + date live in the
 //       dashboard device card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); no PCI ID anywhere;
 //       M2C-B B2: NO capsSummary chips footer on the device card; M2C-B B8:
@@ -149,8 +149,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
   // the driver line moved to the dashboard device card.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.1.0'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.1.0')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.2.0'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.2.0')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);

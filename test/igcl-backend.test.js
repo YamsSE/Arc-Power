@@ -1,6 +1,15 @@
 // M1 — IgclBackend logic tests against an injected fake "lib" that mimics the
 // A770 driver surface (capability matrix, V2 getters/setters, fan read-only,
 // telemetry). Real hardware is exercised separately by the smoke run.
+//
+// M3-D: the fake models the fan probe explicitly. The fake's setters return
+// SUCCESS even when canControl=false (exactly like the real driver), so a
+// naive probe would flip the read-only fixtures to editable — the probe is
+// therefore DISABLED by default in these tests (`makeBackend` passes
+// fanProbe:false); the M3-D fixtures opt in with `{ fanProbe: true }` and
+// model probe-ok / write-refused / write-accepted-restore-fail via the
+// fake's setter behavior (F2: the write outcome, not the final verify,
+// decides the learned modes).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -128,7 +137,7 @@ function makeFakeLib(opts = {}) {
     ctlFanGetProperties: (h, propBuf) => {
       koffi.encode(propBuf, 'ctl_fan_properties_t', {
         Size: koffi.sizeof('ctl_fan_properties_t'), Version: 0, canControl: state.fanCanControl,
-        supportedModes: opts.supportedFanModes ?? 0x2, supportedUnits: 0x1, maxRPM: -1, maxPoints: 10,
+        supportedModes: opts.supportedFanModes ?? 0x2, supportedUnits: 0x1, maxRPM: -1, maxPoints: opts.fanMaxPoints ?? 10,
       });
       return 0;
     },
@@ -191,7 +200,16 @@ function makeFakeLib(opts = {}) {
 }
 
 function makeBackend(fakeLib, opts = {}) {
-  return new IgclBackend({ lib: fakeLib, findDll: () => 'C:\\fake\\IntelControlLib.dll', allowAutoWaiver: opts.allowAutoWaiver ?? false, dllPath: 'C:\\fake\\IntelControlLib.dll' });
+  return new IgclBackend({
+    lib: fakeLib,
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    allowAutoWaiver: opts.allowAutoWaiver ?? false,
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    // M3-D: the probe is DISABLED by default in tests (the fake's setters
+    // return SUCCESS even when canControl=false, so a naive probe would
+    // flip the read-only fixtures to editable). Probe tests opt in.
+    fanProbe: opts.fanProbe ?? false,
+  });
 }
 
 // Encode an alternative ctl_fan_config_t (tests inject this to simulate a
@@ -353,6 +371,108 @@ test('getCapabilities: returns an independent copy — caller mutation cannot po
 });
 
 // ---------------------------------------------------------------------------
+// M3-D — the reversible fan-capability probe (the Alchemist unlock)
+// ---------------------------------------------------------------------------
+
+test('M3-D: probe disabled by default — read-only caps stay (pin regression)', async () => {
+  const lib = makeFakeLib();
+  const b = makeBackend(lib);
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.fan.canControl, false);
+  assert.deepEqual(caps.fan.modes, ['fixed']);
+  assert.equal(lib.__calls.fanSetters, 0, 'no probe without the fanProbe opt');
+});
+
+test('M3-D: probe-ok flips canControl, learns [auto,curve], restores to default', async () => {
+  const lib = makeFakeLib();
+  const b = makeBackend(lib, { fanProbe: true });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.fan.canControl, true, 'effective canControl = properties || probeOk');
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'learned modes — never fixed (fixed writes are unsupported on this card)');
+  assert.equal(caps.fan.maxCurvePoints, 10);
+  assert.equal(lib.__calls.fanSetters, 2, 'one probe = table write + default-mode restore');
+  assert.equal(lib.__state.fanMode, 0, 'restored: the card is left in DEFAULT mode, never table mode');
+});
+
+test('M3-D: probe ALSO runs when properties grant control but the derived modes claim fixed (F1 regression)', async () => {
+  const lib = makeFakeLib({ fanCanControl: true });
+  const b = makeBackend(lib, { fanProbe: true });
+  const caps = await b.getCapabilities(0);
+  assert.equal(lib.__calls.fanSetters, 2, 'probe runs even though canControl=TRUE (IGS running — the primary usage)');
+  assert.equal(caps.fan.canControl, true);
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'probe-learned modes replace the wrong 1<<mode fixed derivation');
+});
+
+test('M3-D: concurrent first caps calls share ONE probe promise (no double probe)', async () => {
+  const lib = makeFakeLib();
+  const b = makeBackend(lib, { fanProbe: true });
+  const [c1, c2, c3] = await Promise.all([b.getCapabilities(0), b.getCapabilities(0), b.getCapabilities(0)]);
+  assert.equal(c1.fan.canControl, true);
+  assert.equal(c2.fan.canControl, true);
+  assert.equal(c3.fan.canControl, true);
+  assert.equal(lib.__calls.fanSetters, 2, 'exactly one probe across concurrent callers');
+});
+
+test('M3-D: the probe cache is OUTSIDE the caps cache — ocMode flips do not re-probe', async () => {
+  const lib = makeFakeLib();
+  const b = makeBackend(lib, { fanProbe: true });
+  await b.getCapabilities(0);
+  assert.equal(lib.__calls.fanSetters, 2);
+  b.setOcMode('advanced'); // invalidates ONLY the caps cache
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.fan.canControl, true);
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve']);
+  assert.equal(lib.__calls.fanSetters, 2, 'no second probe after a caps-cache invalidation');
+});
+
+test('M3-D: probe WRITE-REFUSED keeps the derived modes and read-only caps (F2 regression)', async () => {
+  const lib = makeFakeLib();
+  lib.ctlFanSetSpeedTableMode = (h, tableObj) => { lib.__calls.fanSetters++; return CTL_RESULT.ERROR_UNSUPPORTED_FEATURE; };
+  const b = makeBackend(lib, { fanProbe: true });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.fan.canControl, false);
+  assert.deepEqual(caps.fan.modes, ['fixed'], 'a write-REFUSED card keeps the derived modes — claiming auto/curve would lie');
+  assert.equal(lib.__calls.fanSetters, 1, 'table write attempted; restore never needed (never entered table mode)');
+  // The apply gate uses the effective value: still refused, no setter calls.
+  const res = await b.applySettings(0, { fanCurve: [{ t: 20, speedPct: 20 }] });
+  assert.equal(res.ok, false);
+  assert.equal(res.perControl.fanCurve.errorCode, 'unsupported');
+  assert.equal(lib.__calls.fanSetters, 1);
+});
+
+test('M3-D: write-accepted-but-restore-fail retries the restore (never left in table mode) — modes stay [auto,curve], still read-only (F2 regression)', async () => {
+  const lib = makeFakeLib();
+  lib.ctlFanSetDefaultMode = (h) => { lib.__calls.fanSetters++; return CTL_RESULT.ERROR_DATA_WRITE; };
+  const b = makeBackend(lib, { fanProbe: true });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.fan.canControl, false, 'a stuck restore is itself a probe failure');
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'the table WRITE was accepted — the card demonstrably accepts tables (write-accepted rule)');
+  assert.equal(lib.__calls.fanSetters, 3, 'table write + 2 restore retries');
+});
+
+test('M3-D: probe point count honors fp.maxPoints — min(10, maxPoints) (F3 regression)', async () => {
+  const lib = makeFakeLib({ fanMaxPoints: 4 });
+  const b = makeBackend(lib, { fanProbe: true });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.fan.maxCurvePoints, 4);
+  assert.equal(caps.fan.canControl, true, 'a maxPoints<10 card still unlocks when it accepts tables');
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve']);
+  assert.equal(lib.__calls.fanSetters, 2);
+  assert.equal(lib.__state.fanTable.length, 4, 'sample table built with min(10, maxPoints) points and verified with the same count');
+});
+
+test('M3-D: probe-ok opens the apply gate — the effective canControl drives apply', async () => {
+  const lib = makeFakeLib();
+  const b = makeBackend(lib, { fanProbe: true });
+  assert.equal((await b.getCapabilities(0)).fan.canControl, true);
+  const res = await b.applySettings(0, { fanCurve: [{ t: 20, speedPct: 20 }, { t: 50, speedPct: 40 }] });
+  assert.equal(res.ok, true);
+  assert.equal(res.perControl.fanCurve.ok, true);
+  assert.equal(res.perControl.fanCurve.readBackEqual, true);
+  assert.equal(lib.__calls.fanSetters, 3, 'probe (table+restore) + curve apply');
+});
+
+// ---------------------------------------------------------------------------
 // Read-back
 // ---------------------------------------------------------------------------
 
@@ -437,7 +557,7 @@ test('applySettings: fan setters are never called when canControl=false', async 
 });
 
 test('applySettings: fan applies work on a canControl=true device (F1 regression — no ReferenceError)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
   const b = makeBackend(lib);
   // fixedFanPct: the path that previously threw ReferenceError
   // (CTL_FAN_SPEED_UNITS was not imported).
@@ -452,8 +572,20 @@ test('applySettings: fan applies work on a canControl=true device (F1 regression
   assert.equal(lib.__calls.fanSetters, 2);
 });
 
+test('applySettings: fan mode gate matches the mock — out-of-set modes refused with unsupported, no driver write (F5 regression)', async () => {
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x4 }); // curve only
+  const b = makeBackend(lib);
+  const res = await b.applySettings(0, { fixedFanPct: 30 });
+  assert.equal(res.ok, false);
+  assert.equal(res.perControl.fixedFanPct.errorCode, 'unsupported');
+  assert.match(res.perControl.fixedFanPct.message, /fan mode fixed not supported/);
+  assert.equal(lib.__calls.fanSetters, 0, 'a refused mode never reaches a driver setter');
+  const ok = await b.applySettings(0, { fanCurve: [{ t: 20, speedPct: 20 }] });
+  assert.equal(ok.ok, true, 'an in-set mode still applies');
+});
+
 test('applySettings: fan curve apply clamps %, sorts temps, enforces ascending before the driver write (F2 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
   const b = makeBackend(lib);
   const res = await b.applySettings(0, {
     fanMode: 'curve',
@@ -496,7 +628,7 @@ test('applySettings: fan payload parity — igcl and mock normalize identically 
       { t: 21, speedPct: 130 }, { t: 22, speedPct: 5 }, { t: 22.4, speedPct: 7 },
     ],
   };
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
   const igcl = makeBackend(lib);
   const igclRes = await igcl.applySettings(0, payload);
   assert.equal(igclRes.ok, true);
@@ -513,7 +645,7 @@ test('applySettings: fan payload parity — igcl and mock normalize identically 
 });
 
 test('applySettings: fan curve apply fails when read-back mode differs (F2 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
   // Driver ignores the set and stays in default/auto mode.
   lib.ctlFanGetConfig = (h, cfgBuf) => {
     encodeFanConfig(cfgBuf, { mode: 0 });
@@ -528,7 +660,7 @@ test('applySettings: fan curve apply fails when read-back mode differs (F2 regre
 });
 
 test('applySettings: fan curve apply fails when read-back points differ (F2 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
   // Driver keeps the mode but stores a different table.
   lib.ctlFanGetConfig = (h, cfgBuf) => {
     encodeFanConfig(cfgBuf, { mode: 2, numPoints: 1, tablePoints: [{ Size: 28, Version: 0, temperature: 20, speed: { Size: 16, Version: 0, speed: 99, units: 1 } }] });
@@ -543,7 +675,7 @@ test('applySettings: fan curve apply fails when read-back points differ (F2 regr
 });
 
 test('applySettings: fan curve read-back with a driver-reported numPoints > 32 fails controlled, not throws (N1 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
   // A broken driver reports 40 points into the fixed 32-element table; the
   // sibling read-back guards numPoints <= 32 — verifyFanConfig must too,
   // returning a controlled per-control failure instead of throwing on
@@ -582,7 +714,7 @@ test('applySettings: fixed fan speed fails when read-back speed differs (F2 regr
 });
 
 test('applySettings: fan auto mode fails when read-back mode differs (F2 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
   // Driver stays in table mode instead of switching to default.
   lib.ctlFanGetConfig = (h, cfgBuf) => {
     encodeFanConfig(cfgBuf, { mode: 2 });

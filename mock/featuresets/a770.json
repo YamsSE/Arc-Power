@@ -11,7 +11,7 @@
   "graphicsClockMHz": 2100,
   "memClockMHz": 2187,
   "hasFan": true,
-  "fanCanControl": false,
+  "fanCanControl": true,
   "fanMaxCurvePoints": 10,
   "extendedRanges": true,
   "extended": { "plMax": 315, "tlMax": 115 },
@@ -23,5 +23,5 @@
   },
   "supportedControls": ["gpuFreqOffset", "gpuVoltOffset", "gpuLock", "powerLimit", "tempLimit"],
   "telemetry": { "gpuClockBaseMhz": 600, "memClockMhz": 2187, "tempCBase": 36, "fanRpm": [1030], "powerW": 38.8 },
-  "notes": "Verified on this machine: PL 105-252 W (extended 315 W — the LIVE-VERIFIED KMD ceiling (2026-08-06 probe: 400/350/330 W refused 0x44000004, 315 W persisted) — the mock accepts the full exposed range so the refusal path is exercised via the ocMode gate instead), TL 60-90 C (extended 115), freq offset 0-300 MHz step 1, volt offset 0-0.234 V step 0.005, fan read-only (canControl=false), gpuLock supported, no VRAM offsets, no vfCurve, 32 Xe cores / 4096 shaders, driver 32.0.101.8861, mem clock ~2187 MHz. The mock keeps an editable-fan overlay (RID_MOCK_FAN_READONLY unset under --ui-verify) so the fan editor stays testable."
+  "notes": "Verified on this machine: PL 105-252 W (extended 315 W — the LIVE-VERIFIED KMD ceiling (2026-08-06 probe: 400/350/330 W refused 0x44000004, 315 W persisted) — the mock accepts the full exposed range so the refusal path is exercised via the ocMode gate instead), TL 60-90 C (extended 115), freq offset 0-300 MHz step 1, volt offset 0-0.234 V step 0.005, fan EDITABLE via the M3-D live-verified probe path (canControl=false property is a LIE on this card — table writes SUCCESS with the FAN-enum PERCENT=1 encoding, exact read-back, SetDefaultMode restores cleanly; fixed writes are genuinely UNSUPPORTED_FEATURE, hence modes ['auto','curve']), gpuLock supported, no VRAM offsets, no vfCurve, 32 Xe cores / 4096 shaders, driver 32.0.101.8861, mem clock ~2187 MHz. RID_MOCK_FAN_READONLY=1 (the fanCanControl:false overlay) reproduces the read-only surface for ui-verify — the modes stay ['auto','curve'] there too."
 }

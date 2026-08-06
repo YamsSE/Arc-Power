@@ -591,7 +591,7 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '0.1.0', 'package.json version');
+  assert.equal(version, '0.2.0', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {

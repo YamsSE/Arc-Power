@@ -10,7 +10,11 @@
 // Safety (hard rules):
 //   - never sets a value different from the current read-back;
 //   - reset only when a change was detected;
-//   - fan setters only when canControl === true (never on this A770);
+//   - fan setters only when the EFFECTIVE canControl === true — M3-D: the
+//     A770's canControl=false property is a lie; the first caps read now
+//     triggers ONE reversible fan probe (write sample table + read-back +
+//     SetDefaultMode restore), so the packaged --headless smoke performs a
+//     single write+restore pair on the real card;
 //   - gpuLock is never written when the device reports dynamic (0,0) —
 //     writing 0,0 would switch lock modes (probe rule);
 //   - the waiver is accepted only under allowAutoWaiver (constructor flag
@@ -86,7 +90,9 @@ export async function runSmoke(backend, opts = {}) {
     const noop = {};
     for (const [key, value] of Object.entries(before)) {
       if (value === null || value === undefined) continue;
-      // Safety: never write fan controls on a read-only fan, never write a
+      // Safety: never write fan controls on a read-only fan (M3-D: the
+      // probe already ran its single reversible write+restore inside the
+      // first getCapabilities — no further fan writes here), never write a
       // vfCurve (write switches curve type), never write a dynamic (0,0)
       // gpuLock (would switch lock modes).
       if (['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].includes(key)) continue;
@@ -97,6 +103,13 @@ export async function runSmoke(backend, opts = {}) {
       // to write at all, so zero-valued scalars are skipped (their absence
       // from the set is exactly what the honest refusal would report anyway).
       if (typeof value === 'number' && value === 0) continue;
+      // M3-D: a CURRENT state holding extended values (>252 W / >90 C — e.g.
+      // the card is running a 300 W profile) cannot no-op round-trip through
+      // the DriverStore runtime: it refuses them client-side (0x44000004).
+      // Extended values are the old-2023-runtime domain, verified by the
+      // dedicated probes (M2C-C/M3-C) — the no-op covers the in-range set.
+      if (key === 'powerLimitW' && typeof value === 'number' && value > 252) continue;
+      if (key === 'tempLimitC' && typeof value === 'number' && value > 90) continue;
       noop[key] = value;
     }
     let applyRes;

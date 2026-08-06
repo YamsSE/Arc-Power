@@ -1019,6 +1019,126 @@ during recon, all evidence-based:
 - 643+ tests green, tsc 0, ui-verify variants green, dist + packaged
   (elevated) smoke exit 0, commit + push per the pipeline.
 
+### M3-D — Alchemist fan control (the M3-C-K verdict was WRONG — user-corrected)
+
+User report (2026-08-06): IGS shows a WORKING full fan-curve editor for the
+A770, not just fixed mode. Deep check done by the host, all live-verified:
+
+- **The M3-C-K "no channel" verdict was wrong.** Evidence: IGS's
+  `IntelGraphicsSoftware.Wrapper.IGCL.dll` binds the SAME IGCL fan API we
+  implement (ctlFanGetProperties/GetConfig/SetSpeedTableMode/
+  SetDefaultMode; string scan of the binaries; `IgclFanTableEntryToTuple`
+  in Implementations.dll). IGS's own persisted curve was LIVE on the card
+  (a SYSTEM-context probe read mode=2 speed-table mode with fan RPM
+  telemetry ~1000-1190 rpm; IGS reapplied it).
+- **The unlock is the WRITE ENCODING + a capability probe, not a new
+  channel**: `ctlFanSetSpeedTableMode` returns SUCCESS on this A770 when
+  the table uses the FAN enum's PERCENT units (1) + Intel's sample
+  encoding (Size/Version filled, points ascending). Proven live twice
+  (10-pt sample table + a realistic 4-pt curve: SUCCESS, exact read-back,
+  restore-to-default clean). Our earlier probes failed because they used
+  the general CTL_UNITS.PERCENT (11) instead of the fan enum's 1.
+- The fan's `canControl=false` property is a lie on this card (the driver
+  honors the writes anyway — same "honest vs reality" split as the
+  momentary-lie lesson). Fixed-mode writes are genuinely unsupported
+  (supportedModes=0x2 = table only — and the shipped `1<<mode` derivation
+  maps 0x2 to `['fixed']`, which live behavior contradicts: fixed writes
+  -> ERROR_UNSUPPORTED_FEATURE, table writes -> SUCCESS). The fan speaks
+  percent in table mode (supportedUnits=0x1 = RPM is for STATE reads
+  only).
+- The backend's fan apply (setSpeedTableMode + read-back verify) already
+  exists with the correct FAN_UNITS_PERCENT=1 constant — it is gated
+  behind caps.fan.canControl, which is false.
+
+#### M3-D scope
+1. **Live fan-capability probe (the unlock)**: in the real backend, when
+   fans enumerate but properties report canControl=false, run the
+   reversible probe ONCE per device per session, cached in a DEDICATED
+   promise-keyed map OUTSIDE the caps cache (the caps cache is
+   invalidated by ocMode flips — the probe cache must not be, and
+   concurrent first calls must share one probe promise, never double
+   probe). The probe lives inside `getCapabilities` so the apply gate
+   and every later caps call see the effective value. Probe = write
+   Intel's sample 10-point table (safe 0-90%, FAN-enum PERCENT units =
+   1), read back + verify, restore default mode, verify.
+   **Probe-learned modes (round-1 F1)**: live evidence — fixed-mode
+   writes are UNSUPPORTED_FEATURE, table writes SUCCESS, default SUCCESS
+   — while the shipped `1<<mode` derivation from supportedModes=0x2
+   yields `['fixed']` (wrong on this card). The probe therefore learns
+   the real modes: probe-ok -> modes `['auto','curve']` (never offer
+   fixed unless a fixed-write probe separately succeeds — out of scope,
+   do not offer it); the derivation stays for the auto/curve bits only.
+   On the probe-FAIL path modes follow the WRITE-ACCEPTED rule: a probe
+   whose table WRITE was accepted (a later step failed — stuck restore,
+   IGS reapply race) reports `['auto','curve']` (the card demonstrably
+   accepts tables; applying 'auto' also retries the stuck restore); a
+   write-REFUSED probe keeps the derived modes (claiming auto/curve on
+   a genuinely fixed-only card would lie).
+   caps.fan.maxCurvePoints from properties (maxPoints, live: 10).
+   **Restore-failure safety (round-1 F3)**: if the restore fails, retry
+   it; a failed probe must NEVER leave the card in table mode (a stuck
+   table mode is itself treated as probe-failure with an honest
+   retry/report), and the failure is surfaced (log + fan caps stay
+   read-only).
+2. **Apply gate**: the fan-apply safety gate uses the effective value
+   (properties.canControl || probeOk). **The probe is NOT gated on
+   isElevated (round-1 F7)** — the write outcome decides honesty
+   (non-elevated dev writes fail -> read-only, no hard gate). Note: the
+   packaged `--headless` smoke now triggers one reversible write+restore
+   on the first caps read (update the stale smoke.js:13/89-92 comments:
+   "never on this A770" is now wrong).
+3. **a770 featureset**: fanCanControl -> true + a note documenting the
+   live-verified probe path; the mock mirrors the real card's true
+   capability (canControl true + modes `['auto','curve']` — the mock's
+   FAN_EDITABLE all-three set diverges from the live card; align it).
+   RID_MOCK_FAN_READONLY stays as the dev-only read-only overlay.
+   **Mock modes alignment (round-2 F1)**: the mock's fan modes align to
+   `['auto','curve']` in BOTH the editable and the read-only overlay
+   (the card's true modes regardless of control grant — the read-only
+   fixture must not claim `['fixed']`, which would repeat the honest-vs-
+   reality lie). Pins that move: mock-backend.test.js:32 (editable
+   overlay modes), mock-backend.test.js:70 + mock-backend.js:184
+   (read-only overlay modes), plus the FAN_EDITABLE constant
+   (mock-backend.js:32, all-three -> ['auto','curve']).
+   **Pins that break and must move with the flip (round-1 F5)**:
+   mock-backend.test.js:44-45 (+ :66 title), featuresets.test.js:51 +
+   featureset.test.js:99, and the stale wording in igcl-backend.test.js
+   (fake-lib fanCanControl default), mock-backend.test.js:66,
+   featuresets.test.js:364, main.js:226-230, igcl-backend.js:2/505
+   comments, smoke.js:13, bindings.test.js:244, and docs/igcl-
+   integration.md:152/159-161/275. ui-verify fan pins do NOT break
+   (default variant opts into the editable fixture already).
+4. **Fake-lib probe modeling (round-1 F4)**: igcl-backend.test.js's fake
+   lib reports canControl=false with setters returning SUCCESS — a naive
+   probe would flip the read-only fixtures to editable and increment
+   fanSetters. Model the probe explicitly: probe DISABLED by default
+   (fake opts), with probe-ok / probe-fail / restore-fail fixtures +
+   regression tests (the existing caps-matrix pin at :267-268 and the
+   setters-never-called pin at :428-437 stay green by default).
+5. **Version bump per user request (round-1 F6)**: `npm version 0.2.0`
+   (syncs package-lock.json); update the pins test/ipc-core.test.js:594
+   and ui-verify.js:152-153 ('0.1.0' -> '0.2.0'); tools/probe/package
+   .json is a SEPARATE tool package — leave its version (documented);
+   dist artifactName follows ${version}.
+6. **Correction documentation**: rewrite pipeline/m3c-fan-probe.md +
+   plan.md M3-C-K note with the real verdict + evidence.
+
+#### Checkpoints (build + tests between)
+1. Backend probe (dedicated cache, learned modes, restore safety) +
+   fake-lib modeling + gate + featureset/test pin updates: npm test, tsc.
+2. Version bump + docs: full suite + ui-verify variants (default,
+   RID_MOCK_FAN_READONLY=1, RID_MOCK_STOCK_MODE=1, RID_MOCK_TWEAKS_APPLY=1).
+3. Live with the user (UAC): one real curve apply through the app's
+   apply path on the card (write a gentle curve, verify read-back +
+   fan RPM change, then restore via the app's Reset/auto button).
+4. dist + elevated packaged smoke + commit + push.
+
+#### Acceptance
+- The Fan page is editable on the real A770 and a curve apply lands with
+  verified read-back + observable RPM response, restore clean.
+- Version 0.2.0 in the EXE + header.
+- All suites green.
+
 ## 10. Test strategy
 
 - `vitest` (renderer + pure modules) and `node:test` (main process).
@@ -1031,6 +1151,7 @@ during recon, all evidence-based:
 
 ## 11. Deferred reviewer notes
 
-(none — round-2 findings all folded into the plan; round-2 VERDICT: APPROVED)
+(none — M3-C/M3-D plan findings folded into the plan sections; M3-D
+round-3 VERDICT: APPROVED)
 M0 findings folded into §4a; open M0 risks tracked there (fan
 canControl=false interplay, future-driver registered-UID requirement).
