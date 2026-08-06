@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   telemetryStart: (deviceId) => ipcRenderer.invoke('telemetry-start', deviceId),
   telemetryStop: (deviceId) => ipcRenderer.invoke('telemetry-stop', deviceId),
   registryCatalog: () => ipcRenderer.invoke('registry-catalog'),
+  registryApply: (entryId, action) => ipcRenderer.invoke('registry-apply', entryId, action),
   startupGet: () => ipcRenderer.invoke('startup-get'),
   startupSet: (enabled, profileId) => ipcRenderer.invoke('startup-set', enabled, profileId),
   driverInfo: () => ipcRenderer.invoke('driver-info'),

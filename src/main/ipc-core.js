@@ -23,7 +23,8 @@ import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
-import { createMockRegistryCatalog } from './registry-catalog.js';
+import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
+import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { executeApply, createNullOldIgcl } from './apply-routing.js';
@@ -168,6 +169,7 @@ export function assertNoPayload(args, channel) {
  *   startup?: { get: () => Promise<unknown>, set: (enabled: boolean, profileId: string | null) => Promise<unknown> },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
+ *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   presentmon?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null> },
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -190,8 +192,14 @@ export function createIpcHandlers({
   driverInfo = createMockDriverInfo(),
   // M3-A: the registry-catalog adapter. The DEFAULT is the MOCK (never runs
   // reg.exe); ipc.js injects the real adapter in the product path. The
-  // catalog is read-side only — there is no apply channel in M3-A (M3-B).
-  registryCatalog = createMockRegistryCatalog(),
+  // catalog is read-side only — the M3-B apply channel is 'registry-apply'.
+  registryCatalog,
+  // M3-B: the registry-apply adapter. The DEFAULT is the MOCK (never spawns
+  // PowerShell, never elevates); ipc.js injects the real adapter in the
+  // product path. The mock catalog + mock apply SHARE one mock registry
+  // state so an applied action is honestly reflected by the next
+  // registry-catalog read (the post-apply state refresh).
+  registryApply,
   // M2b-B: the FPS adapter. The DEFAULT is the mock (always unavailable —
   // never loads koffi/PresentMonAPI2); ipc.js injects the real client in the
   // product path. On this machine the real client degrades to null anyway
@@ -207,6 +215,14 @@ export function createIpcHandlers({
   isElevated = detectElevated,
   mock = null,
 }) {
+  // M3-A/M3-B mock defaults: the read + apply mock adapters share ONE mock
+  // registry state (in-memory; never touches the real registry), so a mock
+  // apply flips the very next mock read. When either adapter is injected,
+  // both are product/real or test-injected — a shared state is only built
+  // for the default pair.
+  const mockRegistryState = registryCatalog && registryApply ? null : createMockRegistryState();
+  const catalogAdapter = registryCatalog ?? createMockRegistryCatalog(REGISTRY_CATALOG, { state: mockRegistryState });
+  const registryApplyAdapter = registryApply ?? createMockRegistryApply(REGISTRY_CATALOG, { state: mockRegistryState });
   /** @type {Map<number, TelemetryService>} */
   const telemetry = new Map();
 
@@ -355,10 +371,29 @@ export function createIpcHandlers({
       // M3-A: the registry-hacks catalog (Tweaks page) — read-side only.
       // Real reg.exe queries in the product path (no elevation); the default
       // adapter is the MOCK so tests and --ui-verify never touch the real
-      // registry. There is deliberately NO apply channel in M3-A (M3-B).
+      // registry. The M3-B apply channel is 'registry-apply'.
       'registry-catalog': async (...args) => {
         assertNoPayload(args, 'registry-catalog');
-        return registryCatalog.get();
+        return catalogAdapter.get();
+      },
+
+      // M3-B: apply one catalog action ELEVATED (Enable/Disable/Revert per
+      // the entry's apply descriptor). The default adapter is the MOCK
+      // (never spawns PowerShell, never elevates); ipc.js injects the real
+      // adapter in the product path — every write then runs in an elevated
+      // PowerShell (one UAC per action) and the result reports per-step
+      // truth (including the UAC-cancel and partial-failure paths — no
+      // silent partial state, no auto-revert). The entry's apply descriptor
+      // is resolved HERE from the catalog: the renderer supplies only
+      // entryId + action, never raw commands.
+      'registry-apply': async (entryId, action) => {
+        if (typeof entryId !== 'string' || entryId.length === 0) {
+          throw new Error('registry-apply: entryId must be a non-empty string');
+        }
+        if (typeof action !== 'string' || !['enable', 'disable', 'revert'].includes(action)) {
+          throw new Error('registry-apply: action must be one of enable, disable, revert');
+        }
+        return registryApplyAdapter.apply(entryId, action);
       },
 
       // Run-key (apply-on-startup) state (M2b). startup-set writes the HKCU

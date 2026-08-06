@@ -162,6 +162,53 @@ export interface RegistryEntry {
   reads: RegistryRead[];
   /** The per-entry label for the absent-everywhere state. */
   absentLabel: string;
+  /** M3-B: the elevated apply descriptor (what Enable/Disable/Revert write). */
+  apply: RegistryApplyDescriptor;
+}
+
+/**
+ * One elevated reg.exe command step (M3-B). The renderer never executes
+ * these — the IPC resolves them from the catalog in main; they are exposed
+ * for honest display (tooltips, revert notes).
+ */
+export interface RegistryApplyStep {
+  kind: 'add' | 'delete';
+  path: string;
+  value: string;
+  /** REG_DWORD etc. (add steps only). */
+  type?: string;
+  /** The value data (add steps only; decimal — reg.exe stores DWORD). */
+  data?: string;
+}
+
+/** The M3-B apply surface of one catalog entry. */
+export interface RegistryApplyDescriptor {
+  /** False = read-only info entry (fullscreen-optimizations) — no buttons. */
+  applyable: boolean;
+  /** What the revert restores — shown on the card. */
+  revertNote: string;
+  /** The exact command lists per action (present iff applyable). */
+  actions?: Record<'enable' | 'disable' | 'revert', RegistryApplyStep[]>;
+}
+
+/** One step's outcome in an apply result (per-step honesty, no silent partial state). */
+export interface RegistryApplyStepResult {
+  step: number;
+  ok: boolean;
+  status: 'done' | 'failed' | 'not-run';
+  /** Human description of the command ("MPOHack=1 written to HKLM\..."). */
+  label: string;
+}
+
+/** The registry-apply IPC envelope. */
+export interface RegistryApplyResponse {
+  ok: boolean;
+  /** True when the UAC prompt was declined/timed out — nothing ran. */
+  canceled?: boolean;
+  /** Honest outcome text (success / partial with the failed step / cancel). */
+  message: string;
+  /** Every expected step with its true status (done/failed/not-run). */
+  perStep: RegistryApplyStepResult[];
 }
 
 /** One read's live result + interpretation. */

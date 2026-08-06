@@ -19,14 +19,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState } from './ipc-core.js';
 import { ProfileStore } from './store/profile-store.js';
 import { createStartup, createMockStartup } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
-import { createRegistryCatalog, createMockRegistryCatalog } from './registry-catalog.js';
+import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
+import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
 import { applyProfile, runApplyOnStartup } from './apply-on-boot.js';
 import { createTray, buildTrayMenuTemplate, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
@@ -325,11 +326,36 @@ async function main() {
   // Driver-date adapter: real reg.exe query in the product path; mock mode
   // (incl. --ui-verify) returns the fixture date and never spawns reg.exe.
   const driverInfo = mock ? createMockDriverInfo() : createDriverInfo();
-  // M3-A registry-catalog adapter (Tweaks page, read-side only): real
-  // read-only reg.exe queries in the product path; mock mode (incl.
-  // --ui-verify) returns the fixture states and never spawns reg.exe. There
-  // is no apply channel in M3-A (that is M3-B's elevated surface).
-  const registryCatalog = mock ? createMockRegistryCatalog() : createRegistryCatalog();
+  // M3-A/M3-B registry-catalog + registry-apply adapters (Tweaks page):
+  // real read-only reg.exe queries + elevated reg.exe writes in the product
+  // path; mock mode (incl. --ui-verify) returns the fixture states and the
+  // mock apply flips the SAME in-memory state (never spawns, never
+  // elevates). The two mock adapters share one mock registry state so the
+  // post-apply state refresh honestly reflects the "written" values.
+  const mockRegistryState = mock ? createMockRegistryState() : null;
+  const registryCatalog = mock ? createMockRegistryCatalog(REGISTRY_CATALOG, { state: mockRegistryState }) : createRegistryCatalog();
+  // ui-verify knobs: RID_MOCK_REGAPPLY_FAIL='<entryId>:<action>' simulates a
+  // mid-way reg failure (clamped to the action's last step, so single-step
+  // actions still exercise a step-1 failure); RID_MOCK_REGAPPLY_CANCEL=1
+  // simulates a UAC decline for the mpo entry; RID_MOCK_REGAPPLY_DELAY_MS
+  // adds simulated elevation latency so the in-flight disabled button state
+  // can be asserted — all exercise the honest partial/cancel/in-flight UI
+  // paths.
+  const regApplyFail = process.env.RID_MOCK_REGAPPLY_FAIL;
+  const regApplyDelay = Number(process.env.RID_MOCK_REGAPPLY_DELAY_MS);
+  const registryApply = mock
+    ? createMockRegistryApply(REGISTRY_CATALOG, {
+        state: mockRegistryState,
+        failAt: regApplyFail
+          ? (() => {
+              const [entryId, action] = regApplyFail.split(':');
+              return { entryId, action, step: 1 };
+            })()
+          : null,
+        canceledActions: process.env.RID_MOCK_REGAPPLY_CANCEL === '1' ? new Set(['mpo']) : new Set(),
+        delayMs: regApplyDelay > 0 ? regApplyDelay : 0,
+      })
+    : createRegistryApply();
   // FPS adapter: mock mode reports unavailable (never loads koffi/PresentMon);
   // the product path starts the real client lazily on the first fps-poll.
   // On this machine the real client degrades to unavailable too (no
@@ -400,6 +426,7 @@ async function main() {
     startup,
     driverInfo,
     registryCatalog,
+    registryApply,
     presentmon,
     oldIgcl,
     applyRunner,
@@ -431,6 +458,11 @@ async function main() {
     const fsVariant = process.env.RID_MOCK_FEATURESET;
     if (fsVariant && fsVariant !== 'a770') {
       await runFeaturesetVerify(win, fsVariant);
+    } else if (process.env.RID_MOCK_TWEAKS_APPLY === '1') {
+      // M3-B tweaks-apply variant: drives the full apply flow (mock adapter,
+      // no elevation) — enable/disable/revert round trips, per-step toasts,
+      // the partial-failure + UAC-cancel honesty paths.
+      await runTweaksApplyVerify(win);
     } else {
       await runUiVerify(win, backend, () => trayRebuilds, () => fpsPolls);
     }

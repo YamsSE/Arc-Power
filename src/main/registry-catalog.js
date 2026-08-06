@@ -1,9 +1,12 @@
-// Arc Power — M3-A registry hacks CATALOG (read-side only).
+// Arc Power — M3-A/M3-B registry hacks CATALOG (file-driven data).
 //
 // The catalog is file-driven data: what each known, reversible Windows GPU
 // tweak is, which registry values prove its current state, and how to read
-// that state — all read-only (reg.exe `query`, no elevation). APPLYING is
-// M3-B (every entry requires administrator); M3-A only lists + reads.
+// that state — all read-only (reg.exe `query`, no elevation). Each entry
+// also carries the M3-B APPLY descriptor: the exact elevated reg.exe
+// commands that write the tweak's enabled/disabled state and the revert
+// (restore prior value). APPLYING runs ELEVATED (every entry requires
+// administrator) and is orchestrated by registry-apply.js, never here.
 //
 // The parsers are pure (no process calls) and unit-tested; the real adapter
 // runs `reg query` with an injectable execFile; the default adapter for
@@ -44,7 +47,26 @@ export const REG_NOT_FOUND = 1;
  *     on: string,               // value (or token for enumerate reads) meaning "tweak active"
  *     off?: string,             // value meaning "tweak off" (named reads)
  *   }>,
+ *   apply: {                     // M3-B: elevated apply descriptor (see registry-apply.js)
+ *     applyable: boolean,        // false = read-only info entry (no commands)
+ *     revertNote: string,        // what the revert restores (shown on the card)
+ *     actions?: {                // present iff applyable
+ *       enable: RegistryApplyStep[],   // write the tweak's active state
+ *       disable: RegistryApplyStep[],  // write the tweak's inactive state
+ *       revert: RegistryApplyStep[],   // restore the prior value (delete = system default)
+ *     },
+ *   },
  * }} RegistryEntry
+ */
+
+/**
+ * @typedef {{
+ *   kind: 'add' | 'delete',
+ *   path: string,       // hive-qualified key path ("HKLM\..." / "HKCU\...")
+ *   value: string,      // value name ('' for delete-by-path-only — unused today)
+ *   type?: string,      // REG_DWORD etc. (add steps only)
+ *   data?: string,      // the value data (add steps only; decimal — reg.exe stores DWORD)
+ * }} RegistryApplyStep
  */
 
 export const REGISTRY_CATALOG = [
@@ -54,13 +76,36 @@ export const REGISTRY_CATALOG = [
     description:
       'MPO lets the compositor layer windows on dedicated planes. Some GPUs/drivers produce stutter, flicker or black screens with MPO active; the MPOHack value disables the overlay for the DirectX stack. '
       + 'Canonical location (public knowledge): HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences with MPOHack=1 (system-wide); HKCU is the per-user variant. '
-      + 'VERIFY the exact key/value on this machine in M3-B before applying.',
+      + 'VERIFY the exact key/value on this machine in M3-B before applying. '
+      + 'HKCU applies use the elevated session\'s hive — with alternate-credential UAC (approving as a different admin account) they write the approving account\'s HKCU, not the logged-in user\'s.',
     requiresElevation: true,
     absentLabel: 'Not set — MPO follows the driver default (usually on)',
     reads: [
       { path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
       { path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
     ],
+    // M3-B apply: MPOHack=1 disables MPO (the tweak's active state). The
+    // inactive state is MPOHack=0; REVERT deletes the value in both hives,
+    // which restores the system default (MPO on). The live e2e confirms the
+    // canonical key/value on this machine (see the description note above).
+    apply: {
+      applyable: true,
+      revertNote: 'Revert deletes MPOHack from both hives — MPO follows the driver default again (usually on).',
+      actions: {
+        enable: [
+          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '1' },
+          { kind: 'add', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '1' },
+        ],
+        disable: [
+          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '0' },
+          { kind: 'add', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '0' },
+        ],
+        revert: [
+          { kind: 'delete', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack' },
+          { kind: 'delete', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack' },
+        ],
+      },
+    },
   },
   {
     id: 'hags',
@@ -73,6 +118,23 @@ export const REGISTRY_CATALOG = [
     reads: [
       { path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'DWORD', on: '2', off: '1' },
     ],
+    // M3-B apply: HwSchMode 2 = on / 1 = off; REVERT deletes the value so
+    // the Windows default applies.
+    apply: {
+      applyable: true,
+      revertNote: 'Revert deletes HwSchMode — the Windows default applies (on for recent builds).',
+      actions: {
+        enable: [
+          { kind: 'add', path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'REG_DWORD', data: '2' },
+        ],
+        disable: [
+          { kind: 'add', path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'REG_DWORD', data: '1' },
+        ],
+        revert: [
+          { kind: 'delete', path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode' },
+        ],
+      },
+    },
   },
   {
     id: 'game-dvr',
@@ -85,6 +147,25 @@ export const REGISTRY_CATALOG = [
     reads: [
       { path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'DWORD', on: '0', off: '1' },
     ],
+    // M3-B apply: AllowGameDVR=0 disables background recording (the tweak's
+    // active state); 1 = inactive. REVERT deletes the VALUE and keeps the
+    // policy key (safer than deleting the key — other policies may live in
+    // it), so recording follows the per-user Game Bar setting again.
+    apply: {
+      applyable: true,
+      revertNote: 'Revert deletes AllowGameDVR (the policy key stays) — recording follows the per-user Game Bar setting again.',
+      actions: {
+        enable: [
+          { kind: 'add', path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'REG_DWORD', data: '0' },
+        ],
+        disable: [
+          { kind: 'add', path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'REG_DWORD', data: '1' },
+        ],
+        revert: [
+          { kind: 'delete', path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR' },
+        ],
+      },
+    },
   },
   {
     id: 'fullscreen-optimizations',
@@ -98,6 +179,12 @@ export const REGISTRY_CATALOG = [
     reads: [
       { path: 'HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers', value: null, type: 'REG_SZ', on: 'FULLSCREENOPTIMIZATIONS' },
     ],
+    // M3-B: read-only INFO entry — there is no single system-wide switch to
+    // write (the flag is per-app), so this entry has NO apply commands.
+    apply: {
+      applyable: false,
+      revertNote: 'Read-only — no system-wide setting to apply or revert.',
+    },
   },
 ];
 
@@ -248,9 +335,13 @@ export function createRegistryCatalog(deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Mock adapter — used whenever the app runs in mock mode (tests, --ui-verify,
-// RID_BACKEND=mock). Deterministic fixture states, one per vocabulary entry;
-// never spawns reg.exe.
+// Mock registry STATE — a mutable, in-memory stand-in for the real registry
+// shared by the mock READ adapter (createMockRegistryCatalog) and the mock
+// APPLY adapter (createMockRegistryApply in registry-apply.js). Applying a
+// command step mutates the state exactly like the real reg.exe command
+// would (add -> value present; delete -> value absent), so the read side
+// honestly reflects what the apply side "wrote". Never touches the real
+// registry.
 // ---------------------------------------------------------------------------
 
 const MOCK_READ_STATES = {
@@ -273,21 +364,76 @@ const MOCK_READ_STATES = {
   }],
 };
 
-export function createMockRegistryCatalog(catalog = REGISTRY_CATALOG) {
+/**
+ * Create a mutable mock registry state, seeded from the deterministic
+ * fixture states (one per vocabulary entry). The returned `applyStep`
+ * applies ONE command step (the exact shape the M3-B descriptors use):
+ * add -> the matching read becomes present with the step's data; delete ->
+ * the matching read becomes absent. A step that matches no read is a no-op
+ * (the catalog only writes what it reads — but it must not throw).
+ * @param {RegistryEntry[]} [catalog]
+ */
+export function createMockRegistryState(catalog = REGISTRY_CATALOG) {
+  const state = new Map();
+  for (const entry of catalog) {
+    const readStates = MOCK_READ_STATES[entry.id] ?? entry.reads.map(() => ({ found: false, value: null, state: 'default', detail: 'not present' }));
+    state.set(entry.id, entry.reads.map((read, i) => ({
+      read,
+      found: readStates[i]?.found ?? false,
+      value: readStates[i]?.value ?? null,
+      values: readStates[i]?.values ?? null,
+    })));
+  }
+  return {
+    applyStep(step) {
+      for (const reads of state.values()) {
+        for (const rec of reads) {
+          if (rec.read.value === null || rec.read.path !== step.path || rec.read.value !== step.value) continue;
+          if (step.kind === 'add') {
+            rec.found = true;
+            rec.value = `0x${String(step.data).toLowerCase()}`;
+            rec.values = null;
+          } else if (step.kind === 'delete') {
+            rec.found = false;
+            rec.value = null;
+            rec.values = null;
+          }
+        }
+      }
+    },
+    readsOf(entryId) {
+      return state.get(entryId) ?? [];
+    },
+  };
+}
+
+/**
+ * Mock adapter — used whenever the app runs in mock mode (tests, --ui-verify,
+ * RID_BACKEND=mock). Deterministic fixture states, one per vocabulary entry;
+ * never spawns reg.exe. When a `state` (createMockRegistryState) is shared
+ * with the mock apply adapter, applies are reflected in subsequent reads.
+ * @param {RegistryEntry[]} [catalog]
+ * @param {{ state?: ReturnType<typeof createMockRegistryState> }} [deps]
+ */
+export function createMockRegistryCatalog(catalog = REGISTRY_CATALOG, { state = createMockRegistryState(catalog) } = {}) {
   return {
     get: async () => {
       const states = catalog.map((entry) => {
-        const readStates = MOCK_READ_STATES[entry.id] ?? entry.reads.map(() => ({ found: false, value: null, state: 'default', detail: 'not present' }));
-        const reads = entry.reads.map((read, i) => ({
-          read,
-          res: readStates[i] ?? { found: false, value: null },
-          found: readStates[i]?.found ?? false,
-          value: readStates[i]?.value ?? null,
-          state: readStates[i]?.state ?? 'default',
-          detail: readStates[i]?.detail ?? 'not present',
-        }));
-        const { state, detail } = interpretEntry(entry, reads.map((r) => ({ read: r.read, res: r.res })));
-        return { id: entry.id, state, detail, reads: reads.map(({ read, found, value, state: s, detail: d }) => ({ read, found, value, state: s, detail: d })) };
+        const readStates = state.readsOf(entry.id);
+        const reads = entry.reads.map((read, i) => {
+          const rec = readStates[i] ?? { found: false, value: null };
+          const { state: s, detail } = interpretRead(read, { found: rec.found, value: rec.value, values: rec.values ?? undefined });
+          return {
+            read,
+            res: { found: rec.found, value: rec.value, values: rec.values ?? undefined },
+            found: rec.found,
+            value: rec.value,
+            state: s,
+            detail,
+          };
+        });
+        const { state: s, detail } = interpretEntry(entry, reads.map((r) => ({ read: r.read, res: r.res })));
+        return { id: entry.id, state: s, detail, reads: reads.map(({ read, found, value, state: st, detail: d }) => ({ read, found, value, state: st, detail: d })) };
       });
       return { entries: catalog, states };
     },

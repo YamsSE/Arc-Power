@@ -328,10 +328,56 @@ test('registry-catalog channel: an injected adapter is used (never the real regi
   assert.equal(out.entries[0].id, 'x');
 });
 
-test('registry-catalog channel: read-side only — no apply/enable channel exists (M3-B)', () => {
+test('registry-catalog channel: read-side only — no apply channel exists (M3-B)', () => {
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
   assert.equal(handlers['registry-catalog-apply'], undefined);
   assert.equal(handlers['registry-catalog-enable'], undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Registry-apply channel (M3-B) — elevated apply: payload validation, the
+// default mock adapter (never spawns/elevates), and the injected adapter.
+// ---------------------------------------------------------------------------
+
+test('registry-apply channel: validates entryId + action, default adapter is the mock', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['registry-apply'], 'function');
+  await assert.rejects(() => handlers['registry-apply']('', 'enable'), /entryId must be a non-empty string/);
+  await assert.rejects(() => handlers['registry-apply'](null, 'enable'), /entryId must be a non-empty string/);
+  await assert.rejects(() => handlers['registry-apply']('mpo', 'explode'), /action must be one of/);
+  await assert.rejects(() => handlers['registry-apply']('mpo', 1), /action must be one of/);
+  // Read-only entries are rejected at the adapter (the UI hides their buttons).
+  await assert.rejects(() => handlers['registry-apply']('fullscreen-optimizations', 'enable'), /read-only/);
+});
+
+test('registry-apply channel: mock apply flips the SAME mock state the registry-catalog channel reads (state refresh honesty)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  // Fixture: mpo=disabled. Enable it via the apply channel, then re-read:
+  // the next registry-catalog read MUST report enabled (the post-apply state
+  // refresh path the UI uses).
+  const before = await handlers['registry-catalog']();
+  assert.equal(before.states.find((s) => s.id === 'mpo').state, 'disabled');
+  const out = await handlers['registry-apply']('mpo', 'enable');
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.perStep.map((p) => p.status), ['done', 'done']);
+  assert.match(out.message, /MPOHack=1 written to HKLM/);
+  const after = await handlers['registry-catalog']();
+  assert.equal(after.states.find((s) => s.id === 'mpo').state, 'enabled');
+  assert.equal(after.states.find((s) => s.id === 'mpo').reads.every((r) => r.value === '0x1'), true);
+  // Revert -> default again.
+  const reverted = await handlers['registry-apply']('mpo', 'revert');
+  assert.equal(reverted.ok, true);
+  const afterRevert = await handlers['registry-catalog']();
+  assert.equal(afterRevert.states.find((s) => s.id === 'mpo').state, 'default');
+});
+
+test('registry-apply channel: an injected adapter is used (never spawns PowerShell in tests)', async () => {
+  const injected = {
+    apply: async (entryId, action) => ({ ok: true, message: `${entryId}:${action}`, perStep: [] }),
+  };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, registryApply: injected });
+  const out = await handlers['registry-apply']('mpo', 'revert');
+  assert.equal(out.message, 'mpo:revert');
 });
 
 // ---------------------------------------------------------------------------

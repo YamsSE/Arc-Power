@@ -17,6 +17,7 @@ import type {
   ProfilesEnvelope,
   ProfileSettingsState,
   RegistryCatalogResponse,
+  RegistryApplyResponse,
   ResetResponse,
   Settings,
   StartupState,
@@ -36,6 +37,10 @@ export interface ArcPowerApi {
   telemetryStop(deviceId: number): Promise<void>;
   /** M3-A (read-side only): the registry-hacks catalog + live states. */
   registryCatalog(): Promise<RegistryCatalogResponse>;
+  /** M3-B: apply one catalog action ELEVATED (Enable/Disable/Revert per the
+   *  entry's apply descriptor; main resolves the commands — the renderer
+   *  never sends raw reg commands). */
+  registryApply(entryId: string, action: 'enable' | 'disable' | 'revert'): Promise<RegistryApplyResponse>;
   startupGet(): Promise<StartupState>;
   startupSet(enabled: boolean, profileId: string | null): Promise<StartupState>;
   driverInfo(): Promise<{ driverDate: string | null }>;

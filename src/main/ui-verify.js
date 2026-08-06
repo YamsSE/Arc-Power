@@ -63,10 +63,16 @@
 //      runFeaturesetVerify — a reduced flow per device line (OC cards /
 //      no-OC note, fan editor / read-only / no-fan, monitoring, swap round
 //      trip, b580 percent-unit apply).
-//  16. M3-A Tweaks page: the registry-hacks catalog renders with live
+//  16. M3-A/M3-B Tweaks page: the registry-hacks catalog renders with live
 //      (mock) states — mpo=Off, hags=Active, game-dvr=Default,
-//      fullscreen-optimizations=Active — read-only (apply buttons disabled,
-//      "Requires administrator (M3-B)" note).
+//      fullscreen-optimizations=Active; applyable entries get working
+//      Enable/Disable/Revert buttons (mock apply — no elevation), fullscreen
+//      stays read-only; one apply round trip refreshes the card state.
+//  17. M3-B tweaks-apply variant (RID_MOCK_TWEAKS_APPLY=1): the full apply
+//      flow — every entry through enable/disable/revert with per-step
+//      toasts + state refresh; with RID_MOCK_REGAPPLY_FAIL='<id>:<action>'
+//      the honest partial-failure path, with RID_MOCK_REGAPPLY_CANCEL=1 the
+//      honest UAC-decline path.
 // This script is dev tooling only — it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
@@ -856,8 +862,9 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (leftover !== 0) fail(`cleanup left ${leftover} ui-verify profiles`);
   step('profiles-cleanup', `ui-verify profile cleanup: ${leftover} leftovers`);
 
-  // --- 16. M3-A Tweaks page: the registry-hacks catalog renders with the
-  // --- live (mock) states — read-only, no apply channel ---------------------
+  // --- 16. M3-A/M3-B Tweaks page: the catalog renders with the live (mock)
+  // --- states; applyable entries get working Enable/Disable/Revert buttons
+  // --- (mock apply — no elevation), fullscreen stays read-only ------------
   await js(`location.hash = '#/tweaks'`);
   if (!(await waitFor(win, `document.querySelectorAll('.tweak-card').length === 4`))) {
     fail(`tweaks page did not render 4 catalog cards (got ${await js(`document.querySelectorAll('.tweak-card').length`)})`);
@@ -873,10 +880,44 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if ((await tweakStateOf('hags')).trim() !== 'Active') fail(`hags state is '${await tweakStateOf('hags')}' (expected 'Active')`);
   if ((await tweakStateOf('game-dvr')).trim() !== 'Default') fail(`game-dvr state is '${await tweakStateOf('game-dvr')}' (expected 'Default')`);
   if ((await tweakStateOf('fullscreen-optimizations')).trim() !== 'Active') fail(`fullscreen state is '${await tweakStateOf('fullscreen-optimizations')}' (expected 'Active')`);
-  // Read-side only: every apply button is disabled with the M3-B note.
-  const applyBtns = await js(`Array.from(document.querySelectorAll('.tweak-card .tweak-apply')).map((b) => ({ disabled: b.disabled, text: b.textContent.trim() }))`);
-  if (applyBtns.length !== 4 || applyBtns.some((b) => !b.disabled)) fail(`M3-A: apply buttons must be disabled (read-side only): ${JSON.stringify(applyBtns)}`);
-  if (applyBtns.some((b) => !b.text.includes('Requires administrator (M3-B)'))) fail(`apply buttons must carry the M3-B note: ${JSON.stringify(applyBtns)}`);
+  // M3-B: the three applyable entries render ENABLED Enable/Disable/Revert
+  // buttons (the M3-A disabled placeholder is gone); fullscreen renders the
+  // read-only note with no buttons.
+  const actionCountOf = (id) => js(`document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action').length`);
+  for (const id of ['mpo', 'hags', 'game-dvr']) {
+    if (!(await waitFor(win, `document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action').length === 3`))) {
+      fail(`${id}: expected 3 action buttons (Enable/Disable/Revert), got ${await actionCountOf(id)}`);
+    }
+    const actionLabels = await js(`Array.from(document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action')).map((b) => b.textContent.trim()).join(',')`);
+    if (actionLabels !== 'Enable,Disable,Revert') fail(`${id}: action labels are '${actionLabels}'`);
+    const disabledAny = await js(`Array.from(document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action')).some((b) => b.disabled)`);
+    if (disabledAny) fail(`${id}: an apply button is disabled while nothing is in flight`);
+  }
+  if (await actionCountOf('fullscreen-optimizations') !== 0) fail('fullscreen-optimizations must have NO apply buttons (read-only info)');
+  if (!(await js(`!!document.querySelector('.tweak-card[data-tweak="fullscreen-optimizations"] .tweak-readonly-note')`))) {
+    fail('fullscreen-optimizations is missing the read-only note');
+  }
+  // Every applyable card explains what its revert restores.
+  for (const id of ['mpo', 'hags', 'game-dvr']) {
+    const note = await js(`document.querySelector('.tweak-card[data-tweak="${id}"] .tweak-revert-note')?.textContent ?? ''`);
+    if (note.trim().length < 20) fail(`${id}: revert note missing: '${note}'`);
+  }
+  // One apply round trip through the MOCK adapter (no elevation): mpo Enable
+  // -> success toast with the per-step detail -> card state refreshes to
+  // Active; Revert -> Default.
+  await clearToasts();
+  await js(`document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-action[data-action="enable"]').click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('mpo enable success toast missing');
+  if (!(await waitFor(win, `(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-state-label')?.textContent ?? '').trim() === 'Active'`, 5000))) {
+    fail(`mpo state did not refresh to Active after enable (got '${await tweakStateOf('mpo')}')`);
+  }
+  const mpoToast = await js(`document.querySelector('.toast-success .toast-message')?.textContent ?? ''`);
+  if (!/MPOHack=1 written to HKLM/.test(mpoToast)) fail(`mpo enable toast lacks the per-step detail: '${mpoToast}'`);
+  await clearToasts();
+  await js(`document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-action[data-action="revert"]').click()`);
+  if (!(await waitFor(win, `(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-state-label')?.textContent ?? '').trim() === 'Default'`, 5000))) {
+    fail(`mpo state did not refresh to Default after revert (got '${await tweakStateOf('mpo')}')`);
+  }
   // The read values render honestly (hags shows HwSchMode=0x2; the
   // enumerate read shows the flagged-app detail).
   if (!(await js(`(document.querySelector('.tweak-card[data-tweak="hags"] .tweak-read-path')?.textContent ?? '').includes('HwSchMode')`))) {
@@ -888,10 +929,9 @@ export async function runUiVerify(win, backend, getTrayRebuilds = () => 0, getFp
   if (!(await js(`(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-read-data')?.textContent ?? '').includes('not present')`))) {
     fail('mpo reads must show "not present" for the absent values');
   }
-  // The page is read-side only at the IPC level too.
   const catalog = await js(`window.arcPower.registryCatalog()`);
   if (catalog.entries.length !== 4 || catalog.states.length !== 4) fail(`registry-catalog IPC returned ${catalog.entries.length} entries / ${catalog.states.length} states`);
-  step('tweaks', `Tweaks: ${tweakIds} rendered; mpo=Off, hags=Active (HwSchMode=0x2), game-dvr=Default, fullscreen=Active; apply disabled ('Requires administrator (M3-B)')`);
+  step('tweaks', `Tweaks: ${tweakIds} rendered; mpo=Off, hags=Active (HwSchMode=0x2), game-dvr=Default, fullscreen=Active; Enable/Disable/Revert per applyable card (mock round trip: mpo -> Active -> revert -> Default), fullscreen read-only`);
 
   console.log('\nUI VERIFY OK\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
@@ -1109,5 +1149,167 @@ export async function runFeaturesetVerify(win, fsId) {
   }
 
   console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// M3-B — tweaks-apply variant (RID_MOCK_TWEAKS_APPLY=1)
+// ---------------------------------------------------------------------------
+//
+// Drives the FULL Tweaks apply flow against the MOCK adapters (never
+// spawns, never elevates): every applyable entry through
+// enable/disable/revert round trips with per-step success toasts + honest
+// state refresh; fullscreen stays read-only. Env overlays exercise the
+// honesty paths:
+//   - RID_MOCK_REGAPPLY_FAIL='<entryId>:<action>' -> that exact action fails
+//     mid-way (step 1): the error toast must report the partial apply
+//     (which steps landed, nothing rolled back automatically);
+//   - RID_MOCK_REGAPPLY_CANCEL=1 -> mpo applies are UAC-declined: the error
+//     toast must carry the honest "requires administrator approval" wording
+//     and the state must stay untouched.
+
+/**
+ * @param {import('electron').BrowserWindow} win
+ */
+export async function runTweaksApplyVerify(win) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+
+  const failKnob = process.env.RID_MOCK_REGAPPLY_FAIL; // '<entryId>:<action>'
+  const cancelKnob = process.env.RID_MOCK_REGAPPLY_CANCEL === '1';
+
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
+    fail('sidebar did not render (6 nav links expected)');
+  }
+  await js(`location.hash = '#/tweaks'`);
+  if (!(await waitFor(win, `document.querySelectorAll('.tweak-card').length === 4`))) {
+    fail(`tweaks page did not render 4 catalog cards (got ${await js(`document.querySelectorAll('.tweak-card').length`)})`);
+  }
+  const tweakIds = await js(`Array.from(document.querySelectorAll('.tweak-card')).map((c) => c.dataset.tweak).join(',')`);
+  if (tweakIds !== 'mpo,hags,game-dvr,fullscreen-optimizations') fail(`tweak cards are '${tweakIds}'`);
+
+  const stateLabelOf = (id) => js(`document.querySelector('.tweak-card[data-tweak="${id}"] .tweak-state-label')?.textContent ?? ''`);
+  const clickAction = (id, action) => js(`document.querySelector('.tweak-card[data-tweak="${id}"] .tweak-action[data-action="${action}"]').click()`);
+  const waitForLabel = (id, label) => waitFor(win, `(document.querySelector('.tweak-card[data-tweak="${id}"] .tweak-state-label')?.textContent ?? '').trim() === '${label}'`, 10000);
+  // The previous action's state refresh must have fully landed (buttons
+  // re-enabled + card present) before the next click - a transient refresh
+  // rejection blanking the cards must not race the next interaction.
+  const waitButtonsEnabled = (id) => waitFor(win, `!!document.querySelector('.tweak-card[data-tweak="${id}"]') && Array.from(document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action')).every((b) => !b.disabled)`, 10000);
+
+  // Fixture states before anything runs.
+  if (!(await waitFor(win, `(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-state-label')?.textContent ?? '').trim() === 'Off'`))) {
+    fail('tweaks page did not render the fixture states');
+  }
+
+  // Every applyable card carries the three action buttons; fullscreen none.
+  const actionCountOf = (id) => js(`document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action').length`);
+  for (const id of ['mpo', 'hags', 'game-dvr']) {
+    if (await actionCountOf(id) !== 3) fail(`${id}: expected 3 action buttons, got ${await actionCountOf(id)}`);
+    const labels = await js(`Array.from(document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action')).map((b) => b.textContent.trim()).join(',')`);
+    if (labels !== 'Enable,Disable,Revert') fail(`${id}: action labels are '${labels}'`);
+    if (await js(`Array.from(document.querySelectorAll('.tweak-card[data-tweak="${id}"] .tweak-action')).some((b) => b.disabled)`)) {
+      fail(`${id}: an action button is disabled while nothing is in flight`);
+    }
+  }
+  if (await actionCountOf('fullscreen-optimizations') !== 0) fail('fullscreen-optimizations must have NO apply buttons');
+  if (!(await js(`!!document.querySelector('.tweak-card[data-tweak="fullscreen-optimizations"] .tweak-readonly-note')`))) fail('fullscreen read-only note missing');
+  step('cards', `4 cards render; 3 action buttons per applyable entry, fullscreen read-only`);
+
+  if (cancelKnob) {
+    // mpo applies are UAC-declined (mock): the honest cancel toast + the
+    // state stays untouched.
+    await clearToasts();
+    if (!(await waitButtonsEnabled('mpo'))) fail('card absent or buttons still disabled before the next action (mpo)');
+    await clickAction('mpo', 'enable');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-error')).some((t) => (t.textContent ?? '').includes('requires administrator approval'))`, 5000))) {
+      fail(`UAC-decline toast missing: '${await js(`Array.from(document.querySelectorAll('.toast-error')).map((t) => t.textContent).join(' | ')`)}')'`);
+    }
+    if ((await stateLabelOf('mpo')).trim() !== 'Off') fail(`canceled apply must not change the state (got '${await stateLabelOf('mpo')}')`);
+    await clearToasts();
+    step('cancel', `UAC-decline path: honest 'requires administrator approval' toast, state untouched`);
+  } else if (failKnob) {
+    // That exact action fails at step 1 (mock): the error toast reports the
+    // PARTIAL apply with the failed step + the no-auto-revert note.
+    const [failEntry, failAction] = failKnob.split(':');
+    await clearToasts();
+    if (!(await waitButtonsEnabled(failEntry))) fail('card absent or buttons still disabled before the next action (failEntry)');
+    await clickAction(failEntry, failAction);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 5000))) fail('partial-failure toast missing');
+    const msg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
+    if (!/Partial apply/.test(msg)) fail(`partial-failure toast is not honest: '${msg}'`);
+    if (!/1 of 2 step\(s\) landed, step 2 failed/.test(msg)) fail(`partial-failure toast misses the landed/failed steps: '${msg}'`);
+    if (!/Nothing was rolled back automatically — use Revert/.test(msg)) fail(`partial-failure toast misses the no-auto-revert note: '${msg}'`);
+    // The state refresh reflects what actually landed (step 1 wrote HKLM).
+    if ((await stateLabelOf(failEntry)).trim() !== 'Off') fail(`partial apply state is '${await stateLabelOf(failEntry)}' (expected Off — one hive landed)`);
+    await clearToasts();
+    // The user can still Revert (a real revert works — the failure knob is
+    // per-action).
+    if (!(await waitButtonsEnabled(failEntry))) fail('card absent or buttons still disabled before the next action (failEntry revert)');
+    await clickAction(failEntry, 'revert');
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('revert after a partial failure did not succeed');
+    if (!(await waitForLabel(failEntry, 'Default'))) fail(`state did not refresh to Default after the post-failure revert (got '${await stateLabelOf(failEntry)}')`);
+    await clearToasts();
+    step('partial', `partial-failure path: honest per-step toast ('${msg}'), landed state, revert recovers`);
+  } else {
+    // Full round trips per entry (mock, no elevation).
+    // mpo: Off -> enable -> Active -> disable -> Off -> revert -> Default.
+    await clearToasts();
+    if (!(await waitButtonsEnabled('mpo'))) fail('card absent or buttons still disabled before the next action (mpo roundtrip)');
+    await clickAction('mpo', 'enable');
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('mpo enable success toast missing');
+    if (!(await waitForLabel('mpo', 'Active'))) fail(`mpo did not refresh to Active (got '${await stateLabelOf('mpo')}')`);
+    await clearToasts();
+    if (!(await waitButtonsEnabled('mpo'))) fail('card absent or buttons still disabled before the next action (mpo disable)');
+    await clickAction('mpo', 'disable');
+    if (!(await waitForLabel('mpo', 'Off'))) fail(`mpo did not refresh to Off (got '${await stateLabelOf('mpo')}')`);
+    await clearToasts();
+    if (!(await waitButtonsEnabled('mpo'))) fail('card absent or buttons still disabled before the next action (mpo revert)');
+    await clickAction('mpo', 'revert');
+    if (!(await waitForLabel('mpo', 'Default'))) fail(`mpo did not refresh to Default (got '${await stateLabelOf('mpo')}')`);
+    step('mpo-roundtrip', 'mpo: enable -> Active, disable -> Off, revert -> Default (state refresh per action)');
+
+    // hags: Active -> disable -> Off -> enable -> Active.
+    await clearToasts();
+    if (!(await waitButtonsEnabled('hags'))) fail('card absent or buttons still disabled before the next action (hags disable)');
+    await clickAction('hags', 'disable');
+    if (!(await waitForLabel('hags', 'Off'))) fail(`hags did not refresh to Off (got '${await stateLabelOf('hags')}')`);
+    await clearToasts();
+    if (!(await waitButtonsEnabled('hags'))) fail('card absent or buttons still disabled before the next action (hags enable)');
+    await clickAction('hags', 'enable');
+    if (!(await waitForLabel('hags', 'Active'))) fail(`hags did not refresh to Active (got '${await stateLabelOf('hags')}')`);
+    step('hags-roundtrip', 'hags: disable -> Off, enable -> Active (HwSchMode 1/2)');
+
+    // game-dvr: Default -> enable -> Active -> revert -> Default.
+    await clearToasts();
+    if (!(await waitButtonsEnabled('game-dvr'))) fail('card absent or buttons still disabled before the next action (game-dvr enable)');
+    await clickAction('game-dvr', 'enable');
+    if (!(await waitForLabel('game-dvr', 'Active'))) fail(`game-dvr did not refresh to Active (got '${await stateLabelOf('game-dvr')}')`);
+    const dvrToast = await js(`document.querySelector('.toast-success .toast-message')?.textContent ?? ''`);
+    if (!/AllowGameDVR=0 written to HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR/.test(dvrToast)) {
+      fail(`game-dvr enable toast lacks the per-step detail: '${dvrToast}'`);
+    }
+    await clearToasts();
+    if (!(await waitButtonsEnabled('game-dvr'))) fail('card absent or buttons still disabled before the next action (game-dvr revert)');
+    await clickAction('game-dvr', 'revert');
+    if (!(await waitForLabel('game-dvr', 'Default'))) fail(`game-dvr did not refresh to Default (got '${await stateLabelOf('game-dvr')}')`);
+    step('dvr-roundtrip', `game-dvr: enable -> Active (toast '${dvrToast.trim()}'), revert -> Default`);
+  }
+
+  // The fullscreen card never changes (read-only info) and the catalog IPC
+  // still lists 4 entries.
+  if ((await stateLabelOf('fullscreen-optimizations')).trim() !== 'Active') fail('fullscreen read-only state changed');
+  const catalog = await js(`window.arcPower.registryCatalog()`);
+  if (catalog.entries.length !== 4 || catalog.states.length !== 4) fail('registry-catalog IPC mismatch after the apply flow');
+
+  console.log(`\nUI VERIFY OK (tweaks-apply${failKnob ? `, fail=${failKnob}` : ''}${cancelKnob ? ', cancel' : ''})\n` + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }

@@ -1,8 +1,15 @@
-// Arc Power — Tweaks page (M3-A): the registry-hacks CATALOG with live,
-// read-only current states. Applying is M3-B (every entry needs
-// administrator); here each card lists what the tweak is, the registry
-// values that prove its state, and the current read (reg.exe query results
-// via the registry-catalog IPC — never a write).
+// Arc Power — Tweaks page (M3-A catalog + M3-B APPLY). Each card lists what
+// the tweak is, the registry values that prove its state, the current read
+// (reg.exe query results via the registry-catalog IPC — never a write), and
+// — for applyable entries — working Enable/Disable/Revert buttons.
+//
+// APPLYING (M3-B): the button click calls the registry-apply IPC, which
+// resolves the entry's apply descriptor (the exact elevated reg.exe
+// commands) in MAIN and runs them in an elevated PowerShell — one UAC
+// prompt per action. The result is reported per step (perStep) with honest
+// wording: full success, partial failure (which steps landed, no auto-
+// rollback — the user reverts via the button), or the UAC-decline message.
+// After every apply the catalog is re-read so the card state refreshes.
 //
 // The catalog is fetched at boot (app.ts) into the store; the page re-fetches
 // only when the store slot is empty (early navigation before boot finished)
@@ -12,7 +19,8 @@
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
-import type { RegistryCatalogResponse, RegistryEntry, RegistryEntryState, RegistryState } from '../types.ts';
+import { toast } from '../components/toast.ts';
+import type { RegistryApplyStep, RegistryCatalogResponse, RegistryEntry, RegistryEntryState, RegistryState } from '../types.ts';
 
 const STATE_LABEL: Record<RegistryState, string> = {
   enabled: 'Active',
@@ -28,6 +36,19 @@ const STATE_LEVEL: Record<RegistryState, string> = {
   default: 'unknown',
   unknown: 'error',
 };
+
+const ACTION_LABEL = { enable: 'Enable', disable: 'Disable', revert: 'Revert' } as const;
+type ApplyAction = keyof typeof ACTION_LABEL;
+
+/** One elevated apply is in flight — all apply buttons disable until it returns. */
+let applyInFlight = false;
+
+/** Human label for one command step (mirrors main's stepLabel — honest tooltips). */
+function stepLabel(step: RegistryApplyStep): string {
+  return step.kind === 'add'
+    ? `${step.value}=${step.data} written to ${step.path}`
+    : `${step.value} deleted from ${step.path}`;
+}
 
 /** Fetch the catalog once (boot may not have finished on early navigation). */
 async function loadCatalog(ctx: PageContext): Promise<void> {
@@ -50,7 +71,83 @@ async function refreshCatalog(ctx: PageContext): Promise<void> {
   }
 }
 
-function tweakCard(entry: RegistryEntry, state: RegistryEntryState | undefined): HTMLElement {
+/**
+ * Toggle every apply button's disabled state. Called at flight START (before
+ * the await) so the buttons visually disable for the whole elevation window
+ * — the re-render only happens after the apply resolves, so without this the
+ * `disabled: applyInFlight` attribute would always render false.
+ */
+function setApplyButtonsDisabled(disabled: boolean): void {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('.tweak-action')) {
+    btn.disabled = disabled;
+  }
+}
+
+/**
+ * Run one elevated apply action. Reports the outcome honestly in a toast:
+ * success / partial failure (per-step, no auto-rollback) / UAC decline /
+ * timeout / hard error. Always re-reads the catalog afterwards so the card
+ * state reflects the registry truth (the elevated side may have landed
+ * steps even on a partial failure).
+ */
+async function runApply(ctx: PageContext, entry: RegistryEntry, action: ApplyAction): Promise<void> {
+  if (applyInFlight) return;
+  applyInFlight = true;
+  setApplyButtonsDisabled(true);
+  try {
+    if (ctx.store.get().workerApply) {
+      toast('info', 'Administrator approval needed', `Applying this tweak requires administrator approval — approve the Windows prompt.`);
+    }
+    const out = await api.registryApply(entry.id, action);
+    if (out.canceled) {
+      toast('error', 'Administrator approval required', out.message);
+    } else if (out.ok) {
+      toast('success', `${ACTION_LABEL[action]} applied`, out.message);
+    } else {
+      toast('error', `${ACTION_LABEL[action]} partially failed`, out.message);
+    }
+  } catch (err) {
+    toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
+  } finally {
+    applyInFlight = false;
+    setApplyButtonsDisabled(false);
+    await refreshCatalog(ctx);
+  }
+}
+
+function actionButtons(entry: RegistryEntry, onApply: (action: ApplyAction) => void): HTMLElement {
+  const descriptor = entry.apply;
+  if (!descriptor?.applyable) {
+    return el('p', { class: 'tweak-readonly-note', text: descriptor?.revertNote ?? 'Read-only info — no system-wide setting to apply.' });
+  }
+  const tooltip = (action: ApplyAction): string => {
+    const steps = descriptor.actions?.[action] ?? [];
+    return `${ACTION_LABEL[action]} the tweak: ${steps.map(stepLabel).join('; ')}`;
+  };
+  return el('div', { class: 'tweak-actions' }, [
+    ...(['enable', 'disable'] as const).map((action) =>
+      el('button', {
+        class: `btn btn-sm tweak-action tweak-${action}${action === 'enable' ? ' btn-primary' : ' btn-ghost'}`,
+        dataset: { action },
+        disabled: applyInFlight,
+        title: tooltip(action),
+        text: ACTION_LABEL[action],
+        onClick: () => onApply(action),
+      }),
+    ),
+    el('button', {
+      class: 'btn btn-sm btn-ghost btn-danger-text tweak-action tweak-revert',
+      dataset: { action: 'revert' },
+      disabled: applyInFlight,
+      title: tooltip('revert'),
+      text: 'Revert',
+      onClick: () => onApply('revert'),
+    }),
+    el('p', { class: 'tweak-revert-note', text: descriptor.revertNote }),
+  ]);
+}
+
+function tweakCard(entry: RegistryEntry, state: RegistryEntryState | undefined, onApply: (action: ApplyAction) => void): HTMLElement {
   const level = state ? STATE_LEVEL[state.state] : 'unknown';
   const label = state ? STATE_LABEL[state.state] : 'Unknown';
   const detail = state?.detail ?? 'State not read yet';
@@ -74,14 +171,7 @@ function tweakCard(entry: RegistryEntry, state: RegistryEntryState | undefined):
           ))
         : null,
     ]),
-    el('div', { class: 'card-footer' }, [
-      el('button', {
-        class: 'btn btn-sm tweak-apply',
-        disabled: true,
-        title: 'Applying registry tweaks requires administrator approval — arrives in M3-B.',
-        text: entry.requiresElevation ? 'Requires administrator (M3-B)' : 'Not available',
-      }),
-    ]),
+    el('div', { class: 'card-footer' }, [actionButtons(entry, onApply)]),
   ]);
 }
 
@@ -101,7 +191,7 @@ export const tweaksPage: Page = {
       el('h1', { class: 'page-title', text: 'Tweaks' }),
       el('p', {
         class: 'page-subtitle',
-        text: 'Well-known, reversible registry tweaks that affect GPU behavior. This build reads the current state only (no writes); applying requires administrator approval and arrives in M3-B.',
+        text: 'Well-known, reversible registry tweaks that affect GPU behavior. Enable/Disable/Revert run ELEVATED — one Windows administrator prompt per action; every write is reported per registry value. Fullscreen optimizations is read-only info (it is a per-app flag, not a system-wide switch).',
       }),
       el('div', { class: 'page-actions' }, [
         el('button', {
@@ -114,7 +204,11 @@ export const tweaksPage: Page = {
         ? el('p', { class: 'text-unknown', text: 'Loading registry state…' })
         : entries.length === 0
           ? el('p', { class: 'text-error', text: 'The registry catalog could not be read — no tweaks to show.' })
-          : el('div', { class: 'card-stack' }, entries.map((entry) => tweakCard(entry, states.find((s) => s.id === entry.id)))),
+          : el('div', { class: 'card-stack' }, entries.map((entry) =>
+              tweakCard(entry, states.find((s) => s.id === entry.id), (action) => {
+                void runApply(ctx, entry, action);
+              }),
+            )),
     );
     void loadCatalog(ctx);
   },

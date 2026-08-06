@@ -215,6 +215,25 @@ html, body {
 .tweak-read-path { color: var(--text-muted); font-family: var(--mono); overflow-wrap: anywhere; }
 .tweak-read-data { color: var(--text); font-family: var(--mono); flex-shrink: 0; }
 
+/* M3-B apply actions: Enable/Disable/Revert per card + the revert note. */
+.tweak-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tweak-revert-note {
+  margin: 0 0 0 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  max-width: 620px;
+}
+.tweak-readonly-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 /* ------------------------------------------------------------------- page */
 
 #page {
