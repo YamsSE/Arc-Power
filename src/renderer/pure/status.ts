@@ -12,7 +12,8 @@
 //            the detail shows the driver version + date like the device card
 //            (driverLine: "32.0.101.8861 - Jul 05, 2026");
 //   device — "Device detected": a GPU is enumerated (or the boot error);
-//   oc — "OC working": the last apply outcome (ok / failed / never applied);
+//   oc — "OC Status" (M4-B rename of "OC working"): the last apply outcome
+//        (ok / failed / never applied);
 //   waiver — "OC waiver": the LIVE waiver status (Accepted ok / Not Accepted
 //            error) — the ONLY persistent waiver display in the app (user
 //            correction, mid-M4-A: not on the OC or Fan pages);
@@ -113,18 +114,19 @@ export function deviceRow(input: HealthInput): HealthRow {
 }
 
 /**
- * "OC working": the last apply outcome — honest: never applied, last apply
- * ok, or last apply failed (with a hint of what failed).
+ * "OC Status" (M4-B rename of "OC working"): the last apply outcome —
+ * honest: never applied, last apply ok, or last apply failed (with a hint
+ * of what failed).
  */
 export function ocRow(input: HealthInput): HealthRow {
   const last = input.lastApply;
   if (!last) {
-    return { id: 'oc', label: 'OC working', level: 'unknown', detail: 'No OC apply yet in this session' };
+    return { id: 'oc', label: 'OC Status', level: 'unknown', detail: 'No OC apply yet in this session' };
   }
   if (last.ok) {
-    return { id: 'oc', label: 'OC working', level: 'ok', detail: last.detail ?? 'Last apply succeeded' };
+    return { id: 'oc', label: 'OC Status', level: 'ok', detail: last.detail ?? 'Last apply succeeded' };
   }
-  return { id: 'oc', label: 'OC working', level: 'error', detail: last.detail ?? 'Last apply failed' };
+  return { id: 'oc', label: 'OC Status', level: 'error', detail: last.detail ?? 'Last apply failed' };
 }
 
 /**

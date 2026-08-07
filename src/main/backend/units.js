@@ -138,6 +138,18 @@ export function normalizeFanCurve(points, maxPoints) {
 export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
 
 /**
+ * M4-B: the documented ABSOLUTE ceiling for a gpuLock voltage (V). The lock
+ * pair is an absolute voltage/frequency point (real locks sit ~0.7–1.2 V),
+ * NOT a voltage OFFSET — the old clamp used the gpuVoltOffsetV.max (0.234 V,
+ * an offset bound) which made any real lock impossible. This documented
+ * ceiling (~1.5 V, well above any shipping Arc voltage) keeps defense-in-
+ * depth: a user-typed value can never reach ctlOverclockGpuLockSet unbounded.
+ * 0 V stays legal = "don't touch voltage" (the driver keeps the stock
+ * voltage at the locked frequency).
+ */
+export const GPU_LOCK_VOLT_MAX_V = 1.5;
+
+/**
  * Hard ceiling for the exposed temperature limit (M2C-A F3 PT fix). The A770
  * driver's OC properties report 60–90 °C, but applying a value above 90 is
  * refused with 0x44000005 (TEMPERATURE_OUTSIDE_RANGE) while the props may
@@ -147,21 +159,38 @@ export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
 export const TEMP_LIMIT_MAX_C = 90;
 
 /**
- * Clamp a gpuLock pair to sane bounds before it reaches the driver:
- *   - voltageV -> [0, gpuVoltOffsetV.max] when that range exists (the only
- *     documented voltage bound available; absolute lock voltages outside it
- *     are refused, and 0 is the legal "don't touch voltage" lock value);
- *   - freqMhz -> [0, GPU_LOCK_FREQ_MAX_MHZ] always.
+ * Clamp a gpuLock pair to the DOCUMENTED ABSOLUTE bounds before it reaches
+ * the driver (M4-B: the lock pair is an absolute VF point, not an offset —
+ * the voltage bound is the absolute ceiling GPU_LOCK_VOLT_MAX_V, floor 0
+ * ("don't touch voltage"), NEVER the gpuVoltOffsetV offset range):
+ *   - voltageV -> [0, GPU_LOCK_VOLT_MAX_V];
+ *   - freqMhz -> [0, GPU_LOCK_FREQ_MAX_MHZ].
+ * Shared by every apply path (igcl-backend, mock-backend, ipc-core).
  * @param {{ voltageV: number, freqMhz: number }} lock
- * @param {Record<string, { min: number, max: number, step: number }>} [ranges]
  * @returns {{ voltageV: number, freqMhz: number }}
  */
-export function clampGpuLock(lock, ranges = {}) {
-  const voltRange = ranges.gpuVoltOffsetV;
+export function clampGpuLock(lock) {
   return {
-    voltageV: voltRange
-      ? Math.min(Math.max(0, lock.voltageV), voltRange.max)
-      : lock.voltageV,
+    voltageV: Math.min(Math.max(0, lock.voltageV), GPU_LOCK_VOLT_MAX_V),
     freqMhz: Math.min(Math.max(0, lock.freqMhz), GPU_LOCK_FREQ_MAX_MHZ),
   };
+}
+
+/**
+ * M4-B: format a GPU display name with its VRAM amount ("Intel Arc A770
+ * 16 GB"), formatted ONCE at listDevices time by the backends (never per
+ * render — every consumer reads device.name). Rules:
+ *   - vramBytes null / 0 / missing -> the plain name (no suffix);
+ *   - >= 1 GiB -> "X GB" (rounded down to whole GiB);
+ *   - < 1 GiB -> "X MB" (rounded down to whole MiB).
+ * @param {string} name
+ * @param {number|null|undefined} vramBytes
+ * @returns {string}
+ */
+export function formatDeviceName(name, vramBytes) {
+  if (!name || !Number.isInteger(vramBytes) || vramBytes <= 0) return name;
+  const gib = Math.floor(vramBytes / (1024 * 1024 * 1024));
+  if (gib >= 1) return `${name} ${gib} GB`;
+  const mib = Math.floor(vramBytes / (1024 * 1024));
+  return `${name} ${mib} MB`;
 }

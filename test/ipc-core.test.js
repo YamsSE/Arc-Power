@@ -128,18 +128,17 @@ test('clampSettings: non-scalar controls pass through untouched', () => {
 });
 
 test('clampSettings: clamps an extreme gpuLock pair (F1 regression)', () => {
-  const ranges = {
-    gpuVoltOffsetV: { min: 0, max: 0.234, step: 0.005, default: 0, units: 'V' },
-  };
-  const out = clampSettings({ gpuLock: { voltageV: 99, freqMhz: -5 } }, ranges);
-  assert.deepEqual(out.gpuLock, { voltageV: 0.234, freqMhz: 0 });
+  // M4-B: the clamp is the documented ABSOLUTE lock ceiling (1.5 V) — the
+  // gpuVoltOffsetV range (an offset bound) no longer caps the lock voltage.
+  const out = clampSettings({ gpuLock: { voltageV: 99, freqMhz: -5 } }, {});
+  assert.deepEqual(out.gpuLock, { voltageV: 1.5, freqMhz: 0 });
 });
 
 // ---------------------------------------------------------------------------
 // product-path waiver: never auto-accepted
 // ---------------------------------------------------------------------------
 
-function fakeStore(initial = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' }) {
+function fakeStore(initial = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false }) {
   const saved = [];
   return {
     saved,
@@ -195,7 +194,8 @@ test('apply-settings clamps an extreme gpuLock pair before it reaches the backen
 
   const { result, state } = await handlers['apply-settings'](0, { gpuLock: { voltageV: 99, freqMhz: -5 } });
   assert.equal(result.perControl.gpuLock.ok, true);
-  assert.deepEqual(state.gpuLock, { voltageV: 0.234, freqMhz: 0 });
+  // M4-B: the documented absolute ceiling (1.5 V), not the 0.234 V offset bound.
+  assert.deepEqual(state.gpuLock, { voltageV: 1.5, freqMhz: 0 });
 });
 
 test('reset-to-defaults returns the fresh read-back state', async () => {
@@ -550,7 +550,7 @@ test('startup-set: rejects whitespace profileIds (Run-key round trip stays intac
 
 function fakeProfileStore(initialProfiles = []) {
   const profiles = [...initialProfiles];
-  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' };
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false };
   return {
     profiles,
     async loadProfiles() { return [...profiles]; },
@@ -616,7 +616,7 @@ test('profiles channels: list -> save (create) -> rename -> delete round trip wi
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
-  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' } });
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false } });
   await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
 
   const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
@@ -680,16 +680,72 @@ test('profiles-settings-save: read-modify-write never clobbers waiverAccepted (n
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
   // Seed an accepted waiver (as waiver-accept would).
-  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false });
 
   const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
-  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced' });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false });
   const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
-  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false });
 
   for (const bad of [null, 5, 'x', []]) {
     await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
   }
+});
+
+test('M4-B: advanced-mode-accepted get/set — the once-only warning acceptance persists (get is false until an explicit set)', async () => {
+  // Stateful fake: loadSettings reflects the saves (the plain fakeStore
+  // always returns its initial snapshot, which cannot assert a round trip).
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+
+  assert.deepEqual(await handlers['advanced-mode-accepted-get'](), { accepted: false });
+  await assert.rejects(() => handlers['advanced-mode-accepted-get']({}), /takes no payload/);
+  await assert.rejects(() => handlers['advanced-mode-accepted-set']({}), /takes no payload/);
+
+  assert.deepEqual(await handlers['advanced-mode-accepted-set'](), { accepted: true });
+  assert.deepEqual(await handlers['advanced-mode-accepted-get'](), { accepted: true });
+  assert.equal((await store.loadSettings()).advancedModeAccepted, true);
+  // The set is idempotent and never touches the other settings.
+  assert.equal((await store.loadSettings()).ocMode, 'stock');
+  assert.equal((await store.loadSettings()).waiverAccepted, false);
+});
+
+test('M4-B: profiles-settings-save never clobbers advancedModeAccepted (like ocMode)', async () => {
+  const store = fakeProfileStore();
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: true });
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+
+  const out = await handlers['profiles-settings-save']({ ocOnBoot: true });
+  assert.equal(out.advancedModeAccepted, true, 'the once-only acceptance survives the profiles patch');
+});
+
+test('M4-B (user): a persisted-accepted session applies CLOCKS and a FAN CURVE with no waiver-not-set and no waiver-accept call', async () => {
+  // Boot-time seeding (seedWaiverState) restored the persisted acceptance
+  // into the in-memory flag — the same state the real product path boots.
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true);
+  let waiverAcceptCalls = 0;
+  const original = backend.setWaiverAccepted.bind(backend);
+  backend.setWaiverAccepted = async (...args) => { waiverAcceptCalls += 1; return original(...args); };
+
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, true, 'the seeded session boots accepted');
+
+  const res = await handlers['apply-settings'](0, {
+    gpuFreqOffsetMhz: 25,
+    fanCurve: [{ t: 0, speedPct: 20 }, { t: 100, speedPct: 100 }],
+  });
+  assert.equal(res.result.ok, true);
+  assert.equal(res.result.perControl.gpuFreqOffsetMhz.ok, true);
+  assert.equal(res.result.perControl.fanCurve.ok, true);
+  const perErrors = Object.entries(res.result.perControl).filter(([, p]) => !p.ok).map(([k, p]) => `${k}:${p.errorCode}`);
+  assert.deepEqual(perErrors, [], `no control failed: ${perErrors.join(', ')}`);
+  // The acceptance is neither consumed nor re-issued: no waiver-accept call,
+  // no store write, and the device flag stays accepted.
+  assert.equal(waiverAcceptCalls, 0);
+  assert.equal(store.saved.length, 0);
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, true);
 });
 
 test('tray-rebuild channel: no payload; calls the injected hook', async () => {

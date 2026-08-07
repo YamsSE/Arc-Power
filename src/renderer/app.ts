@@ -8,7 +8,7 @@ import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
 import { GpuHeader } from './components/header.ts';
 import { toast } from './components/toast.ts';
-import { ensureWaiver } from './components/waiver-dialog.ts';
+import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { overclockingPage } from './pages/overclocking.ts';
 import { fanPage } from './pages/fan.ts';
@@ -191,23 +191,25 @@ async function boot() {
     const caps = await api.getCapabilities(deviceId);
     const state = await api.getCurrentSettings(deviceId);
     store.set({ caps, state });
-    // M4-A: the waiver prompt at open — shown exactly once per boot when the
-    // device waiver is not accepted (never auto-accepted: the smoke-only
-    // allowAutoWaiver path never reaches this renderer). NON-BLOCKING: the
-    // boot sequence continues; a declined prompt must not break it. Accept
-    // patches the store caps so the dashboard GPU Health card row flips to
-    // Accepted in place (the waiver pill is gone — the health row is the
-    // only persistent waiver display).
-    if (caps.waiverAccepted !== true) {
-      void (async () => {
-        const decision = await ensureWaiver(deviceId, false, caps.deviceName || 'this GPU');
-        if (decision !== 'accepted') return;
-        const live = store.get();
-        if (live.caps && live.caps.waiverAccepted !== true) {
-          store.set({ caps: { ...live.caps, waiverAccepted: true } });
-        }
-      })();
-    }
+    // M4-B: the OC waiver prompt shows at EVERY startup (the user: "please
+    // prompt it when the Program opens"). The driver-side waiver state
+    // cannot be probed (IGCL exposes only ctlOverclockWaiverSet — no
+    // getter), so the dialog at open is the only reliable visibility: an
+    // in-session ACCEPTED waiver (persisted from an earlier session) shows
+    // the dialog in its ACCEPTED state — a reminder with a single OK, never
+    // a re-accept; an unaccepted session shows the classic Cancel/Accept
+    // pair. NON-BLOCKING: the boot sequence continues; a declined prompt
+    // must not break it. Accept patches the store caps so the dashboard GPU
+    // Health card row flips to Accepted in place (the waiver pill is gone —
+    // the health row is the only persistent waiver display).
+    void (async () => {
+      const decision = await promptWaiverAtBoot(deviceId, caps.waiverAccepted === true, caps.deviceName || 'this GPU');
+      if (decision !== 'accepted') return;
+      const live = store.get();
+      if (live.caps && live.caps.waiverAccepted !== true) {
+        store.set({ caps: { ...live.caps, waiverAccepted: true } });
+      }
+    })();
   } catch (err) {
     store.set({ bootError: `Could not read device state: ${err instanceof Error ? err.message : String(err)}` });
     toast('error', 'Device state failed', err instanceof Error ? err.message : String(err));

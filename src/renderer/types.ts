@@ -104,6 +104,10 @@ export interface DeviceInfo {
   driverVersion: string;
   graphicsClockMHz: number;
   numXeCores: number;
+  /** M4-B: VRAM in bytes for the display-name suffix (set by the backend at
+   *  listDevices time; null when unknown — iGPU, real backend until the
+   *  M4-D sysinfo fallback lands). */
+  vramBytes?: number | null;
 }
 
 export interface HealthReport {

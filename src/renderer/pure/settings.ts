@@ -50,6 +50,20 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
 }
 
 /**
+ * M4-B step-5 F1: the slider range ONE OC card exposes — the raw capability
+ * range passed through clampExposedRange. buildCard AND refreshCard must
+ * derive from the SAME clamped range: the refresh path used to read the raw
+ * range directly, so after any apply the slider min/max/step were rewritten
+ * from the UNCLAMPED caps — a stale cache or a future driver props drift
+ * would have silently widened the slider, removing the UI half of the M2C-A
+ * F3 guard. Undefined (unknown control / no caps) -> undefined; the callers
+ * guard before use.
+ */
+export function cardSliderRange(caps: Capabilities | null | undefined, key: string): RangeInfo | undefined {
+  return clampExposedRange(caps?.ranges[key], key, caps ?? undefined);
+}
+
+/**
  * M2C-C: true when the pending settings contain an extended-range value
  * (PL > 252 W or TL > 90 C) — the apply must pass the extended-range confirm
  * dialog first (honest warning: beyond Intel's standard limit; card/driver
@@ -302,4 +316,58 @@ export function ocCapsChanged(prev: Capabilities | null, next: Capabilities | nu
   return JSON.stringify(prev.ranges) !== JSON.stringify(next.ranges)
     || JSON.stringify(prev.controls) !== JSON.stringify(next.controls)
     || prev.extendedRanges !== next.extendedRanges;
+}
+
+// ---------------------------------------------------------------------------
+// M4-B — gpuLock editor (pure; mirrors the main-side clamp bounds)
+// ---------------------------------------------------------------------------
+// The main process clamps the lock pair to these bounds before it reaches
+// the driver (src/main/backend/units.js clampGpuLock). The renderer mirrors
+// them ONLY for honest toasts when no read-back envelope exists — main stays
+// the authoritative gate.
+
+/** Renderer mirror of units.js GPU_LOCK_VOLT_MAX_V (the absolute VF-point
+ *  ceiling; 0 = "don't touch voltage"). */
+export const GPU_LOCK_VOLT_MAX_V = 1.5;
+/** Renderer mirror of units.js GPU_LOCK_FREQ_MAX_MHZ. */
+export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
+
+/**
+ * M4-B step-5 F3: parse the gpuLock editor inputs. Empty / whitespace-only
+ * fields are rejected BEFORE numeric conversion — `Number('') === 0` and the
+ * 0 V / 0 MHz pair is the legal UNLOCK, so a cleared field (or a number
+ * input's empty-value state after an invalid entry) must never silently
+ * unlock the GPU. Non-finite conversions are rejected too.
+ */
+export function parseGpuLockInput(
+  voltageText: string,
+  freqText: string,
+): { ok: true; pair: { voltageV: number; freqMhz: number } } | { ok: false } {
+  const v = voltageText.trim();
+  const f = freqText.trim();
+  if (v === '' || f === '') return { ok: false };
+  const voltageV = Number(v);
+  const freqMhz = Number(f);
+  if (!Number.isFinite(voltageV) || !Number.isFinite(freqMhz)) return { ok: false };
+  return { ok: true, pair: { voltageV, freqMhz } };
+}
+
+/**
+ * M4-B step-5 F4: the pair the gpuLock SUCCESS toast must report. Main
+ * clamps the typed pair before the write, so the driver received the
+ * CLAMPED values — the toast must show the read-back pair when the fresh
+ * envelope carried one (honesty: toast == the 'Applied:' line), else the
+ * locally clamped pair (same bounds as main's clampGpuLock) so a
+ * null/degraded envelope still cannot re-print an out-of-bounds typed
+ * value.
+ */
+export function gpuLockToastPair(
+  typed: { voltageV: number; freqMhz: number },
+  freshLock: { voltageV: number; freqMhz: number } | null | undefined,
+): { voltageV: number; freqMhz: number } {
+  if (freshLock) return freshLock;
+  return {
+    voltageV: Math.min(Math.max(0, typed.voltageV), GPU_LOCK_VOLT_MAX_V),
+    freqMhz: Math.min(Math.max(0, typed.freqMhz), GPU_LOCK_FREQ_MAX_MHZ),
+  };
 }

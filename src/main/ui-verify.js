@@ -15,11 +15,12 @@
 //       readout next to core clock; M3-A: the header has NO status dot and
 //       NO "Service Status" label (the IGS indicator is gone);
 //   1c. M3-A + M3-C-I: the dashboard shows the general GPU HEALTH card (four
-//       rows: Driver installed / Device detected / OC working / Arc Power
-//       working — the "Clocks normal" row is REMOVED) — the merged Service
-//       Status card is GONE, as is everything IGS (dot, half-state note,
-//       toggle button). The driver row detail is version + date like the
-//       device card; the app row healthy detail is "App & Service Running".
+//       rows: Driver installed / Device detected / OC Status (M4-B rename of
+//       "OC working") / Arc Power working — the "Clocks normal" row is
+//       REMOVED) — the merged Service Status card is GONE, as is everything
+//       IGS (dot, half-state note, toggle button). The driver row detail is
+//       version + date like the device card; the app row healthy detail is
+//       "App & Service Running".
 //   2. overclocking cards render from capability ranges; M2b-B: the card
 //      label is "Core offset", the floating Apply is hidden when clean and
 //      appears when dirty;
@@ -83,21 +84,24 @@
 //      toasts + state refresh; with RID_MOCK_REGAPPLY_FAIL='<id>:<action>'
 //      the honest partial-failure path, with RID_MOCK_REGAPPLY_CANCEL=1 the
 //      honest UAC-decline path.
-//  18. M4-A waiver-prompt variants: every mock session boots with a
+//  18. M4-A/M4-B waiver-prompt variants: every mock session boots with a
 //      DETERMINISTIC waiver state (session-seeded in main.js, pre-window —
-//      the persisted variant never races the renderer's first caps query) —
-//      the boot waiver prompt appears exactly once and is CANCELLED here
-//      (default / stock / extended / worker / featureset / tweaks variants),
-//      ACCEPTED under RID_MOCK_WAIVER_BOOT_ACCEPT=1 (row green, no dialog
-//      anywhere after), or must NOT appear under RID_MOCK_WAIVER_PERSISTED=1
-//      (the persisted-acceptance variant). The waiver STATUS lives ONLY in
-//      the dashboard GPU Health card row ("OC waiver: Accepted / Not
-//      Accepted", green/red — user correction, mid-M4-A): the OC and Fan
-//      pages render NO waiver status (the apply-time dialog gate only); the
-//      unaccepted row is clickable (opens the waiver dialog; Cancel leaves
-//      it red and the next apply still gates), the accepted row has no click
-//      action, and the row flips green IN PLACE on the caps-change
-//      re-render.
+//      the persisted variant never races the renderer's first caps query).
+//      M4-B (user: "please prompt it when the Program opens"): the boot
+//      waiver prompt appears in EVERY variant — CANCELLED here in the
+//      unaccepted sessions (default / stock / extended / worker / featureset
+//      / tweaks variants), ACCEPTED under RID_MOCK_WAIVER_BOOT_ACCEPT=1
+//      (row green, no dialog anywhere after), and shown in its ACCEPTED
+//      state under RID_MOCK_WAIVER_PERSISTED=1 — title + 'Status: Accepted'
+//      line + single OK, clicked here (persisted acceptance at boot: the
+//      boot prompt appears as a reminder, never a re-accept). The waiver
+//      STATUS lives ONLY in the dashboard GPU Health card row ("OC waiver:
+//      Accepted / Not Accepted", green/red — user correction, mid-M4-A): the
+//      OC and Fan pages render NO waiver status (the apply-time dialog gate
+//      only); the unaccepted row is clickable (opens the waiver dialog;
+//      Cancel leaves it red and the next apply still gates), the accepted
+//      row has no click action, and the row flips green IN PLACE on the
+//      caps-change re-render.
 //  19. M4-A fan-gate variant (RID_MOCK_FAN_GATE=1): the unaccepted-waiver fan
 //      apply regression — the waiver dialog appears on the first fan apply
 //      (Cancel -> aborted with the honest toast, device untouched; Accept ->
@@ -105,6 +109,24 @@
 //      G2 self-heal: after a waiver-not-set failure the store flag flips
 //      back to unaccepted (row red again) and the NEXT apply re-shows the
 //      dialog (the "fan applies fail without a prompt" bug).
+//  20. M4-B: (a) the dashboard health row is renamed "OC Status" (was "OC
+//      working"); (b) the freq offset ranges mirror into the negative half
+//      (a770 -300..300) — the slider reaches the negative half, applies and
+//      reads back -100 MHz; (c) the freq card's Offset/Clock toggle: Clock
+//      mode slides over base+[min,max] (2100 + -300..300 = 1800..2400 MHz),
+//      the readout + driver line show the ABSOLUTE clock, and an apply
+//      stores the converted offset (2050 -> -50); (d) the gpuLock editor
+//      card in the Advanced section (a770): "Editing available" expert row,
+//      Apply/Reset round trip through the shared clamp, gated OFF on the
+//      b580 swap; (e) the b580 variant pins the mirrored freq range
+//      (-500..500) + volt % range (-100..100) with percent units intact.
+//  21. M4-B (user): the Advanced OC Mode warning is a ONCE-only gate — the
+//      disclaimer shows ONLY on the first Stock->Advanced toggle (Cancel
+//      keeps stock; it re-asks until Enable), the acceptance is PERSISTED
+//      (advanced-mode-accepted-set), and neither a later toggle in the same
+//      session nor a later BOOT (RID_MOCK_ADVANCED_ACCEPTED=1 seeds the
+//      accepted store) ever shows it again. Stock variant: full once-flow.
+//      Knob variant: boot-persisted acceptance -> toggle shows no dialog.
 // This script is dev tooling only — it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
@@ -123,16 +145,19 @@ async function waitFor(win, expr, timeoutMs = 10000) {
   return false;
 }
 
-// M4-A: the shared waiver boot-step — MUST run in EVERY ui-verify variant
-// BEFORE its own assertions (F4: the extended/stock/featureset variants
-// assert modal absence around applies; the boot prompt would otherwise be
-// the modal being clicked or asserted there). Every mock session boots with
-// a deterministic waiver state (session-seeded in main.js BEFORE the window
-// exists — the persisted variant never races the renderer's first caps
-// query, F2):
+// M4-A/M4-B: the shared waiver boot-step — MUST run in EVERY ui-verify
+// variant BEFORE its own assertions (F4: the extended/stock/featureset
+// variants assert modal absence around applies; the boot prompt would
+// otherwise be the modal being clicked or asserted there). Every mock
+// session boots with a deterministic waiver state (session-seeded in
+// main.js BEFORE the window exists — the persisted variant never races the
+// renderer's first caps query, F2). M4-B (user): the boot prompt shows at
+// EVERY startup — the persisted-accepted variant now asserts the ACCEPTED-
+// state dialog (title + .modal-status + single OK):
 //   - RID_MOCK_WAIVER_PERSISTED=1 -> the store is ACCEPTED at boot: the boot
-//     prompt must NOT appear (the persisted-acceptance variant asserts its
-//     absence once the boot delivered caps);
+//     prompt appears in its accepted state — title 'Warranty waiver', a
+//     'Status: Accepted' line, exactly one OK button; this step clicks OK
+//     (a reminder — NO waiver-accept IPC happens);
 //   - RID_MOCK_WAIVER_BOOT_ACCEPT=1 -> the prompt appears exactly once and
 //     this step ACCEPTS it (health row green, no dialog anywhere after);
 //   - default -> the prompt appears exactly once and this step CANCELS it
@@ -141,21 +166,58 @@ async function waitFor(win, expr, timeoutMs = 10000) {
 async function bootWaiverStep(win, js, waitFor) {
   const persisted = process.env.RID_MOCK_WAIVER_PERSISTED === '1';
   const bootAccept = process.env.RID_MOCK_WAIVER_BOOT_ACCEPT === '1';
-  if (persisted) {
-    // Wait for the boot to deliver caps (the dashboard device-card 'Compute'
-    // row), then assert the boot prompt never appeared.
-    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
-      throw new UiVerifyFailure(`boot did not deliver caps: page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+  // M4-B step-4 F1/F5a: the boot dialog's .modal-device line must carry the
+  // VRAM-suffixed name (mock caps.deviceName = formatDeviceName(...)) — the
+  // regression pin for the caps-vs-device divergence. Featureset-aware:
+  // a770 -> "16 GB", b580/pro-b50 -> "12 GB", arc-igpu -> plain (no VRAM).
+  const fsId = process.env.RID_MOCK_FEATURESET;
+  const expectedSuffix = fsId === 'b580' || fsId === 'pro-b50' ? ' 12 GB'
+    : fsId === 'arc-igpu' ? null
+    : ' 16 GB';
+  const pinDeviceLine = async () => {
+    const deviceText = await js(`document.querySelector('.modal .modal-device')?.textContent ?? ''`);
+    if (expectedSuffix === null) {
+      if (deviceText.includes(' GB')) {
+        throw new UiVerifyFailure(`the boot waiver prompt names '${deviceText}' (arc-igpu has no VRAM — expected the plain name, no suffix)`);
+      }
+    } else if (!deviceText.includes(expectedSuffix)) {
+      throw new UiVerifyFailure(`the boot waiver prompt names '${deviceText}' (expected the VRAM-suffixed name containing '${expectedSuffix}')`);
     }
-    await sleep(300);
+    return deviceText;
+  };
+  if (persisted) {
+    // M4-B: persisted acceptance at boot -> the boot prompt MUST appear in
+    // the accepted state (a reminder, never a re-accept): title + status
+    // line + exactly one OK button. Click OK, then the modal must close.
+    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver' && !!document.querySelector('.modal .modal-status')`, 10000))) {
+      throw new UiVerifyFailure(`the boot waiver prompt did not appear in its accepted state (RID_MOCK_WAIVER_PERSISTED=1): page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+    }
+    const deviceLine = await pinDeviceLine();
+    const status = await js(`document.querySelector('.modal .modal-status')?.textContent ?? ''`);
+    if (!status.includes('Accepted')) {
+      throw new UiVerifyFailure(`the accepted-state boot prompt has status '${status}' (expected 'Status: Accepted')`);
+    }
+    const buttonCount = await js(`document.querySelectorAll('.modal .modal-actions button').length`);
+    if (buttonCount !== 1) {
+      throw new UiVerifyFailure(`the accepted-state boot prompt has ${buttonCount} buttons (expected exactly one OK — a reminder, not a re-accept)`);
+    }
+    await js(`document.querySelector('.modal .modal-actions button')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) {
+      throw new UiVerifyFailure('the accepted-state boot prompt did not close');
+    }
+    // Exactly once per boot: nothing else may pop a modal spontaneously
+    // after the prompt is handled (a stray dialog would mean a re-prompt
+    // bug).
+    await sleep(500);
     if (await js(`!!document.querySelector('.modal')`)) {
-      throw new UiVerifyFailure('the boot waiver prompt appeared despite a persisted acceptance (RID_MOCK_WAIVER_PERSISTED=1)');
+      throw new UiVerifyFailure('a second modal appeared after the accepted-state boot prompt was handled (the boot prompt must appear exactly once)');
     }
     return true;
   }
   if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 10000))) {
     throw new UiVerifyFailure(`the boot waiver prompt did not appear (unaccepted session): page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
   }
+  const deviceLine = await pinDeviceLine();
   await js(`document.querySelector('.modal button.${bootAccept ? 'btn-danger' : 'btn-ghost'}')?.click()`);
   if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) {
     throw new UiVerifyFailure('the boot waiver prompt did not close');
@@ -215,13 +277,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('boot', `shell rendered; brand '${brand.trim()}' + blue accent bar (no logo img); mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
 
-  // M4-A: the shared waiver boot-step — the boot prompt appears exactly once
-  // when the session boots unaccepted (Cancel here; Accept under
-  // RID_MOCK_WAIVER_BOOT_ACCEPT=1), or must NOT appear under
-  // RID_MOCK_WAIVER_PERSISTED=1 (the persisted-acceptance variant).
+  // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
+  // EVERY session: cancelled in the unaccepted sessions (Cancel here;
+  // Accept under RID_MOCK_WAIVER_BOOT_ACCEPT=1), or shown in its ACCEPTED
+  // state under RID_MOCK_WAIVER_PERSISTED=1 (reminder with a single OK).
   const bootAcceptedAtBoot = await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', process.env.RID_MOCK_WAIVER_PERSISTED === '1'
-    ? 'persisted acceptance at boot: NO boot prompt'
+    ? 'persisted acceptance at boot: boot prompt shown in accepted state (OK clicked)'
     : `boot waiver prompt handled: ${bootAcceptedAtBoot ? 'Accepted (no dialog anywhere after)' : 'Cancelled (first apply re-shows the dialog)'}`);
 
   // --- waiver gate seed state (used by every waiver-flow section below) ----
@@ -304,7 +366,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
   if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app — the clocks row is removed)`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Driver installed', 'Device detected', 'OC working', 'OC waiver', 'Arc Power working']) {
+  for (const want of ['Driver installed', 'Device detected', 'OC Status', 'OC waiver', 'Arc Power working']) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   if (rowLabels.includes('Clocks normal')) fail('M3-C-I: the "Clocks normal" health row is still rendered');
@@ -462,7 +524,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`))) fail('success toast missing after apply');
     const state = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
-    step('waiver-persisted', `waiver accepted at boot (persisted or boot-accept): apply without dialog -> read-back ${state.powerLimitW} W`);
+    // M4-B (user): a SAVED waiver must survive the boot AND the apply — the
+    // clock write lands with no waiver-not-set and the device still reports
+    // the acceptance afterwards (the persisted flag is not consumed).
+    const waiverAfter = await js(`window.arcPower.waiverGet(0)`);
+    if (waiverAfter.accepted !== true) fail('M4-B: the waiver acceptance was lost across the apply (persisted-accepted session)');
+    step('waiver-persisted', `waiver accepted at boot (persisted or boot-accept): apply without dialog -> read-back ${state.powerLimitW} W, waiverGet still accepted`);
   } else {
     // M3-C review F4: with the isolated mock data dir the unaccepted branch
     // is reachable on a FRESH store (pre-fix, the shared real settings.json
@@ -655,6 +722,246 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await clearToasts();
   step('instant-apply', `io-failed -> ONE attempt, plain refusal toast ('${refusalMsg.trim()}'), no retry note, no progress label; recovery + baseline applied`);
 
+  // --- 5b2. M4-B: negative slider territory + Offset/Clock toggle + the
+  // --- gpuLock editor. The waiver is accepted here (the apply flow above),
+  // --- so every apply in this block is dialog-free. -------------------------
+  const setFreqSlider = (value) => js(`(() => {
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+    const input = card.querySelector('input[type="range"]');
+    input.value = '${value}';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return card.querySelector('.oc-value')?.textContent ?? '';
+  })()`);
+
+  // (1) NEGATIVE HALF: the mirrored freq range -300..300 (a770) — the slider
+  // reaches the negative half, the readout renders it, and an apply writes
+  // + reads back the negative offset.
+  const freqMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
+  const freqMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
+  if (freqMin !== '-300' || freqMax !== '300') fail(`M4-B: freq slider range is '${freqMin}'..'${freqMax}' (expected -300..300 — the mirrored min)`);
+  const negReadout = await setFreqSlider(-100);
+  if (negReadout.trim() !== '-100 MHz') fail(`M4-B: freq slider readout is '${negReadout}' (expected '-100 MHz')`);
+  if (await floatingHidden()) fail('M4-B: floating Apply did not appear for the negative freq move');
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: negative freq apply success toast missing');
+  const negState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(negState.gpuFreqOffsetMhz + 100) > 1e-6) fail(`M4-B: negative freq apply did not stick: ${negState.gpuFreqOffsetMhz}`);
+  step('m4b-negative', `M4-B: freq range ${freqMin}..${freqMax} MHz, slider -100 -> readout '${negReadout.trim()}', apply -> read-back ${negState.gpuFreqOffsetMhz} MHz`);
+  await clearToasts();
+
+  // (1b) NEGATIVE VOLT half-plane: the mirrored volt range -0.234..0.234 V
+  // (a770) — a -0.050 V apply writes + reads back through the clamp (the
+  // finding-5b negative-volt e2e pin; step 0.005, so -0.05 is on-grid).
+  const setVoltSlider = (value) => js(`(() => {
+    const card = document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]');
+    const input = card.querySelector('input[type="range"]');
+    input.value = '${value}';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return card.querySelector('.oc-value')?.textContent ?? '';
+  })()`);
+  const voltMin = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('min')`);
+  const voltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
+  if (voltMin !== '-0.234' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.234..0.234 — the mirrored min)`);
+  const voltReadout = await setVoltSlider(-0.05);
+  if (voltReadout.trim() !== '-0.050 V') fail(`M4-B: volt slider readout is '${voltReadout}' (expected '-0.050 V' — 3-decimal volt format)`);
+  if (await floatingHidden()) fail('M4-B: floating Apply did not appear for the negative volt move');
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: negative volt apply success toast missing');
+  const negVoltState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(negVoltState.gpuVoltOffsetV + 0.05) > 1e-6) fail(`M4-B: negative volt apply did not stick: ${negVoltState.gpuVoltOffsetV}`);
+  step('m4b-negative-volt', `M4-B: volt range ${voltMin}..${voltMax} V, slider -0.05 -> readout '${voltReadout.trim()}', apply -> read-back ${negVoltState.gpuVoltOffsetV} V`);
+  await clearToasts();
+
+  // (2) Offset/Clock toggle: Clock mode slides over base+[min,max] (a770
+  // base 2100 -> 1800..2400), the readout shows the ABSOLUTE clock, and an
+  // apply stores the CONVERTED offset (target - base).
+  if (!(await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-toggle')`))) {
+    fail('M4-B: the Offset/Clock segmented toggle is missing on the freq card');
+  }
+  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Clock')?.click()`);
+  await sleep(150);
+  const clockMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
+  const clockMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
+  if (clockMin !== '1800' || clockMax !== '2400') fail(`M4-B: Clock-mode slider range is '${clockMin}'..'${clockMax}' (expected 1800..2400 = base 2100 + -300..300)`);
+  // M4-B step-5 F2: the .oc-range meta caption under the slider must follow
+  // the mode — in Clock mode it describes the ABSOLUTE-clock range (the
+  // pre-fix caption stayed on the OFFSET range the card was built with).
+  const clockCaption = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-meta .oc-range')?.textContent ?? ''`);
+  if (!clockCaption.includes('1800') || !clockCaption.includes('2400') || clockCaption.includes('-300')) {
+    fail(`M4-B: Clock-mode range caption is '${clockCaption}' (expected the 1800..2400 MHz absolute-clock range — the stale offset caption must not survive the mode flip)`);
+  }
+  const clockReadout = await setFreqSlider(2050);
+  if (clockReadout.trim() !== '2050 MHz') fail(`M4-B: Clock-mode readout is '${clockReadout}' (expected '2050 MHz' — the absolute clock)`);
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: clock-mode apply success toast missing');
+  const clockState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(clockState.gpuFreqOffsetMhz + 50) > 1e-6) fail(`M4-B: clock-mode apply stored the wrong offset: ${clockState.gpuFreqOffsetMhz} (expected -50 = 2050 - 2100)`);
+  const clockDriver = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-driver-value')?.textContent ?? ''`);
+  if (!clockDriver.includes('2050')) fail(`M4-B: Clock-mode driver readout is '${clockDriver}' (expected the absolute 2050 MHz)`);
+  step('m4b-clock', `M4-B: Clock mode range ${clockMin}..${clockMax} MHz, slider 2050 -> readout '${clockReadout.trim()}', apply -> offset ${clockState.gpuFreqOffsetMhz} MHz, driver '${clockDriver.trim()}'`);
+  await clearToasts();
+
+  // (3) gpuLock editor (a770: gpuLock supported): the card sits in the
+  // Advanced section, the expert row reads "Editing available", Apply/Reset
+  // round-trip through the shared clamp path.
+  if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
+    fail('M4-B: the gpuLock editor card is missing in the Advanced section (a770 supports gpuLock)');
+  }
+  const advText = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
+  if (!advText.includes('Editing available')) fail(`M4-B: the gpuLock expert row does not read 'Editing available': '${advText}'`);
+  const setLockInputs = (v, f) => js(`(() => {
+    const card = document.querySelector('.gpu-lock-editor');
+    const vi = card.querySelector('input[data-lock-field="voltageV"]');
+    const fi = card.querySelector('input[data-lock-field="freqMhz"]');
+    vi.value = '${v}'; fi.value = '${f}';
+    vi.dispatchEvent(new Event('input', { bubbles: true }));
+    fi.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await setLockInputs(0.9, 2100);
+  await clearToasts();
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: gpuLock apply success toast missing');
+  const lockState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (!lockState.gpuLock || Math.abs(lockState.gpuLock.voltageV - 0.9) > 1e-6 || Math.abs(lockState.gpuLock.freqMhz - 2100) > 1e-6) {
+    fail(`M4-B: gpuLock apply did not stick: ${JSON.stringify(lockState.gpuLock)}`);
+  }
+  await clearToasts();
+
+  // (3b) M4-B step-4 F4: a NULL fresh envelope (degraded state read after a
+  // successful write) must NOT flip the 'Applied:' line to 'Dynamic
+  // (unlocked)' — the driver state is unknown, keep the previous line.
+  const realGetState = backend.getCurrentSettings.bind(backend);
+  backend.getCurrentSettings = async () => {
+    throw new Error('injected degraded state read (ui-verify)');
+  };
+  await setLockInputs(1.2, 2400);
+  await clearToasts();
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: null-state gpuLock apply success toast missing');
+  backend.getCurrentSettings = realGetState;
+  const nullStateLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+  if (nullStateLine.trim() !== 'Applied: 0.9 V / 2100 MHz') {
+    fail(`M4-B: null-state apply replaced the 'Applied:' line with '${nullStateLine.trim()}' (expected the previous 'Applied: 0.9 V / 2100 MHz')`);
+  }
+  const nullStateRead = await js(`window.arcPower.getCurrentSettings(0)`);
+  // The WRITE landed (the failure was only the state read-back) — the honest
+  // follow-up read must show the applied pair, and the stale store state must
+  // NOT have been clobbered by the null envelope.
+  if (!nullStateRead.gpuLock || Math.abs(nullStateRead.gpuLock.voltageV - 1.2) > 1e-6 || Math.abs(nullStateRead.gpuLock.freqMhz - 2400) > 1e-6) {
+    fail(`M4-B: the null-state apply did not land the write: ${JSON.stringify(nullStateRead.gpuLock)} (expected the applied 1.2 V / 2400 MHz)`);
+  }
+  step('m4b-nullstate', `M4-B: degraded state read (null envelope) -> 'Applied:' line kept '${nullStateLine.trim()}' (never 'Dynamic (unlocked)')`);
+  await clearToasts();
+
+  // (3b2) M4-B step-5 F3: EMPTY inputs must be rejected BEFORE conversion —
+  // Number('') === 0 and the 0 V / 0 MHz pair is the legal UNLOCK: a cleared
+  // field must never silently unlock the GPU (no success toast, no state
+  // change, the 'Applied:' line untouched).
+  await setLockInputs('', '');
+  await clearToasts();
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-error .toast-message')).some((t) => (t.textContent ?? '').includes('must be numbers'))`, 5000))) {
+    fail('M4-B: an empty gpuLock field did not produce the "must be numbers" error toast');
+  }
+  if (await js(`!!document.querySelector('.toast-success')`)) {
+    fail("M4-B: an empty gpuLock field APPLIED (Number('') === 0 silently applied the 0/0 UNLOCK pair)");
+  }
+  const emptyState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (!emptyState.gpuLock || Math.abs(emptyState.gpuLock.voltageV - 1.2) > 1e-6 || Math.abs(emptyState.gpuLock.freqMhz - 2400) > 1e-6) {
+    fail(`M4-B: an empty gpuLock field changed the driver state to ${JSON.stringify(emptyState.gpuLock)} (must stay the applied 1.2 V / 2400 MHz)`);
+  }
+  const emptyLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+  if (emptyLine.trim() !== 'Applied: 0.9 V / 2100 MHz') {
+    fail(`M4-B: an empty gpuLock field flipped the 'Applied:' line to '${emptyLine.trim()}' (must keep the previous pair)`);
+  }
+  step('m4b-gpulock-empty', `M4-B: empty gpuLock inputs -> 'must be numbers' toast, no success, driver state untouched (${JSON.stringify(emptyState.gpuLock)}), line '${emptyLine.trim()}'`);
+  await clearToasts();
+  // Back to the default pair for the Reset round trip below.
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Reset')?.click()`);
+
+  // (3c) M4-B step-4 F3: Reset must make the 'Applied:' line agree with the
+  // inputs (0/0). Force a re-render first so the editor's render-time lock
+  // IS the applied pair (0.9 V / 2100 MHz) — the pre-fix code then snapped
+  // the line back to that stale pair on Reset instead of 'Dynamic (unlocked)'.
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.health-card')`, 5000))) fail('M4-B: dashboard did not render for the gpuLock Reset round trip');
+  await js(`location.hash = '#/overclocking'`);
+  if (!(await waitFor(win, `!!document.querySelector('.gpu-lock-editor')`, 5000))) fail('M4-B: OC page did not re-render with the gpuLock editor');
+  const reRenderLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+  if (reRenderLine.trim() !== 'Applied: 0.9 V / 2100 MHz') {
+    fail(`M4-B: after the re-render the 'Applied:' line is '${reRenderLine.trim()}' (expected the applied 'Applied: 0.9 V / 2100 MHz')`);
+  }
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Reset')?.click()`);
+  const resetInputs = await js(`(() => {
+    const card = document.querySelector('.gpu-lock-editor');
+    return card.querySelector('input[data-lock-field="voltageV"]').value + '/' + card.querySelector('input[data-lock-field="freqMhz"]').value;
+  })()`);
+  if (resetInputs !== '0/0') fail(`M4-B: gpuLock Reset did not restore the default pair: '${resetInputs}'`);
+  const resetLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+  if (resetLine.trim() !== 'Applied: Dynamic (unlocked)') {
+    fail(`M4-B: gpuLock Reset left the 'Applied:' line as '${resetLine.trim()}' (must agree with the 0/0 inputs — 'Applied: Dynamic (unlocked)')`);
+  }
+  step('m4b-gpulock-reset', `M4-B: gpuLock Reset round trip after re-render: line '${reRenderLine.trim()}' -> Reset -> inputs ${resetInputs}, line '${resetLine.trim()}'`);
+  await clearToasts();
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: gpuLock unlock apply success toast missing');
+  const unlocked = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (!unlocked.gpuLock || unlocked.gpuLock.voltageV !== 0 || unlocked.gpuLock.freqMhz !== 0) {
+    fail(`M4-B: gpuLock unlock (0,0) did not stick: ${JSON.stringify(unlocked.gpuLock)}`);
+  }
+  step('m4b-gpulock', `M4-B: gpuLock editor Apply/Reset round trip (0.9 V / 2100 MHz applied + read back, null-state refusal keeps the line, Reset -> 0/0, unlock applied)`);
+  await clearToasts();
+
+  // (3d) M4-B step-5 F4: the gpuLock SUCCESS toast reports the pair the
+  // driver RECEIVED — main clamps before the write (clampGpuLock: [0, 1.5 V]
+  // / [0, 5000 MHz]), so typing 2.5 V must toast '1.5 V', never re-print
+  // the raw typed value (the toast and the 'Applied:' line must agree).
+  await setLockInputs(2.5, 2400);
+  await clearToasts();
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: over-clamp gpuLock apply success toast missing');
+  const clampToast = await js(`document.querySelector('.toast-success .toast-message')?.textContent ?? ''`);
+  if (!clampToast.includes('1.5 V / 2400 MHz')) {
+    fail(`M4-B: the gpuLock success toast reports '${clampToast}' (expected the clamped read-back '1.5 V / 2400 MHz', not the typed 2.5 V)`);
+  }
+  const clampLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+  if (!clampLine.includes('1.5 V / 2400 MHz')) {
+    fail(`M4-B: the gpuLock 'Applied:' line is '${clampLine.trim()}' (expected 'Applied: 1.5 V / 2400 MHz' — toast and line must agree)`);
+  }
+  const clampState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (!clampState.gpuLock || Math.abs(clampState.gpuLock.voltageV - 1.5) > 1e-6 || clampState.gpuLock.freqMhz !== 2400) {
+    fail(`M4-B: the over-clamp gpuLock apply did not clamp: ${JSON.stringify(clampState.gpuLock)} (expected 1.5 V / 2400 MHz)`);
+  }
+  step('m4b-gpulock-honest', `M4-B: gpuLock success toast reports the clamped read-back pair ('${clampToast.trim()}', line '${clampLine.trim()}')`);
+  await clearToasts();
+  // Back to the unlocked default so the baseline restore below is clean.
+  await setLockInputs(0, 0);
+  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: gpuLock unlock restore did not apply');
+  const unlockRestored = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (!unlockRestored.gpuLock || unlockRestored.gpuLock.voltageV !== 0 || unlockRestored.gpuLock.freqMhz !== 0) {
+    fail(`M4-B: gpuLock unlock restore did not land: ${JSON.stringify(unlockRestored.gpuLock)}`);
+  }
+  await clearToasts();
+
+  // Restore: Offset mode + freq 0 + volt 0 — the later sections expect the
+  // a770 baseline (the freq card must never be left in Clock mode, and the
+  // volt slider must never be left in the negative half-plane).
+  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Offset')?.click()`);
+  await sleep(150);
+  await setVoltSlider(0);
+  await setFreqSlider(0);
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: freq/volt baseline restore did not apply');
+  const freqRestored = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(freqRestored.gpuFreqOffsetMhz) > 1e-6) fail(`M4-B: freq baseline not restored: ${freqRestored.gpuFreqOffsetMhz}`);
+  if (Math.abs(freqRestored.gpuVoltOffsetV) > 1e-6) fail(`M4-B: volt baseline not restored: ${freqRestored.gpuVoltOffsetV}`);
+  await clearToasts();
+  step('m4b-restore', `M4-B: back to Offset mode, freq baseline restored (${freqRestored.gpuFreqOffsetMhz} MHz), volt baseline restored (${freqRestored.gpuVoltOffsetV} V), gpuLock unlocked`);
+
   // --- 5c. M3-C-D/E extended + stock variants. ------------------------------
   // RID_MOCK_EXTENDED_RANGES=1 (mock default OC mode = advanced): full slider
   // range (315 W / 115 C), the extended apply SKIPS the per-apply confirm
@@ -746,6 +1053,76 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await clearToasts();
   }
 
+  // --- M4-B (user): the Advanced OC Mode warning is a ONCE-only gate -------
+  // Shown ONLY on the first Stock->Advanced toggle, persisted on acceptance,
+  // never re-asked on a later boot. Two flows:
+  //   - stock-boot session (warning unaccepted): first Advanced click shows
+  //     the dialog; Cancel keeps stock; the next click shows it AGAIN;
+  //     Enable flips the mode AND persists; a later Stock->Advanced round
+  //     trip shows NO dialog (the persistence is the regression pin).
+  //   - RID_MOCK_ADVANCED_ACCEPTED=1 (boot-persisted acceptance): a
+  //     Stock->Advanced toggle shows NO dialog at all — the "saved onto
+  //     next boot" case the user asked for.
+  const advancedAccepted = process.env.RID_MOCK_ADVANCED_ACCEPTED === '1';
+  const clickModeBtn = (label) => js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === '${label}')?.click()`);
+  const modeActive = (label) => js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === '${label}')?.classList.contains('active')`);
+  const advancedDialogTitle = `document.querySelector('.modal .modal-title')?.textContent === 'Advanced OC Mode'`;
+
+  if (stockMode && !advancedAccepted) {
+    // First toggle: the warning must appear, Cancel must keep stock mode.
+    await clickModeBtn('Advanced');
+    if (!(await waitFor(win, advancedDialogTitle, 5000))) fail('M4-B: the Advanced OC Mode warning did not appear on the first toggle');
+    await js(`Array.from(document.querySelectorAll('.modal button')).find((b) => b.textContent.trim() === 'Cancel')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('M4-B: the Advanced OC Mode warning did not close on Cancel');
+    if (!(await modeActive('Stock'))) fail('M4-B: Cancel on the warning left the mode changed (must stay Stock)');
+    // Second toggle: the warning must appear again (still unaccepted).
+    await clickModeBtn('Advanced');
+    if (!(await waitFor(win, advancedDialogTitle, 5000))) fail('M4-B: the warning did not re-appear on the second toggle (must re-ask until accepted)');
+    // Enable: flips the mode AND persists the once-only acceptance.
+    await js(`Array.from(document.querySelectorAll('.modal button')).find((b) => b.textContent.includes('Enable Advanced OC Mode'))?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('M4-B: the warning did not close on Enable');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Advanced' && b.classList.contains('active'))`, 5000))) {
+      fail('M4-B: enabling Advanced did not flip the toggle');
+    }
+    const acceptedAfter = await js(`window.arcPower.advancedModeAcceptedGet()`);
+    if (acceptedAfter.accepted !== true) fail('M4-B: the Advanced OC Mode acceptance was not persisted');
+    // Round-trip back to Stock, then to Advanced: NO dialog (persisted).
+    await clickModeBtn('Stock');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Stock' && b.classList.contains('active'))`, 5000))) {
+      fail('M4-B: switching back to Stock failed');
+    }
+    await clickModeBtn('Advanced');
+    await sleep(1200);
+    if (await js(`!!document.querySelector('.modal')`)) fail('M4-B: the Advanced OC Mode warning re-appeared after a persisted acceptance');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Advanced' && b.classList.contains('active'))`, 5000))) {
+      fail('M4-B: the persisted-acceptance toggle did not flip to Advanced');
+    }
+    // Restore the variant's stock state for the sections below.
+    await clickModeBtn('Stock');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Stock' && b.classList.contains('active'))`, 5000))) {
+      fail('M4-B: restoring Stock failed');
+    }
+    await clearToasts();
+    step('m4b-advanced-once', 'Advanced OC Mode warning: shown on the first toggle (Cancel keeps stock, re-asked until Enable), persisted on accept, NEVER re-asked after');
+  } else if (advancedAccepted && !stockMode) {
+    // Boot-persisted acceptance (RID_MOCK_ADVANCED_ACCEPTED=1): a fresh
+    // toggle must skip the warning entirely — the "saved onto the next
+    // boot" case. Default variant boots Advanced, so round-trip through
+    // Stock first and back.
+    await clickModeBtn('Stock');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Stock' && b.classList.contains('active'))`, 5000))) {
+      fail('M4-B: switching to Stock failed in the persisted-acceptance session');
+    }
+    await clickModeBtn('Advanced');
+    await sleep(1200);
+    if (await js(`!!document.querySelector('.modal')`)) fail('M4-B: the Advanced OC Mode warning appeared despite a boot-persisted acceptance (RID_MOCK_ADVANCED_ACCEPTED=1)');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Advanced' && b.classList.contains('active'))`, 5000))) {
+      fail('M4-B: the toggle did not flip to Advanced (boot-persisted acceptance)');
+    }
+    await clearToasts();
+    step('m4b-advanced-persisted', 'boot-persisted Advanced-mode acceptance: Stock->Advanced toggle shows NO warning (saved onto next boot)');
+  }
+
   // --- 5d. M2D mock featureset swap: the header dropdown round-trips the
   // --- WHOLE UI surface (mock mode only; absent in real mode) ---------------
   if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) {
@@ -782,6 +1159,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (b580Caps.controls.gpuLock === true || b580Caps.controls.vfCurve !== true) {
     fail(`M2D swap: b580 control set wrong: ${JSON.stringify(b580Caps.controls)}`);
   }
+  // M4-B: the gpuLock editor is gated on caps.controls.gpuLock — it must
+  // disappear on the b580 swap (gpuLock unsupported there).
+  if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
+    fail('M4-B: the gpuLock editor is still rendered on b580 (gated off — gpuLock unsupported)');
+  }
   step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported`);
 
   // M2D: the swap payload replaces the boot driver date — the b580 card must
@@ -807,6 +1189,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const selBack = await js(`document.querySelector('.featureset-select').value`);
   if (selBack !== 'a770') fail(`M2D swap-back: dropdown selection is '${selBack}'`);
   if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) fail('M2D swap: waiver acceptance was lost across the swap');
+  // M4-B: the gpuLock editor returns with the a770 surface (gpuLock
+  // supported again).
+  if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
+    fail('M4-B: the gpuLock editor did not return after the swap back to a770');
+  }
   // M2D: the a770 featureset's own registry date returns with the surface.
   await js(`location.hash = '#/dashboard'`);
   await sleep(250);
@@ -1219,12 +1606,12 @@ export async function runFeaturesetVerify(win, fsId) {
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
 
-  // M4-A: the shared waiver boot-step — the boot prompt appears exactly once
-  // (unaccepted session); Cancel it BEFORE the per-featureset assertions
-  // (F4: the b580 apply-dialog section below must see a clean page, not the
-  // boot modal).
+  // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
+  // EVERY session; Cancel it BEFORE the per-featureset assertions (F4: the
+  // b580 apply-dialog section below must see a clean page, not the boot
+  // modal).
   const bootAccepted = await bootWaiverStep(win, js, waitFor);
-  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: NO prompt' : 'cancelled'})`);
+  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: shown in accepted state (OK clicked)' : 'cancelled'})`);
 
   // --- boot: wait for caps + state in the store -----------------------------
   // The renderer boot (health -> devices -> probes -> caps -> telemetry)
@@ -1250,7 +1637,7 @@ export async function runFeaturesetVerify(win, fsId) {
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
   if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app)`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Driver installed', 'Device detected', 'OC working', 'OC waiver', 'Arc Power working']) {
+  for (const want of ['Driver installed', 'Device detected', 'OC Status', 'OC waiver', 'Arc Power working']) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
@@ -1292,13 +1679,26 @@ export async function runFeaturesetVerify(win, fsId) {
       if (plValue.trim() !== '100 %') fail(`b580 PL readout is '${plValue}' (expected '100 %')`);
       const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
       if (plMax !== '150') fail(`b580 PL slider max is '${plMax}' (expected 150)`);
+      // M4-B: the b580 freq range mirrors into the negative half-plane too
+      // (-500..500) and the percent units still render with the mirror.
+      const b580FreqMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
+      const b580FreqMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
+      if (b580FreqMin !== '-500' || b580FreqMax !== '500') fail(`M4-B: b580 freq slider range is '${b580FreqMin}'..'${b580FreqMax}' (expected -500..500)`);
+      const b580VoltRange = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] .oc-meta .oc-range')?.textContent ?? ''`);
+      if (!b580VoltRange.includes('-100') || !b580VoltRange.includes('100')) fail(`M4-B: b580 volt range does not mirror into the negative half: '${b580VoltRange}'`);
       // M3-C-G: the per-card Stock/Medium/Max preset chips are REMOVED.
       const presetCount = await js(`document.querySelectorAll('.oc-card .oc-presets').length`);
       if (presetCount !== 0) fail(`M3-C-G: preset chips still render (${presetCount})`);
       const adv = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
       if (!adv.includes('Unsupported on this GPU')) fail(`b580 advanced: an expert control is not marked unsupported: '${adv}'`);
-      if (!adv.includes('Supported — editing arrives in M4')) fail(`b580 advanced: vfCurve not marked supported: '${adv}'`);
-      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', no preset chips (M3-C-G), gpuLock unsupported / vfCurve supported`);
+      // M4-B: vfCurve stays read-only (no apply path) — the honest M5 text;
+      // gpuLock is unsupported on b580 so it reads 'Unsupported on this GPU'
+      // and its editor is gated OFF.
+      if (!adv.includes('Supported — editing arrives in M5')) fail(`b580 advanced: vfCurve not marked supported: '${adv}'`);
+      if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
+        fail('M4-B: the gpuLock editor is rendered on b580 (gated off — gpuLock unsupported)');
+      }
+      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), gpuLock unsupported (no editor) / vfCurve supported`);
     } else {
       step('oc-generic', `'${fsId}': ${cards} OC cards render`);
     }
@@ -1476,11 +1876,11 @@ export async function runTweaksApplyVerify(win) {
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
     fail('sidebar did not render (6 nav links expected)');
   }
-  // M4-A: the shared waiver boot-step — the boot prompt appears exactly once
-  // (unaccepted session); Cancel it BEFORE the tweaks flow (F4: no stray
-  // modal may sit over the page while the tweaks assertions run).
+  // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
+  // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
+  // sit over the page while the tweaks assertions run).
   await bootWaiverStep(win, js, waitFor);
-  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: NO prompt' : 'cancelled'})`);
+  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: shown in accepted state (OK clicked)' : 'cancelled'})`);
   await js(`location.hash = '#/tweaks'`);
   if (!(await waitFor(win, `document.querySelectorAll('.tweak-card').length === 4`))) {
     fail(`tweaks page did not render 4 catalog cards (got ${await js(`document.querySelectorAll('.tweak-card').length`)})`);
@@ -1652,9 +2052,9 @@ export async function runFanGateVerify(win, backend) {
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
     fail('sidebar did not render (6 nav links expected)');
   }
-  // The shared boot-step: the session boots unaccepted -> the boot prompt
-  // appears exactly once -> Cancel it (the fan gate below then sees a clean
-  // page with a still-unaccepted waiver).
+  // M4-A/M4-B: the shared boot-step — the session boots unaccepted -> the
+  // boot prompt appears exactly once -> Cancel it (the fan gate below then
+  // sees a clean page with a still-unaccepted waiver).
   await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', 'boot waiver prompt handled (cancelled — the fan gate runs unaccepted)');
 

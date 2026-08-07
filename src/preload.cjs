@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   appElevated: () => ipcRenderer.invoke('app-elevated'),
   ocModeGet: () => ipcRenderer.invoke('oc-mode-get'),
   ocModeSet: (ocMode) => ipcRenderer.invoke('oc-mode-set', ocMode),
+  advancedModeAcceptedGet: () => ipcRenderer.invoke('advanced-mode-accepted-get'),
+  advancedModeAcceptedSet: () => ipcRenderer.invoke('advanced-mode-accepted-set'),
   fpsPoll: (deviceId) => ipcRenderer.invoke('fps-poll', deviceId),
   profilesList: () => ipcRenderer.invoke('profiles-list'),
   profilesSave: (profile) => ipcRenderer.invoke('profiles-save', profile),

@@ -436,6 +436,16 @@ html, body {
 .modal-text { color: var(--text); line-height: 1.55; margin: 0 0 20px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
+/* M4-B: the accepted-state waiver dialog's status line — the boot prompt is
+   a reminder when the waiver is already accepted; green, consistent with
+   the dashboard health row's accepted state (--success). */
+.modal-status {
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 20px;
+}
+
 /* --------------------------------------------------------------- stat tiles */
 
 /* M2C-B B9: the dashboard live readout is compact — shorter tiles, tighter
@@ -543,11 +553,19 @@ html, body {
 
 /* ------------------------------------------- OC-mode toggle (M3-C-E) ---- */
 
+.oc-mode-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 0 14px;
+  width: fit-content;
+}
+
 .oc-mode-toggle {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin: 2px 0 12px;
   padding: 3px;
   border-radius: 999px;
   background: var(--bg-inset);
@@ -557,8 +575,10 @@ html, body {
 
 .oc-mode-label {
   color: var(--text-muted);
-  font-size: 12px;
-  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .oc-mode-btn {
@@ -581,6 +601,17 @@ html, body {
   background: var(--accent);
   color: #06121d;
 }
+
+/* --------------------------- M4-B: freq-card Offset/Clock toggle ---------- */
+
+.oc-freq-mode-row {
+  display: flex;
+  margin: 8px 0 2px;
+}
+
+.oc-freq-mode-toggle { margin: 0; }
+
+.oc-freq-mode-btn { padding: 4px 12px; font-size: 12px; }
 
 .oc-meta {
   display: flex;
@@ -617,6 +648,57 @@ html, body {
 .expert-label { color: var(--text); }
 .expert-value { font-family: var(--mono); font-size: 12.5px; }
 .expert-status { font-size: 12px; }
+
+/* --------------------- M4-B: gpuLock editor (Advanced section) ------------ */
+
+.gpu-lock-editor {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+}
+
+.gpu-lock-editor .card-title { font-size: 13.5px; margin-bottom: 2px; }
+
+.gpu-lock-fields {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.gpu-lock-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.gpu-lock-field input {
+  width: 130px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.gpu-lock-field input:focus { outline: none; border-color: var(--accent); }
+
+.gpu-lock-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.gpu-lock-current {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
 
 /* --------------------------------------------------------------------- fan */
 

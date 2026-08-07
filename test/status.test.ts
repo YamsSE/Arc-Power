@@ -7,7 +7,7 @@
 // FIVEth row — "OC waiver" (Accepted ok / Not Accepted error, the ONLY
 // persistent waiver display — user correction, mid-M4-A):
 //   driver ("Driver installed" — detail = driver version + date like the
-//           device card), device ("Device detected"), oc ("OC working"),
+//           device card), device ("Device detected"), oc ("OC Status" —
 //   waiver ("OC waiver" — LIVE caps.waiverAccepted), app ("Arc Power
 //   working" — healthy detail "App & Service Running").
 // Each row: level (ok/warn/error/unknown) + a human detail line. The health
@@ -120,10 +120,10 @@ test('M3-C-I: the "Clocks normal" row is REMOVED (clocksRow no longer exists)', 
 });
 
 test('ocRow: honest tri-state — never applied / last ok / last failed', () => {
-  assert.deepEqual(ocRow(input()), { id: 'oc', label: 'OC working', level: 'unknown', detail: 'No OC apply yet in this session' });
-  assert.deepEqual(ocRow(input({ lastApply: apply(true, 'Power limit applied') })), { id: 'oc', label: 'OC working', level: 'ok', detail: 'Power limit applied' });
-  assert.deepEqual(ocRow(input({ lastApply: apply(false, 'gpuFreqOffsetMhz: io-failed') })), { id: 'oc', label: 'OC working', level: 'error', detail: 'gpuFreqOffsetMhz: io-failed' });
-  assert.deepEqual(ocRow(input({ lastApply: apply(false) })), { id: 'oc', label: 'OC working', level: 'error', detail: 'Last apply failed' });
+  assert.deepEqual(ocRow(input()), { id: 'oc', label: 'OC Status', level: 'unknown', detail: 'No OC apply yet in this session' });
+  assert.deepEqual(ocRow(input({ lastApply: apply(true, 'Power limit applied') })), { id: 'oc', label: 'OC Status', level: 'ok', detail: 'Power limit applied' });
+  assert.deepEqual(ocRow(input({ lastApply: apply(false, 'gpuFreqOffsetMhz: io-failed') })), { id: 'oc', label: 'OC Status', level: 'error', detail: 'gpuFreqOffsetMhz: io-failed' });
+  assert.deepEqual(ocRow(input({ lastApply: apply(false) })), { id: 'oc', label: 'OC Status', level: 'error', detail: 'Last apply failed' });
 });
 
 test('M3-C-I: appRow healthy detail reads "App & Service Running" (app-only, NO IGS probe)', () => {
@@ -137,7 +137,7 @@ test('healthRows: all five rows in display order (pinned by --ui-verify)', () =>
   const rows = healthRows(input());
   assert.deepEqual(rows.map((r) => r.id), ['driver', 'device', 'oc', 'waiver', 'app']);
   assert.deepEqual(rows.map((r) => r.label), [
-    'Driver installed', 'Device detected', 'OC working', 'OC waiver', 'Arc Power working',
+    'Driver installed', 'Device detected', 'OC Status', 'OC waiver', 'Arc Power working',
   ]);
 });
 

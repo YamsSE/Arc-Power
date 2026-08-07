@@ -33,13 +33,25 @@
 // hidden until the first apply of that control, green "Applied" while the
 // current value equals the last applied value, warn "Unapplied" once the
 // value differs after applying. "Reset to default" stays.
+//
+// M4-B: (1) the offset ranges mirror into the negative half-plane (the UI
+// math is range-driven — no special-casing); (2) the GPU-frequency-offset
+// card gets the Offset/Clock segmented toggle (Wattman-style): Clock mode
+// slides/reads out the ABSOLUTE clock (base = device.graphicsClockMHz,
+// captured at render, stable per session) while the stored/applied value
+// stays the offset (IGCL only accepts offsets — pure/clock.ts converts);
+// (3) the gpuLock editor card ships in the Advanced section (Voltage +
+// Frequency inputs + Apply/Reset, gated on caps.controls.gpuLock — the
+// backend apply paths already existed); (4) expert-row texts are honest:
+// gpuLock = "Editing available", vfCurve/VRAM rows = "M5" (no apply path).
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
+import { clockToOffset, offsetToClock, clockRangeFromOffsetRange } from '../pure/clock.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, clampExposedRange, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, gpuLockToastPair } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
@@ -51,11 +63,14 @@ export { ocStateChanged, ocCapsChanged } from '../pure/settings.ts';
 
 // Display order only — support comes from caps.ranges, limits from the ranges.
 const CONTROL_ORDER = ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'powerLimitW', 'tempLimitC'];
-const EXPERT_CONTROLS: Array<{ key: string; label: string }> = [
-  { key: 'gpuLock', label: 'GPU lock (voltage/frequency pair)' },
-  { key: 'vfCurve', label: 'Custom VF curve' },
-  { key: 'vramFreqOffsetGts', label: 'VRAM frequency offset' },
-  { key: 'vramVoltOffsetV', label: 'VRAM voltage offset' },
+// M4-B: per-control expert status. gpuLock ships an editor in the Advanced
+// section ("Editing available"); vfCurve + VRAM offsets have NO apply path
+// yet — honest "editing arrives in M5".
+const EXPERT_CONTROLS: Array<{ key: string; label: string; note: string }> = [
+  { key: 'gpuLock', label: 'GPU lock (voltage/frequency pair)', note: 'Editing available' },
+  { key: 'vfCurve', label: 'Custom VF curve', note: 'Supported — editing arrives in M5' },
+  { key: 'vramFreqOffsetGts', label: 'VRAM frequency offset', note: 'Supported — editing arrives in M5' },
+  { key: 'vramVoltOffsetV', label: 'VRAM voltage offset', note: 'Supported — editing arrives in M5' },
 ];
 
 export const APPLY_BTN_TEXT = 'Apply';
@@ -79,9 +94,20 @@ let currentState: DeviceState | null = null;
 let applied: Record<string, number> = {};
 let lastRenderedCaps: Capabilities | null = null;
 let renderCaps: Capabilities | null = null;
+// M4-B: the freq card's Offset/Clock mode ('clock' = the slider sets an
+// ABSOLUTE target clock; the stored/applied value stays the offset — the
+// IGCL API only accepts offsets). baseClock = device.graphicsClockMHz
+// (the Dashboard device card's max clock), captured at render, stable per
+// session; null -> the toggle is hidden (no base to convert).
+let freqMode: 'offset' | 'clock' = 'offset';
+let baseClock: number | null = null;
 const cards = new Map<string, HTMLElement>();
 const valueNodes = new Map<string, HTMLElement>();
 const driverNodes = new Map<string, HTMLElement>();
+// M4-B step-5 F2: the card's meta range line — refreshCard keeps it in sync
+// with the mode's slider range (Clock mode would otherwise leave the
+// OFFSET range caption under the absolute-clock slider).
+const rangeNodes = new Map<string, HTMLElement>();
 const chipNodes = new Map<string, HTMLElement>();
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
@@ -93,9 +119,12 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   lastRenderedCaps = caps;
   renderCaps = caps;
   applying = false;
+  freqMode = 'offset';
+  baseClock = null;
   cards.clear();
   valueNodes.clear();
   driverNodes.clear();
+  rangeNodes.clear();
   chipNodes.clear();
   applyBtn = null;
 }
@@ -117,27 +146,56 @@ function refreshChip(key: string) {
 }
 
 /** M3-C-F: refresh ONE card in place from the current values + fresh state:
- *  slider, value readout, the "Driver:" readout, the chip. */
+ *  slider, value readout, the "Driver:" readout, the chip. M4-B: the freq
+ *  card in Clock mode slides/reads out the ABSOLUTE clock (base + offset).
+ *  M4-B step-5 F1: the range derives from the CLAMPED exposure (same helper
+ *  as buildCard) — the raw caps must never re-widen the slider after build
+ *  (the M2C-A F3 guard). F2: the .oc-range meta line follows the mode. */
 function refreshCard(key: string) {
   const caps = renderCaps;
-  const range = caps?.ranges[key];
+  const range = cardSliderRange(caps, key);
   if (!range) return;
   const value = values[key];
+  const clockMode = isFreqClockMode(key);
+  const sliderRange = clockMode ? clockRangeFromOffsetRange(range, baseClock as number) : range;
+  const displayValue = clockMode ? offsetToClock(value, baseClock as number) : value;
   const input = cards.get(key)?.querySelector<HTMLInputElement>(`input[type="range"]`);
   const fill = cards.get(key)?.querySelector<HTMLElement>('.oc-track-fill');
   const valueNode = valueNodes.get(key);
   const driverNode = driverNodes.get(key);
-  if (input) input.value = String(value);
-  if (fill) fill.style.width = `${normalizedPosition(value, range) * 100}%`;
-  if (valueNode) valueNode.textContent = formatValue(value, range.units);
+  const rangeNode = rangeNodes.get(key);
+  // M4-B: the slider's min/max/step attributes follow the mode — Clock mode
+  // slides over the absolute-clock range (the attrs are set at build time
+  // from the offset range; the mode flip must move them in place).
+  if (input) {
+    input.min = String(sliderRange.min);
+    input.max = String(sliderRange.max);
+    input.step = String(sliderRange.step);
+    input.value = String(snapToRange(displayValue, sliderRange));
+  }
+  if (fill) fill.style.width = `${normalizedPosition(displayValue, sliderRange) * 100}%`;
+  if (valueNode) valueNode.textContent = formatValue(displayValue, sliderRange.units);
+  // M4-B step-5 F2: the meta range caption describes the CURRENT slider —
+  // in Clock mode it must read the absolute-clock range, never the stale
+  // offset range the card was built with.
+  if (rangeNode) rangeNode.textContent = `${sliderRange.min} – ${sliderRange.max} ${sliderRange.units} · step ${sliderRange.step}`;
   // The "Driver:" readout always reflects the FRESH state — never built once
-  // at render (the stale part that forced the leave-and-return dance).
+  // at render (the stale part that forced the leave-and-return dance). In
+  // Clock mode it shows the absolute clock of the driver's current offset.
   if (driverNode) {
     const raw = currentState?.[key as keyof DeviceState];
-    driverNode.textContent = formatDriverValue(typeof raw === 'number' ? raw : null, range);
+    const driverValue = clockMode && typeof raw === 'number'
+      ? offsetToClock(raw, baseClock as number)
+      : raw;
+    driverNode.textContent = formatDriverValue(typeof driverValue === 'number' ? driverValue : null, sliderRange);
   }
   refreshChip(key);
   updateFloating();
+}
+
+// M4-B: the freq card is in Clock mode (and a base clock is available).
+function isFreqClockMode(key: string): boolean {
+  return key === 'gpuFreqOffsetMhz' && freqMode === 'clock' && baseClock !== null;
 }
 
 function updateFloating() {
@@ -164,6 +222,13 @@ export const overclockingPage: Page = {
       container.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
       return;
     }
+
+    // M4-B: the absolute-clock base = the device's default max clock (the
+    // same value the Dashboard device card shows), captured at render.
+    const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
+    baseClock = device?.graphicsClockMHz && Number.isFinite(device.graphicsClockMHz) && device.graphicsClockMHz > 0
+      ? device.graphicsClockMHz
+      : null;
 
     const controls = supportedScalars(caps);
     // Slider state: start from the driver's current values, snapped to step.
@@ -196,11 +261,18 @@ export const overclockingPage: Page = {
       // unless extended — sliders never exceed what the current mode allows.
       // M3-C-E: in stock mode the backend caps carry no extendedRanges, so
       // the sliders stay within the standard limits by construction.
-      const range: RangeInfo = clampExposedRange(caps.ranges[key], key, caps) as RangeInfo;
+      // M4-B step-5 F1: derived via cardSliderRange — the SAME helper the
+      // refresh path uses, so the clamp survives every in-place refresh.
+      const range: RangeInfo = cardSliderRange(caps, key) as RangeInfo;
+      // M4-B: the freq card in Clock mode slides over the ABSOLUTE clock
+      // range (offset range translated by baseClock).
+      const clockMode = isFreqClockMode(key);
+      const sliderRange = clockMode ? clockRangeFromOffsetRange(range, baseClock as number) : range;
       const rawDriver = state[key as keyof DeviceState];
-      const driverValue = typeof rawDriver === 'number' ? rawDriver : null;
-      const driverText = formatDriverValue(driverValue, range);
-      const offGrid = isOffGrid(driverValue, range);
+      const driverRaw = typeof rawDriver === 'number' ? rawDriver : null;
+      const driverValue = clockMode && driverRaw !== null ? offsetToClock(driverRaw, baseClock as number) : driverRaw;
+      const driverText = formatDriverValue(driverValue, sliderRange);
+      const offGrid = isOffGrid(driverValue, sliderRange);
 
       const card = el('section', { class: 'card oc-card', dataset: { control: key } }, [
         el('div', { class: 'oc-card-head' }, [
@@ -213,23 +285,51 @@ export const overclockingPage: Page = {
             el('div', { class: 'oc-track-fill' }),
             el('input', {
               type: 'range',
-              min: range.min,
-              max: range.max,
-              step: range.step,
-              value: values[key],
+              min: sliderRange.min,
+              max: sliderRange.max,
+              step: sliderRange.step,
+              value: snapToRange(clockMode ? offsetToClock(values[key], baseClock as number) : values[key], sliderRange),
               oninput: (e: Event) => {
                 const raw = Number((e.target as HTMLInputElement).value);
-                values[key] = snapToRange(raw, range);
+                // M4-B: in Clock mode the slider yields an ABSOLUTE clock —
+                // convert back to the offset the apply path stores. The mode
+                // is read LIVE (isFreqClockMode), never the build-time
+                // closure: a mode flip must change the conversion too.
+                values[key] = isFreqClockMode(key)
+                  ? clockToOffset(snapToRange(raw, clockRangeFromOffsetRange(range, baseClock as number)), baseClock as number)
+                  : snapToRange(raw, range);
                 refreshCard(key);
               },
             }),
           ]),
-          el('div', { class: 'oc-value', text: formatValue(values[key], range.units) }),
+          el('div', { class: 'oc-value', text: formatValue(clockMode ? offsetToClock(values[key], baseClock as number) : values[key], sliderRange.units) }),
         ]),
+        // M4-B: the Offset/Clock segmented toggle (Wattman-style) — the
+        // GPU-frequency-offset card ONLY, hidden when no base clock exists.
+        ...(key === 'gpuFreqOffsetMhz' && baseClock !== null
+          ? [el('div', { class: 'oc-freq-mode-row' }, [
+              el('div', { class: 'oc-mode-toggle oc-freq-mode-toggle', role: 'group' }, [
+                el('button', {
+                  class: `oc-mode-btn oc-freq-mode-btn${freqMode === 'offset' ? ' active' : ''}`,
+                  dataset: { mode: 'offset' },
+                  text: 'Offset',
+                  title: 'Set the frequency as an offset from the base clock',
+                  onClick: () => setFreqMode('offset'),
+                }),
+                el('button', {
+                  class: `oc-mode-btn oc-freq-mode-btn${freqMode === 'clock' ? ' active' : ''}`,
+                  dataset: { mode: 'clock' },
+                  text: 'Clock',
+                  title: `Set the absolute target clock (base ${baseClock} MHz + offset)`,
+                  onClick: () => setFreqMode('clock'),
+                }),
+              ]),
+            ])]
+          : []),
         // M3-C-G: the preset chips are gone — the meta row is the range line
         // only (single line; the freed space makes the tab more compact).
         el('div', { class: 'oc-meta' }, [
-          el('span', { class: 'oc-range', text: `${range.min} – ${range.max} ${range.units} · step ${range.step}` }),
+          el('span', { class: 'oc-range', text: `${sliderRange.min} – ${sliderRange.max} ${sliderRange.units} · step ${sliderRange.step}` }),
         ]),
         el('div', { class: 'oc-card-actions' }, [
           el('span', { class: 'chip oc-chip-status', hidden: true }),
@@ -237,7 +337,15 @@ export const overclockingPage: Page = {
             class: 'btn btn-ghost btn-sm',
             text: 'Reset to default',
             onClick: () => {
-              values[key] = snapToRange(range.default, range);
+              // M4-B: in Clock mode the default is the ABSOLUTE default
+              // (base + range.default) — converts back to the same offset.
+              // Mode read LIVE (a flip must move the reset too).
+              if (isFreqClockMode(key)) {
+                const clockRange = clockRangeFromOffsetRange(range, baseClock as number);
+                values[key] = clockToOffset(snapToRange(clockRange.default, clockRange), baseClock as number);
+              } else {
+                values[key] = snapToRange(range.default, range);
+              }
               refreshCard(key);
             },
           }),
@@ -246,10 +354,165 @@ export const overclockingPage: Page = {
 
       valueNodes.set(key, card.querySelector<HTMLElement>('.oc-value') as HTMLElement);
       driverNodes.set(key, card.querySelector<HTMLElement>('.oc-driver-value') as HTMLElement);
+      rangeNodes.set(key, card.querySelector<HTMLElement>('.oc-range') as HTMLElement);
       chipNodes.set(key, card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
       cards.set(key, card);
       refreshCard(key);
       return card;
+    };
+
+    // M4-B: flip the freq card between Offset and Clock presentation. The
+    // stored value stays an offset in both modes — only the slider range +
+    // readouts translate (refreshCard handles the rest).
+    const setFreqMode = (mode: 'offset' | 'clock') => {
+      if (freqMode === mode) return;
+      freqMode = mode;
+      refreshCard('gpuFreqOffsetMhz');
+      const toggle = cards.get('gpuFreqOffsetMhz')?.querySelector<HTMLElement>('.oc-freq-mode-toggle');
+      toggle?.querySelectorAll<HTMLButtonElement>('.oc-freq-mode-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.mode === freqMode);
+      });
+    };
+
+    // M4-B: the gpuLock editor card (Advanced section) — Voltage (V) +
+    // Frequency (MHz) inputs + Apply/Reset, gated on caps.controls.gpuLock.
+    // The backend apply path already exists (igcl-backend.applyLock / mock
+    // parity / the ipc-core clamp) — this ships the UI. The clamp bounds
+    // (GPU_LOCK_VOLT_MAX_V 1.5 V, 0 = "don't touch voltage") are enforced
+    // in main, so the inputs mirror them as friendly hints, never a gate.
+    const buildLockEditor = (ctx: PageContext): HTMLElement => {
+      const lock = (state.gpuLock && typeof state.gpuLock === 'object'
+        ? state.gpuLock
+        : { voltageV: 0, freqMhz: 0 }) as { voltageV: number; freqMhz: number };
+      const currentLine = el('div', { class: 'gpu-lock-current' });
+      const refreshCurrent = (pair: { voltageV: number; freqMhz: number } | null | undefined) => {
+        currentLine.textContent = pair && (pair.voltageV !== 0 || pair.freqMhz !== 0)
+          ? `Applied: ${pair.voltageV} V / ${pair.freqMhz} MHz`
+          : 'Applied: Dynamic (unlocked)';
+      };
+      refreshCurrent(lock);
+
+      const voltageInput = el('input', {
+        type: 'number',
+        min: '0',
+        max: '1.5',
+        step: '0.001',
+        value: lock.voltageV,
+        dataset: { lockField: 'voltageV' },
+        title: 'Absolute lock voltage (V). 0 = don\'t touch voltage (the driver keeps the stock voltage at the locked frequency).',
+      });
+      const freqInput = el('input', {
+        type: 'number',
+        min: '0',
+        max: '5000',
+        step: '1',
+        value: lock.freqMhz,
+        dataset: { lockField: 'freqMhz' },
+        title: 'Absolute lock frequency (MHz).',
+      });
+
+      const applyLock = async () => {
+        const live = ctx.store.get();
+        const deviceId = live.deviceId;
+        if (deviceId === null || !caps) return;
+        // M4-B step-5 F3: parse + validate FIRST — empty/whitespace fields
+        // are rejected before conversion (Number('') === 0 would silently
+        // apply the legal 0 V / 0 MHz UNLOCK pair); non-numeric fields too.
+        const parsed = parseGpuLockInput(voltageInput.value, freqInput.value);
+        if (!parsed.ok) {
+          toast('error', 'GPU lock', 'Voltage and frequency must be numbers.');
+          return;
+        }
+        const { voltageV, freqMhz } = parsed.pair;
+        // Same waiver gate as every apply path (the boot/row acceptance is
+        // read LIVE from the store — never the render-closure caps).
+        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU');
+        if (decision === 'cancelled') {
+          toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
+          return;
+        }
+        {
+          const cur = ctx.store.get();
+          if (cur.caps && cur.caps.waiverAccepted !== true) {
+            ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
+          }
+        }
+        try {
+          const { result, state: fresh } = await api.applySettings(deviceId, { gpuLock: { voltageV, freqMhz } });
+          if (fresh) {
+            currentState = fresh;
+            ctx.store.set({ state: fresh });
+          }
+          const per = result.perControl.gpuLock;
+          if (per?.ok) {
+            // M4-B step-5 F4: report the pair the DRIVER received — the
+            // read-back pair when the fresh envelope carried one (main
+            // clamped the typed values; the toast must agree with the
+            // 'Applied:' line), else the locally clamped pair (same bounds
+            // as main's clampGpuLock) so a null envelope never re-prints
+            // out-of-bounds typed values.
+            const appliedPair = gpuLockToastPair({ voltageV, freqMhz }, fresh?.gpuLock);
+            toast('success', 'GPU lock applied', `${appliedPair.voltageV} V / ${appliedPair.freqMhz} MHz`);
+            ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
+          } else {
+            toast('error', 'GPU lock failed', per?.message ?? errorMessage(per?.errorCode, 'gpuLock'));
+            const freshCaps = await api.getCapabilities(deviceId);
+            ctx.store.set({ caps: freshCaps });
+          }
+          ctx.store.set({
+            lastApply: {
+              ok: result.ok,
+              at: Date.now(),
+              detail: result.ok ? 'GPU lock applied' : (per?.message ?? 'GPU lock failed'),
+            },
+          });
+          // M4-B step-4 F4: only refresh the "Applied:" line on a NON-NULL
+          // fresh envelope — a refused/null-state apply must keep the
+          // previous line (the driver state is unknown, never "unlocked").
+          if (fresh) {
+            refreshCurrent(fresh.gpuLock ?? null);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
+          toast('error', 'GPU lock failed', msg);
+        }
+      };
+
+      return el('div', { class: 'card gpu-lock-editor' }, [
+        el('h3', { class: 'card-title', text: 'GPU lock' }),
+        el('p', {
+          class: 'card-note',
+          text: 'Lock the GPU to a voltage/frequency pair. Voltage 0 means "keep the stock voltage at the locked frequency"; the pair 0 / 0 unlocks (dynamic).',
+        }),
+        el('div', { class: 'gpu-lock-fields' }, [
+          el('label', { class: 'gpu-lock-field' }, [
+            el('span', { class: 'gpu-lock-label', text: 'Voltage (V)' }),
+            voltageInput,
+          ]),
+          el('label', { class: 'gpu-lock-field' }, [
+            el('span', { class: 'gpu-lock-label', text: 'Frequency (MHz)' }),
+            freqInput,
+          ]),
+        ]),
+        el('div', { class: 'gpu-lock-actions' }, [
+          el('button', { class: 'btn btn-primary btn-sm', text: 'Apply', onClick: () => void applyLock() }),
+          el('button', {
+            class: 'btn btn-ghost btn-sm',
+            text: 'Reset',
+            title: 'Reset the editor to the default unlock pair (0 V / 0 MHz)',
+            onClick: () => {
+              voltageInput.value = '0';
+              freqInput.value = '0';
+              // M4-B step-4 F3: Reset means "the default unlock pair" — the
+              // line must agree with the inputs (0/0), never snap back to
+              // the render-time closure lock.
+              refreshCurrent({ voltageV: 0, freqMhz: 0 });
+            },
+          }),
+        ]),
+        currentLine,
+      ]);
     };
 
     // --- M3-C-E: the OC-mode segmented toggle (near the top) ---------------
@@ -259,8 +522,29 @@ export const overclockingPage: Page = {
       if (mode === 'advanced') {
         // M3-C-D disclaimer: enabling Advanced warns about beyond-standard
         // limits, card/driver/PSU dependence, and the BiFrost 300 W profile.
-        const confirmed = await showAdvancedModeConfirm(caps.deviceName || 'this GPU');
-        if (!confirmed) return;
+        // M4-B (user): the warning shows ONLY on the first Stock->Advanced
+        // toggle — the acceptance is persisted (advanced-mode-accepted-set),
+        // so a re-boot never re-asks. Only the toggle click reaches this
+        // code path; nothing else can enable the mode.
+        let accepted = false;
+        try {
+          ({ accepted } = await api.advancedModeAcceptedGet());
+        } catch {
+          // A read failure must not dead-click the toggle: over-warn (show
+          // the disclaimer) rather than silently doing nothing.
+          accepted = false;
+        }
+        if (accepted !== true) {
+          const confirmed = await showAdvancedModeConfirm(caps.deviceName || 'this GPU');
+          if (!confirmed) return;
+          try {
+            await api.advancedModeAcceptedSet();
+          } catch (err) {
+            // The warning was shown; a persist failure must not block the
+            // mode change — the dialog simply re-appears on the next toggle.
+            toast('warn', 'Advanced OC Mode', 'The confirmation could not be saved — it will be asked again.');
+          }
+        }
       }
       try {
         await api.ocModeSet(mode);
@@ -278,18 +562,23 @@ export const overclockingPage: Page = {
         toast('error', 'OC mode could not be changed', err instanceof Error ? err.message : String(err));
       }
     };
-    const modeToggle = (mode: OcMode) => el('div', { class: 'oc-mode-toggle' }, [
+    // M4-B (user): the label sits ABOVE the segmented control as a caption —
+    // a label inside the pill made the whole control read as a single
+    // "OC mode" button. The pill now holds only the two choices.
+    const modeToggle = (mode: OcMode) => el('div', { class: 'oc-mode-row' }, [
       el('span', { class: 'oc-mode-label', text: 'OC mode' }),
-      el('button', {
-        class: `oc-mode-btn${mode === 'stock' ? ' active' : ''}`,
-        text: 'Stock',
-        onClick: () => void setMode('stock'),
-      }),
-      el('button', {
-        class: `oc-mode-btn${mode === 'advanced' ? ' active' : ''}`,
-        text: 'Advanced',
-        onClick: () => void setMode('advanced'),
-      }),
+      el('div', { class: 'oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
+        el('button', {
+          class: `oc-mode-btn${mode === 'stock' ? ' active' : ''}`,
+          text: 'Stock',
+          onClick: () => void setMode('stock'),
+        }),
+        el('button', {
+          class: `oc-mode-btn${mode === 'advanced' ? ' active' : ''}`,
+          text: 'Advanced',
+          onClick: () => void setMode('advanced'),
+        }),
+      ]),
     ]);
 
     const apply = async (ctx: PageContext) => {
@@ -349,7 +638,7 @@ export const overclockingPage: Page = {
           currentState = fresh;
           ctx.store.set({ state: fresh });
         }
-        // M3-A: record the outcome for the dashboard "OC working" health row
+        // M3-A: record the outcome for the dashboard "OC Status" health row
         // (honest: ok with what changed / failed with the first error).
         {
           const changed = Object.entries(result.perControl)
@@ -433,18 +722,25 @@ export const overclockingPage: Page = {
 
       el('details', { class: 'card advanced-card' }, [
         el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),
-        el('div', { class: 'card-body' }, EXPERT_CONTROLS.map(({ key, label }) => {
-          const supported = caps.controls[key] === true;
-          const cur = state[key as keyof DeviceState];
-          const current = key === 'gpuLock'
-            ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
-            : cur === null || cur === undefined ? '—' : JSON.stringify(cur);
-          return el('div', { class: 'expert-row' }, [
-            el('span', { class: 'expert-label', text: label }),
-            el('span', { class: 'expert-value', text: String(current) }),
-            el('span', { class: 'expert-status', text: supported ? 'Supported — editing arrives in M4' : 'Unsupported on this GPU' }),
-          ]);
-        })),
+        el('div', { class: 'card-body' }, [
+          ...EXPERT_CONTROLS.map(({ key, label, note }) => {
+            const supported = caps.controls[key] === true;
+            const cur = state[key as keyof DeviceState];
+            const current = key === 'gpuLock'
+              ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
+              : cur === null || cur === undefined ? '—' : JSON.stringify(cur);
+            return el('div', { class: 'expert-row' }, [
+              el('span', { class: 'expert-label', text: label }),
+              el('span', { class: 'expert-value', text: String(current) }),
+              // M4-B: gpuLock has an editor in this section ("Editing
+              // available"); vfCurve + VRAM offsets have no apply path yet.
+              el('span', { class: 'expert-status', text: supported ? note : 'Unsupported on this GPU' }),
+            ]);
+          }),
+          // M4-B: the gpuLock editor — a card in the Advanced section, gated
+          // on caps.controls.gpuLock (the backend apply paths already exist).
+          ...(caps.controls.gpuLock === true ? [buildLockEditor(ctx)] : []),
+        ]),
       ]),
 
       applyBtn as Node,
@@ -476,7 +772,10 @@ export const overclockingPage: Page = {
       for (const key of Object.keys(values)) {
         if (key in applied) continue;
         const raw = currentState?.[key as keyof DeviceState];
-        const range = s.caps?.ranges[key];
+        // M4-B step-5 F1: the restore snap goes through the CLAMPED range
+        // too — a raw (drift-wide) range would snap values[key] beyond the
+        // exposed slider max and a subsequent apply would send it.
+        const range = cardSliderRange(s.caps, key);
         if (typeof raw === 'number' && range) values[key] = snapToRange(raw, range);
       }
       for (const key of cards.keys()) refreshCard(key);

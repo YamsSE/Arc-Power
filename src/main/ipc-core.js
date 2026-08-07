@@ -123,7 +123,7 @@ export function clampSettings(settings, ranges) {
       out[key] = clampAndSnap(out[key], range);
     }
   }
-  if (out.gpuLock) out.gpuLock = clampGpuLock(out.gpuLock, ranges);
+  if (out.gpuLock) out.gpuLock = clampGpuLock(out.gpuLock);
   return out;
 }
 
@@ -596,6 +596,9 @@ export function createIpcHandlers({
             : (typeof patch.activeProfileId === 'string' && patch.activeProfileId.length > 0 ? patch.activeProfileId : null),
           // M3-C-E: the OC mode is never touched by the profiles patch.
           ocMode: cur.ocMode,
+          // M4-B: the once-only Advanced-mode warning acceptance is never
+          // touched by the profiles patch either.
+          advancedModeAccepted: cur.advancedModeAccepted,
         };
         await store.saveSettings(next);
         return next;
@@ -623,6 +626,24 @@ export function createIpcHandlers({
           await backend.setOcMode(ocMode);
         }
         return { ocMode };
+      },
+
+      // M4-B (user): the Advanced OC Mode warning is accepted ONCE and
+      // persisted — the renderer shows the disclaimer only on the FIRST
+      // Stock->Advanced toggle and skips it on every later boot. There is
+      // no revoke path (nothing resets the acceptance), mirroring the
+      // waiver's persisted-acceptance pattern.
+      'advanced-mode-accepted-get': async (...args) => {
+        assertNoPayload(args, 'advanced-mode-accepted-get');
+        const s = await store.loadSettings();
+        return { accepted: s.advancedModeAccepted === true };
+      },
+
+      'advanced-mode-accepted-set': async (...args) => {
+        assertNoPayload(args, 'advanced-mode-accepted-set');
+        const cur = await store.loadSettings();
+        await store.saveSettings({ ...cur, advancedModeAccepted: true });
+        return { accepted: true };
       },
 
       // Rebuild the tray menu after any profile change (M2b-B). The product

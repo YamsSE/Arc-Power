@@ -10,14 +10,15 @@
   "shaders": 4096,
   "graphicsClockMHz": 2100,
   "memClockMHz": 2187,
+  "vramBytes": 17179869184,
   "hasFan": true,
   "fanCanControl": true,
   "fanMaxCurvePoints": 10,
   "extendedRanges": true,
   "extended": { "plMax": 315, "tlMax": 115 },
   "ranges": {
-    "gpuFreqOffsetMhz": { "units": "MHz", "min": 0, "max": 300, "step": 1, "default": 0 },
-    "gpuVoltOffsetV": { "units": "V", "min": 0, "max": 0.234, "step": 0.005, "default": 0 },
+    "gpuFreqOffsetMhz": { "units": "MHz", "min": -300, "max": 300, "step": 1, "default": 0 },
+    "gpuVoltOffsetV": { "units": "V", "min": -0.234, "max": 0.234, "step": 0.005, "default": 0 },
     "powerLimitW": { "units": "W", "min": 105, "max": 252, "step": 1, "default": 210 },
     "tempLimitC": { "units": "C", "min": 60, "max": 90, "step": 1, "default": 90 }
   },

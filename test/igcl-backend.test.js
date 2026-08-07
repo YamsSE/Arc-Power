@@ -260,6 +260,10 @@ test('listDevices: returns the A770 fixture from device properties', async () =>
   assert.equal(devices[0].driverVersion, '0x002000000065229d');
   assert.equal(devices[0].graphicsClockMHz, 2100);
   assert.equal(devices[0].numXeCores, 32);
+  // M4-B: the real backend exposes NO memory-size field (see the
+  // _ensureDevices comment) — vramBytes stays null and the name keeps no
+  // VRAM suffix until the M4-D sysinfo fallback lands.
+  assert.equal(devices[0].vramBytes, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -950,10 +954,11 @@ test('applySettings: gpuLock extremes are clamped before the driver write (F1 re
   const b = makeBackend(lib);
   const res = await b.applySettings(0, { gpuLock: { voltageV: 99, freqMhz: -5 } });
   assert.equal(res.ok, true);
-  // Clamped to the documented bounds: [0, gpuVoltOffsetV.max] / [0, 5000].
-  assert.deepEqual(lib.__calls.sets.at(-1), ['gpuLock', 0.234, 0]);
+  // M4-B: clamped to the documented ABSOLUTE bounds [0, 1.5 V] / [0, 5000] —
+  // the 0.234 V gpuVoltOffsetV bound (an offset bound) no longer caps locks.
+  assert.deepEqual(lib.__calls.sets.at(-1), ['gpuLock', 1.5, 0]);
   const s = await b.getCurrentSettings(0);
-  assert.deepEqual(s.gpuLock, { voltageV: 0.234, freqMhz: 0 });
+  assert.deepEqual(s.gpuLock, { voltageV: 1.5, freqMhz: 0 });
 });
 
 test('applySettings: vfCurve writes and verifies by read-back (F2 regression)', async () => {

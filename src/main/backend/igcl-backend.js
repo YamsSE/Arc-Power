@@ -26,7 +26,7 @@ import {
   describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem,
 } from './igcl-bindings.js';
 import { igclErrorCode } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C } from './units.js';
 import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
@@ -210,10 +210,19 @@ export class IgclBackend {
         throw new Error(`ctlGetDeviceProperties(${i}) failed: ${describeResult(result)}`);
       }
       const p = koffi.decode(propsBuf, 'ctl_device_adapter_properties_t');
+      // M4-B: VRAM source check — the bundled bindings (igcl-bindings.js)
+      // expose NO memory-size field: ctl_device_adapter_properties_t has no
+      // memory info, and no ctlGetMemoryInfo-style symbol is bound (verified
+      // against igcl-bindings.js + docs/igcl-integration.md — no MEMORY_BYTES
+      // surface exists in the bound structs). The real backend therefore
+      // keeps the plain IGCL name (no VRAM suffix — formatDeviceName with a
+      // null vramBytes is a no-op); the M4-D sysinfo fallback
+      // (Win32_VideoController AdapterRAM) is what will fill vramBytes for
+      // real devices later. A future ctlGetMemoryInfo binding lands here.
       devices.push({
         id: i,
         handle,
-        name: (p.name || '').replace(/\0+$/, ''),
+        name: formatDeviceName((p.name || '').replace(/\0+$/, ''), null),
         type: 'GRAPHICS',
         pciVendorId: `0x${(Number(p.pci_vendor_id) >>> 0).toString(16).padStart(8, '0')}`,
         pciDeviceId: `0x${(Number(p.pci_device_id) >>> 0).toString(16).padStart(8, '0')}`,
@@ -222,6 +231,7 @@ export class IgclBackend {
         driverVersion: '0x' + p.driver_version.toString(16).padStart(16, '0'),
         graphicsClockMHz: p.Frequency,
         numXeCores: p.num_xe_cores,
+        vramBytes: null,
       });
     }
     return (this._devices = devices);
@@ -229,8 +239,8 @@ export class IgclBackend {
 
   async listDevices() {
     const devices = await this._ensureDevices();
-    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores }) => ({
-      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores,
+    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes }) => ({
+      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes,
     }));
   }
 
@@ -817,7 +827,7 @@ export class IgclBackend {
       }
       // Never assume the caller's pair is in range (backend contract): the
       // lock pair has no capability range, so clamp to the documented bounds.
-      const bounded = clampGpuLock(lock, caps.ranges);
+      const bounded = clampGpuLock(lock);
       const pair = { Size: koffi.sizeof('ctl_oc_vf_pair_t'), Version: 0, Voltage: bounded.voltageV, Frequency: bounded.freqMhz };
       const setResult = lib.ctlOverclockGpuLockSet(dev.handle, pair);
       if (setResult !== CTL_RESULT.SUCCESS) {

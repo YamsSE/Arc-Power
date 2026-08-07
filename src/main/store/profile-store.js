@@ -126,12 +126,12 @@ export class ProfileStore {
   }
 
   /**
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
     if (data === null) {
-      return { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: this.ocModeDefault };
+      return { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: this.ocModeDefault, advancedModeAccepted: false };
     }
     return {
       waiverAccepted: data.waiverAccepted === true,
@@ -140,11 +140,14 @@ export class ProfileStore {
       // M3-C-E: absent ocMode follows the store default (stock for the real
       // product, advanced for mock/ui-verify); a persisted value always wins.
       ocMode: data.ocMode === 'advanced' || data.ocMode === 'stock' ? data.ocMode : this.ocModeDefault,
+      // M4-B (user): the Advanced OC Mode warning is accepted ONCE and
+      // persisted — a re-boot must not re-ask. Absent on old files -> false.
+      advancedModeAccepted: data.advancedModeAccepted === true,
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -153,6 +156,7 @@ export class ProfileStore {
       ocOnBoot: settings.ocOnBoot === true,
       activeProfileId: settings.activeProfileId ?? null,
       ocMode: settings.ocMode === 'advanced' || settings.ocMode === 'stock' ? settings.ocMode : this.ocModeDefault,
+      advancedModeAccepted: settings.advancedModeAccepted === true,
     });
   }
 }

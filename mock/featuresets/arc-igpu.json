@@ -10,6 +10,7 @@
   "shaders": 1024,
   "graphicsClockMHz": 2000,
   "memClockMHz": 1067,
+  "vramBytes": null,
   "hasFan": false,
   "fanCanControl": false,
   "fanMaxCurvePoints": 0,

@@ -6,7 +6,7 @@ import { app, ipcMain } from 'electron';
 import { createIpcHandlers } from './ipc-core.js';
 import { createStartup } from './startup.js';
 import { createDriverInfo } from './driver-info.js';
-import { createRegistryCatalog } from './registry-catalog.js';
+import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
 import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
 import { isElevated as isElevatedReal } from './elevation.js';
@@ -31,7 +31,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply({ isElevated: isElevatedReal }), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,

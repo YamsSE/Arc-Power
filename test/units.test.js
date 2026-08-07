@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   canonicalUnit, canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, nearlyEqual,
-  clampFanPct, normalizeFanCurve,
+  clampFanPct, formatDeviceName, normalizeFanCurve, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ,
 } from '../src/main/backend/units.js';
 
 test('canonicalUnit maps CTL_UNITS to canonical strings', () => {
@@ -84,22 +84,45 @@ test('clampAndSnap: float drift guard on fractional steps', () => {
 });
 
 test('clampGpuLock: in-bounds pairs pass through untouched', () => {
-  const ranges = { gpuVoltOffsetV: { min: 0, max: 0.234, step: 0.005 } };
-  assert.deepEqual(clampGpuLock({ voltageV: 0.15, freqMhz: 2100 }, ranges), { voltageV: 0.15, freqMhz: 2100 });
+  // M4-B: the lock voltage is an ABSOLUTE value — real locks sit ~0.7-1.2 V,
+  // far above the old 0.234 V offset bound (the F3 regression that made any
+  // real lock impossible). 0.9 V passes through now.
+  assert.deepEqual(clampGpuLock({ voltageV: 0.9, freqMhz: 2100 }), { voltageV: 0.9, freqMhz: 2100 });
+  assert.deepEqual(clampGpuLock({ voltageV: 1.2, freqMhz: 2400 }), { voltageV: 1.2, freqMhz: 2400 });
   // the unlock pair (0,0) is legal
-  assert.deepEqual(clampGpuLock({ voltageV: 0, freqMhz: 0 }, ranges), { voltageV: 0, freqMhz: 0 });
+  assert.deepEqual(clampGpuLock({ voltageV: 0, freqMhz: 0 }), { voltageV: 0, freqMhz: 0 });
 });
 
-test('clampGpuLock: extreme pairs are clamped to the documented bounds', () => {
-  const ranges = { gpuVoltOffsetV: { min: 0, max: 0.234, step: 0.005 } };
+test('clampGpuLock: extreme pairs are clamped to the documented absolute bounds', () => {
   // F1 regression: voltageV=99 / freqMhz=-5 must never reach the driver.
-  assert.deepEqual(clampGpuLock({ voltageV: 99, freqMhz: -5 }, ranges), { voltageV: 0.234, freqMhz: 0 });
-  assert.deepEqual(clampGpuLock({ voltageV: -3, freqMhz: 99999 }, ranges), { voltageV: 0, freqMhz: 5000 });
+  assert.deepEqual(clampGpuLock({ voltageV: 99, freqMhz: -5 }), { voltageV: GPU_LOCK_VOLT_MAX_V, freqMhz: 0 });
+  assert.deepEqual(clampGpuLock({ voltageV: -3, freqMhz: 99999 }), { voltageV: 0, freqMhz: GPU_LOCK_FREQ_MAX_MHZ });
+  assert.equal(GPU_LOCK_VOLT_MAX_V, 1.5, 'the documented absolute lock ceiling is 1.5 V');
 });
 
-test('clampGpuLock: without a voltage range, voltageV passes through (freq still bounded)', () => {
-  assert.deepEqual(clampGpuLock({ voltageV: 0.9, freqMhz: 2100 }, {}), { voltageV: 0.9, freqMhz: 2100 });
-  assert.deepEqual(clampGpuLock({ voltageV: 0.9, freqMhz: -1 }, {}), { voltageV: 0.9, freqMhz: 0 });
+test('clampGpuLock: the voltage bound is ABSOLUTE — never the gpuVoltOffsetV offset range (M4-B F3)', () => {
+  // The old clamp used gpuVoltOffsetV.max (0.234 V — an OFFSET bound) as the
+  // lock ceiling; the new clamp is range-free and absolute. 1.0 V (a real
+  // lock voltage) must survive; 1.6 V still hits the documented ceiling.
+  assert.deepEqual(clampGpuLock({ voltageV: 1.0, freqMhz: 2100 }), { voltageV: 1.0, freqMhz: 2100 });
+  assert.deepEqual(clampGpuLock({ voltageV: 1.6, freqMhz: 2100 }), { voltageV: GPU_LOCK_VOLT_MAX_V, freqMhz: 2100 });
+});
+
+test('formatDeviceName: appends the VRAM amount once, per the M4-B rules', () => {
+  // >= 1 GiB -> whole GiB
+  assert.equal(formatDeviceName('Intel Arc A770', 16 * 1024 * 1024 * 1024), 'Intel Arc A770 16 GB');
+  assert.equal(formatDeviceName('Intel Arc B580', 12 * 1024 * 1024 * 1024), 'Intel Arc B580 12 GB');
+  // < 1 GiB -> whole MiB
+  assert.equal(formatDeviceName('Arc A380', 6 * 1024 * 1024 * 1024 + 512 * 1024 * 1024), 'Arc A380 6 GB');
+  assert.equal(formatDeviceName('Tiny GPU', 512 * 1024 * 1024), 'Tiny GPU 512 MB');
+  // null / 0 / missing -> plain name (no suffix)
+  assert.equal(formatDeviceName('Arc iGPU', null), 'Arc iGPU');
+  assert.equal(formatDeviceName('Arc iGPU', 0), 'Arc iGPU');
+  assert.equal(formatDeviceName('Arc iGPU', undefined), 'Arc iGPU');
+  // non-integer / negative garbage never formats
+  assert.equal(formatDeviceName('Arc A770', 17179869184.5), 'Arc A770');
+  assert.equal(formatDeviceName('Arc A770', -16 * 1024 * 1024 * 1024), 'Arc A770');
+  assert.equal(formatDeviceName('', 16 * 1024 * 1024 * 1024), '');
 });
 
 // ---------------------------------------------------------------------------

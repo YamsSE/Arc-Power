@@ -340,17 +340,33 @@ async function main() {
     } catch (err) {
       console.log(`[boot] oc-mode session seed skipped: ${err.message}`);
     }
-    // M4-A: deterministic waiver session seed — every mock session boots
-    // UNACCEPTED so the boot waiver prompt appears exactly once (ui-verify
-    // F4: the prompt would otherwise hit every variant unpredictably, and a
-    // previous run's persisted acceptance would suppress it). The
-    // RID_MOCK_WAIVER_PERSISTED=1 ui-verify variant seeds an ACCEPTED store
-    // instead — its boot-step then asserts NO boot prompt.
+    // M4-A/M4-B: deterministic waiver session seed — every mock session
+    // boots UNACCEPTED so the boot waiver prompt shows in the classic
+    // Cancel/Accept state (ui-verify F4: the prompt would otherwise hit
+    // every variant unpredictably, and a previous run's persisted
+    // acceptance would change its state). The RID_MOCK_WAIVER_PERSISTED=1
+    // ui-verify variant seeds an ACCEPTED store instead — M4-B (user): the
+    // boot prompt STILL appears in that variant, in its ACCEPTED state (a
+    // reminder with a single OK, never a re-accept); the seed now only
+    // controls the dialog STATE, not its presence.
     try {
       const cur = await store.loadSettings();
       await store.saveSettings({ ...cur, waiverAccepted: process.env.RID_MOCK_WAIVER_PERSISTED === '1' });
     } catch (err) {
       console.log(`[boot] waiver session seed skipped: ${err.message}`);
+    }
+    // M4-B (user): deterministic Advanced-mode-warning session seed — every
+    // mock session boots with the warning UNACCEPTED so the first
+    // Stock->Advanced toggle shows the disclaimer (the shared isolated mock
+    // dir would otherwise leak a previous run's acceptance). The
+    // RID_MOCK_ADVANCED_ACCEPTED=1 ui-verify variant seeds an ACCEPTED
+    // store instead — its step asserts the toggle then shows NO dialog
+    // (the user: "once accepted, saved, next boot doesn't need this accept").
+    try {
+      const cur = await store.loadSettings();
+      await store.saveSettings({ ...cur, advancedModeAccepted: process.env.RID_MOCK_ADVANCED_ACCEPTED === '1' });
+    } catch (err) {
+      console.log(`[boot] advanced-mode session seed skipped: ${err.message}`);
     }
     // M4-A review F2: seed the backend's IN-MEMORY waiver flag HERE, before
     // createWindow — the renderer's FIRST getCapabilities (right after the
@@ -365,14 +381,16 @@ async function main() {
       console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
     }
   } else {
-    // M4-A review F1: the REAL path must pre-seed the waiver flag BEFORE
-    // createWindow too — the renderer's FIRST getCapabilities (right after
-    // the window loads) must already see a persisted acceptance, or a
-    // persisted-accepted session shows the boot prompt spuriously (nothing
-    // orders bootBackend's later seed against the renderer's first caps
-    // query). backend.init() is idempotent and bootBackend re-runs it below;
-    // an init failure here degrades into the health system (collectHealth
-    // reports the init error and the window stays up degraded).
+    // M4-A review F1 (M4-B update): the REAL path must pre-seed the waiver
+    // flag BEFORE createWindow too — the renderer's FIRST getCapabilities
+    // (right after the window loads) must already see a persisted
+    // acceptance, or the M4-B boot prompt renders in the wrong STATE (an
+    // unaccepted dialog with Accept instead of the accepted-state reminder)
+    // because nothing orders bootBackend's later seed against the
+    // renderer's first caps query. backend.init() is idempotent and
+    // bootBackend re-runs it below; an init failure here degrades into the
+    // health system (collectHealth reports the init error and the window
+    // stays up degraded).
     try {
       await backend.init();
     } catch {
@@ -432,7 +450,9 @@ async function main() {
     : // M3-C-B: the real adapter is elevation-aware — an elevated process
       // (the packaged EXE always is) runs reg.exe directly with per-step
       // honest reporting; non-elevated dev keeps the PowerShell RunAs chain.
-      createRegistryApply({ isElevated });
+      // M4-B: the CATALOG is the first argument (a deps-only call used to
+      // land the deps in `catalog` -> "catalog.find is not a function").
+      createRegistryApply(REGISTRY_CATALOG, { isElevated });
   // FPS adapter: mock mode reports unavailable (never loads koffi/PresentMon);
   // the product path starts the real client lazily on the first fps-poll.
   // On this machine the real client degrades to unavailable too (no

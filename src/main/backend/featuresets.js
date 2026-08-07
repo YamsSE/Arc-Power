@@ -80,6 +80,12 @@ export function validateFeatureset(raw, expectedId) {
       throw new Error(`featureset '${fs.id}': ${key} must be a positive number`);
     }
   }
+  // M4-B: the VRAM amount in BYTES for the display-name suffix ("Arc A770
+  // 16 GB"). Optional (null when absent) — integrated GPUs have no VRAM.
+  if (fs.vramBytes !== undefined && fs.vramBytes !== null
+    && (!Number.isInteger(fs.vramBytes) || fs.vramBytes <= 0)) {
+    throw new Error(`featureset '${fs.id}': vramBytes must be a positive integer (bytes) or null`);
+  }
   if (typeof fs.hasFan !== 'boolean') throw new Error(`featureset '${fs.id}': hasFan must be a boolean`);
   if (typeof fs.fanCanControl !== 'boolean') throw new Error(`featureset '${fs.id}': fanCanControl must be a boolean`);
   if (!Number.isInteger(fs.fanMaxCurvePoints) || fs.fanMaxCurvePoints < 0) {

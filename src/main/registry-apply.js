@@ -259,6 +259,16 @@ async function unlinkIfExists(filePath) {
  * }} [deps]
  */
 export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
+  // M4-B: make the whole bug CLASS loud at construction time — the first
+  // parameter is the CATALOG array (apply() calls catalog.find(...)), but
+  // two product call sites used to pass the deps object there, throwing
+  // "catalog.find is not a function" mid-apply in the packaged EXE. The
+  // default parameter still provides REGISTRY_CATALOG when undefined; this
+  // guard only fires when a non-array is explicitly passed, which is always
+  // a caller bug.
+  if (!Array.isArray(catalog)) {
+    throw new TypeError('createRegistryApply: catalog must be an array of registry entries (call as createRegistryApply(catalog, deps))');
+  }
   const exec = deps.execFile ?? execFile;
   const tmpdir = deps.tmpdir ?? (() => os.tmpdir());
   const powershellExe = deps.powershellExe ?? POWERSHELL_EXE;

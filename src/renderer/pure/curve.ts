@@ -4,6 +4,11 @@
 // space; all point math (insert, move, clamp, sort, ascending-temp
 // enforcement, point-count clamping, presets) lives here so it is testable
 // without a DOM. Temps are rounded to whole °C, speeds to whole %.
+//
+// M4-B (user): the temp axis is STATIC 0..100 °C — deleting/adding/dragging
+// points never changes the domain (deleting the outer point of a curve used
+// to narrow the axis so the remaining points could not be dragged back to
+// higher/lower temps). Only the RPM y-axis is dynamic.
 
 export interface CurvePoint {
   t: number;
@@ -14,7 +19,9 @@ export const MIN_CURVE_POINTS = 2;
 export const MAX_CURVE_POINTS = 32; // ctl_fan_speed_table_t.table size
 export const SPEED_MIN = 0;
 export const SPEED_MAX = 100;
-const DEFAULT_DOMAIN: CurveDomain = { minT: 20, maxT: 90 };
+export const FAN_TEMP_MIN = 0;
+export const FAN_TEMP_MAX = 100;
+export const FAN_DOMAIN: CurveDomain = { minT: FAN_TEMP_MIN, maxT: FAN_TEMP_MAX };
 
 export interface CurveDomain {
   minT: number;
@@ -127,13 +134,15 @@ export function addPointAtMidGap(points: CurvePoint[], max: number): CurvePoint[
   return enforceAscending([...sorted, { t, speedPct: clampPct(speedPct) }]);
 }
 
-/** The temp domain spanned by the current curve (guarded against flat). */
-export function curveDomain(points: CurvePoint[]): CurveDomain {
-  if (points.length === 0) return { ...DEFAULT_DOMAIN };
-  const ts = points.map((p) => p.t);
-  const minT = Math.min(...ts);
-  const maxT = Math.max(...ts);
-  return maxT > minT ? { minT, maxT } : { minT: minT - 1, maxT: minT + 1 };
+/**
+ * The temp domain of the fan editor: STATIC 0..100 °C (M4-B, user
+ * requirement). Deleting/adding/dragging points NEVER changes the domain —
+ * the whole axis always spans FAN_DOMAIN so a point removed from one end
+ * can still be dragged to 0 °C / 100 °C. (The `points` argument is kept for
+ * call-site compatibility; it is intentionally unused.)
+ */
+export function curveDomain(_points: CurvePoint[]): CurveDomain {
+  return { ...FAN_DOMAIN };
 }
 
 /** Normalized editor x (0..100) for a temp in the domain. */

@@ -10,6 +10,7 @@
   "shaders": 2560,
   "graphicsClockMHz": 2400,
   "memClockMHz": 2250,
+  "vramBytes": 12884901888,
   "hasFan": true,
   "fanCanControl": true,
   "fanMaxCurvePoints": 10,

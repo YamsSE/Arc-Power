@@ -16,7 +16,7 @@
 // — the card's modes are ['auto','curve'] regardless of the control grant
 // (same honest-vs-reality principle as the real backend's probe-fail path).
 
-import { clampAndSnap, clampGpuLock, clampFanPct, normalizeFanCurve } from './units.js';
+import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve } from './units.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
@@ -151,7 +151,11 @@ export class MockBackend {
     }
     const caps = {
       oemName: 'Intel (mock)',
-      deviceName: fs.deviceName,
+      // M4-B step-4 F1: the VRAM suffix is formatted HERE too (not only in
+      // _buildDevice) — every dialog (boot waiver, apply-time waiver,
+      // advanced-mode confirm) renders caps.deviceName, so mock and real
+      // backends must agree and the dialogs must match the header/card.
+      deviceName: formatDeviceName(fs.deviceName, fs.vramBytes ?? null),
       waiverAccepted: false,
       controls,
       ranges,
@@ -196,7 +200,10 @@ export class MockBackend {
   _buildDevice(fs) {
     return {
       id: 0,
-      name: fs.deviceName,
+      // M4-B: the VRAM suffix is formatted ONCE here (listDevices time) —
+      // the header, device card and dialogs all read device.name, so the
+      // suffix reaches every consumer by construction, never per-render.
+      name: formatDeviceName(fs.deviceName, fs.vramBytes ?? null),
       type: 'GRAPHICS',
       pciVendorId: '0x00008086',
       pciDeviceId: fs.pciDeviceId ?? '0x000056a0',
@@ -205,6 +212,7 @@ export class MockBackend {
       driverVersion: fs.driverVersion,
       graphicsClockMHz: fs.graphicsClockMHz,
       numXeCores: fs.numXeCores,
+      vramBytes: fs.vramBytes ?? null,
     };
   }
 
@@ -385,7 +393,7 @@ export class MockBackend {
         result.ok = false;
       } else {
         // Mirror IgclBackend.applyLock: clamp to the documented lock bounds.
-        this._state.gpuLock = clampGpuLock(settings.gpuLock, caps.ranges);
+        this._state.gpuLock = clampGpuLock(settings.gpuLock);
         result.perControl.gpuLock = { ok: true, readBackEqual: true };
       }
     }

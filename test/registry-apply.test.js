@@ -482,6 +482,40 @@ test('apply: validation — unknown entry / read-only entry / bad action throw',
   await assert.rejects(() => runner.apply('hags', 'explode'), /action must be one of/);
 });
 
+test('M4-B: a non-array first argument throws the catalog guard at CONSTRUCTION time (the "catalog.find is not a function" bug class)', () => {
+  // The two product call sites (main.js / ipc.js) used to pass the deps
+  // object as the catalog argument; apply() then blew up mid-apply with
+  // "catalog.find is not a function" in the packaged EXE. The guard makes
+  // the whole class loud at construction time.
+  assert.throws(() => createRegistryApply({ isElevated: () => true }), /catalog must be an array/);
+  assert.throws(() => createRegistryApply({ execFile: async () => ({}) }), /catalog must be an array/);
+  assert.throws(() => createRegistryApply('mpo'), /catalog must be an array/);
+  // The default parameter still provides the real catalog when undefined —
+  // a plain call must NOT throw.
+  assert.doesNotThrow(() => createRegistryApply());
+});
+
+test('M4-B: the product-path pattern (catalog FIRST, deps SECOND) resolves the MPO entry from the real catalog and applies its steps', async () => {
+  // The exact wiring main.js:435 / ipc.js:34 now use: createRegistryApply(
+  // REGISTRY_CATALOG, { execFile, isElevated }) — the .find path inside
+  // apply() must resolve the MPO entry from the REAL catalog and run its
+  // steps (previously the deps landed in `catalog` and apply() threw).
+  const calls = [];
+  const exec = async (cmd, args) => {
+    calls.push({ cmd, args });
+    return { stdout: '', stderr: '' };
+  };
+  const runner = createRegistryApply(REGISTRY_CATALOG, { execFile: exec, isElevated: () => true });
+  const out = await runner.apply('mpo', 'enable');
+  assert.equal(out.ok, true);
+  assert.equal(out.canceled, false);
+  assert.deepEqual(calls.map((c) => c.cmd), ['reg', 'reg']);
+  assert.deepEqual(calls[0].args, ['add', 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', '/v', 'MPOHack', '/t', 'REG_DWORD', '/d', '1', '/f']);
+  assert.deepEqual(calls[1].args, ['add', 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', '/v', 'MPOHack', '/t', 'REG_DWORD', '/d', '1', '/f']);
+  assert.deepEqual(out.perStep.map((p) => [p.step, p.status]), [[0, 'done'], [1, 'done']]);
+  assert.match(out.message, /MPOHack=1 written to HKLM/);
+});
+
 // ---------------------------------------------------------------------------
 // Mock adapter (shared mock registry state — the read side reflects applies)
 // ---------------------------------------------------------------------------

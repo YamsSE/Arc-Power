@@ -9,7 +9,10 @@ test('listDevices: one A770-matching fixture device', async () => {
   const b = new MockBackend();
   const devices = await b.listDevices();
   assert.equal(devices.length, 1);
-  assert.equal(devices[0].name, 'Mock Arc A770 Graphics (fixture)');
+  // M4-B: the device name carries the VRAM suffix (16 GiB a770 featureset) —
+  // formatted ONCE at listDevices time.
+  assert.equal(devices[0].name, 'Mock Arc A770 Graphics (fixture) 16 GB');
+  assert.equal(devices[0].vramBytes, 16 * 1024 * 1024 * 1024);
   assert.equal(devices[0].pciDeviceId, '0x000056a0');
 });
 
@@ -21,10 +24,12 @@ test('getCapabilities: A770 matrix (same ranges/units as the real card)', async 
   // the featureset base carries the extended maxes natively (M2C-C verified).
   const b = new MockBackend({ fanCanControl: true, extendedRanges: false });
   const caps = await b.getCapabilities(0);
-  assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: 0, max: 300, step: 1, default: 0, units: 'MHz' });
+  // M4-B: the offset ranges mirror into the negative half-plane.
+  assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: -300, max: 300, step: 1, default: 0, units: 'MHz' });
   assert.deepEqual(caps.ranges.powerLimitW, { min: 105, max: 252, step: 1, default: 210, units: 'W' });
   assert.deepEqual(caps.ranges.tempLimitC, { min: 60, max: 90, step: 1, default: 90, units: 'C' });
   assert.ok(Math.abs(caps.ranges.gpuVoltOffsetV.max - 0.234) < 1e-9);
+  assert.ok(Math.abs(caps.ranges.gpuVoltOffsetV.min + 0.234) < 1e-9, 'volt offset min mirrors to -0.234');
   assert.equal(caps.controls.vramFreqOffset, false);
   assert.equal(caps.controls.vfCurve, false);
   // the editable-fan fixture: canControl=true with the learned modes
@@ -204,7 +209,9 @@ test('applySettings: gpuLock extremes are clamped like the real backend (F1 regr
   assert.equal(res.ok, true);
   assert.equal(res.perControl.gpuLock.ok, true);
   const s = await b.getCurrentSettings(0);
-  assert.deepEqual(s.gpuLock, { voltageV: 0.234, freqMhz: 0 });
+  // M4-B: the clamp is the documented ABSOLUTE ceiling (1.5 V), not the
+  // 0.234 V offset bound — real lock voltages (~0.7-1.2 V) must survive.
+  assert.deepEqual(s.gpuLock, { voltageV: 1.5, freqMhz: 0 });
 });
 
 test('injectFail: dev-only knob forces a control failure and clears', async () => {

@@ -78,6 +78,23 @@ test('M2D: validator rejects malformed shapes with clear errors', () => {
   assert.throws(() => validateFeatureset(unknownControl), /unknown control/);
 });
 
+test('M2D: validator rejects non-integer / negative / zero vramBytes (M4-B step-4 F5c)', () => {
+  const base = () => JSON.parse(JSON.stringify(loadFeatureset('a770')));
+  const nonInteger = base();
+  nonInteger.vramBytes = 17.5;
+  assert.throws(() => validateFeatureset(nonInteger), /vramBytes/);
+  const negative = base();
+  negative.vramBytes = -17179869184;
+  assert.throws(() => validateFeatureset(negative), /vramBytes/);
+  const zero = base();
+  zero.vramBytes = 0;
+  assert.throws(() => validateFeatureset(zero), /vramBytes/);
+  // null stays legal (integrated GPUs have no VRAM — the arc-igpu file).
+  const nullable = base();
+  nullable.vramBytes = null;
+  assert.equal(validateFeatureset(nullable), nullable);
+});
+
 // ---------------------------------------------------------------------------
 // a770 — the verified default
 // ---------------------------------------------------------------------------
@@ -86,19 +103,28 @@ test('M2D: default mock = a770 featureset (verified matrix)', async () => {
   const b = new MockBackend();
   const caps = await b.getCapabilities(0);
   assert.equal(b.featuresetId, 'a770');
-  assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: 0, max: 300, step: 1, default: 0, units: 'MHz' });
+  // M4-B: the offset ranges mirror into the negative half-plane.
+  assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: -300, max: 300, step: 1, default: 0, units: 'MHz' });
   // the a770 featureset carries the extended maxes natively (M2C-C verified;
   // PL max = the live-verified 315 W KMD ceiling, M3-C-D)
   assert.deepEqual(caps.ranges.powerLimitW, { min: 105, max: 315, step: 1, default: 210, units: 'W' });
   assert.deepEqual(caps.ranges.tempLimitC, { min: 60, max: 115, step: 1, default: 90, units: 'C' });
   assert.ok(Math.abs(caps.ranges.gpuVoltOffsetV.max - 0.234) < 1e-9);
+  assert.ok(Math.abs(caps.ranges.gpuVoltOffsetV.min + 0.234) < 1e-9, 'volt offset min mirrors to -0.234');
   assert.equal(caps.extendedRanges, true);
   assert.equal(caps.controls.gpuLock, true);
   assert.equal(caps.controls.vramFreqOffset, false);
   assert.equal(caps.controls.vfCurve, false);
   assert.equal(caps.fan.canControl, true, 'a770: editable fan — the live-verified M3-D probe path');
   const devices = await b.listDevices();
-  assert.equal(devices[0].name, 'Mock Arc A770 Graphics (fixture)');
+  // M4-B: the device name carries the VRAM suffix (16 GiB), formatted once.
+  assert.equal(devices[0].name, 'Mock Arc A770 Graphics (fixture) 16 GB');
+  // M4-B step-4 F1: caps.deviceName must carry the SAME suffixed name (every
+  // dialog renders caps.deviceName — boot waiver, apply-time waiver,
+  // advanced-mode confirm — and must agree with the header/card).
+  assert.equal(caps.deviceName, 'Mock Arc A770 Graphics (fixture) 16 GB');
+  assert.equal(caps.deviceName, devices[0].name, 'caps.deviceName and device.name must agree (mock vs real parity)');
+  assert.equal(devices[0].vramBytes, 16 * 1024 * 1024 * 1024);
   assert.equal(devices[0].driverVersion, '32.0.101.8861');
   assert.equal(devices[0].numXeCores, 32);
   assert.equal(devices[0].pciDeviceId, '0x000056a0');
@@ -151,6 +177,9 @@ test('M2D: b580 featureset — percent units for volt/PL/TL, Gbps VRAM, vfCurve 
   assert.deepEqual(caps.ranges.powerLimitW, { min: 0, max: 150, step: 1, default: 100, units: '%' });
   assert.equal(caps.ranges.tempLimitC.units, '%');
   assert.equal(caps.ranges.gpuVoltOffsetV.units, '%');
+  // M4-B: the b580 offset ranges mirror into the negative half-plane too.
+  assert.deepEqual(caps.ranges.gpuFreqOffsetMhz, { min: -500, max: 500, step: 1, default: 0, units: 'MHz' });
+  assert.equal(caps.ranges.gpuVoltOffsetV.min, -100, 'b580 volt % min mirrors to -100');
   assert.equal(caps.ranges.gpuFreqOffsetMhz.units, 'MHz');
   assert.equal(caps.ranges.vramFreqOffsetGts.units, 'Gbps');
   assert.equal(caps.controls.gpuLock, false);
@@ -165,6 +194,10 @@ test('M2D: b580 featureset — percent units for volt/PL/TL, Gbps VRAM, vfCurve 
   const devices = await b.listDevices();
   assert.equal(devices[0].numXeCores, 20);
   assert.equal(devices[0].driverVersion, '32.0.140.4109');
+  assert.equal(devices[0].name, 'Mock Arc B580 Graphics (fixture) 12 GB');
+  // M4-B step-4 F1: caps.deviceName is VRAM-suffixed here too (dialog parity).
+  assert.equal(caps.deviceName, 'Mock Arc B580 Graphics (fixture) 12 GB');
+  assert.equal(devices[0].vramBytes, 12 * 1024 * 1024 * 1024);
 });
 
 test('M2D: b580 percent values flow through apply/presets/format/validation', async () => {
@@ -264,6 +297,10 @@ test('M2D: arc-igpu — telemetry-only, no fan', async () => {
   const s = await b.getCurrentSettings(0);
   assert.equal(s.fanMode, null);
   assert.equal(s.fanCurve, null);
+  // M4-B step-4 F1: no VRAM -> caps.deviceName stays the plain name (the
+  // formatDeviceName(null) no-op — dialogs must not show a bogus suffix).
+  assert.equal(caps.deviceName, 'Mock Arc iGPU (fixture)');
+  assert.equal((await b.listDevices())[0].name, 'Mock Arc iGPU (fixture)');
   const tel = await b.sampleRawTelemetry(0);
   assert.equal(tel.fanRpm, null);
   assert.equal(tel.memClockMhz, 1067);
@@ -284,7 +321,7 @@ test('M2D: setFeatureset swaps caps/state/device/health and back (waiver preserv
   assert.equal(out.featureset.name, 'Arc B580 (Battlemage)');
   assert.equal(out.caps.ranges.powerLimitW.units, '%');
   assert.equal(out.state.powerLimitW, 100, 'state resets to the new device defaults');
-  assert.equal(out.devices[0].name, 'Mock Arc B580 Graphics (fixture)');
+  assert.equal(out.devices[0].name, 'Mock Arc B580 Graphics (fixture) 12 GB');
   assert.match(out.health.driverVersion, /32\.0\.140\.4109/);
   assert.equal((await b.getCapabilities(0)).waiverAccepted, true, 'app-level waiver survives the swap');
   const back = await b.setFeatureset('a770');

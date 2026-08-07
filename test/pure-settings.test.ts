@@ -15,6 +15,9 @@ import {
   isScalarDirtyVsApplied,
   ocStateChanged,
   ocCapsChanged,
+  cardSliderRange,
+  parseGpuLockInput,
+  gpuLockToastPair,
   TEMP_LIMIT_MAX_C,
 } from '../src/renderer/pure/settings.ts';
 import { computePresets } from '../src/renderer/pure/presets.ts';
@@ -283,4 +286,98 @@ test('M3-C-F: ocCapsChanged — content comparison, the post-apply waiver re-set
   assert.equal(ocCapsChanged(caps, { ...caps, extendedRanges: true }), true);
   const extended = { ...caps, ranges: { ...caps.ranges, powerLimitW: { ...caps.ranges.powerLimitW, max: 315 } }, extendedRanges: true };
   assert.equal(ocCapsChanged(caps, extended), true, 'a mode toggle changed the ranges');
+});
+
+// ---------------------------------------------------------------------------
+// M4-B step-5 F1 — the card slider range derives from the CLAMPED exposure
+// at build AND refresh time (refreshCard used to read the RAW range and
+// rewrite the slider min/max/step past the M2C-A F3 guard after every
+// apply; both call sites now go through cardSliderRange).
+// ---------------------------------------------------------------------------
+
+const driftedCaps: Capabilities = {
+  oemName: 'o', deviceName: 'd', waiverAccepted: false,
+  controls: { powerLimitW: true, tempLimitC: true, gpuFreqOffsetMhz: true },
+  ranges: {
+    // A stale cache / future driver drift wider than the mode-allowable
+    // limit — exactly what clampExposedRange is documented to defend against.
+    powerLimitW: { min: 105, max: 300, step: 1, default: 210, units: 'W' },
+    tempLimitC: { min: 60, max: 95, step: 1, default: 90, units: 'C' },
+    gpuFreqOffsetMhz: { min: -300, max: 300, step: 1, default: 0, units: 'MHz' },
+  },
+  fan: { canControl: false, modes: [], maxRpm: -1, maxCurvePoints: 0 },
+};
+
+test('F1: cardSliderRange clamps the drifted PL/TL exposure at refresh time too', () => {
+  assert.equal(cardSliderRange(driftedCaps, 'powerLimitW')?.max, 252, 'PL slider max stays pinned to 252 W');
+  assert.equal(cardSliderRange(driftedCaps, 'powerLimitW')?.default, 210, 'a legal default is untouched');
+  assert.equal(cardSliderRange(driftedCaps, 'tempLimitC')?.max, 90, 'TL slider max stays pinned to 90 C');
+  assert.deepEqual(
+    cardSliderRange(driftedCaps, 'powerLimitW'),
+    clampExposedRange(driftedCaps.ranges.powerLimitW, 'powerLimitW', driftedCaps),
+    'cardSliderRange IS clampExposedRange — build and refresh can never diverge',
+  );
+});
+
+test('F1: cardSliderRange passes through non-clamped controls and extended ranges', () => {
+  assert.equal(cardSliderRange(driftedCaps, 'gpuFreqOffsetMhz'), driftedCaps.ranges.gpuFreqOffsetMhz, 'non-clamped controls pass through untouched (same object)');
+  const extended = { ...driftedCaps, extendedRanges: true };
+  assert.equal(cardSliderRange(extended, 'powerLimitW')?.max, 300, 'extended ranges yield to the backend ceiling');
+  assert.equal(cardSliderRange(extended, 'tempLimitC')?.max, 95);
+  // percent-unit featuresets (Battlemage) are not DriverStore W/C limits
+  const pctCaps: Capabilities = {
+    ...driftedCaps,
+    ranges: { ...driftedCaps.ranges, powerLimitW: { min: 0, max: 150, step: 1, default: 100, units: '%' } },
+  };
+  assert.equal(cardSliderRange(pctCaps, 'powerLimitW')?.max, 150, 'percent-unit PL passes through untouched');
+});
+
+test('F1: cardSliderRange guards the undefined cases the callers rely on', () => {
+  assert.equal(cardSliderRange(driftedCaps, 'gpuLock'), undefined, 'unknown control -> undefined (refreshCard returns early)');
+  assert.equal(cardSliderRange(null, 'powerLimitW'), undefined, 'null caps -> undefined');
+  assert.equal(cardSliderRange(undefined, 'powerLimitW'), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// M4-B step-5 F3 — empty gpuLock inputs must be rejected BEFORE conversion:
+// Number('') === 0 and the 0 V / 0 MHz pair is the legal UNLOCK — a cleared
+// field must never silently unlock the GPU.
+// ---------------------------------------------------------------------------
+
+test('F3: parseGpuLockInput rejects empty / whitespace-only fields', () => {
+  assert.deepEqual(parseGpuLockInput('', '2100'), { ok: false }, 'empty voltage');
+  assert.deepEqual(parseGpuLockInput('0.9', ''), { ok: false }, 'empty freq');
+  assert.deepEqual(parseGpuLockInput('   ', '2100'), { ok: false }, 'whitespace voltage');
+  assert.deepEqual(parseGpuLockInput('0.9', '  '), { ok: false }, 'whitespace freq');
+  assert.deepEqual(parseGpuLockInput('', ''), { ok: false });
+});
+
+test('F3: parseGpuLockInput rejects non-numeric fields, accepts trimmed numbers', () => {
+  assert.deepEqual(parseGpuLockInput('abc', '2100'), { ok: false });
+  assert.deepEqual(parseGpuLockInput('0.9', 'Infinity'), { ok: false }, 'Number("Infinity") is not finite');
+  assert.deepEqual(parseGpuLockInput('NaN', '2100'), { ok: false });
+  assert.deepEqual(parseGpuLockInput('0.9', '2100'), { ok: true, pair: { voltageV: 0.9, freqMhz: 2100 } });
+  assert.deepEqual(parseGpuLockInput(' 1.2 ', ' 2400 '), { ok: true, pair: { voltageV: 1.2, freqMhz: 2400 } }, 'trimmed numeric fields parse');
+  assert.deepEqual(parseGpuLockInput('0', '0'), { ok: true, pair: { voltageV: 0, freqMhz: 0 } }, 'the explicit 0/0 UNLOCK pair stays legal');
+});
+
+// ---------------------------------------------------------------------------
+// M4-B step-5 F4 — the gpuLock success toast must report the pair the driver
+// RECEIVED: the read-back pair from the fresh envelope, else the locally
+// clamped pair (same bounds as main's clampGpuLock) — never the raw typed
+// values (main clamps before the write, so typing 2.5 V applies 1.5 V).
+// ---------------------------------------------------------------------------
+
+test('F4: gpuLockToastPair reports the read-back pair when the envelope carries one', () => {
+  const typed = { voltageV: 2.5, freqMhz: 2400 };
+  assert.deepEqual(gpuLockToastPair(typed, { voltageV: 1.5, freqMhz: 2400 }), { voltageV: 1.5, freqMhz: 2400 }, 'toast matches the clamped read-back, not the typed value');
+  assert.deepEqual(gpuLockToastPair({ voltageV: 0.9, freqMhz: 2100 }, { voltageV: 0.9, freqMhz: 2100 }), { voltageV: 0.9, freqMhz: 2100 }, 'in-range typed == read-back');
+});
+
+test('F4: gpuLockToastPair falls back to the locally clamped pair (null/degraded envelope)', () => {
+  const typed = { voltageV: 2.5, freqMhz: 2400 };
+  assert.deepEqual(gpuLockToastPair(typed, null), { voltageV: 1.5, freqMhz: 2400 }, 'null envelope -> local clamp (same as main)');
+  assert.deepEqual(gpuLockToastPair(typed, undefined), { voltageV: 1.5, freqMhz: 2400 });
+  assert.deepEqual(gpuLockToastPair({ voltageV: -0.5, freqMhz: 6000 }, null), { voltageV: 0, freqMhz: 5000 }, 'negative/oversized typed pair clamps to [0, 1.5 V] / [0, 5000 MHz]');
+  assert.deepEqual(gpuLockToastPair({ voltageV: -0.5, freqMhz: 6000 }, { voltageV: 0, freqMhz: 5000 }), { voltageV: 0, freqMhz: 5000 });
 });

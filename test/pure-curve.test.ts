@@ -14,6 +14,7 @@ import {
   removePoint,
   addPointAtMidGap,
   curveDomain,
+  FAN_DOMAIN,
   tempToX,
   xToTemp,
   rpmMarkerY,
@@ -45,16 +46,17 @@ test('clampPointCount: caps at max but never below MIN_CURVE_POINTS', () => {
   assert.equal(clampPointCount(pts(), -1).length, MIN_CURVE_POINTS);
 });
 
-test('seedCurvePoints: seeds a 2-point ramp when the curve has fewer than 2 points (F6 regression)', () => {
-  // A canControl device that reports no curve at all.
+test('seedCurvePoints: seeds a 2-point ramp across the STATIC 0..100 domain when the curve has fewer than 2 points (F6 regression)', () => {
+  // A canControl device that reports no curve at all — the seeded ramp now
+  // spans the STATIC 0..100 °C axis (M4-B), not the old dynamic span.
   const seeded = seedCurvePoints([], 10);
-  assert.deepEqual(seeded, [{ t: 20, speedPct: 20 }, { t: 90, speedPct: 100 }]);
+  assert.deepEqual(seeded, [{ t: 0, speedPct: 20 }, { t: 100, speedPct: 100 }]);
   assert.equal(addPointAtMidGap(seeded, 10)?.length, 3); // the editor is never stuck
-  // A single reported point: ramp spans its (guarded) domain.
+  // A single reported point: ramp spans the (static) domain.
   const one = seedCurvePoints([{ t: 50, speedPct: 40 }], 10);
   assert.equal(one.length, 2);
-  assert.deepEqual(one[0], { t: 49, speedPct: 20 });
-  assert.deepEqual(one[1], { t: 51, speedPct: 100 });
+  assert.deepEqual(one[0], { t: 0, speedPct: 20 });
+  assert.deepEqual(one[1], { t: 100, speedPct: 100 });
 });
 
 test('seedCurvePoints: leaves a legal curve untouched (clamped to the device max)', () => {
@@ -132,11 +134,55 @@ test('addPointAtMidGap: null when at max or no gap >= 2 °C', () => {
   assert.equal(addPointAtMidGap(tight, 10), null);
 });
 
-test('curveDomain: spans min..max, guards flat curves', () => {
-  assert.deepEqual(curveDomain(pts()), { minT: 20, maxT: 90 });
+test('curveDomain: STATIC 0..100 °C regardless of the curve (M4-B regression)', () => {
+  // M4-B (user): deleting a curve point must NEVER narrow the temp axis —
+  // the domain is static 0..100 no matter what the curve contains.
+  assert.deepEqual(curveDomain(pts()), { minT: 0, maxT: 100 });
   const flat = [{ t: 50, speedPct: 20 }, { t: 50, speedPct: 80 }];
-  const d = curveDomain(flat);
-  assert.ok(d.maxT > d.minT);
+  assert.deepEqual(curveDomain(flat), { minT: 0, maxT: 100 });
+  assert.deepEqual(curveDomain([]), { minT: 0, maxT: 100 });
+  // The user scenario shape: a NARROW curve (all points near the middle)
+  // still leaves the whole 0..100 axis for dragging.
+  assert.deepEqual(
+    curveDomain([{ t: 60, speedPct: 40 }, { t: 70, speedPct: 60 }]),
+    { minT: 0, maxT: 100 },
+  );
+  assert.deepEqual(curveDomain([{ t: 100, speedPct: 100 }]), { minT: 0, maxT: 100 });
+});
+
+test('M4-B: tempToX/xToTemp round-trip across the STATIC FAN_DOMAIN (axis edges reachable)', () => {
+  // The drag regression: with the static domain, the axis extremes are
+  // always reachable — x=0 maps to 0 °C and x=100 to 100 °C, and the
+  // round-trip is exact at any x.
+  assert.equal(tempToX(0, FAN_DOMAIN), 0);
+  assert.equal(tempToX(100, FAN_DOMAIN), 100);
+  for (const x of [0, 12.5, 25, 50, 75, 100]) {
+    assert.equal(tempToX(xToTemp(x, FAN_DOMAIN), FAN_DOMAIN), x);
+  }
+});
+
+test('M4-B: the delete-then-drag user scenario — removing a point never narrows the drag space', () => {
+  // The exact user report: deleting a curve point narrowed the axis so the
+  // remaining points could not be moved to higher/lower temps. With the
+  // static domain, after the delete the remaining points still drag all the
+  // way to 0 °C and 100 °C (clampTempBetween only constrains between
+  // neighbors, and nothing else shrinks the space).
+  let curve: CP[] = [
+    { t: 20, speedPct: 20 },
+    { t: 50, speedPct: 50 },
+    { t: 80, speedPct: 80 },
+  ];
+  curve = removePoint(curve, 1); // delete a point
+  assert.deepEqual(curve.map((p) => p.t), [20, 80]);
+  // The domain is unchanged by the delete.
+  assert.deepEqual(curveDomain(curve), { minT: 0, maxT: 100 });
+  // The remaining top point can still be dragged to 100 °C...
+  curve = movePoint(curve, 1, 100, 100);
+  assert.equal(curve[1].t, 100);
+  // ...and the remaining bottom point can still be dragged to 0 °C.
+  curve = movePoint(curve, 0, 0, 20);
+  assert.equal(curve[0].t, 0);
+  assert.deepEqual(curveDomain(curve), { minT: 0, maxT: 100 });
 });
 
 test('tempToX / xToTemp: round-trip across the domain', () => {

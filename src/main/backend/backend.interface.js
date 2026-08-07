@@ -96,6 +96,8 @@
  *   driverVersion: string,
  *   graphicsClockMHz: number,
  *   numXeCores: number,
+ *   vramBytes: number|null,  // M4-B: VRAM in bytes (null when unknown) — the
+ *                            // name already carries the formatted suffix
  * }} DeviceInfo
  */
 

@@ -53,6 +53,11 @@ export interface ArcPowerApi {
   /** M3-C-E: persist + activate the OC mode; invalidates the caps cache
    *  (the renderer re-fetches caps after the toggle). */
   ocModeSet(ocMode: 'stock' | 'advanced'): Promise<{ ocMode: 'stock' | 'advanced' }>;
+  /** M4-B: whether the Advanced OC Mode warning was already accepted
+   *  (persisted — a re-boot must not re-ask). */
+  advancedModeAcceptedGet(): Promise<{ accepted: boolean }>;
+  /** M4-B: persist the once-only Advanced OC Mode warning acceptance. */
+  advancedModeAcceptedSet(): Promise<{ accepted: boolean }>;
   fpsPoll(deviceId: number): Promise<FpsSample | null>;
   profilesList(): Promise<ProfilesEnvelope>;
   profilesSave(profile: Partial<Profile> & { id: string; name: string; settings: Settings; ocOnBoot: boolean }): Promise<ProfilesEnvelope>;
