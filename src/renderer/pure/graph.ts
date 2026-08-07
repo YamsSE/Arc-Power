@@ -27,6 +27,22 @@ export function pushSeries(series: SeriesPoint[], t: number, v: number | undefin
 }
 
 /**
+ * M4-D2 fix (user: "the monitoring graphs are glitched — the lines
+ * overlap"): the REAL driver's telemetry timestamp occasionally ticks
+ * BACKWARD (live-verified: 8 folds in 40 s under load on the A770 — a
+ * counter-readout race in the driver). A non-monotonic t folds the drawn
+ * polyline back over itself ("overlapping lines"). Sort by t so the drawn
+ * line is ALWAYS the true chronological timeline — never a fold. Sorting
+ * is stable and cheap (≤ GRAPH_MAX_POINTS points).
+ * @param series the series (possibly out of time order)
+ * @returns a NEW series sorted by t
+ */
+export function sortSeriesByTime(series: SeriesPoint[]): SeriesPoint[] {
+  if (series.length <= 1) return series;
+  return [...series].sort((a, b) => a.t - b.t);
+}
+
+/**
  * Drop points older than `now - windowS` (the rolling window). Series grow
  * in lockstep with telemetry time, so trimming by time keeps the drawn
  * window honest even if the poll cadence drifts.

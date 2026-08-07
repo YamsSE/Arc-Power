@@ -19,6 +19,7 @@ import { setLatestFps, setMonitorLogToFile, getMonitorLogToFile, getCurrentLogFi
 import {
   pushSeries,
   trimSeriesWindow,
+  sortSeriesByTime,
   autoScale,
   downsample,
   nearestSampleIndex,
@@ -440,7 +441,16 @@ export const monitoringPage: Page = {
     for (const seg of SEGMENTS) {
       const value = seg.value(sample);
       if (value !== undefined) {
-        mon.series[seg.id] = trimSeriesWindow(pushSeries(mon.series[seg.id], sample?.t ?? now, value), now, GRAPH_WINDOW_S);
+        // M4-D2 fix (user: "the lines overlap"): the REAL driver's
+        // telemetry t occasionally ticks BACKWARD (live-verified: 8 folds
+        // in 40 s under load) — an unsorted push would fold the polyline
+        // over itself. sortSeriesByTime keeps the drawn line on the true
+        // chronological timeline — never a fold, never overlapping.
+        mon.series[seg.id] = trimSeriesWindow(
+          sortSeriesByTime(pushSeries(mon.series[seg.id], sample?.t ?? now, value)),
+          now,
+          GRAPH_WINDOW_S,
+        );
       }
     }
     // Refresh the readout grid tiles in place (values only). The FPS tile is

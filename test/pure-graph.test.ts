@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   pushSeries,
   trimSeriesWindow,
+  sortSeriesByTime,
   autoScale,
   downsample,
   nearestSampleIndex,
@@ -129,4 +130,45 @@ test('nearestSampleIndex: uneven time spacing picks the closest by time, ties ke
   // Exact tie (target 15, samples 10 and 20): the earlier sample wins.
   const tie = [{ t: 0, v: 1 }, { t: 10, v: 2 }, { t: 20, v: 3 }];
   assert.equal(nearestSampleIndex(tie, 0.75), 1);
+});
+
+test('M4-D2 fix: sortSeriesByTime — the real driver t ticks BACKWARD sometimes (8 folds in 40 s live); the sorted series never folds the polyline', () => {
+  // the live-shaped sequence: mostly forward 0.5 s ticks + two backward ticks
+  const raw = [
+    { t: 100.0, v: 10 },
+    { t: 100.5, v: 12 },
+    { t: 100.1, v: 11 }, // backward tick (driver counter race)
+    { t: 101.0, v: 14 },
+    { t: 101.5, v: 13 },
+    { t: 101.2, v: 15 }, // backward tick
+    { t: 102.0, v: 16 },
+  ];
+  const sorted = sortSeriesByTime(raw);
+  assert.deepEqual(sorted.map((p) => p.t), [100.0, 100.1, 100.5, 101.0, 101.2, 101.5, 102.0]);
+  assert.deepEqual(sorted.map((p) => p.v), [10, 11, 12, 14, 15, 13, 16]);
+  // monotonic: no delta < 0 (the drawing x can never fold)
+  for (let i = 1; i < sorted.length; i++) assert.ok(sorted[i].t - sorted[i - 1].t >= 0);
+});
+
+test('M4-D2 fix: sortSeriesByTime — immutability + trivial cases', () => {
+  const one = [{ t: 5, v: 1 }];
+  assert.equal(sortSeriesByTime(one), one);
+  assert.deepEqual(sortSeriesByTime([]), []);
+  const src = [{ t: 2, v: 2 }, { t: 1, v: 1 }];
+  const out = sortSeriesByTime(src);
+  assert.notEqual(out, src);
+  assert.deepEqual(src, [{ t: 2, v: 2 }, { t: 1, v: 1 }]);
+});
+
+test('M4-D2 fix: pushSeries + sortSeriesByTime + trimSeriesWindow compose — the drawn window stays 60 s of driver time even with backward ticks', () => {
+  let series = [] as SeriesPoint[];
+  const push = (t: number, v: number) => {
+    series = trimSeriesWindow(sortSeriesByTime(pushSeries(series, t, v)), t, GRAPH_WINDOW_S);
+  };
+  push(100.0, 1);
+  push(100.5, 2);
+  push(100.2, 3); // backward tick
+  push(160.0, 4); // beyond the window
+  assert.deepEqual(series.map((p) => p.t), [100.0, 100.2, 100.5, 160.0]);
+  for (let i = 1; i < series.length; i++) assert.ok(series[i].t >= series[i - 1].t);
 });
