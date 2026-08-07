@@ -20,6 +20,7 @@ import {
   createIpcHandlers,
   seedWaiverState,
   probeWaiverState,
+  persistWaiverLost,
   seedOcMode,
 } from '../src/main/ipc-core.js';
 import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
@@ -333,6 +334,36 @@ test('probeWaiverState: devices without a powerLimitW control are skipped (no pr
   assert.equal(store.saved.length, 0);
 });
 
+// M4-B (user): persistWaiverLost — the driver's waiver-not-set verdict is
+// persisted so the NEXT boot's prompt shows the real state.
+
+test('persistWaiverLost: flips the store to unaccepted when the driver answers waiver-not-set', async () => {
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' });
+  await persistWaiverLost(store, { perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } });
+  assert.equal(store.saved.length, 1);
+  assert.equal(store.saved[0].waiverAccepted, false);
+  assert.equal(store.saved[0].ocMode, 'stock', 'only the waiver flag is touched');
+});
+
+test('persistWaiverLost: a successful apply never writes, and a store that already says unaccepted stays unwritten', async () => {
+  const okStore = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  await persistWaiverLost(okStore, { perControl: { powerLimitW: { ok: true } } });
+  assert.equal(okStore.saved.length, 0);
+
+  const alreadyLost = fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null });
+  await persistWaiverLost(alreadyLost, { perControl: { fanCurve: { ok: false, errorCode: 'waiver-not-set' } } });
+  assert.equal(alreadyLost.saved.length, 0);
+});
+
+test('persistWaiverLost: a store read/write failure degrades silently (the in-memory flag was already cleared)', async () => {
+  const broken = {
+    loadSettings: async () => { throw new Error('cannot read settings.json'); },
+    saveSettings: async () => { throw new Error('must not be called'); },
+  };
+  await persistWaiverLost(broken, { perControl: { powerLimitW: { errorCode: 'waiver-not-set' } } });
+  assert.ok(true, 'no throw');
+});
+
 test('apply-settings: a waiver-not-set apply clears the flag so waiver-get reports unaccepted (G2 regression)', async () => {
   const backend = new MockBackend();
   await backend.restoreWaiverState(0, true); // persisted-accepted boot seed
@@ -345,10 +376,13 @@ test('apply-settings: a waiver-not-set apply clears the flag so waiver-get repor
   assert.equal(res.result.ok, false);
   assert.equal(res.result.perControl.powerLimitW.errorCode, 'waiver-not-set');
   // The in-memory flag was cleared (NOT accepted): the next waiver-get is
-  // unaccepted so the renderer re-shows the dialog on the next apply. The
-  // store is untouched — only the in-memory flag was reconciled.
+  // unaccepted so the renderer re-shows the dialog on the next apply.
   assert.deepEqual(await handlers['waiver-get'](0), { accepted: false });
-  assert.equal(store.saved.length, 0);
+  // M4-B (user): the driver's verdict is PERSISTED — a store that still
+  // says accepted would lie at the next boot (the boot prompt claims
+  // "accepted" while every apply fails). The store is flipped to false.
+  assert.equal(store.saved.length, 1);
+  assert.equal(store.saved[0].waiverAccepted, false);
 });
 
 test('telemetry-start emits samples through the injected emit channel', async () => {
@@ -659,7 +693,7 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '0.9.10', 'package.json version');
+  assert.equal(version, '0.9.11', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {

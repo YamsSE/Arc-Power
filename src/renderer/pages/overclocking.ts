@@ -101,6 +101,11 @@ let renderCaps: Capabilities | null = null;
 // session; null -> the toggle is hidden (no base to convert).
 let freqMode: 'offset' | 'clock' = 'offset';
 let baseClock: number | null = null;
+// M4-B (user): the automatic waiver re-prompt + single retry counter — the
+// driver can lose the waiver while settings.json still says accepted; the
+// first apply then fails with waiver-not-set and re-prompts + retries once.
+// Reset on every successful apply.
+let waiverRetryCount = 0;
 const cards = new Map<string, HTMLElement>();
 const valueNodes = new Map<string, HTMLElement>();
 const driverNodes = new Map<string, HTMLElement>();
@@ -683,7 +688,30 @@ export const overclockingPage: Page = {
           // The waiver may have been lost on the device (e.g. driver reset).
           const freshCaps = await api.getCapabilities(deviceId);
           ctx.store.set({ caps: freshCaps });
+          // M4-B (user): a waiver-not-set failure must not dead-end the
+          // first apply with a confusing error — re-prompt the waiver dialog
+          // AUTOMATICALLY (the store flag was just refreshed, so the dialog
+          // shows) and retry ONCE. Never a loop; on success the counter
+          // resets, so a later driver-side loss still gets its own retry.
+          if (waiverRetryCount === 0
+            && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
+            waiverRetryCount += 1;
+            const live2 = ctx.store.get();
+            const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, deviceName);
+            if (decision === 'accepted') {
+              // The store caps flag must be patched BEFORE the retry — the
+              // retry re-enters the pre-apply waiver gate, which reads the
+              // store flag; without the patch it would re-show the dialog
+              // (the user just accepted — no second prompt).
+              const cur3 = ctx.store.get();
+              if (cur3.caps && cur3.caps.waiverAccepted !== true) {
+                ctx.store.set({ caps: { ...cur3.caps, waiverAccepted: true } });
+              }
+              return apply(ctx);
+            }
+          }
         } else {
+          waiverRetryCount = 0;
           ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
         }
       } catch (err) {

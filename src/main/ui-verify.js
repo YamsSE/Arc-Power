@@ -337,8 +337,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
   // the driver line moved to the dashboard device card.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.10 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.10 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.11 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.11 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -566,6 +566,38 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const waiverAfter = await js(`window.arcPower.waiverGet(0)`);
     if (waiverAfter.accepted !== true) fail('M4-B: the waiver acceptance was lost across the apply (persisted-accepted session)');
     step('waiver-persisted', `waiver accepted at boot (persisted or boot-accept): apply without dialog -> read-back ${state.powerLimitW} W, waiverGet still accepted`);
+    // M4-B (user): the DRIVER can still lose the waiver mid-session (or the
+    // persisted flag can be stale) — the first apply then fails with
+    // waiver-not-set and must re-prompt AUTOMATICALLY + retry ONCE (never a
+    // confusing dead-end or a manual second click). Inject a one-shot
+    // waiver-not-set on the power limit: the apply fails, the dialog appears
+    // by itself, Accept re-applies the same value, the read-back lands, and
+    // the persisted store was flipped (persistWaiverLost) then re-accepted.
+    backend.injectFail('powerLimitW', 'waiver-not-set', true);
+    await clearToasts();
+    await setSlider(230);
+    await clickApply();
+    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
+      fail('M4-B: the auto re-prompt did not show the waiver dialog after a waiver-not-set apply');
+    }
+    if (await js(`!!document.querySelector('.modal .modal-status')`)) {
+      fail('M4-B: the auto re-prompt shows the accepted-state reminder (the flag must read unaccepted after the driver refusal)');
+    }
+    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('M4-B: the auto re-prompt did not close on Accept');
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: the automatic retry after Accept did not land (success toast missing)');
+    const retried = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(retried.powerLimitW - 230) > 1e-6) fail(`M4-B: the retry did not apply 230 W: ${retried.powerLimitW}`);
+    const waiverAfterRetry = await js(`window.arcPower.waiverGet(0)`);
+    if (waiverAfterRetry.accepted !== true) fail('M4-B: the re-acceptance did not stick after the retry');
+    step('m4b-waiver-autoretry', `driver lost the waiver mid-session: first apply auto re-prompted + retried (230 W read back), waiver re-accepted`);
+    // Restore the flow's expected baseline (the driver readout + noop-toast
+    // sections below expect 220 W applied and EXACTLY ONE success toast —
+    // the restore apply's toast is the one they count).
+    await clearToasts();
+    await setSlider(220);
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: the 220 W baseline restore after the retry did not land');
   } else {
     // M3-C review F4: with the isolated mock data dir the unaccepted branch
     // is reachable on a FRESH store (pre-fix, the shared real settings.json
@@ -2494,35 +2526,41 @@ export async function runFanGateVerify(win, backend) {
   // --- 4. G2 self-heal: the driver loses the waiver mid-session ------------
   // The injected ONE-SHOT waiver-not-set mirrors the real driver losing the
   // waiver (the mock clears its in-memory flag exactly like IgclBackend —
-  // G2): the first apply fails, then the failure is gone — like a real
-  // driver whose waiver the re-accept restores.
+  // G2). M4-B (user): the FIRST apply must re-prompt the waiver dialog
+  // AUTOMATICALLY (no manual second click) and retry ONCE after Accept —
+  // never a confusing dead-end error.
   backend.injectFail('fanCurve', 'waiver-not-set', true);
   await clearToasts();
   await clickApply();
-  if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 5000))) fail('waiver-not-set fan apply error toast missing');
+  // The waiver dialog must appear BY ITSELF after the failed apply — this is
+  // the user's "reapplying then shows the waiver popup" flow made automatic.
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
+    fail('M4-B: the waiver-not-set apply did NOT auto re-prompt the waiver dialog (the user bug: the first apply dead-ends with an error)');
+  }
+  if (await js(`!!document.querySelector('.modal .modal-status')`)) {
+    fail('M4-B: the auto re-prompt shows the accepted-state reminder (the flag must read unaccepted after the driver refusal)');
+  }
   // The failed apply must re-fetch the caps: the store flag flips back to
   // unaccepted and the dashboard row goes red IN PLACE (re-render on the
-  // caps re-set).
+  // caps re-set) while the dialog is still up.
   await goDashboard('fan-gate-g2-dashboard');
   await expectRow('Not Accepted', true);
   if (!/status-error/.test(await rowDotOk())) fail('M4-A G2: the waiver row dot is not red after the waiver-not-set failure');
   if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== false) fail('G2: the mock waiver flag did not clear on the waiver-not-set apply');
-  step('fan-gate-g2', `G2: waiver-not-set apply failed honestly; store flag flipped back to unaccepted, row red + clickable`);
+  step('fan-gate-g2', `G2/M4-B: waiver-not-set apply auto re-prompted (dialog up, no second click); store flag flipped back to unaccepted, row red + clickable`);
   await goFan();
-  // THE USER BUG: the next apply must re-show the dialog — never fail
-  // silently without a prompt.
-  await clickApply();
-  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
-    fail('M4-A G2: the next fan apply did NOT re-show the waiver dialog (the stale-flag bug: applies fail without a prompt)');
-  }
-  step('fan-gate-reprompt', 'the next fan apply re-shows the waiver dialog (never a silent failure)');
   await clearToasts();
   await js(`document.querySelector('.modal button.btn-danger')?.click()`);
-  if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('waiver dialog did not close on the re-prompt Accept');
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing after the re-prompt accept');
+  if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('waiver dialog did not close on the auto re-prompt Accept');
+  // The retry re-applies the SAME curve automatically (no manual click).
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing after the auto re-prompt accept');
+  const healed = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (healed.fanCurve?.length !== pointsBefore - 1 || healed.fanMode !== 'curve') {
+    fail(`M4-B: the automatic retry did not land: read-back=${JSON.stringify({ mode: healed.fanMode, points: healed.fanCurve?.length })}`);
+  }
   await goDashboard('fan-gate-heal-dashboard');
   await expectRow('Accepted', false);
-  step('fan-gate-heal', 're-prompt accept -> apply landed, dashboard waiver row green again (self-healed)');
+  step('fan-gate-heal', 'auto re-prompt accept -> the retry landed the same curve, dashboard waiver row green again (self-healed)');
 
   console.log('\nUI VERIFY OK (fan-gate)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);

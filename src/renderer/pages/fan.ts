@@ -31,6 +31,12 @@ import type { FanMode } from '../types.ts';
 
 const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Curve', fixed: 'Fixed' };
 
+// M4-B (user): the automatic waiver re-prompt + single retry counter — the
+// driver can lose the waiver while settings.json still says accepted; the
+// first fan apply then fails with waiver-not-set and re-prompts + retries
+// once. Reset on every successful apply.
+let waiverRetryCount = 0;
+
 interface EditorState {
   mode: FanMode;
   points: CurvePoint[];
@@ -366,12 +372,13 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
         if (readoutVisible) showReadout(editor.selectedIdx);
       };
 
-      // M4-C: the manual per-point input path — one Temp/Speed pair per
-      // point + a per-point remove. All math stays in pure/curve.ts (movePoint
-      // for the temp clamp-between + speed 0..100 clamp, clampPointCount for
-      // the count clamp, removePoint for the remove — never below
-      // MIN_CURVE_POINTS). The dots + selected state + readout sync IN PLACE
-      // so typing keeps focus (a full redraw would drop the caret).
+// M4-C: the manual per-point input path — one Temp/Speed pair per
+// point + a per-point remove. All math stays in pure/curve.ts (movePoint
+// for the temp clamp-between + speed 0..100 clamp, clampPointCount for
+// the count clamp, removePoint for the remove — never below
+// MIN_CURVE_POINTS). The dots + selected state + readout sync IN PLACE
+// so typing keeps focus (a full redraw would drop the caret).
+
       const onEditPoint = (idx: number, raw: number, input: HTMLInputElement, field: 't' | 'speed') => {
         // M4-C (round-2 fix): an EMPTIED box is not a typed value —
         // Number('') === 0 is finite, so the old code instantly moved the
@@ -581,10 +588,33 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       // every subsequent apply fail WITHOUT a prompt). Never force-accept
       // the store flag on a failed apply.
       if (result.ok) {
+        waiverRetryCount = 0;
         ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
       } else {
         const freshCaps = await api.getCapabilities(deviceId);
         ctx.store.set({ caps: freshCaps });
+        // M4-B (user): a waiver-not-set failure must not dead-end the first
+        // apply with a confusing error — re-prompt the waiver dialog
+        // AUTOMATICALLY (the store flag was just refreshed, so the dialog
+        // shows) and retry ONCE. Never a loop; the counter resets on the
+        // next success.
+        if (waiverRetryCount === 0
+          && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
+          waiverRetryCount += 1;
+          const live2 = ctx.store.get();
+          const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, live2.caps?.deviceName || 'this GPU');
+          if (decision === 'accepted') {
+            // Patch the store caps BEFORE the retry — the retry re-enters
+            // the pre-apply waiver gate, which reads the store flag; without
+            // the patch it would re-show the dialog (just accepted — no
+            // second prompt).
+            const cur3 = ctx.store.get();
+            if (cur3.caps && cur3.caps.waiverAccepted !== true) {
+              ctx.store.set({ caps: { ...cur3.caps, waiverAccepted: true } });
+            }
+            return applyFan();
+          }
+        }
       }
     } catch (err) {
       ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: err instanceof Error ? err.message : String(err) } });

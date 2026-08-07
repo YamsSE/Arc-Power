@@ -151,6 +151,31 @@ export async function seedWaiverState(backend, store) {
 }
 
 /**
+ * M4-B (user): persist the driver's waiver-not-set verdict. An apply that
+ * answers waiver-not-set proves the persisted acceptance is STALE — flip the
+ * store so the NEXT boot's waiver prompt shows the real state (classic
+ * Accept dialog) instead of a "already accepted" lie. Only ever clears;
+ * never accepts anything. Best-effort: a store failure must not fail the
+ * apply envelope.
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ * @param {{ perControl?: Record<string, { errorCode?: string }> }} result
+ */
+export async function persistWaiverLost(store, result) {
+  const lost = Object.values(result?.perControl ?? {})
+    .some((p) => p?.errorCode === 'waiver-not-set');
+  if (!lost) return;
+  try {
+    const cur = await store.loadSettings();
+    if (cur.waiverAccepted === true) {
+      await store.saveSettings({ ...cur, waiverAccepted: false });
+    }
+  } catch {
+    // degraded: leave the store as-is (the in-memory flag was already
+    // cleared — the next apply re-prompts regardless).
+  }
+}
+
+/**
  * M4-B (user): boot-time driver-truth probe for the REAL path. A persisted
  * `waiverAccepted: true` can be STALE — the driver-side waiver
  * (ctlOverclockWaiverSet) can be lost (reinstall, IGS reset) while
@@ -384,9 +409,15 @@ export function createIpcHandlers({
             .some((p) => p?.errorCode === 'waiver-not-set')) {
             await backend.restoreWaiverState(deviceId, false);
           }
+          // M4-B (user): the driver's waiver-not-set verdict is PERSISTED —
+          // a settings.json that still says accepted would otherwise lie at
+          // the next boot (the boot prompt claims "accepted" while every
+          // apply fails). Only ever clears; never auto-accepts.
+          await persistWaiverLost(store, out.result);
           return { result: out.result, state: out.state };
         }
         const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped });
+        await persistWaiverLost(store, out.result);
         return { result: out.result, state: out.state };
       },
 
