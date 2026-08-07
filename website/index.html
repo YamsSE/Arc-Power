@@ -88,33 +88,33 @@
         <div class="readouts">
           <div class="readout">
             <div class="readout-label mono">Core clock</div>
-            <div class="readout-val mono"><span class="js-anim" data-target="2390" data-decimals="0" data-suffix="">0</span><span class="unit">MHz</span></div>
+            <div class="readout-val mono"><span class="js-anim" data-role="core" data-target="2390" data-decimals="0" data-suffix="">0</span><span class="unit">MHz</span></div>
           </div>
           <div class="readout">
             <div class="readout-label mono">Mem clock</div>
-            <div class="readout-val mono"><span class="js-anim" data-target="2187" data-decimals="0">0</span><span class="unit">MHz</span></div>
+            <div class="readout-val mono"><span class="js-anim" data-role="mem" data-target="2187" data-decimals="0">0</span><span class="unit">MHz</span></div>
           </div>
           <div class="readout">
             <div class="readout-label mono">Temp</div>
-            <div class="readout-val mono"><span class="js-anim" data-target="62" data-decimals="0" data-suffix="°">0</span><span class="unit">C</span></div>
+            <div class="readout-val mono"><span class="js-anim" data-role="temp" data-target="62" data-decimals="0" data-suffix="°">0</span><span class="unit">C</span></div>
           </div>
           <div class="readout">
             <div class="readout-label mono">Fan</div>
-            <div class="readout-val mono"><span class="js-anim" data-target="1462" data-decimals="0">0</span><span class="unit">RPM</span></div>
+            <div class="readout-val mono"><span class="js-anim" data-role="fan" data-target="1462" data-decimals="0">0</span><span class="unit">RPM</span></div>
           </div>
           <div class="readout">
             <div class="readout-label mono">FPS</div>
-            <div class="readout-val mono"><span class="js-anim" data-target="118" data-decimals="0">0</span><span class="unit">fps</span></div>
+            <div class="readout-val mono"><span class="js-anim" data-role="fps" data-target="118" data-decimals="0" data-min="62">0</span><span class="unit">fps</span></div>
           </div>
           <div class="readout">
             <div class="readout-label mono">Power</div>
-            <div class="readout-val mono"><span class="js-anim" data-target="252" data-decimals="0">0</span><span class="unit">W</span></div>
+            <div class="readout-val mono"><span class="js-anim" data-role="power" data-target="252" data-decimals="0">0</span><span class="unit">W</span></div>
           </div>
         </div>
         <div class="power-block">
-          <div class="power-meta mono"><span>Power limit</span><span class="js-anim" data-target="252" data-decimals="0">0</span><span>W</span></div>
+          <div class="power-meta mono"><span>Power limit</span><span class="js-anim" data-role="pl" data-target="252" data-decimals="0">0</span><span>W</span></div>
           <div class="power-track"><div class="power-fill" id="powerFill"></div></div>
-          <div class="power-scale mono"><span>180</span><span>252</span><span class="power-ext">315 W extended</span></div>
+          <div class="power-scale mono"><span id="powerMin">105</span><span id="powerMax">252</span><span class="power-ext" id="powerExt">315 W extended</span></div>
         </div>
         <div class="card-foot mono">
           <span class="ok">&#10003;</span> apply read-back verified
