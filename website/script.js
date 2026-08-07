@@ -19,11 +19,11 @@
   var HERO_GPUS = [
     { name: 'Arc A770',     family: 'Alchemist',  core: 2390, mem: 2187, temp: 62, fan: 1462, fps: 118, draw: 156, plMin: 105, plMax: 252, ext: 315 },
     { name: 'Arc A750',     family: 'Alchemist',  core: 2050, mem: 2000, temp: 61, fan: 1415, fps: 101, draw: 138, plMin: 90,  plMax: 225, ext: 315 },
-    { name: 'Arc A580',     family: 'Alchemist',  core: 1700, mem: 2000, temp: 59, fan: 1305, fps: 92,  draw: 118, plMin: 90,  plMax: 185, ext: null },
+    { name: 'Arc A580',     family: 'Alchemist',  core: 1700, mem: 2000, temp: 59, fan: 1305, fps: 92,  draw: 118, plMin: 90,  plMax: 185, ext: 315 },
     { name: 'Arc B580',     family: 'Battlemage', core: 2670, mem: 2375, temp: 64, fan: 1510, fps: 124, draw: 168, plMin: 100, plMax: 190, ext: null },
     { name: 'Arc B570',     family: 'Battlemage', core: 2500, mem: 2375, temp: 60, fan: 1340, fps: 109, draw: 132, plMin: 80,  plMax: 150, ext: null },
-    { name: 'Arc Pro B50',  family: 'Battlemage', core: 2450, mem: 2250, temp: 57, fan: 1180, fps: 78,  draw: 88,  plMin: 60,  plMax: 130, ext: null },
-    { name: 'Arc Pro B60',  family: 'Battlemage', core: 2600, mem: 2375, temp: 62, fan: 1400, fps: 105, draw: 140, plMin: 90,  plMax: 190, ext: null }
+    { name: 'Arc Pro B50',  family: 'Battlemage', core: 2600, mem: 1750, temp: 55, fan: 980,  fps: 74,  draw: 46,  plMin: 40,  plMax: 70,  ext: null },
+    { name: 'Arc Pro B60',  family: 'Battlemage', core: 2400, mem: 2375, temp: 61, fan: 1330, fps: 108, draw: 150, plMin: 120, plMax: 200, ext: null }
   ];
 
   var heroCard = document.querySelector('.hero-card');
