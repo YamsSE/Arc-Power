@@ -1,9 +1,18 @@
-// Arc Power — Overclocking page: one card per supported control (slider,
+// Arc Power — Tuning page (M4-D2 §7/§8: renamed from Overclocking; the Fan
+// page merged in as a sub-view). One card per supported control (slider,
 // clamps, per-card reset), the M3-C-E OC-mode segmented toggle (Stock /
 // Advanced with the beyond-Intel disclaimer), the Advanced disclosure for
 // expert controls, and a floating Apply button anchored bottom-left that
 // appears ONLY when a setting differs from the loaded driver state (dirty)
 // and disappears when clean.
+//
+// M4-D2 (§8): the OC-mode row is a FLEX ROW — LEFT the Stock/Advanced pill
+// (unchanged), RIGHT a second segmented pill "Tuning | Fan Curve" (same
+// height, same styling) switching the page content between the tuning
+// controls and the fan curve editor (pages/fan-editor.ts — the old Fan
+// page's editor extracted into a shared module). The view persists per
+// render (module state, default 'tuning'); the old #/fan hash redirects
+// here with the fan view active (router.ts consumeFanViewRequest).
 //
 // M2C-B F3 (instant apply): ONE attempt per control, zero waiting, no
 // progress UI, no cancellation, no retry note. Refusals (incl. the silent
@@ -53,6 +62,7 @@
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
+import { consumeFanViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { clockToOffset, offsetToClock, clockRangeFromOffsetRange } from '../pure/clock.ts';
@@ -61,6 +71,7 @@ import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirty
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
+import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
 import type { RangeInfo, Capabilities, DeviceState, OcMode } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
@@ -131,6 +142,12 @@ const rangeNodes = new Map<string, HTMLElement>();
 const chipNodes = new Map<string, HTMLElement>();
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
+// M4-D2 (§8): the Tuning page's sub-view — 'tuning' = the OC controls,
+// 'fan' = the fan curve editor. Module-level (persists across re-renders —
+// a caps-change re-render must not drop the fan view); default 'tuning';
+// the #/fan redirect forces 'fan' via consumeFanViewRequest at render.
+let view: 'tuning' | 'fan' = 'tuning';
+let viewContainer: HTMLElement | null = null;
 
 function resetPageState(state: DeviceState, caps: Capabilities) {
   values = {};
@@ -147,6 +164,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   rangeNodes.clear();
   chipNodes.clear();
   applyBtn = null;
+  viewContainer = null;
 }
 
 /** M3-C-G: hidden until the first apply of this control; green "Applied"
@@ -224,8 +242,8 @@ function updateFloating() {
   applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values), currentState as DeviceState, applied);
 }
 
-export const overclockingPage: Page = {
-  id: 'overclocking',
+export const tuningPage: Page = {
+  id: 'tuning',
 
   render(container: HTMLElement, ctx: PageContext) {
     const s = ctx.store.get();
@@ -233,6 +251,9 @@ export const overclockingPage: Page = {
     const state = s.state;
     clear(container);
     resetPageState(state as DeviceState, caps as Capabilities);
+
+    // M4-D2 (§8): the old #/fan hash arrives with the fan view requested.
+    if (consumeFanViewRequest()) view = 'fan';
 
     if (!caps || !state) {
       container.append(el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
@@ -585,21 +606,103 @@ export const overclockingPage: Page = {
     // M4-B (user): the label sits ABOVE the segmented control as a caption —
     // a label inside the pill made the whole control read as a single
     // "OC mode" button. The pill now holds only the two choices.
-    const modeToggle = (mode: OcMode) => el('div', { class: 'oc-mode-row' }, [
-      el('span', { class: 'oc-mode-label', text: 'OC mode' }),
-      el('div', { class: 'oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
-        el('button', {
-          class: `oc-mode-btn${mode === 'stock' ? ' active' : ''}`,
-          text: 'Stock',
-          onClick: () => void setMode('stock'),
-        }),
-        el('button', {
-          class: `oc-mode-btn${mode === 'advanced' ? ' active' : ''}`,
-          text: 'Advanced',
-          onClick: () => void setMode('advanced'),
-        }),
+    // M4-D2 (§8): the row is a FLEX ROW — LEFT the Stock/Advanced pill
+    // (unchanged), RIGHT the "Tuning | Fan Curve" view pill at the SAME
+    // height (both columns are identical label-over-toggle stacks; the
+    // ui-verify pin asserts the pills' getBoundingClientRect tops are equal).
+    const modeRow = el('div', { class: 'oc-mode-row' }, [
+      el('div', { class: 'oc-mode-col' }, [
+        el('span', { class: 'oc-mode-label', text: 'OC mode' }),
+        el('div', { class: 'oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
+          el('button', {
+            class: `oc-mode-btn${s.ocMode === 'stock' ? ' active' : ''}`,
+            text: 'Stock',
+            onClick: () => void setMode('stock'),
+          }),
+          el('button', {
+            class: `oc-mode-btn${s.ocMode === 'advanced' ? ' active' : ''}`,
+            text: 'Advanced',
+            onClick: () => void setMode('advanced'),
+          }),
+        ]),
+      ]),
+      el('div', { class: 'oc-mode-col' }, [
+        el('span', { class: 'oc-mode-label', text: 'View' }),
+        el('div', { class: 'oc-mode-toggle tuning-view-toggle', role: 'group', 'aria-label': 'Tuning view' }, [
+          el('button', {
+            class: `oc-mode-btn tuning-view-btn${view === 'tuning' ? ' active' : ''}`,
+            dataset: { view: 'tuning' },
+            text: 'Tuning',
+            onClick: () => setView('tuning'),
+          }),
+          el('button', {
+            class: `oc-mode-btn tuning-view-btn${view === 'fan' ? ' active' : ''}`,
+            dataset: { view: 'fan' },
+            text: 'Fan Curve',
+            onClick: () => setView('fan'),
+          }),
+        ]),
       ]),
     ]);
+
+    // M4-D2 (§8): the view switch re-renders ONLY the sub-view container —
+    // the OC slider state (values/applied — module-level) survives the
+    // round trip and the fan editor's own module state survives too.
+    const setView = (v: 'tuning' | 'fan'): void => {
+      if (view === v) return;
+      view = v;
+      renderView();
+      modeRow.querySelectorAll<HTMLButtonElement>('.tuning-view-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.view === view);
+      });
+    };
+    const renderView = (): void => {
+      if (!viewContainer) return;
+      clear(viewContainer);
+      if (view === 'fan') {
+        renderFanEditor(viewContainer, ctx);
+        return;
+      }
+      const body: Array<Node | string> = [
+        controls.length > 0
+          ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
+          : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
+
+        el('details', { class: 'card advanced-card' }, [
+          el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),
+          el('div', { class: 'card-body' }, [
+            // M4-D (user): ONLY supported rows render — the unsupported ones
+            // are removed entirely (no "Unsupported on this GPU" rows). The
+            // filter keys on row.control (the IGCL-keyed caps.controls key —
+            // M4-D review F1); the state read below keeps the CANONICAL
+            // row.key.
+            ...EXPERT_CONTROLS
+              .filter(({ control }) => caps.controls[control] === true)
+              .map(({ key, label, note }) => {
+                const cur = state[key as keyof DeviceState];
+                const current = key === 'gpuLock'
+                  ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
+                  : cur === null || cur === undefined ? '—' : JSON.stringify(cur);
+                return el('div', { class: 'expert-row' }, [
+                  el('span', { class: 'expert-label', text: label }),
+                  el('span', { class: 'expert-value', text: String(current) }),
+                  // M4-B: gpuLock has an editor in this section ("Editing
+                  // available"); vfCurve + VRAM offsets have no apply path yet
+                  // — the honest M5 note.
+                  el('span', { class: 'expert-status', text: note }),
+                ]);
+              }),
+            // M4-B: the gpuLock editor — a card in the Advanced section, gated
+            // on caps.controls.gpuLock (the backend apply paths already exist).
+            ...(caps.controls.gpuLock === true ? [buildLockEditor(ctx)] : []),
+          ]),
+        ]),
+
+        applyBtn as Node,
+      ];
+      viewContainer.append(...body);
+      updateFloating();
+    };
 
     const apply = async (ctx: PageContext) => {
       const live = ctx.store.get();
@@ -635,8 +738,8 @@ export const overclockingPage: Page = {
       // is the honesty (stock refuses, advanced already warned at enable).
       // M2C-C: a non-elevated product app delegates the apply to the
       // elevated self-worker (one UAC prompt) — explain BEFORE the prompt.
-      // M3-C-B: gated on !elevated — the always-elevated packaged EXE applies
-      // in-process and must never see the approval toast.
+      // M4-D2: the packaged EXE is asInvoker now — the workerApply toast
+      // applies (the worker still spawns elevated when the user approves).
       if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
         toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
       }
@@ -745,59 +848,28 @@ export const overclockingPage: Page = {
       }
     };
 
-    const body: Array<Node | string> = [
-      el('h1', { class: 'page-title', text: 'Overclocking' }),
+    // M4-D2 (§8): the page shell (title + subtitle + the pill row) renders
+    // once; the ACTIVE VIEW's content lives in the view container below
+    // (renderView builds it — the OC controls or the fan curve editor).
+    viewContainer = el('div', { class: 'tuning-view' });
+    container.append(
+      el('h1', { class: 'page-title', text: 'Tuning' }),
       el('p', {
         class: 'page-subtitle',
-        text: controls.length === 0
-          ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
-          : 'Values are clamped to the range reported by this GPU. Changes apply on demand — nothing is applied until you press Apply.',
+        text: view === 'fan'
+          ? 'Edit the fan curve or switch the fan mode. Changes apply on demand.'
+          : (controls.length === 0
+            ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
+            : 'Values are clamped to the range reported by this GPU. Changes apply on demand — nothing is applied until you press Apply.'),
       }),
-    ];
-    // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
-    // GPU Health card — this page keeps no waiver UI beyond the apply-time
-    // dialog gate (ensureWaiver above).
-    if (controls.length > 0) body.push(modeToggle(s.ocMode));
-    body.push(
-      controls.length > 0
-        ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
-        : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
-
-      el('details', { class: 'card advanced-card' }, [
-        el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),
-        el('div', { class: 'card-body' }, [
-          // M4-D (user): ONLY supported rows render — the unsupported ones
-          // are removed entirely (no "Unsupported on this GPU" rows). The
-          // filter keys on row.control (the IGCL-keyed caps.controls key —
-          // M4-D review F1); the state read below keeps the CANONICAL
-          // row.key.
-          ...EXPERT_CONTROLS
-            .filter(({ control }) => caps.controls[control] === true)
-            .map(({ key, label, note }) => {
-              const cur = state[key as keyof DeviceState];
-              const current = key === 'gpuLock'
-                ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
-                : cur === null || cur === undefined ? '—' : JSON.stringify(cur);
-              return el('div', { class: 'expert-row' }, [
-                el('span', { class: 'expert-label', text: label }),
-                el('span', { class: 'expert-value', text: String(current) }),
-                // M4-B: gpuLock has an editor in this section ("Editing
-                // available"); vfCurve + VRAM offsets have no apply path yet
-                // — the honest M5 note.
-                el('span', { class: 'expert-status', text: note }),
-              ]);
-            }),
-          // M4-B: the gpuLock editor — a card in the Advanced section, gated
-          // on caps.controls.gpuLock (the backend apply paths already exist).
-          ...(caps.controls.gpuLock === true ? [buildLockEditor(ctx)] : []),
-        ]),
-      ]),
-
-      applyBtn as Node,
+      // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+      // GPU Health card — this page keeps no waiver UI beyond the apply-time
+      // dialog gate (ensureWaiver above). The pill row renders for every
+      // device: the Fan Curve view must stay reachable on no-OC devices.
+      modeRow,
+      viewContainer,
     );
-    container.append(...body);
-
-    updateFloating();
+    renderView();
   },
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
@@ -805,9 +877,17 @@ export const overclockingPage: Page = {
     // M3-C-F: a mode toggle / featureset swap changed the capability
     // SURFACE — full re-render (ranges/units change; the in-place refresh
     // cannot). Content comparison: the page's own post-apply caps re-set
-    // ({ ...caps, waiverAccepted }) is NOT a surface change.
+    // ({ ...caps, waiverAccepted }) is NOT a surface change. The re-render
+    // keeps the current sub-view (module-level `view`).
     if (ocCapsChanged(lastRenderedCaps, s.caps)) {
-      overclockingPage.render(container, ctx);
+      tuningPage.render(container, ctx);
+      return;
+    }
+    // M4-D2 (§8): the fan sub-view only tracks the RPM marker + readout on
+    // telemetry ticks (the editor's own redraw handles its content — same
+    // contract as the removed Fan page's onUpdate).
+    if (view === 'fan') {
+      updateFanReadout(container, ctx);
       return;
     }
     // M3-C-F: refresh the cards IN PLACE when the store's state slot changed

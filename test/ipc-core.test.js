@@ -139,11 +139,16 @@ test('clampSettings: clamps an extreme gpuLock pair (F1 regression)', () => {
 // product-path waiver: never auto-accepted
 // ---------------------------------------------------------------------------
 
-function fakeStore(initial = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false }) {
+function fakeStore(initial = {}) {
   const saved = [];
+  const defaults = {
+    waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
+    advancedModeAccepted: false, startWithWindows: false, startMinimized: false,
+    closeToTray: false, monitorLogToFile: false,
+  };
   return {
     saved,
-    loadSettings: async () => ({ ...initial }),
+    loadSettings: async () => ({ ...defaults, ...initial }),
     saveSettings: async (s) => { saved.push({ ...s }); },
   };
 }
@@ -467,6 +472,71 @@ test('telemetry-start emits samples through the injected emit channel', async ()
   assert.equal(typeof emitted[0][1].t, 'number');
 });
 
+test('M4-D2: the pushed telemetry sample carries the 4 system-stats fields (mock: fixed values)', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const emitted = [];
+  const { handlers, stopAllTelemetry } = createIpcHandlers({
+    backend,
+    store,
+    emit: (ch, p) => emitted.push([ch, p]),
+  });
+
+  await handlers['telemetry-start'](0);
+  await new Promise((r) => setTimeout(r, 600));
+  await stopAllTelemetry();
+
+  assert.ok(emitted.length >= 1, 'at least one sample');
+  const sample = emitted[0][1];
+  assert.equal(sample.cpuUtilPct, 42, 'the mock sysStats fixed util');
+  assert.equal(sample.cpuTempC, 61, 'the mock sysStats fixed temp');
+  assert.equal(sample.cpuFreqMhz, 4300, 'the mock sysStats fixed freq');
+  assert.equal(sample.gpuMemUsedBytes, 2971324416, 'the mock sysStats fixed gpuMem');
+});
+
+test('M4-D2: an injected sysStats adapter drives the pushed sample fields', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const emitted = [];
+  const sysStats = { sample: async () => ({ cpuUtilPct: 7, cpuTempC: 33, cpuFreqMhz: 1600, gpuMemUsedBytes: 123 }) };
+  const { handlers, stopAllTelemetry } = createIpcHandlers({
+    backend,
+    store,
+    sysStats,
+    emit: (ch, p) => emitted.push([ch, p]),
+  });
+
+  await handlers['telemetry-start'](0);
+  await new Promise((r) => setTimeout(r, 600));
+  await stopAllTelemetry();
+
+  const sample = emitted[0][1];
+  assert.equal(sample.cpuUtilPct, 7);
+  assert.equal(sample.cpuTempC, 33);
+  assert.equal(sample.cpuFreqMhz, 1600);
+  assert.equal(sample.gpuMemUsedBytes, 123);
+});
+
+test('M4-D2: a throwing sysStats adapter never breaks the telemetry push', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const emitted = [];
+  const sysStats = { sample: async () => { throw new Error('powershell gone'); } };
+  const { handlers, stopAllTelemetry } = createIpcHandlers({
+    backend,
+    store,
+    sysStats,
+    emit: (ch, p) => emitted.push([ch, p]),
+  });
+
+  await handlers['telemetry-start'](0);
+  await new Promise((r) => setTimeout(r, 600));
+  await stopAllTelemetry();
+
+  assert.ok(emitted.length >= 1, 'samples still flow');
+  assert.equal(emitted[0][1].cpuUtilPct, undefined, 'no stats fields on a failed sample');
+});
+
 // ---------------------------------------------------------------------------
 // Registry-catalog channel (M3-A) — read-side only: the default adapter is
 // the MOCK (never runs reg.exe), and there is NO apply channel.
@@ -661,8 +731,10 @@ test('apply-settings: a volt/temp refusal gets the plain driver message + code (
 });
 
 // ---------------------------------------------------------------------------
-// startup channels (M2b) — the default adapter is the MOCK (never the
-// registry), and payloads are validated
+// startup channels (M2b/M4-D2) — the default adapter is the MOCK (never the
+// registry), payloads are validated, and startup-get COMPOSES the
+// { startWithWindows, applyOnBoot } derivation from the raw Run value +
+// the persisted settings
 // ---------------------------------------------------------------------------
 
 test('startup channels: registered; startup-get takes no payload', async () => {
@@ -672,78 +744,70 @@ test('startup channels: registered; startup-get takes no payload', async () => {
   await assert.rejects(() => handlers['startup-get']({}), /takes no payload/);
 });
 
-test('startup channels: default adapter is the mock — get/set round trip without any registry access', async () => {
+test('M4-D2: startup-get composes the derivation — value exists + settings decide', async () => {
+  const startup = createMockStartup({ valueExists: true });
+  // startWithWindows: value + the Settings toggle; applyOnBoot: value +
+  // ocOnBoot + an active profile.
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(),
+    store: fakeStore({ waiverAccepted: false, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'stock', startWithWindows: false }),
+    emit: () => {},
+    startup,
+  });
+  assert.deepEqual(await handlers['startup-get'](), { startWithWindows: false, applyOnBoot: true });
+
+  const sww = createIpcHandlers({
+    backend: new MockBackend(),
+    store: fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', startWithWindows: true }),
+    emit: () => {},
+    startup: createMockStartup({ valueExists: true }),
+  });
+  assert.deepEqual(await sww.handlers['startup-get'](), { startWithWindows: true, applyOnBoot: false });
+
+  // No value -> both off regardless of the settings.
+  const none = createIpcHandlers({
+    backend: new MockBackend(),
+    store: fakeStore({ waiverAccepted: false, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'stock', startWithWindows: true }),
+    emit: () => {},
+    startup: createMockStartup(),
+  });
+  assert.deepEqual(await none.handlers['startup-get'](), { startWithWindows: false, applyOnBoot: false });
+});
+
+test('M4-D2: startup-set(enabled) round trips through the mock + returns the composed state', async () => {
   const startup = createMockStartup();
-  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, startup });
-
-  // M4-D: the combined shape — both tasks reported distinctly.
-  assert.deepEqual(await handlers['startup-get'](), {
-    startupRunKey: { enabled: false, profileId: null, value: null, mechanism: null },
-    applyOnBoot: { enabled: false, value: null },
-    startWithWindows: false,
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(),
+    store: fakeStore({ waiverAccepted: false, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'stock', startWithWindows: true }),
+    emit: () => {},
+    startup,
   });
-  const setOut = await handlers['startup-set'](true, 'p1');
-  assert.equal(setOut.startupRunKey.enabled, true);
-  assert.equal(setOut.startupRunKey.profileId, 'p1');
-  assert.match(setOut.startupRunKey.value, /--apply-profile p1/);
-  assert.equal(setOut.applyOnBoot.enabled, false, 'coexistence: the app task stays off');
-  assert.deepEqual(await handlers['startup-get'](), setOut);
-
-  assert.deepEqual(await handlers['startup-set'](false, null), {
-    startupRunKey: { enabled: false, profileId: null, value: null, mechanism: null },
-    applyOnBoot: { enabled: false, value: null },
-    startWithWindows: false,
-  });
+  assert.deepEqual(await handlers['startup-get'](), { startWithWindows: false, applyOnBoot: false });
+  const on = await handlers['startup-set'](true);
+  assert.deepEqual(on, { startWithWindows: true, applyOnBoot: true });
+  assert.deepEqual(await handlers['startup-get'](), on);
+  const off = await handlers['startup-set'](false);
+  assert.deepEqual(off, { startWithWindows: false, applyOnBoot: false });
 });
 
-// M4-D: the plain-app task channel (Settings "Start with Windows").
-test('M4-D: startup-app-set enables the app task and disables the apply-profile registration (coexistence)', async () => {
+test('M4-D2: startup-set validation — enabled must be a boolean (no profileId anymore)', async () => {
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
-  await assert.rejects(() => handlers['startup-app-set']('yes'), /enabled must be a boolean/);
-  await assert.rejects(() => handlers['startup-app-set'](1), /enabled must be a boolean/);
-
-  const on = await handlers['startup-app-set'](true);
-  assert.equal(on.applyOnBoot.enabled, true);
-  assert.equal(on.applyOnBoot.value, `"${process.execPath}"`);
-  assert.equal(on.startWithWindows, true);
-  assert.equal(on.startupRunKey.enabled, false);
-
-  // Enabling the apply-profile registration flips the app task back off.
-  const profileOn = await handlers['startup-set'](true, 'p1');
-  assert.equal(profileOn.startupRunKey.enabled, true);
-  assert.equal(profileOn.applyOnBoot.enabled, false);
-
-  const off = await handlers['startup-app-set'](false);
-  assert.equal(off.applyOnBoot.enabled, false);
-  assert.equal(off.startWithWindows, false);
+  await assert.rejects(() => handlers['startup-set']('yes'), /enabled must be a boolean/);
+  await assert.rejects(() => handlers['startup-set'](1), /enabled must be a boolean/);
+  await assert.rejects(() => handlers['startup-set'](null), /enabled must be a boolean/);
+  // The old two-arg call shape is gone: a second arg is ignored, never
+  // required (the Run value is a bare "<exe>").
+  const startup = createMockStartup();
+  const { handlers: h2 } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, startup });
+  const out = await h2['startup-set'](true);
+  assert.equal(out.startWithWindows, false, 'settings decide the toggle flags, not the adapter');
 });
 
-test('M4-D: startup-app-set rejects when the adapter has no app-task variant (honest 404)', async () => {
-  const noAppVariant = { get: async () => ({}), set: async () => ({}) };
-  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, startup: noAppVariant });
-  await assert.rejects(() => handlers['startup-app-set'](true), /no app-task variant/);
-});
-
-test('startup-set: validation — enabled must be boolean; enabling needs a profileId; disabling takes null', async () => {
+test('M4-D2: startup-app-set is REMOVED (tasks are gone — the renderer must drop it)', async () => {
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
-  await assert.rejects(() => handlers['startup-set']('yes', 'p1'), /enabled must be a boolean/);
-  await assert.rejects(() => handlers['startup-set'](true, null), /profileId is required/);
-  await assert.rejects(() => handlers['startup-set'](true, ''), /profileId is required/);
-  await assert.rejects(() => handlers['startup-set'](false, 'p1'), /profileId must be null/);
-  await assert.rejects(() => handlers['startup-set'](1, 'p1'), /enabled must be a boolean/);
-});
-
-// M2b review F6 — a whitespace profileId would silently break the startup-get
-// round trip (the Run-key value is space-delimited); reject it up front.
-test('startup-set: rejects whitespace profileIds (Run-key round trip stays intact)', async () => {
-  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
-  await assert.rejects(() => handlers['startup-set'](true, 'profile 1'), /must not contain whitespace/);
-  await assert.rejects(() => handlers['startup-set'](true, ' p1'), /must not contain whitespace/);
-  await assert.rejects(() => handlers['startup-set'](true, 'p1 '), /must not contain whitespace/);
-  // A legal id still round-trips.
-  const out = await handlers['startup-set'](true, 'profile-1');
-  assert.equal(out.startupRunKey.enabled, true);
-  assert.equal(out.startupRunKey.profileId, 'profile-1');
+  assert.equal(handlers['startup-app-set'], undefined, 'the channel must not exist');
+  const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../src/main/ipc-core.js', import.meta.url), 'utf8'));
+  assert.doesNotMatch(src, /startup-app-set/);
 });
 
 // ---------------------------------------------------------------------------
@@ -752,7 +816,7 @@ test('startup-set: rejects whitespace profileIds (Run-key round trip stays intac
 
 function fakeProfileStore(initialProfiles = []) {
   const profiles = [...initialProfiles];
-  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false };
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false };
   return {
     profiles,
     async loadProfiles() { return [...profiles]; },
@@ -793,7 +857,7 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '0.9.12', 'package.json version');
+  assert.equal(version, '0.9.13', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {
@@ -801,7 +865,7 @@ test('app-version channel: an injected version is returned (product path = app.g
   assert.deepEqual(await handlers['app-version'](), { version: '2.3.4' });
 });
 
-test('fps-poll channel: the DEFAULT adapter reports unavailable (never loads PresentMon)', async () => {
+test('fps-poll channel: the DEFAULT adapter reports unavailable (never loads DXGI)', async () => {
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
   assert.equal(typeof handlers['fps-poll'], 'function');
   assert.equal(await handlers['fps-poll'](0), null);
@@ -809,16 +873,34 @@ test('fps-poll channel: the DEFAULT adapter reports unavailable (never loads Pre
 });
 
 test('fps-poll channel: an injected adapter returns its sample (never null when present)', async () => {
-  const presentmon = { poll: async () => ({ fps: 144, frameTimeMs: 6.9, gpuBusy: 0.7 }) };
-  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, presentmon });
+  const fpsAdapter = { poll: async () => ({ fps: 144, frameTimeMs: 6.9, gpuBusy: 0.7 }) };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, fpsAdapter });
   assert.deepEqual(await handlers['fps-poll'](0), { fps: 144, frameTimeMs: 6.9, gpuBusy: 0.7 });
+});
+
+// M4-D2: the Monitoring "Log to file" channel.
+test('M4-D2: monitor-log-append validates the payload and calls the injected writer', async () => {
+  const appended = [];
+  const monitorLog = { append: async (sample) => { appended.push(sample); return { ok: true }; } };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, monitorLog });
+  for (const bad of [null, 5, 'x', []]) {
+    await assert.rejects(() => handlers['monitor-log-append'](bad), /must be a plain object/);
+  }
+  const sample = { t: 1, gpuClockMhz: 2100, cpuUtilPct: 42, fps: 60 };
+  assert.deepEqual(await handlers['monitor-log-append'](sample), { ok: true });
+  assert.deepEqual(appended, [sample]);
+});
+
+test('M4-D2: monitor-log-append — the DEFAULT writer is a no-op (tests never write to Documents)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.deepEqual(await handlers['monitor-log-append']({ t: 1 }), { ok: true });
 });
 
 test('profiles channels: list -> save (create) -> rename -> delete round trip with validation', async () => {
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
-  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false } });
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false } });
   await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
 
   const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
@@ -882,12 +964,12 @@ test('profiles-settings-save: read-modify-write never clobbers waiverAccepted (n
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
   // Seed an accepted waiver (as waiver-accept would).
-  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false });
+  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false });
 
   const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
-  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false });
   const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
-  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false });
 
   for (const bad of [null, 5, 'x', []]) {
     await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
@@ -933,6 +1015,7 @@ test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWi
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
     advancedModeAccepted: false, startWithWindows: true, startMinimized: true, closeToTray: false,
+    monitorLogToFile: false,
   });
   // Turning one back off keeps the other.
   const back = await handlers['profiles-settings-save']({ startMinimized: false });
@@ -946,6 +1029,107 @@ test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWi
   const tray = await handlers['profiles-settings-save']({ closeToTray: true });
   assert.equal(tray.closeToTray, true);
   assert.equal(tray.startWithWindows, true, 'the other fields stay untouched');
+  // M4-D2: monitorLogToFile persists through the same channel (and is
+  // never clobbered by a patch that does not mention it).
+  const log = await handlers['profiles-settings-save']({ monitorLogToFile: true });
+  assert.equal(log.monitorLogToFile, true);
+  assert.equal(log.closeToTray, true, 'the other fields stay untouched');
+  const other = await handlers['profiles-settings-save']({ startMinimized: true });
+  assert.equal(other.monitorLogToFile, true, 'an absent patch field keeps the current value');
+});
+
+// ---------------------------------------------------------------------------
+// M4-D2 plan F4 / review F1 — profiles-settings-save is the ONLY writer of
+// the HKCU Run value. The mock startup adapter is wrapped in a recording
+// spy so the set/clear calls are asserted (the registry is never touched).
+// ---------------------------------------------------------------------------
+
+function recordingMockStartup(initial = {}) {
+  const calls = [];
+  const inner = createMockStartup(initial);
+  return {
+    calls,
+    async get() { return inner.get(); },
+    async set(enabled) { calls.push(enabled); return inner.set(enabled); },
+  };
+}
+
+test('M4-D2 review F1: profiles-settings-save writes the Run value from the merged intent (mock records set/clear)', async () => {
+  const store = fakeProfileStore();
+  const startup = recordingMockStartup();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {}, startup });
+
+  // ocOnBoot + an active profile -> the merged intent is ON -> set(true).
+  const on = await handlers['profiles-settings-save']({ ocOnBoot: true, activeProfileId: 'p1' });
+  assert.equal(on.ocOnBoot, true);
+  assert.equal(on.activeProfileId, 'p1');
+  assert.deepEqual(await startup.get(), { valueExists: true, value: `"${process.execPath}"` }, 'the Run value exists after the save');
+  assert.deepEqual(startup.calls, [true], 'one startup.set(true) call — the ONLY writer');
+
+  // startWithWindows alone also owns the value.
+  const sww = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null, startWithWindows: true });
+  assert.equal(sww.startWithWindows, true);
+  assert.deepEqual(await startup.get(), { valueExists: true, value: `"${process.execPath}"` }, 'startWithWindows keeps the value');
+  assert.deepEqual(startup.calls, [true, true]);
+
+  // Nothing owns the value anymore -> set(false) removes it.
+  const off = await handlers['profiles-settings-save']({ ocOnBoot: false, startWithWindows: false });
+  assert.equal(off.ocOnBoot, false);
+  assert.equal(off.startWithWindows, false);
+  assert.deepEqual(await startup.get(), { valueExists: false, value: null }, 'the Run value is removed');
+  assert.deepEqual(startup.calls, [true, true, false], 'one startup.set(false) call removes the value');
+});
+
+test('M4-D2 review F1: a NON-toggle settings save self-heals a missing Run value (the intent owns the write)', async () => {
+  const store = fakeProfileStore();
+  const startup = recordingMockStartup({ valueExists: false });
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {}, startup });
+
+  // ocOnBoot is already on with an active profile, but the value is absent
+  // (external deletion / a prior partial failure). A plain settings save
+  // that does NOT mention ocOnBoot must re-derive and re-register.
+  await handlers['profiles-settings-save']({ ocOnBoot: true, activeProfileId: 'p1' });
+  await startup.set(false); // simulate external deletion
+  assert.deepEqual(await startup.get(), { valueExists: false, value: null });
+  const healed = await handlers['profiles-settings-save']({ activeProfileId: 'p1' });
+  assert.equal(healed.ocOnBoot, true, 'the merged intent keeps ocOnBoot');
+  assert.deepEqual(await startup.get(), { valueExists: true, value: `"${process.execPath}"` }, 'the next settings save re-registers the app');
+  assert.deepEqual(startup.calls, [true, false, true], 'set(true) after the value loss');
+});
+
+test('M4-D2 review F1: a failed settings save still lands the value write first (the F3 honest-partial state)', async () => {
+  const store = fakeProfileStore();
+  const startup = recordingMockStartup();
+  let failSave = false;
+  const realSave = store.saveSettings.bind(store);
+  store.saveSettings = async (s) => {
+    if (failSave) throw new Error('injected settings-save failure');
+    return realSave(s);
+  };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {}, startup });
+
+  await handlers['profiles-settings-save']({ ocOnBoot: true, activeProfileId: 'p1' });
+  failSave = true;
+  // The value write lands BEFORE the save: a save failure leaves the
+  // registration ahead of the persisted intent (the renderer's catch
+  // re-queries startup-get and the mismatch hint explains it).
+  await assert.rejects(() => handlers['profiles-settings-save']({ ocOnBoot: false }), /injected/);
+  assert.deepEqual(await startup.get(), { valueExists: false, value: null }, 'the value write (set(false)) still landed');
+  assert.equal((await store.loadSettings()).ocOnBoot, true, 'the persisted intent is unchanged — mismatch is honest and self-heals');
+});
+
+test('M4-D2 review F1: the renderer contract — profiles.ts has NO direct startupSet; settings.ts re-queries startup-get in its toggle', async () => {
+  const read = async (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
+  const profiles = await read('src/renderer/pages/profiles.ts');
+  const settings = await read('src/renderer/pages/settings.ts');
+  // F1: the profiles "start at boot" toggle drops its direct startupSet
+  // calls (profilesSettingsSave owns the Run-value write).
+  assert.doesNotMatch(profiles, /api\.startupSet\(/, 'profiles.ts must not call startupSet directly');
+  // F1: the Settings toggle may keep startupSet ONLY with a fresh
+  // re-query before the ownership decision (never the mount-captured
+  // bootState) — the handler body must contain an api.startupGet() call.
+  const toggle = settings.slice(settings.indexOf('const onStartWithWindowsToggle'));
+  assert.match(toggle, /api\.startupGet\(/, 'the Settings toggle must re-query startupGet fresh before its ownership guard');
 });
 
 test('M4-B (user): a persisted-accepted session applies CLOCKS and a FAN CURVE with no waiver-not-set and no waiver-accept call', async () => {
@@ -1503,4 +1687,21 @@ test('S2: the G2 wedge is closed — a waiver-not-set worker result clears the p
   const out = await handlers['apply-settings'](0, { powerLimitW: 220 });
   assert.equal(out.result.ok, false);
   assert.equal((await backend.getCapabilities(0)).waiverAccepted, false, 'getCapabilities must re-report unaccepted — the dialog re-shows');
+});
+
+// M4-D2: the mock-only boot-apply channels (mock:run-boot-apply runs the
+// REAL boot-apply code path; mock:boot-apply-log reads the session log).
+test('M4-D2: mock:run-boot-apply / mock:boot-apply-log exist ONLY when the mock ctx provides them', async () => {
+  const real = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, mock: null });
+  assert.equal('mock:run-boot-apply' in real.handlers, false, 'real mode: no such channel');
+  const mockCtl = {
+    runBootApply: async () => ({ applied: true, reason: null, log: [] }),
+    bootApplyLog: async () => [],
+  };
+  const mock = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, mock: mockCtl });
+  assert.equal(typeof mock.handlers['mock:run-boot-apply'], 'function');
+  assert.equal(typeof mock.handlers['mock:boot-apply-log'], 'function');
+  await assert.rejects(() => mock.handlers['mock:run-boot-apply']({}), /takes no payload/);
+  assert.deepEqual(await mock.handlers['mock:run-boot-apply'](), { applied: true, reason: null, log: [] });
+  assert.deepEqual(await mock.handlers['mock:boot-apply-log'](), []);
 });

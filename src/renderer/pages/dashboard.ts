@@ -19,8 +19,18 @@ import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { driverLine } from '../components/header.ts';
 import { shaderUnits } from '../pure/driver.ts';
-import { cpuCardRows, pcieRow, rebarState } from '../pure/sysinfo.ts';
+import { cpuCardRows, rebarState } from '../pure/sysinfo.ts';
 import type { TelemetrySample } from '../types.ts';
+
+/** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half — the current
+ *  CPU frequency from the telemetry tick, ALWAYS in GHz with 1 decimal
+ *  (" / @ 4.3 GHz" — the leading separator joins the static cores/threads
+ *  half); null sample -> honest '—' (never a fake number). */
+function liveFreqText(sample: TelemetrySample | null): string {
+  const mhz = sample?.cpuFreqMhz;
+  if (typeof mhz !== 'number' || !Number.isFinite(mhz)) return ' / @ — GHz';
+  return ` / @ ${(mhz / 1000).toFixed(1)} GHz`;
+}
 
 function statTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   const clock = sample?.gpuClockMhz;
@@ -121,15 +131,25 @@ export const dashboardPage: Page = {
 
       el('div', { class: 'card-grid' }, [
         // --- M4-D (user): the CPU & memory card — BEFORE the GPU card. ---
-        // Fed by the sysinfo:get payload (CIM at boot, mock fixture in
-        // --ui-verify); every field degrades honestly to '—' (pure/sysinfo.ts
+        // M4-D2 (§9): the card title is "CPU & Memory". Fed by the
+        // sysinfo:get payload (CIM at boot, mock fixture in --ui-verify);
+        // every field degrades honestly to '—' (pure/sysinfo.ts
         // cpuCardRows). The dashboard sig includes sysinfo, so the card
         // re-renders when the boot fetch lands after the first render.
+        // M4-D2 (§6): the "Cores / clock" row's clock half is the LIVE
+        // frequency (cpuFreqMhz from the telemetry tick, GHz always) — the
+        // static cores/threads half comes from the sysinfo payload, the
+        // live half updates IN PLACE on ticks like the GPU clocks row.
         el('section', { class: 'card sysinfo-card' }, [
-          el('h2', { class: 'card-title', text: 'CPU & memory' }),
+          el('h2', { class: 'card-title', text: 'CPU & Memory' }),
           el('div', { class: 'card-body kv-grid' }, [
             el('div', { class: 'kv', 'data-label': 'CPU' }, [el('span', { text: sysRows.cpu })]),
-            el('div', { class: 'kv', 'data-label': 'Cores / clock' }, [el('span', { text: sysRows.coresClock })]),
+            el('div', { class: 'kv', 'data-label': 'Cores / clock' }, [
+              el('span', { class: 'kv-cores-clock' }, [
+                el('span', { text: sysRows.coresClock }),
+                el('span', { class: 'kv-live-freq', text: liveFreqText(s.latestSample) }),
+              ]),
+            ]),
             el('div', { class: 'kv', 'data-label': 'Memory' }, [el('span', { text: sysRows.memory })]),
           ]),
         ]),
@@ -151,11 +171,11 @@ export const dashboardPage: Page = {
                   class: 'kv-clocks',
                   text: `${device.graphicsClockMHz} MHz Core / ${s.latestSample?.memClockMhz !== undefined ? s.latestSample.memClockMhz : '--'} MHz Memory`,
                 })]),
-                // M4-D (user): the CURRENTLY-USED PCIe link + the ReBAR pill
-                // (green/red/grey — the pill reflects whether the device's
-                // memory resources actually include the multi-GiB BAR).
-                el('div', { class: 'kv', 'data-label': 'PCIe' }, [el('span', { text: pcieRow(matchedController) })]),
-                el('div', { class: 'kv kv-rebar', 'data-label': 'Resizable BAR' }, [
+                // M4-D2 (§3): the ReBAR pill is STANDALONE — no label kv row
+                // around it (the "Resizable BAR" row is gone). Green "ReBAR
+                // on" / red "ReBAR off" / grey "ReBAR —", data-driven from
+                // the sysinfo controller's rebarActive.
+                el('div', { class: 'kv kv-rebar' }, [
                   el('span', { class: `chip rebar-pill status-${rebar.level}`, text: rebar.label }),
                 ]),
               ])
@@ -215,5 +235,10 @@ export const dashboardPage: Page = {
       const core = dev?.graphicsClockMHz;
       clocksValue.textContent = `${core !== undefined ? core : '--'} MHz Core / ${mem !== undefined ? mem : '--'} MHz Memory`;
     }
+    // M4-D2 (§6): the CPU card's "Cores / clock" LIVE half (the current
+    // frequency, GHz always) tracks the telemetry tick in place — same
+    // pattern as the GPU clocks row.
+    const liveFreq = container.querySelector<HTMLElement>('.sysinfo-card .kv-live-freq');
+    if (liveFreq) liveFreq.textContent = liveFreqText(ctx.store.get().latestSample);
   },
 };

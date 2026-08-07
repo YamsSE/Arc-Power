@@ -9,7 +9,7 @@ import { ProfileStore } from '../src/main/store/profile-store.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { applyProfile, applyProfileOnBoot, runApplyOnStartup } from '../src/main/apply-on-boot.js';
+import { applyProfile, applyProfileOnBoot, applyProfileBoot, runApplyOnStartup } from '../src/main/apply-on-boot.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../src/main/apply-routing.js';
 import { trayBalloonForOutcome, trayBalloonProfileFailed, trayBalloonProfileRefused } from '../src/main/tray.js';
 
@@ -659,6 +659,73 @@ test('NIT5: read-back throw after the defaults fallback -> failure still reporte
     assert.equal(out.state, null);
     assert.equal(calls.balloons.length, 1); // outcome balloon still fires
     assert.equal(calls.balloons[0].content, trayBalloonProfileFailed('Game Boost'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// M4-D2 (no-UAC boot variant): the in-app boot apply runs applyRunner-less
+// and SKIPS the defaults-restore fallback REGARDLESS of errorCode (an
+// unelevated logon apply must never wipe the live OC state over an
+// elevation refusal � keyed on the SESSION, not the errorCode).
+test('M4-D2: applyProfileBoot with a refused apply NEVER restores defaults (fallbackSkipped)', async () => {
+  const dir = testDir('boot-skip-fallback');
+  try {
+    const backend = new MockBackend({ extendedRanges: true });
+    await backend.restoreWaiverState(0, true);
+    // The unelevated PL refusal maps to out-of-range-style failures: make
+    // the apply itself fail (io-failed) � the skip must not depend on the
+    // errorCode.
+    backend.injectFail('powerLimitW', 'io-failed');
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced' },
+      profiles: [PROFILE],
+    });
+    let resetCalls = 0;
+    const origReset = backend.resetToDefaults.bind(backend);
+    backend.resetToDefaults = async (...a) => { resetCalls += 1; return origReset(...a); };
+    const logs = [];
+    const out = await applyProfileBoot({ backend, store, profileId: 'p1', log: (s) => logs.push(s) });
+    assert.equal(out.applied, false);
+    assert.equal(out.fallbackSkipped, true, 'the boot variant flags the skipped fallback');
+    assert.equal(resetCalls, 0, 'the defaults restore NEVER runs in the boot variant');
+    assert.equal(backend._state.powerLimitW, 210, 'the live OC state survives');
+    assert.ok(logs.some((l) => l.includes('fallback SKIPPED')), 'the log explains the skip');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-D2: applyProfileBoot still APPLIES when the write lands (the boot flow works unelevated on mock)', async () => {
+  const dir = testDir('boot-applies');
+  try {
+    const backend = new MockBackend();
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced' },
+      profiles: [PROFILE],
+    });
+    const out = await applyProfileBoot({ backend, store, profileId: 'p1' });
+    assert.equal(out.applied, true);
+    assert.equal(backend._state.powerLimitW, 240, 'the profile lands');
+    assert.equal(out.fallbackSkipped, undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-D2: applyProfileBoot gates on ocOnBoot like the boot flow (Start-at-boot is disabled)', async () => {
+  const dir = testDir('boot-gate');
+  try {
+    const backend = new MockBackend();
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'p1', ocMode: 'advanced' },
+      profiles: [PROFILE],
+    });
+    const out = await applyProfileBoot({ backend, store, profileId: 'p1' });
+    assert.equal(out.applied, false);
+    assert.match(out.reason, /Start-at-boot is disabled/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

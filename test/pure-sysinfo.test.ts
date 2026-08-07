@@ -1,12 +1,16 @@
 // M4-D — dashboard CPU/GPU card row model (pure/sysinfo.ts): the sysinfo:get
 // payload renders as honest kv rows; every null field degrades to '—' (the
 // os.cpus() fallback has no physical-core count or RAM speed — the card
-// must never invent a number). M4-D (user): the cores/threads/clock and the
-// RAM brand/size/speed are BUNDLED rows.
+// must never invent a number). M4-D (user): the cores/threads and the RAM
+// brand/size/speed are BUNDLED rows. M4-D2 (§5): the RAM amount ROUNDS UP
+// to the next whole GiB (34293735424 → "32 GB"); (§2) the PCIe row +
+// pcieRow helper are REMOVED; (§6) the clock half of the cores row moved
+// OUT of this static model (the dashboard renders the LIVE frequency from
+// the telemetry tick).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatBytes, cpuCardRows, pcieRow, rebarState } from '../src/renderer/pure/sysinfo.ts';
+import { formatBytes, cpuCardRows, rebarState } from '../src/renderer/pure/sysinfo.ts';
 import type { SysInfo, VideoControllerInfo } from '../src/renderer/types.ts';
 
 const fixture: SysInfo = {
@@ -16,15 +20,18 @@ const fixture: SysInfo = {
     name: 'Intel(R) Arc(TM) A770 Graphics',
     vramBytes: 17179869184,
     pnpDeviceId: null,
-    pcie: { currentGen: 4, currentWidth: 16, maxGen: 4, maxWidth: 16 },
     rebarActive: true,
   }],
 };
 
-test('M4-D: formatBytes renders GB figures; null/zero/non-finite degrade to "—"', () => {
-  assert.equal(formatBytes(34359738368), '32.0 GB');
-  assert.equal(formatBytes(17179869184), '16.0 GB');
-  assert.equal(formatBytes(100 * 1024 ** 3), '100 GB'); // >= 100 GiB -> rounded, no decimal
+test('M4-D2: formatBytes ROUNDS UP to the next whole GiB and drops the decimal', () => {
+  assert.equal(formatBytes(34293735424), '32 GB'); // 31.93 GiB -> 32 (the user's case)
+  assert.equal(formatBytes(34359738368), '32 GB'); // exactly 32 GiB -> 32
+  assert.equal(formatBytes(17179869184), '16 GB'); // exactly 16 GiB -> 16
+  assert.equal(formatBytes(8602566656), '9 GB'); // 8.01 GiB -> 9 (documented ceil semantics)
+  assert.equal(formatBytes(100 * 1024 ** 3), '100 GB');
+  // Sub-GiB amounts render as whole MiB (never a rounded-up "1 GB" lie).
+  assert.equal(formatBytes(512 * 1024 ** 2), '512 MB');
   assert.equal(formatBytes(0), '—');
   assert.equal(formatBytes(null), '—');
   assert.equal(formatBytes(undefined), '—');
@@ -32,11 +39,11 @@ test('M4-D: formatBytes renders GB figures; null/zero/non-finite degrade to "—
   assert.equal(formatBytes(-1), '—');
 });
 
-test('M4-D (user): cpuCardRows bundles cores/threads/clock and RAM brand/size/speed', () => {
+test('M4-D (user) + M4-D2 (§6): cpuCardRows bundles cores/threads (the CLOCK is live now — no static MHz part) + RAM brand/size/speed', () => {
   assert.deepEqual(cpuCardRows(fixture), {
     cpu: 'Intel(R) Core(TM) i7-14700K',
-    coresClock: '20 Cores / 28 Threads / @ 5600 MHz',
-    memory: 'G.Skill 32.0 GB @ 6000 MHz',
+    coresClock: '20 Cores / 28 Threads',
+    memory: 'G.Skill 32 GB @ 6000 MHz',
   });
 });
 
@@ -54,10 +61,11 @@ test('M4-D: the os.cpus() fallback (no physical cores / no RAM speed / no brand)
     ram: { totalBytes: 34359738368, speedMhz: null, manufacturer: null },
     videoControllers: [],
   });
-  // The physical half is unknown — only the logical half + clock render
-  // (never an estimate); the RAM speed/brand pieces degrade out.
-  assert.equal(rows.coresClock, '28 Threads / @ 5600 MHz');
-  assert.equal(rows.memory, '32.0 GB');
+  // The physical half is unknown — only the logical half renders (never an
+  // estimate; the clock half is LIVE and lives in the dashboard, not here);
+  // the RAM speed/brand pieces degrade out.
+  assert.equal(rows.coresClock, '28 Threads');
+  assert.equal(rows.memory, '32 GB');
   assert.equal(rows.cpu, 'Intel(R) Core(TM) i7-14700K');
 });
 
@@ -67,32 +75,21 @@ test('M4-D: missing CPU fields degrade per-field', () => {
 });
 
 // ---------------------------------------------------------------------------
-// M4-D (user): the GPU-card PCIe row + the ReBAR pill.
+// M4-D2: the PCIe row + the pcieRow helper are REMOVED (the unpopulated
+// 1/1 kernel pattern made the row a permanent '—' on the A770). The ReBAR
+// pill stays.
 // ---------------------------------------------------------------------------
 
-const pcieController = (pcie: VideoControllerInfo['pcie']): VideoControllerInfo => ({
+const rebarController = (rebarActive: boolean | null): VideoControllerInfo => ({
   name: 'Intel(R) Arc(TM) A770 Graphics',
   vramBytes: null,
   pnpDeviceId: null,
-  pcie,
-  rebarActive: null,
-});
-
-test('M4-D (user): pcieRow renders the CURRENTLY-USED link ("PCIe 4.0 x16")', () => {
-  assert.equal(pcieRow(pcieController({ currentGen: 4, currentWidth: 16, maxGen: 4, maxWidth: 16 })), 'PCIe 4.0 x16');
-  assert.equal(pcieRow(pcieController({ currentGen: 3, currentWidth: 8, maxGen: 3, maxWidth: 16 })), 'PCIe 3.0 x8');
-});
-
-test('M4-D (user): pcieRow degrades to "—" when the kernel does not populate the link (live-verified 1/1 pattern)', () => {
-  assert.equal(pcieRow(null), '—');
-  assert.equal(pcieRow(undefined), '—');
-  assert.equal(pcieRow(pcieController({ currentGen: 1, currentWidth: 1, maxGen: 1, maxWidth: 1 })), '—');
-  assert.equal(pcieRow(pcieController({ currentGen: null, currentWidth: null, maxGen: null, maxWidth: null })), '—');
+  rebarActive,
 });
 
 test('M4-D (user): rebarState — green on, red off, grey unknown', () => {
-  assert.deepEqual(rebarState({ ...pcieController(null), rebarActive: true }), { label: 'ReBAR on', level: 'ok' });
-  assert.deepEqual(rebarState({ ...pcieController(null), rebarActive: false }), { label: 'ReBAR off', level: 'error' });
-  assert.deepEqual(rebarState({ ...pcieController(null), rebarActive: null }), { label: 'ReBAR —', level: 'unknown' });
+  assert.deepEqual(rebarState(rebarController(true)), { label: 'ReBAR on', level: 'ok' });
+  assert.deepEqual(rebarState(rebarController(false)), { label: 'ReBAR off', level: 'error' });
+  assert.deepEqual(rebarState(rebarController(null)), { label: 'ReBAR —', level: 'unknown' });
   assert.deepEqual(rebarState(null), { label: 'ReBAR —', level: 'unknown' });
 });

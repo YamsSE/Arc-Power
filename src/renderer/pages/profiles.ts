@@ -1,7 +1,10 @@
 // Arc Power — Profiles page (M2b-B): list/create/save/rename/delete/load
 // profiles persisted by the main-process ProfileStore (via the profiles-*
-// IPC channels), plus the "start at boot" toggle (ocOnBoot, waiver-gated)
-// backed by the Run-key helper (startup-set) with honest state reporting.
+// IPC channels), plus the "start at boot" toggle (ocOnBoot) backed by the
+// shared HKCU Run value with honest state reporting. M4-D2 (plan F4): the
+// toggle ONLY persists the intent — profilesSettingsSave owns the
+// Run-value write (main re-derives the value from the merged intent; the
+// renderer never calls startupSet directly).
 // Loading a profile applies its settings through the same waiver gate and
 // toast rules as the Overclocking page (no-op applies stay silent; errors
 // always toast; M2C-B F3 instant apply — one attempt, no retry UI). Every
@@ -196,13 +199,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const activeId = envelope.settings.activeProfileId;
     const activeProfile = envelope.profiles.find((p) => p.id === activeId) ?? null;
     const waiverAccepted = caps.waiverAccepted === true;
-    // Honest ocOnBoot state: the Run key is the truth, settings.json the
-    // persisted intent — a mismatch surfaces as a hint, never a lie.
-    // M4-D: startup-get reports BOTH registrations — the apply-profile one
-    // lives under startupRunKey (the plain-app task is the Settings page's
-    // concern).
-    const runKeyEnabled = bootState?.startupRunKey?.enabled === true;
-    const bootMismatch = runKeyEnabled !== envelope.settings.ocOnBoot;
+    // Honest ocOnBoot state: the startup-get derivation is the truth
+    // (applyOnBoot = the Run value exists AND ocOnBoot is on AND an active
+    // profile exists), settings.json the persisted intent — a mismatch
+    // surfaces as a hint, never a lie.
+    const applyOnBoot = bootState?.applyOnBoot === true;
+    const bootMismatch = applyOnBoot !== (envelope.settings.ocOnBoot === true && !!envelope.settings.activeProfileId);
 
     const bootCard = el('section', { class: 'card boot-card' }, [
       el('h2', { class: 'card-title', text: 'Start at boot' }),
@@ -211,7 +213,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           el('input', {
             type: 'checkbox',
             class: 'boot-checkbox',
-            checked: runKeyEnabled,
+            checked: applyOnBoot,
             disabled: !waiverAccepted,
             onchange: (ev: Event) => void onBootToggle((ev.target as HTMLInputElement).checked),
           }),
@@ -221,10 +223,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       !waiverAccepted
         ? el('p', { class: 'card-note', text: 'Accept the warranty waiver to enable start-at-boot.' })
         : activeProfile
-          ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot${bootState?.startupRunKey?.mechanism === 'task' ? ' (elevated task — no prompt at logon)' : ''}.` })
+          ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot.` })
           : el('p', { class: 'card-note', text: 'Load a profile first — start-at-boot applies the active profile.' }),
       bootMismatch
-        ? el('p', { class: 'card-note boot-hint', text: 'The Run key and the saved settings disagree — the toggle reflects the Run key.' })
+        ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree — the toggle reflects the registration.' })
         : null,
     ]);
 
@@ -285,23 +287,31 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         return;
       }
       try {
-        await api.startupSet(true, activeProfile.id);
+        // M4-D2 (plan F4): the toggle only persists the intent —
+        // profilesSettingsSave({ ocOnBoot }) is the ONLY writer of the Run
+        // value (main re-derives it from the merged intent; NO direct
+        // startupSet call).
+        await api.profilesSettingsSave({ ocOnBoot: true, activeProfileId: activeProfile.id });
       } catch (err) {
         toast('error', 'Start at boot could not be set', err instanceof Error ? err.message : String(err));
-        if (box) box.checked = false; // honest state: the Run key was not written
+        if (box) box.checked = false; // transient honest state — the re-render below follows startup-get
+        await refresh(); // F3: re-render the card from startup-get so the honest state shows immediately
         return;
       }
-      await api.profilesSettingsSave({ ocOnBoot: true, activeProfileId: activeProfile.id });
       toast('success', 'Start at boot enabled', `"${activeProfile.name}" will apply when Arc Power starts.`);
     } else {
       try {
-        await api.startupSet(false, null);
+        // M4-D2 (plan F4): disabling just persists the intent — main
+        // removes the Run value only when nothing else owns it (the merged
+        // intent derivation). NO direct startupSet call, no renderer-side
+        // ownership guard (the single writer cannot double-remove).
+        await api.profilesSettingsSave({ ocOnBoot: false });
       } catch (err) {
         toast('error', 'Start at boot could not be removed', err instanceof Error ? err.message : String(err));
-        if (box) box.checked = true; // honest state: the Run key is still set
+        if (box) box.checked = true; // transient honest state — the re-render below follows startup-get
+        await refresh(); // F3: re-render the card from startup-get so the honest state shows immediately
         return;
       }
-      await api.profilesSettingsSave({ ocOnBoot: false });
       toast('info', 'Start at boot disabled', '');
     }
     void api.trayRebuild().catch(() => {});
@@ -362,12 +372,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       const wasActive = envelope.settings.activeProfileId === p.id;
       await api.profilesDelete(p.id);
       if (wasActive) {
-        // Deleting the boot profile: remove the Run key + clear the active
-        // slot so boot never applies a ghost profile.
-        const runKeyEnabled = (await api.startupGet()).startupRunKey?.enabled === true;
-        if (runKeyEnabled) {
-          try { await api.startupSet(false, null); } catch { /* best effort */ }
-        }
+        // M4-D2 (plan F4): clearing the active slot + ocOnBoot re-derives
+        // the Run value in main — removed unless the Settings page's
+        // startWithWindows still owns it (no renderer-side guard needed;
+        // the single writer cannot double-remove).
         await api.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null });
         toast('info', 'Active profile deleted', 'Start-at-boot was disabled.');
       }
@@ -398,8 +406,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // extended values with the per-control mode-message toasts below
     // (never a dead-end confirm).
     // M2C-C: a non-elevated product app delegates to the elevated worker —
-    // explain before the UAC prompt. M3-C-B: gated on !elevated — the
-    // always-elevated packaged EXE applies in-process, never a prompt.
+    // explain before the UAC prompt. M4-D2: the packaged EXE is asInvoker
+    // now — the workerApply toast applies (the worker still spawns elevated
+    // when the user approves).
     if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }

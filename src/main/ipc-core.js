@@ -32,6 +32,7 @@ import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
+import { createMockSysStats } from './sys-stats.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODES } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 
@@ -252,7 +253,7 @@ export function assertNoPayload(args, channel) {
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
- *   startup?: { get: () => Promise<unknown>, set: (enabled: boolean, profileId: string | null) => Promise<unknown>, setAppOnBoot?: (enabled: boolean) => Promise<unknown> },
+ *   startup?: { get: () => Promise<{ valueExists: boolean, value: string | null }>, set: (enabled: boolean) => Promise<unknown> },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
  *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
  *   windowOps?: {                              // M4-D: injected BrowserWindow ops (title-bar buttons)
@@ -262,7 +263,9 @@ export function assertNoPayload(args, channel) {
  *   },
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
- *   presentmon?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null> },
+ *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null>, stop?: () => Promise<void> },
+ *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }> },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample)
+ *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: CSV log-to-file writer
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
@@ -273,6 +276,12 @@ export function assertNoPayload(args, channel) {
  *                                // registered at all — an honest 404.
  *     listFeaturesets: () => Promise<{ featuresets: Array<{id: string, name: string, tag: string}>, current: string }>,
  *     setFeatureset: (id: string) => Promise<{ featureset: object, devices: object[], caps: object, state: object, health: object, driverDate: string | null }>,
+ *     // M4-D2: run the REAL window-path boot-apply code path in mock mode
+ *     // (applyRunner-less variant, fallback skipped) + read the mock
+ *     // boot-apply log (what the boot apply recorded). ui-verify pins the
+ *     // flow through these channels.
+ *     runBootApply: () => Promise<{ applied: boolean, reason: string, log: object[] }>,
+ *     bootApplyLog: () => Promise<object[]>,
  *   } | null,
  * }} ctx
  */
@@ -305,11 +314,21 @@ export function createIpcHandlers({
   // state so an applied action is honestly reflected by the next
   // registry-catalog read (the post-apply state refresh).
   registryApply,
+  // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory).
+  // The DEFAULT is the MOCK (fixed deterministic values, never spawns
+  // PowerShell — ui-verify pins are deterministic); ipc.js injects the
+  // real rolling-delta adapter in the product path. sample() is called on
+  // every telemetry tick; its values ride the pushed telemetry sample.
+  sysStats = createMockSysStats(),
+  // M4-D2: the CSV log-to-file writer. The DEFAULT is a no-op (tests never
+  // write to Documents); ipc.js injects the real writer in the product
+  // path (dir: RID_MOCK_LOG_DIR ?? app.getPath('documents')).
+  monitorLog = { append: async () => ({ ok: true }) },
   // M2b-B: the FPS adapter. The DEFAULT is the mock (always unavailable —
-  // never loads koffi/PresentMonAPI2); ipc.js injects the real client in the
-  // product path. On this machine the real client degrades to null anyway
-  // (no PresentMon service), so mock and product agree on 'unavailable'.
-  presentmon = { poll: async () => null },
+  // never loads koffi/dxgi); ipc.js injects the real DXGI adapter in the
+  // product path. On this machine the real adapter may also degrade to
+  // null (DXGI unavailable), so mock and product agree on 'unavailable'.
+  fpsAdapter = { poll: async () => null },
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
   // M2C-C: the 2023-runtime adapter + the elevation-aware apply runner.
@@ -334,7 +353,21 @@ export function createIpcHandlers({
   const startTelemetry = async (deviceId) => {
     if (telemetry.has(deviceId)) return;
     const svc = new TelemetryService(backend, deviceId);
-    svc.onSample((sample) => emit('telemetry:sample', sample));
+    // M4-D2: the pushed sample carries the system stats (CPU util/freq/
+    // temp + GPU memory) — OS-formatted counters sampled once per tick by
+    // the injected sysStats adapter (one PowerShell query per tick — no
+    // extra polling latency). The mock adapter returns fixed values; the
+    // real adapter degrades per-field to null (honest '—' in the UI).
+    svc.onSample(async (sample) => {
+      let extra = {};
+      try {
+        extra = await sysStats.sample();
+      } catch {
+        // a stats failure must never break the telemetry push
+        extra = {};
+      }
+      emit('telemetry:sample', { ...sample, ...extra });
+    });
     svc.onPollError(() => { /* stale readouts recover on the next tick */ });
     await svc.start();
     telemetry.set(deviceId, svc);
@@ -585,47 +618,35 @@ export function createIpcHandlers({
         return registryApplyAdapter.apply(entryId, action);
       },
 
-      // Run-key (apply-on-startup) state (M2b). startup-set writes the HKCU
-      // Run key ONLY on an explicit user click (the future Profiles UI
-      // toggle); the default adapter is the MOCK so tests/ui-verify never
-      // touch the real registry.
+      // Run-key (start-with-windows / apply-at-boot) state (M2b/M4-D2).
+      // startup.set writes the HKCU Run value ONLY on an explicit user
+      // click (unelevated reg.exe — zero UAC); the default adapter is the
+      // MOCK so tests/ui-verify never touch the real registry.
       'startup-get': async (...args) => {
         assertNoPayload(args, 'startup-get');
-        return startup.get();
+        const raw = await startup.get();
+        // M4-D2 derivation: ONE Run value serves both toggles. The value
+        // existing means the app starts at logon; the toggle semantics are
+        // composed HERE from the persisted settings:
+        //   startWithWindows = value exists AND the Settings toggle is on;
+        //   applyOnBoot = value exists AND the profile's start-at-boot is
+        //   on AND an active profile exists.
+        const settings = await store.loadSettings();
+        return {
+          startWithWindows: raw.valueExists === true && settings.startWithWindows === true,
+          applyOnBoot: raw.valueExists === true
+            && settings.ocOnBoot === true
+            && !!settings.activeProfileId,
+        };
       },
 
-      'startup-set': async (enabled, profileId) => {
+      // M4-D2: enable/disable the HKCU Run value (the bare "<exe>" — no
+      // profile id, no tasks, no elevation). Validates the boolean and
+      // returns the composed state (same derivation as startup-get).
+      'startup-set': async (enabled) => {
         if (typeof enabled !== 'boolean') throw new Error('startup-set: enabled must be a boolean');
-        if (enabled) {
-          if (typeof profileId !== 'string' || profileId.length === 0) {
-            throw new Error('startup-set: profileId is required when enabling');
-          }
-          // M2b review F6: the Run-key value is space-delimited
-          // (buildRunValue/parseRunValue require \S+) — a whitespace id
-          // would silently break the startup-get round trip.
-          if (!/^\S+$/.test(profileId)) {
-            throw new Error('startup-set: profileId must not contain whitespace');
-          }
-        } else if (profileId !== null && profileId !== undefined) {
-          throw new Error('startup-set: profileId must be null when disabling');
-        }
-        await startup.set(enabled, enabled ? profileId : null);
-        return startup.get();
-      },
-
-      // M4-D (Settings "Start with Windows"): enable/disable the plain-app
-      // scheduled task (ArcPowerAppOnBoot — onlogon /rl highest, no
-      // --apply-profile). Enabling disables the apply-profile registration
-      // and vice versa (the two tasks cannot both be enabled — the startup
-      // module owns the coexistence rule). The default adapter is the MOCK;
-      // the product path injects the real adapter (ONE UAC per enable).
-      'startup-app-set': async (enabled) => {
-        if (typeof enabled !== 'boolean') throw new Error('startup-app-set: enabled must be a boolean');
-        if (typeof startup.setAppOnBoot !== 'function') {
-          throw new Error('startup-app-set: the startup adapter has no app-task variant');
-        }
-        await startup.setAppOnBoot(enabled);
-        return startup.get();
+        await startup.set(enabled);
+        return handlers['startup-get']();
       },
 
       // M4-D (user): the system-info read (CPU card + the VRAM enrichment
@@ -685,12 +706,26 @@ export function createIpcHandlers({
         return { elevated, workerApply: applyRunner?.needsWorker?.() === true };
       },
 
-      // FPS via PresentMon (M2b-B). The default adapter is the mock (always
-      // null); the product path injects the real client, which itself
-      // degrades to null when the DLL/service is unavailable. Never throws.
+      // FPS via DXGI GetFrameStatistics (M4-D2 — replaced PresentMon). The
+      // default adapter is the mock (always null); the product path injects
+      // the real DXGI adapter, which itself degrades to null when DXGI is
+      // unavailable. Never throws.
       'fps-poll': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return presentmon.poll(deviceId);
+        return fpsAdapter.poll(deviceId);
+      },
+
+      // M4-D2 (user): Monitoring "Log to file" — append one CSV line for a
+      // full telemetry sample (the pushed sample incl. the 4 system-stats
+      // fields + fps). The payload is validated as a plain object; the
+      // writer appends the line (header on first open) and never throws —
+      // IO errors are reported as { ok: false, error } so the renderer can
+      // show an honest note instead of a crash.
+      'monitor-log-append': async (sample) => {
+        if (typeof sample !== 'object' || sample === null || Array.isArray(sample)) {
+          throw new Error('monitor-log-append: sample must be a plain object');
+        }
+        return monitorLog.append(sample);
       },
 
       // Profiles (M2b-B). Every channel returns the full envelope
@@ -757,7 +792,18 @@ export function createIpcHandlers({
 
       // Persisted-settings patch (activeProfileId / ocOnBoot + M4-D the
       // Settings-tab fields). Read-modify-write in main so the renderer can
-      // never clobber waiverAccepted.
+      // never clobber waiverAccepted. M4-D2 (plan F4 / review F1): THIS
+      // handler is the ONLY writer of the HKCU Run value (via the startup
+      // adapter) — every settings save re-derives the value from the MERGED
+      // intent (startWithWindows || (ocOnBoot && an active profile)), so a
+      // missing/externally-deleted value self-heals on the next save.
+      // One reg.exe call per save; a registry failure degrades to the
+      // honest save envelope (the intent still persists and the renderer's
+      // mismatch hint surfaces the disagreement until the next save
+      // re-derives). The value write lands BEFORE the settings save: a
+      // partial failure (save threw) leaves the registration ahead of the
+      // intent — the renderer's catch re-queries startup-get and the
+      // mismatch hint explains the disagreement honestly.
       'profiles-settings-save': async (patch) => {
         if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
           throw new Error('profiles-settings-save: patch must be an object');
@@ -786,7 +832,24 @@ export function createIpcHandlers({
           closeToTray: patch.closeToTray === undefined
             ? cur.closeToTray
             : patch.closeToTray === true,
+          // M4-D2: the Monitoring "Log to file" toggle (same rule).
+          monitorLogToFile: patch.monitorLogToFile === undefined
+            ? cur.monitorLogToFile
+            : patch.monitorLogToFile === true,
         };
+        // M4-D2 (plan F4): derive the Run value from the merged intent and
+        // write it through the startup adapter (write when true, delete when
+        // false — one reg.exe call per save, mock-safe). A registry failure
+        // degrades to the honest save envelope below (never a failed save).
+        try {
+          await startup.set(
+            next.startWithWindows === true
+              || (next.ocOnBoot === true && !!next.activeProfileId),
+          );
+        } catch {
+          // honest degradation: the persisted intent stays, the renderer's
+          // mismatch hint (startup truth vs intent) surfaces the reg failure
+        }
         await store.saveSettings(next);
         return next;
       },
@@ -857,6 +920,23 @@ export function createIpcHandlers({
         }
         return mock.setFeatureset(id);
       };
+      // M4-D2: the boot-apply flow probe. mock.runBootApply runs the REAL
+      // window-path boot apply (applyRunner-less, defaults-fallback
+      // skipped — the exact unelevated-boot semantics) and records the
+      // outcome in the mock apply log; ui-verify asserts the log records
+      // the active profile with no refusal.
+      if (typeof mock.runBootApply === 'function') {
+        handlers['mock:run-boot-apply'] = async (...args) => {
+          assertNoPayload(args, 'mock:run-boot-apply');
+          return mock.runBootApply();
+        };
+      }
+      if (typeof mock.bootApplyLog === 'function') {
+        handlers['mock:boot-apply-log'] = async (...args) => {
+          assertNoPayload(args, 'mock:boot-apply-log');
+          return mock.bootApplyLog();
+        };
+      }
     }
 
     return { handlers, stopAllTelemetry };

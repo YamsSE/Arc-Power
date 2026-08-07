@@ -1,27 +1,39 @@
-// Arc Power — Settings tab (M4-D): Start with Windows (the plain-app
-// onlogon task ArcPowerAppOnBoot — ONE UAC in dev, mock in --ui-verify),
-// Start minimized (persisted startMinimized — the window minimizes to the
-// taskbar at boot, the tray click restores), Close to tray (persisted
-// closeToTray — closing the window hides it to the icon list instead of
-// quitting; the tray menu's Quit still exits), and the app version row.
+// Arc Power — Settings tab (M4-D + M4-D2): Start with Windows (the HKCU Run
+// value — ONE registration, zero UAC), Start minimized (persisted
+// startMinimized — the window minimizes to the taskbar at boot, the tray
+// click restores), Close to tray (persisted closeToTray — closing the
+// window hides it to the icon list instead of quitting; the tray menu's
+// Quit still exits), Log to file (persisted monitorLogToFile — the actual
+// CSV writes happen in the BOOT-LEVEL telemetry subscription in app.ts),
+// and the app version row.
 //
-// Honesty rules (same pattern as the Profiles page's boot card):
-//   - the Start-with-Windows checkbox reflects the TASK truth from
-//     startup-get (read-only), never the persisted intent; a mismatch with
-//     settings.json surfaces as a hint, never a lie;
-//   - the apply-profile registration (Profiles "start at boot") and the
-//     plain-app task cannot both be enabled (two onlogon /rl highest tasks
-//     would launch the app twice at logon) — the card shows both states
-//     honestly and enabling one disables the other inside the SAME elevated
-//     call (still one UAC);
-//   - enabling Start with Windows needs ONE UAC in dev (the elevated
-//     scheduled-task helper); mock mode applies in-process.
+// M4-D2 (r2 F4/F6): the Run value is SHARED with the Profiles page's
+// "start at boot" (ocOnBoot) — one value serves both toggles. Honesty
+// rules:
+//   - the checkbox reflects the STARTUP-GET derivation (checked whenever
+//     the value exists — either toggle can own it), never the persisted
+//     intent alone;
+//   - the mismatch hint compares the startup truth against the persisted
+//     intent `(settings.startWithWindows || (settings.ocOnBoot &&
+//     !!settings.activeProfileId))` — NEVER a false mismatch when ocOnBoot
+//     owns the value (plan-review r2 F6);
+//   - disabling Start with Windows must NOT remove the Run value while the
+//     profile's start-at-boot owns it (the value is shared) — the toggle
+//     RE-QUERIES startup-get FRESH before that ownership decision (never
+//     the mount-captured bootState); main's profiles-settings-save is the
+//     single writer of the value and re-derives it from the persisted
+//     intent on every save.
+//
+// The old elevated scheduled-task wording (ArcPowerAppOnBoot) is GONE —
+// tasks are dead (M4-D2 §12 root cause b); the HKCU Run value is the only
+// registration and it never UACs.
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { versionLine } from '../components/header.ts';
+import { setMonitorLogToFile } from '../log-state.ts';
 import type { StartupGetState } from '../types.ts';
 
 export const settingsPage: Page = {
@@ -33,7 +45,7 @@ export const settingsPage: Page = {
       el('h1', { class: 'page-title', text: 'Settings' }),
       el('p', {
         class: 'page-subtitle',
-        text: 'Startup behavior and app information. Start with Windows runs the app at logon via an elevated scheduled task (no prompt); Start minimized hides the window to the taskbar — restore it from the tray icon.',
+        text: 'Startup behavior and app information. Start with Windows registers Arc Power in the HKCU Run key (no elevation, no prompt); Start minimized hides the window to the taskbar — restore it from the tray icon.',
       }),
       el('div', { id: 'settings-root', class: 'settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
     );
@@ -46,7 +58,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const s = ctx.store.get();
   const displayVersion = s.appVersion && s.appVersion !== '0.0.0' ? `${versionLine(s.appVersion)} Alpha` : '—';
 
-  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean };
+  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null };
   let bootState: StartupGetState | null = null;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
@@ -56,6 +68,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       startWithWindows: envelope.settings.startWithWindows === true,
       startMinimized: envelope.settings.startMinimized === true,
       closeToTray: envelope.settings.closeToTray === true,
+      monitorLogToFile: envelope.settings.monitorLogToFile === true,
+      // M4-D2 (r2 F6): the mismatch formula also reads the profile's
+      // start-at-boot intent (ocOnBoot + activeProfileId) — the Run value
+      // is shared, so the Settings checkbox can legitimately be ON because
+      // the profile owns it.
+      ocOnBoot: envelope.settings.ocOnBoot === true,
+      activeProfileId: envelope.settings.activeProfileId,
     };
   } catch (err) {
     clear(root);
@@ -69,14 +88,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const refresh = async (): Promise<void> => {
     try {
       bootState = await api.startupGet();
-    } catch { /* keep the last known task state */ }
+    } catch { /* keep the last known startup state */ }
     render();
   };
 
   const render = (): void => {
-    const appTaskEnabled = bootState?.applyOnBoot?.enabled === true;
-    const runKeyEnabled = bootState?.startupRunKey?.enabled === true;
-    const startWithMismatch = appTaskEnabled !== persisted.startWithWindows;
+    // M4-D2 (r2 F6): the Settings checkbox shows ON whenever the Run value
+    // exists — either the Settings toggle OR the profile's start-at-boot
+    // owns it. The mismatch hint compares the startup truth against the
+    // persisted INTENT (never a false mismatch when ocOnBoot owns the
+    // value).
+    const startWithWindows = bootState?.startWithWindows === true;
+    const applyOnBoot = bootState?.applyOnBoot === true;
+    const valueExists = startWithWindows || applyOnBoot;
+    const intended = persisted.startWithWindows || (persisted.ocOnBoot && !!persisted.activeProfileId);
+    const startWithMismatch = valueExists !== intended;
 
     const startWithCard = el('section', { class: 'card settings-card settings-startup-card' }, [
       el('h2', { class: 'card-title', text: 'Start with Windows' }),
@@ -86,27 +112,26 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             type: 'checkbox',
             class: 'settings-checkbox',
             dataset: { setting: 'startWithWindows' },
-            checked: appTaskEnabled,
+            checked: valueExists,
             onchange: (ev: Event) => void onStartWithWindowsToggle((ev.target as HTMLInputElement).checked),
           }),
           el('span', { text: 'Launch Arc Power when Windows starts' }),
         ]),
       ]),
-      // Honest current-state lines: the elevated task runs the app WITHOUT
-      // --apply-profile (the packaged EXE is always elevated — a plain Run
-      // key would UAC at every logon).
-      appTaskEnabled
-        ? el('p', { class: 'card-note settings-state', text: 'Active: ArcPowerAppOnBoot (elevated logon task — no prompt at logon).' })
+      // Honest current-state line: the HKCU Run value is the ONLY
+      // registration (no tasks, no elevation).
+      valueExists
+        ? el('p', { class: 'card-note settings-state', text: 'Active — Arc Power starts at logon.' })
         : el('p', { class: 'card-note settings-state', text: 'Not active — the app starts manually.' }),
-      // Coexistence (Round-1 F4): both registrations are onlogon /rl
-      // highest — both enabled would launch the app twice at logon. The
-      // apply-profile task is shown honestly; enabling the app task
-      // disables it inside the same elevated call.
-      runKeyEnabled
-        ? el('p', { class: 'card-note boot-hint', text: 'The "Apply active profile at boot" task is enabled — it also launches the app at logon. Enabling Start with Windows disables it (the two cannot coexist).' })
+      // M4-D2 (r2 F6 reword): when the profile's start-at-boot owns the
+      // value, the Settings checkbox is ON because Arc Power starts at
+      // logon to run the boot apply — the hint explains the ownership
+      // (never a false mismatch).
+      applyOnBoot
+        ? el('p', { class: 'card-note boot-hint', text: 'Apply active profile at boot is enabled — Arc Power starts at logon to apply it.' })
         : null,
       startWithMismatch
-        ? el('p', { class: 'card-note boot-hint', text: 'The task state and the saved settings disagree — the toggle reflects the task.' })
+        ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree — the toggle reflects the registration.' })
         : null,
     ]);
 
@@ -154,6 +179,33 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
+    // M4-D2 (§10): the "Log to file" toggle. The persisted value rides in
+    // profiles-settings (monitorLogToFile); the actual CSV writes live in
+    // the BOOT-LEVEL telemetry subscription (app.ts) so logging continues
+    // across page navigation. The Monitoring page carries the same toggle
+    // + the current log path.
+    const logCard = el('section', { class: 'card settings-card' }, [
+      el('h2', { class: 'card-title', text: 'Log to file' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'monitorLogToFile' },
+            checked: persisted.monitorLogToFile,
+            onchange: (ev: Event) => void onLogToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Write every telemetry sample to a CSV file' }),
+        ]),
+      ]),
+      el('p', {
+        class: 'card-note settings-state',
+        text: persisted.monitorLogToFile
+          ? 'Every telemetry sample is appended to a daily CSV file in your Documents folder.'
+          : 'No log file is written.',
+      }),
+    ]);
+
     const aboutCard = el('section', { class: 'card settings-card' }, [
       el('h2', { class: 'card-title', text: 'About' }),
       el('div', { class: 'card-body kv-grid' }, [
@@ -162,26 +214,41 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    root.append(startWithCard, startMinimizedCard, closeToTrayCard, aboutCard);
+    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, aboutCard);
   };
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
     try {
-      // The elevated task create/delete (ONE UAC in dev; mock in verify).
-      // Enabling disables the apply-profile registration in the same call.
-      await api.startupAppSet(checked);
+      // M4-D2: the HKCU Run value is shared with the Profiles page's
+      // start-at-boot — disabling must NOT remove it while the profile's
+      // boot apply owns it (the in-app boot apply then still runs). The
+      // ownership decision ALWAYS re-queries startup-get FRESH — never the
+      // mount-captured bootState (a stale capture could remove the value
+      // the other toggle owns after a mid-session change). A failed
+      // re-query degrades to "owned" — never remove the shared value
+      // directly on unknown state (main's profiles-settings-save
+      // re-derives the value from the persisted intent anyway).
+      let ownedByBoot = true;
+      try {
+        const fresh = await api.startupGet();
+        ownedByBoot = fresh?.applyOnBoot === true;
+      } catch { /* unknown ownership — keep the shared value */ }
+      if (checked || !ownedByBoot) {
+        await api.startupSet(checked);
+      }
       // Persist the intent so the next boot's honest-state line matches.
       await api.profilesSettingsSave({ startWithWindows: checked });
       persisted.startWithWindows = checked;
       toast(checked ? 'success' : 'info', checked ? 'Start with Windows enabled' : 'Start with Windows disabled', '');
     } catch (err) {
       toast('error', 'Start with Windows could not be changed', err instanceof Error ? err.message : String(err));
-      // M4-D review F4: a PARTIAL failure (the task write landed but the
-      // settings save threw) must not leave the card contradicting the task
-      // truth — re-query startup-get so the card re-renders from the TASK
-      // state (the checkbox follows the task, the state line reads the
-      // truth and the mismatch hint explains the disagreement). A blind
-      // checkbox revert would lie when the task write actually succeeded.
+      // M4-D review F4: a PARTIAL failure (the value write landed but the
+      // settings save threw) must not leave the card contradicting the
+      // startup truth — re-query startup-get so the card re-renders from
+      // the derived state (the checkbox follows the derivation, the state
+      // line reads the truth and the mismatch hint explains the
+      // disagreement). A blind checkbox revert would lie when the value
+      // write actually succeeded.
       await refresh();
       return;
     }
@@ -210,6 +277,24 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast(checked ? 'success' : 'info', checked ? 'Close to tray enabled' : 'Close to tray disabled', '');
     } catch (err) {
       toast('error', 'Close to tray could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = !checked;
+      return;
+    }
+    await refresh();
+  };
+
+  const onLogToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="monitorLogToFile"]');
+    try {
+      await api.profilesSettingsSave({ monitorLogToFile: checked });
+      persisted.monitorLogToFile = checked;
+      // M4-D2: the boot-level telemetry subscription reads the shared
+      // module state — the toggle takes effect on the next tick, no
+      // navigation needed.
+      setMonitorLogToFile(checked);
+      toast(checked ? 'success' : 'info', checked ? 'Log to file enabled' : 'Log to file disabled', '');
+    } catch (err) {
+      toast('error', 'Log to file could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = !checked;
       return;
     }

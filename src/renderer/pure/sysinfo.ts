@@ -6,18 +6,28 @@
 
 import type { SysInfo, VideoControllerInfo } from '../types.ts';
 
-/** Format a byte count as a human GB figure ('32.0 GB'), '—' when null. */
+/**
+ * Format a byte count as a human size ('32 GB'), '—' when null.
+ * M4-D2 (§5, user): the RAM amount ROUNDS UP to the next whole GiB —
+ * 34293735424 (31.93 GiB) renders "32 GB", never a floored "31 GB"
+ * (documented ceil semantics per the user's request; the ".0" decimal is
+ * dropped). Sub-GiB amounts render as whole MiB (never a rounded-up "1 GB"
+ * lie for a 512 MB stick).
+ */
 export function formatBytes(bytes: number | null | undefined): string {
   if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) return '—';
-  const gb = bytes / 1024 ** 3;
-  return gb >= 100 ? `${Math.round(gb)} GB` : `${gb.toFixed(1)} GB`;
+  const gib = bytes / 1024 ** 3;
+  if (gib >= 1) return `${Math.ceil(gib)} GB`;
+  return `${Math.ceil(bytes / 1024 ** 2)} MB`;
 }
 
 /**
  * The CPU card's kv rows (data-label -> text). Honest '—' per null field.
- * M4-D (user): the cores/threads/clock and the RAM brand/size/speed are
- * BUNDLED into single rows ("4 Cores / 8 Threads @ 3300 MHz",
- * "G.Skill 32.0 GB @ 2400 MHz") — the two loose rows are gone.
+ * M4-D (user): the cores/threads and the RAM brand/size/speed are BUNDLED
+ * into single rows ("4 Cores / 8 Threads", "G.Skill 32 GB @ 2400 MHz").
+ * M4-D2 (§6): the clock half of the cores row is the LIVE frequency — it
+ * moved OUT of this static model (the dashboard renders it from the
+ * telemetry tick, "@ 4.3 GHz", updated in place).
  */
 export interface CpuCardRows {
   cpu: string;
@@ -27,19 +37,18 @@ export interface CpuCardRows {
 
 /**
  * Build the CPU-card rows from the sysinfo payload (null payload -> all
- * '—'). Cores/threads/clock bundle: "4 Cores / 8 Threads @ 3300 MHz"
- * (physical cores degrade to null in the os.cpus() fallback — never an
- * estimate, so the bundle shows the logical half only then, and the clock
- * drops out when unknown). Memory bundle: "G.Skill 32.0 GB @ 2400 MHz"
- * (the manufacturer + speed rows degrade to '—' pieces, never invented).
+ * '—'). Cores/threads bundle: "4 Cores / 8 Threads" (physical cores
+ * degrade to null in the os.cpus() fallback — never an estimate, so the
+ * bundle shows the logical half only then). Memory bundle:
+ * "G.Skill 32 GB @ 2400 MHz" (the manufacturer + speed rows degrade to '—'
+ * pieces, never invented).
  */
 export function cpuCardRows(sysinfo: SysInfo | null): CpuCardRows {
   const cpu = sysinfo?.cpu;
   const ram = sysinfo?.ram;
   const coresPart = typeof cpu?.cores === 'number' && cpu.cores > 0 ? `${cpu.cores} Cores` : null;
   const threadsPart = typeof cpu?.threads === 'number' && cpu.threads > 0 ? `${cpu.threads} Threads` : null;
-  const clockPart = typeof cpu?.maxClockMhz === 'number' && cpu.maxClockMhz > 0 ? `@ ${cpu.maxClockMhz} MHz` : null;
-  const coreClockParts = [coresPart, threadsPart, clockPart].filter(Boolean) as string[];
+  const coreClockParts = [coresPart, threadsPart].filter(Boolean) as string[];
   const memParts = [
     typeof ram?.manufacturer === 'string' && ram.manufacturer.length > 0 ? ram.manufacturer : null,
     formatBytes(ram?.totalBytes),
@@ -50,30 +59,6 @@ export function cpuCardRows(sysinfo: SysInfo | null): CpuCardRows {
     coresClock: coreClockParts.length > 0 ? coreClockParts.join(' / ') : '—',
     memory: memParts.length > 0 ? memParts.join(' ') : '—',
   };
-}
-
-/** PCIe Gen number -> display label ("PCIe 4.0"), null when unknown. */
-export function pcieGenLabel(gen: number | null | undefined): string | null {
-  if (typeof gen !== 'number' || gen < 1 || gen > 5) return null;
-  return `PCIe ${gen}.0`;
-}
-
-/**
- * M4-D (user): the GPU card's PCIe row — the CURRENTLY-USED link
- * ("PCIe 4.0 x16"), or '—' when the kernel does not populate the link
- * properties (live-verified: the A770 behind a PCIe switch reports the
- * unpopulated 1/1 pattern — the honest row never invents a link).
- */
-export function pcieRow(controller: VideoControllerInfo | null | undefined): string {
-  const pcie = controller?.pcie;
-  if (!pcie) return '—';
-  // The kernel's unpopulated-defaults pattern (1/1/1/1) must never render
-  // as a real link (defense-in-depth — the main-side parse gates it too).
-  if (pcie.currentGen === 1 && pcie.currentWidth === 1 && pcie.maxGen === 1 && pcie.maxWidth === 1) return '—';
-  const gen = pcieGenLabel(pcie.currentGen);
-  const width = typeof pcie.currentWidth === 'number' && pcie.currentWidth > 0 ? `x${pcie.currentWidth}` : null;
-  if (!gen || !width) return '—';
-  return `${gen} ${width}`;
 }
 
 /**

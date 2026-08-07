@@ -242,27 +242,16 @@ export interface RegistryCatalogResponse {
   states: RegistryEntryState[];
 }
 
-/** apply-on-startup state (startup-get IPC). `mechanism` reports which
- *  registration is active: the M2C-C elevated scheduled task or the legacy
- *  Run key. */
-export interface StartupState {
-  enabled: boolean;
-  profileId: string | null;
-  value: string | null;
-  mechanism: 'task' | 'run-key' | null;
-}
-
 /**
- * M4-D: the combined startup-get shape — BOTH registrations reported
- * distinctly (the two onlogon tasks cannot both be enabled; enabling one
- * disables the other in main). `startupRunKey` is the apply-profile
- * registration (Profiles "start at boot"), `applyOnBoot` is the plain-app
- * task (Settings "Start with Windows"), `startWithWindows` is its summary.
+ * M4-D2: the startup-get shape — ONE HKCU Run value serves both toggles;
+ * the derivation is composed in main from the raw value + the persisted
+ * settings: startWithWindows = value exists AND the Settings toggle is on;
+ * applyOnBoot = value exists AND the profile's start-at-boot is on AND an
+ * active profile exists.
  */
 export interface StartupGetState {
-  startupRunKey: StartupState;
-  applyOnBoot: { enabled: boolean; value: string | null };
   startWithWindows: boolean;
+  applyOnBoot: boolean;
 }
 
 /** M4-D: one Win32_VideoController row (AdapterRAM already degraded). */
@@ -270,17 +259,12 @@ export interface VideoControllerInfo {
   name: string | null;
   vramBytes: number | null;
   pnpDeviceId: string | null;
-  /** M4-D (user): the CURRENTLY-USED PCIe link (null when the kernel does
-   *  not populate the properties — the honest '—' row). */
-  pcie: {
-    currentGen: number | null;
-    currentWidth: number | null;
-    maxGen: number | null;
-    maxWidth: number | null;
-  } | null;
   /** M4-D (user): ReBAR verdict — true when the device's memory resources
    *  include a multi-GiB BAR (a functioning Resizable BAR), false when only
-   *  the small aperture BAR exists, null when unknown. */
+   *  the small aperture BAR exists, null when unknown. M4-D2: sourced from
+   *  BOTH the per-device pnputil resources AND the Win32_AllocatedResource
+   *  cross-check (any >= 1 GiB range from either). The PCIe row was
+   *  REMOVED (the unpopulated 1/1 pattern made it a permanent '—'). */
   rebarActive: boolean | null;
 }
 
@@ -323,6 +307,11 @@ export interface TelemetrySample {
   utilPct?: number;
   powerW?: number;
   throttle: ThrottleFlags;
+  /** M4-D2: system stats pushed on every tick (rolling deltas; null = honest '—'). */
+  cpuUtilPct?: number | null;
+  cpuTempC?: number | null;
+  cpuFreqMhz?: number | null;
+  gpuMemUsedBytes?: number | null;
 }
 
 /** A saved profile (mirrors the main-process Profile typedef). */
@@ -349,6 +338,8 @@ export interface ProfileSettingsState {
   startMinimized: boolean;
   /** M4-D (user): closing the window hides it to the tray instead of quitting. */
   closeToTray: boolean;
+  /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
+  monitorLogToFile: boolean;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */
@@ -357,7 +348,7 @@ export interface ProfilesEnvelope {
   settings: ProfileSettingsState;
 }
 
-/** Result of one PresentMon fps-poll (null when FPS is unavailable). */
+/** Result of one DXGI fps-poll (null when FPS is unavailable). */
 export interface FpsSample {
   fps: number | null;
   frameTimeMs: number | null;

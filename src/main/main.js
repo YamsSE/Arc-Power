@@ -25,13 +25,15 @@ import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode } from './ipc-core.js';
 import { ProfileStore } from './store/profile-store.js';
-import { createStartup, createMockStartup } from './startup.js';
+import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
-import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
-import { collectSysinfo, createMockSysinfo, vramBytesOfDevice } from './sysinfo.js';
-import { applyProfile, runApplyOnStartup } from './apply-on-boot.js';
+import { createDxgiFpsAdapter } from './fps-dxgi.js';
+import { createSysStats, createMockSysStats } from './sys-stats.js';
+import { createMonitorLog } from './monitor-log.js';
+import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar } from './sysinfo.js';
+import { applyProfile, runApplyOnStartup, applyProfileBoot } from './apply-on-boot.js';
 import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
@@ -244,7 +246,14 @@ async function main() {
       mock: {},
     });
     try {
-      const { lines } = await runSmoke(backend);
+      // M4-D2 (§13 smoke gate): unelevated smoke runs SKIP the no-op write
+      // round trips (reported as "skipped (unelevated)") — the real A770
+      // refuses/silently-lies unelevated, and the packaged gate must stay
+      // exit 0. Mock smoke reports elevated (its round trips genuinely
+      // pass) so the full sequence still runs in --headless --mock.
+      const { lines } = await runSmoke(backend, {
+        isElevated: mock ? () => true : isElevatedReal,
+      });
       console.log('\nSMOKE OK — ' + lines.filter((l) => l.startsWith('[health]')).length + ' health line(s), see above for the full sequence.');
       app.exit(0);
     } catch (err) {
@@ -311,8 +320,37 @@ async function main() {
     // query RESULT here, so the handler threw and the renderer degraded to
     // null (empty card; the mock adapter masked it in tests/ui-verify). Wrap
     // the cached result in the SAME adapter shape the mock uses.
+    // M4-D2 (user: ReBAR): the driver's BAR state (ctlPciGetProperties —
+    // resizable_bar_enabled) is the PRIMARY ReBAR source — the same driver
+    // state IGS + GPU-Z report (live-verified: this A770's driver reports
+    // resizable_bar_enabled=1 while the OS resource map shows no large BAR
+    // window on this Z97 platform). The OS-resource check stays as the
+    // fallback when the driver cannot report (unbound symbol / ctl error).
+    // The driver query runs ONCE, LAZILY at the first sysinfo:get (the
+    // renderer asks after boot — the backend exists by then; no boot
+    // latency added).
     const cached = await collectSysinfo({ timeoutMs: 10000 });
-    sysinfo = { get: async () => cached };
+    let driverBarCached = null;
+    let driverBarDone = false;
+    const driverReBar = async () => {
+      if (driverBarDone) return driverBarCached;
+      driverBarDone = true;
+      try {
+        const devices = await backend.listDevices();
+        if (devices.length === 0) return (driverBarCached = null);
+        const p = await backend.pciProperties(devices[0].id);
+        driverBarCached = p ? (p.resizableBarEnabled ? true : false) : null;
+      } catch {
+        driverBarCached = null;
+      }
+      return driverBarCached;
+    };
+    sysinfo = {
+      get: async () => {
+        const verdict = await driverReBar();
+        return verdict === null ? cached : applyDriverReBar(cached, verdict);
+      },
+    };
   }
   const backend = createBackend({
     kind: mock ? 'mock' : 'igcl',
@@ -519,7 +557,9 @@ async function main() {
   // Run-key adapter: the real one writes HKCU only on an explicit user click
   // (startup-set IPC); mock mode (incl. --ui-verify) never touches the
   // registry.
-  const startup = mock ? createMockStartup() : createStartup();
+  const startup = mock
+    ? createMockStartup()
+    : createStartup({ logonExecPath: await resolveLogonExecPath({ execPath: process.execPath, isPackaged: app.isPackaged }) });
   // Driver-date adapter: real reg.exe query in the product path; mock mode
   // (incl. --ui-verify) returns the fixture date and never spawns reg.exe.
   const driverInfo = mock ? createMockDriverInfo() : createDriverInfo();
@@ -558,16 +598,53 @@ async function main() {
       // M4-B: the CATALOG is the first argument (a deps-only call used to
       // land the deps in `catalog` -> "catalog.find is not a function").
       createRegistryApply(REGISTRY_CATALOG, { isElevated });
-  // FPS adapter: mock mode reports unavailable (never loads koffi/PresentMon);
-  // the product path starts the real client lazily on the first fps-poll.
-  // On this machine the real client degrades to unavailable too (no
-  // PresentMon service) — both modes show 'FPS unavailable'. The mock counts
-  // polls so --ui-verify can assert the Monitoring page stops polling on
-  // navigation away (M2b review F4).
+  // FPS adapter (M4-D2): DXGI GetFrameStatistics — unelevated, system-wide,
+  // no service. Mock mode reports unavailable (never loads dxgi.dll/koffi),
+  // counts polls so --ui-verify can assert the Monitoring page stops
+  // polling on navigation away (M2b review F4), and returns a FIXED sample
+  // ONLY under RID_MOCK_FPS=1 (the new pin).
   let fpsPolls = 0;
-  const presentmon = mock
-    ? { poll: async () => { fpsPolls += 1; return null; } }
-    : createPresentmonAdapter();
+  const fpsAdapter = mock
+    ? {
+        poll: async () => {
+          fpsPolls += 1;
+          if (process.env.RID_MOCK_FPS === '1') return { fps: 60, frameTimeMs: 16.7, gpuBusy: 0.6 };
+          return null;
+        },
+      }
+    : createDxgiFpsAdapter();
+  // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory used).
+  // Mock: fixed deterministic values. Real: the rolling-delta CIM adapter;
+  // its GPU-memory match needs the backend device's LUID — the IGCL
+  // bindings expose none, so the DXGI display-enumeration link resolves it
+  // (GetDesc1: DeviceId -> LUID), matched against the sysinfo video
+  // controllers' PCI device id (DEV_56A0 on the A770). Unmatched -> null
+  // (honest '—').
+  let sysStats;
+  if (mock) {
+    sysStats = createMockSysStats();
+  } else {
+    let deviceIdHex = null;
+    try {
+      const cached = await sysinfo?.get?.();
+      const row = Array.isArray(cached?.videoControllers)
+        ? cached.videoControllers.find((c) => c?.pnpDeviceId)
+        : null;
+      const m = typeof row?.pnpDeviceId === 'string' ? row.pnpDeviceId.match(/DEV_([0-9A-Fa-f]{4})/) : null;
+      if (m) deviceIdHex = `0x${m[1].toLowerCase()}`;
+    } catch {
+      deviceIdHex = null;
+    }
+    sysStats = createSysStats({
+      deviceIdHex,
+      luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
+    });
+  }
+  // M4-D2: the Monitoring log-to-file writer. RID_MOCK_LOG_DIR redirects
+  // the directory (ui-verify); the default is <Documents>\Arc Power.
+  const monitorLog = createMonitorLog({
+    getDocumentsDir: () => app.getPath('documents'),
+  });
 
   let teardown = null;
   // M4-D (user): close-to-tray — the tray's Quit (app.quit) must NOT be
@@ -624,6 +701,28 @@ async function main() {
   }
 
   const win = createWindow();
+  // M4-D2 (§1 close-to-tray FIX): the close handler reads the SYNC settings
+  // cache (loadSettingsSync) and calls event.preventDefault() IN THE SAME
+  // TICK — the old async loadSettings().then(...) ran preventDefault too
+  // late (the window had already closed — the user's "toggle doesn't
+  // work"). The handler is registered in EVERY mode (incl. --ui-verify,
+  // plan-review F2): the mock store updates the sync cache correctly, and
+  // the REAL close-interception probe needs the handler live. A settings
+  // read failure degrades to the normal close (never silently swallows a
+  // quit — isQuitting lets the tray Quit through).
+  win.on('close', (event) => {
+    if (event.defaultPrevented) return;
+    if (win.isDestroyed() || isQuitting) return;
+    try {
+      const settings = store.loadSettingsSync();
+      if (settings && settings.closeToTray === true) {
+        event.preventDefault();
+        win.hide();
+      }
+    } catch {
+      // fall through: normal close
+    }
+  });
   // M4-D (user): Start minimized — when the persisted setting is on, the
   // window starts minimized to the taskbar right after ready-to-show; the
   // tray click restores it (the tray toggle's isMinimized -> restore branch
@@ -634,40 +733,65 @@ async function main() {
     try {
       const bootSettings = await store.loadSettings();
       if (bootSettings.startMinimized === true) {
-        win.once('ready-to-show', () => {
-          if (!win.isDestroyed()) win.minimize();
-        });
+        // M4-D2 (user): start minimized must be DETERMINISTIC. The old
+        // once('ready-to-show', minimize) was flaky (live-verified: the
+        // window sometimes opened normal) — a minimize issued while the
+        // frameless window is still being mapped can be dropped by
+        // Windows. Minimize shortly AFTER the window is shown, with a
+        // retry on the 'show' event until it actually reports minimized.
+        const minimizeOnce = () => {
+          if (!win.isDestroyed() && !win.isMinimized()) win.minimize();
+        };
+        win.once('ready-to-show', () => setTimeout(minimizeOnce, 250));
+        win.on('show', () => setTimeout(minimizeOnce, 120));
       }
-      // M4-D (user): "If the program is closed it's just minimized to the
-      // Icon List in Windows" — when closeToTray is on, closing the window
-      // HIDES it to the tray instead of quitting (the tray menu's Quit item
-      // still exits). The setting is read LIVE at each close (a toggle flip
-      // applies immediately); a settings read failure falls back to the
-      // normal close (never silently swallows a quit).
-      win.on('close', (event) => {
-        if (event.defaultPrevented) return;
-        if (win.isDestroyed() || isQuitting) return;
-        try {
-          void store.loadSettings().then((s) => {
-            if (s.closeToTray === true && !win.isDestroyed() && !isQuitting) {
-              event.preventDefault();
-              win.hide();
-            }
-          });
-        } catch {
-          // fall through: normal close
-        }
-      });
     } catch (err) {
       console.log(`[boot] start-minimized read skipped: ${err.message}`);
     }
   }
   // M2D: the mock-featureset IPC surface exists ONLY in mock mode — real
   // mode has no such channel (the renderer's dropdown never renders either).
+  // M4-D2: mock mode ALSO records every boot-apply attempt in a session
+  // mock apply log + exposes the REAL boot-apply flow as a mock-only
+  // channel (mock:run-boot-apply) — ui-verify proves the flow: the log
+  // records the active profile with no refusal.
+  const mockBootApplyLog = [];
+  const recordBootApply = (profileId, out) => {
+    mockBootApplyLog.push({
+      profileId,
+      applied: out.applied === true,
+      reason: out.reason ?? null,
+      at: Date.now(),
+    });
+  };
+  const runMockBootApply = async () => {
+    let settings;
+    try {
+      settings = await store.loadSettings();
+    } catch (err) {
+      return { applied: false, reason: `settings read failed: ${err.message}`, log: mockBootApplyLog.slice() };
+    }
+    if (settings.ocOnBoot !== true || !settings.activeProfileId) {
+      return { applied: false, reason: 'Start-at-boot is disabled or no active profile', log: mockBootApplyLog.slice() };
+    }
+    // The REAL boot-apply code path: boot-gated, applyRunner-less
+    // (in-process only), defaults-restore skipped regardless of errorCode.
+    const out = await applyProfileBoot({
+      backend,
+      store,
+      profileId: settings.activeProfileId,
+      oldIgcl,
+      log: (s) => console.log(`[mock-boot-apply] ${s}`),
+    });
+    recordBootApply(settings.activeProfileId, out);
+    return { ...out, log: mockBootApplyLog.slice() };
+  };
   const mockCtl = mock
     ? {
         listFeaturesets: () => backend.listFeaturesets(),
         setFeatureset: (id) => backend.setFeatureset(id),
+        runBootApply: runMockBootApply,
+        bootApplyLog: async () => mockBootApplyLog.slice(),
       }
     : null;
   // Whitelisted IPC + telemetry ownership; the renderer drives everything.
@@ -704,7 +828,9 @@ async function main() {
     windowOps,
     registryCatalog,
     registryApply,
-    presentmon,
+    fpsAdapter,
+    sysStats,
+    monitorLog,
     oldIgcl,
     applyRunner,
     isElevated,
@@ -755,6 +881,39 @@ async function main() {
   console.log(`[health] ${JSON.stringify(health)}`);
 
   await setupTray({ getWindow: () => win, backend, store, oldIgcl, applyRunner });
+
+  // M4-D2 (boot apply — pinned F3/F4): the app launched from the HKCU Run
+  // value boots into the UI; when the profile's start-at-boot is on AND an
+  // active profile exists, run the boot-gated IN-APP apply. It runs AFTER
+  // setupTray (a failure balloon must never hit a null trayRef — pinned
+  // F3). The boot variant is applyRunner: null — in-process ONLY, NEVER
+  // the elevated worker, NEVER a UAC at logon (hard constraint); when it
+  // fails in this unelevated boot variant, the defaults-restore fallback
+  // is SKIPPED regardless of errorCode (applyProfileBoot) and the balloon
+  // says the honest deferred-to-next-milestone line (pinned F3/r2 F2).
+  // Mock mode records the attempt in the mock boot-apply log. Never
+  // crashes — every failure is a logged balloon or a console line.
+  try {
+    const bootSettings = await store.loadSettings();
+    if (bootSettings.ocOnBoot === true && bootSettings.activeProfileId) {
+      const out = await applyProfileBoot({
+        backend,
+        store,
+        profileId: bootSettings.activeProfileId,
+        oldIgcl,
+        log: (s) => console.log(s),
+      });
+      if (mock) recordBootApply(bootSettings.activeProfileId, out);
+      if (!out.applied && trayRef && !trayRef.isDestroyed()) {
+        trayRef.displayBalloon({
+          title: 'Arc Power',
+          content: 'Profile apply needs administrator approval — deferred to the next milestone.',
+        });
+      }
+    }
+  } catch (err) {
+    console.log(`[boot] in-app boot apply skipped: ${err.message}`);
+  }
 }
 
 main().catch((err) => {

@@ -8,7 +8,9 @@ import { createStartup } from './startup.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
-import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
+import { createDxgiFpsAdapter } from './fps-dxgi.js';
+import { createSysStats } from './sys-stats.js';
+import { createMonitorLog } from './monitor-log.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 
 /**
@@ -28,16 +30,18 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   },
  *   registryCatalog?: ReturnType<typeof createRegistryCatalog>,
  *   registryApply?: ReturnType<typeof createRegistryApply>,
- *   presentmon?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
+ *   fpsAdapter?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
+ *   sysStats?: { sample: () => Promise<unknown> },
+ *   monitorLog?: { append: (sample: object) => Promise<unknown> },
  *   rebuildTray?: () => Promise<unknown>,
  *   oldIgcl?: object,
  *   applyRunner?: object | null,
  *   isElevated?: () => boolean,
- *   mock?: { listFeaturesets: () => Promise<unknown>, setFeatureset: (id: string) => Promise<unknown> } | null,
+ *   mock?: { listFeaturesets: () => Promise<unknown>, setFeatureset: (id: string) => Promise<unknown>, runBootApply?: () => Promise<unknown>, bootApplyLog?: () => Promise<unknown> } | null,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -47,7 +51,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     windowOps,
     registryCatalog,
     registryApply,
-    presentmon,
+    fpsAdapter,
+    sysStats,
+    monitorLog,
     rebuildTray,
     appVersion: app.getVersion(),
     oldIgcl,
@@ -65,9 +71,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, (_event, ...args) => fn(...args));
   }
-  const stopPresentmon = () => presentmon.stop?.().catch(() => {});
+  const stopFps = () => fpsAdapter.stop?.().catch(() => {});
   return async () => {
     await stopAllTelemetry();
-    await stopPresentmon();
+    await stopFps();
   };
 }

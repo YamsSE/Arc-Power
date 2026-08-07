@@ -12,14 +12,15 @@ import type {
   TelemetrySample,
 } from './types.ts';
 
-export type PageId = 'dashboard' | 'overclocking' | 'fan' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
+export type PageId = 'dashboard' | 'tuning' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
 
-export const PAGE_IDS: PageId[] = ['dashboard', 'overclocking', 'fan', 'monitoring', 'profiles', 'tweaks', 'settings'];
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'monitoring', 'profiles', 'tweaks', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
-  overclocking: 'Overclocking',
-  fan: 'Fan',
+  // M4-D2 (§7): the Overclocking page was RENAMED to Tuning (the fan editor
+  // moved into it as a sub-view — §8).
+  tuning: 'Tuning',
   monitoring: 'Monitoring',
   profiles: 'Profiles',
   tweaks: 'Tweaks',
@@ -27,9 +28,28 @@ export const NAV_LABELS: Record<PageId, string> = {
   settings: 'Settings',
 };
 
+// M4-D2 (§8): the old #/overclocking and #/fan hashes redirect to #/tuning
+// (old bookmarks + old pins). The fan-view signal is a module flag: when
+// the navigation arrived via #/fan, the Tuning page starts with the fan
+// sub-view active (the hash itself is left in place — replaceState would
+// destroy the signal before the page renders).
+let fanViewRequested = false;
+
 export function pageFromHash(hash: string): PageId {
-  const id = hash.replace(/^#\/?/, '').split('?')[0] as PageId;
-  return PAGE_IDS.includes(id) ? id : 'dashboard';
+  const raw = hash.replace(/^#\/?/, '').split('?')[0];
+  if (raw === 'fan') fanViewRequested = true;
+  let id: string = raw;
+  if (raw === 'overclocking' || raw === 'fan') id = 'tuning';
+  return PAGE_IDS.includes(id as PageId) ? (id as PageId) : 'dashboard';
+}
+
+/** M4-D2: whether the current navigation arrived via the old #/fan alias —
+ *  the Tuning page consumes this once at render to start with the fan
+ *  sub-view active. */
+export function consumeFanViewRequest(): boolean {
+  const v = fanViewRequested;
+  fanViewRequested = false;
+  return v;
 }
 
 export function currentPage(): PageId {

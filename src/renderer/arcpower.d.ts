@@ -43,11 +43,10 @@ export interface ArcPowerApi {
    *  never sends raw reg commands). */
   registryApply(entryId: string, action: 'enable' | 'disable' | 'revert'): Promise<RegistryApplyResponse>;
   startupGet(): Promise<StartupGetState>;
-  startupSet(enabled: boolean, profileId: string | null): Promise<StartupGetState>;
-  /** M4-D: enable/disable the plain-app boot task (ArcPowerAppOnBoot, no
-   *  --apply-profile); enabling disables the apply-profile registration and
-   *  vice versa (the two tasks cannot both be enabled). */
-  startupAppSet(enabled: boolean): Promise<StartupGetState>;
+  /** M4-D2: enable/disable the HKCU Run value (the bare "<exe>" — the ONE
+   *  registration shared by Start with Windows and start-at-boot; zero
+   *  UAC). Returns the composed derivation. */
+  startupSet(enabled: boolean): Promise<StartupGetState>;
   /** M4-D: the CIM system info (CPU/RAM/video controllers) — the dashboard
    *  CPU card + the real-GPU VRAM suffix source. */
   sysinfo(): Promise<SysInfo>;
@@ -71,6 +70,12 @@ export interface ArcPowerApi {
   /** M4-B: persist the once-only Advanced OC Mode warning acceptance. */
   advancedModeAcceptedSet(): Promise<{ accepted: boolean }>;
   fpsPoll(deviceId: number): Promise<FpsSample | null>;
+  /** M4-D2 (user): append one full telemetry sample as a CSV line (Log to
+   *  file). The writer reports { ok, file } — the file is the resolved CSV
+   *  path the Monitoring page shows. Never throws (IO errors -> ok:false).
+   *  The optional fps rides along (the renderer's latest FPS, best-effort —
+   *  the sample itself carries the rest of the 12 CSV fields). */
+  monitorLogAppend(sample: TelemetrySample & { fps?: number | null }): Promise<{ ok: boolean; error?: string; file?: string }>;
   profilesList(): Promise<ProfilesEnvelope>;
   profilesSave(profile: Partial<Profile> & { id: string; name: string; settings: Settings; ocOnBoot: boolean }): Promise<ProfilesEnvelope>;
   profilesDelete(id: string): Promise<ProfilesEnvelope>;
@@ -83,6 +88,13 @@ export interface ArcPowerApi {
   /** M2D (mock mode only): swap the mock device featureset live; the whole
    *  UI surface (caps/ranges/units/telemetry) re-renders from the response. */
   mockSetFeatureset(id: string): Promise<MockSwapResponse>;
+  /** M4-D2 (mock mode only): run the REAL window-path boot-apply code path
+   *  (applyRunner-less, defaults-fallback skipped) and record the attempt
+   *  in the session mock apply log. */
+  mockRunBootApply(): Promise<{ applied: boolean; reason?: string | null; log: unknown[] }>;
+  /** M4-D2 (mock mode only): the session's mock boot-apply log (what the
+   *  REAL boot-apply flow recorded). */
+  mockBootApplyLog(): Promise<Array<{ profileId: string; applied: boolean; reason: string | null; at: number }>>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
   /** M4-D: pushed window-maximize state ({ maximized: boolean } on
    *  maximize/unmaximize — the title-bar max button follows it). */

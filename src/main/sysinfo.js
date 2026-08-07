@@ -43,15 +43,20 @@ let cached = null;
  * The PowerShell CIM query: Win32_Processor (Name/NumberOfCores/
  * NumberOfLogicalProcessors/MaxClockSpeed), Win32_ComputerSystem
  * (TotalPhysicalMemory), Win32_PhysicalMemory (Manufacturer/
- * ConfiguredClockSpeed — the RAM brand for the bundled memory row),
- * Win32_VideoController (Name/AdapterRAM/PNPDeviceID), the display class
- * registry subkeys' HardwareInformation.qwMemorySize (UInt64 bytes, keyed
- * by MatchingDeviceId), and — per video controller — the PCIe link
- * properties (DEVPKEY_PciDevice_CurrentLinkSpeed/Width + Max) and the
- * pnputil resource ranges (the ReBAR check: a functioning Resizable BAR
- * shows a multi-GiB memory BAR). Serialized to JSON by PowerShell itself
- * (the parse side stays dumb). A missing class on a stripped-down system
- * serializes as null/[] — the parser degrades those honestly.
+ * ConfiguredClockSpeed — the RAM brand for the bundled memory row; the
+ * Manufacturer is the raw SPD JEDEC hex code, decoded by jedecBrand in the
+ * parse), Win32_VideoController (Name/AdapterRAM/PNPDeviceID), the display
+ * class registry subkeys' HardwareInformation.qwMemorySize (UInt64 bytes,
+ * keyed by MatchingDeviceId), and per video controller — the pnputil
+ * resource ranges (the ReBAR check: a functioning Resizable BAR shows a
+ * multi-GiB memory BAR) PLUS the Win32_AllocatedResource cross-check
+ * (Win32_DeviceMemoryAddress ranges joined to the controller by its
+ * Win32_VideoController DeviceID — the second ReBAR source; M4-D2 §3).
+ * M4-D2: the PCIe-link property queries are REMOVED (the row was removed —
+ * the unpopulated 1/1 pattern made it a permanent '—' on this machine).
+ * Serialized to JSON by PowerShell itself (the parse side stays dumb). A
+ * missing class on a stripped-down system serializes as null/[] — the
+ * parser degrades those honestly.
  * @returns {string}
  */
 export function buildSysinfoScript() {
@@ -60,10 +65,26 @@ export function buildSysinfoScript() {
     '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed',
     '$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory',
     '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed',
-    '$vga = @(Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM,PNPDeviceID)',
+    '$vga = @(Get-CimInstance Win32_VideoController | Select-Object DeviceID,Name,AdapterRAM,PNPDeviceID)',
     '$regMem = @(Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; if ($p.\'HardwareInformation.qwMemorySize\' -and $p.MatchingDeviceId) { [pscustomobject]@{ PNPDeviceID = $p.MatchingDeviceId; MemoryBytes = $p.\'HardwareInformation.qwMemorySize\' } } })',
-    '$vga = @($vga | ForEach-Object { $id = $_.PNPDeviceID; $p = @(Get-PnpDeviceProperty -InstanceId $id -KeyName \'DEVPKEY_PciDevice_CurrentLinkSpeed\',\'DEVPKEY_PciDevice_CurrentLinkWidth\',\'DEVPKEY_PciDevice_MaxLinkSpeed\',\'DEVPKEY_PciDevice_MaxLinkWidth\'); $links = @{}; foreach ($pr in $p) { $links[$pr.KeyName] = $pr.Data }; $res = & pnputil /enum-devices /instanceid $id /resources /format txt 2>$null; $barMax = 0; if ($res) { $res | ForEach-Object { if ($_ -match \'^Memory Resources:\\s*0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz } } } }; [pscustomobject]@{ Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $id; CurrentLinkSpeed = $links[\'DEVPKEY_PciDevice_CurrentLinkSpeed\']; CurrentLinkWidth = $links[\'DEVPKEY_PciDevice_CurrentLinkWidth\']; MaxLinkSpeed = $links[\'DEVPKEY_PciDevice_MaxLinkSpeed\']; MaxLinkWidth = $links[\'DEVPKEY_PciDevice_MaxLinkWidth\']; MaxBarBytes = $barMax } })',
-    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; physicalMemory = $mem; videoControllers = $vga; registryMemory = $regMem } | ConvertTo-Json -Depth 4 -Compress',
+    // M4-D2: per-controller ReBAR sources. (a) pnputil memory resources —
+    // the ONE-LINE layout ("Memory Resources: 0x... - 0x...",
+    // live-verified on the A770). The indented two-line layout (the label
+    // on its own line, the range indented on the NEXT line) is NOT matched
+    // by this per-line -match — machines with that layout are covered by
+    // the (b) allocated-resource cross-check (the plan's second source).
+    // (b) the allocated-resource
+    // cross-check: Win32_AllocatedResource links each Win32_VideoController
+    // (by its DeviceID "VideoControllerN") to Win32_DeviceMemoryAddress
+    // ranges (by StartingAddress) — 64-bit ranges handled with
+    // [Convert]::ToInt64. rebarActive = any range >= 1 GiB from EITHER
+    // source (the A770's only range is 16-20 MB below 4 GB -> ReBAR off,
+    // live-verified; no >= 1 GiB window exists anywhere on this machine).
+    '$vga = @($vga | ForEach-Object { $id = $_.PNPDeviceID; $res = & pnputil /enum-devices /instanceid $id /resources /format txt 2>$null; $barMax = 0; if ($res) { $res | ForEach-Object { if ($_ -match \'^Memory Resources:\\s*0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz } } } }; [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $id; MaxBarBytes = $barMax } })',
+    '$dma = @(Get-CimInstance Win32_DeviceMemoryAddress | Select-Object StartingAddress,EndingAddress)',
+    '$alloc = @(Get-CimInstance Win32_AllocatedResource)',
+    '$barRes = @(foreach ($v in $vga) { $max = 0; foreach ($r in $alloc) { if ("$($r.Dependent)" -match "Win32_VideoController \\(DeviceID = ""$($v.DeviceID)""\\)" -and "$($r.Antecedent)" -match \'StartingAddress = (\\d+)\') { $start = [Convert]::ToInt64($Matches[1]); $e = @($dma | Where-Object { [Convert]::ToInt64($_.StartingAddress) -eq $start })[0]; if ($e) { $sz = [Convert]::ToInt64($e.EndingAddress) - $start + 1; if ($sz -gt $max) { $max = $sz } } } }; [pscustomobject]@{ PNPDeviceID = $v.PNPDeviceID; MaxBarBytes = $max } })',
+    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; physicalMemory = $mem; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
 }
 
@@ -115,44 +136,108 @@ export function applyRegistryMemory(controllers, registryMemory) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// M4-D2 §4: the JEDEC SPD manufacturer-ID -> brand map.
+//
+// Win32_PhysicalMemory.Manufacturer is the RAW SPD JEDEC code rendered as
+// hex (live on this machine: "0420" with PartNumber F3-2400C11-8GXM —
+// definitively G.Skill). The codes come from the JEDEC JEP106 table
+// (JEP106BN, January 2026 — sourced via RAMSPDToolkit's ManufacturerMapping
+// mirror of the JEDEC list, fetched at implementation; the plan's pinned
+// codes Kingston "9801" / Samsung "CE00" / SK Hynix "AD00" / Micron "2C00"
+// match the [code][continuation-count] rendering of the JEP106 entries).
+// FIX-ROUND verification (the RAMSPDToolkit repo is no longer hosted):
+// every entry in this map was re-checked against the i2c-tools
+// decode-dimms manufacturer table (Jean Delvare, the JEDEC-derived table
+// used by the Linux SPD tools) — bank index = continuation count, entry
+// index = (code & 0x7F) - 1. All code-first + count-first twins match,
+// including '04CD' = bank 5 (count 4), code 0x4D with the DDR3 odd-parity
+// bit set (0xCD) = "G Skill Intl" — G.Skill's official JEP106 assignment.
+// The live-anchored '0420' (count 4, code 0x20) is what the F3-2400C11
+// module family actually programs; the map decodes BOTH the live code and
+// the official JEP106 code to G.Skill. Unknown codes pass through honestly
+// (never a wrong brand).
+// ---------------------------------------------------------------------------
+
+export const JEDEC_BRAND = Object.freeze({
+  // Live-verified: F3-2400C11-8GXM (bank 5 code 0x20 under the module's
+  // count-first packing — the firmware renders [count][code]).
+  '0420': 'G.Skill',
+  // Code-first rendering [JEP106 code][continuation count] from the
+  // JEP106BN table: Samsung 0xCE/0, SK Hynix 0xAD/0, Micron 0x2C/0,
+  // Kingston 0x98/1, Corsair 0x9E/2, ADATA 0xCB/4, Team Group 0xEF/4,
+  // Patriot 0x02/5, Crucial 0x9B/5. (All keys quoted — a bare numeric key
+  // like 0205 would be an octal literal in strict mode.)
+  'CE00': 'Samsung',
+  'AD00': 'SK Hynix',
+  '2C00': 'Micron',
+  '9801': 'Kingston',
+  '9E02': 'Corsair',
+  'CB04': 'ADATA',
+  'EF04': 'Team Group',
+  '0205': 'Patriot',
+  '9B05': 'Crucial',
+  // The count-first packings of the same entries (the G.Skill module
+  // proves this packing exists in the wild; both orders are covered).
+  '00CE': 'Samsung',
+  '00AD': 'SK Hynix',
+  '002C': 'Micron',
+  '0198': 'Kingston',
+  '029E': 'Corsair',
+  '04CB': 'ADATA',
+  '04EF': 'Team Group',
+  '0502': 'Patriot',
+  '059B': 'Crucial',
+  // G.Skill's OFFICIAL JEP106 assignment in the count-first packing:
+  // bank 5 (count 4), code 0x4D + the DDR3 odd-parity bit = 0xCD
+  // (verified against the i2c-tools decode-dimms JEDEC-derived table —
+  // "G Skill Intl"; the live F3-2400C11 modules program 0x20 instead,
+  // hence both keys map to G.Skill).
+  '04CD': 'G.Skill',
+});
+
 /**
- * PCIe link-speed code -> Gen label (PCI_EXPRESS_LINK_SPEED codes):
- * 1 = 2.5 GT/s (Gen1) ... 5 = 32 GT/s (Gen5).
- * @param {unknown} code
- * @returns {number|null} the Gen number, or null when unknown
+ * Decode a CIM manufacturer value: a 4-hex-digit JEDEC code maps to the
+ * brand; anything else (a real brand name, an empty value, a longer
+ * string) passes through unchanged — never a wrong claim.
+ * @param {unknown} manufacturer
+ * @returns {string | null}
  */
-export function pcieGenFromCode(code) {
-  if (typeof code !== 'number' || !Number.isFinite(code) || code < 1 || code > 5) return null;
-  return code;
+export function jedecBrand(manufacturer) {
+  if (typeof manufacturer !== 'string' || manufacturer.length === 0) return null;
+  const trimmed = manufacturer.trim();
+  if (/^[0-9A-Fa-f]{4}$/.test(trimmed)) {
+    const upper = trimmed.toUpperCase();
+    return JEDEC_BRAND[upper] ?? trimmed;
+  }
+  return trimmed;
 }
 
 /**
- * M4-D (user): the PCIe link row. The kernel's PciDevice properties can be
- * UNPOPULATED on some platforms (live-verified here: the A770 behind a PCIe
- * switch reports the all-defaults 1/1/1/1 pattern — Max=Gen1 x1 is
- * impossible for a Gen4 card, so the row honestly degrades to null instead
- * of printing a wrong link). When populated (currentSpeed/currentWidth sane
- * or maxSpeed >= 2), report the CURRENTLY-USED link ("PCIe 4.0 x16").
- * @param {object} c raw controller row
- * @returns {{ currentGen: number|null, currentWidth: number|null, maxGen: number|null, maxWidth: number|null } | null}
+ * M4-D2 (user: "read the driver's BAR state"): the DRIVER's Resizable BAR
+ * verdict (ctlPciGetProperties.resizable_bar_enabled — the same state IGS +
+ * GPU-Z show) is the PRIMARY ReBAR source. Live-verified on this machine:
+ * the driver reports enabled=1 while the OS resource map has no large BAR
+ * window (Z97 platform) — the tools and the driver agree, the OS window
+ * never engaged. The verdict is applied to the FIRST video controller (the
+ * primary GPU); a definitive driver verdict (true/false) WINS over the OS
+ * resource check; a null driver verdict (unbound symbol / ctl error /
+ * no device) keeps the OS verdict unchanged. Pure.
+ * @param {object} sysinfo the cached sysinfo shape
+ * @param {boolean|null} driverEnabled the driver's resizable_bar_enabled
+ * @returns {object} a NEW sysinfo object with the driver verdict merged
  */
-export function pcieFromController(c) {
-  const currentSpeed = typeof c?.CurrentLinkSpeed === 'number' ? c.CurrentLinkSpeed : null;
-  const currentWidth = typeof c?.CurrentLinkWidth === 'number' ? c.CurrentLinkWidth : null;
-  const maxSpeed = typeof c?.MaxLinkSpeed === 'number' ? c.MaxLinkSpeed : null;
-  const maxWidth = typeof c?.MaxLinkWidth === 'number' ? c.MaxLinkWidth : null;
-  // Nothing populated -> unknown; the unpopulated-defaults pattern
-  // (everything 1/1 — live-verified here: the A770 behind a PCIe switch)
-  // is also unknown: Max=Gen1 x1 is impossible for a Gen4 card, so the
-  // row honestly degrades to null instead of printing a wrong link.
-  if (currentSpeed === null && currentWidth === null && maxSpeed === null && maxWidth === null) return null;
-  if (currentSpeed === 1 && currentWidth === 1 && maxSpeed === 1 && maxWidth === 1) return null;
-  return {
-    currentGen: pcieGenFromCode(currentSpeed),
-    currentWidth,
-    maxGen: pcieGenFromCode(maxSpeed),
-    maxWidth,
-  };
+export function applyDriverReBar(sysinfo, driverEnabled) {
+  if (driverEnabled === null || driverEnabled === undefined || typeof sysinfo !== 'object' || sysinfo === null) {
+    return sysinfo;
+  }
+  if (!Array.isArray(sysinfo.videoControllers) || sysinfo.videoControllers.length === 0) {
+    return sysinfo;
+  }
+  const controllers = sysinfo.videoControllers.map((c, i) => (
+    i === 0 ? { ...c, rebarActive: driverEnabled } : c
+  ));
+  return { ...sysinfo, videoControllers: controllers };
 }
 
 /**
@@ -167,6 +252,30 @@ export function pcieFromController(c) {
 export function rebarFromMaxBarBytes(maxBarBytes) {
   if (typeof maxBarBytes !== 'number' || !Number.isFinite(maxBarBytes) || maxBarBytes <= 0) return null;
   return maxBarBytes >= 1024 * 1024 * 1024;
+}
+
+/**
+ * M4-D2 (§3): merge the allocated-resource cross-check rows into the
+ * controller list — per controller, the ReBAR verdict comes from the LARGER
+ * of the two sources (pnputil per-device resources and the
+ * Win32_AllocatedResource -> Win32_DeviceMemoryAddress join), matched by
+ * PNPDeviceID. rebarActive = any range >= 1 GiB from either source.
+ * @param {Array<{ pnpDeviceId: string|null, rebarActive: boolean|null }>} controllers
+ * @param {Array<{ PNPDeviceID?: unknown, MaxBarBytes?: unknown }>} allocatedBar
+ *   the raw parsed cross-check rows
+ */
+export function applyAllocatedBar(controllers, allocatedBar) {
+  const rows = Array.isArray(allocatedBar) ? allocatedBar : [];
+  return controllers.map((c) => {
+    if (!c.pnpDeviceId) return c;
+    const row = rows.find((r) => typeof r?.PNPDeviceID === 'string' && r.PNPDeviceID === c.pnpDeviceId);
+    const crossBytes = typeof row?.MaxBarBytes === 'number' && Number.isFinite(row.MaxBarBytes) ? row.MaxBarBytes : 0;
+    const pnputilBytes = typeof c._pnputilBarBytes === 'number' && Number.isFinite(c._pnputilBarBytes) ? c._pnputilBarBytes : 0;
+    return {
+      ...c,
+      rebarActive: rebarFromMaxBarBytes(Math.max(pnputilBytes, crossBytes)),
+    };
+  });
 }
 
 /**
@@ -200,20 +309,30 @@ export function parseCimOutput(stdout) {
   const ram = {
     totalBytes: num(csRaw?.TotalPhysicalMemory) ?? 0,
     speedMhz: num(memRaw?.ConfiguredClockSpeed),
-    manufacturer: typeof memRaw?.Manufacturer === 'string' && memRaw.Manufacturer ? memRaw.Manufacturer : null,
+    // M4-D2: the raw SPD JEDEC code ("0420") decodes to the brand
+    // (G.Skill); a real name / unknown code passes through honestly.
+    manufacturer: jedecBrand(memRaw?.Manufacturer),
   };
-  const videoControllers = applyRegistryMemory(
-    vgaRaw
-      .map((c) => ({
-        name: typeof c?.Name === 'string' ? c.Name : null,
-        vramBytes: vramBytesFromAdapterRam(c?.AdapterRAM),
-        pnpDeviceId: typeof c?.PNPDeviceID === 'string' && c.PNPDeviceID ? c.PNPDeviceID : null,
-        pcie: pcieFromController(c),
-        rebarActive: rebarFromMaxBarBytes(c?.MaxBarBytes),
-      }))
-      .filter((c) => c.name !== null),
-    raw?.registryMemory,
+  const controllers = applyAllocatedBar(
+    applyRegistryMemory(
+      vgaRaw
+        .map((c) => ({
+          name: typeof c?.Name === 'string' ? c.Name : null,
+          vramBytes: vramBytesFromAdapterRam(c?.AdapterRAM),
+          pnpDeviceId: typeof c?.PNPDeviceID === 'string' && c.PNPDeviceID ? c.PNPDeviceID : null,
+          rebarActive: null,
+          // M4-D2: the pnputil source rides along (merged with the
+          // allocated-resource cross-check by applyAllocatedBar).
+          _pnputilBarBytes: typeof c?.MaxBarBytes === 'number' && Number.isFinite(c.MaxBarBytes) ? c.MaxBarBytes : 0,
+        }))
+        .filter((c) => c.name !== null),
+      raw?.registryMemory,
+    ),
+    raw?.allocatedBar,
   );
+  // M4-D2: the internal pnputil byte count never surfaces (only the merged
+  // verdict does).
+  const videoControllers = controllers.map(({ _pnputilBarBytes, ...rest }) => rest);
   return { cpu, ram, videoControllers };
 }
 
@@ -407,7 +526,6 @@ export function createMockSysinfo(overrides = {}) {
           name: 'Intel(R) Arc(TM) A770 Graphics',
           vramBytes: 17179869184, // 16 GiB (the 16 GB config)
           pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08',
-          pcie: { currentGen: 4, currentWidth: 16, maxGen: 4, maxWidth: 16 },
           rebarActive: true,
         },
         ...(overrides.videoControllers ?? []),

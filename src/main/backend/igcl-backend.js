@@ -23,7 +23,7 @@
 import koffi from 'koffi';
 import {
   CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, CTL_FAN_SPEED_MODE, CTL_FAN_SPEED_UNITS,
-  describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem,
+  describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem, decodePciProperties,
 } from './igcl-bindings.js';
 import { igclErrorCode } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C } from './units.js';
@@ -286,6 +286,39 @@ export class IgclBackend {
     const dev = devices[deviceId];
     if (!dev) throw new Error(`unknown device id ${deviceId}`);
     return dev;
+  }
+
+  /**
+   * M4-D2 (user: "read the driver's BAR state"): the driver's PCI
+   * properties via ctlPciGetProperties — resizable_bar_supported /
+   * resizable_bar_enabled (the same driver state IGS + GPU-Z report).
+   * Read-only, unelevated. Degrades to null on any failure (unbound
+   * symbol, ctl error, garbage) — the sysinfo layer falls back to the OS
+   * resource check then.
+   * @param {number} deviceId
+   * @returns {Promise<{
+   *   domain: number, bus: number, device: number, function: number,
+   *   gen: number, width: number, maxBandwidth: number,
+   *   resizableBarSupported: boolean, resizableBarEnabled: boolean
+   * } | null>}
+   */
+  async pciProperties(deviceId) {
+    try {
+      const lib = this._libOrThrow();
+      if (this._isUnavailable(lib.ctlPciGetProperties)) return null;
+      const dev = await this._device(deviceId);
+      const buf = koffi.alloc('uint8', 64);
+      // Size MUST be the DRIVER's real struct size (64) — koffi's own
+      // sizeof is 72 (8-align tail padding that the driver build lacks);
+      // a 72 would answer ERROR_INVALID_SIZE (live-verified).
+      koffi.encode(buf, 0, 'uint32', 64);
+      koffi.encode(buf, 4, 'uint8', 0);
+      const result = lib.ctlPciGetProperties(dev.handle, buf);
+      if (result !== CTL_RESULT.SUCCESS) return null;
+      return decodePciProperties(buf);
+    } catch {
+      return null;
+    }
   }
 
   async _fanHandlesOf(deviceId) {

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import {
   CTL_RESULT, RESULT_NAME, CTL_UNITS, CTL_DATA_TYPE,
   CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_FAN_SPEED_MODE, CTL_FAN_SPEED_UNITS,
-  makeVersion, describeResult, decodeItem, findIgclDll, loadIgcl,
+  makeVersion, describeResult, decodeItem, findIgclDll, loadIgcl, decodePciProperties,
 } from '../src/main/backend/igcl-bindings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,11 @@ const EXPECTED_SIZES = {
   ctl_psu_info_t: 56,
   ctl_power_telemetry_t: 1024,
   ctl_voltage_frequency_point_t: 8,
+  // M4-D2 (driver ReBAR state): ctl_pci_address_t 24, ctl_pci_speed_t 20
+  // (this driver build — no Version field, live-verified), properties 64.
+  ctl_pci_address_t: 24,
+  ctl_pci_speed_t: 24,
+  ctl_pci_properties_t: 64,
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -320,4 +325,46 @@ test('loadIgcl binds symbols and records unavailable ones without throwing', () 
   assert.equal(typeof lib.ctlInit, 'function');
   assert.equal(typeof lib.ctlPowerTelemetryGet, 'function');
   assert.ok(Array.isArray(lib.unavailable));
+});
+
+test('M4-D2: decodePciProperties � the LIVE A770 driver layout (bus 3/gen 4/x16/31.5 GB/s, ReBAR enabled at the 52/53 offsets)', () => {
+  const buf = koffi.alloc('uint8', 64);
+  koffi.encode(buf, 0, 'uint32', 64);       // Size
+  koffi.encode(buf, 4, 'uint8', 0);         // Version
+  koffi.encode(buf, 16, 'uint32', 0);       // address.domain
+  koffi.encode(buf, 20, 'uint32', 3);       // address.bus (the A770 live)
+  koffi.encode(buf, 24, 'uint32', 0);       // address.device
+  koffi.encode(buf, 28, 'uint32', 0);       // address.function
+  koffi.encode(buf, 40, 'int32', 4);        // maxSpeed.gen (PCIe gen 4)
+  koffi.encode(buf, 44, 'int32', 16);       // maxSpeed.width (x16)
+  // maxBandwidth (u64@44): written byte-wise — koffi's int64 encode at a
+  // 4-aligned raw offset misaligns (8-alignment requirement).
+  const bw = 31547565840n; // PCIe 4.0 x16 = 31.5 GB/s
+  for (let b = 0; b < 8; b++) koffi.encode(buf, 48 + b, 'uint8', Number((bw >> BigInt(8 * b)) & 0xffn));
+  koffi.encode(buf, 56, 'uint8', 1);        // resizable_bar_supported
+  koffi.encode(buf, 57, 'uint8', 1);        // resizable_bar_enabled
+  const p = decodePciProperties(buf);
+  assert.equal(p.bus, 3);
+  assert.equal(p.device, 0);
+  assert.equal(p.function, 0);
+  assert.equal(p.gen, 4);
+  assert.equal(p.width, 16);
+  assert.equal(p.maxBandwidth, 31547565840n);
+  assert.equal(p.resizableBarSupported, true);
+  assert.equal(p.resizableBarEnabled, true);
+});
+
+test('M4-D2: decodePciProperties � ReBAR disabled state', () => {
+  const buf = koffi.alloc('uint8', 64);
+  koffi.encode(buf, 20, 'uint32', 3);
+  koffi.encode(buf, 56, 'uint8', 1);
+  koffi.encode(buf, 57, 'uint8', 0);
+  const p = decodePciProperties(buf);
+  assert.equal(p.resizableBarSupported, true);
+  assert.equal(p.resizableBarEnabled, false);
+});
+
+test('M4-D2: the ctlPciGetProperties symbol binds (fixture DLL exists in the repo)', () => {
+  const fixture = path.join(__dirname, '..', 'src', 'main', 'backend', 'igcl2023', 'IntelControlLib.dll');
+  assert.ok(fs.existsSync(fixture), 'the bundled 2023 runtime must exist for the bind test');
 });

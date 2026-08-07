@@ -127,6 +127,22 @@ function makeFakeLib(opts = {}) {
       koffi.encode(buf, 'ctl_oc_vf_pair_t', { Size: koffi.sizeof('ctl_oc_vf_pair_t'), Version: 0, Voltage: state.gpuLock.Voltage, Frequency: state.gpuLock.Frequency });
       return 0;
     },
+    ctlPciGetProperties: (h, buf) => {
+      // M4-D2: the live A770 driver layout (bus 3, gen 4, x16, ReBAR on at
+      // the 52/53 offsets).
+      koffi.encode(buf, 0, 'uint32', 64);
+      koffi.encode(buf, 16, 'uint32', 0);
+      koffi.encode(buf, 20, 'uint32', 3);
+      koffi.encode(buf, 24, 'uint32', 0);
+      koffi.encode(buf, 28, 'uint32', 0);
+      koffi.encode(buf, 40, 'int32', 4);
+      koffi.encode(buf, 44, 'int32', 16);
+      const bw = 31547565840n;
+      for (let b = 0; b < 8; b++) koffi.encode(buf, 48 + b, 'uint8', Number((bw >> BigInt(8 * b)) & 0xffn));
+      koffi.encode(buf, 56, 'uint8', 1);
+      koffi.encode(buf, 57, 'uint8', opts.rebarEnabled === false ? 0 : 1);
+      return 0;
+    },
     ctlOverclockGpuLockSet: (h, pair) => {
       calls.sets.push(['gpuLock', pair.Voltage, pair.Frequency]);
       state.gpuLock = { Voltage: pair.Voltage, Frequency: pair.Frequency };
@@ -228,6 +244,13 @@ function makeBackend(fakeLib, opts = {}) {
     vramBytesOf: opts.vramBytesOf,
   });
 }
+
+// The shared fake lib (createFakeLib) + a convenience wrapper for the
+// pciProperties tests.
+function createFakeLib(opts = {}) {
+  return makeFakeLib(opts);
+}
+
 
 // Encode an alternative ctl_fan_config_t (tests inject this to simulate a
 // driver that normalizes/ignores the applied fan settings).
@@ -1355,4 +1378,24 @@ test('close: clears state and tolerates ctlClose STILL_OPEN', async () => {
   await b.init();
   await b.close();
   assert.equal(b._apiHandle, null);
+});
+
+test('M4-D2: pciProperties reads the driver ReBAR state (live A770 layout: bus 3, gen 4, x16, enabled)', async () => {
+  const backend = makeBackend(makeFakeLib());
+  const p = await backend.pciProperties(0);
+  assert.equal(p.bus, 3);
+  assert.equal(p.gen, 4);
+  assert.equal(p.width, 16);
+  assert.equal(p.resizableBarSupported, true);
+  assert.equal(p.resizableBarEnabled, true);
+});
+
+test('M4-D2: pciProperties reflects resizable_bar_enabled=0; an unbound symbol degrades to null', async () => {
+  const backend = makeBackend(makeFakeLib({ rebarEnabled: false }));
+  const p = await backend.pciProperties(0);
+  assert.equal(p.resizableBarEnabled, false);
+  const lib = backend._libOrThrow();
+  delete lib.ctlPciGetProperties;
+  lib.unavailable.push('ctlPciGetProperties');
+  assert.equal(await backend.pciProperties(0), null);
 });

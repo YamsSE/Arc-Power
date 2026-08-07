@@ -1,12 +1,19 @@
-// Arc Power — Fan page. Read-only (probe-failed / read-only overlay):
-// mode, current curve rendered in the SVG view, RPM marker. Full editor
-// when canControl=true (real A770 via the M3-D probe, and the mock):
-// mode toggle, draggable points, add/remove with point-count clamp,
-// ascending-temp enforcement, presets, Apply.
-// All editor math lives in pure/curve.ts; this file is the DOM view.
+// Arc Power — Fan curve editor (M4-D2 §8): the Tuning page's fan sub-view.
+// Extracted from the removed Fan page (pages/fan.ts) so the editor lives in
+// a shared module used by the Tuning page's "Fan Curve" view toggle.
+//
+// Read-only (probe-failed / read-only overlay): mode, current curve rendered
+// in the SVG view, RPM marker. Full editor when canControl=true (real A770
+// via the M3-D probe, and the mock): mode toggle, draggable points,
+// add/remove with point-count clamp, ascending-temp enforcement, presets,
+// Apply. All editor math lives in pure/curve.ts; this module is the DOM view.
+//
+// The page shell (title/subtitle) belongs to the Tuning page; this module
+// renders ONLY the fan card content. The read-only note + the no-fan note
+// live here (the honest states the Tuning page must show in the sub-view).
 
 import { el, clear, svgEl } from '../dom.ts';
-import type { Page, PageContext } from '../router.ts';
+import type { PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import type { CurvePoint } from '../pure/curve.ts';
 import {
@@ -34,7 +41,8 @@ const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Curve', fixed
 // M4-B (user): the automatic waiver re-prompt + single retry counter — the
 // driver can lose the waiver while settings.json still says accepted; the
 // first fan apply then fails with waiver-not-set and re-prompts + retries
-// once. Reset on every successful apply.
+// once. Reset on every successful apply. (Module-level: only one fan
+// sub-view renders at a time — same pattern as the pages it came from.)
 let waiverRetryCount = 0;
 
 interface EditorState {
@@ -51,93 +59,90 @@ function modeFromCaps(capsMode: FanMode | null, modes: string[]): FanMode {
   return 'fixed';
 }
 
-export const fanPage: Page = {
-  id: 'fan',
+/**
+ * M4-D2: render the fan sub-view into `container` (a fresh element owned by
+ * the Tuning page — cleared + re-created on every view switch). Handles the
+ * honest states: no-fan device note, canControl=false read-only note, and
+ * the full editor.
+ */
+export function renderFanEditor(container: HTMLElement, ctx: PageContext): void {
+  const s = ctx.store.get();
+  const caps = s.caps;
+  const state = s.state;
+  clear(container);
 
-  render(container: HTMLElement, ctx: PageContext) {
-    const s = ctx.store.get();
-    const caps = s.caps;
-    const state = s.state;
-    clear(container);
+  if (!caps || !state) {
+    container.append(el('p', { class: 'page-subtitle', text: 'Loading fan state…' }));
+    return;
+  }
+  if (s.deviceId === null) {
+    container.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
+    return;
+  }
 
-    if (!caps || !state) {
-      container.append(el('p', { class: 'page-subtitle', text: 'Loading fan state…' }));
-      return;
-    }
-    if (s.deviceId === null) {
-      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
-      return;
-    }
+  const canControl = caps.fan.canControl === true;
+  const maxPoints = caps.fan.maxCurvePoints > 0 ? caps.fan.maxCurvePoints : 10;
+  const initial: CurvePoint[] = clampPointCount(state.fanCurve ?? [], maxPoints);
 
-    const canControl = caps.fan.canControl === true;
-    const maxPoints = caps.fan.maxCurvePoints > 0 ? caps.fan.maxCurvePoints : 10;
-    const initial: CurvePoint[] = clampPointCount(state.fanCurve ?? [], maxPoints);
+  // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+  // GPU Health card — this view keeps no waiver UI beyond the apply-time
+  // dialog gate (ensureWaiver in applyFan).
 
+  // M2D: a fan-less device (mock iGPU featureset) has no modes, no curve,
+  // no RPM — render the honest note instead of an empty read-only view.
+  if (caps.fan.modes.length === 0) {
     container.append(
-      el('h1', { class: 'page-title', text: 'Fan' }),
-      el('p', {
-        class: 'page-subtitle',
-        text: canControl
-          ? 'Edit the fan curve or switch the fan mode. Changes apply on demand.'
-          : 'Fan control is read-only on this GPU — the curve below is what the driver currently reports.',
-      }),
+      el('section', { class: 'card fan-card' }, [
+        el('p', { class: 'card-note', text: 'This GPU does not expose a fan (telemetry-only device).' }),
+      ]),
     );
+    return;
+  }
 
-    // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
-    // GPU Health card — this page keeps no waiver UI beyond the apply-time
-    // dialog gate (ensureWaiver in applyFan).
+  if (!canControl) {
+    renderReadOnly(container, ctx, initial, state.fanMode);
+    return;
+  }
 
-    // M2D: a fan-less device (mock iGPU featureset) has no modes, no curve,
-    // no RPM — render the honest note instead of an empty read-only view.
-    if (caps.fan.modes.length === 0) {
-      container.append(
-        el('section', { class: 'card fan-card' }, [
-          el('p', { class: 'card-note', text: 'This GPU does not expose a fan (telemetry-only device).' }),
-        ]),
-      );
-      return;
-    }
+  // Editable path: a device that reports < 2 curve points gets a seeded
+  // 2-point ramp so Add/Remove never get stuck (F6).
+  const editorPoints = seedCurvePoints(state.fanCurve ?? [], maxPoints);
+  const editor: EditorState = {
+    mode: modeFromCaps(state.fanMode, caps.fan.modes),
+    points: editorPoints,
+    selectedIdx: Math.max(0, editorPoints.length - 1),
+    fixedPct: state.fixedFanPct ?? 50,
+  };
 
-    if (!canControl) {
-      renderReadOnly(container, ctx, initial, state.fanMode);
-      return;
-    }
+  renderEditor(container, ctx, editor, maxPoints);
+}
 
-    // Editable path: a device that reports < 2 curve points gets a seeded
-    // 2-point ramp so Add/Remove never get stuck (F6).
-    const editorPoints = seedCurvePoints(state.fanCurve ?? [], maxPoints);
-    const editor: EditorState = {
-      mode: modeFromCaps(state.fanMode, caps.fan.modes),
-      points: editorPoints,
-      selectedIdx: Math.max(0, editorPoints.length - 1),
-      fixedPct: state.fixedFanPct ?? 50,
-    };
-
-    renderEditor(container, ctx, editor, maxPoints);
-  },
-
-  onUpdate(container: HTMLElement, ctx: PageContext) {
-    const marker = container.querySelector<HTMLElement>('#fan-rpm-marker');
-    const readout = container.querySelector<HTMLElement>('#fan-rpm-readout');
-    if (!marker) return;
-    const sample = ctx.store.get().latestSample;
-    const rpm = sample?.fanRpm?.[0];
-    const temp = sample?.tempC;
-    const maxRpm = ctx.store.get().caps?.fan.maxRpm ?? -1;
-    if (readout) readout.textContent = rpm !== undefined ? `${Math.round(rpm)} RPM` : '—';
-    if (rpm !== undefined && temp !== undefined && maxRpm > 0) {
-      const card = container.querySelector<HTMLElement>('.fan-card');
-      const domain = card
-        ? { minT: Number(card.dataset['fanDomainMin']), maxT: Number(card.dataset['fanDomainMax']) }
-        : curveDomain([]);
-      marker.style.left = `${tempToX(temp, domain)}%`;
-      marker.style.top = `${rpmMarkerY(rpm, maxRpm)}%`;
-      marker.hidden = false;
-    } else if (marker) {
-      marker.hidden = true;
-    }
-  },
-};
+/**
+ * M4-D2: the Tuning page's onUpdate delegates here while the fan sub-view is
+ * active — the RPM marker + readout track the telemetry ticks (the same
+ * update the old Fan page ran in its onUpdate).
+ */
+export function updateFanReadout(container: HTMLElement, ctx: PageContext): void {
+  const marker = container.querySelector<HTMLElement>('#fan-rpm-marker');
+  const readout = container.querySelector<HTMLElement>('#fan-rpm-readout');
+  if (!marker) return;
+  const sample = ctx.store.get().latestSample;
+  const rpm = sample?.fanRpm?.[0];
+  const temp = sample?.tempC;
+  const maxRpm = ctx.store.get().caps?.fan.maxRpm ?? -1;
+  if (readout) readout.textContent = rpm !== undefined ? `${Math.round(rpm)} RPM` : '—';
+  if (rpm !== undefined && temp !== undefined && maxRpm > 0) {
+    const card = container.querySelector<HTMLElement>('.fan-card');
+    const domain = card
+      ? { minT: Number(card.dataset['fanDomainMin']), maxT: Number(card.dataset['fanDomainMax']) }
+      : curveDomain([]);
+    marker.style.left = `${tempToX(temp, domain)}%`;
+    marker.style.top = `${rpmMarkerY(rpm, maxRpm)}%`;
+    marker.hidden = false;
+  } else if (marker) {
+    marker.hidden = true;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Read-only view (probe-failed fan / read-only overlay)
@@ -372,12 +377,12 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
         if (readoutVisible) showReadout(editor.selectedIdx);
       };
 
-// M4-C: the manual per-point input path — one Temp/Speed pair per
-// point + a per-point remove. All math stays in pure/curve.ts (movePoint
-// for the temp clamp-between + speed 0..100 clamp, clampPointCount for
-// the count clamp, removePoint for the remove — never below
-// MIN_CURVE_POINTS). The dots + selected state + readout sync IN PLACE
-// so typing keeps focus (a full redraw would drop the caret).
+      // M4-C: the manual per-point input path — one Temp/Speed pair per
+      // point + a per-point remove. All math stays in pure/curve.ts (movePoint
+      // for the temp clamp-between + speed 0..100 clamp, clampPointCount for
+      // the count clamp, removePoint for the remove — never below
+      // MIN_CURVE_POINTS). The dots + selected state + readout sync IN PLACE
+      // so typing keeps focus (a full redraw would drop the caret).
 
       const onEditPoint = (idx: number, raw: number, input: HTMLInputElement, field: 't' | 'speed') => {
         // M4-C (round-2 fix): an EMPTIED box is not a typed value —

@@ -13,9 +13,9 @@ function collect() {
   return { push: (s) => lines.push(s), get: () => lines };
 }
 
-test('runSmoke: full sequence passes on the mock backend', async () => {
+test('runSmoke: full sequence passes on the mock backend (elevated — round trips run)', async () => {
   const out = collect();
-  const res = await runSmoke(new MockBackend(), { log: out.push });
+  const res = await runSmoke(new MockBackend(), { log: out.push, isElevated: () => true });
   assert.equal(res.ok, true);
   const lines = out.get();
   const text = lines.join('\n');
@@ -24,6 +24,22 @@ test('runSmoke: full sequence passes on the mock backend', async () => {
   assert.match(text, /\[caps\] supported=\[gpuFreqOffset, gpuVoltOffset, gpuLock, powerLimit, tempLimit\]/);
   assert.match(text, /\[noop\] applied current values as no-op/);
   assert.match(text, /\[verify\] no value changes detected/);
+  assert.match(text, /\[reset\] no changes detected — reset NOT called/);
+  assert.match(text, /\[telemetry\] sample\[2\]/);
+  assert.match(text, /\[health\] final:/);
+  assert.match(text, /\[close\] backend closed/);
+});
+
+// M4-D2 (§13): the packaged smoke gate — unelevated no-op writes are
+// refused/lie on the real A770, so they are SKIPPED and reported honestly;
+// every other health line stays, and the gate stays exit 0.
+test('M4-D2: runSmoke unelevated — the write round trips are SKIPPED, the rest of the sequence stays', async () => {
+  const out = collect();
+  const res = await runSmoke(new MockBackend(), { log: out.push, isElevated: () => false });
+  assert.equal(res.ok, true, 'the unelevated gate stays exit 0');
+  const text = out.get().join('\n');
+  assert.match(text, /\[noop\] no-op write round trips SKIPPED \(unelevated/);
+  assert.match(text, /\[verify\] write verification SKIPPED/);
   assert.match(text, /\[reset\] no changes detected — reset NOT called/);
   assert.match(text, /\[telemetry\] sample\[2\]/);
   assert.match(text, /\[health\] final:/);
@@ -42,7 +58,7 @@ test('runSmoke: reset IS called when a change is detected (regression guard)', a
     return res;
   };
   const out = collect();
-  const res = await runSmoke(backend, { log: out.push });
+  const res = await runSmoke(backend, { log: out.push, isElevated: () => true });
   assert.equal(res.ok, true);
   const text = out.get().join('\n');
   assert.match(text, /CHANGE DETECTED on \[powerLimitW\]/);

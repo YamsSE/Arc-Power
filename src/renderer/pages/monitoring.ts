@@ -2,7 +2,8 @@
 // telemetry IPC push + one rolling Canvas graph per segment (core clock,
 // temperature, power, utilization, fan) with a 60 s window. Each segment is
 // COLLAPSIBLE (header row + chevron; collapsed by default except the first).
-// FPS comes from the fps-poll IPC channel; when PresentMon is unavailable
+// FPS comes from the fps-poll IPC channel (the DXGI frame-statistics /
+// output-duplication adapter); when no frame statistics are being reported
 // the page shows "FPS unavailable" gracefully — never an error.
 //
 // The graph math lives in pure/graph.ts (series push, time-window trim,
@@ -12,7 +13,9 @@
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
+import { toast } from '../components/toast.ts';
 import type { TelemetrySample } from '../types.ts';
+import { setLatestFps, setMonitorLogToFile, getMonitorLogToFile, getCurrentLogFile } from '../log-state.ts';
 import {
   pushSeries,
   trimSeriesWindow,
@@ -25,7 +28,9 @@ import type { SeriesPoint } from '../pure/graph.ts';
 
 const FPS_POLL_MS = 1000;
 const DRAW_MAX_POINTS = 240;
-const FPS_UNAVAILABLE_NOTE = 'FPS unavailable — PresentMon is not reporting frames on this machine.';
+// M4-D2 (plan-review M5): the PresentMon mention is gone — the FPS source is
+// the DXGI frame-statistics/duplication adapter; unavailable -> honest '—'.
+const FPS_UNAVAILABLE_NOTE = 'FPS unavailable — no frame statistics are being reported on this machine.';
 const FPS_CHECKING_NOTE = 'Checking FPS…';
 
 interface SegmentDef {
@@ -74,8 +79,13 @@ function statTile(label: string, value: string, unit: string, extraClass = ''): 
 }
 
 function readoutTiles(sample: TelemetrySample | null): HTMLElement[] {
-  const num = (v: number | undefined, decimals = 0): string => (v === undefined || !Number.isFinite(v) ? '—' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v)));
+  const num = (v: number | undefined | null, decimals = 0): string => (v === undefined || v === null || !Number.isFinite(v) ? '—' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v)));
   const fpsTile = statTile('FPS', '—', 'FPS', 'mon-fps-tile');
+  // M4-D2 (§11): the GPU-memory tile shows the used VRAM as whole MiB
+  // (integer; 2971324416 bytes -> 2834 MiB). Null -> honest '—'.
+  const gpuMemMiB = typeof sample?.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)
+    ? String(Math.round(sample.gpuMemUsedBytes / 1024 ** 2))
+    : '—';
   return [
     statTile('Core clock', num(sample?.gpuClockMhz), 'MHz'),
     statTile('Memory clock', num(sample?.memClockMhz), 'MHz'),
@@ -83,6 +93,11 @@ function readoutTiles(sample: TelemetrySample | null): HTMLElement[] {
     statTile('Power', num(sample?.powerW, 1), 'W'),
     statTile('Utilization', num(sample?.utilPct), '%'),
     statTile('Fan', num(sample?.fanRpm?.[0]), 'RPM'),
+    // M4-D2 (§11): the new system-stat tiles (the sample carries them on
+    // every push; null = honest '—' — never a fake number).
+    statTile('CPU utilization', num(sample?.cpuUtilPct), '%'),
+    statTile('CPU temperature', num(sample?.cpuTempC), '°C'),
+    statTile('GPU memory', gpuMemMiB, 'MiB'),
     fpsTile,
   ];
 }
@@ -190,6 +205,11 @@ async function pollFps(): Promise<void> {
     sample = null;
   }
   if (!mon) return; // navigated away while polling
+  // M4-D2 (§10): the log-to-file sender reads the latest FPS through the
+  // shared module — the log line carries the best-effort fps even when the
+  // Monitoring page is not the current page (the BOOT-level subscription
+  // does the logging).
+  setLatestFps(sample?.fps ?? null);
   if (mon.fpsTileValue && mon.fpsNote) {
     if (sample && sample.fps !== null && Number.isFinite(sample.fps)) {
       mon.fpsTileValue.textContent = String(Math.round(sample.fps));
@@ -224,6 +244,63 @@ export const monitoringPage: Page = {
     clear(container);
     const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
     mon.fpsNote = fpsNote;
+
+    // M4-D2 (§10): the "Log to file" toggle + the current log path. The
+    // persisted value lives in profiles-settings (monitorLogToFile); the
+    // WRITE itself happens in the BOOT-LEVEL telemetry subscription in
+    // app.ts (logging continues across page navigation) — this card only
+    // owns the toggle + the honest path display.
+    const syncLogToggle = async (): Promise<void> => {
+      try {
+        const env = await api.profilesList();
+        setMonitorLogToFile(env.settings.monitorLogToFile === true);
+      } catch { /* the boot-time value stands */ }
+      const box = container.querySelector<HTMLInputElement>('.mon-log-checkbox');
+      if (box) box.checked = getMonitorLogToFile();
+      refreshLogPath();
+    };
+    const refreshLogPath = (): void => {
+      const line = container.querySelector<HTMLElement>('.mon-log-path');
+      if (!line) return;
+      const p = getCurrentLogFile();
+      line.textContent = getMonitorLogToFile()
+        ? (p ? `Log file: ${p}` : 'Waiting for the first telemetry sample…')
+        : 'Logging is off — no file is written.';
+    };
+    const logCard = el('section', { class: 'card mon-log-card' }, [
+      el('h2', { class: 'card-title', text: 'Log to file' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox mon-log-checkbox',
+            dataset: { setting: 'monitorLogToFile' },
+            checked: getMonitorLogToFile(),
+            onchange: (ev: Event) => void onLogToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Write every telemetry sample to a CSV file' }),
+        ]),
+      ]),
+      el('p', { class: 'card-note mon-log-path' }),
+      el('p', {
+        class: 'card-note',
+        text: 'One CSV line per second (timestamp, GPU + CPU stats, FPS) in your Documents folder. Logging continues while you navigate — it stops when the toggle is off.',
+      }),
+    ]);
+
+    const onLogToggle = async (checked: boolean): Promise<void> => {
+      const box = container.querySelector<HTMLInputElement>('.mon-log-checkbox');
+      try {
+        await api.profilesSettingsSave({ monitorLogToFile: checked });
+        setMonitorLogToFile(checked);
+        toast(checked ? 'success' : 'info', checked ? 'Log to file enabled' : 'Log to file disabled', '');
+        refreshLogPath();
+      } catch (err) {
+        toast('error', 'Log to file could not be changed', err instanceof Error ? err.message : String(err));
+        if (box) box.checked = !checked;
+      }
+    };
+    void syncLogToggle();
 
     const readout = el('section', { class: 'card' }, [
       el('h2', { class: 'card-title', text: 'Live readout' }),
@@ -336,6 +413,7 @@ export const monitoringPage: Page = {
     container.append(
       el('h1', { class: 'page-title', text: 'Monitoring' }),
       el('p', { class: 'page-subtitle', text: 'Live values and 60-second rolling graphs from the GPU.' }),
+      logCard,
       readout,
       graphs,
     );
@@ -355,7 +433,7 @@ export const monitoringPage: Page = {
     mon = null;
   },
 
-  onUpdate(_container: HTMLElement, ctx: PageContext) {
+  onUpdate(container: HTMLElement, ctx: PageContext) {
     if (!mon) return;
     const sample = ctx.store.get().latestSample;
     const now = sample?.t ?? Date.now();
@@ -376,6 +454,16 @@ export const monitoringPage: Page = {
           (values[i] as HTMLElement).textContent = (tile.querySelector('.stat-value') as HTMLElement).textContent;
         }
       });
+    }
+    // M4-D2 (§10): the log path line follows the last append result (the
+    // append runs in the boot subscription; telemetry ticks are the natural
+    // refresh beat — no extra timers).
+    const pathLine = container.querySelector<HTMLElement>('.mon-log-path');
+    if (pathLine) {
+      const p = getCurrentLogFile();
+      pathLine.textContent = getMonitorLogToFile()
+        ? (p ? `Log file: ${p}` : 'Waiting for the first telemetry sample…')
+        : 'Logging is off — no file is written.';
     }
     redrawAll();
   },

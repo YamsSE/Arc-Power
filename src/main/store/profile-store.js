@@ -29,6 +29,14 @@ export class ProfileStore {
     this.ocModeDefault = opts.ocModeDefault === 'advanced' ? 'advanced' : 'stock';
     this.profilesPath = path.join(this.dir, 'profiles.json');
     this.settingsPath = path.join(this.dir, 'settings.json');
+    // M4-D2 (§1 close-to-tray fix): the in-memory settings cache. The REAL
+    // bug was main.js's close handler reading settings ASYNC (loadSettings
+    // .then) and calling event.preventDefault() too late — the window had
+    // already closed. The close handler now reads loadSettingsSync()
+    // SYNCHRONOUSLY. The cache is initialized by the first loadSettings
+    // (and refreshed by every subsequent one); saveSettings updates it in
+    // the same write, so the sync view never lags the persisted truth.
+    this._settingsCache = null;
   }
 
   _ensureDir() {
@@ -73,7 +81,11 @@ export class ProfileStore {
     const raw = fs.readFileSync(filePath, 'utf8');
     let data;
     try {
-      data = JSON.parse(raw);
+      // M4-D2 (user-reported): tolerate a UTF-8 BOM — a settings/profiles
+      // file saved by a third-party tool with a BOM (or an editor save)
+      // must never brick every settings operation with an opaque parse
+      // error. The app's own writer never emits a BOM.
+      data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
     } catch (err) {
       throw new Error(`Cannot load ${path.basename(filePath)}: invalid JSON (${err.message})`);
     }
@@ -126,10 +138,34 @@ export class ProfileStore {
   }
 
   /**
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
+    const settings = this._settingsFromData(data);
+    this._settingsCache = settings;
+    return settings;
+  }
+
+  /**
+   * M4-D2 (§1): the SYNC settings read — serves the in-memory cache
+   * (initialized by the first loadSettings / updated by every
+   * saveSettings). Used by main.js's window close handler where an async
+   * read races the close: preventDefault() must run in the same tick.
+   * Returns null when no settings have been loaded or saved yet (the
+   * caller degrades to the default close behavior — never blocks).
+   * @returns {object|null}
+   */
+  loadSettingsSync() {
+    return this._settingsCache ? { ...this._settingsCache } : null;
+  }
+
+  /**
+   * M4-D2: normalize one raw settings file into the canonical shape (the
+   * absent-field defaults mechanism — no schema bump).
+   * @param {object|null} data
+   */
+  _settingsFromData(data) {
     if (data === null) {
       return {
         waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
@@ -137,6 +173,8 @@ export class ProfileStore {
         // M4-D: absent -> false (the Settings-tab fields ride the
         // absent-field defaults mechanism — NO schema bump).
         startWithWindows: false, startMinimized: false, closeToTray: false,
+        // M4-D2: absent -> false (the Monitoring log-to-file toggle).
+        monitorLogToFile: false,
       };
     }
     return {
@@ -153,12 +191,14 @@ export class ProfileStore {
       // absent-field default mechanism as ocMode/advancedModeAccepted).
       startWithWindows: data.startWithWindows === true,
       startMinimized: data.startMinimized === true,
-    closeToTray: data.closeToTray === true,
+      closeToTray: data.closeToTray === true,
+      // M4-D2: the Monitoring "Log to file" toggle (same mechanism).
+      monitorLogToFile: data.monitorLogToFile === true,
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -171,6 +211,13 @@ export class ProfileStore {
       startWithWindows: settings.startWithWindows === true,
       startMinimized: settings.startMinimized === true,
       closeToTray: settings.closeToTray === true,
+      monitorLogToFile: settings.monitorLogToFile === true,
+    });
+    // M4-D2: keep the sync cache in lockstep with the persisted write — the
+    // close handler must see the very toggle it just persisted.
+    this._settingsCache = this._settingsFromData({
+      ...settings,
+      schemaVersion: SCHEMA_VERSION,
     });
   }
 }

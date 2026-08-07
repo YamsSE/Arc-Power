@@ -39,6 +39,11 @@ const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
  *   requireOcOnBoot?: boolean,   // boot path only; explicit actions skip it
  *   oldIgcl?: object,            // M2C-C: bundled-2023-runtime adapter (null in tests that never extend)
  *   applyRunner?: object | null, // M2C-C: elevation-aware apply runner (null = in-process)
+ *   skipDefaultsFallback?: boolean,  // M4-D2: the in-app (unelevated) boot
+ *                                    // variant — NEVER restores defaults
+ *                                    // (keyed on the SESSION, not the
+ *                                    // errorCode: the unelevated PL refusal
+ *                                    // maps to 'out-of-range')
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -48,7 +53,7 @@ const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null }) {
+export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
@@ -187,6 +192,26 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   // Failure -> defaults, never a silent partial apply. Reached either by a
   // non-waiver failure or by the M4-D retry also failing (the retry ran
   // exactly once above — a second waiver-not-set lands here honestly).
+  //
+  // M4-D2 (no-UAC boot variant): the in-app boot apply runs applyRunner-less
+  // (in-process ONLY — never the elevated worker, no UAC at logon). The
+  // unelevated igcl writes are refused, and the refusal maps to an
+  // errorCode that an errorCode-keyed skip could never match ('out-of-range'
+  // for the PL refusal) — so the fallback-skip is keyed on the SESSION
+  // (skipDefaultsFallback), REGARDLESS of errorCode: logon must NEVER
+  // wipe the live OC state over an elevation refusal. The honest balloon
+  // ("needs administrator approval — deferred to the next milestone") is
+  // the caller's job.
+  if (skipDefaultsFallback) {
+    log('[apply-on-boot] boot variant (applyRunner-less, unelevated): apply failed — defaults-restore fallback SKIPPED (real-HW apply needs administrator approval, deferred to M4-E)');
+    return {
+      applied: false,
+      reason: 'apply failed; defaults restore skipped (boot apply needs administrator approval — deferred to the next milestone)',
+      result,
+      state,
+      fallbackSkipped: true,
+    };
+  }
   log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} — restoring defaults`);
   let fallbackApplied = true;
   try {
@@ -236,6 +261,37 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  */
 export async function applyProfileOnBoot({ backend, store, profileId, log = () => {}, oldIgcl = null, applyRunner = null }) {
   return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true, oldIgcl, applyRunner });
+}
+
+/**
+ * M4-D2: the IN-APP boot variant (window path — the app launched from the
+ * HKCU Run value). Runs the boot-gated shared flow with applyRunner: null
+ * (in-process ONLY — NEVER the elevated worker, no UAC at logon) and the
+ * defaults-restore fallback SKIPPED regardless of errorCode (an unelevated
+ * logon apply must never wipe the live OC state over an elevation refusal).
+ * @param {{
+ *   backend: import('./backend/backend.interface.js').IOCBackend,
+ *   store: import('./store/profile-store.js').ProfileStore,
+ *   profileId: string,
+ *   log?: (s: string) => void,
+ *   oldIgcl?: object,
+ * }} ctx
+ * @returns {Promise<{
+ *   applied: boolean,
+ *   reason: string,
+ *   fallbackSkipped?: boolean,
+ *   result?: unknown,
+ *   state?: unknown,
+ * }>}
+ */
+export async function applyProfileBoot({ backend, store, profileId, log = () => {}, oldIgcl = null }) {
+  return applyProfile({
+    backend, store, profileId, log,
+    requireOcOnBoot: true,
+    oldIgcl,
+    applyRunner: null,
+    skipDefaultsFallback: true,
+  });
 }
 
 /**

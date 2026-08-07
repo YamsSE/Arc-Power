@@ -85,7 +85,7 @@ export class GpuHeader {
         el('div', { class: 'gpu-identity' }, [
           el('div', { class: 'gpu-name', text: device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power') }),
           // M4-A: the display label carries the " Alpha" suffix; the app:version
-          // IPC keeps the bare semver (test/ipc-core pins '0.9.10').
+          // IPC keeps the bare semver (test/ipc-core pins '0.9.13').
           el('div', { class: 'gpu-meta', text: s.bootError ?? `${versionLine(s.appVersion)} Alpha` }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),

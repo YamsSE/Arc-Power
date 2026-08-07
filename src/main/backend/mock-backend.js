@@ -332,6 +332,27 @@ export class MockBackend {
     return [{ ...this._device }];
   }
 
+  /**
+   * M4-D2 (user: driver ReBAR state): the mock reports the fixture's driver
+   * PCI properties — resizableBarEnabled defaults TRUE (the pinned green
+   * pill), overridable via the knob for the off-state pin.
+   * @returns {Promise<object>}
+   */
+  async pciProperties() {
+    const enabled = process.env.RID_MOCK_REBAR_ENABLED !== '0';
+    return {
+      domain: 0,
+      bus: 3,
+      device: 0,
+      function: 0,
+      gen: 4,
+      width: 16,
+      maxBandwidth: 31547565840,
+      resizableBarSupported: true,
+      resizableBarEnabled: enabled,
+    };
+  }
+
   async getCapabilities() {
     const caps = JSON.parse(JSON.stringify(this._caps));
     caps.waiverAccepted = this._waiverAccepted;

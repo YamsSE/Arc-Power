@@ -11,17 +11,16 @@ import { toast } from './components/toast.ts';
 import { initTitlebar } from './components/titlebar.ts';
 import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
-import { overclockingPage } from './pages/overclocking.ts';
-import { fanPage } from './pages/fan.ts';
+import { tuningPage } from './pages/tuning.ts';
 import { monitoringPage } from './pages/monitoring.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
+import { setMonitorLogToFile, setCurrentLogFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
-  overclocking: overclockingPage,
-  fan: fanPage,
+  tuning: tuningPage,
   monitoring: monitoringPage,
   profiles: profilesPage,
   tweaks: tweaksPage,
@@ -244,9 +243,39 @@ async function boot() {
     return;
   }
 
+  // M4-D2 (§10): the Monitoring "Log to file" persisted toggle — the BOOT
+  // sequence reads it ONCE (the Settings/Monitoring pages update the shared
+  // state after their saves); a read failure degrades to off (never blocks
+  // boot).
+  try {
+    const env = await api.profilesList();
+    setMonitorLogToFile(env.settings.monitorLogToFile === true);
+  } catch {
+    setMonitorLogToFile(false);
+  }
+
   try {
     await api.telemetryStart(deviceId);
-    api.onTelemetrySample((sample) => store.set({ latestSample: sample }));
+    // M4-D2 (§10): the log send lives in the BOOT-LEVEL telemetry
+    // subscription (plan-review M5) — logging continues across page
+    // navigation. On EVERY pushed sample, when the Log-to-file toggle is
+    // on, append the sample + the best-effort fps (the module-level latest
+    // FPS the Monitoring page's poll updates; the sample's own fields make
+    // up the rest). Same tick cadence as the telemetry push — NO extra
+    // timers. The append result carries the CSV path — surfaced to the
+    // Monitoring page's "current log path" line.
+    api.onTelemetrySample((sample) => {
+      store.set({ latestSample: sample });
+      if (getMonitorLogToFile()) {
+        void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
+          .then((res) => {
+            if (res && typeof (res as { file?: unknown }).file === 'string') {
+              setCurrentLogFile((res as { file: string }).file);
+            }
+          })
+          .catch(() => { /* a failed append never breaks the UI */ });
+      }
+    });
   } catch (err) {
     toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
   }

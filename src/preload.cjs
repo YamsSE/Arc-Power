@@ -18,8 +18,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   registryCatalog: () => ipcRenderer.invoke('registry-catalog'),
   registryApply: (entryId, action) => ipcRenderer.invoke('registry-apply', entryId, action),
   startupGet: () => ipcRenderer.invoke('startup-get'),
-  startupSet: (enabled, profileId) => ipcRenderer.invoke('startup-set', enabled, profileId),
-  startupAppSet: (enabled) => ipcRenderer.invoke('startup-app-set', enabled),
+  startupSet: (enabled) => ipcRenderer.invoke('startup-set', enabled),
   sysinfo: () => ipcRenderer.invoke('sysinfo:get'),
   // M4-D: the integrated-title-bar window controls (no payload — the
   // channels assert it in main).
@@ -34,6 +33,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   advancedModeAcceptedGet: () => ipcRenderer.invoke('advanced-mode-accepted-get'),
   advancedModeAcceptedSet: () => ipcRenderer.invoke('advanced-mode-accepted-set'),
   fpsPoll: (deviceId) => ipcRenderer.invoke('fps-poll', deviceId),
+  // M4-D2: append one full telemetry sample as a CSV line (Log to file).
+  monitorLogAppend: (sample) => ipcRenderer.invoke('monitor-log-append', sample),
   profilesList: () => ipcRenderer.invoke('profiles-list'),
   profilesSave: (profile) => ipcRenderer.invoke('profiles-save', profile),
   profilesDelete: (id) => ipcRenderer.invoke('profiles-delete', id),
@@ -45,6 +46,10 @@ contextBridge.exposeInMainWorld('arcPower', {
   // calls them there: the dropdown renders only when health.backend === 'mock').
   mockListFeaturesets: () => ipcRenderer.invoke('mock:list-featuresets'),
   mockSetFeatureset: (id) => ipcRenderer.invoke('mock:set-featureset', id),
+  // M4-D2: mock-only boot-apply flow probe (the REAL window-path boot apply
+  // in mock mode; the log records what it did). Mock mode only.
+  mockRunBootApply: () => ipcRenderer.invoke('mock:run-boot-apply'),
+  mockBootApplyLog: () => ipcRenderer.invoke('mock:boot-apply-log'),
   onTelemetrySample: (cb) => {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);

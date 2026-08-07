@@ -13,6 +13,9 @@ import {
   createMockSysinfo,
   vramBytesFromAdapterRam,
   applyRegistryMemory,
+  applyAllocatedBar,
+  jedecBrand,
+  JEDEC_BRAND,
   matchVideoController,
   vramBytesOfDevice,
 } from '../src/main/sysinfo.js';
@@ -41,6 +44,23 @@ test('buildSysinfoScript: queries the CIM classes + the registry qwMemorySize VR
   assert.match(script, /ConvertTo-Json/);
 });
 
+test('M4-D2: the ReBAR cross-check sources are queried; the PCIe plumbing is GONE', () => {
+  const script = buildSysinfoScript();
+  // The per-device pnputil parser (one-line layout) is kept...
+  assert.match(script, /pnputil \/enum-devices \/instanceid/);
+  assert.match(script, /Memory Resources:\\s\*0x/);
+  // ...and the allocated-resource cross-check (Win32_AllocatedResource +
+  // Win32_DeviceMemoryAddress joined by the video controller DeviceID,
+  // 64-bit ranges via [Convert]::ToInt64) is added.
+  assert.match(script, /Get-CimInstance Win32_DeviceMemoryAddress/);
+  assert.match(script, /Get-CimInstance Win32_AllocatedResource/);
+  assert.match(script, /Win32_VideoController \\\(DeviceID/);
+  assert.match(script, /\[Convert\]::ToInt64/);
+  // The PCIe-link property queries are REMOVED (the row was deleted).
+  assert.doesNotMatch(script, /DEVPKEY_PciDevice/);
+  assert.doesNotMatch(script, /CurrentLinkSpeed/);
+});
+
 // ---------------------------------------------------------------------------
 // CIM output parsing
 // ---------------------------------------------------------------------------
@@ -58,13 +78,20 @@ const CIM_STDOUT = JSON.stringify({
     MaxClockSpeed: 5400,
   },
   computerSystem: { TotalPhysicalMemory: 34359738368 },
-  physicalMemory: { Manufacturer: 'G.Skill', ConfiguredClockSpeed: 6000 },
+  physicalMemory: { Manufacturer: '0420', ConfiguredClockSpeed: 6000 },
   videoControllers: [
-    { Name: 'Intel(R) Arc(TM) A770 Graphics', AdapterRAM: 2147479552, PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008', CurrentLinkSpeed: 1, CurrentLinkWidth: 1, MaxLinkSpeed: 1, MaxLinkWidth: 1, MaxBarBytes: 16777216 },
-    { Name: 'Microsoft Basic Display Adapter', AdapterRAM: 0, PNPDeviceID: 'ROOT\\BASIC_DISPLAY\\0000' },
+    { DeviceID: 'VideoController1', Name: 'Intel(R) Arc(TM) A770 Graphics', AdapterRAM: 2147479552, PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008', MaxBarBytes: 16777216 },
+    { DeviceID: 'VideoController2', Name: 'Microsoft Basic Display Adapter', AdapterRAM: 0, PNPDeviceID: 'ROOT\\BASIC_DISPLAY\\0000', MaxBarBytes: 0 },
   ],
   registryMemory: [
     { PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08', MemoryBytes: 17179869184 },
+  ],
+  // M4-D2: the Win32_AllocatedResource cross-check rows (the A770's
+  // 20 MB window — the LIVE range on this machine is 0xF6000000-0xF73FFFFF,
+  // far below 1 GiB: ReBAR off).
+  allocatedBar: [
+    { PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008', MaxBarBytes: 20971520 },
+    { PNPDeviceID: 'ROOT\\BASIC_DISPLAY\\0000', MaxBarBytes: 0 },
   ],
 });
 
@@ -76,23 +103,91 @@ test('parseCimOutput: maps the CIM fields into the canonical shape', () => {
     threads: 24,
     maxClockMhz: 5400,
   });
+  // M4-D2: the raw SPD JEDEC code "0420" decodes to G.Skill.
   assert.deepEqual(out.ram, { totalBytes: 34359738368, speedMhz: 6000, manufacturer: 'G.Skill' });
   assert.equal(out.videoControllers.length, 2);
   assert.deepEqual(out.videoControllers[0], {
     name: 'Intel(R) Arc(TM) A770 Graphics',
     vramBytes: 17179869184,
     pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008',
-    pcie: null,
     rebarActive: false,
   });
+  assert.ok(!('pcie' in out.videoControllers[0]), 'the pcie field is REMOVED');
   // A 0-AdapterRAM basic-display fallback degrades to null vramBytes.
   assert.deepEqual(out.videoControllers[1], {
     name: 'Microsoft Basic Display Adapter',
     vramBytes: null,
     pnpDeviceId: 'ROOT\\BASIC_DISPLAY\\0000',
-    pcie: null,
     rebarActive: null,
   });
+});
+
+test('M4-D2: rebarActive = any >= 1 GiB range from EITHER source (pnputil OR the allocated-resource cross-check)', () => {
+  // pnputil small + cross-check BIG -> on (the cross-check catches what
+  // pnputil misses on other machines and vice versa).
+  const merged = applyAllocatedBar(
+    [{ name: 'Arc', vramBytes: null, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0', rebarActive: null, _pnputilBarBytes: 16777216 }],
+    [{ PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0', MaxBarBytes: 4294967296 }],
+  );
+  assert.equal(merged[0].rebarActive, true);
+  // pnputil BIG + cross-check small -> on.
+  const merged2 = applyAllocatedBar(
+    [{ name: 'Arc', vramBytes: null, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0', rebarActive: null, _pnputilBarBytes: 4294967296 }],
+    [{ PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0', MaxBarBytes: 20971520 }],
+  );
+  assert.equal(merged2[0].rebarActive, true);
+  // Both small -> off (the live A770 case).
+  const merged3 = applyAllocatedBar(
+    [{ name: 'Arc', vramBytes: null, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0', rebarActive: null, _pnputilBarBytes: 16777216 }],
+    [{ PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0', MaxBarBytes: 20971520 }],
+  );
+  assert.equal(merged3[0].rebarActive, false);
+  // No cross-check row -> pnputil decides; no pnp id -> untouched.
+  assert.equal(applyAllocatedBar(
+    [{ name: 'Arc', vramBytes: null, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0', rebarActive: null, _pnputilBarBytes: 0 }],
+    [],
+  )[0].rebarActive, null);
+  assert.equal(applyAllocatedBar(
+    [{ name: 'Arc', vramBytes: null, pnpDeviceId: null, rebarActive: true }],
+    [{ PNPDeviceID: 'X', MaxBarBytes: 4294967296 }],
+  )[0].rebarActive, true, 'no pnp id -> untouched');
+});
+
+// ---------------------------------------------------------------------------
+// M4-D2 §4: the JEDEC manufacturer-ID -> brand map (sourced from the JEP106
+// table; the live module F3-2400C11-8GXM renders "0420" = G.Skill)
+// ---------------------------------------------------------------------------
+
+test('M4-D2: jedecBrand decodes the pinned JEDEC codes', () => {
+  assert.equal(jedecBrand('0420'), 'G.Skill', 'live-verified: F3-2400C11-8GXM');
+  assert.equal(jedecBrand('CE00'), 'Samsung');
+  assert.equal(jedecBrand('AD00'), 'SK Hynix');
+  assert.equal(jedecBrand('2C00'), 'Micron');
+  assert.equal(jedecBrand('9801'), 'Kingston');
+  assert.equal(jedecBrand('9E02'), 'Corsair');
+  assert.equal(jedecBrand('CB04'), 'ADATA');
+  assert.equal(jedecBrand('EF04'), 'Team Group');
+  assert.equal(jedecBrand('0205'), 'Patriot');
+  assert.equal(jedecBrand('9B05'), 'Crucial');
+});
+
+test('M4-D2: jedecBrand is case-insensitive and covers the count-first packing', () => {
+  assert.equal(jedecBrand('0420'), jedecBrand('0420'.toLowerCase()), 'case-insensitive');
+  assert.equal(jedecBrand('ce00'), 'Samsung');
+  assert.equal(jedecBrand('04CD'), 'G.Skill', 'the count-first packing of the current-table G.Skill code');
+  assert.equal(jedecBrand('0198'), 'Kingston', 'the count-first packing of Kingston');
+});
+
+test('M4-D2: jedecBrand passes unknown codes and real names through honestly', () => {
+  assert.equal(jedecBrand('1234'), '1234', 'unknown hex code passes through');
+  assert.equal(jedecBrand('Samsung'), 'Samsung', 'a real brand name passes through');
+  assert.equal(jedecBrand('G Skill Intl'), 'G Skill Intl');
+  assert.equal(jedecBrand(''), null);
+  assert.equal(jedecBrand(null), null);
+  assert.equal(jedecBrand(undefined), null);
+  assert.equal(jedecBrand(42), null);
+  assert.equal(jedecBrand('ABCDE'), 'ABCDE', 'a longer hex-ish string passes through (not a 2-byte code)');
+  assert.equal(Object.keys(JEDEC_BRAND).length >= 15, true, 'the map covers both packings of every listed brand');
 });
 
 test('parseCimOutput: a saturated AdapterRAM (0xFFFFFFFF) degrades to null vramBytes', () => {

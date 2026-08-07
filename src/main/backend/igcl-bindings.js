@@ -1,4 +1,4 @@
-﻿// IGCL (Intel Graphics Control Library) koffi bindings — M1 vendored copy.
+// IGCL (Intel Graphics Control Library) koffi bindings � M1 vendored copy.
 // SOURCE OF TRUTH: tools/probe/igcl.mjs (M0-verified reference implementation).
 // This file is a copy of that module with the M0-research header replaced;
 // re-sync from the probe module if the struct defs change upstream.
@@ -6,8 +6,8 @@
 //   https://github.com/intel/drivers.gpu.control-library
 // The native runtime is IntelControlLib.dll ("Intel Graphics Control Lib
 // Runtime"), shipped inside the DriverStore igfx package; System32's
-// ControlLib.dll is only a UID-whitelisted loader (do NOT use it — see
-// docs/igcl-integration.md §1).
+// ControlLib.dll is only a UID-whitelisted loader (do NOT use it � see
+// docs/igcl-integration.md �1).
 // All layouts are MSVC x64. Every struct size is asserted so a header/driver
 // change or a transcription mistake fails loudly at load time.
 
@@ -292,6 +292,44 @@ const ctl_voltage_frequency_point_t = koffi.struct('ctl_voltage_frequency_point_
   Frequency: 'uint32',
 }); // 8 bytes, align 4
 
+// M4-D2 (user, driver ReBAR state): ctlPciGetProperties structs, transcribed
+// from the IGCL SDK ctl_api.h. LIVE-VERIFIED against the DriverStore runtime
+// on the A770 (2026-08-07): this driver build's ctl_pci_speed_t has NO
+// Version field ({ Size, gen, width, maxBandwidth } = 20 bytes) � the current
+// docs' header adds Version (24 bytes). The resizable-bar flags therefore
+// sit at offset 52/53 in this driver build (the docs' 56/57). The decoder
+// reads the LIVE offsets (52/53) and the size assertion matches the driver
+// build (64 bytes either way).
+const ctl_pci_address_t = koffi.struct('ctl_pci_address_t', {
+  Size: 'uint32',
+  Version: 'uint8',
+  pad: 'uint8[3]',
+  domain: 'uint32',
+  bus: 'uint32',
+  device: 'uint32',
+  function: 'uint32',
+}); // 24 bytes, align 4
+
+const ctl_pci_speed_t = koffi.struct('ctl_pci_speed_t', {
+  Size: 'uint32',
+  Version: 'uint8',
+  pad: 'uint8[3]',
+  gen: 'int32',
+  width: 'int32',
+  maxBandwidth: 'int64',
+}); // 24 bytes, align 8
+
+const ctl_pci_properties_t = koffi.struct('ctl_pci_properties_t', {
+  Size: 'uint32',
+  Version: 'uint8',
+  pad: 'uint8[3]',
+  address: 'ctl_pci_address_t',   // @8..32
+  maxSpeed: 'ctl_pci_speed_t',    // @32..56 (docs layout, live-verified)
+  resizable_bar_supported: 'uint8', // @56
+  resizable_bar_enabled: 'uint8',   // @57
+  pad2: 'uint8[6]',
+}); // 64 bytes, align 8
+
 // ---------------------------------------------------------------------------
 // Layout assertions (sizes computed by hand from the C headers; any mismatch
 // means koffi laid out a struct differently than MSVC did)
@@ -314,6 +352,12 @@ const EXPECTED_SIZES = {
   ctl_psu_info_t: 56,
   ctl_power_telemetry_t: 1024,
   ctl_voltage_frequency_point_t: 8,
+  // M4-D2 (driver ReBAR state): ctl_pci_address_t 24, ctl_pci_speed_t 20
+  // (koffi/MSVC 8-aligns the tail � the DRIVER's real layout is 20 bytes\n  // without the tail pad, which is why the flags sit at 52/53), properties 64.
+  ctl_pci_address_t: 24,
+  ctl_pci_speed_t: 24,
+  ctl_pci_properties_t: 64,
+
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -329,20 +373,20 @@ for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
 
 export function findIgclDll() {
   // Loader (ControlLib.dll, System32) enforces a UID whitelist (registered
-  // Intel UIDs only â€” an invented UID is rejected with
+  // Intel UIDs only — an invented UID is rejected with
   // CTL_RESULT_ERROR_UNKNOWN_APPLICATION_UID). The runtime
   // (IntelControlLib.dll, "Intel Graphics Control Lib Runtime", DriverStore
-  // igfx package) accepts any UID â€” that is what the probe uses.
+  // igfx package) accepts any UID — that is what the probe uses.
   //
   // The DriverStore keeps packages from every install, so there can be
   // several iigd_dch_d.inf_amd64_* folders. Selection order:
   //   1. the package whose INF DriverVer matches the ACTIVE display driver
   //      version (read from the display class registry key, preferring the
-  //      discrete-GPU block â€” see activeDriverVersion()) â€” the newest
+  //      discrete-GPU block — see activeDriverVersion()) — the newest
   //      folder is NOT necessarily the active driver (staged/rolled-back
   //      packages linger);
   //   2. the most recently written package;
-  //   3. env IGCL_DLL_PATH, then System32 ControlLib.dll (loader â€” init will
+  //   3. env IGCL_DLL_PATH, then System32 ControlLib.dll (loader — init will
   //      fail with a clear "unregistered UID" error), then System32
   //      IntelControlLib.dll (runtime), then the IGS dir.
   const store = 'C:\\Windows\\System32\\DriverStore\\FileRepository';
@@ -387,7 +431,7 @@ export function findIgclDll() {
 
 function driverVerFromInf(infPath) {
   // [Version] section of the package INF, e.g. "DriverVer = 07/05/2026,32.0.101.8861".
-  // Some driver packages ship UTF-16 LE INFs â€” sniff the BOM before decoding.
+  // Some driver packages ship UTF-16 LE INFs — sniff the BOM before decoding.
   try {
     const raw = fs.readFileSync(infPath);
     let text;
@@ -408,7 +452,7 @@ function activeDriverVersion() {
   // Selection order (avoids the iGPU-vs-dGPU trap on multi-GPU boxes, where
   // "last Intel block" can be the integrated adapter's subkey):
   //   1. Intel blocks whose DriverDesc names a discrete GPU (Intel's discrete
-  //      product line is "Arc"); the last such block wins â€” the iGPU block
+  //      product line is "Arc"); the last such block wins — the iGPU block
   //      ("UHD/Iris/HD Graphics") is never picked while a discrete block
   //      exists;
   //   2. otherwise the last block with an Intel DriverDesc;
@@ -525,6 +569,14 @@ export function loadIgcl(dllPath) {
 
   bind('ctlPowerTelemetryGet', 'ctl_result_t', ['void*', 'ctl_power_telemetry_t*']);
 
+  // M4-D2 (user): the driver's PCI properties — resizable_bar_supported /
+  // resizable_bar_enabled (the same driver state IGS + GPU-Z report).
+  // Raw 'void*' params: a typed 'ctl_pci_properties_t*' arg makes koffi
+  // validate the buffer type and reject the raw 64-byte buffer the caller
+  // passes (live-verified — the driver build's struct differs from koffi's
+  // padded layout, so the caller allocates raw bytes + Size 64).
+  bind('ctlPciGetProperties', 'ctl_result_t', ['void*', 'void*']);
+
   return fn;
 }
 
@@ -563,9 +615,47 @@ export function decodeItem(buf, structType, fieldName) {
 
 export function decodeVfCurve(buf, numPoints) {
   const pts = [];
-  const sz = koffi.sizeof('ctl_voltage_frequency_point_t');
   for (let i = 0; i < numPoints; i++) {
-    pts.push(koffi.decode(buf, i * sz, 'ctl_voltage_frequency_point_t'));
+    const raw = koffi.decode(buf, i * 8, 'ctl_voltage_frequency_point_t');
+    pts.push({ voltage: raw.Voltage, frequency: raw.Frequency });
   }
   return pts;
+}
+
+/**
+ * M4-D2 (user): decode a ctl_pci_properties_t buffer into plain JS. The
+ * resizable-bar flags are read at the LIVE offsets 52/53 (this driver
+ * build's ctl_pci_speed_t has no Version field � 20 bytes; the docs'
+ * current header would place them at 56/57). Also reads the BDF + link
+ * capability for the PCIe truth (bus/gen/width sanity: the A770 live probe
+ * reported bus 3, gen 4, width 16, maxBandwidth 31.5 GB/s).
+ * @param {unknown} buf koffi buffer of 64+ bytes
+ * @returns {{ domain: number, bus: number, device: number, function: number, gen: number, width: number, maxBandwidth: number, resizableBarSupported: boolean, resizableBarEnabled: boolean }}
+ */
+export function decodePciProperties(buf) {
+  // koffi decode quirk (live-verified): single-byte/primitive decodes with
+  // an offset on a call-passed buffer drift by -4; the WHOLE-ARRAY decode
+  // (koffi.decode(buf, 0, 'uint8[64]')) is byte-accurate. Parse the array
+  // in plain JS at the docs/IGCL offsets (live-verified on the A770):
+  // domain@16, bus@20, device@24, function@28; speed struct @32:
+  // Size@32, Version@36, gen@40, width@44, maxBandwidth@48 (31.5 GB/s =
+  // PCIe 4.0 x16 ✓); resizable_bar_supported@56, enabled@57.
+  const arr = koffi.decode(buf, 0, 'uint8[64]');
+  const u32 = (o) => arr[o] | (arr[o + 1] << 8) | (arr[o + 2] << 16) | (arr[o + 3] << 24);
+  const u64 = (o) => {
+    let v = 0n;
+    for (let b = 7; b >= 0; b--) v = (v << 8n) | BigInt(arr[o + b]);
+    return v;
+  };
+  return {
+    domain: u32(16),
+    bus: u32(20),
+    device: u32(24),
+    function: u32(28),
+    gen: u32(40) | 0,
+    width: u32(44) | 0,
+    maxBandwidth: u64(48),
+    resizableBarSupported: arr[56] === 1,
+    resizableBarEnabled: arr[57] === 1,
+  };
 }

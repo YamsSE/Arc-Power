@@ -24,17 +24,26 @@
  * @typedef {import('./backend/backend.interface.js').IOCBackend} IOCBackend
  */
 
+import { isElevated as detectElevated } from './elevation.js';
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class SmokeFailure extends Error {}
 
 /**
  * @param {IOCBackend} backend
- * @param {{ log?: (s: string) => void }} opts
+ * @param {{ log?: (s: string) => void, isElevated?: () => boolean }} opts —
+ *   M4-D2: `isElevated` (default the real koffi probe) gates the no-op
+ *   write round trips: unelevated on the real A770 the writes are refused
+ *   (PL) or silently ignored (freq/fan) — the round trips would fail the
+ *   gate. When unelevated they are SKIPPED and reported as
+ *   "skipped (unelevated)" lines; every other health line + the
+ *   koffi/asar packaging checks stay intact; the exit-0 contract holds.
  * @returns {Promise<{ ok: true, lines: string[] }>}
  */
 export async function runSmoke(backend, opts = {}) {
   const log = opts.log ?? ((s) => console.log(s));
+  const isElevated = opts.isElevated ?? detectElevated;
   const lines = [];
   const step = (n, msg) => {
     lines.push(`[${n}] ${msg}`);
@@ -87,59 +96,70 @@ export async function runSmoke(backend, opts = {}) {
     }
     step('state', `current=${JSON.stringify(before)}`);
 
-    const noop = {};
-    for (const [key, value] of Object.entries(before)) {
-      if (value === null || value === undefined) continue;
-      // Safety: never write fan controls on a read-only fan (M3-D: the
-      // probe already ran its single reversible write+restore inside the
-      // first getCapabilities — no further fan writes here), never write a
-      // vfCurve (write switches curve type), never write a dynamic (0,0)
-      // gpuLock (would switch lock modes).
-      if (['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].includes(key)) continue;
-      if (key === 'gpuLock' && value.voltageV === 0 && value.freqMhz === 0) continue;
-      // M2C-C: zero-valued OC scalars are refused by the driver by design
-      // (0x40000007 — verified; "0-value no-ops most refused"). A no-op round
-      // trip of the CURRENT state must not fail on values the driver refuses
-      // to write at all, so zero-valued scalars are skipped (their absence
-      // from the set is exactly what the honest refusal would report anyway).
-      if (typeof value === 'number' && value === 0) continue;
-      // M3-D: a CURRENT state holding extended values (>252 W / >90 C — e.g.
-      // the card is running a 300 W profile) cannot no-op round-trip through
-      // the DriverStore runtime: it refuses them client-side (0x44000004).
-      // Extended values are the old-2023-runtime domain, verified by the
-      // dedicated probes (M2C-C/M3-C) — the no-op covers the in-range set.
-      if (key === 'powerLimitW' && typeof value === 'number' && value > 252) continue;
-      if (key === 'tempLimitC' && typeof value === 'number' && value > 90) continue;
-      noop[key] = value;
-    }
-    let applyRes;
-    try {
-      applyRes = await backend.applySettings(dev.id, noop, { snapToStep: false });
-    } catch (err) {
-      fail('noop', `applySettings threw: ${err.message}`);
-    }
-    step('noop', `applied current values as no-op: ${JSON.stringify(applyRes.perControl)}`);
-    if (!applyRes.ok) fail('noop', `no-op apply reported failures: ${JSON.stringify(applyRes.perControl)}`);
+    let changedKeys = [];
 
-    // --- verify nothing changed ---------------------------------------------
-    let after;
-    try {
-      after = await backend.getCurrentSettings(dev.id);
-    } catch (err) {
-      fail('verify', err.message);
+    // M4-D2 (§13): unelevated no-op writes are refused (PL) or silently
+    // ignored (freq/fan) on the real A770 — a round trip would FAIL the
+    // gate. When unelevated, the write round trips are SKIPPED and
+    // reported honestly (the read-back + telemetry + packaging checks
+    // still run); the packaged gate stays exit 0.
+    if (!isElevated()) {
+      step('noop', `no-op write round trips SKIPPED (unelevated — igcl writes refused/lie unelevated; see the M4-D2 report)`);
+      step('verify', 'write verification SKIPPED with the no-op round trips (unelevated)');
+    } else {
+      const noop = {};
+      for (const [key, value] of Object.entries(before)) {
+        if (value === null || value === undefined) continue;
+        // Safety: never write fan controls on a read-only fan (M3-D: the
+        // probe already ran its single reversible write+restore inside the
+        // first getCapabilities — no further fan writes here), never write a
+        // vfCurve (write switches curve type), never write a dynamic (0,0)
+        // gpuLock (would switch lock modes).
+        if (['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].includes(key)) continue;
+        if (key === 'gpuLock' && value.voltageV === 0 && value.freqMhz === 0) continue;
+        // M2C-C: zero-valued OC scalars are refused by the driver by design
+        // (0x40000007 — verified; "0-value no-ops most refused"). A no-op round
+        // trip of the CURRENT state must not fail on values the driver refuses
+        // to write at all, so zero-valued scalars are skipped (their absence
+        // from the set is exactly what the honest refusal would report anyway).
+        if (typeof value === 'number' && value === 0) continue;
+        // M3-D: a CURRENT state holding extended values (>252 W / >90 C — e.g.
+        // the card is running a 300 W profile) cannot no-op round-trip through
+        // the DriverStore runtime: it refuses them client-side (0x44000004).
+        // Extended values are the old-2023-runtime domain, verified by the
+        // dedicated probes (M2C-C/M3-C) — the no-op covers the in-range set.
+        if (key === 'powerLimitW' && typeof value === 'number' && value > 252) continue;
+        if (key === 'tempLimitC' && typeof value === 'number' && value > 90) continue;
+        noop[key] = value;
+      }
+      let applyRes;
+      try {
+        applyRes = await backend.applySettings(dev.id, noop, { snapToStep: false });
+      } catch (err) {
+        fail('noop', `applySettings threw: ${err.message}`);
+      }
+      step('noop', `applied current values as no-op: ${JSON.stringify(applyRes.perControl)}`);
+      if (!applyRes.ok) fail('noop', `no-op apply reported failures: ${JSON.stringify(applyRes.perControl)}`);
+
+      // --- verify nothing changed ---------------------------------------------
+      let after;
+      try {
+        after = await backend.getCurrentSettings(dev.id);
+      } catch (err) {
+        fail('verify', err.message);
+      }
+      for (const key of Object.keys(noop)) {
+        const a = before[key];
+        const b = after[key];
+        const equal = typeof a === 'object' && a !== null
+          ? JSON.stringify(a) === JSON.stringify(b)
+          : Math.abs(a - b) < 1e-6;
+        if (!equal) changedKeys.push(key);
+      }
+      step('verify', changedKeys.length === 0
+        ? 'no value changes detected — state untouched'
+        : `CHANGE DETECTED on [${changedKeys.join(', ')}]`);
     }
-    const changedKeys = [];
-    for (const key of Object.keys(noop)) {
-      const a = before[key];
-      const b = after[key];
-      const equal = typeof a === 'object' && a !== null
-        ? JSON.stringify(a) === JSON.stringify(b)
-        : Math.abs(a - b) < 1e-6;
-      if (!equal) changedKeys.push(key);
-    }
-    step('verify', changedKeys.length === 0
-      ? 'no value changes detected — state untouched'
-      : `CHANGE DETECTED on [${changedKeys.join(', ')}]`);
 
     // --- telemetry ticks (>=50 ms apart) -------------------------------------
     for (let i = 0; i < 3; i++) {

@@ -34,7 +34,7 @@ test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWi
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
-    startWithWindows: false, startMinimized: false, closeToTray: false,
+    startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
   });
   await store.saveSettings({
     waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
@@ -43,6 +43,7 @@ test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWi
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
     advancedModeAccepted: false, startWithWindows: true, startMinimized: true, closeToTray: false,
+    monitorLogToFile: false,
   });
 });
 
@@ -88,7 +89,7 @@ test('F4: stores on separate dirs are fully isolated — a mock-mode write never
   assert.deepEqual(await realStore.loadSettings(), {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
-    startWithWindows: false, startMinimized: false, closeToTray: false,
+    startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
   });
   assert.equal(fs.existsSync(path.join(realDir, 'settings.json')), false, 'the mock session never wrote the real dir');
   // A stock mock variant flips only the mock dir — the real store still
@@ -178,6 +179,21 @@ test('load: corrupt JSON fails with a clear error', async (t) => {
   await assert.rejects(store.loadProfiles(), /invalid JSON/);
 });
 
+test('load: a UTF-8 BOM is tolerated (M4-D2 user-reported — a third-party BOM must never brick the settings)', async (t) => {
+  const dir = tempDir(t);
+  fs.writeFileSync(path.join(dir, 'settings.json'), '\uFEFF' + JSON.stringify({ schemaVersion: 2, waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1' }));
+  const store = new ProfileStore({ dir });
+  const s = await store.loadSettings();
+  assert.equal(s.waiverAccepted, true);
+  assert.equal(s.ocOnBoot, true);
+  assert.equal(s.activeProfileId, 'p1');
+  fs.writeFileSync(path.join(dir, 'profiles.json'), '\uFEFF' + JSON.stringify({ schemaVersion: 2, profiles: [{ id: 'p1' }] }));
+  const store2 = new ProfileStore({ dir });
+  const p = await store2.loadProfiles();
+  assert.equal(p.length, 1);
+  assert.equal(p[0].id, 'p1');
+});
+
 test('load: settings file at current schema passes through (M3-C-E: v2, M4-D absent fields default false)', async (t) => {
   const dir = tempDir(t);
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ schemaVersion: 2, waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' }));
@@ -185,7 +201,7 @@ test('load: settings file at current schema passes through (M3-C-E: v2, M4-D abs
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
     ocMode: 'advanced', advancedModeAccepted: false,
-    startWithWindows: false, startMinimized: false, closeToTray: false,
+    startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
   });
 });
 
@@ -226,7 +242,7 @@ test('M3-C-E: a v1 settings file migrates on load; the absent ocMode follows the
   assert.deepEqual(await real.loadSettings(), {
     waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
-    startWithWindows: false, startMinimized: false, closeToTray: false,
+    startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
   });
   // The migrated file is persisted back at the CURRENT schema (v2).
   const raw = JSON.parse(fs.readFileSync(real.settingsPath, 'utf8'));
@@ -234,4 +250,37 @@ test('M3-C-E: a v1 settings file migrates on load; the absent ocMode follows the
   assert.ok(!('ocMode' in raw), 'the migration does not pin a mode — the default decides');
   const mock = new ProfileStore({ dir, ocModeDefault: 'advanced' });
   assert.equal((await mock.loadSettings()).ocMode, 'advanced');
+});
+
+// M4-D2 (�1): the in-memory settings sync cache � the close-to-tray fix.
+test('M4-D2: loadSettingsSync serves the cache; loadSettings refreshes it; saveSettings keeps it in lockstep', async (t) => {
+  const store = new ProfileStore({ dir: tempDir(t) });
+  // Before any read: the sync view is null (caller degrades to a normal close).
+  assert.equal(store.loadSettingsSync(), null);
+  // The first loadSettings initializes the cache.
+  const first = await store.loadSettings();
+  assert.equal(first.closeToTray, false);
+  assert.deepEqual(store.loadSettingsSync(), first);
+  // A save updates the cache SYNCHRONOUSLY � the close handler must see the
+  // very toggle it just persisted, in the same tick (no async race).
+  await store.saveSettings({ ...first, closeToTray: true });
+  assert.equal(store.loadSettingsSync().closeToTray, true, 'the sync view reflects the save immediately');
+  // loadSettings (the async refresh) agrees with the sync view.
+  assert.equal((await store.loadSettings()).closeToTray, true);
+  assert.equal(store.loadSettingsSync().closeToTray, true);
+  // The sync view is a COPY � callers cannot poison the cache.
+  const view = store.loadSettingsSync();
+  view.closeToTray = false;
+  assert.equal(store.loadSettingsSync().closeToTray, true);
+});
+
+test('M4-D2: monitorLogToFile persists (absent on old files -> false)', async (t) => {
+  const store = new ProfileStore({ dir: tempDir(t) });
+  assert.equal((await store.loadSettings()).monitorLogToFile, false);
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', monitorLogToFile: true });
+  assert.equal((await store.loadSettings()).monitorLogToFile, true);
+  // An old v2 settings file without the field reads false (no schema bump).
+  const oldDir = tempDir(t);
+  fs.writeFileSync(path.join(oldDir, 'settings.json'), JSON.stringify({ schemaVersion: 2, waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' }));
+  assert.equal((await new ProfileStore({ dir: oldDir }).loadSettings()).monitorLogToFile, false);
 });
