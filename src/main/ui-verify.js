@@ -1313,6 +1313,188 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (pointsClamped !== pointsAfter) fail(`add point past the clamp: ${pointsAfter} -> ${pointsClamped}`);
   step('fan-clamp', `add point blocked at the ${pointsClamped}-point device max`);
 
+  // --- M4-C: Fixed tab always rendered + the honest disabled state ---------
+  // The editable a770 overlay's learned modes are ['auto','curve'] (fixed
+  // writes are genuinely unsupported on this card) — the Fixed chip must
+  // ALWAYS render, DISABLED, with the honest note.
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).some((c) => (c.textContent ?? '').trim() === 'Fixed')`))) {
+    fail('M4-C: the Fixed mode chip is missing from the toggle (it must ALWAYS render)');
+  }
+  const toggleState = await js(`JSON.stringify(Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).map((c) => [c.textContent.trim(), c.disabled, c.classList.contains('chip-active')]))`);
+  const toggle = JSON.parse(toggleState);
+  const fixedChip = toggle.find(([label]) => label === 'Fixed');
+  if (!fixedChip) fail('M4-C: the Fixed chip is not in the toggle');
+  if (fixedChip[1] !== true) fail('M4-C: the Fixed chip must be DISABLED when fixed is not in caps.fan.modes');
+  const autoChip = toggle.find(([label]) => label === 'Auto');
+  const curveChip = toggle.find(([label]) => label === 'Curve');
+  if (!autoChip || autoChip[1] !== false || !curveChip || curveChip[1] !== false) {
+    fail(`M4-C: the supported Auto/Curve chips must stay enabled: ${toggleState}`);
+  }
+  if (toggle.some(([label, , active]) => label === 'Fixed' && active)) {
+    fail('M4-C: a DISABLED Fixed chip must never render as the active mode');
+  }
+  const fixedNote = await js(`document.querySelector('.fan-fixed-note')?.textContent ?? ''`);
+  if (!fixedNote.includes('Fixed speed is not supported on this GPU')) {
+    fail(`M4-C: the honest fixed note is missing: '${fixedNote}'`);
+  }
+  step('fan-m4c-fixed', `M4-C: Fixed tab always renders — chip disabled (${toggleState}), note '${fixedNote.trim()}'`);
+
+  // --- M4-C: dot hover readout + live drag readout --------------------------
+  // Hover a dot: the floating readout shows "85% @ 72 °C · #N" style text.
+  // Round-1 strengthening: the LAST dot is the 88C/100% TOP-EDGE point —
+  // the readout must be FULLY VISIBLE (getBoundingClientRect inside the
+  // stage bounds; the old above-dot parking clipped under .fan-stage
+  // overflow:hidden and the previous pin only checked ro.hidden/text).
+  const hoverOk = await js(`(() => {
+    const dots = Array.from(document.querySelectorAll('.fan-dot'));
+    const dot = dots[dots.length - 1];
+    dot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    const ro = document.querySelector('.fan-dot-readout');
+    if (!ro || ro.hidden) return 'readout-hidden';
+    const want = dot.dataset.speed + '% @ ' + dot.dataset.t + ' °C · #' + dot.dataset.idx;
+    if (ro.textContent !== want) return 'mismatch:' + ro.textContent + ' != ' + want;
+    const stage = document.querySelector('.fan-stage');
+    const sr = stage.getBoundingClientRect();
+    const rr = ro.getBoundingClientRect();
+    const inside = rr.top >= sr.top - 0.5 && rr.bottom <= sr.bottom + 0.5
+      && rr.left >= sr.left - 0.5 && rr.right <= sr.right + 0.5;
+    if (!inside) return 'clipped-outside-stage:' + JSON.stringify({ sr: [sr.top, sr.bottom, sr.left, sr.right], rr: [rr.top, rr.bottom, rr.left, rr.right] });
+    if (Number(dot.dataset.speed) === 100 && !ro.classList.contains('fan-dot-readout-below')) {
+      return 'top-edge-not-flipped';
+    }
+    return 'ok';
+  })()`);
+  if (hoverOk !== 'ok') fail(`M4-C: hover readout: ${hoverOk}`);
+  await js(`document.querySelector('.fan-dot')?.dispatchEvent(new PointerEvent('pointerout', { bubbles: true }))`);
+  if (!(await waitFor(win, `document.querySelector('.fan-dot-readout')?.hidden === true`, 5000))) {
+    fail('M4-C: the hover readout did not hide on pointerout');
+  }
+  // Drag the same dot: the readout must appear and LIVE-UPDATE during the
+  // move, then hide on release.
+  const dragOk = await js(`(() => {
+    const stage = document.querySelector('.fan-stage');
+    const rect = stage.getBoundingClientRect();
+    const dot = Array.from(document.querySelectorAll('.fan-dot')).find((d) => Number(d.dataset.idx) === 1);
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7, clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 7, clientX: rect.left + rect.width * 0.3, clientY: rect.top + rect.height * 0.4 }));
+    const ro = document.querySelector('.fan-dot-readout');
+    const moved = document.querySelector('.fan-dot[data-idx="1"]');
+    const movedOk = moved && Number(moved.dataset.t) === 30 && Number(moved.dataset.speed) === 60;
+    const roOk = !!ro && !ro.hidden && ro.textContent === '60% @ 30 °C · #1';
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7 }));
+    const hiddenAfter = document.querySelector('.fan-dot-readout')?.hidden === true;
+    return movedOk && roOk && hiddenAfter
+      ? 'ok'
+      : JSON.stringify({ moved: moved ? [moved.dataset.t, moved.dataset.speed] : null, ro: ro?.textContent, roHidden: ro?.hidden, hiddenAfter });
+  })()`);
+  if (dragOk !== 'ok') fail(`M4-C: drag readout: ${dragOk}`);
+  step('fan-m4c-hover', 'M4-C: dot hover readout ("60% @ 30 °C · #1"-style), live during drag, hidden on pointerout/up');
+
+  // M4-C round-1 fix: a stale hover readout must NOT survive a mode switch —
+  // hover a dot, click Auto, click Curve: the readout must stay hidden
+  // (the old renderEditor-scope state survived the switch and popped the
+  // readout up for the selected point with no pointer near a dot).
+  const modeSwitchOk = await js(`(() => {
+    const chip = (label) => Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).find((c) => (c.textContent ?? '').trim() === label);
+    const dot = Array.from(document.querySelectorAll('.fan-dot')).find((d) => Number(d.dataset.idx) === 3);
+    if (!dot) return 'no-dot';
+    dot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    const shownBefore = document.querySelector('.fan-dot-readout')?.hidden === false;
+    chip('Auto')?.click();
+    chip('Curve')?.click();
+    const ro = document.querySelector('.fan-dot-readout');
+    const hiddenAfter = !!ro && ro.hidden === true;
+    return shownBefore && hiddenAfter ? 'ok' : JSON.stringify({ shownBefore, hiddenAfter: !!ro && ro.hidden });
+  })()`);
+  if (modeSwitchOk !== 'ok') fail(`M4-C: stale readout after a mode switch: ${modeSwitchOk}`);
+  step('fan-m4c-mode-switch', 'M4-C: the mode switch clears the hover readout (no stale readout on returning to Curve)');
+
+  // --- M4-C: manual per-point boxes -----------------------------------------
+  // Typing a colliding temp clamps between the neighbors (dot dataset.t +
+  // the input value must show the clamped temp).
+  const boxTemp = await js(`(() => {
+    const row = document.querySelector('.fan-point-row[data-idx="2"]');
+    const inp = row.querySelector('input[data-field="t"]');
+    inp.value = '80';
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    const dot = document.querySelector('.fan-dot[data-idx="2"]');
+    return dot.dataset.t + '/' + inp.value;
+  })()`);
+  if (boxTemp !== '69/69') fail(`M4-C: manual temp box: got '${boxTemp}' (expected 69/69 — clamped strictly between the neighbors 30+1 and 70-1)`);
+  // Typing an over-range speed clamps to 100.
+  const boxSpeed = await js(`(() => {
+    const row = document.querySelector('.fan-point-row[data-idx="2"]');
+    const inp = row.querySelector('input[data-field="speed"]');
+    inp.value = '150';
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    const dot = document.querySelector('.fan-dot[data-idx="2"]');
+    return dot.dataset.speed + '/' + inp.value;
+  })()`);
+  if (boxSpeed !== '100/100') fail(`M4-C: manual speed box: got '${boxSpeed}' (expected 100/100 — clamped to 0..100)`);
+  // M4-C round-1 fix: TYPED temps are clamped to the static 0..100 domain
+  // like the drag path (xToTemp clamps) — clampTempBetween only clamps
+  // BETWEEN neighbors, so typing 150 / -5 into the OUTER points (no
+  // neighbor on that side) used to reach the driver table unclamped.
+  const boxOuter = await js(`(() => {
+    const rows = Array.from(document.querySelectorAll('.fan-point-row'));
+    const last = rows[rows.length - 1];
+    const lastInp = last.querySelector('input[data-field="t"]');
+    lastInp.value = '150';
+    lastInp.dispatchEvent(new Event('input', { bubbles: true }));
+    const lastDot = document.querySelector('.fan-dot[data-idx="' + (rows.length - 1) + '"]');
+    const first = rows[0];
+    const firstInp = first.querySelector('input[data-field="t"]');
+    firstInp.value = '-5';
+    firstInp.dispatchEvent(new Event('input', { bubbles: true }));
+    const firstDot = document.querySelector('.fan-dot[data-idx="0"]');
+    return (lastDot ? lastDot.dataset.t : 'no-dot') + '/' + lastInp.value + '/' + (firstDot ? firstDot.dataset.t : 'no-dot') + '/' + firstInp.value;
+  })()`);
+  if (boxOuter !== '100/100/0/0') fail(`M4-C: manual temp box domain clamp: got '${boxOuter}' (expected 100/100/0/0 — typing 150 / -5 clamps to the static 0..100 domain)`);
+  // M4-C round-2 fix: an EMPTIED box must NOT be treated as 0 — Number('')
+  // is 0 and finite, so clearing a box used to instantly move the point to
+  // 0 °C / 0 % and rewrite the box to '0' (the same bug class the gpuLock
+  // editor's parseGpuLockInput already rejects). Clearing the temp AND
+  // speed boxes of point 1 must leave the dot dataset unchanged and both
+  // boxes as the user left them ('').
+  const boxEmpty = await js(`(() => {
+    const row = document.querySelector('.fan-point-row[data-idx="1"]');
+    const dot = document.querySelector('.fan-dot[data-idx="1"]');
+    const before = dot.dataset.t + '/' + dot.dataset.speed;
+    for (const field of ['t', 'speed']) {
+      const inp = row.querySelector('input[data-field="' + field + '"]');
+      inp.value = '';
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const after = dot.dataset.t + '/' + dot.dataset.speed;
+    const tVal = row.querySelector('input[data-field="t"]').value;
+    const sVal = row.querySelector('input[data-field="speed"]').value;
+    return before + '|' + after + '|' + tVal + '|' + sVal;
+  })()`);
+  const [beBefore, beAfter, beT, beS] = boxEmpty.split('|');
+  if (beBefore !== beAfter) fail(`M4-C: clearing a manual box moved the point (${beBefore} -> ${beAfter}) — an empty input must keep the previous value (Number('') is 0)`);
+  if (beT !== '' || beS !== '') fail(`M4-C: cleared boxes were rewritten to '${beT}'/'${beS}' (expected both to stay '' — no point mutation on empty input)`);
+  // Per-point remove: one click removes the row's point; at the 2-point
+  // floor every remove button is disabled and clicking is a no-op.
+  await js(`document.querySelector('.fan-point-row .fan-point-remove').click()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.fan-dot').length === ${pointsAfter - 1}`, 5000))) {
+    fail(`M4-C: per-point remove did not remove one dot (expected ${pointsAfter - 1})`);
+  }
+  const floorOk = await js(`(() => {
+    let guard = 0;
+    while (document.querySelectorAll('.fan-dot').length > 2 && guard++ < 20) {
+      document.querySelector('.fan-point-remove')?.click();
+    }
+    const count = document.querySelectorAll('.fan-dot').length;
+    const allDisabled = Array.from(document.querySelectorAll('.fan-point-remove')).every((b) => b.disabled);
+    const before = count;
+    document.querySelector('.fan-point-remove')?.click();
+    return count === 2 && allDisabled && document.querySelectorAll('.fan-dot').length === before;
+  })()`);
+  if (!floorOk) fail('M4-C: the per-point remove did not floor at MIN_CURVE_POINTS (2) with disabled buttons');
+  // Re-seed a couple of points so the preset step below has a sane curve.
+  await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Add point'))?.click()`);
+  step('fan-m4c-boxes', 'M4-C: manual per-point boxes — colliding temp clamped between (69), speed clamped to 100, per-point remove floors at 2 (buttons disabled)');
+
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.trim() === 'Max cooling')?.click()`);
   await sleep(250);
   const presetLast = await js(`(() => {
@@ -1389,6 +1571,121 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const canvases = await js(`document.querySelectorAll('.seg-canvas').length`);
   if (canvases !== 5) fail(`expected 5 canvases, got ${canvases}`);
   step('mon-canvas', `${canvases} canvas graphs rendered from telemetry pushes`);
+
+  // --- M4-C: canvas hover crosshair + nearest-sample popup ------------------
+  // The first segment is expanded (re-opened above): pointer-move over its
+  // canvas shows the popup at the NEAREST sample ("1410 MHz · 12 s ago"
+  // style); pointer-leave hides it; a COLLAPSED segment never shows it.
+  if (!(await waitFor(win, `(() => {
+    const canvas = document.querySelector('.seg-card .seg-canvas');
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 }));
+    const p = document.querySelector('.seg-popup');
+    return !!p && !p.hidden;
+  })()`, 10000))) {
+    fail('M4-C: the monitoring hover popup did not appear on the EXPANDED segment');
+  }
+  const popupText = await js(`document.querySelector('.seg-popup')?.textContent ?? ''`);
+  if (!/^\d+ MHz · \d+ s ago$/.test(popupText)) {
+    fail(`M4-C: monitor popup text is '${popupText}' (expected '<value> MHz · <n> s ago' on the clock segment)`);
+  }
+  step('mon-m4c-popup', `M4-C: hover popup on the expanded clock segment: '${popupText}'`);
+  // M4-C round-2 fix: RIGHT-EDGE hovers — the NEWEST sample, the common
+  // case — must keep the popup inside the card. The old unclamped
+  // centering (left = 10 + x with x up to w - 8) pushed the ~120px box up
+  // to ~60px past the card's right edge and .seg-card{overflow:hidden}
+  // clipped the "· N s ago" tail. Hover exactly at the canvas's right edge
+  // (xNorm = 1 -> the newest sample) and assert the popup's
+  // getBoundingClientRect() is inside the seg-card's. The flip-below is
+  // asserted whenever the hovered sample sits in the no-room-above zone
+  // (top-edge samples — the box used to park over the segment header):
+  // whether that zone is hit depends on the telemetry value at the newest
+  // sample, so the class check is conditional, the inside-card check is
+  // unconditional (it fails ~60px past the right edge without the clamp).
+  const popupInCard = await js(`(() => {
+    const card = document.querySelector('.seg-card');
+    const canvas = card.querySelector('.seg-canvas');
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return 'zero-rect';
+    canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: rect.left + rect.width - 8, clientY: rect.top + rect.height * 0.5 }));
+    const popup = card.querySelector('.seg-popup');
+    if (!popup || popup.hidden) return 'no-popup';
+    const pr = popup.getBoundingClientRect();
+    const cr = card.getBoundingClientRect();
+    const br = popup.parentElement.getBoundingClientRect();
+    const inside = pr.left >= cr.left && pr.right <= cr.right && pr.top >= cr.top && pr.bottom <= cr.bottom;
+    const py = parseFloat(popup.style.top);
+    const below = popup.classList.contains('seg-popup-below');
+    // No room above -> the box MUST have flipped below (and the class must
+    // be present); room above -> either position is fine (the old code
+    // parked it above there without clipping).
+    const flipOk = !(py - 6 - pr.height < 0) || below;
+    return inside && flipOk
+      ? 'ok'
+      : JSON.stringify({ pLeft: Math.round(pr.left), pRight: Math.round(pr.right), pTop: Math.round(pr.top), pBottom: Math.round(pr.bottom), cLeft: Math.round(cr.left), cRight: Math.round(cr.right), cTop: Math.round(cr.top), cBottom: Math.round(cr.bottom), inside, below, py, styleLeft: popup.style.left, needFlip: py - 6 - pr.height < 0 });
+  })()`);
+  if (popupInCard !== 'ok') fail(`M4-C: right-edge hover popup escapes the seg-card (clamp + flip-below): ${popupInCard}`);
+  step('mon-m4c-popup-edge', 'M4-C: right-edge hover (newest sample) keeps the popup inside the card — horizontal clamp + top-edge flip-below');
+  // M4-C round-1 fix: a STATIONARY hover must survive telemetry ticks —
+  // redrawAll passes the persisted hover crosshair back into drawSeries
+  // (before the fix the crosshair vanished on every tick while the popup
+  // stayed). Probe canvas pixels in the crosshair's column away from the
+  // sample: the dashed vertical line lights roughly half of them; without
+  // persistence the column is bare (the polyline crosses it at ONE point
+  // only — excluded by the band around y; the horizontal grid lines add a
+  // handful at most).
+  const crosshairOk = await js(`(async () => {
+    const canvas = document.querySelector('.seg-card .seg-canvas');
+    if (!canvas) return 'no-canvas';
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return 'zero-rect';
+    canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: rect.left + rect.width * 0.45, clientY: rect.top + rect.height * 0.5 }));
+    const popup = document.querySelector('.seg-popup');
+    if (!popup || popup.hidden) return 'no-popup';
+    const x = parseFloat(popup.style.left) - 10;
+    const y = parseFloat(popup.style.top) - 8;
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = canvas.getContext('2d');
+    const lit = (px, py) => ctx.getImageData(Math.round(px * dpr), Math.round(py * dpr), 1, 1).data[3] > 0;
+    const columnLits = () => {
+      let n = 0;
+      for (let yy = 12; yy < canvas.clientHeight - 20; yy += 1) {
+        if (Math.abs(yy - y) < 10) continue; // the polyline crosses this column at ~y
+        if (lit(x, yy)) n++;
+      }
+      return n;
+    };
+    const before = columnLits();
+    if (before < 10) return 'no-crosshair-at-hover:' + before;
+    await new Promise((r) => setTimeout(r, 2600)); // several telemetry ticks
+    const after = columnLits();
+    return after >= 10 ? 'ok' : 'crosshair-lost-after-tick:' + after + ' (before ' + before + ')';
+  })()`);
+  if (crosshairOk !== 'ok') fail(`M4-C: monitor crosshair persistence: ${crosshairOk}`);
+  step('mon-m4c-crosshair', 'M4-C: the hover crosshair survives telemetry ticks (redrawAll passes the persisted hover through)');
+  // pointer-leave hides the popup (and clears the crosshair).
+  await js(`document.querySelector('.seg-canvas')?.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }))`);
+  if (!(await waitFor(win, `document.querySelector('.seg-popup')?.hidden === true`, 5000))) {
+    fail('M4-C: the hover popup did not hide on pointer-leave');
+  }
+  // A COLLAPSED segment must never show the popup (expand + collapse the
+  // second segment, then hover its canvas).
+  await js(`document.querySelectorAll('.seg-head')[1].click()`);
+  if (!(await waitFor(win, `!document.querySelectorAll('.seg-card .seg-body')[1].hidden`, 5000))) fail('M4-C: the 2nd segment did not expand');
+  await js(`document.querySelectorAll('.seg-head')[1].click()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.seg-card .seg-body')[1].hidden === true`, 5000))) fail('M4-C: the 2nd segment did not collapse');
+  const collapsedOk = await js(`(() => {
+    const body = document.querySelectorAll('.seg-card .seg-body')[1];
+    const canvas = body.querySelector('.seg-canvas');
+    const rect = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 }));
+    const p = body.querySelector('.seg-popup');
+    return !p || p.hidden;
+  })()`);
+  if (!collapsedOk) fail('M4-C: a COLLAPSED monitoring segment showed the hover popup (expanded segments only)');
+  step('mon-m4c-collapsed', 'M4-C: pointer-leave hides the popup; a collapsed segment never shows it');
 
   // --- 9b. M2b review F4: the 1 s FPS poll must stop on navigation away ---
   const pollsOnEnter = getFpsPolls();
@@ -1768,7 +2065,17 @@ export async function runFeaturesetVerify(win, fsId) {
     step('fan-readonly', `'${fsId}' + RID_MOCK_FAN_READONLY: read-only fan rendered`);
   } else {
     if (!(await waitFor(win, `!!document.querySelector('.fan-dot')`))) fail('fan editor dots did not render');
-    step('fan-editor', `'${fsId}': fan editor rendered`);
+    // M4-C: the Fixed tab ALWAYS renders in the editable editor — disabled
+    // with the honest note (the editable overlay's modes stay ['auto','curve']
+    // until the live probe proves fixed writes work).
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).some((c) => (c.textContent ?? '').trim() === 'Fixed' && c.disabled === true)`))) {
+      fail(`M4-C ('${fsId}'): the Fixed chip must render DISABLED (fixed not in the editable overlay's modes)`);
+    }
+    const fsFixedNote = await js(`document.querySelector('.fan-fixed-note')?.textContent ?? ''`);
+    if (!fsFixedNote.includes('Fixed speed is not supported on this GPU')) {
+      fail(`M4-C ('${fsId}'): the honest fixed note is missing: '${fsFixedNote}'`);
+    }
+    step('fan-editor', `'${fsId}': fan editor rendered (M4-C: Fixed chip disabled + honest note)`);
   }
   // M4-A review F2: the Fan page renders NO waiver status either (the row
   // lives only in the dashboard GPU Health card).

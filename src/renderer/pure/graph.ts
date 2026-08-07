@@ -75,3 +75,32 @@ export function downsample(points: SeriesPoint[], maxPoints: number): SeriesPoin
   }
   return out;
 }
+
+/**
+ * M4-C: the index of the series point nearest to a normalized x position
+ * (0..1 across the DRAWN window: points[0].t .. points[last].t — the same
+ * linear mapping the canvas uses). The Monitoring hover feeds it the pointer
+ * x so the crosshair + popup snap to the nearest sample on the line.
+ * Returns -1 for an empty series. `xNorm` is clamped to [0, 1] (hovering
+ * outside the plot snaps to the nearest edge sample); between-sample
+ * positions round to the CLOSEST point by time, ties keeping the earlier
+ * sample. Series times are ascending (telemetry push order).
+ */
+export function nearestSampleIndex(points: SeriesPoint[], xNorm: number): number {
+  if (points.length === 0) return -1;
+  const n = points.length;
+  const x = Math.min(1, Math.max(0, xNorm));
+  const tMin = points[0].t;
+  const tMax = points[n - 1].t;
+  const target = tMin + x * (tMax - tMin);
+  let best = 0;
+  let bestDist = Math.abs(points[0].t - target);
+  for (let i = 1; i < n; i++) {
+    const d = Math.abs(points[i].t - target);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}

@@ -83,10 +83,12 @@ export class IgclBackend {
     this._telemetryCbs = new Map(); // deviceId -> Set<cb>
     this._activity = new Map(); // M3-C-L: deviceId -> { t, counter } for the utilPct delta method
     // M3-D: the fan-capability probe cache — deviceId -> Promise<{probeOk,
-    // writeAccepted}>. DEDICATED: the caps cache is invalidated by ocMode
-    // flips (setOcMode), the probe result must NOT be (the card's write
+    // writeAccepted, fixedOk}>. DEDICATED: the caps cache is invalidated by
+    // ocMode flips (setOcMode), the probe result must NOT be (the card's write
     // acceptance does not change with the app's OC mode). Promise-keyed so
     // concurrent first caps reads share ONE probe — never a double probe.
+    // M4-C: the fixed-write sub-probe (reversible 50% write) runs INSIDE the
+    // same probe, so the whole shape is one promise per device per session.
     this._fanProbeCache = new Map();
     this._fanProbeEnabled = opts.fanProbe !== false;
   }
@@ -276,24 +278,26 @@ export class IgclBackend {
 
   /**
    * M3-D: the fan-capability probe cache accessor — deviceId ->
-   * Promise<{probeOk: boolean, writeAccepted: boolean}>. The DEDICATED
+   * Promise<{probeOk: boolean, writeAccepted: boolean, fixedOk: boolean}>
+   * (M4-C: the fixed-write sub-probe extends the shape — one probe per
+   * device per session for the table AND the fixed path). The DEDICATED
    * promise-keyed cache lives OUTSIDE the caps cache: concurrent first
    * calls share ONE probe promise (never a double probe) and ocMode flips
    * never re-probe (the card's write acceptance does not change with the
    * app's OC mode). A throwing probe degrades to probeOk=false +
-   * writeAccepted=false — the fan stays read-only, never a hard crash of
-   * getCapabilities. `maxPoints` (fan properties) sizes the sample table
-   * (F3); the same device always reports the same value, so it is safe
-   * under the deviceId-keyed cache.
+   * writeAccepted=false + fixedOk=false — the fan stays read-only, never a
+   * hard crash of getCapabilities. `maxPoints` (fan properties) sizes the
+   * sample table (F3); the same device always reports the same value, so it
+   * is safe under the deviceId-keyed cache.
    * @param {number} deviceId
    * @param {number} [maxPoints]
-   * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean }>}
+   * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }>}
    */
   _probeFanCapability(deviceId, maxPoints) {
     if (this._fanProbeCache.has(deviceId)) return this._fanProbeCache.get(deviceId);
     const p = this._runFanProbe(deviceId, maxPoints).catch((err) => {
       console.error(`[igcl-backend] fan capability probe threw for device ${deviceId}: ${err.message} — fan stays read-only`);
-      return { probeOk: false, writeAccepted: false };
+      return { probeOk: false, writeAccepted: false, fixedOk: false };
     });
     this._fanProbeCache.set(deviceId, p);
     return p;
@@ -317,9 +321,21 @@ export class IgclBackend {
    * from probeOk (full verify passed) so the caller can keep the real
    * modes for a card that demonstrably accepts tables even when a later
    * step failed (stuck restore, IGS reapply race).
+   *
+   * M4-C: the fixed-write sub-probe extends the shape with `fixedOk`. It
+   * runs INSIDE this probe (same promise-keyed cache — one per device per
+   * session, never a re-probe per caps read) and ONLY when the table path
+   * is available: after the table restore succeeded. A refused table write
+   * tells us nothing about fixed writes and a stuck table mode must never
+   * be left behind — so the fixed sub-probe never runs independently.
+   * `fixedOk` = one reversible 50% write via ctlFanSetFixedSpeedMode +
+   * read-back verify + restore to default mode (the SAME restore-retry
+   * semantics: a failed restore is a probe failure — the fan must NEVER be
+   * left at 50% fixed). Only a fully verified fixed probe adds 'fixed' to
+   * the learned modes.
    * @param {number} deviceId
    * @param {number} [maxPoints]  fan properties' maxPoints (default 10)
-   * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean }>}
+   * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }>}
    */
   async _runFanProbe(deviceId, maxPoints) {
     const lib = this._libOrThrow();
@@ -328,7 +344,7 @@ export class IgclBackend {
     if (!fan || this._isUnavailable(lib.ctlFanSetSpeedTableMode)
       || this._isUnavailable(lib.ctlFanSetDefaultMode)
       || this._isUnavailable(lib.ctlFanGetConfig)) {
-      return { probeOk: false, writeAccepted: false };
+      return { probeOk: false, writeAccepted: false, fixedOk: false };
     }
 
     // Intel's sample encoding: Size/Version filled, FAN-enum PERCENT units
@@ -349,9 +365,11 @@ export class IgclBackend {
     const writeAccepted = setResult === CTL_RESULT.SUCCESS;
     if (!writeAccepted) {
       // The write itself failed: the card was never put in table mode, so
-      // no restore is needed — the refusal IS the honest answer.
+      // no restore is needed — the refusal IS the honest answer. The fixed
+      // sub-probe never runs here (a refused table write tells us nothing
+      // about fixed writes).
       console.error(`[igcl-backend] fan probe: ctlFanSetSpeedTableMode refused (${describeResult(setResult)}) — fan stays read-only`);
-      return { probeOk: false, writeAccepted };
+      return { probeOk: false, writeAccepted, fixedOk: false };
     }
 
     // Read-back verify: exact point match, PERCENT units.
@@ -380,7 +398,79 @@ export class IgclBackend {
 
     const probeOk = readOk && restoreOk;
     console.log(`[igcl-backend] fan probe device ${deviceId}: table write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} — effective canControl=${probeOk}`);
-    return { probeOk, writeAccepted };
+
+    // M4-C: the fixed-write sub-probe — ONLY when the table path is
+    // available (the table restore succeeded): a stuck table mode must
+    // never be left behind, and the fixed path is independent evidence.
+    //
+    // M4-C (round-1 review, confirmed interpretation): a failed FIXED
+    // restore (the driver wedged at 50% fixed) does NOT downgrade whole-fan
+    // canControl — probeOk stays true (the TABLE probe fully verified) and
+    // the editor stays open: the table editor is the ONLY recovery path
+    // (a curve apply issues ctlFanSetSpeedTableMode, which exits fixed
+    // mode), so making the whole fan read-only would strand the user at 50%
+    // fixed with no recourse. fixedOk=false is reported honestly in the
+    // probe shape ('fixed' is never offered) — the plan's "honest read-only"
+    // intent for the fixed path. Reversibility is intact: the restore is
+    // always attempted after a successful fixed write, retried twice, and
+    // verified DEFAULT-mode.
+    let fixedOk = false;
+    if (restoreOk && !this._isUnavailable(lib.ctlFanSetFixedSpeedMode)) {
+      fixedOk = await this._runFixedProbe(fan, deviceId);
+    }
+    return { probeOk, writeAccepted, fixedOk };
+  }
+
+  /**
+   * M4-C: the fixed-write sub-probe — one reversible 50% write via
+   * ctlFanSetFixedSpeedMode + read-back verify (FIXED mode, PERCENT units,
+   * 50%) + restore to default mode via ctlFanSetDefaultMode with the SAME
+   * restore-retry semantics as the table probe (`_restoreFanDefault`: a
+   * failed restore is a probe failure — the fan must NEVER be left at 50%
+   * fixed). Runs once per device per session inside the SAME promise-keyed
+   * probe cache as the table probe (never a re-probe per caps read; ocMode
+   * flips never re-probe). `fixedOk` = write + read-back + restore all
+   * succeeded; a refused write needs no restore (the card never entered
+   * fixed mode) and is the honest `false`.
+   * @param {object} fan
+   * @param {number} deviceId
+   * @returns {Promise<boolean>}
+   */
+  async _runFixedProbe(fan, deviceId) {
+    const lib = this._libOrThrow();
+    const FIXED_PCT = 50;
+    const fixed = { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: FIXED_PCT, units: FAN_UNITS_PERCENT };
+    const setResult = lib.ctlFanSetFixedSpeedMode(fan, fixed);
+    const writeAccepted = setResult === CTL_RESULT.SUCCESS;
+    if (!writeAccepted) {
+      // The write itself failed: the card was never put in fixed mode, so
+      // no restore is needed — the refusal IS the honest answer.
+      console.error(`[igcl-backend] fixed fan probe: ctlFanSetFixedSpeedMode refused (${describeResult(setResult)}) — 'fixed' stays out of the learned modes`);
+      return false;
+    }
+
+    // Read-back verify: FIXED mode + PERCENT units + the 50% sample.
+    let readOk = false;
+    const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
+    koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
+    const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
+    if (getResult === CTL_RESULT.SUCCESS) {
+      const cfg = koffi.decode(cfgBuf, 'ctl_fan_config_t');
+      readOk = cfg.mode === 1 /* FIXED */
+        && cfg.speedFixed.units === FAN_UNITS_PERCENT
+        && nearlyEqual(cfg.speedFixed.speed, FIXED_PCT, 1);
+    }
+    if (!readOk) {
+      console.error('[igcl-backend] fixed fan probe: read-back did not match the 50% fixed sample — probe fails');
+    }
+
+    // Restore default mode, retried: a failed fixed probe must NEVER leave
+    // the fan at 50% fixed.
+    const restoreOk = await this._restoreFanDefault(fan, deviceId);
+
+    const fixedOk = readOk && restoreOk;
+    console.log(`[igcl-backend] fixed fan probe device ${deviceId}: 50% write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} — fixedOk=${fixedOk}`);
+    return fixedOk;
   }
 
   /**
@@ -574,7 +664,10 @@ export class IgclBackend {
         // an IGS reapply race); a write-REFUSED probe keeps the derived
         // modes (claiming auto/curve on a genuinely fixed-only card would
         // lie). The derivation stays only for cards that never probe
-        // (probe disabled, or probe symbols missing).
+        // (probe disabled, or probe symbols missing). M4-C: the fixed-write
+        // sub-probe (reversible 50% write) extends the same cached shape —
+        // only a fully verified fixed probe (fixedOk) adds 'fixed' to the
+        // learned modes (a refused fixed write keeps ['auto','curve']).
         let modes = Object.entries(CTL_FAN_SPEED_MODE)
           .filter(([v]) => (fp.supportedModes & (1 << Number(v))) !== 0)
           .map(([v]) => FAN_MODE_CANONICAL[Number(v)]);
@@ -587,7 +680,14 @@ export class IgclBackend {
         if (probeRuns) {
           const probe = await this._probeFanCapability(deviceId, fp.maxPoints);
           canControl = fp.canControl || probe.probeOk;
-          modes = probe.writeAccepted ? ['auto', 'curve'] : modes;
+          // M4-C: the fixed sub-probe extends the write-accepted rule —
+          // only a FULLY verified fixed probe (write + read-back + restore
+          // all succeeded, fixedOk) adds 'fixed' to the learned modes; a
+          // refused/partial fixed probe keeps ['auto','curve'] (claiming
+          // fixed on a card that refuses fixed writes would lie).
+          if (probe.writeAccepted) {
+            modes = probe.fixedOk ? ['auto', 'curve', 'fixed'] : ['auto', 'curve'];
+          }
         }
         caps.fan = {
           canControl,

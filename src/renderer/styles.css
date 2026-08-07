@@ -319,6 +319,11 @@ html, body {
 .chip-btn:hover { border-color: var(--accent); }
 .chip-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
+/* M4-C: a disabled mode chip (the Fixed tab on a card that cannot write it)
+   — same honest treatment as a disabled button. */
+.chip-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.chip-btn:disabled:hover { border-color: var(--border); }
+
 .chip-warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
 
 /* M3-C-G: the green "Applied" chip (per-control apply status). */
@@ -788,6 +793,79 @@ html, body {
 .fan-dot:hover { background: var(--accent-soft); }
 .fan-dot-selected { background: var(--accent); }
 
+/* M4-C: the floating point readout — above a hovered/dragged dot, in the
+   dots layer (inset 0) so the % left/top position matches the dot. */
+.fan-dot-readout {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  margin-top: -8px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 11.5px;
+  font-family: var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: var(--shadow);
+}
+
+/* M4-C (round-1 fix): top-edge dots flip the readout BELOW the dot — the
+   above-dot default (translate(-50%,-100%) + margin-top:-8px) parks the box
+   up to ~30px above the dot center and .fan-stage overflow:hidden clips it
+   for dots at speed >= ~91% (the default curve's 100% points, the 'Max
+   cooling' preset). fan.ts measures the layer + box, positions in px and
+   toggles this class when there is no room above the dot. */
+.fan-dot-readout-below {
+  transform: translate(-50%, 0);
+  margin-top: 10px;
+}
+
+/* M4-C: the manual per-point editor row under the SVG — one Temp/Speed
+   input pair + a per-point remove button. */
+.fan-points-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.fan-point-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+.fan-point-idx {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  min-width: 18px;
+}
+.fan-point-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.fan-point-input {
+  width: 52px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.fan-point-input:focus { outline: none; border-color: var(--accent); }
+.fan-point-unit { color: var(--text-dim); font-size: 11px; }
+
 .fan-marker {
   position: absolute;
   width: 12px;
@@ -942,12 +1020,45 @@ html, body {
 .seg-body {
   border-top: 1px solid var(--border);
   padding: 8px 10px 4px;
+  /* M4-C: the hover popup positions against the segment body (the canvas
+     starts at the padding box + 10px/8px padding — the handler offsets). */
+  position: relative;
 }
 
 .seg-canvas {
   width: 100%;
   height: 110px;
   display: block;
+}
+
+/* M4-C: the nearest-sample hover popup (crosshair readout, expanded
+   segments only). */
+.seg-popup {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  margin-top: -6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 11.5px;
+  font-family: var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: var(--shadow);
+}
+
+/* M4-C (round-2 fix): top-edge samples flip the popup BELOW the sample —
+   the above default (translate(-50%,-100%) + margin-top:-6px) parks the
+   box ~12px above the canvas top at the max-value sample (y = padT = 8),
+   overlaying the segment header. monitoring.ts measures the segment body +
+   box, positions in px and toggles this class when there is no room above
+   the sample (same pattern as the fan readout's flip-below). */
+.seg-popup-below {
+  transform: translate(-50%, 0);
+  margin-top: 10px;
 }
 
 .mon-fps-note { margin: 6px 0 0; }

@@ -234,3 +234,47 @@ test('B1: fanSpeedTicks covers 0..100% at the five grid lines, top-down', () => 
   // the y of each tick is the grid line it aligns to (top-down SVG y)
   assert.ok(ticks.every((t) => t.y === 100 - t.pct));
 });
+
+// M4-C — the manual per-point input path: typing goes through the EXISTING
+// pure helpers (movePoint for the temp clamp-between + speed 0..100 clamp,
+// clampPointCount for the count clamp, removePoint for the per-point remove).
+
+test('M4-C input path: typing a temp that collides with the next neighbor clamps strictly between (movePoint)', () => {
+  // The mock A770 default curve segment: typing 78 into the 70 °C point
+  // collides with the 78 °C neighbor -> clamped to 77 (next.t - 1).
+  const p = [
+    { t: 20, speedPct: 20 }, { t: 55, speedPct: 23 }, { t: 70, speedPct: 28 },
+    { t: 78, speedPct: 30 }, { t: 90, speedPct: 100 },
+  ];
+  const out = movePoint(p, 2, 78, 28);
+  assert.equal(out[2].t, 77, 'a colliding temp is clamped strictly below the next neighbor');
+  assert.equal(out[2].speedPct, 28, 'typing a temp never touches the speed');
+  // Typing below the previous neighbor clamps strictly above it.
+  const low = movePoint(p, 2, 50, 28);
+  assert.equal(low[2].t, 56, 'prev.t + 1');
+  // A legal temp passes through unclamped.
+  assert.equal(movePoint(p, 2, 65, 28)[2].t, 65);
+});
+
+test('M4-C input path: typing a speed clamps to 0..100 (movePoint)', () => {
+  const p = pts();
+  assert.equal(movePoint(p, 1, 55, 150)[1].speedPct, 100);
+  assert.equal(movePoint(p, 1, 55, -20)[1].speedPct, 0);
+  assert.equal(movePoint(p, 1, 55, 42.4)[1].speedPct, 42); // rounded to whole %
+});
+
+test('M4-C input path: clampPointCount keeps the count clamp (typing never overflows the device max)', () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({ t: i * 5, speedPct: 20 + i }));
+  const out = clampPointCount(many, 10);
+  assert.equal(out.length, 10);
+  assert.deepEqual(clampPointCount(many, 10), clampPointCount(many, 10)); // idempotent
+});
+
+test('M4-C input path: the per-point remove uses removePoint and never drops below MIN_CURVE_POINTS', () => {
+  let p = pts(); // 4 points
+  for (let i = 0; i < 5; i++) p = removePoint(p, 0);
+  assert.equal(p.length, MIN_CURVE_POINTS, 'the floor is MIN_CURVE_POINTS');
+  const again = removePoint(p, 0);
+  assert.equal(again.length, MIN_CURVE_POINTS, 'a remove at the floor is a no-op');
+  assert.deepEqual(again, p, 'the no-op returns a copy, never a mutation');
+});

@@ -7,6 +7,7 @@ import {
   trimSeriesWindow,
   autoScale,
   downsample,
+  nearestSampleIndex,
   GRAPH_WINDOW_S,
   GRAPH_MAX_POINTS,
 } from '../src/renderer/pure/graph.ts';
@@ -90,4 +91,42 @@ test('downsample: a cap below 2 keeps the first point only', () => {
 test('downsample: the default max is the module constant (240)', () => {
   const s = Array.from({ length: 1000 }, (_, i) => ({ t: i, v: i }));
   assert.equal(downsample(s, GRAPH_MAX_POINTS).length, GRAPH_MAX_POINTS);
+});
+
+// M4-C — the nearest-sample lookup behind the Monitoring hover popup.
+
+test('nearestSampleIndex: an empty series returns -1 (no crosshair/popup)', () => {
+  assert.equal(nearestSampleIndex([], 0.5), -1);
+});
+
+test('nearestSampleIndex: clamps to the edge samples outside the plot', () => {
+  const s = [{ t: 10, v: 1 }, { t: 20, v: 2 }, { t: 30, v: 3 }];
+  assert.equal(nearestSampleIndex(s, -0.5), 0);
+  assert.equal(nearestSampleIndex(s, 1.5), 2);
+  assert.equal(nearestSampleIndex(s, 0), 0);
+  assert.equal(nearestSampleIndex(s, 1), 2);
+});
+
+test('nearestSampleIndex: exact hits return the exact index', () => {
+  const s = [{ t: 0, v: 1 }, { t: 30, v: 2 }, { t: 60, v: 3 }];
+  assert.equal(nearestSampleIndex(s, 0), 0);
+  assert.equal(nearestSampleIndex(s, 0.5), 1); // target 30
+  assert.equal(nearestSampleIndex(s, 1), 2);
+});
+
+test('nearestSampleIndex: between-sample positions round to the closest by time', () => {
+  const s = [{ t: 0, v: 1 }, { t: 10, v: 2 }, { t: 20, v: 3 }];
+  // xNorm 0.6 -> target 12 -> 10 (dist 2) beats 20 (dist 8).
+  assert.equal(nearestSampleIndex(s, 0.6), 1);
+  // xNorm 0.9 -> target 18 -> 20 (dist 2) beats 10 (dist 8).
+  assert.equal(nearestSampleIndex(s, 0.9), 2);
+});
+
+test('nearestSampleIndex: uneven time spacing picks the closest by time, ties keep the earlier sample', () => {
+  // t span 0..50: xNorm 0.5 -> target 25 -> 5 (dist 20) beats 50 (dist 25).
+  const uneven = [{ t: 0, v: 1 }, { t: 5, v: 2 }, { t: 50, v: 3 }];
+  assert.equal(nearestSampleIndex(uneven, 0.5), 1);
+  // Exact tie (target 15, samples 10 and 20): the earlier sample wins.
+  const tie = [{ t: 0, v: 1 }, { t: 10, v: 2 }, { t: 20, v: 3 }];
+  assert.equal(nearestSampleIndex(tie, 0.75), 1);
 });

@@ -10,6 +10,12 @@
 // model probe-ok / write-refused / write-accepted-restore-fail via the
 // fake's setter behavior (F2: the write outcome, not the final verify,
 // decides the learned modes).
+//
+// M4-C (round-1): the fake's DEFAULT card refuses FIXED writes with
+// ERROR_UNSUPPORTED_FEATURE — the A770-realistic verdict (the mock overlay
+// and ui-verify pins model the same). Tests that need a fixed-CAPABLE card
+// opt in explicitly with `fixedWriteResult: CTL_RESULT.SUCCESS`; M3-D-era
+// tests must never silently gain 'fixed' from the fixture default.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -158,6 +164,15 @@ function makeFakeLib(opts = {}) {
     },
     ctlFanSetFixedSpeedMode: (h, speed) => {
       calls.fanSetters++;
+      // M4-C (round-1 fix): the fake-lib DEFAULT models the A770-realistic
+      // card — fixed writes are REFUSED with ERROR_UNSUPPORTED_FEATURE (the
+      // live-verified M3-D verdict, mirrored by the mock overlay and the
+      // ui-verify pins). Tests that exercise a fixed-CAPABLE card opt in
+      // explicitly with `fixedWriteResult: CTL_RESULT.SUCCESS`.
+      const result = opts.fixedWriteResult ?? CTL_RESULT.ERROR_UNSUPPORTED_FEATURE;
+      if (result !== CTL_RESULT.SUCCESS) {
+        return result;
+      }
       state.fanMode = 1;
       state.fixedSpeed = speed.speed;
       state.fixedUnits = 1;
@@ -387,22 +402,68 @@ test('M3-D: probe disabled by default — read-only caps stay (pin regression)',
   assert.equal(lib.__calls.fanSetters, 0, 'no probe without the fanProbe opt');
 });
 
-test('M3-D: probe-ok flips canControl, learns [auto,curve], restores to default', async () => {
-  const lib = makeFakeLib();
+test('M3-D: probe-ok flips canControl, learns [auto,curve], restores to default (fixed sub-probe refused — the A770 case)', async () => {
+  // M4-C: the A770-realistic fixture — fixed writes are UNSUPPORTED_FEATURE,
+  // so the fixed sub-probe answers honestly and 'fixed' stays out of the
+  // learned modes (the real card's M3-D verdict).
+  const lib = makeFakeLib({ fixedWriteResult: CTL_RESULT.ERROR_UNSUPPORTED_FEATURE });
   const b = makeBackend(lib, { fanProbe: true });
   const caps = await b.getCapabilities(0);
   assert.equal(caps.fan.canControl, true, 'effective canControl = properties || probeOk');
-  assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'learned modes — never fixed (fixed writes are unsupported on this card)');
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'learned modes — fixed stays out (fixed writes are UNSUPPORTED_FEATURE on this card)');
   assert.equal(caps.fan.maxCurvePoints, 10);
-  assert.equal(lib.__calls.fanSetters, 2, 'one probe = table write + default-mode restore');
+  assert.equal(lib.__calls.fanSetters, 3, 'one probe = table write + default-mode restore + one refused fixed write');
   assert.equal(lib.__state.fanMode, 0, 'restored: the card is left in DEFAULT mode, never table mode');
+  const probe = await b._probeFanCapability(0);
+  assert.deepEqual(probe, { probeOk: true, writeAccepted: true, fixedOk: false }, 'the M4-C probe shape: table path ok, fixed refused');
+});
+
+test('M4-C round-1: the fake-lib DEFAULT models the A770 — fixed writes refused (regression: fixed is never learned incidentally)', async () => {
+  // Round-1 finding 2: the old default (fixed writes SUCCEED) modeled the
+  // OPPOSITE of the target card — the mock overlay, the ui-verify pins and
+  // the live A770 verdict all refuse fixed writes (['auto','curve'] only).
+  // The default must refuse; a fixed-capable card opts in explicitly with
+  // `fixedWriteResult: CTL_RESULT.SUCCESS`.
+  const lib = makeFakeLib();
+  const b = makeBackend(lib, { fanProbe: true });
+  const probe = await b._probeFanCapability(0);
+  assert.deepEqual(probe, { probeOk: true, writeAccepted: true, fixedOk: false }, 'the default fixture refuses the fixed write — the A770-realistic shape');
+  assert.deepEqual((await b.getCapabilities(0)).fan.modes, ['auto', 'curve'], 'the default fixture must NOT silently learn fixed');
+  assert.equal(lib.__calls.fanSetters, 3, 'table write + table restore + one REFUSED fixed write');
+  assert.equal(lib.__state.fanMode, 0, 'a refused fixed write never enters fixed mode — no restore needed');
+  // The APPLY path answers the same way: a derived-fixed card (no probe)
+  // refuses the fixedFanPct write with the honest unsupported error —
+  // never a driver write, never a "success".
+  const lib2 = makeFakeLib({ fanCanControl: true });
+  const b2 = makeBackend(lib2);
+  const res = await b2.applySettings(0, { fixedFanPct: 30 });
+  assert.equal(res.ok, false);
+  assert.equal(res.perControl.fixedFanPct.ok, false);
+  assert.equal(res.perControl.fixedFanPct.errorCode, 'unsupported');
+  assert.equal(lib2.__calls.fanSetters, 1, 'one REFUSED fixed write — no table, no restore');
+});
+
+test('M4-C: fixed sub-probe SUCCESS adds fixed to the learned modes (one reversible 50% write + read-back + restore)', async () => {
+  // Round-1: the fixed-CAPABLE card is now an EXPLICIT opt-in — the fake's
+  // default models the A770 (fixed refused).
+  const lib = makeFakeLib({ fixedWriteResult: CTL_RESULT.SUCCESS });
+  const b = makeBackend(lib, { fanProbe: true });
+  const probe = await b._probeFanCapability(0);
+  assert.deepEqual(probe, { probeOk: true, writeAccepted: true, fixedOk: true });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.fan.canControl, true);
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve', 'fixed'], 'a fully verified fixed probe adds fixed to the learned modes');
+  assert.equal(caps.fan.maxCurvePoints, 10);
+  assert.equal(lib.__calls.fanSetters, 4, 'table write + table restore + fixed write + fixed restore');
+  assert.equal(lib.__state.fanMode, 0, 'restored: the fan is left in DEFAULT mode, never 50% fixed');
+  assert.equal(lib.__state.fixedSpeed, 50, 'the fixed sub-probe wrote the reversible 50% sample');
 });
 
 test('M3-D: probe ALSO runs when properties grant control but the derived modes claim fixed (F1 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  const lib = makeFakeLib({ fanCanControl: true, fixedWriteResult: CTL_RESULT.ERROR_UNSUPPORTED_FEATURE });
   const b = makeBackend(lib, { fanProbe: true });
   const caps = await b.getCapabilities(0);
-  assert.equal(lib.__calls.fanSetters, 2, 'probe runs even though canControl=TRUE (IGS running — the primary usage)');
+  assert.equal(lib.__calls.fanSetters, 3, 'probe runs even though canControl=TRUE (IGS running — the primary usage)');
   assert.equal(caps.fan.canControl, true);
   assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'probe-learned modes replace the wrong 1<<mode fixed derivation');
 });
@@ -414,19 +475,20 @@ test('M3-D: concurrent first caps calls share ONE probe promise (no double probe
   assert.equal(c1.fan.canControl, true);
   assert.equal(c2.fan.canControl, true);
   assert.equal(c3.fan.canControl, true);
-  assert.equal(lib.__calls.fanSetters, 2, 'exactly one probe across concurrent callers');
+  assert.deepEqual(c1.fan.modes, ['auto', 'curve'], 'the default fixture refuses fixed — the A770-realistic learned modes');
+  assert.equal(lib.__calls.fanSetters, 3, 'exactly one probe across concurrent callers (table write + restore + one refused fixed write)');
 });
 
 test('M3-D: the probe cache is OUTSIDE the caps cache — ocMode flips do not re-probe', async () => {
   const lib = makeFakeLib();
   const b = makeBackend(lib, { fanProbe: true });
   await b.getCapabilities(0);
-  assert.equal(lib.__calls.fanSetters, 2);
+  assert.equal(lib.__calls.fanSetters, 3);
   b.setOcMode('advanced'); // invalidates ONLY the caps cache
   const caps = await b.getCapabilities(0);
   assert.equal(caps.fan.canControl, true);
-  assert.deepEqual(caps.fan.modes, ['auto', 'curve']);
-  assert.equal(lib.__calls.fanSetters, 2, 'no second probe after a caps-cache invalidation');
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'the default fixture stays fixed-REFUSED (A770-realistic — no incidental fixed learning)');
+  assert.equal(lib.__calls.fanSetters, 3, 'no second probe after a caps-cache invalidation');
 });
 
 test('M3-D: probe WRITE-REFUSED keeps the derived modes and read-only caps (F2 regression)', async () => {
@@ -437,6 +499,8 @@ test('M3-D: probe WRITE-REFUSED keeps the derived modes and read-only caps (F2 r
   assert.equal(caps.fan.canControl, false);
   assert.deepEqual(caps.fan.modes, ['fixed'], 'a write-REFUSED card keeps the derived modes — claiming auto/curve would lie');
   assert.equal(lib.__calls.fanSetters, 1, 'table write attempted; restore never needed (never entered table mode)');
+  const probe = await b._probeFanCapability(0);
+  assert.deepEqual(probe, { probeOk: false, writeAccepted: false, fixedOk: false }, 'a refused table write never runs the fixed sub-probe');
   // The apply gate uses the effective value: still refused, no setter calls.
   const res = await b.applySettings(0, { fanCurve: [{ t: 20, speedPct: 20 }] });
   assert.equal(res.ok, false);
@@ -452,6 +516,8 @@ test('M3-D: write-accepted-but-restore-fail retries the restore (never left in t
   assert.equal(caps.fan.canControl, false, 'a stuck restore is itself a probe failure');
   assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'the table WRITE was accepted — the card demonstrably accepts tables (write-accepted rule)');
   assert.equal(lib.__calls.fanSetters, 3, 'table write + 2 restore retries');
+  const probe = await b._probeFanCapability(0);
+  assert.deepEqual(probe, { probeOk: false, writeAccepted: true, fixedOk: false }, 'a stuck table restore never runs the fixed sub-probe');
 });
 
 test('M3-D: probe point count honors fp.maxPoints — min(10, maxPoints) (F3 regression)', async () => {
@@ -460,8 +526,8 @@ test('M3-D: probe point count honors fp.maxPoints — min(10, maxPoints) (F3 reg
   const caps = await b.getCapabilities(0);
   assert.equal(caps.fan.maxCurvePoints, 4);
   assert.equal(caps.fan.canControl, true, 'a maxPoints<10 card still unlocks when it accepts tables');
-  assert.deepEqual(caps.fan.modes, ['auto', 'curve']);
-  assert.equal(lib.__calls.fanSetters, 2);
+  assert.deepEqual(caps.fan.modes, ['auto', 'curve'], 'the default fixture refuses fixed — this M3-D-era test must not silently gain fixed');
+  assert.equal(lib.__calls.fanSetters, 3);
   assert.equal(lib.__state.fanTable.length, 4, 'sample table built with min(10, maxPoints) points and verified with the same count');
 });
 
@@ -473,7 +539,62 @@ test('M3-D: probe-ok opens the apply gate — the effective canControl drives ap
   assert.equal(res.ok, true);
   assert.equal(res.perControl.fanCurve.ok, true);
   assert.equal(res.perControl.fanCurve.readBackEqual, true);
-  assert.equal(lib.__calls.fanSetters, 3, 'probe (table+restore) + curve apply');
+  assert.equal(lib.__calls.fanSetters, 4, 'probe (table write + restore + one refused fixed write) + curve apply');
+});
+
+test('M4-C: fixed write accepted but the read-back mismatch fails the sub-probe — the restore still runs (never left at 50% fixed)', async () => {
+  // Round-1: this path needs a SUCCESSFUL fixed WRITE (the read-back
+  // mismatch is what fails the probe) — explicit opt-in against the
+  // fixed-REFUSED default.
+  const lib = makeFakeLib({ fixedWriteResult: CTL_RESULT.SUCCESS });
+  const realGet = lib.ctlFanGetConfig;
+  let fixedReads = 0;
+  // The driver stays in FIXED mode but ignores the 50% request (reports 80).
+  lib.ctlFanGetConfig = (h, cfgBuf) => {
+    if (lib.__state.fanMode === 1) {
+      fixedReads++;
+      koffi.encode(cfgBuf, 'ctl_fan_config_t', {
+        Size: koffi.sizeof('ctl_fan_config_t'), Version: 0, mode: 1,
+        speedFixed: { Size: 16, Version: 0, speed: 80, units: 1 },
+        speedTable: { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: 0, table: [] },
+      });
+      return 0;
+    }
+    return realGet(h, cfgBuf);
+  };
+  const b = makeBackend(lib, { fanProbe: true });
+  const probe = await b._probeFanCapability(0);
+  assert.deepEqual(probe, { probeOk: true, writeAccepted: true, fixedOk: false });
+  assert.deepEqual((await b.getCapabilities(0)).fan.modes, ['auto', 'curve'], 'an unverified fixed probe keeps [auto,curve]');
+  assert.ok(fixedReads >= 1, 'the fixed read-back ran');
+  assert.equal(lib.__state.fanMode, 0, 'the restore ran despite the failed verify — the fan is never left at 50% fixed');
+  assert.equal(lib.__calls.fanSetters, 4, 'table write + table restore + fixed write + fixed restore');
+});
+
+test('M4-C: fixed restore fails -> retried, fixedOk=false (a failed restore is a probe failure — never left at 50% fixed)', async () => {
+  // Round-1: this path needs a SUCCESSFUL fixed WRITE (the RESTORE is what
+  // fails) — explicit opt-in against the fixed-REFUSED default.
+  const lib = makeFakeLib({ fixedWriteResult: CTL_RESULT.SUCCESS });
+  const origDefault = lib.ctlFanSetDefaultMode;
+  let defaultCalls = 0;
+  lib.ctlFanSetDefaultMode = (h) => {
+    defaultCalls++;
+    // Call 1: the TABLE restore (must succeed so the fixed sub-probe runs).
+    // Calls 2-3: the FIXED restore retried twice (both fail — each attempt
+    // still counts as a setter call, like the real driver round trip).
+    if (defaultCalls >= 2) {
+      lib.__calls.fanSetters++;
+      return CTL_RESULT.ERROR_DATA_WRITE;
+    }
+    return origDefault(h);
+  };
+  const b = makeBackend(lib, { fanProbe: true });
+  const probe = await b._probeFanCapability(0);
+  assert.deepEqual(probe, { probeOk: true, writeAccepted: true, fixedOk: false });
+  assert.deepEqual((await b.getCapabilities(0)).fan.modes, ['auto', 'curve'], 'a stuck fixed restore never claims fixed');
+  assert.equal(defaultCalls, 3, 'table restore + 2 fixed-restore retries (same retry semantics as the table probe)');
+  assert.equal(lib.__calls.fanSetters, 5, 'table write + table restore + fixed write + 2 fixed restore retries');
+  assert.equal(lib.__state.fanMode, 1, 'the driver still reads FIXED — the probe reports the honest failure (the 50% write was attempted and the restore failed loudly)');
 });
 
 // ---------------------------------------------------------------------------
@@ -561,7 +682,9 @@ test('applySettings: fan setters are never called when canControl=false', async 
 });
 
 test('applySettings: fan applies work on a canControl=true device (F1 regression — no ReferenceError)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7 });
+  // Round-1: this fixture applies a fixed speed successfully — explicit
+  // fixed-CAPABLE opt-in against the fixed-REFUSED default.
+  const lib = makeFakeLib({ fanCanControl: true, supportedFanModes: 0x7, fixedWriteResult: CTL_RESULT.SUCCESS });
   const b = makeBackend(lib);
   // fixedFanPct: the path that previously threw ReferenceError
   // (CTL_FAN_SPEED_UNITS was not imported).
@@ -615,7 +738,9 @@ test('applySettings: fan curve apply clamps %, sorts temps, enforces ascending b
 });
 
 test('applySettings: fixedFanPct is clamped to 0..100 before the driver write (F2 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  // Round-1: applies a fixed speed successfully — explicit fixed-CAPABLE
+  // opt-in against the fixed-REFUSED default.
+  const lib = makeFakeLib({ fanCanControl: true, fixedWriteResult: CTL_RESULT.SUCCESS });
   const b = makeBackend(lib);
   const res = await b.applySettings(0, { fixedFanPct: 150 });
   assert.equal(res.ok, true);
@@ -703,7 +828,9 @@ test('applySettings: fan curve read-back with a driver-reported numPoints > 32 f
 });
 
 test('applySettings: fixed fan speed fails when read-back speed differs (F2 regression)', async () => {
-  const lib = makeFakeLib({ fanCanControl: true });
+  // Round-1: this path needs a SUCCESSFUL fixed WRITE (the read-back
+  // mismatch is what fails the apply) — explicit opt-in.
+  const lib = makeFakeLib({ fanCanControl: true, fixedWriteResult: CTL_RESULT.SUCCESS });
   // Driver keeps fixed mode but applies a different percentage.
   lib.ctlFanGetConfig = (h, cfgBuf) => {
     encodeFanConfig(cfgBuf, { mode: 1, speed: 50, units: 1 });
