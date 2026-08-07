@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arc Power — Overclocking &amp; Tuning for Intel Arc GPUs</title>
-  <meta name="description" content="Arc Power is an open-source overclocking and tuning tool for Intel Arc GPUs — power, clock, voltage and fan control through Intel's official IGCL API, with live telemetry, profiles and safety-first verified applies.">
-  <meta property="og:title" content="Arc Power — Overclocking &amp; Tuning for Intel Arc GPUs">
-  <meta property="og:description" content="Overclock and tune Intel Arc GPUs through Intel's official IGCL API. Power, clocks, voltage, fan curves, live telemetry, profiles — no reverse engineering, no daemons.">
+  <title>Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs</title>
+  <meta name="description" content="Arc Power is an open-source overclocking and tuning tool for Intel Arc GPUs - power, clock, voltage and fan control through Intel's official IGCL API, with live telemetry, profiles and safety-first verified applies.">
+  <meta property="og:title" content="Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs">
+  <meta property="og:description" content="Overclock and tune Intel Arc GPUs through Intel's official IGCL API. Power, clocks, voltage, fan curves, live telemetry, profiles - no reverse engineering, no daemons.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://yamsse.github.io/Arc-Power/">
   <meta property="og:image" content="assets/og.png">
@@ -55,7 +55,7 @@
           Arc <span class="grad-text">Power</span>
         </h1>
         <p class="hero-sub">
-          An open-source overclocking and tuning tool for Intel Arc GPUs — in the spirit of
+          An open-source overclocking and tuning tool for Intel Arc GPUs - in the spirit of
           MSI Afterburner and AMD Adrenaline, built on Intel's official Graphics Control
           Library (IGCL). No reverse-engineering. No third-party daemons.
         </p>
@@ -112,9 +112,9 @@
           </div>
         </div>
         <div class="power-block">
-          <div class="power-meta mono"><span>Power limit</span><span class="js-anim" data-role="pl" data-target="252" data-decimals="0">0</span><span>W</span></div>
+          <div class="power-meta mono"><span>Power limit</span><span class="js-anim" data-role="pl" data-target="315" data-decimals="0">0</span><span>W</span></div>
           <div class="power-track"><div class="power-fill" id="powerFill"></div></div>
-          <div class="power-scale mono"><span id="powerMin">105</span><span id="powerMax">252</span><span class="power-ext" id="powerExt">315 W extended</span></div>
+          <div class="power-scale mono"><span id="powerMin">0</span><span id="powerMax">315</span><span class="power-ext" id="powerExt">315 W extended</span></div>
         </div>
         <div class="card-foot mono">
           <span class="ok">&#10003;</span> apply read-back verified
@@ -131,7 +131,7 @@
       </div>
       <div class="stat glass">
         <div class="stat-num mono"><span class="js-count" data-target="2">0</span></div>
-        <div class="stat-label">GPU families — Alchemist &amp; Battlemage</div>
+        <div class="stat-label">GPU families - Alchemist &amp; Battlemage</div>
       </div>
       <div class="stat glass">
         <div class="stat-num mono"><span class="js-count" data-target="100">0</span>%</div>
@@ -155,7 +155,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17h4l2-5 3 9 3-13 2 6h4"/></svg>
           </div>
           <h3>Overclocking</h3>
-          <p>Power limit (W), core frequency offset (MHz), voltage offset and temperature limit (&deg;C) — applied through Intel's documented IGCL API with a warranty-waiver gate on first use.</p>
+          <p>Power limit (W), core frequency offset (MHz), voltage offset and temperature limit (&deg;C) - applied through Intel's documented IGCL API with a warranty-waiver gate on first use.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
@@ -166,45 +166,31 @@
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M8 8h.01M11 8h.01M14 8h.01M8 11h.01M11 11h.01M14 11h.01"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2"/><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/></svg>
           </div>
-          <h3>Expert controls</h3>
-          <p>VRAM frequency and voltage offsets, GPU voltage lock and custom VF curves — capability-gated, so they only appear on hardware that actually exposes them.</p>
+          <h3>Fan control</h3>
+          <p>Auto, curve and fixed modes with an interactive SVG curve editor - hover/drag readouts and manual per-point boxes. Unlocked on Alchemist through IGCL speed tables; read-only on boards that don't expose control.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17 8 12l4 4 8-9"/><path d="M15 7h5v5"/></svg>
           </div>
           <h3>Live telemetry</h3>
-          <p>Clocks, temperatures, power from GPU energy counters, fan RPM, utilization and throttle reasons — plus FPS / frame-time via PresentMon and VRAM via DXGI, as readouts and rolling graphs.</p>
+          <p>Clocks, temperatures, power from GPU energy counters, fan RPM, utilization and throttle reasons - plus FPS / frame-time via PresentMon and VRAM via DXGI, as readouts and rolling graphs.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M5 8l7-5 7 5M5 8v13M19 8v13"/><path d="M8 21h8"/></svg>
           </div>
           <h3>Profiles &amp; boot apply</h3>
-          <p>Save, load, rename and delete named profiles, and apply one silently at every logon through an elevated scheduled task — with a safe default fallback.</p>
-        </article>
-        <article class="card glass reveal">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4Z"/><path d="m9 12 2 2 4-4"/></svg>
-          </div>
-          <h3>Safety-first applies</h3>
-          <p>Every value is clamped to the device-reported range, every apply is verified by read-back — including a delayed re-read to catch momentary "lies" — and refusals surface as honest per-control errors.</p>
-        </article>
-        <article class="card glass reveal">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2"/><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/></svg>
-          </div>
-          <h3>Fan control</h3>
-          <p>Auto, curve and fixed modes with an interactive SVG curve editor — hover/drag readouts and manual per-point boxes. Unlocked on Alchemist through IGCL speed tables; read-only on boards that don't expose control.</p>
+          <p>Save, load, rename and delete named profiles, and apply one silently at every logon through an elevated scheduled task - with a safe default fallback.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></svg>
           </div>
           <h3>Reversible tweaks</h3>
-          <p>Registry hacks — MPO disable, HAGS and more — with one-click Enable / Disable / Revert, per-step verified writes and honest per-step reporting.</p>
+          <p>Registry hacks - MPO disable, HAGS and more - with one-click Enable / Disable / Revert, per-step verified writes and honest per-step reporting.</p>
         </article>
       </div>
     </section>
@@ -214,7 +200,7 @@
       <div class="section-head">
         <span class="kicker mono">Hardware</span>
         <h2>Supported GPUs</h2>
-        <p class="section-sub">Capability limits, ranges, steps and units are read from the GPU at launch — never hardcoded. The UI only shows what your device actually supports.</p>
+        <p class="section-sub">Capability limits, ranges, steps and units are read from the GPU at launch - never hardcoded. The UI only shows what your device actually supports.</p>
       </div>
       <div class="gpu-table glass reveal">
         <div class="gpu-row gpu-head mono">
@@ -223,7 +209,7 @@
         <div class="gpu-row">
           <span class="gpu-name"><img src="assets/logo.svg" alt="" width="18" height="18">Arc A3 / A5 / A7 series</span>
           <span>Alchemist</span>
-          <span class="chip chip-ok">Verified<span class="chip-sub">A770 confirmed; A3/A5/A7 expected — same IGCL surface</span></span>
+          <span class="chip chip-ok">Verified<span class="chip-sub">A770 confirmed; A3/A5/A7 expected - same IGCL surface</span></span>
         </div>
         <div class="gpu-row">
           <span class="gpu-name"><img src="assets/logo.svg" alt="" width="18" height="18">Arc B580 / B570</span>
@@ -258,12 +244,12 @@
         <article class="card glass reveal">
           <div class="card-num mono">02</div>
           <h3>Verified read-backs</h3>
-          <p>Every apply is confirmed by reading the value back from the driver — including a delayed re-read — so a setter that "succeeds" silently never counts as applied.</p>
+          <p>Every apply is confirmed by reading the value back from the driver - including a delayed re-read - so a setter that "succeeds" silently never counts as applied.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-num mono">03</div>
           <h3>Honest refusals</h3>
-          <p>When the driver refuses, you get a truthful per-control error with a message you can act on — never a silent failure or a fake success state.</p>
+          <p>When the driver refuses, you get a truthful per-control error with a message you can act on - never a silent failure or a fake success state.</p>
         </article>
       </div>
     </section>
