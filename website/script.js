@@ -55,7 +55,7 @@
     var pMin = document.getElementById('powerMin');
     var pMax = document.getElementById('powerMax');
     if (pMin) pMin.textContent = '0';
-    if (pMax) pMax.textContent = String(heroLimit);
+    if (pMax) pMax.textContent = String(heroGpu.plMax);
     var pExt = document.getElementById('powerExt');
     if (pExt) {
       if (heroGpu.ext) { pExt.textContent = heroGpu.ext + ' W extended'; pExt.style.display = ''; }
