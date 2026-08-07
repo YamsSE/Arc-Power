@@ -216,8 +216,11 @@ a:hover { text-decoration: underline; }
   box-shadow: 0 0 14px rgba(76,194,255,0.7);
   transition: width 1.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.power-scale { display: flex; justify-content: space-between; margin-top: 8px; font-size: 10.5px; color: var(--muted-2); }
-.power-ext { color: var(--accent); font-weight: 600; }
+.power-scale { position: relative; margin-top: 8px; height: 16px; font-size: 10.5px; color: var(--muted-2); }
+.power-scale > span { position: absolute; top: 0; line-height: 1; }
+.power-scale #powerMin { left: 0; }
+.power-scale #powerMax { transform: translateX(-50%); }
+.power-ext { color: var(--accent); font-weight: 600; right: 0; }
 
 .card-foot { margin-top: 14px; font-size: 11.5px; color: var(--muted); display: flex; gap: 18px; }
 .card-foot .ok { color: var(--ok); margin-right: 2px; }

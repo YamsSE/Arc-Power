@@ -55,7 +55,14 @@
     var pMin = document.getElementById('powerMin');
     var pMax = document.getElementById('powerMax');
     if (pMin) pMin.textContent = '0';
-    if (pMax) pMax.textContent = String(heroGpu.plMax);
+    if (pMax) {
+      // The max tick sits where it belongs on the bar's scale (80% for
+      // 252 of 315 W on Alchemist), not spread across the whole row.
+      var pct = Math.round(heroGpu.plMax / heroLimit * 100);
+      pMax.textContent = String(heroGpu.plMax);
+      pMax.style.left = pct + '%';
+      pMax.style.transform = pct >= 98 ? 'translateX(-100%)' : 'translateX(-50%)';
+    }
     var pExt = document.getElementById('powerExt');
     if (pExt) {
       if (heroGpu.ext) { pExt.textContent = heroGpu.ext + ' W extended'; pExt.style.display = ''; }
