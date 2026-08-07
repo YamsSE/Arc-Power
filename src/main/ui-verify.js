@@ -387,6 +387,36 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-D: the title-bar buttons did not tick the injected window ops: ${JSON.stringify({ before: tbOpsBefore, after: tbOpsAfter })}`);
   }
   step('titlebar', `integrated title bar: logo (${logo}), brand '${brandName.trim()}' (blue gradient 'Power'), ${await js(`document.querySelectorAll('#titlebar .window-btn').length`)} window buttons; max icon follows window:maximized-changed; buttons ticked the window-op counters (${JSON.stringify(tbOpsAfter)})`);
+  // M4-D (user): the app icon ALSO sits at the title bar's top-LEFT corner,
+  // and the max/restore icons are exactly one glyph each (the restore glyph
+  // is TWO overlapping squares drawn as one icon — a filled front square
+  // over the back outline; the pin asserts the fill so it no longer reads
+  // as two separate icons).
+  const cornerIcon = await js(`document.querySelector('#titlebar .titlebar-corner-icon')?.getAttribute('src') ?? ''`);
+  if (!cornerIcon.includes('icon.png')) fail(`M4-D: the title bar corner icon is '${cornerIcon}' (expected the app icon at the top-left)`);
+  const restoreFill = await js(`(() => {
+    const r = document.querySelector('#titlebar .icon-restore rect');
+    return r ? getComputedStyle(r).fill : '';
+  })()`);
+  const tbRect = await js(`(() => { const b = document.querySelector('#titlebar .icon-restore'); const r = b.getBoundingClientRect(); return JSON.stringify({ w: r.width, h: r.height }); })()`);
+  step('titlebar-extras', `top-left corner icon OK; restore glyph is ONE icon (front square filled: '${restoreFill}', ${JSON.parse(tbRect).w}x${JSON.parse(tbRect).h}px)`);
+
+  // M4-D (user): the sidebar — per-tab icons left of the names, the brand
+  // "Power" illuminated like the title bar, the brand BOLD.
+  const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
+  if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
+  if (sidebarIcons.length !== 7) fail(`M4-D: expected 7 sidebar links with icons, got ${sidebarIcons.length}`);
+  const sidebarPower = await js(`(() => {
+    const el = document.querySelector('.sidebar-brand-power');
+    if (!el) return 'no-el';
+    const cs = getComputedStyle(el);
+    return cs.backgroundImage.includes('linear-gradient')
+      && (cs.backgroundClip === 'text' || cs.webkitBackgroundClip === 'text');
+  })()`);
+  if (sidebarPower !== true) fail(`M4-D: the sidebar 'Power' is not gradient-illuminated: ${sidebarPower}`);
+  const sidebarWeight = await js(`getComputedStyle(document.querySelector('.sidebar-brand')).fontWeight`);
+  if (sidebarWeight !== '800') fail(`M4-D: the sidebar brand is not BOLD (weight '${sidebarWeight}', expected 800)`);
+  step('sidebar-icons', `sidebar: ${sidebarIcons.length} links each with a fitting icon; 'Power' illuminated (gradient), brand weight ${sidebarWeight}`);
 
   // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
   // EVERY session: cancelled in the unaccepted sessions (Cancel here;
@@ -421,7 +451,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
   if (!favicon.includes('favicon.png')) fail(`favicon link is '${favicon}'`);
-  if (await js(`document.body.textContent.includes('PCI')`)) fail('PCI ID is still shown somewhere in the UI');
+  // M4-D (user): the GPU card gained the PCIe ROW ('PCIe 4.0 x16') — the
+  // pin must catch the old PCI-ID text ('PCI\VEN...'), not the word 'PCI'.
+  if (await js(`document.body.textContent.includes('PCI\\\\')`)) fail('PCI ID is still shown somewhere in the UI');
   // M3-A: the header status indicator is REMOVED — no dot, no 'Service
   // Status' label anywhere (IGS is no longer a status item).
   if (await js(`!!document.querySelector('.gpu-header .status-dot')`)) fail('M3-A: the header still renders a status dot');
@@ -442,22 +474,23 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // device card: no 'OC waiver' text in any device-card kv row.
   if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Health card)');
   // B2: the chips footer ("Fan curve N points", power/volt/freq/temp notes)
-  // is GONE from the device card — no chips inside the card grid at all.
-  const gridChips = await js(`document.querySelectorAll('.card-grid .chip').length`);
+  // is GONE from the device card — no chips inside the card grid EXCEPT the
+  // M4-D ReBAR pill (a deliberate new chip, excluded here).
+  const gridChips = await js(`document.querySelectorAll('.card-grid .chip:not(.rebar-pill)').length`);
   if (gridChips !== 0) fail(`B2: device card chips footer still renders ${gridChips} chips`);
-  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row, no chips footer');
+  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row, no chips footer (ReBAR pill is the only chip)');
 
-  // M2C-B B8: 'Memory clock' kv row next to 'Graphics clock' (a770
-  // featureset telemetry memClockMhz = 2187).
+  // M4-D (user): the core + memory clock BUNDLED row ("… MHz Core /
+  // 2187 MHz Memory" — a770 featureset telemetry memClockMhz = 2187).
   if (!(await waitFor(win, `(() => {
-    const rows = Array.from(document.querySelectorAll('.card-grid .kv'));
-    const mem = rows.find((k) => (k.getAttribute('data-label') ?? '') === 'Memory clock');
-    const gfx = rows.find((k) => (k.getAttribute('data-label') ?? '') === 'Graphics clock');
-    return !!mem && !!gfx && (mem.textContent ?? '').includes('2187');
+    const row = Array.from(document.querySelectorAll('.card-grid .kv'))
+      .find((k) => (k.getAttribute('data-label') ?? '') === 'Clocks');
+    const text = row?.textContent ?? '';
+    return (text ?? '').includes('MHz Core') && text.includes('2187') && text.includes('MHz Memory');
   })()`))) {
-    fail(`memory clock kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Memory clock"]')?.textContent ?? ''`)}' (expected '2187 MHz')`);
+    fail(`combined clocks kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}' (expected '2400 MHz Core / 2187 MHz Memory')`);
   }
-  step('mem-clock-kv', `device card memory clock kv = ${await js(`document.querySelector('.card-grid .kv[data-label="Memory clock"]')?.textContent ?? ''`)} (next to Graphics clock)`);
+  step('clocks-kv', `device card combined clocks kv = ${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}`);
 
   // Memory clock readout next to core clock (a770 featureset: 2187 MHz).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2187')`))) {
@@ -467,9 +500,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- M4-D (user): the CPU & memory card (sysinfo:get fixture) ----------
   // The card sits BEFORE the GPU card in the card-grid and renders the mock
-  // fixture: CPU name, cores/threads (physical + logical), max clock, RAM
-  // total + speed. Every field degrades to '—' when null (pinned by the
-  // pure/sysinfo.ts unit tests; the fixture here is all-populated).
+  // fixture: CPU name + the BUNDLED cores/threads/clock + the BUNDLED RAM
+  // brand/size/speed rows (user formats). Every field degrades to '—' when
+  // null (pinned by the pure/sysinfo.ts unit tests; the fixture here is
+  // all-populated).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid > .card')).some((c) => (c.querySelector('.card-title')?.textContent ?? '') === 'CPU & memory')`, 5000))) {
     fail('M4-D: the CPU & memory card did not render');
   }
@@ -480,11 +514,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const sysinfoRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const sysRows = JSON.parse(sysinfoRows);
   if (sysRows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`M4-D: CPU row is '${sysRows['CPU']}' (expected the sysinfo fixture name)`);
-  if (sysRows['CPU cores'] !== '20 physical · 28 logical') fail(`M4-D: CPU cores row is '${sysRows['CPU cores']}' (expected '20 physical · 28 logical')`);
-  if (sysRows['Max clock'] !== '5600 MHz') fail(`M4-D: Max clock row is '${sysRows['Max clock']}' (expected '5600 MHz')`);
-  if (sysRows['Memory'] !== '32.0 GB') fail(`M4-D: Memory row is '${sysRows['Memory']}' (expected '32.0 GB')`);
-  if (sysRows['Memory speed'] !== '6000 MHz') fail(`M4-D: Memory speed row is '${sysRows['Memory speed']}' (expected '6000 MHz')`);
-  step('m4d-cpu-card', `CPU & memory card first in the card-grid: '${sysRows['CPU']}', '${sysRows['CPU cores']}', '${sysRows['Max clock']}', '${sysRows['Memory']}', '${sysRows['Memory speed']}'`);
+  if (sysRows['Cores / clock'] !== '20 Cores / 28 Threads / @ 5600 MHz') fail(`M4-D: Cores / clock row is '${sysRows['Cores / clock']}' (expected the bundled '20 Cores / 28 Threads / @ 5600 MHz')`);
+  if (sysRows['Memory'] !== 'G.Skill 32.0 GB @ 6000 MHz') fail(`M4-D: Memory row is '${sysRows['Memory']}' (expected the bundled 'G.Skill 32.0 GB @ 6000 MHz')`);
+  step('m4d-cpu-card', `CPU & memory card first in the card-grid: '${sysRows['CPU']}', '${sysRows['Cores / clock']}', '${sysRows['Memory']}'`);
+
+  // --- M4-D (user): the GPU-card PCIe row + the ReBAR pill ---------------
+  // The mock fixture models a healthy setup: PCIe 4.0 x16 currently used +
+  // a multi-GiB BAR (ReBAR on -> green pill).
+  const pcieRowText = await js(`document.querySelector('.card-grid .kv[data-label="PCIe"]')?.textContent?.trim() ?? ''`);
+  if (pcieRowText !== 'PCIe 4.0 x16') fail(`M4-D: the PCIe row is '${pcieRowText}' (expected 'PCIe 4.0 x16' — the CURRENTLY-USED link)`);
+  const rebarPill = await js(`(() => {
+    const pill = document.querySelector('.card-grid .kv[data-label="Resizable BAR"] .rebar-pill');
+    if (!pill) return 'no-pill';
+    return pill.textContent + '|' + pill.className;
+  })()`);
+  if (!/ReBAR on\|.*status-ok/.test(rebarPill)) fail(`M4-D: the ReBAR pill is '${rebarPill}' (expected the green 'ReBAR on')`);
+  step('m4d-gpu-rows', `GPU card: PCIe '${pcieRowText}', ReBAR pill '${rebarPill.split('|')[0]}' (green)`);
 
   // ONE general GPU HEALTH card (M3-A + M3-C-I + M4-A): FIVE rows, honest
   // per-row state, no Level Zero item, no IGCL detail line, NO clocks row
@@ -2208,8 +2253,21 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
-  if (!(await js(`!!${startWithBox} && !!${startMinBox}`))) fail('M4-D: the Settings toggles did not render');
+  const closeTrayBox = `document.querySelector('.settings-checkbox[data-setting="closeToTray"]')`;
+  if (!(await js(`!!${startWithBox} && !!${startMinBox} && !!${closeTrayBox}`))) fail('M4-D: the Settings toggles did not render');
   if (await js(`${startWithBox}.checked`)) fail('M4-D: Start with Windows is checked before anything enabled it');
+  // Close to tray round trip (M4-D user): the checkbox persists
+  // closeToTray through the profiles-settings-save channel; the main-side
+  // close interception is a window-level behavior (live round).
+  await js(`${closeTrayBox}.click()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.closeToTray === true)`, 5000))) {
+    fail('M4-D: Close to tray did not persist closeToTray=true');
+  }
+  if (!(await js(`${closeTrayBox}.checked`))) fail('M4-D: the Close to tray checkbox did not reflect its on state');
+  await js(`${closeTrayBox}.click()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.closeToTray === false)`, 5000))) {
+    fail('M4-D: Close to tray did not persist closeToTray=false');
+  }
   // Start minimized round trip: the checkbox persists settings.json
   // (startMinimized) through the profiles-settings-save channel.
   await js(`${startMinBox}.click()`);

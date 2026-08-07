@@ -126,7 +126,7 @@ export class ProfileStore {
   }
 
   /**
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -136,7 +136,7 @@ export class ProfileStore {
         ocMode: this.ocModeDefault, advancedModeAccepted: false,
         // M4-D: absent -> false (the Settings-tab fields ride the
         // absent-field defaults mechanism — NO schema bump).
-        startWithWindows: false, startMinimized: false,
+        startWithWindows: false, startMinimized: false, closeToTray: false,
       };
     }
     return {
@@ -153,11 +153,12 @@ export class ProfileStore {
       // absent-field default mechanism as ocMode/advancedModeAccepted).
       startWithWindows: data.startWithWindows === true,
       startMinimized: data.startMinimized === true,
+    closeToTray: data.closeToTray === true,
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -169,6 +170,7 @@ export class ProfileStore {
       advancedModeAccepted: settings.advancedModeAccepted === true,
       startWithWindows: settings.startWithWindows === true,
       startMinimized: settings.startMinimized === true,
+      closeToTray: settings.closeToTray === true,
     });
   }
 }

@@ -1,7 +1,9 @@
 // Arc Power — Settings tab (M4-D): Start with Windows (the plain-app
 // onlogon task ArcPowerAppOnBoot — ONE UAC in dev, mock in --ui-verify),
 // Start minimized (persisted startMinimized — the window minimizes to the
-// taskbar at boot, the tray click restores), and the app version row.
+// taskbar at boot, the tray click restores), Close to tray (persisted
+// closeToTray — closing the window hides it to the icon list instead of
+// quitting; the tray menu's Quit still exits), and the app version row.
 //
 // Honesty rules (same pattern as the Profiles page's boot card):
 //   - the Start-with-Windows checkbox reflects the TASK truth from
@@ -44,13 +46,17 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const s = ctx.store.get();
   const displayVersion = s.appVersion && s.appVersion !== '0.0.0' ? `${versionLine(s.appVersion)} Alpha` : '—';
 
-  let persisted: { startWithWindows: boolean; startMinimized: boolean };
+  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean };
   let bootState: StartupGetState | null = null;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
     // (settings.json via ProfileStore — the same read the Profiles page uses).
     const envelope = await api.profilesList();
-    persisted = { startWithWindows: envelope.settings.startWithWindows === true, startMinimized: envelope.settings.startMinimized === true };
+    persisted = {
+      startWithWindows: envelope.settings.startWithWindows === true,
+      startMinimized: envelope.settings.startMinimized === true,
+      closeToTray: envelope.settings.closeToTray === true,
+    };
   } catch (err) {
     clear(root);
     root.append(el('p', { class: 'text-error', text: `Could not load settings: ${err instanceof Error ? err.message : String(err)}` }));
@@ -126,6 +132,28 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
+    const closeToTrayCard = el('section', { class: 'card settings-card' }, [
+      el('h2', { class: 'card-title', text: 'Close to tray' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'closeToTray' },
+            checked: persisted.closeToTray,
+            onchange: (ev: Event) => void onCloseToTrayToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Closing the window minimizes it to the tray icon list' }),
+        ]),
+      ]),
+      el('p', {
+        class: 'card-note settings-state',
+        text: persisted.closeToTray
+          ? 'The close button hides the app to the tray — use the tray menu\'s Quit to exit fully.'
+          : 'The close button quits the app.',
+      }),
+    ]);
+
     const aboutCard = el('section', { class: 'card settings-card' }, [
       el('h2', { class: 'card-title', text: 'About' }),
       el('div', { class: 'card-body kv-grid' }, [
@@ -134,7 +162,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    root.append(startWithCard, startMinimizedCard, aboutCard);
+    root.append(startWithCard, startMinimizedCard, closeToTrayCard, aboutCard);
   };
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
@@ -168,6 +196,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast(checked ? 'success' : 'info', checked ? 'Start minimized enabled' : 'Start minimized disabled', '');
     } catch (err) {
       toast('error', 'Start minimized could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = !checked;
+      return;
+    }
+    await refresh();
+  };
+
+  const onCloseToTrayToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="closeToTray"]');
+    try {
+      await api.profilesSettingsSave({ closeToTray: checked });
+      persisted.closeToTray = checked;
+      toast(checked ? 'success' : 'info', checked ? 'Close to tray enabled' : 'Close to tray disabled', '');
+    } catch (err) {
+      toast('error', 'Close to tray could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = !checked;
       return;
     }

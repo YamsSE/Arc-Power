@@ -42,13 +42,16 @@ let cached = null;
 /**
  * The PowerShell CIM query: Win32_Processor (Name/NumberOfCores/
  * NumberOfLogicalProcessors/MaxClockSpeed), Win32_ComputerSystem
- * (TotalPhysicalMemory), Win32_PhysicalMemory (ConfiguredClockSpeed),
- * Win32_VideoController (Name/AdapterRAM/PNPDeviceID) and — the reliable
- * VRAM source — the display class registry subkeys'
- * HardwareInformation.qwMemorySize (UInt64 bytes) keyed by MatchingDeviceId,
- * serialized to JSON by PowerShell itself (the parse side stays dumb). A
- * missing class on a stripped-down system serializes as null/[] — the
- * parser degrades those honestly.
+ * (TotalPhysicalMemory), Win32_PhysicalMemory (Manufacturer/
+ * ConfiguredClockSpeed — the RAM brand for the bundled memory row),
+ * Win32_VideoController (Name/AdapterRAM/PNPDeviceID), the display class
+ * registry subkeys' HardwareInformation.qwMemorySize (UInt64 bytes, keyed
+ * by MatchingDeviceId), and — per video controller — the PCIe link
+ * properties (DEVPKEY_PciDevice_CurrentLinkSpeed/Width + Max) and the
+ * pnputil resource ranges (the ReBAR check: a functioning Resizable BAR
+ * shows a multi-GiB memory BAR). Serialized to JSON by PowerShell itself
+ * (the parse side stays dumb). A missing class on a stripped-down system
+ * serializes as null/[] — the parser degrades those honestly.
  * @returns {string}
  */
 export function buildSysinfoScript() {
@@ -56,9 +59,10 @@ export function buildSysinfoScript() {
     '$ErrorActionPreference = \'SilentlyContinue\'',
     '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed',
     '$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory',
-    '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 ConfiguredClockSpeed',
+    '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed',
     '$vga = @(Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM,PNPDeviceID)',
     '$regMem = @(Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; if ($p.\'HardwareInformation.qwMemorySize\' -and $p.MatchingDeviceId) { [pscustomobject]@{ PNPDeviceID = $p.MatchingDeviceId; MemoryBytes = $p.\'HardwareInformation.qwMemorySize\' } } })',
+    '$vga = @($vga | ForEach-Object { $id = $_.PNPDeviceID; $p = @(Get-PnpDeviceProperty -InstanceId $id -KeyName \'DEVPKEY_PciDevice_CurrentLinkSpeed\',\'DEVPKEY_PciDevice_CurrentLinkWidth\',\'DEVPKEY_PciDevice_MaxLinkSpeed\',\'DEVPKEY_PciDevice_MaxLinkWidth\'); $links = @{}; foreach ($pr in $p) { $links[$pr.KeyName] = $pr.Data }; $res = & pnputil /enum-devices /instanceid $id /resources /format txt 2>$null; $barMax = 0; if ($res) { $res | ForEach-Object { if ($_ -match \'^Memory Resources:\\s*0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz } } } }; [pscustomobject]@{ Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $id; CurrentLinkSpeed = $links[\'DEVPKEY_PciDevice_CurrentLinkSpeed\']; CurrentLinkWidth = $links[\'DEVPKEY_PciDevice_CurrentLinkWidth\']; MaxLinkSpeed = $links[\'DEVPKEY_PciDevice_MaxLinkSpeed\']; MaxLinkWidth = $links[\'DEVPKEY_PciDevice_MaxLinkWidth\']; MaxBarBytes = $barMax } })',
     '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; physicalMemory = $mem; videoControllers = $vga; registryMemory = $regMem } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
 }
@@ -112,6 +116,60 @@ export function applyRegistryMemory(controllers, registryMemory) {
 }
 
 /**
+ * PCIe link-speed code -> Gen label (PCI_EXPRESS_LINK_SPEED codes):
+ * 1 = 2.5 GT/s (Gen1) ... 5 = 32 GT/s (Gen5).
+ * @param {unknown} code
+ * @returns {number|null} the Gen number, or null when unknown
+ */
+export function pcieGenFromCode(code) {
+  if (typeof code !== 'number' || !Number.isFinite(code) || code < 1 || code > 5) return null;
+  return code;
+}
+
+/**
+ * M4-D (user): the PCIe link row. The kernel's PciDevice properties can be
+ * UNPOPULATED on some platforms (live-verified here: the A770 behind a PCIe
+ * switch reports the all-defaults 1/1/1/1 pattern — Max=Gen1 x1 is
+ * impossible for a Gen4 card, so the row honestly degrades to null instead
+ * of printing a wrong link). When populated (currentSpeed/currentWidth sane
+ * or maxSpeed >= 2), report the CURRENTLY-USED link ("PCIe 4.0 x16").
+ * @param {object} c raw controller row
+ * @returns {{ currentGen: number|null, currentWidth: number|null, maxGen: number|null, maxWidth: number|null } | null}
+ */
+export function pcieFromController(c) {
+  const currentSpeed = typeof c?.CurrentLinkSpeed === 'number' ? c.CurrentLinkSpeed : null;
+  const currentWidth = typeof c?.CurrentLinkWidth === 'number' ? c.CurrentLinkWidth : null;
+  const maxSpeed = typeof c?.MaxLinkSpeed === 'number' ? c.MaxLinkSpeed : null;
+  const maxWidth = typeof c?.MaxLinkWidth === 'number' ? c.MaxLinkWidth : null;
+  // Nothing populated -> unknown; the unpopulated-defaults pattern
+  // (everything 1/1 — live-verified here: the A770 behind a PCIe switch)
+  // is also unknown: Max=Gen1 x1 is impossible for a Gen4 card, so the
+  // row honestly degrades to null instead of printing a wrong link.
+  if (currentSpeed === null && currentWidth === null && maxSpeed === null && maxWidth === null) return null;
+  if (currentSpeed === 1 && currentWidth === 1 && maxSpeed === 1 && maxWidth === 1) return null;
+  return {
+    currentGen: pcieGenFromCode(currentSpeed),
+    currentWidth,
+    maxGen: pcieGenFromCode(maxSpeed),
+    maxWidth,
+  };
+}
+
+/**
+ * M4-D (user): the ReBAR verdict — a functioning Resizable BAR shows a
+ * multi-GiB memory BAR in the device resources (the A770's non-ReBAR
+ * aperture is 16 MB; with ReBAR the BAR spans the full VRAM). True when
+ * the largest memory range is >= 1 GiB; false otherwise (unknown when no
+ * resource info). Live-verified on this machine: 16 MB -> false (ReBAR off).
+ * @param {unknown} maxBarBytes
+ * @returns {boolean|null}
+ */
+export function rebarFromMaxBarBytes(maxBarBytes) {
+  if (typeof maxBarBytes !== 'number' || !Number.isFinite(maxBarBytes) || maxBarBytes <= 0) return null;
+  return maxBarBytes >= 1024 * 1024 * 1024;
+}
+
+/**
  * Parse the PowerShell JSON output into the canonical sysinfo shape. Any
  * missing/unparseable piece degrades per-field (null / empty array) — the
  * query result is a best-effort read, never a boot blocker.
@@ -142,6 +200,7 @@ export function parseCimOutput(stdout) {
   const ram = {
     totalBytes: num(csRaw?.TotalPhysicalMemory) ?? 0,
     speedMhz: num(memRaw?.ConfiguredClockSpeed),
+    manufacturer: typeof memRaw?.Manufacturer === 'string' && memRaw.Manufacturer ? memRaw.Manufacturer : null,
   };
   const videoControllers = applyRegistryMemory(
     vgaRaw
@@ -149,6 +208,8 @@ export function parseCimOutput(stdout) {
         name: typeof c?.Name === 'string' ? c.Name : null,
         vramBytes: vramBytesFromAdapterRam(c?.AdapterRAM),
         pnpDeviceId: typeof c?.PNPDeviceID === 'string' && c.PNPDeviceID ? c.PNPDeviceID : null,
+        pcie: pcieFromController(c),
+        rebarActive: rebarFromMaxBarBytes(c?.MaxBarBytes),
       }))
       .filter((c) => c.name !== null),
     raw?.registryMemory,
@@ -170,7 +231,7 @@ export function fallbackSysinfo() {
     : { name: null, cores: null, threads: null, maxClockMhz: null };
   return {
     cpu,
-    ram: { totalBytes: os.totalmem(), speedMhz: null },
+    ram: { totalBytes: os.totalmem(), speedMhz: null, manufacturer: null },
     videoControllers: [],
   };
 }
@@ -212,6 +273,7 @@ export async function collectSysinfo(deps = {}) {
         ram: {
           totalBytes: parsed.ram?.totalBytes || os.totalmem(),
           speedMhz: parsed.ram?.speedMhz ?? null,
+          manufacturer: parsed.ram?.manufacturer ?? null,
         },
         videoControllers: parsed.videoControllers ?? [],
       };
@@ -337,13 +399,16 @@ export function createMockSysinfo(overrides = {}) {
       ram: {
         totalBytes: 34359738368, // 32 GiB
         speedMhz: 6000,
+        manufacturer: 'G.Skill',
         ...(overrides.ram ?? {}),
       },
       videoControllers: [
         {
           name: 'Intel(R) Arc(TM) A770 Graphics',
-          vramBytes: 17179869184, // 16 GiB
+          vramBytes: 17179869184, // 16 GiB (the 16 GB config)
           pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08',
+          pcie: { currentGen: 4, currentWidth: 16, maxGen: 4, maxWidth: 16 },
+          rebarActive: true,
         },
         ...(overrides.videoControllers ?? []),
       ],

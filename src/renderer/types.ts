@@ -270,6 +270,18 @@ export interface VideoControllerInfo {
   name: string | null;
   vramBytes: number | null;
   pnpDeviceId: string | null;
+  /** M4-D (user): the CURRENTLY-USED PCIe link (null when the kernel does
+   *  not populate the properties — the honest '—' row). */
+  pcie: {
+    currentGen: number | null;
+    currentWidth: number | null;
+    maxGen: number | null;
+    maxWidth: number | null;
+  } | null;
+  /** M4-D (user): ReBAR verdict — true when the device's memory resources
+   *  include a multi-GiB BAR (a functioning Resizable BAR), false when only
+   *  the small aperture BAR exists, null when unknown. */
+  rebarActive: boolean | null;
 }
 
 /**
@@ -284,7 +296,7 @@ export interface SysInfo {
     threads: number | null;
     maxClockMhz: number | null;
   };
-  ram: { totalBytes: number; speedMhz: number | null };
+  ram: { totalBytes: number; speedMhz: number | null; manufacturer: string | null };
   videoControllers: VideoControllerInfo[];
 }
 
@@ -335,6 +347,8 @@ export interface ProfileSettingsState {
   /** M4-D: the Settings-tab fields (absent on old files -> false). */
   startWithWindows: boolean;
   startMinimized: boolean;
+  /** M4-D (user): closing the window hides it to the tray instead of quitting. */
+  closeToTray: boolean;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

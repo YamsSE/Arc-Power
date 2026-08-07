@@ -58,9 +58,9 @@ const CIM_STDOUT = JSON.stringify({
     MaxClockSpeed: 5400,
   },
   computerSystem: { TotalPhysicalMemory: 34359738368 },
-  physicalMemory: { ConfiguredClockSpeed: 6000 },
+  physicalMemory: { Manufacturer: 'G.Skill', ConfiguredClockSpeed: 6000 },
   videoControllers: [
-    { Name: 'Intel(R) Arc(TM) A770 Graphics', AdapterRAM: 2147479552, PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008' },
+    { Name: 'Intel(R) Arc(TM) A770 Graphics', AdapterRAM: 2147479552, PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008', CurrentLinkSpeed: 1, CurrentLinkWidth: 1, MaxLinkSpeed: 1, MaxLinkWidth: 1, MaxBarBytes: 16777216 },
     { Name: 'Microsoft Basic Display Adapter', AdapterRAM: 0, PNPDeviceID: 'ROOT\\BASIC_DISPLAY\\0000' },
   ],
   registryMemory: [
@@ -76,18 +76,22 @@ test('parseCimOutput: maps the CIM fields into the canonical shape', () => {
     threads: 24,
     maxClockMhz: 5400,
   });
-  assert.deepEqual(out.ram, { totalBytes: 34359738368, speedMhz: 6000 });
+  assert.deepEqual(out.ram, { totalBytes: 34359738368, speedMhz: 6000, manufacturer: 'G.Skill' });
   assert.equal(out.videoControllers.length, 2);
   assert.deepEqual(out.videoControllers[0], {
     name: 'Intel(R) Arc(TM) A770 Graphics',
     vramBytes: 17179869184,
     pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008',
+    pcie: null,
+    rebarActive: false,
   });
   // A 0-AdapterRAM basic-display fallback degrades to null vramBytes.
   assert.deepEqual(out.videoControllers[1], {
     name: 'Microsoft Basic Display Adapter',
     vramBytes: null,
     pnpDeviceId: 'ROOT\\BASIC_DISPLAY\\0000',
+    pcie: null,
+    rebarActive: null,
   });
 });
 
@@ -195,7 +199,7 @@ test('parseCimOutput: the registryMemory rows join by PNPDeviceID prefix (end to
   const stdout = JSON.stringify({
     cpu: { Name: 'Intel(R) Core(TM) i7-14700K', NumberOfCores: 20, NumberOfLogicalProcessors: 28, MaxClockSpeed: 5600 },
     computerSystem: { TotalPhysicalMemory: 34359738368 },
-    physicalMemory: { ConfiguredClockSpeed: 6000 },
+    physicalMemory: { Manufacturer: 'G.Skill', ConfiguredClockSpeed: 6000 },
     videoControllers: [{ Name: 'Intel(R) Arc(TM) A770 Graphics', AdapterRAM: 2147479552, PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_60011849&REV_08\\6&183F91F5&0&00080008' }],
     registryMemory: [{ PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_60011849&REV_08', MemoryBytes: 17179869184 }],
   });

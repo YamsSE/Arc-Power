@@ -74,16 +74,22 @@ function renderSidebar() {
   const active = currentPage();
   clear(nav);
   nav.append(
-    // M3-A: the user's preferred variant — no logo image, just the "Arc
-    // Power" text with the small blue accent bar below (the ::after bar in
-    // styles.css). The window/EXE/tray/favicon icons (M2C-B B6) are kept.
-    el('div', { class: 'sidebar-brand', text: 'Arc Power' }),
+    // M4-D (user): the sidebar brand — "Arc Power" with "Power" ILLUMINATED
+    // like the title bar (the blue gradient + glow) and a BOLD weight; the
+    // small blue accent bar below stays.
+    el('div', { class: 'sidebar-brand' }, [
+      el('span', { class: 'sidebar-brand-arc', text: 'Arc ' }),
+      el('span', { class: 'sidebar-brand-power', text: 'Power' }),
+    ]),
     el('nav', { class: 'sidebar-nav' }, PAGE_IDS.map((id) =>
       el('a', {
         class: `sidebar-link${id === active ? ' active' : ''}`,
         href: `#/${id}`,
-        text: NAV_LABELS[id],
-      }),
+      }, [
+        // M4-D (user): one fitting icon per tab, left of the name.
+        el('span', { class: `sidebar-icon sidebar-icon-${id}` }),
+        el('span', { class: 'sidebar-link-label', text: NAV_LABELS[id] }),
+      ]),
     )),
   );
 }

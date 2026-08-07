@@ -19,7 +19,7 @@ import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { driverLine } from '../components/header.ts';
 import { shaderUnits } from '../pure/driver.ts';
-import { cpuCardRows } from '../pure/sysinfo.ts';
+import { cpuCardRows, pcieRow, rebarState } from '../pure/sysinfo.ts';
 import type { TelemetrySample } from '../types.ts';
 
 function statTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
@@ -106,6 +106,13 @@ export const dashboardPage: Page = {
     lastSig = currentSig(ctx);
     const s = ctx.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
+    // M4-D (user): the GPU-card PCIe/ReBAR rows read the sysinfo video
+    // controller matched to the device (name-family match — same rules as
+    // the main-side VRAM lookup; null when unmatched -> honest '—' rows).
+    const matchedController = s.sysinfo?.videoControllers
+      .find((c) => c.name && device?.name && c.name.replace(/\s*\d+\s*GB$/i, '') === device.name.replace(/\s*\d+\s*GB$/i, ''))
+      ?? s.sysinfo?.videoControllers[0] ?? null;
+    const rebar = rebarState(matchedController);
     const sysRows = cpuCardRows(s.sysinfo);
 
     clear(container);
@@ -122,10 +129,8 @@ export const dashboardPage: Page = {
           el('h2', { class: 'card-title', text: 'CPU & memory' }),
           el('div', { class: 'card-body kv-grid' }, [
             el('div', { class: 'kv', 'data-label': 'CPU' }, [el('span', { text: sysRows.cpu })]),
-            el('div', { class: 'kv', 'data-label': 'CPU cores' }, [el('span', { text: sysRows.cores })]),
-            el('div', { class: 'kv', 'data-label': 'Max clock' }, [el('span', { text: sysRows.maxClock })]),
+            el('div', { class: 'kv', 'data-label': 'Cores / clock' }, [el('span', { text: sysRows.coresClock })]),
             el('div', { class: 'kv', 'data-label': 'Memory' }, [el('span', { text: sysRows.memory })]),
-            el('div', { class: 'kv', 'data-label': 'Memory speed' }, [el('span', { text: sysRows.memorySpeed })]),
           ]),
         ]),
 
@@ -139,11 +144,20 @@ export const dashboardPage: Page = {
                 device.numXeCores > 0
                   ? el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}` })])
                   : null,
-                el('div', { class: 'kv', 'data-label': 'Graphics clock' }, [el('span', { text: `${device.graphicsClockMHz} MHz` })]),
-                // M2C-B B8: memory clock from the latest telemetry sample
-                // ('--' until the first sample arrives; the card re-renders
-                // on status changes — acceptable).
-                el('div', { class: 'kv', 'data-label': 'Memory clock' }, [el('span', { text: `${s.latestSample?.memClockMhz !== undefined ? s.latestSample.memClockMhz : '--'} MHz` })]),
+                // M4-D (user): core + memory clock BUNDLED into one row —
+                // "2400 MHz Core / 2187 MHz Memory" (the memory half tracks
+                // the latest telemetry sample in place).
+                el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', {
+                  class: 'kv-clocks',
+                  text: `${device.graphicsClockMHz} MHz Core / ${s.latestSample?.memClockMhz !== undefined ? s.latestSample.memClockMhz : '--'} MHz Memory`,
+                })]),
+                // M4-D (user): the CURRENTLY-USED PCIe link + the ReBAR pill
+                // (green/red/grey — the pill reflects whether the device's
+                // memory resources actually include the multi-GiB BAR).
+                el('div', { class: 'kv', 'data-label': 'PCIe' }, [el('span', { text: pcieRow(matchedController) })]),
+                el('div', { class: 'kv kv-rebar', 'data-label': 'Resizable BAR' }, [
+                  el('span', { class: `chip rebar-pill status-${rebar.level}`, text: rebar.label }),
+                ]),
               ])
             : el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' }),
         ]),
@@ -190,12 +204,16 @@ export const dashboardPage: Page = {
         ),
       );
     }
-    // M2C-B B8: the device-card memory clock row tracks the latest sample
-    // in place (the card itself only re-renders on status changes).
-    const memValue = container.querySelector<HTMLElement>('.card-grid .kv[data-label="Memory clock"] span');
-    if (memValue) {
-      const mem = ctx.store.get().latestSample?.memClockMhz;
-      memValue.textContent = `${mem !== undefined ? mem : '--'} MHz`;
+    // M2C-B B8 (M4-D user update): the device-card COMBINED clocks row
+    // tracks the latest sample in place (the card itself only re-renders
+    // on status changes).
+    const clocksValue = container.querySelector<HTMLElement>('.card-grid .kv[data-label="Clocks"] span');
+    if (clocksValue) {
+      const live = ctx.store.get();
+      const dev = live.devices.find((d) => d.id === live.deviceId) ?? null;
+      const mem = live.latestSample?.memClockMhz;
+      const core = dev?.graphicsClockMHz;
+      clocksValue.textContent = `${core !== undefined ? core : '--'} MHz Core / ${mem !== undefined ? mem : '--'} MHz Memory`;
     }
   },
 };

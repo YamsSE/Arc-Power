@@ -752,7 +752,7 @@ test('startup-set: rejects whitespace profileIds (Run-key round trip stays intac
 
 function fakeProfileStore(initialProfiles = []) {
   const profiles = [...initialProfiles];
-  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false };
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false };
   return {
     profiles,
     async loadProfiles() { return [...profiles]; },
@@ -818,7 +818,7 @@ test('profiles channels: list -> save (create) -> rename -> delete round trip wi
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
-  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false } });
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false } });
   await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
 
   const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
@@ -882,12 +882,12 @@ test('profiles-settings-save: read-modify-write never clobbers waiverAccepted (n
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
   // Seed an accepted waiver (as waiver-accept would).
-  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false });
+  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false });
 
   const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
-  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false });
   const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
-  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false });
 
   for (const bad of [null, 5, 'x', []]) {
     await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
@@ -921,7 +921,7 @@ test('M4-B: profiles-settings-save never clobbers advancedModeAccepted (like ocM
   assert.equal(out.advancedModeAccepted, true, 'the once-only acceptance survives the profiles patch');
 });
 
-test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWindows/startMinimized) without touching the rest', async () => {
+test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWindows/startMinimized/closeToTray) without touching the rest', async () => {
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
@@ -932,7 +932,7 @@ test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWi
   assert.equal(out.waiverAccepted, false, 'waiverAccepted stays untouched');
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
-    advancedModeAccepted: false, startWithWindows: true, startMinimized: true,
+    advancedModeAccepted: false, startWithWindows: true, startMinimized: true, closeToTray: false,
   });
   // Turning one back off keeps the other.
   const back = await handlers['profiles-settings-save']({ startMinimized: false });
@@ -942,6 +942,10 @@ test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWi
   const untouched = await handlers['profiles-settings-save']({ ocOnBoot: true });
   assert.equal(untouched.startWithWindows, true);
   assert.equal(untouched.startMinimized, false);
+  // M4-D (user): closeToTray persists through the same channel.
+  const tray = await handlers['profiles-settings-save']({ closeToTray: true });
+  assert.equal(tray.closeToTray, true);
+  assert.equal(tray.startWithWindows, true, 'the other fields stay untouched');
 });
 
 test('M4-B (user): a persisted-accepted session applies CLOCKS and a FAN CURVE with no waiver-not-set and no waiver-accept call', async () => {

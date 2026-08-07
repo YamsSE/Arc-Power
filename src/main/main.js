@@ -306,7 +306,13 @@ async function main() {
     // the query — it enriches the real-GPU name and the CPU card.
     sysinfo = null;
   } else {
-    sysinfo = await collectSysinfo({ timeoutMs: 10000 });
+    // M4-D FIX (user: the CPU card was EMPTY in the product): the sysinfo:get
+    // handler calls `sysinfo.get()` — the REAL path previously passed the raw
+    // query RESULT here, so the handler threw and the renderer degraded to
+    // null (empty card; the mock adapter masked it in tests/ui-verify). Wrap
+    // the cached result in the SAME adapter shape the mock uses.
+    const cached = await collectSysinfo({ timeoutMs: 10000 });
+    sysinfo = { get: async () => cached };
   }
   const backend = createBackend({
     kind: mock ? 'mock' : 'igcl',
@@ -564,7 +570,12 @@ async function main() {
     : createPresentmonAdapter();
 
   let teardown = null;
+  // M4-D (user): close-to-tray — the tray's Quit (app.quit) must NOT be
+  // swallowed by the window close interception (the close event fires
+  // during a quit too; the flag lets it through).
+  let isQuitting = false;
   app.on('before-quit', () => {
+    isQuitting = true;
     void teardown?.().catch(() => {});
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
@@ -627,6 +638,26 @@ async function main() {
           if (!win.isDestroyed()) win.minimize();
         });
       }
+      // M4-D (user): "If the program is closed it's just minimized to the
+      // Icon List in Windows" — when closeToTray is on, closing the window
+      // HIDES it to the tray instead of quitting (the tray menu's Quit item
+      // still exits). The setting is read LIVE at each close (a toggle flip
+      // applies immediately); a settings read failure falls back to the
+      // normal close (never silently swallows a quit).
+      win.on('close', (event) => {
+        if (event.defaultPrevented) return;
+        if (win.isDestroyed() || isQuitting) return;
+        try {
+          void store.loadSettings().then((s) => {
+            if (s.closeToTray === true && !win.isDestroyed() && !isQuitting) {
+              event.preventDefault();
+              win.hide();
+            }
+          });
+        } catch {
+          // fall through: normal close
+        }
+      });
     } catch (err) {
       console.log(`[boot] start-minimized read skipped: ${err.message}`);
     }

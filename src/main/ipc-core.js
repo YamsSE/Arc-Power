@@ -634,7 +634,10 @@ export function createIpcHandlers({
       // PowerShell).
       'sysinfo:get': async (...args) => {
         assertNoPayload(args, 'sysinfo:get');
-        return sysinfo.get();
+        // Defensive: the adapter shape ({ get }) is the contract, but the
+        // raw result would be a silent-empty CPU card if ever passed
+        // directly (the M4-D product bug) — accept both.
+        return typeof sysinfo.get === 'function' ? sysinfo.get() : sysinfo;
       },
 
       // M4-D (user): the integrated-title-bar window controls. No payload;
@@ -780,6 +783,9 @@ export function createIpcHandlers({
           startMinimized: patch.startMinimized === undefined
             ? cur.startMinimized
             : patch.startMinimized === true,
+          closeToTray: patch.closeToTray === undefined
+            ? cur.closeToTray
+            : patch.closeToTray === true,
         };
         await store.saveSettings(next);
         return next;
