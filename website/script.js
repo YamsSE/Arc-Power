@@ -29,14 +29,14 @@
   var heroCard = document.querySelector('.hero-card');
   var heroGpu = null;
   var heroLimit = null; // bar + scale max: extended max on Alchemist, else the card's own max
-  var heroDraw = 0;
+  var heroDraw = 0;     // current power draw (fake telemetry)
+  var heroPL = 0;       // SET power limit: jumps randomly in 100 W+ steps
   if (heroCard && HERO_GPUS.length) {
     heroGpu = HERO_GPUS[Math.floor(Math.random() * HERO_GPUS.length)];
     heroLimit = heroGpu.ext || heroGpu.plMax;
-    // Random current draw anywhere in [30, heroLimit] - the whole range,
-    // no fixed per-card number. Power and Power limit always show the
-    // same wattage so the two rows stay matched.
-    heroDraw = Math.round(30 + Math.random() * (heroLimit - 30));
+    heroPL = Math.round(30 + Math.random() * (heroLimit - 30));
+    // Current draw starts below the set limit and can never exceed it.
+    heroDraw = Math.round(30 + Math.random() * (heroPL - 30));
     var setRole = function (role, val) {
       var el = heroCard.querySelector('[data-role="' + role + '"]');
       if (el) el.dataset.target = String(val);
@@ -51,7 +51,7 @@
     setRole('fan', heroGpu.fan);
     setRole('fps', heroGpu.fps);
     setRole('power', heroDraw);
-    setRole('pl', heroDraw);
+    setRole('pl', heroPL);
     var pMin = document.getElementById('powerMin');
     var pMax = document.getElementById('powerMax');
     if (pMin) pMin.textContent = '0';
@@ -63,12 +63,35 @@
     }
   }
 
-  /* ---- hero card: power bar tracks the live wattage (0 to the card max) ---- */
+  /* ---- hero card: power bar + set-limit marker (0 to the card max) ---- */
   var powerFill = document.getElementById('powerFill');
+  var powerMarker = document.getElementById('powerMarker');
   var powerMetaVal = heroCard ? heroCard.querySelector('[data-role="pl"]') : null;
+
+  // The SET power limit re-rolls at random in jumps of 100 W+ (as far as the
+  // card's range allows); the red divider marks it and the telemetry never
+  // climbs above it.
+  function rollPowerLimit() {
+    if (!heroLimit) return;
+    var next;
+    var tries = 0;
+    do {
+      next = Math.round(30 + Math.random() * (heroLimit - 30));
+      tries += 1;
+    } while (Math.abs(next - heroPL) < 100 && tries < 12);
+    heroPL = next;
+    if (powerMetaVal) powerMetaVal.textContent = String(heroPL);
+    if (powerMarker) {
+      var pct = Math.round(heroPL / heroLimit * 100);
+      powerMarker.style.left = Math.max(Math.min(pct, 99), 1) + '%';
+    }
+  }
+
   if (powerFill && heroLimit) {
     powerFill.style.width = Math.max(Math.round(heroDraw / heroLimit * 100), 2) + '%';
   }
+  rollPowerLimit();
+  setInterval(rollPowerLimit, 4500);
 
   /* ---- hero readouts: steady live wobble ---- */
   var heroVals = Array.prototype.map.call(
@@ -82,20 +105,17 @@
   function wobble() {
     var now = Date.now();
     heroVals.forEach(function (o) {
-      // Power: a random walk across the WHOLE [30, heroLimit] range; the
-      // Power limit row and the bar always mirror the displayed wattage.
+      // Power: the draw wanders below the SET power limit, never above it.
       if (o.el.dataset.role === 'power' && heroLimit) {
-        var span = heroLimit - 30;
+        var span = heroPL - 30;
         o.value += (Math.random() * 2 - 1) * span * 0.18;
         if (o.value < 30) o.value = 30;
-        if (o.value > heroLimit) o.value = heroLimit;
-        var txt = fmt(o.el, o.value);
-        o.el.textContent = txt;
-        if (powerMetaVal) powerMetaVal.textContent = txt;
+        if (o.value > heroPL) o.value = heroPL;
+        o.el.textContent = fmt(o.el, o.value);
         if (powerFill) powerFill.style.width = Math.round(o.value / heroLimit * 100) + '%';
         return;
       }
-      if (o.el.dataset.role === 'pl') return; // already updated with the power readout
+      if (o.el.dataset.role === 'pl') return; // the set limit updates on its own re-roll
       var drift = Math.sin(now / 1200 + o.target) * 1.5;
       var jitter = (Math.random() * 2 - 1) * 0.8;
       var floor = parseFloat(o.el.dataset.min || '0');
