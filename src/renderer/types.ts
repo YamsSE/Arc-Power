@@ -252,6 +252,42 @@ export interface StartupState {
   mechanism: 'task' | 'run-key' | null;
 }
 
+/**
+ * M4-D: the combined startup-get shape — BOTH registrations reported
+ * distinctly (the two onlogon tasks cannot both be enabled; enabling one
+ * disables the other in main). `startupRunKey` is the apply-profile
+ * registration (Profiles "start at boot"), `applyOnBoot` is the plain-app
+ * task (Settings "Start with Windows"), `startWithWindows` is its summary.
+ */
+export interface StartupGetState {
+  startupRunKey: StartupState;
+  applyOnBoot: { enabled: boolean; value: string | null };
+  startWithWindows: boolean;
+}
+
+/** M4-D: one Win32_VideoController row (AdapterRAM already degraded). */
+export interface VideoControllerInfo {
+  name: string | null;
+  vramBytes: number | null;
+  pnpDeviceId: string | null;
+}
+
+/**
+ * M4-D: the system-info payload (sysinfo:get IPC) — the dashboard CPU card
+ * + the real-GPU VRAM suffix source. `cores`/`speedMhz`/`videoControllers`
+ * degrade honestly to null/empty in the os.cpus() fallback.
+ */
+export interface SysInfo {
+  cpu: {
+    name: string | null;
+    cores: number | null;
+    threads: number | null;
+    maxClockMhz: number | null;
+  };
+  ram: { totalBytes: number; speedMhz: number | null };
+  videoControllers: VideoControllerInfo[];
+}
+
 export interface ThrottleFlags {
   power?: boolean;
   temp?: boolean;
@@ -294,6 +330,11 @@ export interface ProfileSettingsState {
   activeProfileId: string | null;
   /** M3-C-E: the OC mode ('stock'|'advanced'), persisted in settings.json. */
   ocMode: OcMode;
+  /** M4-B: the once-only Advanced OC Mode warning acceptance. */
+  advancedModeAccepted: boolean;
+  /** M4-D: the Settings-tab fields (absent on old files -> false). */
+  startWithWindows: boolean;
+  startMinimized: boolean;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

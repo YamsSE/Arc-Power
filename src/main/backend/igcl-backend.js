@@ -62,6 +62,9 @@ export class IgclBackend {
    *                                   // probe on canControl=false devices
    *                                   // (default true; tests pass false to keep
    *                                   // read-only fixtures read-only)
+   *   vramBytesOf?: (device: object) => number|null,  // M4-D: VRAM source for
+   *                                   // the display-name suffix (the sysinfo
+   *                                   // cache in main.js; null = plain name)
    * }} opts
    */
   constructor(opts = {}) {
@@ -71,6 +74,11 @@ export class IgclBackend {
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
     this._extended = opts.extended ?? null;
+    // M4-D: the VRAM provider for formatDeviceName (constructor opt — main.js
+    // runs the sysinfo cache BEFORE constructing the backend, so the lookup
+    // is available at enumeration time; setVramBytesOf re-formats an already
+    // enumerated device list).
+    this._vramBytesOf = typeof opts.vramBytesOf === 'function' ? opts.vramBytesOf : null;
     this._ocMode = opts.ocMode === 'advanced' ? 'advanced' : 'stock';
     this._apiHandle = null;
     this._levelZeroOk = false;
@@ -212,19 +220,21 @@ export class IgclBackend {
         throw new Error(`ctlGetDeviceProperties(${i}) failed: ${describeResult(result)}`);
       }
       const p = koffi.decode(propsBuf, 'ctl_device_adapter_properties_t');
-      // M4-B: VRAM source check — the bundled bindings (igcl-bindings.js)
-      // expose NO memory-size field: ctl_device_adapter_properties_t has no
-      // memory info, and no ctlGetMemoryInfo-style symbol is bound (verified
-      // against igcl-bindings.js + docs/igcl-integration.md — no MEMORY_BYTES
-      // surface exists in the bound structs). The real backend therefore
-      // keeps the plain IGCL name (no VRAM suffix — formatDeviceName with a
-      // null vramBytes is a no-op); the M4-D sysinfo fallback
-      // (Win32_VideoController AdapterRAM) is what will fill vramBytes for
-      // real devices later. A future ctlGetMemoryInfo binding lands here.
-      devices.push({
+      // M4-B/M4-D: VRAM source — the bundled bindings expose NO memory-size
+      // field (verified against igcl-bindings.js + docs/igcl-integration.md:
+      // no MEMORY_BYTES surface exists in the bound structs), so the REAL
+      // backend gets its vramBytes from the M4-D sysinfo cache
+      // (Win32_VideoController AdapterRAM) through the injected vramBytesOf
+      // provider: formatDeviceName appends the "16 GB" suffix when the
+      // lookup matches the IGCL device name (GPU-family token match, else
+      // the primary non-basic adapter) and the AdapterRAM value is
+      // trustworthy. Honest null when unmatched — the plain IGCL name. A
+      // future ctlGetMemoryInfo binding would land here as a better source.
+      const plainName = (p.name || '').replace(/\0+$/, '');
+      const dev = {
         id: i,
         handle,
-        name: formatDeviceName((p.name || '').replace(/\0+$/, ''), null),
+        name: plainName,
         type: 'GRAPHICS',
         pciVendorId: `0x${(Number(p.pci_vendor_id) >>> 0).toString(16).padStart(8, '0')}`,
         pciDeviceId: `0x${(Number(p.pci_device_id) >>> 0).toString(16).padStart(8, '0')}`,
@@ -234,9 +244,34 @@ export class IgclBackend {
         graphicsClockMHz: p.Frequency,
         numXeCores: p.num_xe_cores,
         vramBytes: null,
-      });
+      };
+      // Internal-only: the pre-suffix name (setVramBytesOf re-formats from
+      // it) — never surfaced by listDevices (it destructures explicit fields).
+      dev._plainName = plainName;
+      const vramBytes = this._vramBytesOf ? this._vramBytesOf(dev) : null;
+      dev.vramBytes = Number.isInteger(vramBytes) && vramBytes > 0 ? vramBytes : null;
+      dev.name = formatDeviceName(plainName, dev.vramBytes);
+      devices.push(dev);
     }
     return (this._devices = devices);
+  }
+
+  /**
+   * M4-D: inject (or replace) the VRAM provider AFTER construction and
+   * re-format the already-enumerated device names in place. The constructor
+   * opt is the main.js path (sysinfo runs before the backend exists); the
+   * setter exists for tests + late wiring.
+   * @param {(device: object) => number | null} fn
+   */
+  setVramBytesOf(fn) {
+    this._vramBytesOf = typeof fn === 'function' ? fn : null;
+    if (this._devices) {
+      for (const dev of this._devices) {
+        const vramBytes = this._vramBytesOf ? this._vramBytesOf(dev) : null;
+        dev.vramBytes = Number.isInteger(vramBytes) && vramBytes > 0 ? vramBytes : null;
+        dev.name = formatDeviceName(dev._plainName ?? dev.name, dev.vramBytes);
+      }
+    }
   }
 
   async listDevices() {

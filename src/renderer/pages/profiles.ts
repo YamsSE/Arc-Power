@@ -7,6 +7,14 @@
 // always toast; M2C-B F3 instant apply — one attempt, no retry UI). Every
 // mutation rebuilds the tray menu (tray-rebuild IPC) and marks the active
 // profile.
+//
+// M4-D (user): the load keeps its waiver gate and gains the SAME auto
+// re-prompt + single retry as OC/fan — a load whose apply answers
+// waiver-not-set re-prompts ONCE (the fresh caps show the driver truth) and
+// retries on accept; the counter resets on success. This renderer-side
+// retry is the defense for NEVER-accepted sessions — with a persisted
+// acceptance MAIN silently re-sets the driver waiver and retries (the
+// renderer never sees the failure).
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
@@ -16,9 +24,17 @@ import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
-import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings, StartupState } from '../types.ts';
+import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
+
+// M4-D (user): the automatic waiver re-prompt + single retry counter — a
+// profile load can hit waiver-not-set (the driver lost the waiver while the
+// store had no persisted acceptance); the load then re-prompts ONCE and
+// retries on accept. Reset on every successful load — a later driver-side
+// loss still gets its own retry. Module-level (per-page state, same pattern
+// as the OC page).
+let waiverRetryCount = 0;
 
 function newProfileId(): string {
   return `profile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -157,7 +173,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   }
 
   let envelope: ProfilesEnvelope;
-  let bootState: StartupState | null = null;
+  let bootState: StartupGetState | null = null;
   try {
     [envelope, bootState] = await Promise.all([api.profilesList(), api.startupGet()]);
   } catch (err) {
@@ -182,7 +198,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const waiverAccepted = caps.waiverAccepted === true;
     // Honest ocOnBoot state: the Run key is the truth, settings.json the
     // persisted intent — a mismatch surfaces as a hint, never a lie.
-    const runKeyEnabled = bootState?.enabled === true;
+    // M4-D: startup-get reports BOTH registrations — the apply-profile one
+    // lives under startupRunKey (the plain-app task is the Settings page's
+    // concern).
+    const runKeyEnabled = bootState?.startupRunKey?.enabled === true;
     const bootMismatch = runKeyEnabled !== envelope.settings.ocOnBoot;
 
     const bootCard = el('section', { class: 'card boot-card' }, [
@@ -202,7 +221,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       !waiverAccepted
         ? el('p', { class: 'card-note', text: 'Accept the warranty waiver to enable start-at-boot.' })
         : activeProfile
-          ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot${bootState?.mechanism === 'task' ? ' (elevated task — no prompt at logon)' : ''}.` })
+          ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot${bootState?.startupRunKey?.mechanism === 'task' ? ' (elevated task — no prompt at logon)' : ''}.` })
           : el('p', { class: 'card-note', text: 'Load a profile first — start-at-boot applies the active profile.' }),
       bootMismatch
         ? el('p', { class: 'card-note boot-hint', text: 'The Run key and the saved settings disagree — the toggle reflects the Run key.' })
@@ -345,7 +364,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       if (wasActive) {
         // Deleting the boot profile: remove the Run key + clear the active
         // slot so boot never applies a ghost profile.
-        const runKeyEnabled = (await api.startupGet()).enabled;
+        const runKeyEnabled = (await api.startupGet()).startupRunKey?.enabled === true;
         if (runKeyEnabled) {
           try { await api.startupSet(false, null); } catch { /* best effort */ }
         }
@@ -406,6 +425,33 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           },
         });
       }
+      // M4-D (user): a waiver-not-set failure must not dead-end the load
+      // with a confusing error — re-prompt the waiver dialog AUTOMATICALLY
+      // (the fresh caps reflect the driver truth, refreshed like the OC
+      // page does) and retry ONCE. Never a loop; the counter resets on
+      // success, so a later driver-side loss still gets its own retry.
+      // Accepted-store sessions never reach this branch (MAIN silently
+      // re-sets + retries — the failure does not surface).
+      if (!result.ok) {
+        const freshCaps = await api.getCapabilities(deviceId);
+        ctx.store.set({ caps: freshCaps });
+        if (waiverRetryCount === 0
+          && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
+          waiverRetryCount += 1;
+          const retryDecision = await ensureWaiver(deviceId, freshCaps.waiverAccepted === true, caps.deviceName || 'this GPU');
+          if (retryDecision === 'accepted') {
+            // The store caps flag must be patched BEFORE the retry — the
+            // retry re-enters the pre-load waiver gate, which reads the
+            // store flag; without the patch it would re-show the dialog
+            // (the user just accepted — no second prompt).
+            const cur2 = ctx.store.get();
+            if (cur2.caps && cur2.caps.waiverAccepted !== true) {
+              ctx.store.set({ caps: { ...cur2.caps, waiverAccepted: true } });
+            }
+            return onLoad(p, done);
+          }
+        }
+      }
       let changed = 0;
       for (const [key, per] of Object.entries(result.perControl)) {
         if (!per.ok) {
@@ -418,6 +464,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }
       }
       ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
+      // M4-D: a successful load resets the auto-retry counter — a later
+      // driver-side waiver loss gets its own single retry.
+      if (result.ok) waiverRetryCount = 0;
       // M2b step-5 NIT 2: only a fully-successful apply (result.ok) may mark
       // the profile active and claim "applied to the GPU" — a partially-
       // failed load keeps the per-control error toasts but marks nothing.

@@ -20,6 +20,12 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   getWindow: () => import('electron').BrowserWindow,
  *   startup?: import('./startup.js').RunKeyStartup,
  *   driverInfo?: ReturnType<typeof createDriverInfo>,
+ *   sysinfo?: { get: () => Promise<unknown> },  // M4-D
+ *   windowOps?: {                              // M4-D: BrowserWindow ops
+ *     minimize: () => Promise<unknown>,
+ *     maximizeToggle: () => Promise<unknown>,
+ *     close: () => Promise<unknown>,
+ *   },
  *   registryCatalog?: ReturnType<typeof createRegistryCatalog>,
  *   registryApply?: ReturnType<typeof createRegistryApply>,
  *   presentmon?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
@@ -31,12 +37,14 @@ import { isElevated as isElevatedReal } from './elevation.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), presentmon = createPresentmonAdapter(), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, mock = null }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
     startup,
     driverInfo,
+    sysinfo,
+    windowOps,
     registryCatalog,
     registryApply,
     presentmon,

@@ -30,8 +30,9 @@ import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createPresentmonAdapter } from './presentmon/presentmon-client.js';
+import { collectSysinfo, createMockSysinfo, vramBytesOfDevice } from './sysinfo.js';
 import { applyProfile, runApplyOnStartup } from './apply-on-boot.js';
-import { createTray, buildTrayMenuTemplate, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
+import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
 import { executeApply } from './apply-routing.js';
@@ -66,6 +67,12 @@ function createWindow() {
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
     autoHideMenuBar: true,
+    // M4-D (user): the INTEGRATED title bar — the window is frameless and
+    // the renderer draws the title bar (draggable region + brand + window
+    // controls wired to window-minimize/maximize-toggle/close). Resizing
+    // still works (resizable defaults true — Windows draws the edge resize
+    // handles for frameless windows).
+    frame: false,
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -79,6 +86,20 @@ function createWindow() {
     const message = typeof event.message === 'string' ? event.message : '';
     if (level >= 2) console.error(`[renderer] ${message}`);
   });
+  // M4-D (user): the pushed window:maximized-changed channel — the
+  // title-bar max button follows the live maximize state (the renderer
+  // subscribes via preload's onWindowMaximizedChanged).
+  const sendMaximized = () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('window:maximized-changed', { maximized: win.isMaximized() });
+    }
+  };
+  win.on('maximize', sendMaximized);
+  win.on('unmaximize', sendMaximized);
+  // M4-D (user): push the INITIAL state once the renderer is up — the max
+  // button must reflect a window that starts (or was restored to) the
+  // maximized state even before any later maximize/unmaximize event.
+  win.webContents.on('did-finish-load', sendMaximized);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   return win;
 }
@@ -102,9 +123,22 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner }) {
       hasActiveProfile,
       onToggle: () => {
         const win = getWindow();
-        if (win) {
-          if (win.isVisible()) win.hide();
-          else { win.show(); win.focus(); }
+        if (!win) return;
+        // M4-D Round-1 F5 (tray restore): a MINIMIZED window reports
+        // isVisible() === true — the old `if (win.isVisible()) hide()` would
+        // hide a minimized window instead of restoring it (the user could
+        // never restore a start-minimized session from the tray). The
+        // isMinimized -> restore branch runs FIRST; only a visible,
+        // non-minimized window toggles to hidden.
+        const action = trayToggleAction({ isMinimized: win.isMinimized(), isVisible: win.isVisible() });
+        if (action === 'restore') {
+          win.restore();
+          win.focus();
+        } else if (action === 'hide') {
+          win.hide();
+        } else {
+          win.show();
+          win.focus();
         }
       },
       onApplyProfile: async () => {
@@ -252,10 +286,39 @@ async function main() {
   // backend instead). The backend's extended probe consults it lazily
   // (isCapable runs on the first caps query).
   const realOldIgcl = mock ? null : new OldIgcl();
+  // M4-D: the sysinfo cache (PowerShell CIM, ONE query per session — the
+  // dashboard CPU card + the real-GPU VRAM suffix source). Run BEFORE the
+  // backend so the VRAM lookup can enrich the device names at enumeration
+  // time. Mock/ui-verify uses the fixed fixture (never spawns PowerShell).
+  // M4-D review F3: the query timeout is SHORT (10 s) — a hung PowerShell
+  // must not block the first window for a minute; the timeout degrades to
+  // the honest os.cpus() fallback (cpu populated, RAM speed + video
+  // controllers null/empty).
+  let sysinfo;
+  if (mock) {
+    sysinfo = createMockSysinfo();
+  } else if (applyProfileId) {
+    // M4-D review F3 (logon latency): the --apply-profile flow is TRAY-ONLY —
+    // the VRAM name suffix is never displayed there, so the PowerShell CIM
+    // query (1-5 s typical, up to the 10 s timeout) would only delay the
+    // apply. Skip it: vramBytesOfDevice(device, undefined) degrades to null
+    // and formatDeviceName keeps the plain name. The window path still runs
+    // the query — it enriches the real-GPU name and the CPU card.
+    sysinfo = null;
+  } else {
+    sysinfo = await collectSysinfo({ timeoutMs: 10000 });
+  }
   const backend = createBackend({
     kind: mock ? 'mock' : 'igcl',
     igcl: realOldIgcl
-      ? { extended: { isCapable: () => realOldIgcl.isCapable() } }
+      ? {
+          extended: { isCapable: () => realOldIgcl.isCapable() },
+          // M4-D (user): the REAL GPU name gets the "16 GB" suffix — the
+          // lookup matches the IGCL device name against the cached CIM
+          // video controllers (GPU-family token match, else the primary
+          // non-basic adapter); honest null when unmatched/degraded.
+          vramBytesOf: (device) => vramBytesOfDevice(device, sysinfo),
+        }
       : {},
     mock: mockOpts,
   });
@@ -345,24 +408,28 @@ async function main() {
     // Cancel/Accept state (ui-verify F4: the prompt would otherwise hit
     // every variant unpredictably, and a previous run's persisted
     // acceptance would change its state). The RID_MOCK_WAIVER_PERSISTED=1
-    // ui-verify variant seeds an ACCEPTED store instead — M4-B (user): the
-    // boot prompt STILL appears in that variant, in its ACCEPTED state (a
-    // reminder with a single OK, never a re-accept); the seed now only
-    // controls the dialog STATE, not its presence.
+    // ui-verify variant seeds an ACCEPTED store instead — M4-D (PERMANENT
+    // acceptance, user: "skipped IF permanently accepted after accepting
+    // once"): the accepted store means the boot prompt is SKIPPED entirely
+    // (the accepted-state reminder dialog is REMOVED — the dashboard health
+    // row remains the status display), and an apply-time waiver-not-set is
+    // silently re-set + retried in main.
     try {
       const cur = await store.loadSettings();
       await store.saveSettings({ ...cur, waiverAccepted: process.env.RID_MOCK_WAIVER_PERSISTED === '1' });
     } catch (err) {
       console.log(`[boot] waiver session seed skipped: ${err.message}`);
     }
-    // M4-B (user fix): RID_MOCK_WAIVER_LOST=1 reproduces the user's report —
-    // the store says the waiver is ACCEPTED (persisted) but the DRIVER lost
-    // it. The boot probe (probeWaiverState) writes the current power limit
-    // (value-neutral), surfaces the waiver-not-set, and flips the store +
-    // in-memory flag to unaccepted BEFORE the window — so the boot prompt
-    // shows the classic Accept dialog instead of the stale "already
-    // accepted" reminder (ui-verify: RID_MOCK_WAIVER_PERSISTED=1 +
-    // RID_MOCK_WAIVER_LOST=1).
+    // M4-B (user fix)/M4-D: RID_MOCK_WAIVER_LOST=1 reproduces the user's
+    // report — the store says the waiver is ACCEPTED (persisted) but the
+    // DRIVER lost it. The boot probe (probeWaiverState) writes the current
+    // power limit (value-neutral) and surfaces the waiver-not-set. M4-D
+    // (PERMANENT acceptance): with the persisted acceptance true the probe
+    // now RESTORES the driver waiver (setWaiverAccepted) — the consent
+    // stands, the store is never flipped to false, and the boot prompt
+    // stays SKIPPED like the plain persisted variant (ui-verify:
+    // RID_MOCK_WAIVER_PERSISTED=1 + RID_MOCK_WAIVER_LOST=1 asserts NO boot
+    // dialog + waiver-get accepted).
     if (process.env.RID_MOCK_WAIVER_LOST === '1') {
       try {
         backend.injectFail('powerLimitW', 'waiver-not-set', true);
@@ -397,13 +464,13 @@ async function main() {
       console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
     }
   } else {
-    // M4-A review F1 (M4-B update): the REAL path must pre-seed the waiver
-    // flag BEFORE createWindow too — the renderer's FIRST getCapabilities
-    // (right after the window loads) must already see a persisted
-    // acceptance, or the M4-B boot prompt renders in the wrong STATE (an
-    // unaccepted dialog with Accept instead of the accepted-state reminder)
-    // because nothing orders bootBackend's later seed against the
-    // renderer's first caps query. backend.init() is idempotent and
+    // M4-A review F1 (M4-B/M4-D update): the REAL path must pre-seed the
+    // waiver flag BEFORE createWindow too — the renderer's FIRST
+    // getCapabilities (right after the window loads) must already see a
+    // persisted acceptance, or the M4-D boot decision renders wrong: the
+    // accepted store must SKIP the boot prompt entirely (permanent
+    // acceptance), and an unaccepted store must show the classic dialog.
+    // backend.init() is idempotent and
     // bootBackend re-runs it below; an init failure here degrades into the
     // health system (collectHealth reports the init error and the window
     // stays up degraded).
@@ -546,6 +613,24 @@ async function main() {
   }
 
   const win = createWindow();
+  // M4-D (user): Start minimized — when the persisted setting is on, the
+  // window starts minimized to the taskbar right after ready-to-show; the
+  // tray click restores it (the tray toggle's isMinimized -> restore branch
+  // above — Round-1 F5). Skipped in --ui-verify (the verify drives a
+  // visible window; the toggle persistence is pinned there instead). A
+  // settings read failure must never block boot — best effort.
+  if (!uiVerify) {
+    try {
+      const bootSettings = await store.loadSettings();
+      if (bootSettings.startMinimized === true) {
+        win.once('ready-to-show', () => {
+          if (!win.isDestroyed()) win.minimize();
+        });
+      }
+    } catch (err) {
+      console.log(`[boot] start-minimized read skipped: ${err.message}`);
+    }
+  }
   // M2D: the mock-featureset IPC surface exists ONLY in mock mode — real
   // mode has no such channel (the renderer's dropdown never renders either).
   const mockCtl = mock
@@ -557,12 +642,35 @@ async function main() {
   // Whitelisted IPC + telemetry ownership; the renderer drives everything.
   // --ui-verify never creates a tray, so rebuildTray guards the null ref.
   let trayRebuilds = 0;
+  // M4-D: the injected window ops for the integrated title bar. The product
+  // path performs the real BrowserWindow ops; --ui-verify mode injects
+  // COUNTING probes instead (performing minimize/close mid-verify would
+  // disrupt the assertions) — run 2 pins the title-bar buttons through
+  // getWindowOpCounts.
+  let windowOpCounts = { minimize: 0, maximizeToggle: 0, close: 0 };
+  const windowOps = uiVerify
+    ? {
+        minimize: async () => { windowOpCounts.minimize += 1; },
+        maximizeToggle: async () => { windowOpCounts.maximizeToggle += 1; },
+        close: async () => { windowOpCounts.close += 1; },
+      }
+    : {
+        minimize: async () => { if (!win.isDestroyed()) win.minimize(); },
+        maximizeToggle: async () => {
+          if (win.isDestroyed()) return;
+          if (win.isMaximized()) win.unmaximize();
+          else win.maximize();
+        },
+        close: async () => { if (!win.isDestroyed()) win.close(); },
+      };
   teardown = registerIpc({
     backend,
     store,
     getWindow: () => win,
     startup,
     driverInfo,
+    sysinfo,
+    windowOps,
     registryCatalog,
     registryApply,
     presentmon,
@@ -604,7 +712,9 @@ async function main() {
       // loses the waiver (the "fan applies fail without a prompt" bug).
       await runFanGateVerify(win, backend);
     } else {
-      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls);
+      // M4-D: the window-ops probe rides along — run 2 pins the title-bar
+      // buttons via getWindowOpCounts.
+      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts);
     }
     return;
   }

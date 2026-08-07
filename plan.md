@@ -1017,6 +1017,57 @@ display name (e.g. "Intel Arc A770 16 GB") — see M4-B.
   UAC, environment note; start-minimized boot verified via ui-verify
   instead); (4) dist + smoke + commit + push.
 
+#### M4-D user additions (2026-08-07, host-folded; supersede the base section where they conflict)
+
+1. **VRAM in the REAL GPU name**: the mock reports the "16 GB" suffix; the
+   real backend has no VRAM source. The M4-D sysinfo module's video-
+   controller query (Win32_VideoController Name/AdapterRAM/PNPDeviceID)
+   becomes the real source: match the IGCL device name against the
+   controller list (GPU-family token match, else the primary non-basic
+   adapter), pass vramBytes into the backend's device naming
+   (formatDeviceName) so the device card, header AND dialogs show the
+   suffix on the real card too. Honest null when unmatched (AdapterRAM is
+   a 32-bit field — a suspicious 0xFFFFFFFF-ish value degrades to null).
+2. **Waiver on profile apply**: the Profiles Load path keeps its waiver
+   gate and gains the SAME auto re-prompt + single retry as OC/fan (a
+   profile apply that hits waiver-not-set re-prompts once, retries on
+   accept).
+3. **PERMANENT waiver acceptance (user: "skipped IF permanently accepted
+   after accepting once")**: the persisted acceptance is the user's
+   permanent consent — after one explicit accept the app NEVER asks
+   again:
+   - the boot prompt is SKIPPED entirely when the waiver is accepted
+     (the accepted-state reminder dialog is removed — the dashboard
+     health row remains the status display);
+   - when an apply answers waiver-not-set while the persisted acceptance
+     is true, MAIN silently re-sets the driver waiver
+     (setWaiverAccepted / runner.waiverAccept — elevated) and retries
+     the apply ONCE — no dialog, no error;
+   - the boot probe (elevated) re-sets the driver waiver instead of
+     clearing the store when the persisted acceptance is true;
+   - persistWaiverLost is REMOVED (the consent stands — never persist
+     false); the renderer's apply-time auto-retry stays only as defense
+     for never-accepted sessions (the classic dialog flow is unchanged
+     for users who never accepted).
+4. **Expert section filtering**: the Advanced (expert) section shows ONLY
+   rows whose control is supported on the device (caps.controls[key] —
+   the "Unsupported on this GPU" rows are removed entirely; supported-but-
+   M5 rows keep their note).
+5. **Integrated title bar (frameless window)**: createWindow gains
+   `frame: false`; a custom title bar spans the top of the window:
+   draggable region (-webkit-app-region: drag; double-click maximizes)
+   + the integrated window controls (Minimize / Maximize-restore / Close
+   buttons on the right, no-drag, Windows-style hover, close hover red).
+   New IPC: window-minimize / window-maximize-toggle / window-close +
+   pushed window:maximized-changed (the max button icon follows state).
+   Close keeps the current close semantics. ui-verify gets a window-ops
+   probe (mock mode injects counting ops).
+6. **Branding (per the GitHub Pages website)**: in the title bar's right
+   cluster: the logo (the blue AP mark — assets/icon.png) on TOP with the
+   name "Arc Power" BELOW it, "Power" in the blue gradient + glow
+   (website style.css .grad-text: linear-gradient(100deg, accent,
+   accent-2, #7ee0ff), background-clip text, drop-shadow).
+
 #### M4-D2 — Non-Intel GPU detection + honest error state (user requirement)
 
 User requirement (2026-08-06, follow-up): when the app starts on a

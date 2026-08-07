@@ -4,6 +4,11 @@
 // schemaVersion. Migrations are pure functions chained 0->1->2...; a file
 // with an unknown/newer schemaVersion is REFUSED (never silently clobbered).
 // v0 = pre-schema files that existed without a schemaVersion field.
+//
+// M4-D: settings gains startWithWindows + startMinimized. Both ride the
+// ABSENT-FIELD DEFAULTS mechanism in loadSettings (like ocMode and
+// advancedModeAccepted) — an old file without them reads false, so there is
+// deliberately NO SCHEMA_VERSION bump (Round-1 F8).
 
 export const SCHEMA_VERSION = 2;
 

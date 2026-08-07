@@ -20,7 +20,8 @@ import type {
   RegistryApplyResponse,
   ResetResponse,
   Settings,
-  StartupState,
+  StartupGetState,
+  SysInfo,
   TelemetrySample,
 } from './types.ts';
 
@@ -41,8 +42,19 @@ export interface ArcPowerApi {
    *  entry's apply descriptor; main resolves the commands — the renderer
    *  never sends raw reg commands). */
   registryApply(entryId: string, action: 'enable' | 'disable' | 'revert'): Promise<RegistryApplyResponse>;
-  startupGet(): Promise<StartupState>;
-  startupSet(enabled: boolean, profileId: string | null): Promise<StartupState>;
+  startupGet(): Promise<StartupGetState>;
+  startupSet(enabled: boolean, profileId: string | null): Promise<StartupGetState>;
+  /** M4-D: enable/disable the plain-app boot task (ArcPowerAppOnBoot, no
+   *  --apply-profile); enabling disables the apply-profile registration and
+   *  vice versa (the two tasks cannot both be enabled). */
+  startupAppSet(enabled: boolean): Promise<StartupGetState>;
+  /** M4-D: the CIM system info (CPU/RAM/video controllers) — the dashboard
+   *  CPU card + the real-GPU VRAM suffix source. */
+  sysinfo(): Promise<SysInfo>;
+  /** M4-D: integrated-title-bar window controls (no payload). */
+  windowMinimize(): Promise<void>;
+  windowMaximizeToggle(): Promise<void>;
+  windowClose(): Promise<void>;
   driverInfo(): Promise<{ driverDate: string | null }>;
   /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
   appVersion(): Promise<{ version: string }>;
@@ -72,6 +84,9 @@ export interface ArcPowerApi {
    *  UI surface (caps/ranges/units/telemetry) re-renders from the response. */
   mockSetFeatureset(id: string): Promise<MockSwapResponse>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
+  /** M4-D: pushed window-maximize state ({ maximized: boolean } on
+   *  maximize/unmaximize — the title-bar max button follows it). */
+  onWindowMaximizedChanged(cb: (state: { maximized: boolean }) => void): () => void;
 }
 
 declare global {

@@ -20,7 +20,6 @@ import {
   createIpcHandlers,
   seedWaiverState,
   probeWaiverState,
-  persistWaiverLost,
   seedOcMode,
 } from '../src/main/ipc-core.js';
 import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
@@ -140,7 +139,7 @@ test('clampSettings: clamps an extreme gpuLock pair (F1 regression)', () => {
 // product-path waiver: never auto-accepted
 // ---------------------------------------------------------------------------
 
-function fakeStore(initial = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false }) {
+function fakeStore(initial = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false }) {
   const saved = [];
   return {
     saved,
@@ -267,14 +266,17 @@ test('seedWaiverState: persisted not-accepted leaves the flag unset', async () =
   assert.equal((await backend.getCapabilities(0)).waiverAccepted, false);
 });
 
-// M4-B (user fix): the boot-time driver-truth probe. A persisted acceptance
-// can be STALE — the driver lost the waiver while settings.json still says
-// accepted (the user: "the popup said already accepted, then changing the
-// voltage threw a no-accepted-waiver error"). The probe writes the CURRENT
-// power limit (value-neutral), surfaces waiver-not-set, and flips store +
-// flag to unaccepted BEFORE the window.
+// M4-D (user): probeWaiverState — the boot-time driver-truth probe. A
+// persisted acceptance can be STALE — the driver lost the waiver while
+// settings.json still says accepted. The probe writes the CURRENT power
+// limit (value-neutral), surfaces waiver-not-set, and:
+//   - store ACCEPTED (M4-D, PERMANENT acceptance): RESTORES the driver
+//     waiver (setWaiverAccepted) — the consent stands, the store is NEVER
+//     flipped to false (persistWaiverLost is removed);
+//   - store UNACCEPTED (unchanged M4-B): clears the in-memory flag + the
+//     persisted store so the boot prompt shows the classic Accept dialog.
 
-test('probeWaiverState: a stale persisted acceptance is corrected when the DRIVER lost the waiver (M4-B user fix)', async () => {
+test('M4-D: probeWaiverState RESTORES the driver waiver when the store says accepted (never flips the store)', async () => {
   const backend = new MockBackend();
   await backend.restoreWaiverState(0, true); // boot seed from the persisted store
   assert.equal((await backend.getCapabilities(0)).waiverAccepted, true);
@@ -285,13 +287,10 @@ test('probeWaiverState: a stale persisted acceptance is corrected when the DRIVE
 
   await probeWaiverState(backend, store);
 
-  // The in-memory flag AND the persisted store are flipped to unaccepted —
-  // the boot prompt must show the classic Accept dialog, not the stale
-  // "already accepted" reminder.
-  assert.equal((await backend.getCapabilities(0)).waiverAccepted, false);
-  assert.equal(store.saved.length, 1);
-  assert.equal(store.saved[0].waiverAccepted, false);
-  assert.equal(store.saved[0].ocMode, 'advanced', 'the probe never touches the other settings');
+  // The driver waiver is RE-SET (consent stands) and the store is NEVER
+  // written — no persisted false, no flip.
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, true);
+  assert.equal(store.saved.length, 0, 'the probe never persists anything for an accepted store');
 });
 
 test('probeWaiverState: a driver that HAS the waiver is untouched — no flag flip, no store write', async () => {
@@ -305,18 +304,21 @@ test('probeWaiverState: a driver that HAS the waiver is untouched — no flag fl
   assert.equal(store.saved.length, 0);
 });
 
-test('probeWaiverState: never accepts anything — setWaiverAccepted is not in the path', async () => {
+test('probeWaiverState: an UNACCEPTED store keeps the M4-B behavior — flag + store cleared, setWaiverAccepted NEVER called', async () => {
   const backend = new MockBackend();
-  await backend.restoreWaiverState(0, true);
+  await backend.restoreWaiverState(0, true); // stale in-memory acceptance
   let setCalls = 0;
   const original = backend.setWaiverAccepted.bind(backend);
   backend.setWaiverAccepted = async (...args) => { setCalls += 1; return original(...args); };
   backend.injectFail('powerLimitW', 'waiver-not-set', true);
-  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  const store = fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null });
 
   await probeWaiverState(backend, store);
 
-  assert.equal(setCalls, 0, 'the probe must never auto-accept');
+  assert.equal(setCalls, 0, 'an unaccepted store must never be auto-accepted');
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, false);
+  assert.equal(store.saved.length, 1);
+  assert.equal(store.saved[0].waiverAccepted, false);
 });
 
 test('probeWaiverState: devices without a powerLimitW control are skipped (no probe write possible)', async () => {
@@ -327,6 +329,7 @@ test('probeWaiverState: devices without a powerLimitW control are skipped (no pr
     getCurrentSettings: async () => { throw new Error('must not be called'); },
     applySettings: async () => { applyCalls += 1; throw new Error('must not be called'); },
     restoreWaiverState: async () => { throw new Error('must not be called'); },
+    setWaiverAccepted: async () => { throw new Error('must not be called'); },
   };
   const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
   await probeWaiverState(noPowerBackend, store);
@@ -334,55 +337,114 @@ test('probeWaiverState: devices without a powerLimitW control are skipped (no pr
   assert.equal(store.saved.length, 0);
 });
 
-// M4-B (user): persistWaiverLost — the driver's waiver-not-set verdict is
-// persisted so the NEXT boot's prompt shows the real state.
+// M4-D (user, PERMANENT acceptance): an ACCEPTED store + a waiver-not-set
+// apply -> MAIN silently re-sets the driver waiver + retries ONCE. The
+// first attempt is never surfaced; the store is never flipped to false.
 
-test('persistWaiverLost: flips the store to unaccepted when the driver answers waiver-not-set', async () => {
-  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' });
-  await persistWaiverLost(store, { perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } });
-  assert.equal(store.saved.length, 1);
-  assert.equal(store.saved[0].waiverAccepted, false);
-  assert.equal(store.saved[0].ocMode, 'stock', 'only the waiver flag is touched');
-});
-
-test('persistWaiverLost: a successful apply never writes, and a store that already says unaccepted stays unwritten', async () => {
-  const okStore = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
-  await persistWaiverLost(okStore, { perControl: { powerLimitW: { ok: true } } });
-  assert.equal(okStore.saved.length, 0);
-
-  const alreadyLost = fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null });
-  await persistWaiverLost(alreadyLost, { perControl: { fanCurve: { ok: false, errorCode: 'waiver-not-set' } } });
-  assert.equal(alreadyLost.saved.length, 0);
-});
-
-test('persistWaiverLost: a store read/write failure degrades silently (the in-memory flag was already cleared)', async () => {
-  const broken = {
-    loadSettings: async () => { throw new Error('cannot read settings.json'); },
-    saveSettings: async () => { throw new Error('must not be called'); },
-  };
-  await persistWaiverLost(broken, { perControl: { powerLimitW: { errorCode: 'waiver-not-set' } } });
-  assert.ok(true, 'no throw');
-});
-
-test('apply-settings: a waiver-not-set apply clears the flag so waiver-get reports unaccepted (G2 regression)', async () => {
+test('M4-D: an accepted store auto re-sets the driver waiver + retries ONCE (waiver-get stays accepted, retry landed)', async () => {
   const backend = new MockBackend();
   await backend.restoreWaiverState(0, true); // persisted-accepted boot seed
   assert.equal((await backend.getCapabilities(0)).waiverAccepted, true);
-  backend.injectFail('powerLimitW', 'waiver-not-set'); // driver lost the waiver
+  backend.injectFail('powerLimitW', 'waiver-not-set', true); // one-shot driver waiver loss
   const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
   const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
 
   const res = await handlers['apply-settings'](0, { powerLimitW: 220 });
-  assert.equal(res.result.ok, false);
+  // The RETRY envelope is returned — the first waiver-not-set attempt is
+  // never surfaced as a failure.
+  assert.equal(res.result.ok, true);
+  assert.equal(res.result.perControl.powerLimitW.ok, true);
+  assert.equal(res.state.powerLimitW, 220, 'the retry landed');
+  // The waiver was re-set: waiver-get stays accepted (the G2 flag clear
+  // must not leak) and the store was NEVER flipped to false.
+  assert.deepEqual(await handlers['waiver-get'](0), { accepted: true });
+  assert.equal(store.saved.length, 0, 'the store never persists false — the consent stands');
+});
+
+test('M4-D: exactly ONE retry — a second waiver-not-set returns the retry envelope as-is', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true);
+  backend.injectFail('powerLimitW', 'waiver-not-set'); // persistent: both attempts fail
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
+
+  const res = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(res.result.ok, false, 'the retry also failed — reported honestly');
   assert.equal(res.result.perControl.powerLimitW.errorCode, 'waiver-not-set');
+  // The G2 flag clear still applies (the retry's failure cleared it) —
+  // waiver-get reports unaccepted so the NEXT apply re-prompts.
+  assert.deepEqual(await handlers['waiver-get'](0), { accepted: false });
+  // The store is NEVER flipped to false (persistWaiverLost is removed).
+  assert.equal(store.saved.length, 0);
+});
+
+test('M4-D: an UNACCEPTED store keeps the current behavior — no auto re-set, no retry, flag cleared', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true); // stale in-memory flag only
+  backend.injectFail('powerLimitW', 'waiver-not-set', true);
+  let acceptCalls = 0;
+  const original = backend.setWaiverAccepted.bind(backend);
+  backend.setWaiverAccepted = async (...args) => { acceptCalls += 1; return original(...args); };
+  const store = fakeStore({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
+
+  const res = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(res.result.ok, false, 'the first attempt is surfaced for an unaccepted store');
+  assert.equal(res.result.perControl.powerLimitW.errorCode, 'waiver-not-set');
+  assert.equal(acceptCalls, 0, 'never auto-accept for an unaccepted store');
   // The in-memory flag was cleared (NOT accepted): the next waiver-get is
   // unaccepted so the renderer re-shows the dialog on the next apply.
   assert.deepEqual(await handlers['waiver-get'](0), { accepted: false });
-  // M4-B (user): the driver's verdict is PERSISTED — a store that still
-  // says accepted would lie at the next boot (the boot prompt claims
-  // "accepted" while every apply fails). The store is flipped to false.
-  assert.equal(store.saved.length, 1);
-  assert.equal(store.saved[0].waiverAccepted, false);
+  assert.equal(store.saved.length, 0);
+});
+
+test('M4-D: the worker path auto re-accepts through the runner and retries ONCE', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true);
+  let applyCalls = 0;
+  let acceptCalls = 0;
+  const applyRunner = {
+    needsWorker: () => true,
+    apply: async (req) => {
+      applyCalls += 1;
+      if (applyCalls === 1) {
+        assert.equal(req.waiverAccepted, true, 'the first request carries the seeded acceptance');
+        return { worker: true, result: { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } }, state: {} };
+      }
+      assert.equal(req.waiverAccepted, true, 'the retry request carries the re-set acceptance');
+      return { worker: true, result: { ok: true, perControl: { powerLimitW: { ok: true, readBackEqual: true } } }, state: { powerLimitW: 220 } };
+    },
+    waiverAccept: async () => { acceptCalls += 1; },
+    reset: async () => ({}),
+  };
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRunner });
+
+  const out = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(applyCalls, 2, 'exactly one retry');
+  assert.equal(acceptCalls, 1, 'the runner re-accepted the waiver exactly once');
+  assert.equal(out.result.ok, true);
+  assert.equal(out.state.powerLimitW, 220);
+  // The parent-side flag reflects the runner acceptance.
+  assert.deepEqual(await handlers['waiver-get'](0), { accepted: true });
+  assert.equal(store.saved.length, 0);
+});
+
+test('M4-D: a declined silent re-set (UAC) surfaces the FIRST attempt honestly — never a fake success', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true);
+  const applyRunner = {
+    needsWorker: () => true,
+    apply: async () => ({ worker: true, result: { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } }, state: {} }),
+    waiverAccept: async () => { throw new Error('Apply requires administrator approval.'); },
+    reset: async () => ({}),
+  };
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {}, applyRunner });
+
+  const out = await handlers['apply-settings'](0, { powerLimitW: 220 });
+  assert.equal(out.result.ok, false);
+  assert.equal(out.result.perControl.powerLimitW.errorCode, 'waiver-not-set');
 });
 
 test('telemetry-start emits samples through the injected emit channel', async () => {
@@ -614,14 +676,52 @@ test('startup channels: default adapter is the mock — get/set round trip witho
   const startup = createMockStartup();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, startup });
 
-  assert.deepEqual(await handlers['startup-get'](), { enabled: false, profileId: null, value: null, mechanism: null });
+  // M4-D: the combined shape — both tasks reported distinctly.
+  assert.deepEqual(await handlers['startup-get'](), {
+    startupRunKey: { enabled: false, profileId: null, value: null, mechanism: null },
+    applyOnBoot: { enabled: false, value: null },
+    startWithWindows: false,
+  });
   const setOut = await handlers['startup-set'](true, 'p1');
-  assert.equal(setOut.enabled, true);
-  assert.equal(setOut.profileId, 'p1');
-  assert.match(setOut.value, /--apply-profile p1/);
+  assert.equal(setOut.startupRunKey.enabled, true);
+  assert.equal(setOut.startupRunKey.profileId, 'p1');
+  assert.match(setOut.startupRunKey.value, /--apply-profile p1/);
+  assert.equal(setOut.applyOnBoot.enabled, false, 'coexistence: the app task stays off');
   assert.deepEqual(await handlers['startup-get'](), setOut);
 
-  assert.deepEqual(await handlers['startup-set'](false, null), { enabled: false, profileId: null, value: null, mechanism: null });
+  assert.deepEqual(await handlers['startup-set'](false, null), {
+    startupRunKey: { enabled: false, profileId: null, value: null, mechanism: null },
+    applyOnBoot: { enabled: false, value: null },
+    startWithWindows: false,
+  });
+});
+
+// M4-D: the plain-app task channel (Settings "Start with Windows").
+test('M4-D: startup-app-set enables the app task and disables the apply-profile registration (coexistence)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  await assert.rejects(() => handlers['startup-app-set']('yes'), /enabled must be a boolean/);
+  await assert.rejects(() => handlers['startup-app-set'](1), /enabled must be a boolean/);
+
+  const on = await handlers['startup-app-set'](true);
+  assert.equal(on.applyOnBoot.enabled, true);
+  assert.equal(on.applyOnBoot.value, `"${process.execPath}"`);
+  assert.equal(on.startWithWindows, true);
+  assert.equal(on.startupRunKey.enabled, false);
+
+  // Enabling the apply-profile registration flips the app task back off.
+  const profileOn = await handlers['startup-set'](true, 'p1');
+  assert.equal(profileOn.startupRunKey.enabled, true);
+  assert.equal(profileOn.applyOnBoot.enabled, false);
+
+  const off = await handlers['startup-app-set'](false);
+  assert.equal(off.applyOnBoot.enabled, false);
+  assert.equal(off.startWithWindows, false);
+});
+
+test('M4-D: startup-app-set rejects when the adapter has no app-task variant (honest 404)', async () => {
+  const noAppVariant = { get: async () => ({}), set: async () => ({}) };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, startup: noAppVariant });
+  await assert.rejects(() => handlers['startup-app-set'](true), /no app-task variant/);
 });
 
 test('startup-set: validation — enabled must be boolean; enabling needs a profileId; disabling takes null', async () => {
@@ -642,8 +742,8 @@ test('startup-set: rejects whitespace profileIds (Run-key round trip stays intac
   await assert.rejects(() => handlers['startup-set'](true, 'p1 '), /must not contain whitespace/);
   // A legal id still round-trips.
   const out = await handlers['startup-set'](true, 'profile-1');
-  assert.equal(out.enabled, true);
-  assert.equal(out.profileId, 'profile-1');
+  assert.equal(out.startupRunKey.enabled, true);
+  assert.equal(out.startupRunKey.profileId, 'profile-1');
 });
 
 // ---------------------------------------------------------------------------
@@ -652,7 +752,7 @@ test('startup-set: rejects whitespace profileIds (Run-key round trip stays intac
 
 function fakeProfileStore(initialProfiles = []) {
   const profiles = [...initialProfiles];
-  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false };
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false };
   return {
     profiles,
     async loadProfiles() { return [...profiles]; },
@@ -693,7 +793,7 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '0.9.11', 'package.json version');
+  assert.equal(version, '0.9.12', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {
@@ -718,7 +818,7 @@ test('profiles channels: list -> save (create) -> rename -> delete round trip wi
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
-  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false } });
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false } });
   await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
 
   const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
@@ -782,12 +882,12 @@ test('profiles-settings-save: read-modify-write never clobbers waiverAccepted (n
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
   // Seed an accepted waiver (as waiver-accept would).
-  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false });
+  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false });
 
   const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
-  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false });
   const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
-  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false });
 
   for (const bad of [null, 5, 'x', []]) {
     await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
@@ -814,11 +914,34 @@ test('M4-B: advanced-mode-accepted get/set — the once-only warning acceptance 
 
 test('M4-B: profiles-settings-save never clobbers advancedModeAccepted (like ocMode)', async () => {
   const store = fakeProfileStore();
-  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: true });
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: true, startWithWindows: false, startMinimized: false });
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
   const out = await handlers['profiles-settings-save']({ ocOnBoot: true });
   assert.equal(out.advancedModeAccepted, true, 'the once-only acceptance survives the profiles patch');
+});
+
+test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWindows/startMinimized) without touching the rest', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+
+  const out = await handlers['profiles-settings-save']({ startWithWindows: true, startMinimized: true });
+  assert.equal(out.startWithWindows, true);
+  assert.equal(out.startMinimized, true);
+  assert.equal(out.ocOnBoot, false, 'the profiles fields stay untouched');
+  assert.equal(out.waiverAccepted, false, 'waiverAccepted stays untouched');
+  assert.deepEqual(await store.loadSettings(), {
+    waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
+    advancedModeAccepted: false, startWithWindows: true, startMinimized: true,
+  });
+  // Turning one back off keeps the other.
+  const back = await handlers['profiles-settings-save']({ startMinimized: false });
+  assert.equal(back.startMinimized, false);
+  assert.equal(back.startWithWindows, true);
+  // Absent fields keep the current values (read-modify-write).
+  const untouched = await handlers['profiles-settings-save']({ ocOnBoot: true });
+  assert.equal(untouched.startWithWindows, true);
+  assert.equal(untouched.startMinimized, false);
 });
 
 test('M4-B (user): a persisted-accepted session applies CLOCKS and a FAN CURVE with no waiver-not-set and no waiver-accept call', async () => {
@@ -862,6 +985,65 @@ test('tray-rebuild channel: no payload; calls the injected hook', async () => {
 test('tray-rebuild channel: the default hook is a no-op (never throws without a tray)', async () => {
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
   assert.deepEqual(await handlers['tray-rebuild'](), { ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// M4-D: sysinfo channel (CPU card + VRAM source) — read-side, no payload,
+// the DEFAULT adapter is the mock fixture (never spawns PowerShell)
+// ---------------------------------------------------------------------------
+
+test('M4-D: sysinfo:get — no payload, the default adapter returns the mock fixture', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['sysinfo:get'], 'function');
+  await assert.rejects(() => handlers['sysinfo:get']({}), /takes no payload/);
+  const out = await handlers['sysinfo:get']();
+  assert.equal(out.cpu.name, 'Intel(R) Core(TM) i7-14700K');
+  assert.equal(out.cpu.cores, 20);
+  assert.equal(out.cpu.threads, 28);
+  assert.equal(out.cpu.maxClockMhz, 5600);
+  assert.equal(out.ram.totalBytes, 34359738368);
+  assert.equal(out.ram.speedMhz, 6000);
+  assert.equal(out.videoControllers.length, 1);
+  assert.equal(out.videoControllers[0].name, 'Intel(R) Arc(TM) A770 Graphics');
+  assert.equal(out.videoControllers[0].vramBytes, 17179869184);
+});
+
+test('M4-D: sysinfo:get — an injected adapter is used (the product path cache)', async () => {
+  const sysinfo = { get: async () => ({ cpu: { name: 'Real CPU', cores: 24, threads: 32, maxClockMhz: 5000 }, ram: { totalBytes: 1, speedMhz: null }, videoControllers: [] }) };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, sysinfo });
+  assert.deepEqual(await handlers['sysinfo:get'](), { cpu: { name: 'Real CPU', cores: 24, threads: 32, maxClockMhz: 5000 }, ram: { totalBytes: 1, speedMhz: null }, videoControllers: [] });
+});
+
+// ---------------------------------------------------------------------------
+// M4-D: window-op channels (integrated title bar) — no payload; the default
+// ops are no-ops; the injected ops are called
+// ---------------------------------------------------------------------------
+
+test('M4-D: window channels — registered, take no payload, call the injected ops', async () => {
+  const calls = [];
+  const windowOps = {
+    minimize: async () => { calls.push('minimize'); },
+    maximizeToggle: async () => { calls.push('maximizeToggle'); },
+    close: async () => { calls.push('close'); },
+  };
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, windowOps });
+  for (const ch of ['window-minimize', 'window-maximize-toggle', 'window-close']) {
+    assert.equal(typeof handlers[ch], 'function', ch);
+    await assert.rejects(() => handlers[ch]({}), /takes no payload/, ch);
+    await assert.rejects(() => handlers[ch](0), /takes no payload/, ch);
+  }
+  await handlers['window-minimize']();
+  await handlers['window-maximize-toggle']();
+  await handlers['window-close']();
+  assert.deepEqual(calls, ['minimize', 'maximizeToggle', 'close']);
+});
+
+test('M4-D: window channels — the DEFAULT ops are no-ops (tests never touch a BrowserWindow)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  await handlers['window-minimize']();
+  await handlers['window-maximize-toggle']();
+  await handlers['window-close']();
+  assert.ok(true, 'no throw — no window exists in tests');
 });
 
 // ---------------------------------------------------------------------------

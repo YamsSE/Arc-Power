@@ -19,6 +19,13 @@ contextBridge.exposeInMainWorld('arcPower', {
   registryApply: (entryId, action) => ipcRenderer.invoke('registry-apply', entryId, action),
   startupGet: () => ipcRenderer.invoke('startup-get'),
   startupSet: (enabled, profileId) => ipcRenderer.invoke('startup-set', enabled, profileId),
+  startupAppSet: (enabled) => ipcRenderer.invoke('startup-app-set', enabled),
+  sysinfo: () => ipcRenderer.invoke('sysinfo:get'),
+  // M4-D: the integrated-title-bar window controls (no payload — the
+  // channels assert it in main).
+  windowMinimize: () => ipcRenderer.invoke('window-minimize'),
+  windowMaximizeToggle: () => ipcRenderer.invoke('window-maximize-toggle'),
+  windowClose: () => ipcRenderer.invoke('window-close'),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   appElevated: () => ipcRenderer.invoke('app-elevated'),
@@ -42,5 +49,12 @@ contextBridge.exposeInMainWorld('arcPower', {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);
     return () => ipcRenderer.removeListener('telemetry:sample', listener);
+  },
+  // M4-D: pushed window-maximize state (the title-bar max button icon
+  // follows the live state; main sends on maximize/unmaximize).
+  onWindowMaximizedChanged: (cb) => {
+    const listener = (_event, state) => cb(state);
+    ipcRenderer.on('window:maximized-changed', listener);
+    return () => ipcRenderer.removeListener('window:maximized-changed', listener);
   },
 });

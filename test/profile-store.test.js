@@ -29,11 +29,21 @@ test('profiles: empty store loads [] and saves/loads round trip', async (t) => {
   assert.equal(raw.schemaVersion, SCHEMA_VERSION);
 });
 
-test('settings: defaults when missing; round trip (M3-C-E: ocMode)', async (t) => {
+test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWithWindows/startMinimized)', async (t) => {
   const store = new ProfileStore({ dir: tempDir(t) });
-  assert.deepEqual(await store.loadSettings(), { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false });
-  await store.saveSettings({ waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced' });
-  assert.deepEqual(await store.loadSettings(), { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false });
+  assert.deepEqual(await store.loadSettings(), {
+    waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
+    ocMode: 'stock', advancedModeAccepted: false,
+    startWithWindows: false, startMinimized: false,
+  });
+  await store.saveSettings({
+    waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
+    startWithWindows: true, startMinimized: true,
+  });
+  assert.deepEqual(await store.loadSettings(), {
+    waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
+    advancedModeAccepted: false, startWithWindows: true, startMinimized: true,
+  });
 });
 
 test('M4-B: the Advanced OC Mode warning acceptance persists across store round trips', async (t) => {
@@ -75,7 +85,11 @@ test('F4: stores on separate dirs are fully isolated — a mock-mode write never
   await mockStore.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
   assert.equal(fs.existsSync(path.join(mockDir, 'settings.json')), true, 'the mock write lands in the mock dir');
   // The real store's settings stay at its own defaults — nothing leaked.
-  assert.deepEqual(await realStore.loadSettings(), { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false });
+  assert.deepEqual(await realStore.loadSettings(), {
+    waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
+    ocMode: 'stock', advancedModeAccepted: false,
+    startWithWindows: false, startMinimized: false,
+  });
   assert.equal(fs.existsSync(path.join(realDir, 'settings.json')), false, 'the mock session never wrote the real dir');
   // A stock mock variant flips only the mock dir — the real store still
   // defaults to stock, and the advanced mock store sees its own write.
@@ -164,18 +178,56 @@ test('load: corrupt JSON fails with a clear error', async (t) => {
   await assert.rejects(store.loadProfiles(), /invalid JSON/);
 });
 
-test('load: settings file at current schema passes through (M3-C-E: v2)', async (t) => {
+test('load: settings file at current schema passes through (M3-C-E: v2, M4-D absent fields default false)', async (t) => {
   const dir = tempDir(t);
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ schemaVersion: 2, waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' }));
   const store = new ProfileStore({ dir });
-  assert.deepEqual(await store.loadSettings(), { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false });
+  assert.deepEqual(await store.loadSettings(), {
+    waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
+    ocMode: 'advanced', advancedModeAccepted: false,
+    startWithWindows: false, startMinimized: false,
+  });
+});
+
+test('M4-D: startWithWindows / startMinimized persist and are never clobbered by the profiles patch... (absent -> false)', async (t) => {
+  const dir = tempDir(t);
+  const store = new ProfileStore({ dir });
+  assert.equal((await store.loadSettings()).startWithWindows, false);
+  assert.equal((await store.loadSettings()).startMinimized, false);
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', startWithWindows: true, startMinimized: true });
+  const loaded = await store.loadSettings();
+  assert.equal(loaded.startWithWindows, true);
+  assert.equal(loaded.startMinimized, true);
+  // A save that does not mention the fields keeps them (read-modify-write
+  // callers spread the loaded settings) — but an explicit false wins.
+  await store.saveSettings({ ...loaded, startMinimized: false });
+  assert.equal((await store.loadSettings()).startMinimized, false);
+  assert.equal((await store.loadSettings()).startWithWindows, true);
+  // An OLD v2 settings file without the fields reads false (no schema bump —
+  // the absent-field default).
+  const oldDir = tempDir(t);
+  fs.writeFileSync(path.join(oldDir, 'settings.json'), JSON.stringify({ schemaVersion: 2, waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' }));
+  const old = await new ProfileStore({ dir: oldDir }).loadSettings();
+  assert.equal(old.startWithWindows, false);
+  assert.equal(old.startMinimized, false);
+  // A v1 file (pre-ocMode) still migrates and reads false too.
+  const v1Dir = tempDir(t);
+  fs.writeFileSync(path.join(v1Dir, 'settings.json'), JSON.stringify({ schemaVersion: 1, waiverAccepted: true, ocOnBoot: false, activeProfileId: null }));
+  const v1 = await new ProfileStore({ dir: v1Dir }).loadSettings();
+  assert.equal(v1.startWithWindows, false);
+  assert.equal(v1.startMinimized, false);
+  assert.equal(v1.ocMode, 'stock', 'the v1 migration is untouched by M4-D');
 });
 
 test('M3-C-E: a v1 settings file migrates on load; the absent ocMode follows the store default', async (t) => {
   const dir = tempDir(t);
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ schemaVersion: 1, waiverAccepted: true, ocOnBoot: false, activeProfileId: null }));
   const real = new ProfileStore({ dir });
-  assert.deepEqual(await real.loadSettings(), { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false });
+  assert.deepEqual(await real.loadSettings(), {
+    waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
+    ocMode: 'stock', advancedModeAccepted: false,
+    startWithWindows: false, startMinimized: false,
+  });
   // The migrated file is persisted back at the CURRENT schema (v2).
   const raw = JSON.parse(fs.readFileSync(real.settingsPath, 'utf8'));
   assert.equal(raw.schemaVersion, 2);

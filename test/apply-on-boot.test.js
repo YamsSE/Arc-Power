@@ -331,6 +331,112 @@ test('apply-on-boot: failure AND failed defaults restore -> fallbackApplied fals
 });
 
 // ---------------------------------------------------------------------------
+// M4-D (PERMANENT acceptance) — the logon/tray apply is a MAIN-side apply:
+// with a persisted acceptance and a STALE driver waiver (the M4-B user
+// report scenario — the M4-D boot probe that restores the waiver runs only
+// in the window path), the apply answers waiver-not-set and must SILENTLY
+// re-set the driver waiver + retry the apply ONCE (mirror runApply) — never
+// restore the user's OC state to defaults over a stale driver waiver, and
+// never flip the persisted acceptance.
+// ---------------------------------------------------------------------------
+
+test('M4-D: accepted store + one-shot waiver-not-set -> silent re-set + retry lands, NO defaults restore, store never flipped', async () => {
+  const dir = testDir('m4d-waiver-retry');
+  try {
+    const backend = new MockBackend();
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1' },
+      profiles: [PROFILE],
+    });
+    // The driver lost the waiver while settings.json still says accepted.
+    backend.injectFail('powerLimitW', 'waiver-not-set', true);
+    let accepts = 0;
+    const realAccept = MockBackend.prototype.setWaiverAccepted.bind(backend);
+    backend.setWaiverAccepted = async (d) => { accepts += 1; return realAccept(d); };
+    const logs = [];
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1', log: (s) => logs.push(s) });
+    assert.equal(out.applied, true, `the retry must land: ${out.reason}`);
+    assert.equal(accepts, 1, 'the driver waiver is silently re-set exactly once');
+    assert.equal(out.fallbackApplied, undefined, 'NO defaults restore — the retry landed');
+    const state = await backend.getCurrentSettings(0);
+    assert.equal(state.powerLimitW, 240, 'the profile values are applied');
+    assert.equal(state.gpuFreqOffsetMhz, 100);
+    assert.equal(state.tempLimitC, 85);
+    assert.equal((await backend.getCapabilities(0)).waiverAccepted, true, 'the device waiver is accepted again');
+    assert.equal((await store.loadSettings()).waiverAccepted, true, 'the persisted acceptance is never flipped');
+    assert.ok(logs.some((l) => l.includes('silently re-setting the driver waiver')), 'the silent re-set is logged');
+    assert.ok(logs.some((l) => l.includes('applied and read-back verified')), 'the retry landed and verified');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-D: a SECOND waiver-not-set on the retry -> exactly ONE re-set, then the honest defaults restore (no loop)', async () => {
+  const dir = testDir('m4d-waiver-retry2');
+  try {
+    const backend = new MockBackend();
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1' },
+      profiles: [PROFILE],
+    });
+    // PERSISTENT waiver-not-set: the retry also answers waiver-not-set.
+    backend.injectFail('powerLimitW', 'waiver-not-set');
+    let accepts = 0;
+    const realAccept = MockBackend.prototype.setWaiverAccepted.bind(backend);
+    backend.setWaiverAccepted = async (d) => { accepts += 1; return realAccept(d); };
+    const out = await applyProfileOnBoot({ backend, store, profileId: 'p1' });
+    assert.equal(accepts, 1, 'exactly one silent re-set — a second waiver-not-set never loops');
+    assert.equal(out.applied, false);
+    assert.equal(out.fallbackApplied, true, 'the retry also failed -> the honest defaults restore runs');
+    assert.equal(out.reason, 'apply failed; defaults restored');
+    assert.equal(out.result.perControl.powerLimitW.errorCode, 'waiver-not-set');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'defaults restored');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-D: the TRAY path (runner) also gets the silent re-set + retry — waiverAccept once, retry carries waiverAccepted true', async () => {
+  const dir = testDir('m4d-waiver-retry-runner');
+  try {
+    const backend = new MockBackend();
+    await backend.restoreWaiverState(0, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'p1' },
+      profiles: [PROFILE],
+    });
+    const requests = [];
+    let accepts = 0;
+    const applyRunner = {
+      needsWorker: () => true,
+      apply: async (req) => {
+        requests.push(req);
+        if (requests.length === 1) {
+          return { result: { ok: false, perControl: { powerLimitW: { ok: false, errorCode: 'waiver-not-set' } } }, state: null };
+        }
+        return { result: { ok: true, perControl: { powerLimitW: { ok: true, readBackEqual: true } } }, state: { powerLimitW: 240, gpuFreqOffsetMhz: 100, tempLimitC: 85 } };
+      },
+      waiverAccept: async (deviceId) => { accepts += 1; await backend.setWaiverAccepted(deviceId); },
+      reset: async () => ({ ok: true, state: null }),
+    };
+    const out = await applyProfile({ backend, store, profileId: 'p1', applyRunner });
+    assert.equal(out.applied, true, 'the runner retry must land');
+    assert.equal(accepts, 1, 'runner.waiverAccept called exactly once (silent)');
+    assert.equal(requests.length, 2, 'the apply ran exactly twice (first + ONE retry)');
+    assert.equal(requests[0].waiverAccepted, true, 'the first attempt carries the device-side flag');
+    assert.equal(requests[1].waiverAccepted, true, 'the retry carries the re-set acceptance');
+    assert.equal(out.fallbackApplied, undefined, 'no defaults restore');
+    assert.equal(out.state.powerLimitW, 240);
+    assert.equal((await backend.getCapabilities(0)).waiverAccepted, true);
+    assert.equal((await store.loadSettings()).waiverAccepted, true, 'the persisted acceptance is never flipped');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // M2b review F1 — explicit-user-action apply (tray click): skips the ocOnBoot
 // gate, keeps the waiver gates; the balloon only claims "defaults restored"
 // when a restore actually ran.

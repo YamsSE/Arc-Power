@@ -7,6 +7,7 @@ import {
   TRAY_ICON_DATA_URL, decodeTrayIcon, buildTrayMenuTemplate,
   TRAY_LABEL_TOGGLE, TRAY_LABEL_APPLY_PROFILE, TRAY_LABEL_QUIT,
   trayBalloonProfileFailed, trayBalloonProfileRefused, trayBalloonForOutcome,
+  trayToggleAction,
 } from '../src/main/tray.js';
 
 test('tray icon: data URL is a valid 32x32 PNG with real bytes', () => {
@@ -70,4 +71,18 @@ test('tray balloon: a gate refusal shows the reason, never "defaults restored"',
     assert.equal(content, trayBalloonProfileRefused(reason));
     assert.ok(!content.includes('defaults restored'), content);
   }
+});
+
+// M4-D Round-1 F5 — the tray toggle branch fix: a MINIMIZED window reports
+// isVisible() === true, so the old visibility-only toggle would hide a
+// minimized window instead of restoring it (a start-minimized session could
+// never be restored from the tray). The minimize case must win.
+test('M4-D (F5): the tray toggle RESTORES a minimized window before any visibility toggle', () => {
+  assert.equal(trayToggleAction({ isMinimized: true, isVisible: true }), 'restore');
+  assert.equal(trayToggleAction({ isMinimized: true, isVisible: false }), 'restore');
+});
+
+test('M4-D (F5): a visible non-minimized window toggles to hidden; a hidden one shows', () => {
+  assert.equal(trayToggleAction({ isMinimized: false, isVisible: true }), 'hide');
+  assert.equal(trayToggleAction({ isMinimized: false, isVisible: false }), 'show');
 });

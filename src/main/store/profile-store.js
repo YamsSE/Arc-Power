@@ -126,12 +126,18 @@ export class ProfileStore {
   }
 
   /**
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
     if (data === null) {
-      return { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: this.ocModeDefault, advancedModeAccepted: false };
+      return {
+        waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
+        ocMode: this.ocModeDefault, advancedModeAccepted: false,
+        // M4-D: absent -> false (the Settings-tab fields ride the
+        // absent-field defaults mechanism — NO schema bump).
+        startWithWindows: false, startMinimized: false,
+      };
     }
     return {
       waiverAccepted: data.waiverAccepted === true,
@@ -143,11 +149,15 @@ export class ProfileStore {
       // M4-B (user): the Advanced OC Mode warning is accepted ONCE and
       // persisted — a re-boot must not re-ask. Absent on old files -> false.
       advancedModeAccepted: data.advancedModeAccepted === true,
+      // M4-D: the Settings-tab fields. Absent on old files -> false (same
+      // absent-field default mechanism as ocMode/advancedModeAccepted).
+      startWithWindows: data.startWithWindows === true,
+      startMinimized: data.startMinimized === true,
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -157,6 +167,8 @@ export class ProfileStore {
       activeProfileId: settings.activeProfileId ?? null,
       ocMode: settings.ocMode === 'advanced' || settings.ocMode === 'stock' ? settings.ocMode : this.ocModeDefault,
       advancedModeAccepted: settings.advancedModeAccepted === true,
+      startWithWindows: settings.startWithWindows === true,
+      startMinimized: settings.startMinimized === true,
     });
   }
 }

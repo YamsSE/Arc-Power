@@ -44,6 +44,12 @@
 // Frequency inputs + Apply/Reset, gated on caps.controls.gpuLock — the
 // backend apply paths already existed); (4) expert-row texts are honest:
 // gpuLock = "Editing available", vfCurve/VRAM rows = "M5" (no apply path).
+//
+// M4-D (user): the Advanced (expert) section renders ONLY rows whose
+// control is SUPPORTED on the device (caps.controls[row.control] === true —
+// the IGCL-keyed caps key, M4-D review F1) — the "Unsupported on this GPU"
+// rows are REMOVED entirely (they said nothing the empty space could not);
+// supported-but-M5 rows keep their honest note.
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
@@ -66,11 +72,20 @@ const CONTROL_ORDER = ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'powerLimitW', 'tem
 // M4-B: per-control expert status. gpuLock ships an editor in the Advanced
 // section ("Editing available"); vfCurve + VRAM offsets have NO apply path
 // yet — honest "editing arrives in M5".
-const EXPERT_CONTROLS: Array<{ key: string; label: string; note: string }> = [
-  { key: 'gpuLock', label: 'GPU lock (voltage/frequency pair)', note: 'Editing available' },
-  { key: 'vfCurve', label: 'Custom VF curve', note: 'Supported — editing arrives in M5' },
-  { key: 'vramFreqOffsetGts', label: 'VRAM frequency offset', note: 'Supported — editing arrives in M5' },
-  { key: 'vramVoltOffsetV', label: 'VRAM voltage offset', note: 'Supported — editing arrives in M5' },
+// M4-D (user): only SUPPORTED controls render (caps.controls[row.control] ===
+// true); the "Unsupported on this GPU" rows are removed entirely.
+// M4-D review F1: `key` is the CANONICAL settings/state key (the expert-value
+// read below uses it); `control` is the caps.controls key (IGCL-keyed in BOTH
+// backends — vramFreqOffset/vramVoltOffset, not the canonical
+// vramFreqOffsetGts/vramVoltOffsetV). The supported filter MUST key on
+// `control`: keying on the canonical name reads undefined for the two VRAM
+// rows and drops them even on devices that support the control (b580, real
+// discrete Arcs). gpuLock/vfCurve are identical in both namespaces.
+const EXPERT_CONTROLS: Array<{ key: string; control: string; label: string; note: string }> = [
+  { key: 'gpuLock', control: 'gpuLock', label: 'GPU lock (voltage/frequency pair)', note: 'Editing available' },
+  { key: 'vfCurve', control: 'vfCurve', label: 'Custom VF curve', note: 'Supported — editing arrives in M5' },
+  { key: 'vramFreqOffsetGts', control: 'vramFreqOffset', label: 'VRAM frequency offset', note: 'Supported — editing arrives in M5' },
+  { key: 'vramVoltOffsetV', control: 'vramVoltOffset', label: 'VRAM voltage offset', note: 'Supported — editing arrives in M5' },
 ];
 
 export const APPLY_BTN_TEXT = 'Apply';
@@ -751,20 +766,27 @@ export const overclockingPage: Page = {
       el('details', { class: 'card advanced-card' }, [
         el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),
         el('div', { class: 'card-body' }, [
-          ...EXPERT_CONTROLS.map(({ key, label, note }) => {
-            const supported = caps.controls[key] === true;
-            const cur = state[key as keyof DeviceState];
-            const current = key === 'gpuLock'
-              ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
-              : cur === null || cur === undefined ? '—' : JSON.stringify(cur);
-            return el('div', { class: 'expert-row' }, [
-              el('span', { class: 'expert-label', text: label }),
-              el('span', { class: 'expert-value', text: String(current) }),
-              // M4-B: gpuLock has an editor in this section ("Editing
-              // available"); vfCurve + VRAM offsets have no apply path yet.
-              el('span', { class: 'expert-status', text: supported ? note : 'Unsupported on this GPU' }),
-            ]);
-          }),
+          // M4-D (user): ONLY supported rows render — the unsupported ones
+          // are removed entirely (no "Unsupported on this GPU" rows). The
+          // filter keys on row.control (the IGCL-keyed caps.controls key —
+          // M4-D review F1); the state read below keeps the CANONICAL
+          // row.key.
+          ...EXPERT_CONTROLS
+            .filter(({ control }) => caps.controls[control] === true)
+            .map(({ key, label, note }) => {
+              const cur = state[key as keyof DeviceState];
+              const current = key === 'gpuLock'
+                ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
+                : cur === null || cur === undefined ? '—' : JSON.stringify(cur);
+              return el('div', { class: 'expert-row' }, [
+                el('span', { class: 'expert-label', text: label }),
+                el('span', { class: 'expert-value', text: String(current) }),
+                // M4-B: gpuLock has an editor in this section ("Editing
+                // available"); vfCurve + VRAM offsets have no apply path yet
+                // — the honest M5 note.
+                el('span', { class: 'expert-status', text: note }),
+              ]);
+            }),
           // M4-B: the gpuLock editor — a card in the Advanced section, gated
           // on caps.controls.gpuLock (the backend apply paths already exist).
           ...(caps.controls.gpuLock === true ? [buildLockEditor(ctx)] : []),

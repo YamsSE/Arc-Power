@@ -189,7 +189,13 @@ export function clampGpuLock(lock) {
  */
 export function formatDeviceName(name, vramBytes) {
   if (!name || !Number.isInteger(vramBytes) || vramBytes <= 0) return name;
-  const gib = Math.floor(vramBytes / (1024 * 1024 * 1024));
+  // M4-D (user, live-verified): the driver's qwMemorySize is the honest
+  // source but carries a small reserved margin (the 8 GB A770 reports
+  // ~7.91 GiB) — ROUND to the nearest whole GiB so the suffix matches the
+  // card's actual size ("8 GB"), never a floored undershoot ("7 GB").
+  // Values under 1 GiB stay whole-MiB (a 512 MiB card never rounds to
+  // "1 GB").
+  const gib = vramBytes >= 1024 * 1024 * 1024 ? Math.round(vramBytes / (1024 * 1024 * 1024)) : 0;
   if (gib >= 1) return `${name} ${gib} GB`;
   const mib = Math.floor(vramBytes / (1024 * 1024));
   return `${name} ${mib} MB`;

@@ -10,11 +10,45 @@
 </head>
 <body>
   <div id="app">
-    <aside id="sidebar"></aside>
-    <main id="shell">
-      <header id="gpu-header"></header>
-      <section id="page"></section>
-    </main>
+    <!-- M4-D (user): the INTEGRATED title bar (frameless window) — the
+         (user): the brand sits CENTERED in the title bar (the logo on top,
+         'Arc Power' below it — 'Power' in the website's blue gradient), the
+         window controls in the right cluster. The drag regions
+         (left zone + the brand) are -webkit-app-region: drag (Electron
+         handles double-click-to-maximize there); the controls cluster is
+         no-drag so the buttons stay clickable. The wiring lives in
+         components/titlebar.ts (app.ts boots it). -->
+    <div id="titlebar" class="titlebar">
+      <div class="titlebar-drag" title="Arc Power"></div>
+      <div class="titlebar-brand">
+        <img class="titlebar-logo" src="../assets/icon.png" alt="Arc Power logo">
+        <div class="titlebar-brand-name">Arc <span class="titlebar-brand-power">Power</span></div>
+      </div>
+      <div class="titlebar-cluster">
+        <div class="titlebar-controls">
+          <button class="window-btn window-btn-min" data-op="minimize" title="Minimize" aria-label="Minimize">
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+          <button class="window-btn window-btn-max" data-op="maximize-toggle" title="Maximize" aria-label="Maximize">
+            <svg class="icon-maximize" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            <svg class="icon-restore" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" hidden>
+              <rect x="3.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="1.5" y="3.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+          </button>
+          <button class="window-btn window-btn-close" data-op="close" title="Close" aria-label="Close">
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 1.5 L10.5 10.5 M10.5 1.5 L1.5 10.5" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="app-body">
+      <aside id="sidebar"></aside>
+      <main id="shell">
+        <header id="gpu-header"></header>
+        <section id="page"></section>
+      </main>
+    </div>
   </div>
   <script src="./out/app.js"></script>
 </body>

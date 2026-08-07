@@ -224,6 +224,8 @@ function makeBackend(fakeLib, opts = {}) {
     // return SUCCESS even when canControl=false, so a naive probe would
     // flip the read-only fixtures to editable). Probe tests opt in.
     fanProbe: opts.fanProbe ?? false,
+    // M4-D: the VRAM provider (sysinfo cache in main.js) — pass-through.
+    vramBytesOf: opts.vramBytesOf,
   });
 }
 
@@ -279,6 +281,55 @@ test('listDevices: returns the A770 fixture from device properties', async () =>
   // _ensureDevices comment) — vramBytes stays null and the name keeps no
   // VRAM suffix until the M4-D sysinfo fallback lands.
   assert.equal(devices[0].vramBytes, null);
+});
+
+// M4-D (user): the VRAM enrichment — a vramBytesOf provider (the sysinfo
+// cache in main.js) makes the REAL GPU name carry the "16 GB"-style suffix,
+// with caps.deviceName parity (every dialog renders caps.deviceName).
+test('M4-D: vramBytesOf null provider -> plain name, null vramBytes', async () => {
+  const b = makeBackend(makeFakeLib());
+  const devices = await b.listDevices();
+  assert.equal(devices[0].name, 'Intel(R) Arc(TM) A770 Graphics');
+  assert.equal(devices[0].vramBytes, null);
+  assert.equal((await b.getCapabilities(0)).deviceName, 'Intel(R) Arc(TM) A770 Graphics');
+});
+
+test('M4-D: a provided vramBytesOf suffixes listDevices AND caps.deviceName', async () => {
+  const b = makeBackend(makeFakeLib(), { vramBytesOf: () => 16 * 1024 ** 3 });
+  const devices = await b.listDevices();
+  assert.equal(devices[0].name, 'Intel(R) Arc(TM) A770 Graphics 16 GB');
+  assert.equal(devices[0].vramBytes, 16 * 1024 ** 3);
+  // caps.deviceName parity — the device card/header/dialogs all read it.
+  assert.equal((await b.getCapabilities(0)).deviceName, 'Intel(R) Arc(TM) A770 Graphics 16 GB');
+});
+
+test('M4-D: a provider returning null/0 leaves the plain name (honest null)', async () => {
+  const nullProvider = makeBackend(makeFakeLib(), { vramBytesOf: () => null });
+  assert.equal((await nullProvider.listDevices())[0].name, 'Intel(R) Arc(TM) A770 Graphics');
+  const zeroProvider = makeBackend(makeFakeLib(), { vramBytesOf: () => 0 });
+  assert.equal((await zeroProvider.listDevices())[0].name, 'Intel(R) Arc(TM) A770 Graphics');
+  // The AdapterRAM -> vramBytes degradation (0xFFFFFFFF saturation etc.)
+  // lives in the sysinfo provider (sysinfo.test.js pins it); a provider
+  // that already degraded to null yields the plain name here.
+  const degradedProvider = makeBackend(makeFakeLib(), { vramBytesOf: () => null });
+  assert.equal((await degradedProvider.listDevices())[0].name, 'Intel(R) Arc(TM) A770 Graphics');
+  assert.equal((await degradedProvider.listDevices())[0].vramBytes, null);
+});
+
+test('M4-D: setVramBytesOf re-formats an already-enumerated device list in place', async () => {
+  const b = makeBackend(makeFakeLib());
+  await b.init();
+  await b.listDevices(); // enumerate with the plain name first
+  b.setVramBytesOf(() => 8 * 1024 ** 3);
+  const devices = await b.listDevices();
+  assert.equal(devices[0].name, 'Intel(R) Arc(TM) A770 Graphics 8 GB');
+  assert.equal(devices[0].vramBytes, 8 * 1024 ** 3);
+  assert.equal((await b.getCapabilities(0)).deviceName, 'Intel(R) Arc(TM) A770 Graphics 8 GB');
+  // Clearing the provider restores the plain names.
+  b.setVramBytesOf(null);
+  const plain = await b.listDevices();
+  assert.equal(plain[0].name, 'Intel(R) Arc(TM) A770 Graphics');
+  assert.equal(plain[0].vramBytes, null);
 });
 
 // ---------------------------------------------------------------------------

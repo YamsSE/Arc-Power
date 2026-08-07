@@ -8,12 +8,13 @@ import type {
   HealthReport,
   LastApply,
   RegistryCatalogResponse,
+  SysInfo,
   TelemetrySample,
 } from './types.ts';
 
-export type PageId = 'dashboard' | 'overclocking' | 'fan' | 'monitoring' | 'profiles' | 'tweaks';
+export type PageId = 'dashboard' | 'overclocking' | 'fan' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
 
-export const PAGE_IDS: PageId[] = ['dashboard', 'overclocking', 'fan', 'monitoring', 'profiles', 'tweaks'];
+export const PAGE_IDS: PageId[] = ['dashboard', 'overclocking', 'fan', 'monitoring', 'profiles', 'tweaks', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
@@ -22,6 +23,8 @@ export const NAV_LABELS: Record<PageId, string> = {
   monitoring: 'Monitoring',
   profiles: 'Profiles',
   tweaks: 'Tweaks',
+  // M4-D: the Settings tab (Start with Windows / Start minimized / About).
+  settings: 'Settings',
 };
 
 export function pageFromHash(hash: string): PageId {
@@ -89,6 +92,9 @@ export interface AppState {
    *  Null until the first fetch (page shows 'Loading…'); a failed fetch
    *  degrades to an empty response so the page renders the error note. */
   catalog: RegistryCatalogResponse | null;
+  /** M4-D: the system-info payload (dashboard CPU & memory card). Null until
+   *  the boot fetch lands (the card then re-renders via the sig). */
+  sysinfo: SysInfo | null;
 }
 
 const INITIAL: AppState = {
@@ -108,6 +114,7 @@ const INITIAL: AppState = {
   featuresets: [],
   featuresetId: null,
   catalog: null,
+  sysinfo: null,
 };
 
 export class Store {

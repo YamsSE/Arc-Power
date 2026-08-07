@@ -146,27 +146,28 @@ async function waitFor(win, expr, timeoutMs = 10000) {
   return false;
 }
 
-// M4-A/M4-B: the shared waiver boot-step — MUST run in EVERY ui-verify
+// M4-A/M4-B/M4-D: the shared waiver boot-step — MUST run in EVERY ui-verify
 // variant BEFORE its own assertions (F4: the extended/stock/featureset
 // variants assert modal absence around applies; the boot prompt would
 // otherwise be the modal being clicked or asserted there). Every mock
 // session boots with a deterministic waiver state (session-seeded in
 // main.js BEFORE the window exists — the persisted variant never races the
-// renderer's first caps query, F2). M4-B (user): the boot prompt shows at
-// EVERY startup — the persisted-accepted variant now asserts the ACCEPTED-
-// state dialog (title + .modal-status + single OK):
+// renderer's first caps query, F2). M4-D (user, PERMANENT acceptance —
+// "skipped IF permanently accepted after accepting once"):
 //   - RID_MOCK_WAIVER_PERSISTED=1 -> the store is ACCEPTED at boot: the boot
-//     prompt appears in its accepted state — title 'Warranty waiver', a
-//     'Status: Accepted' line, exactly one OK button; this step clicks OK
-//     (a reminder — NO waiver-accept IPC happens);
-//   - RID_MOCK_WAIVER_PERSISTED=1 + RID_MOCK_WAIVER_LOST=1 (M4-B user fix) ->
-//     the store STILL says accepted but the DRIVER lost the waiver: the boot
-//     probe (probeWaiverState) flipped store + flag to unaccepted BEFORE the
-//     window, so the boot prompt appears in the CLASSIC state (Accept/Cancel,
-//     NO accepted-status line) — the "the popup lied that it's accepted" bug;
-//     this step CANCELS it and asserts the store now reads unaccepted;
-//   - RID_MOCK_WAIVER_BOOT_ACCEPT=1 -> the prompt appears exactly once and
-//     this step ACCEPTS it (health row green, no dialog anywhere after);
+//     prompt is SKIPPED ENTIRELY (the accepted-state reminder dialog is
+//     REMOVED — the dashboard health row remains the status display); this
+//     step asserts NO modal ever appears after the boot sequence lands;
+//   - RID_MOCK_WAIVER_PERSISTED=1 + RID_MOCK_WAIVER_LOST=1 (M4-B user fix,
+//     M4-D update) -> the store STILL says accepted and the DRIVER lost the
+//     waiver: the boot probe (probeWaiverState) now RESTORES the driver
+//     waiver instead of clearing the store (M4-D PERMANENT acceptance — the
+//     consent stands, the store is never flipped to false), so the boot
+//     prompt is STILL skipped (same as the plain persisted variant) and
+//     waiver-get reads accepted (the restore is pinned);
+//   - RID_MOCK_WAIVER_BOOT_ACCEPT=1 -> the session is unaccepted at boot:
+//     the prompt appears exactly once and this step ACCEPTS it (health row
+//     green, no dialog anywhere after);
 //   - default -> the prompt appears exactly once and this step CANCELS it
 //     (row red, the first apply re-shows the dialog — the classic flow).
 // Returns true when the session booted with the waiver accepted.
@@ -177,7 +178,10 @@ async function bootWaiverStep(win, js, waitFor) {
   // M4-B step-4 F1/F5a: the boot dialog's .modal-device line must carry the
   // VRAM-suffixed name (mock caps.deviceName = formatDeviceName(...)) — the
   // regression pin for the caps-vs-device divergence. Featureset-aware:
-  // a770 -> "16 GB", b580/pro-b50 -> "12 GB", arc-igpu -> plain (no VRAM).
+  // a770 -> "16 GB" (the mock models the 16 GB config; the REAL card on
+  // this machine is the 8 GB config — its driver qwMemorySize ~7.91 GiB
+  // rounds to "8 GB" via formatDeviceName; M4-D user correction),
+  // b580/pro-b50 -> "12 GB", arc-igpu -> plain (no VRAM).
   const fsId = process.env.RID_MOCK_FEATURESET;
   const expectedSuffix = fsId === 'b580' || fsId === 'pro-b50' ? ' 12 GB'
     : fsId === 'arc-igpu' ? null
@@ -193,57 +197,29 @@ async function bootWaiverStep(win, js, waitFor) {
     }
     return deviceText;
   };
-  if (persisted && waiverLost) {
-    // M4-B (user fix): the store says accepted but the DRIVER lost the
-    // waiver — the boot probe must have flipped the store + flag BEFORE the
-    // window, so the boot prompt shows the CLASSIC Accept/Cancel dialog (the
-    // stale "already accepted" reminder must NOT appear).
-    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 10000))) {
-      throw new UiVerifyFailure(`the boot waiver prompt did not appear (waiver lost despite the persisted store): page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
-    }
-    if (await js(`!!document.querySelector('.modal .modal-status')`)) {
-      throw new UiVerifyFailure('RID_MOCK_WAIVER_LOST=1: the boot prompt shows the accepted-state reminder though the driver lost the waiver (the probe must flip the state before the window)');
-    }
-    if (!(await js(`!!document.querySelector('.modal button.btn-danger')`))) {
-      throw new UiVerifyFailure('RID_MOCK_WAIVER_LOST=1: the boot prompt lacks the classic Accept button');
-    }
-    const deviceLine = await pinDeviceLine();
-    await js(`document.querySelector('.modal button.btn-ghost')?.click()`);
-    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) {
-      throw new UiVerifyFailure('the boot waiver prompt did not close');
-    }
-    await sleep(500);
-    if (await js(`!!document.querySelector('.modal')`)) {
-      throw new UiVerifyFailure('a second modal appeared after the boot prompt was handled (the boot prompt must appear exactly once)');
-    }
-    return false;
-  }
   if (persisted) {
-    // M4-B: persisted acceptance at boot -> the boot prompt MUST appear in
-    // the accepted state (a reminder, never a re-accept): title + status
-    // line + exactly one OK button. Click OK, then the modal must close.
-    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver' && !!document.querySelector('.modal .modal-status')`, 10000))) {
-      throw new UiVerifyFailure(`the boot waiver prompt did not appear in its accepted state (RID_MOCK_WAIVER_PERSISTED=1): page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+    // M4-D (PERMANENT acceptance): the boot prompt must NOT appear at all.
+    // The accepted store never asks again — the accepted-state reminder
+    // dialog is REMOVED. Wait for the boot sequence to land (the dashboard
+    // GPU Health card renders only after caps arrive — the point where a
+    // (buggy) boot prompt would have shown), then assert no modal. The
+    // WAIVER_LOST overlay changes nothing: the boot probe RESTORED the
+    // driver waiver for the accepted store (the consent stands), so the
+    // session boots silent and waiver-get reads accepted.
+    if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 15000))) {
+      throw new UiVerifyFailure(`M4-D: the persisted-accepted session did not land the dashboard health card: page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
     }
-    const deviceLine = await pinDeviceLine();
-    const status = await js(`document.querySelector('.modal .modal-status')?.textContent ?? ''`);
-    if (!status.includes('Accepted')) {
-      throw new UiVerifyFailure(`the accepted-state boot prompt has status '${status}' (expected 'Status: Accepted')`);
-    }
-    const buttonCount = await js(`document.querySelectorAll('.modal .modal-actions button').length`);
-    if (buttonCount !== 1) {
-      throw new UiVerifyFailure(`the accepted-state boot prompt has ${buttonCount} buttons (expected exactly one OK — a reminder, not a re-accept)`);
-    }
-    await js(`document.querySelector('.modal .modal-actions button')?.click()`);
-    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) {
-      throw new UiVerifyFailure('the accepted-state boot prompt did not close');
-    }
-    // Exactly once per boot: nothing else may pop a modal spontaneously
-    // after the prompt is handled (a stray dialog would mean a re-prompt
-    // bug).
-    await sleep(500);
+    await sleep(600);
     if (await js(`!!document.querySelector('.modal')`)) {
-      throw new UiVerifyFailure('a second modal appeared after the accepted-state boot prompt was handled (the boot prompt must appear exactly once)');
+      throw new UiVerifyFailure(`M4-D: the boot waiver prompt appeared in a PERSISTED-ACCEPTED session (${persisted ? 'RID_MOCK_WAIVER_PERSISTED=1' : ''}${waiverLost ? ' + RID_MOCK_WAIVER_LOST=1' : ''}) — a persisted acceptance skips the boot prompt entirely; page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+    }
+    if (waiverLost) {
+      // M4-D pin: the boot probe RESTORED the driver waiver — the backend
+      // flag is accepted again (the store was never flipped to false).
+      const flag = await js(`window.arcPower.waiverGet(0)`);
+      if (flag.accepted !== true) {
+        throw new UiVerifyFailure('RID_MOCK_WAIVER_LOST=1 (M4-D): the boot probe did not RESTORE the driver waiver for the accepted store (waiver-get is unaccepted)');
+      }
     }
     return true;
   }
@@ -276,8 +252,12 @@ export class UiVerifyFailure extends Error {}
  * @param {() => number} [getTrayRebuilds] dev probe: tray-rebuild invocations
  * @param {() => number} [getFpsPolls] dev probe: fps-poll invocations (M2b
  *   review F4 — asserts the Monitoring poll stops on navigation away)
+ * @param {() => { minimize: number, maximizeToggle: number, close: number }} [getWindowOpCounts]
+ *   M4-D dev probe: the injected window-op counters (ui-verify mode counts
+ *   instead of performing the real BrowserWindow ops) — run 2 pins the
+ *   integrated title-bar buttons through this.
  */
-export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 })) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -291,8 +271,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders -----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -310,6 +290,104 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('boot', `shell rendered; brand '${brand.trim()}' + blue accent bar (no logo img); mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
 
+  // M4-D (user): the integrated title bar (frameless window).
+  // The title bar spans the top of the window: the left drag zone, the
+  // brand CENTERED (logo + 'Arc Power' with the blue gradient 'Power'),
+  // the three window controls in the right cluster. The buttons are wired
+  // to the injected window ops (getWindowOpCounts — ui-verify counts
+  // instead of performing real minimize/close mid-verify); the max
+  // button's icon follows the pushed window:maximized-changed state.
+  if (!(await waitFor(win, `!!document.querySelector('#titlebar .titlebar-logo')`))) {
+    fail('M4-D: the integrated title bar logo did not render');
+  }
+  const logo = await js(`document.querySelector('#titlebar .titlebar-logo')?.getAttribute('src') ?? ''`);
+  if (!logo.includes('icon.png')) fail(`M4-D: the title bar logo src is '${logo}' (expected the assets/icon.png brand mark)`);
+  const brandName = await js(`document.querySelector('#titlebar .titlebar-brand-name')?.textContent ?? ''`);
+  if (brandName.trim() !== 'Arc Power') fail(`M4-D: the title bar brand name is '${brandName}' (expected 'Arc Power')`);
+  // The brand must be CENTERED in the title bar (user: "move the Arc Power
+  // logo & writing to the middle of the top").
+  const brandCentered = await js(`(() => {
+    const tb = document.querySelector('#titlebar');
+    const brand = document.querySelector('#titlebar .titlebar-brand');
+    if (!tb || !brand) return false;
+    const tbRect = tb.getBoundingClientRect();
+    const bRect = brand.getBoundingClientRect();
+    const tbCx = (tbRect.left + tbRect.right) / 2;
+    const bCx = (bRect.left + bRect.right) / 2;
+    return Math.abs(tbCx - bCx) <= 8;
+  })()`);
+  if (brandCentered !== true) fail('M4-D: the title bar brand is not centered (expected the logo+name in the middle of the top)');
+  // The website gradient treatment: 'Power' is background-clip:text over the
+  // blue linear-gradient + glow — the name renders as the brand mark.
+  const powerGradient = await js(`(() => {
+    const el = document.querySelector('#titlebar .titlebar-brand-power');
+    if (!el) return 'no-el';
+    const cs = getComputedStyle(el);
+    return cs.backgroundImage.includes('linear-gradient')
+      && (cs.backgroundClip === 'text' || cs.webkitBackgroundClip === 'text')
+      && el.textContent === 'Power';
+  })()`);
+  if (powerGradient !== true) fail(`M4-D: the title bar 'Power' span is not gradient-clipped: ${powerGradient}`);
+  for (const op of ['minimize', 'maximize-toggle', 'close']) {
+    if (!(await js(`!!document.querySelector('#titlebar .window-btn[data-op="${op}"]')`))) {
+      fail(`M4-D: the title bar ${op} button is missing`);
+    }
+  }
+  // The drag regions must be draggable and the button cluster must NOT be
+  // (a drag region over the buttons would eat their clicks). The brand is
+  // draggable too (the user can drag the window by the logo/name).
+  const appRegion = await js(`(() => {
+    const drag = document.querySelector('#titlebar .titlebar-drag');
+    const brand = document.querySelector('#titlebar .titlebar-brand');
+    const cluster = document.querySelector('#titlebar .titlebar-cluster');
+    const of = (n) => {
+      if (!n) return '';
+      const cs = getComputedStyle(n);
+      const v = cs.getPropertyValue('-webkit-app-region').trim()
+        || cs.getPropertyValue('app-region').trim();
+      return v;
+    };
+    return JSON.stringify({ drag: of(drag), brand: of(brand), cluster: of(cluster) });
+  })()`);
+  const region = JSON.parse(appRegion);
+  if (region.drag !== 'drag' || region.brand !== 'drag' || region.cluster !== 'no-drag') {
+    fail(`M4-D: the title bar drag regions are wrong: ${appRegion} (expected drag on the left zone + brand, no-drag cluster)`);
+  }
+  // The max button icon follows the pushed window:maximized-changed state
+  // (single square = maximize, overlapping squares = restore).
+  const maxIconState = () => js(`(() => {
+    const b = document.querySelector('#titlebar .window-btn[data-op="maximize-toggle"]');
+    const restore = b?.querySelector('.icon-restore');
+    const maximize = b?.querySelector('.icon-maximize');
+    return JSON.stringify({ restoreHidden: restore?.hidden, maxHidden: maximize?.hidden });
+  })()`);
+  win.webContents.send('window:maximized-changed', { maximized: true });
+  await sleep(300);
+  let iconState = JSON.parse(await maxIconState());
+  if (iconState.restoreHidden !== false || iconState.maxHidden !== true) {
+    fail(`M4-D: the max button did not flip to the RESTORE icon on window:maximized-changed {maximized:true}: ${JSON.stringify(iconState)}`);
+  }
+  win.webContents.send('window:maximized-changed', { maximized: false });
+  await sleep(300);
+  iconState = JSON.parse(await maxIconState());
+  if (iconState.restoreHidden !== true || iconState.maxHidden !== false) {
+    fail(`M4-D: the max button did not flip back to the MAXIMIZE icon: ${JSON.stringify(iconState)}`);
+  }
+  // Clicking each button performs the injected window op (the counters
+  // tick — the real ops would minimize/close the verify window).
+  const tbOpsBefore = { ...getWindowOpCounts() };
+  await js(`document.querySelector('#titlebar .window-btn[data-op="minimize"]').click()`);
+  await js(`document.querySelector('#titlebar .window-btn[data-op="maximize-toggle"]').click()`);
+  await js(`document.querySelector('#titlebar .window-btn[data-op="close"]').click()`);
+  await sleep(300);
+  const tbOpsAfter = { ...getWindowOpCounts() };
+  if (tbOpsAfter.minimize !== tbOpsBefore.minimize + 1
+    || tbOpsAfter.maximizeToggle !== tbOpsBefore.maximizeToggle + 1
+    || tbOpsAfter.close !== tbOpsBefore.close + 1) {
+    fail(`M4-D: the title-bar buttons did not tick the injected window ops: ${JSON.stringify({ before: tbOpsBefore, after: tbOpsAfter })}`);
+  }
+  step('titlebar', `integrated title bar: logo (${logo}), brand '${brandName.trim()}' (blue gradient 'Power'), ${await js(`document.querySelectorAll('#titlebar .window-btn').length`)} window buttons; max icon follows window:maximized-changed; buttons ticked the window-op counters (${JSON.stringify(tbOpsAfter)})`);
+
   // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
   // EVERY session: cancelled in the unaccepted sessions (Cancel here;
   // Accept under RID_MOCK_WAIVER_BOOT_ACCEPT=1), or shown in its ACCEPTED
@@ -317,8 +395,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const bootAcceptedAtBoot = await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', process.env.RID_MOCK_WAIVER_PERSISTED === '1'
     ? (process.env.RID_MOCK_WAIVER_LOST === '1'
-      ? 'persisted store said accepted but the DRIVER lost the waiver: the boot probe flipped store+flag to unaccepted, prompt shown in the CLASSIC state (Cancelled)'
-      : 'persisted acceptance at boot: boot prompt shown in accepted state (OK clicked)')
+      ? 'persisted store said accepted but the DRIVER lost the waiver: the boot probe RESTORED the driver waiver — boot prompt SKIPPED (permanent acceptance), waiver-get accepted'
+      : 'persisted acceptance at boot: boot prompt SKIPPED entirely (permanent acceptance — the accepted-state reminder dialog is removed)')
     : `boot waiver prompt handled: ${bootAcceptedAtBoot ? 'Accepted (no dialog anywhere after)' : 'Cancelled (first apply re-shows the dialog)'}`);
 
   // --- waiver gate seed state (used by every waiver-flow section below) ----
@@ -337,8 +415,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
   // the driver line moved to the dashboard device card.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.11 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.11 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.12 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.12 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -386,6 +464,27 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('memory-clock readout missing or not 2187 MHz');
   }
   step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
+
+  // --- M4-D (user): the CPU & memory card (sysinfo:get fixture) ----------
+  // The card sits BEFORE the GPU card in the card-grid and renders the mock
+  // fixture: CPU name, cores/threads (physical + logical), max clock, RAM
+  // total + speed. Every field degrades to '—' when null (pinned by the
+  // pure/sysinfo.ts unit tests; the fixture here is all-populated).
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid > .card')).some((c) => (c.querySelector('.card-title')?.textContent ?? '') === 'CPU & memory')`, 5000))) {
+    fail('M4-D: the CPU & memory card did not render');
+  }
+  const gridCardTitles = await js(`Array.from(document.querySelectorAll('.card-grid > .card .card-title')).map((t) => t.textContent).join('|')`);
+  if (!gridCardTitles.startsWith('CPU & memory')) {
+    fail(`M4-D: the CPU & memory card is not FIRST in the card-grid (before the GPU card): '${gridCardTitles}'`);
+  }
+  const sysinfoRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
+  const sysRows = JSON.parse(sysinfoRows);
+  if (sysRows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`M4-D: CPU row is '${sysRows['CPU']}' (expected the sysinfo fixture name)`);
+  if (sysRows['CPU cores'] !== '20 physical · 28 logical') fail(`M4-D: CPU cores row is '${sysRows['CPU cores']}' (expected '20 physical · 28 logical')`);
+  if (sysRows['Max clock'] !== '5600 MHz') fail(`M4-D: Max clock row is '${sysRows['Max clock']}' (expected '5600 MHz')`);
+  if (sysRows['Memory'] !== '32.0 GB') fail(`M4-D: Memory row is '${sysRows['Memory']}' (expected '32.0 GB')`);
+  if (sysRows['Memory speed'] !== '6000 MHz') fail(`M4-D: Memory speed row is '${sysRows['Memory speed']}' (expected '6000 MHz')`);
+  step('m4d-cpu-card', `CPU & memory card first in the card-grid: '${sysRows['CPU']}', '${sysRows['CPU cores']}', '${sysRows['Max clock']}', '${sysRows['Memory']}', '${sysRows['Memory speed']}'`);
 
   // ONE general GPU HEALTH card (M3-A + M3-C-I + M4-A): FIVE rows, honest
   // per-row state, no Level Zero item, no IGCL detail line, NO clocks row
@@ -526,7 +625,34 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await js(`location.hash = '#/profiles'`);
     if (!(await waitFor(win, `!!document.querySelector('.boot-checkbox')`))) fail('boot checkbox did not render');
     if (!(await js(`document.querySelector('.boot-checkbox').disabled`))) fail('start-at-boot must be gated on the waiver (unaccepted)');
-    step('boot-gate', 'start-at-boot toggle disabled while the waiver is not accepted');
+    // M4-D (user): in an UNACCEPTED session the profile LOAD PROMPTS — the
+    // classic waiver gate. Create a throwaway profile, click Load, Cancel
+    // the dialog: the load is aborted, the device stays untouched (the
+    // accepted-store variants never see this — their loads are silent).
+    await js(`document.querySelector('.profile-create').click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.modal-input')`))) fail('M4-D: create-profile modal did not open (boot-gate step)');
+    await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'ui-verify gate'; })()`);
+    await js(`document.querySelector('.modal button.btn-primary').click()`);
+    const gateRowExpr = `Array.from(document.querySelectorAll('.profile-row')).find((r) => (r.querySelector('.profile-name')?.textContent ?? '') === 'ui-verify gate')`;
+    if (!(await waitFor(win, `!!(${gateRowExpr})`))) fail('M4-D: the gate-check profile did not appear');
+    await js(`(() => { const r = ${gateRowExpr}; if (!r) return false; Array.from(r.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Load')?.click(); return true; })()`);
+    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
+      fail('M4-D: an unaccepted profile load did not prompt the waiver dialog');
+    }
+    await clearToasts();
+    await js(`document.querySelector('.modal button.btn-ghost')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('M4-D: the profile-load waiver dialog did not close on Cancel');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-info')).some((t) => (t.textContent ?? '').includes('must be accepted'))`, 5000))) {
+      fail(`M4-D: the cancelled profile load did not toast the honest info: '${await js(`Array.from(document.querySelectorAll('.toast-info')).map((t) => t.textContent).join(' | ')`)}'`);
+    }
+    const gateState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(gateState.powerLimitW - 210) > 1e-6) fail(`M4-D: the cancelled profile load changed the device: ${gateState.powerLimitW}`);
+    await js(`(() => { const r = ${gateRowExpr}; if (!r) return false; Array.from(r.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Delete')?.click(); return true; })()`);
+    if (!(await waitFor(win, `!!document.querySelector('.modal button.btn-danger')`))) fail('M4-D: the gate-profile delete confirm did not open');
+    await js(`document.querySelector('.modal button.btn-danger').click()`);
+    if (!(await waitFor(win, `!(${gateRowExpr})`))) fail('M4-D: the gate profile was not deleted');
+    await clearToasts();
+    step('boot-gate', 'start-at-boot toggle disabled while the waiver is not accepted; M4-D: an unaccepted profile Load prompts the waiver dialog (Cancel aborts, device untouched)');
     await js(`location.hash = '#/overclocking'`);
     await sleep(250);
   }
@@ -566,38 +692,35 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const waiverAfter = await js(`window.arcPower.waiverGet(0)`);
     if (waiverAfter.accepted !== true) fail('M4-B: the waiver acceptance was lost across the apply (persisted-accepted session)');
     step('waiver-persisted', `waiver accepted at boot (persisted or boot-accept): apply without dialog -> read-back ${state.powerLimitW} W, waiverGet still accepted`);
-    // M4-B (user): the DRIVER can still lose the waiver mid-session (or the
-    // persisted flag can be stale) — the first apply then fails with
-    // waiver-not-set and must re-prompt AUTOMATICALLY + retry ONCE (never a
-    // confusing dead-end or a manual second click). Inject a one-shot
-    // waiver-not-set on the power limit: the apply fails, the dialog appears
-    // by itself, Accept re-applies the same value, the read-back lands, and
-    // the persisted store was flipped (persistWaiverLost) then re-accepted.
+    // M4-D (user, PERMANENT acceptance): an ACCEPTED store + a driver that
+    // loses the waiver mid-session — the apply is SILENTLY re-set + retried
+    // ONCE in main (never a dialog, never a dead-end, never a persisted
+    // false). Inject a one-shot waiver-not-set on the power limit: the apply
+    // lands WITHOUT any dialog, the read-back sticks, and waiver-get stays
+    // accepted (the consent stands).
     backend.injectFail('powerLimitW', 'waiver-not-set', true);
     await clearToasts();
     await setSlider(230);
     await clickApply();
-    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
-      fail('M4-B: the auto re-prompt did not show the waiver dialog after a waiver-not-set apply');
+    await sleep(400);
+    if (await js(`!!document.querySelector('.modal')`)) {
+      fail('M4-D: the waiver dialog appeared for an ACCEPTED store (the silent re-set + retry must handle waiver-not-set)');
     }
-    if (await js(`!!document.querySelector('.modal .modal-status')`)) {
-      fail('M4-B: the auto re-prompt shows the accepted-state reminder (the flag must read unaccepted after the driver refusal)');
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) {
+      fail('M4-D: the silent re-set retry did not land (success toast missing)');
     }
-    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
-    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('M4-B: the auto re-prompt did not close on Accept');
-    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: the automatic retry after Accept did not land (success toast missing)');
     const retried = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(retried.powerLimitW - 230) > 1e-6) fail(`M4-B: the retry did not apply 230 W: ${retried.powerLimitW}`);
+    if (Math.abs(retried.powerLimitW - 230) > 1e-6) fail(`M4-D: the silent retry did not apply 230 W: ${retried.powerLimitW}`);
     const waiverAfterRetry = await js(`window.arcPower.waiverGet(0)`);
-    if (waiverAfterRetry.accepted !== true) fail('M4-B: the re-acceptance did not stick after the retry');
-    step('m4b-waiver-autoretry', `driver lost the waiver mid-session: first apply auto re-prompted + retried (230 W read back), waiver re-accepted`);
+    if (waiverAfterRetry.accepted !== true) fail('M4-D: the waiver acceptance was lost across the silent re-set');
+    step('m4d-waiver-silent-retry', `driver lost the waiver mid-session (accepted store): the apply silently re-set + retried ONCE (230 W read back, no dialog), waiverGet still accepted`);
     // Restore the flow's expected baseline (the driver readout + noop-toast
     // sections below expect 220 W applied and EXACTLY ONE success toast —
     // the restore apply's toast is the one they count).
     await clearToasts();
     await setSlider(220);
     await clickApply();
-    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: the 220 W baseline restore after the retry did not land');
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-D: the 220 W baseline restore after the silent retry did not land');
   } else {
     // M3-C review F4: with the isolated mock data dir the unaccepted branch
     // is reachable on a FRESH store (pre-fix, the shared real settings.json
@@ -625,6 +748,50 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const state = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
     step('apply', `accept -> apply -> toast -> read-back refreshed to ${state.powerLimitW} W`);
+
+    // --- M4-D review F5: the OC-side renderer auto re-prompt pin ---------
+    // (the profiles twin is pinned below via m4d-profiles-retry — this pins
+    // the OC page's copy of the SAME never-accepted-session defense, which
+    // ui-verify no longer exercised after the accepted-store silent retry
+    // replaced the old dialog-based re-prompt pin). The gate Accept above
+    // persisted the acceptance; simulate a NEVER-ACCEPTED session at apply
+    // time — the STORE loses the persisted acceptance (settings.json) while
+    // the renderer caps + driver flag still say accepted (no gate dialog):
+    // the apply answers waiver-not-set, main's silent re-set is correctly
+    // NOT available (unaccepted store), and the renderer must AUTO
+    // RE-PROMPT once with the fresh (driver-truth, unaccepted) caps + retry
+    // on accept.
+    await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: false });
+    backend.injectFail('powerLimitW', 'waiver-not-set', true);
+    await setSlider(230);
+    await clearToasts();
+    await clickApply();
+    // No gate dialog was clicked — the dialog must appear BY ITSELF (the
+    // renderer-side re-prompt after the surfaced waiver-not-set).
+    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
+      fail('M4-D: the OC apply did not auto re-prompt the waiver dialog after a waiver-not-set failure (never-accepted store, renderer-side retry)');
+    }
+    // The failed first attempt is surfaced honestly (per-control error
+    // toast) before the re-prompt.
+    if (!(await js(`!!document.querySelector('.toast-error')`))) {
+      fail('M4-D: the failed first OC attempt did not surface its honest per-control error toast before the re-prompt');
+    }
+    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) {
+      fail(`M4-D: the OC retry did not land (no success toast; toasts=${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => t.className + ':' + t.textContent).join(' | ')`)}; driver=${JSON.stringify(await js(`window.arcPower.getCurrentSettings(0)`))}; storeWaiver=${(await store.loadSettings()).waiverAccepted}; modal=${await js(`!!document.querySelector('.modal')`)})`);
+    }
+    if (await js(`!!document.querySelector('.modal')`)) fail('M4-D: a second dialog appeared after the OC retry accept (exactly one re-prompt)');
+    const ocRetried = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(ocRetried.powerLimitW - 230) > 1e-6) {
+      fail(`M4-D: the OC retry did not apply 230 W: ${ocRetried.powerLimitW}`);
+    }
+    // The counter reset: a clean apply (no failure injected) shows no dialog.
+    await clearToasts();
+    await setSlider(220);
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-D: the OC post-retry baseline apply did not land');
+    if (await js(`!!document.querySelector('.modal')`)) fail('M4-D: the OC apply re-prompted after a successful retry (the counter must reset)');
+    step('m4d-oc-retry', `M4-D: OC apply hit waiver-not-set (never-accepted store) -> ONE auto re-prompt by itself -> accept -> the retry landed (${ocRetried.powerLimitW} W read back, honest per-control error toast on the first attempt); a clean apply after shows no dialog (counter reset)`);
   }
 
   // M4-A: the dashboard health row now reflects the acceptance — the
@@ -1559,17 +1726,55 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   backend.injectFail('fanCurve', null);
   step('fan-fail-toast', `fan apply failure mapped: '${errMsg}' (hard) + refusal composed: '${refuseMsg}'`);
 
-  // --- 8. startup (Run-key) channels (M2b) ----------------------------------
+  // --- 8. startup channels (M2b + M4-D plain-app task) ----------------------
   const startState = await js(`window.arcPower.startupGet()`);
-  if (startState.enabled !== false) fail(`startupGet initial state: ${JSON.stringify(startState)}`);
+  if (startState.startupRunKey?.enabled !== false) fail(`startupGet initial state: ${JSON.stringify(startState)}`);
+  if (startState.applyOnBoot?.enabled !== false) fail(`startupGet initial app-task state: ${JSON.stringify(startState)}`);
   const setOn = await js(`window.arcPower.startupSet(true, 'profile-1')`);
-  if (setOn.enabled !== true || setOn.profileId !== 'profile-1') fail(`startupSet(true): ${JSON.stringify(setOn)}`);
-  if (!/--apply-profile profile-1/.test(setOn.value ?? '')) fail(`startupSet value: ${setOn.value}`);
+  if (setOn.startupRunKey?.enabled !== true || setOn.startupRunKey?.profileId !== 'profile-1') fail(`startupSet(true): ${JSON.stringify(setOn)}`);
+  if (!/--apply-profile profile-1/.test(setOn.startupRunKey?.value ?? '')) fail(`startupSet value: ${setOn.startupRunKey?.value}`);
+  // M4-D: enabling the apply-profile registration must disable the app task
+  // (coexistence — the two onlogon tasks cannot both be enabled).
+  if (setOn.applyOnBoot?.enabled !== false) fail(`startupSet(true) left the app task enabled: ${JSON.stringify(setOn)}`);
   const setOff = await js(`window.arcPower.startupSet(false, null)`);
-  if (setOff.enabled !== false || setOff.profileId !== null) fail(`startupSet(false): ${JSON.stringify(setOff)}`);
+  if (setOff.startupRunKey?.enabled !== false || setOff.startupRunKey?.profileId !== null) fail(`startupSet(false): ${JSON.stringify(setOff)}`);
   const badRejected = await js(`(async () => { try { await window.arcPower.startupSet(true, null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
   if (badRejected !== 'rejected') fail(`startupSet(true, null) was not rejected (${badRejected})`);
-  step('startup-ipc', `startup channels: get -> set(profile-1) -> set(off) -> invalid payload rejected`);
+  // M4-D: the plain-app task channel round trip + coexistence the other way.
+  const appOn = await js(`window.arcPower.startupAppSet(true)`);
+  if (appOn.applyOnBoot?.enabled !== true || appOn.startWithWindows !== true) fail(`startupAppSet(true): ${JSON.stringify(appOn)}`);
+  if (appOn.startupRunKey?.enabled !== false) fail(`startupAppSet(true) left the apply-profile registration enabled: ${JSON.stringify(appOn)}`);
+  const appOff = await js(`window.arcPower.startupAppSet(false)`);
+  if (appOff.applyOnBoot?.enabled !== false || appOff.startWithWindows !== false) fail(`startupAppSet(false): ${JSON.stringify(appOff)}`);
+  const badAppRejected = await js(`(async () => { try { await window.arcPower.startupAppSet('yes'); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
+  if (badAppRejected !== 'rejected') fail(`startupAppSet('yes') was not rejected (${badAppRejected})`);
+  step('startup-ipc', `startup channels: get -> set(profile-1) -> set(off) -> app-task set(true/false, coexistence) -> invalid payloads rejected`);
+
+  // --- 8b. M4-D: sysinfo + window-op channels through the REAL preload ------
+  // The mock adapter serves the fixed fixture (never PowerShell); the
+  // injected window ops COUNT in ui-verify mode (performing minimize/close
+  // mid-verify would disrupt the flow) — run 2 pins the title-bar buttons
+  // via getWindowOpCounts.
+  const sysinfo = await js(`window.arcPower.sysinfo()`);
+  if (sysinfo?.cpu?.name !== 'Intel(R) Core(TM) i7-14700K' || sysinfo?.cpu?.cores !== 20) {
+    fail(`sysinfo IPC payload wrong: ${JSON.stringify(sysinfo)}`);
+  }
+  if (sysinfo?.videoControllers?.[0]?.name !== 'Intel(R) Arc(TM) A770 Graphics') {
+    fail(`sysinfo videoControllers wrong: ${JSON.stringify(sysinfo?.videoControllers)}`);
+  }
+  // Snapshot BEFORE the calls (a live reference would read the post-call
+  // values for both sides — the counters are a single mutable object).
+  const opsBefore = { ...getWindowOpCounts() };
+  await js(`window.arcPower.windowMinimize()`);
+  await js(`window.arcPower.windowMaximizeToggle()`);
+  await js(`window.arcPower.windowClose()`);
+  const opsAfter = { ...getWindowOpCounts() };
+  if (opsAfter.minimize !== opsBefore.minimize + 1
+    || opsAfter.maximizeToggle !== opsBefore.maximizeToggle + 1
+    || opsAfter.close !== opsBefore.close + 1) {
+    fail(`window-op counters did not tick: ${JSON.stringify({ before: opsBefore, after: opsAfter })}`);
+  }
+  step('m4d-sysinfo-window-ops', `sysinfo:get fixture payload verified (CPU ${sysinfo.cpu.name}, ${sysinfo.cpu.cores} cores); window-minimize/maximize-toggle/close ticked the injected counters (${JSON.stringify(opsAfter)})`);
 
   // --- 9. M2b-B Monitoring: readout grid + collapsible Canvas segments ------
   await js(`location.hash = '#/monitoring'`);
@@ -1743,7 +1948,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       await js(`window.arcPower.profilesDelete('${p.id}')`).catch(() => {});
     }
     const st = await js(`window.arcPower.startupGet()`);
-    if (st.enabled) await js(`window.arcPower.startupSet(false, null)`).catch(() => {});
+    if (st.startupRunKey?.enabled) await js(`window.arcPower.startupSet(false, null)`).catch(() => {});
   };
   await cleanupProfiles(); // stale leftovers from a crashed previous run
 
@@ -1800,6 +2005,67 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('profiles-load', 'load applied the profile: 2 toasts, active highlight, activeProfileId persisted');
   await clearToasts();
 
+  // --- M4-D (user): the profile LOAD auto re-prompt + single retry -------
+  // A NEVER-accepted session whose load hits waiver-not-set (the driver
+  // lost the waiver, no consent is persisted): MAIN cannot silently re-set
+  // (the store is unaccepted), so the failure surfaces — and the renderer
+  // re-prompts ONCE (the fresh caps show the driver truth) + retries on
+  // accept. The retry lands with REAL changes and exactly one dialog.
+  // 1. Dirty the driver state through the OC UI (the session is accepted —
+  //    no dialog) so the retry is a real change (the profile holds 210 W /
+  //    0 MHz).
+  await js(`location.hash = '#/overclocking'`);
+  await sleep(250);
+  await setSliderFor('powerLimitW', 220);
+  await setSliderFor('gpuFreqOffsetMhz', 50);
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-D: the retry-setup apply failed');
+  await clearToasts();
+  await js(`location.hash = '#/profiles'`);
+  await sleep(250);
+  // 2. The STORE loses the persisted acceptance (a never-accepted session)
+  //    while the driver flag + renderer caps still say accepted — the load
+  //    gate reads the caps (no gate dialog), the silent re-set in main
+  //    reads the store (no auto re-set — the failure surfaces).
+  await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: false });
+  // 3. One-shot driver waiver loss on the profile apply.
+  backend.injectFail('powerLimitW', 'waiver-not-set', true);
+  await clearToasts();
+  await clickRowButton('ui-verify profile', 'Load');
+  // 4. No gate dialog; the apply answers waiver-not-set and the renderer
+  //    AUTO RE-PROMPTS once with the fresh (driver-truth) caps.
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
+    fail('M4-D: the profile load did not auto re-prompt the waiver dialog after a waiver-not-set failure (never-accepted session)');
+  }
+  await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+  // 5. Accept -> the retry runs ONCE -> the failed control (power limit)
+  //    lands. NOTE: the first attempt partially applied the OTHER controls
+  //    (per-control apply semantics — the injected failure only hit
+  //    powerLimitW, so the freq 50->0 landed there), so the retry's only
+  //    REAL change is the power limit: exactly ONE success toast + the
+  //    'Profile loaded' info + no error toast + no second dialog.
+  if (!(await waitFor(win, `document.querySelectorAll('.toast-success').length === 1`, 5000))) {
+    fail(`M4-D: the profile-load retry did not land the power-limit change (got ${await js(`document.querySelectorAll('.toast-success').length`)} success toasts; toasts=${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => t.className + ':' + t.textContent).join(' | ')`)}; driver=${JSON.stringify(await js(`window.arcPower.getCurrentSettings(0)`))}; storeWaiver=${(await store.loadSettings()).waiverAccepted}; modal=${await js(`!!document.querySelector('.modal')`)})`);
+  }
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-info')).some((t) => (t.textContent ?? '').includes('Profile loaded'))`, 5000))) {
+    fail('M4-D: the retried profile load did not mark the profile active (no "Profile loaded" info)');
+  }
+  if (await js(`!!document.querySelector('.modal')`)) fail('M4-D: a second dialog appeared after the retry accept (exactly one re-prompt)');
+  if (await js(`!!document.querySelector('.toast-error')`)) fail('M4-D: the retried profile load surfaced an error toast (the failed first attempt must be swallowed by the retry)');
+  const retriedLoad = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(retriedLoad.powerLimitW - 210) > 1e-6 || Math.abs(retriedLoad.gpuFreqOffsetMhz) > 1e-6) {
+    fail(`M4-D: the profile-load retry did not apply the profile: ${JSON.stringify({ pl: retriedLoad.powerLimitW, freq: retriedLoad.gpuFreqOffsetMhz })}`);
+  }
+  if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) fail('M4-D: the re-prompt accept did not persist the waiver');
+  // 6. The counter reset: a second load (accepted session now) shows NO
+  //    dialog (the gate is skipped and no failure is injected).
+  await clearToasts();
+  await clickRowButton('ui-verify profile', 'Load');
+  await sleep(600);
+  if (await js(`!!document.querySelector('.modal')`)) fail('M4-D: the profile load re-prompted after a successful retry (the counter must reset)');
+  step('m4d-profiles-retry', `M4-D: profile load hit waiver-not-set (never-accepted store) -> ONE auto re-prompt -> accept -> the retry landed (${retriedLoad.powerLimitW} W / ${retriedLoad.gpuFreqOffsetMhz} MHz read back, 'Profile loaded' info, no error toast); a second load shows no dialog (counter reset)`);
+  await clearToasts();
+
   // No-op load: create a copy of the CURRENT state, load it -> silent.
   await js(`document.querySelector('.profile-create').click()`);
   if (!(await waitFor(win, `!!document.querySelector('.modal-input')`))) fail('create modal did not reopen');
@@ -1815,14 +2081,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('profiles-noop', `no-op profile load: no success toast, info 'matches the current GPU state'`);
   await clearToasts();
 
-  // ocOnBoot round trip (active profile = the copy).
+  // ocOnBoot round trip (active profile = the copy). M4-D: the toggle state
+  // lives under startupRunKey (the apply-profile registration).
   await js(`document.querySelector('.boot-checkbox').click()`);
-  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.enabled === true)`, 5000))) fail('start-at-boot ON did not set the Run key (mock)');
-  const bootProfile = await js(`window.arcPower.startupGet().then((s) => s.profileId)`);
+  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.startupRunKey?.enabled === true)`, 5000))) fail('start-at-boot ON did not set the Run key (mock)');
+  const bootProfile = await js(`window.arcPower.startupGet().then((s) => s.startupRunKey?.profileId)`);
   const copyId = await js(`window.arcPower.profilesList().then((e) => (e.profiles.find((p) => p.name === 'ui-verify copy') ?? {}).id)`);
   if (bootProfile !== copyId) fail(`Run key profile mismatch: ${bootProfile} != ${copyId}`);
   await js(`document.querySelector('.boot-checkbox').click()`);
-  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.enabled === false)`, 5000))) fail('start-at-boot OFF did not clear the Run key');
+  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.startupRunKey?.enabled === false)`, 5000))) fail('start-at-boot OFF did not clear the Run key');
   step('ocOnBoot', `start-at-boot toggle round trip via the Run key (profile ${bootProfile})`);
   await clearToasts();
 
@@ -1926,6 +2193,119 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (catalog.entries.length !== 4 || catalog.states.length !== 4) fail(`registry-catalog IPC returned ${catalog.entries.length} entries / ${catalog.states.length} states`);
   step('tweaks', `Tweaks: ${tweakIds} rendered; mpo=Off, hags=Active (HwSchMode=0x2), game-dvr=Default, fullscreen=Active; Enable/Disable/Revert per applyable card (mock round trip: mpo -> Active -> revert -> Default), fullscreen read-only`);
 
+  // --- M4-D (user): the Settings tab --------------------------------------
+  // New nav label + page: Start with Windows (the plain-app task via the
+  // MOCK startup adapter — never spawns, never elevates), Start minimized
+  // (persisted), the app version row.
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.sidebar-link')).some((a) => (a.textContent ?? '').trim() === 'Settings')`))) {
+    fail('M4-D: the sidebar has no Settings nav link');
+  }
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  // Version row (app:version via the header line's display format).
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.12 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.12 Alpha')`);
+  }
+  const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
+  const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
+  if (!(await js(`!!${startWithBox} && !!${startMinBox}`))) fail('M4-D: the Settings toggles did not render');
+  if (await js(`${startWithBox}.checked`)) fail('M4-D: Start with Windows is checked before anything enabled it');
+  // Start minimized round trip: the checkbox persists settings.json
+  // (startMinimized) through the profiles-settings-save channel.
+  await js(`${startMinBox}.click()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === true)`, 5000))) {
+    fail('M4-D: Start minimized did not persist startMinimized=true');
+  }
+  if (!(await js(`${startMinBox}.checked`))) fail('M4-D: the Start minimized checkbox did not reflect its on state');
+  await js(`${startMinBox}.click()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === false)`, 5000))) {
+    fail('M4-D: Start minimized did not persist startMinimized=false');
+  }
+  step('m4d-settings-startmin', 'Settings: Start minimized round trip persisted startMinimized true/false; version row OK');
+  // Start with Windows round trip + the honest coexistence state. First
+  // enable the apply-profile registration (the Profiles page's start-at-boot
+  // toggle — mock): the Settings card must SHOW both states honestly.
+  await js(`window.arcPower.startupSet(true, 'profile-1')`);
+  await js(`location.hash = '#/dashboard'`);
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Apply active profile at boot')`))) {
+    fail('M4-D: the Settings card does not show the apply-profile registration honestly while it is enabled');
+  }
+  // Enabling Start with Windows creates the app task AND disables the
+  // apply-profile registration (coexistence — the two onlogon tasks cannot
+  // both be enabled), and persists startWithWindows.
+  await clearToasts();
+  await js(`${startWithBox}.click()`);
+  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot?.enabled === true && s.startupRunKey?.enabled === false)`, 5000))) {
+    fail('M4-D: enabling Start with Windows did not create the app task + disable the apply-profile task (coexistence)');
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startWithWindows === true)`, 5000))) {
+    fail('M4-D: Start with Windows did not persist startWithWindows=true');
+  }
+  if (!(await js(`${startWithBox}.checked`))) fail('M4-D: the Start with Windows checkbox did not reflect its on state');
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-D: the Start with Windows enable did not toast success');
+  // Toggle off: the app task is deleted (mock) + startWithWindows persists
+  // false.
+  await clearToasts();
+  await js(`${startWithBox}.click()`);
+  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot?.enabled === false)`, 5000))) {
+    fail('M4-D: disabling Start with Windows did not delete the app task');
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startWithWindows === false)`, 5000))) {
+    fail('M4-D: Start with Windows did not persist startWithWindows=false');
+  }
+  step('m4d-settings-startwith', 'Settings: Start with Windows round trip (mock app task + coexistence with the apply-profile task + persisted startWithWindows true/false)');
+  await clearToasts();
+
+  // --- M4-D review F4: the PARTIAL-FAILURE honesty path -------------------
+  // The task write lands but the settings save throws: the catch path must
+  // re-query the task truth so the card shows the ENABLED task + the
+  // task-vs-settings mismatch hint (never a blindly reverted checkbox that
+  // lies about the task). The settings-save failure is injected by wrapping
+  // the SESSION store's saveSettings — the very store the IPC handler
+  // writes through (the pre-fix catch reverted the checkbox and kept stale
+  // bootState, so the card read 'Not active' with no hint).
+  await store.saveSettings({ ...(await store.loadSettings()), startWithWindows: false });
+  const realSaveSettings = store.saveSettings.bind(store);
+  let failSettingsSave = false;
+  store.saveSettings = async (settings) => {
+    if (failSettingsSave && settings.startWithWindows !== undefined) {
+      throw new Error('injected settings-save failure (ui-verify)');
+    }
+    return realSaveSettings(settings);
+  };
+  // Re-render the Settings card so it mounts on the disabled baseline.
+  await js(`location.hash = '#/dashboard'`);
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  failSettingsSave = true;
+  await clearToasts();
+  await js(`${startWithBox}.click()`);
+  // The task write lands (the app task + the coexistence delete).
+  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot?.enabled === true)`, 5000))) {
+    fail('M4-D: the partial-failure task write did not land (setup)');
+  }
+  if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 5000))) {
+    fail('M4-D: the partial-failure settings save did not surface the honest error toast');
+  }
+  // The card re-rendered from the TASK truth: checkbox on, 'Active' state
+  // line, and the mismatch hint explaining the disagreement.
+  if (!(await waitFor(win, `${startWithBox}.checked === true`, 5000))) {
+    fail('M4-D: the partial failure left the checkbox contradicting the task truth (it must reflect the ENABLED task)');
+  }
+  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('The task state and the saved settings disagree')`, 5000))) {
+    fail('M4-D: the partial failure did not render the task-vs-settings mismatch hint');
+  }
+  const partialState = await js(`Array.from(document.querySelectorAll('.settings-state')).map((e) => (e.textContent ?? '').trim()).join(' | ')`);
+  if (!partialState.includes('Active: ArcPowerAppOnBoot')) {
+    fail(`M4-D: the partial-failure state line does not read the task truth: '${partialState}'`);
+  }
+  step('m4d-settings-partial', `M4-D: partial failure (task written, settings save failed) -> the card re-read the task truth: checkbox on, 'Active: ArcPowerAppOnBoot', mismatch hint rendered, honest error toast kept`);
+  failSettingsSave = false;
+  store.saveSettings = realSaveSettings;
+  await clearToasts();
+
   console.log('\nUI VERIFY OK\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }
@@ -1959,8 +2339,8 @@ export async function runFeaturesetVerify(win, fsId) {
   const noOc = fsId === 'pro-b50' || fsId === 'arc-igpu';
 
   // --- boot: shell + dropdown -----------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
   // the IGS indicator is gone everywhere.
@@ -1980,7 +2360,7 @@ export async function runFeaturesetVerify(win, fsId) {
   // b580 apply-dialog section below must see a clean page, not the boot
   // modal).
   const bootAccepted = await bootWaiverStep(win, js, waitFor);
-  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: shown in accepted state (OK clicked)' : 'cancelled'})`);
+  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: boot prompt SKIPPED entirely (M4-D permanent acceptance)' : 'cancelled'})`);
 
   // --- boot: wait for caps + state in the store -----------------------------
   // The renderer boot (health -> devices -> probes -> caps -> telemetry)
@@ -2059,11 +2439,23 @@ export async function runFeaturesetVerify(win, fsId) {
       const presetCount = await js(`document.querySelectorAll('.oc-card .oc-presets').length`);
       if (presetCount !== 0) fail(`M3-C-G: preset chips still render (${presetCount})`);
       const adv = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
-      if (!adv.includes('Unsupported on this GPU')) fail(`b580 advanced: an expert control is not marked unsupported: '${adv}'`);
-      // M4-B: vfCurve stays read-only (no apply path) — the honest M5 text;
-      // gpuLock is unsupported on b580 so it reads 'Unsupported on this GPU'
-      // and its editor is gated OFF.
-      if (!adv.includes('Supported — editing arrives in M5')) fail(`b580 advanced: vfCurve not marked supported: '${adv}'`);
+      // M4-B: vfCurve stays read-only (no apply path) — the honest M5 text.
+      // M4-D (user): the Advanced section renders ONLY supported rows — the
+      // b580 surface shows the supported vfCurve + VRAM-offset rows with
+      // their M5 notes and NO 'Unsupported on this GPU' rows at all (gpuLock
+      // + VRAM voltage are unsupported -> their rows are REMOVED entirely,
+      // the editor gated off).
+      // M4-D review F1 regression: the supported filter keys on the
+      // IGCL-keyed caps.controls (row.control — vramFreqOffset), NOT the
+      // canonical settings key (vramFreqOffsetGts): BOTH supported M5 rows
+      // MUST render (pre-fix the VRAM row was silently dropped and the old
+      // note-only check passed on vfCurve alone).
+      const expertRows = await js(`document.querySelectorAll('.expert-row').length`);
+      if (expertRows !== 2) fail(`M4-D: b580 advanced must render exactly the 2 supported expert rows (vfCurve + VRAM offset), got ${expertRows}: '${adv}'`);
+      if (!adv.includes('Custom VF curve')) fail(`M4-D: b580 advanced is missing the vfCurve row: '${adv}'`);
+      if (!adv.includes('VRAM frequency offset')) fail(`M4-D: b580 advanced is missing the supported VRAM frequency offset row: '${adv}'`);
+      if (!adv.includes('Supported — editing arrives in M5')) fail(`b580 advanced: a supported expert control is missing its M5 note: '${adv}'`);
+      if (adv.includes('Unsupported on this GPU')) fail('M4-D: b580 advanced still renders "Unsupported on this GPU" rows (unsupported controls are removed entirely)');
       if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
         fail('M4-B: the gpuLock editor is rendered on b580 (gated off — gpuLock unsupported)');
       }
@@ -2252,14 +2644,14 @@ export async function runTweaksApplyVerify(win) {
   const failKnob = process.env.RID_MOCK_REGAPPLY_FAIL; // '<entryId>:<action>'
   const cancelKnob = process.env.RID_MOCK_REGAPPLY_CANCEL === '1';
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected)');
   }
   // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
   // sit over the page while the tweaks assertions run).
   await bootWaiverStep(win, js, waitFor);
-  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: shown in accepted state (OK clicked)' : 'cancelled'})`);
+  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: boot prompt SKIPPED entirely (M4-D permanent acceptance)' : 'cancelled'})`);
   await js(`location.hash = '#/tweaks'`);
   if (!(await waitFor(win, `document.querySelectorAll('.tweak-card').length === 4`))) {
     fail(`tweaks page did not render 4 catalog cards (got ${await js(`document.querySelectorAll('.tweak-card').length`)})`);
@@ -2402,11 +2794,12 @@ export async function runTweaksApplyVerify(win) {
 //      ABORTED with the honest info toast and the device stays untouched;
 //   3. second fan apply: dialog -> Accept -> the apply LANDS (read-back
 //      reflects the edited curve) and the dashboard waiver row flips green;
-//   4. G2 self-heal (root cause): with the driver-side waiver LOST
-//      (injected waiver-not-set), a failed apply must re-fetch the caps so
-//      the store flag flips back to unaccepted (dashboard row red again) —
-//      the NEXT apply re-shows the dialog instead of failing silently
-//      without a prompt.
+//   4. M4-D (PERMANENT acceptance): with the store ACCEPTED (the Accept
+//      above), the driver losing the waiver mid-session (injected one-shot
+//      waiver-not-set) is handled SILENTLY in main — the apply re-sets the
+//      driver waiver + retries ONCE (no dialog, no error), the read-back
+//      lands, and the dashboard waiver row stays green (the consent stands;
+//      the store is never flipped to false).
 // The packaged always-elevated path applies in-process (waiver-accept +
 // apply run inside the EXE — pinned by elevated-apply.test.js); this
 // variant never elevates (mock adapters).
@@ -2428,8 +2821,8 @@ export async function runFanGateVerify(win, backend) {
   const js = (code) => win.webContents.executeJavaScript(code);
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected)');
   }
   // M4-A/M4-B: the shared boot-step — the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then
@@ -2523,44 +2916,35 @@ export async function runFanGateVerify(win, backend) {
   step('fan-gate-accept', `Accept -> apply landed (${landed.fanCurve?.length} points read back), dashboard waiver row flipped to Accepted (green, not clickable)`);
   await goFan();
 
-  // --- 4. G2 self-heal: the driver loses the waiver mid-session ------------
+  // --- 4. M4-D: the driver loses the waiver mid-session (accepted store) ---
   // The injected ONE-SHOT waiver-not-set mirrors the real driver losing the
-  // waiver (the mock clears its in-memory flag exactly like IgclBackend —
-  // G2). M4-B (user): the FIRST apply must re-prompt the waiver dialog
-  // AUTOMATICALLY (no manual second click) and retry ONCE after Accept —
-  // never a confusing dead-end error.
+  // waiver. M4-D (user, PERMANENT acceptance): with the persisted
+  // acceptance TRUE (the fan Accept above), a waiver-not-set apply is
+  // SILENTLY re-set + retried ONCE in main — never a dialog, never a
+  // dead-end, never a persisted false. The dashboard row stays green (the
+  // consent stands — the M4-B "flip to unaccepted + re-prompt" behavior is
+  // gone for accepted stores).
   backend.injectFail('fanCurve', 'waiver-not-set', true);
   await clearToasts();
   await clickApply();
-  // The waiver dialog must appear BY ITSELF after the failed apply — this is
-  // the user's "reapplying then shows the waiver popup" flow made automatic.
-  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
-    fail('M4-B: the waiver-not-set apply did NOT auto re-prompt the waiver dialog (the user bug: the first apply dead-ends with an error)');
+  await sleep(400);
+  if (await js(`!!document.querySelector('.modal')`)) {
+    fail('M4-D: the waiver dialog appeared for an accepted store (the silent re-set + retry must handle waiver-not-set)');
   }
-  if (await js(`!!document.querySelector('.modal .modal-status')`)) {
-    fail('M4-B: the auto re-prompt shows the accepted-state reminder (the flag must read unaccepted after the driver refusal)');
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) {
+    fail('M4-D: the silent retry after waiver-not-set did not land (success toast missing)');
   }
-  // The failed apply must re-fetch the caps: the store flag flips back to
-  // unaccepted and the dashboard row goes red IN PLACE (re-render on the
-  // caps re-set) while the dialog is still up.
-  await goDashboard('fan-gate-g2-dashboard');
-  await expectRow('Not Accepted', true);
-  if (!/status-error/.test(await rowDotOk())) fail('M4-A G2: the waiver row dot is not red after the waiver-not-set failure');
-  if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== false) fail('G2: the mock waiver flag did not clear on the waiver-not-set apply');
-  step('fan-gate-g2', `G2/M4-B: waiver-not-set apply auto re-prompted (dialog up, no second click); store flag flipped back to unaccepted, row red + clickable`);
-  await goFan();
-  await clearToasts();
-  await js(`document.querySelector('.modal button.btn-danger')?.click()`);
-  if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('waiver dialog did not close on the auto re-prompt Accept');
-  // The retry re-applies the SAME curve automatically (no manual click).
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing after the auto re-prompt accept');
   const healed = await js(`window.arcPower.getCurrentSettings(0)`);
   if (healed.fanCurve?.length !== pointsBefore - 1 || healed.fanMode !== 'curve') {
-    fail(`M4-B: the automatic retry did not land: read-back=${JSON.stringify({ mode: healed.fanMode, points: healed.fanCurve?.length })}`);
+    fail(`M4-D: the silent retry did not land: read-back=${JSON.stringify({ mode: healed.fanMode, points: healed.fanCurve?.length })}`);
   }
   await goDashboard('fan-gate-heal-dashboard');
   await expectRow('Accepted', false);
-  step('fan-gate-heal', 'auto re-prompt accept -> the retry landed the same curve, dashboard waiver row green again (self-healed)');
+  if (!/status-ok/.test(await rowDotOk())) fail('M4-A: the waiver row dot is not green after the silent re-set');
+  if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) {
+    fail('M4-D: the waiver acceptance was lost across the silent re-set (consent stands)');
+  }
+  step('fan-gate-g2', `M4-D: waiver-not-set apply with an accepted store -> silent re-set + retry landed (${healed.fanCurve?.length} points), NO dialog, dashboard row stays Accepted (the consent stands)`);
 
   console.log('\nUI VERIFY OK (fan-gate)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);

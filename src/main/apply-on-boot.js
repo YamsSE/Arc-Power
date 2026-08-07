@@ -11,6 +11,11 @@
 // on failure applies defaults (resetToDefaults) and reports the fallback —
 // never a silent partial apply. The "defaults restored" claim is only ever
 // made when a restore actually ran (fallbackApplied !== undefined).
+// M4-D (PERMANENT acceptance): when the apply answers waiver-not-set with a
+// PERSISTED acceptance (settings.waiverAccepted), the flow silently re-sets
+// the driver waiver and retries the apply ONCE (mirror runApply) before any
+// defaults fallback — the logon/tray apply must honor the user's permanent
+// consent, never restore defaults over a stale driver waiver.
 //
 // M2C-C: the apply goes through the ROUTED core (DriverStore runtime for
 // values within range, bundled 2023 runtime above 252 W / 90 C) and through
@@ -20,6 +25,10 @@
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
 import { executeApply, ocModeRefusal, extendedUnavailableRefusal } from './apply-routing.js';
+
+/** Any per-control result carrying the waiver-not-set driver answer. */
+const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
+  .some((p) => p?.errorCode === 'waiver-not-set');
 
 /**
  * @param {{
@@ -103,33 +112,61 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
     return { applied: false, reason: unavailable.message, extendedUnavailable: true };
   }
 
-  log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId} — single attempt`);
+  log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId}`);
   // F3 instant apply (M2C-B) + M2C-C routing/elevation: ONE attempt, shared
   // with the UI apply path. A non-elevated parent delegates to the elevated
   // self-worker; the boot task runs elevated and applies in-process.
-  let result;
-  let state = null;
-  try {
+  // M4-D (PERMANENT acceptance): a waiver-not-set answer with a persisted
+  // acceptance gets exactly ONE silent re-set + retry (mirror runApply) —
+  // the M4-D boot probe that restores the driver waiver runs only in the
+  // window path, so the logon/tray apply must honor the permanent consent
+  // itself instead of restoring defaults over a stale driver waiver.
+  const attempt = async (waiverAccepted) => {
     if (applyRunner?.needsWorker?.()) {
       // S2: the runner request carries the device-side waiver state so the
       // worker's in-memory flag matches what the user accepted. M3-C-E: it
       // carries the persisted ocMode so the worker's gate keys on the real
       // mode (its own caps always report extendedRanges).
-      const out = await applyRunner.apply({
+      return applyRunner.apply({
         deviceId,
         settings: profile.settings,
         profileName: profile.name,
-        waiverAccepted: caps.waiverAccepted === true,
+        waiverAccepted,
         ocMode: settings.ocMode,
       });
-      result = out.result;
-      state = out.state;
-    } else {
-      const out = await executeApply({ backend, oldIgcl, deviceId, settings: profile.settings, log });
-      result = out.result;
-      state = out.state;
     }
-    log(`[apply-on-boot] single attempt completed with ${Object.keys(result.perControl).length} per-control result(s)`);
+    return executeApply({ backend, oldIgcl, deviceId, settings: profile.settings, log });
+  };
+  let result;
+  let state = null;
+  try {
+    let out = await attempt(caps.waiverAccepted === true);
+    result = out.result;
+    state = out.state;
+    // M4-D: the apply answered waiver-not-set while the persisted acceptance
+    // is true (settings.json — the user's permanent consent). Silently
+    // re-set the driver waiver (in-process on the elevated boot task;
+    // runner.waiverAccept on the tray path) and retry the apply ONCE. A
+    // declined/unavailable re-set falls through to the honest failure path
+    // (never a fake success). Exactly one retry — a second waiver-not-set
+    // lands in the defaults restore below, never an endless loop.
+    if (!result.ok && hasWaiverNotSet(result) && settings.waiverAccepted === true) {
+      log('[apply-on-boot] apply answered waiver-not-set with a persisted acceptance — silently re-setting the driver waiver and retrying ONCE');
+      try {
+        if (applyRunner?.needsWorker?.()) {
+          await applyRunner.waiverAccept(deviceId);
+          await backend.restoreWaiverState(deviceId, true);
+        } else {
+          await backend.setWaiverAccepted(deviceId);
+        }
+        out = await attempt(true);
+        result = out.result;
+        state = out.state;
+      } catch (err) {
+        log(`[apply-on-boot] waiver re-set failed: ${err.message} — falling through to the honest failure path`);
+      }
+    }
+    log(`[apply-on-boot] attempt(s) completed with ${Object.keys(result.perControl).length} per-control result(s)`);
   } catch (err) {
     return { applied: false, reason: `apply threw: ${err.message}` };
   }
@@ -147,7 +184,9 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
     return { applied: true, result, state };
   }
 
-  // Failure -> defaults, never a silent partial apply.
+  // Failure -> defaults, never a silent partial apply. Reached either by a
+  // non-waiver failure or by the M4-D retry also failing (the retry ran
+  // exactly once above — a second waiver-not-set lands here honestly).
   log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} — restoring defaults`);
   let fallbackApplied = true;
   try {

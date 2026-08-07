@@ -175,6 +175,7 @@ const dashSig = (patch: Partial<DashboardSig> = {}): DashboardSig => ({
   caps: null,
   bootError: null,
   driverDate: null,
+  sysinfo: null,
   ...patch,
 });
 
@@ -200,6 +201,18 @@ test('dashboardNeedsFullRender: health / caps / bootError / driverDate changes D
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ caps })), true);
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ bootError: 'No Intel Arc GPU detected' })), true);
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ driverDate: '7-5-2026' })), true);
+});
+
+test('M4-D: the sysinfo landing re-renders the dashboard (the CPU card appears when it arrives)', () => {
+  const sig = dashSig();
+  const sysinfo = {
+    cpu: { name: 'Intel(R) Core(TM) i7-14700K', cores: 20, threads: 28, maxClockMhz: 5600 },
+    ram: { totalBytes: 34359738368, speedMhz: 6000 },
+    videoControllers: [],
+  };
+  assert.equal(dashboardNeedsFullRender(sig, dashSig({ sysinfo })), true);
+  // The same sysinfo object reference does NOT re-render (telemetry-tick-like).
+  assert.equal(dashboardNeedsFullRender(sig, dashSig({ sysinfo: null })), false);
 });
 
 test('dashboardNeedsFullRender: the first update always renders', () => {

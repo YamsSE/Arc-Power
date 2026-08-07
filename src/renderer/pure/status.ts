@@ -24,7 +24,7 @@
 // The legacy health-only level mapping (healthLevel) stays for the header
 // test contract.
 
-import type { Capabilities, DeviceInfo, HealthReport, LastApply, TelemetrySample } from '../types.ts';
+import type { Capabilities, DeviceInfo, HealthReport, LastApply, SysInfo, TelemetrySample } from '../types.ts';
 import { decodeDriverVersion, formatDriverDate } from './driver.ts';
 
 export type HealthLevel = 'ok' | 'warn' | 'error' | 'unknown';
@@ -179,30 +179,35 @@ export function overallHealthLevel(rows: HealthRow[]): HealthLevel {
 
 /**
  * The store slots that drive the dashboard's static content (device card,
- * GPU health card). Telemetry ticks only touch `latestSample` — those must
- * NOT trigger a full page rebuild; the dashboard refreshes the readout grid
- * and the clocks row in place instead. driverDate is fetched once at boot
- * (it can arrive after the first render, so it counts as a status slot).
- * M3-A: the IGS slot is gone (no longer surfaced); the OC row reads
- * lastApply at render time (applies happen on other pages — the dashboard
- * re-renders on navigation).
+ * GPU health card, M4-D CPU & memory card). Telemetry ticks only touch
+ * `latestSample` — those must NOT trigger a full page rebuild; the
+ * dashboard refreshes the readout grid and the clocks row in place instead.
+ * driverDate is fetched once at boot (it can arrive after the first render,
+ * so it counts as a status slot). M4-D: `sysinfo` lands once at boot (the
+ * CPU card must re-render when it arrives — the boot fetch is fire-and-
+ * forget, so it can land after the first render). M3-A: the IGS slot is
+ * gone (no longer surfaced); the OC row reads lastApply at render time
+ * (applies happen on other pages — the dashboard re-renders on navigation).
  */
 export interface DashboardSig {
   health: HealthReport | null;
   caps: Capabilities | null;
   bootError: string | null;
   driverDate: string | null;
+  /** M4-D: the system-info payload (CPU & memory card source). */
+  sysinfo: SysInfo | null;
 }
 
 /**
  * Full re-render decision for the dashboard's onUpdate: re-render when a
- * status slot changed (boot probe, boot errors), not on telemetry ticks. The
- * first update (prev === null) always renders.
+ * status slot changed (boot probe, boot errors, the sysinfo landing), not
+ * on telemetry ticks. The first update (prev === null) always renders.
  */
 export function dashboardNeedsFullRender(prev: DashboardSig | null, next: DashboardSig): boolean {
   if (prev === null) return true;
   return prev.health !== next.health
     || prev.caps !== next.caps
     || prev.bootError !== next.bootError
-    || prev.driverDate !== next.driverDate;
+    || prev.driverDate !== next.driverDate
+    || prev.sysinfo !== next.sysinfo;
 }

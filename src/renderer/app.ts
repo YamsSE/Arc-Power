@@ -8,6 +8,7 @@ import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
 import { GpuHeader } from './components/header.ts';
 import { toast } from './components/toast.ts';
+import { initTitlebar } from './components/titlebar.ts';
 import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { overclockingPage } from './pages/overclocking.ts';
@@ -15,6 +16,7 @@ import { fanPage } from './pages/fan.ts';
 import { monitoringPage } from './pages/monitoring.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
+import { settingsPage } from './pages/settings.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -23,6 +25,7 @@ const PAGES: Record<PageId, Page> = {
   monitoring: monitoringPage,
   profiles: profilesPage,
   tweaks: tweaksPage,
+  settings: settingsPage,
 };
 
 const store = new Store();
@@ -86,6 +89,11 @@ function renderSidebar() {
 }
 
 async function boot() {
+  // M4-D (user): the integrated title bar (frameless window) — the window
+  // buttons + the maximized-state icon subscription. Static markup, wired
+  // before the boot sequence so the buttons work immediately.
+  initTitlebar();
+
   store.subscribe(() => {
     header.render();
     if (current?.onUpdate) {
@@ -157,6 +165,17 @@ async function boot() {
     store.set({ driverDate: null });
   }
 
+  // M4-D (user): the system info (dashboard CPU & memory card + the real-GPU
+  // VRAM source). Fire-and-forget semantics: a failure degrades to null and
+  // the card renders '—' rows; when the payload lands AFTER the first render
+  // the dashboard sig (sysinfo slot) triggers the re-render.
+  try {
+    const info = await api.sysinfo();
+    store.set({ sysinfo: info ?? null });
+  } catch {
+    store.set({ sysinfo: null });
+  }
+
   // M3-A: the registry-hacks catalog (Tweaks page, read-side). Read-only
   // reg queries; a failure degrades to an empty catalog so the page can
   // render the error note. The IGS service probe is no longer surfaced as a
@@ -191,25 +210,28 @@ async function boot() {
     const caps = await api.getCapabilities(deviceId);
     const state = await api.getCurrentSettings(deviceId);
     store.set({ caps, state });
-    // M4-B: the OC waiver prompt shows at EVERY startup (the user: "please
-    // prompt it when the Program opens"). The driver-side waiver state
-    // cannot be probed (IGCL exposes only ctlOverclockWaiverSet — no
-    // getter), so the dialog at open is the only reliable visibility: an
-    // in-session ACCEPTED waiver (persisted from an earlier session) shows
-    // the dialog in its ACCEPTED state — a reminder with a single OK, never
-    // a re-accept; an unaccepted session shows the classic Cancel/Accept
-    // pair. NON-BLOCKING: the boot sequence continues; a declined prompt
-    // must not break it. Accept patches the store caps so the dashboard GPU
-    // Health card row flips to Accepted in place (the waiver pill is gone —
-    // the health row is the only persistent waiver display).
-    void (async () => {
-      const decision = await promptWaiverAtBoot(deviceId, caps.waiverAccepted === true, caps.deviceName || 'this GPU');
-      if (decision !== 'accepted') return;
-      const live = store.get();
-      if (live.caps && live.caps.waiverAccepted !== true) {
-        store.set({ caps: { ...live.caps, waiverAccepted: true } });
-      }
-    })();
+    // M4-B: the OC waiver prompt shows at EVERY startup while the waiver is
+    // NOT accepted (the user: "please prompt it when the Program opens").
+    // M4-D (user, PERMANENT acceptance): a PERSISTED acceptance is the
+    // user's permanent consent — the boot prompt is SKIPPED entirely then
+    // (the accepted-state reminder dialog is REMOVED; the dashboard health
+    // row remains the status display). The driver-side waiver state cannot
+    // be probed from the renderer (IGCL exposes only ctlOverclockWaiverSet
+    // — no getter), so the dialog at open is the only reliable visibility
+    // for never-accepted sessions. NON-BLOCKING: the boot sequence
+    // continues; a declined prompt must not break it. Accept patches the
+    // store caps so the dashboard GPU Health card row flips to Accepted in
+    // place.
+    if (caps.waiverAccepted !== true) {
+      void (async () => {
+        const decision = await promptWaiverAtBoot(deviceId, caps.deviceName || 'this GPU');
+        if (decision !== 'accepted') return;
+        const live = store.get();
+        if (live.caps && live.caps.waiverAccepted !== true) {
+          store.set({ caps: { ...live.caps, waiverAccepted: true } });
+        }
+      })();
+    }
   } catch (err) {
     store.set({ bootError: `Could not read device state: ${err instanceof Error ? err.message : String(err)}` });
     toast('error', 'Device state failed', err instanceof Error ? err.message : String(err));

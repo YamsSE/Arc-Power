@@ -109,11 +109,14 @@ test('clampGpuLock: the voltage bound is ABSOLUTE — never the gpuVoltOffsetV o
 });
 
 test('formatDeviceName: appends the VRAM amount once, per the M4-B rules', () => {
-  // >= 1 GiB -> whole GiB
+  // >= 1 GiB -> nearest whole GiB (M4-D user, live-verified: the driver's
+  // qwMemorySize carries a small reserve — the 8 GB A770 reports ~7.91 GiB
+  // and must read "8 GB", never a floored "7 GB").
   assert.equal(formatDeviceName('Intel Arc A770', 16 * 1024 * 1024 * 1024), 'Intel Arc A770 16 GB');
   assert.equal(formatDeviceName('Intel Arc B580', 12 * 1024 * 1024 * 1024), 'Intel Arc B580 12 GB');
+  assert.equal(formatDeviceName('Intel(R) Arc(TM) A770 Graphics', 8491368448), 'Intel(R) Arc(TM) A770 Graphics 8 GB');
   // < 1 GiB -> whole MiB
-  assert.equal(formatDeviceName('Arc A380', 6 * 1024 * 1024 * 1024 + 512 * 1024 * 1024), 'Arc A380 6 GB');
+  assert.equal(formatDeviceName('Arc A380', 6 * 1024 * 1024 * 1024 - 96 * 1024 * 1024), 'Arc A380 6 GB');
   assert.equal(formatDeviceName('Tiny GPU', 512 * 1024 * 1024), 'Tiny GPU 512 MB');
   // null / 0 / missing -> plain name (no suffix)
   assert.equal(formatDeviceName('Arc iGPU', null), 'Arc iGPU');

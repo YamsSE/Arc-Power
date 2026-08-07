@@ -14,9 +14,13 @@
 //     have changed OC state between runs) and returned to the caller;
 //   - telemetry is owned by main (one TelemetryService per device), pushed
 //     to the renderer via the injected `emit`;
-//   - the waiver is NEVER auto-accepted here: waiver-accept is the only path
-//     to setWaiverAccepted, and it is called by the renderer only after the
-//     user explicitly accepted the dialog.
+//   - the waiver is NEVER auto-accepted for a NEVER-accepted store:
+//     waiver-accept is the only path to setWaiverAccepted, and it is called
+//     by the renderer only after the user explicitly accepted the dialog.
+//     M4-D (PERMANENT acceptance): once the store says accepted (the user
+//     accepted once), MAIN silently re-sets the driver waiver + retries the
+//     apply ONCE on a waiver-not-set answer — the persisted consent stands,
+//     the store is never flipped back to false (persistWaiverLost removed).
 
 import { createRequire } from 'node:module';
 import { TelemetryService } from './telemetry/telemetry-service.js';
@@ -27,6 +31,7 @@ import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } 
 import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
+import { createMockSysinfo } from './sysinfo.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODES } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 
@@ -151,46 +156,26 @@ export async function seedWaiverState(backend, store) {
 }
 
 /**
- * M4-B (user): persist the driver's waiver-not-set verdict. An apply that
- * answers waiver-not-set proves the persisted acceptance is STALE — flip the
- * store so the NEXT boot's waiver prompt shows the real state (classic
- * Accept dialog) instead of a "already accepted" lie. Only ever clears;
- * never accepts anything. Best-effort: a store failure must not fail the
- * apply envelope.
- * @param {import('./store/profile-store.js').ProfileStore} store
- * @param {{ perControl?: Record<string, { errorCode?: string }> }} result
- */
-export async function persistWaiverLost(store, result) {
-  const lost = Object.values(result?.perControl ?? {})
-    .some((p) => p?.errorCode === 'waiver-not-set');
-  if (!lost) return;
-  try {
-    const cur = await store.loadSettings();
-    if (cur.waiverAccepted === true) {
-      await store.saveSettings({ ...cur, waiverAccepted: false });
-    }
-  } catch {
-    // degraded: leave the store as-is (the in-memory flag was already
-    // cleared — the next apply re-prompts regardless).
-  }
-}
-
-/**
- * M4-B (user): boot-time driver-truth probe for the REAL path. A persisted
+ * M4-D (user): boot-time driver-truth probe for the REAL path. A persisted
  * `waiverAccepted: true` can be STALE — the driver-side waiver
  * (ctlOverclockWaiverSet) can be lost (reinstall, IGS reset) while
  * settings.json still says accepted. IGCL exposes no waiver getter, so the
  * only honest check is a write: apply the device's CURRENT power limit (a
- * no-op value write) and read the outcome. When the driver answers
- * waiver-not-set, the persisted acceptance is a LIE — clear the in-memory
- * flag AND the persisted store so the boot waiver prompt shows the real
- * state (classic Accept dialog) instead of the stale "already accepted"
- * reminder, and applies succeed first-try after the user accepts.
+ * no-op value write) and read the outcome.
+ *
+ * M4-D (user, PERMANENT acceptance): when the driver answers waiver-not-set
+ * while the persisted acceptance is TRUE, the elevated boot probe now
+ * RESTORES the driver waiver (backend.setWaiverAccepted) instead of
+ * clearing the store — the persisted acceptance is the user's permanent
+ * consent, it stands until the user revokes it, and the store is never
+ * flipped to false on a driver refusal (persistWaiverLost is REMOVED). The
+ * probe writes nothing else. When the store says unaccepted, the behavior
+ * is unchanged (the in-memory flag + store are cleared to false so the
+ * classic Accept dialog shows).
  *
  * The write is value-neutral (current value -> current value) and only
- * ever surfaces the waiver truth; every other outcome is ignored. Never
- * accepts anything (setWaiverAccepted is not in this path). Call AFTER
- * seedWaiverState, before the renderer boots.
+ * ever surfaces the waiver truth. Call AFTER seedWaiverState, before the
+ * renderer boots.
  *
  * @param {import('./backend/backend.interface.js').IOCBackend} backend
  * @param {import('./store/profile-store.js').ProfileStore} store
@@ -206,9 +191,24 @@ export async function probeWaiverState(backend, store) {
     const out = await backend.applySettings(device.id, { powerLimitW: state.powerLimitW });
     const per = out?.perControl?.powerLimitW;
     if (per?.ok === false && per.errorCode === 'waiver-not-set') {
-      await backend.restoreWaiverState(device.id, false);
-      const settings = await store.loadSettings();
-      await store.saveSettings({ ...settings, waiverAccepted: false });
+      let persistedAccepted = false;
+      try {
+        persistedAccepted = (await store.loadSettings()).waiverAccepted === true;
+      } catch {
+        // degraded: treat as unaccepted — never restore on an unknown store
+      }
+      if (persistedAccepted) {
+        // M4-D: the consent stands — RESTORE the driver waiver (elevated
+        // boot probe). setWaiverAccepted also re-sets the in-memory flag.
+        await backend.setWaiverAccepted(device.id);
+      } else {
+        // Unaccepted store: unchanged M4-B behavior — clear the in-memory
+        // flag AND the persisted store so the boot prompt shows the classic
+        // Accept dialog.
+        await backend.restoreWaiverState(device.id, false);
+        const settings = await store.loadSettings();
+        await store.saveSettings({ ...settings, waiverAccepted: false });
+      }
     }
   }
 }
@@ -252,8 +252,14 @@ export function assertNoPayload(args, channel) {
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
- *   startup?: { get: () => Promise<unknown>, set: (enabled: boolean, profileId: string | null) => Promise<unknown> },
+ *   startup?: { get: () => Promise<unknown>, set: (enabled: boolean, profileId: string | null) => Promise<unknown>, setAppOnBoot?: (enabled: boolean) => Promise<unknown> },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
+ *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
+ *   windowOps?: {                              // M4-D: injected BrowserWindow ops (title-bar buttons)
+ *     minimize: () => Promise<unknown>,
+ *     maximizeToggle: () => Promise<unknown>,
+ *     close: () => Promise<unknown>,
+ *   },
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   presentmon?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null> },
@@ -276,6 +282,19 @@ export function createIpcHandlers({
   emit,
   startup = createMockStartup(),
   driverInfo = createMockDriverInfo(),
+  // M4-D: the sysinfo adapter. The DEFAULT is the MOCK fixture (never
+  // spawns PowerShell); main.js injects the cached CIM result in the
+  // product path.
+  sysinfo = createMockSysinfo(),
+  // M4-D: the injected BrowserWindow ops for the integrated title bar. The
+  // DEFAULT is no-ops (tests + mock mode never touch a real window);
+  // main.js wires the real BrowserWindow in the product path (and counting
+  // probes in --ui-verify mode).
+  windowOps = {
+    minimize: async () => {},
+    maximizeToggle: async () => {},
+    close: async () => {},
+  },
   // M3-A: the registry-catalog adapter. The DEFAULT is the MOCK (never runs
   // reg.exe); ipc.js injects the real adapter in the product path. The
   // catalog is read-side only — the M3-B apply channel is 'registry-apply'.
@@ -326,6 +345,70 @@ export function createIpcHandlers({
       try { await svc.stop(); } catch { /* best effort */ }
     }
     telemetry.clear();
+  };
+
+  const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
+    .some((p) => p?.errorCode === 'waiver-not-set');
+
+  /**
+   * M4-D (user, PERMANENT acceptance): ONE apply attempt through the
+   * elevation-aware worker or the in-process routed core, with the silent
+   * waiver re-set + single retry. When the driver answers waiver-not-set
+   * AND the persisted acceptance is true (settings.json — the user's
+   * permanent consent), MAIN silently re-sets the driver waiver
+   * (runner.waiverAccept / backend.setWaiverAccepted — elevated) and
+   * retries the apply ONCE; the FIRST attempt is never surfaced as a
+   * failure to the renderer. Exactly one retry — a second waiver-not-set
+   * returns the retry's envelope as-is. An unaccepted store keeps the
+   * current behavior (no auto re-set — the renderer's dialog flow handles
+   * it). persistWaiverLost is REMOVED: the store never flips to false on a
+   * driver refusal.
+   * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced' }} req
+   */
+  const runApply = async ({ deviceId, settings, caps, ocMode }) => {
+    const attempt = async (waiverAccepted) => {
+      if (applyRunner?.needsWorker?.()) {
+        const out = await applyRunner.apply({ deviceId, settings, waiverAccepted, ocMode });
+        // S2 G2 mirror: when the driver lost the waiver, the worker's
+        // per-control results carry waiver-not-set. Clear the parent-side
+        // in-memory flag so getCapabilities reports unaccepted and the
+        // dialog re-shows — the wedge (stale-true parent flag with failing
+        // applies) must never happen.
+        if (hasWaiverNotSet(out.result)) await backend.restoreWaiverState(deviceId, false);
+        return out;
+      }
+      return executeApply({ backend, oldIgcl, deviceId, settings });
+    };
+    const first = await attempt(caps.waiverAccepted === true);
+    if (!hasWaiverNotSet(first.result)) {
+      return { result: first.result, state: first.state };
+    }
+    let persistedAccepted = false;
+    try {
+      persistedAccepted = (await store.loadSettings()).waiverAccepted === true;
+    } catch {
+      // degraded: no auto re-set (an unreadable store must not silently
+      // accept anything).
+    }
+    if (!persistedAccepted) {
+      // Unaccepted store: current behavior — the renderer's dialog flow
+      // re-prompts and re-applies.
+      return { result: first.result, state: first.state };
+    }
+    // M4-D: silent re-set + retry ONCE. A declined re-set (UAC) surfaces the
+    // FIRST attempt's envelope — never a fake success, never a crash.
+    try {
+      if (applyRunner?.needsWorker?.()) {
+        await applyRunner.waiverAccept(deviceId);
+        await backend.restoreWaiverState(deviceId, true);
+      } else {
+        await backend.setWaiverAccepted(deviceId);
+      }
+    } catch {
+      return { result: first.result, state: first.state };
+    }
+    const retry = await attempt(true);
+    return { result: retry.result, state: retry.state };
   };
 
   const handlers = {
@@ -390,35 +473,11 @@ export function createIpcHandlers({
         // 2023 runtime above). The worker runs the SAME core + gate (the
         // request file carries ocMode — the worker's own caps always report
         // extendedRanges, so a caps-keyed gate there would silently clamp).
-        if (applyRunner?.needsWorker?.()) {
-          // S2: the request carries the parent-side waiver flag so the
-          // worker's in-memory state (its clamp caps + apply gate) matches
-          // what the user already accepted.
-          const out = await applyRunner.apply({
-            deviceId,
-            settings: clamped,
-            waiverAccepted: caps.waiverAccepted === true,
-            ocMode,
-          });
-          // S2 G2 mirror: when the driver lost the waiver, the worker's
-          // per-control results carry waiver-not-set. Clear the parent-side
-          // in-memory flag so the next getCapabilities reports unaccepted
-          // and the waiver dialog re-shows — the wedge (stale-true parent
-          // flag with failing applies) must never happen.
-          if (Object.values(out.result?.perControl ?? {})
-            .some((p) => p?.errorCode === 'waiver-not-set')) {
-            await backend.restoreWaiverState(deviceId, false);
-          }
-          // M4-B (user): the driver's waiver-not-set verdict is PERSISTED —
-          // a settings.json that still says accepted would otherwise lie at
-          // the next boot (the boot prompt claims "accepted" while every
-          // apply fails). Only ever clears; never auto-accepts.
-          await persistWaiverLost(store, out.result);
-          return { result: out.result, state: out.state };
-        }
-        const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped });
-        await persistWaiverLost(store, out.result);
-        return { result: out.result, state: out.state };
+        // M4-D (user, PERMANENT acceptance): runApply silently re-sets the
+        // driver waiver + retries ONCE when the driver answers waiver-not-set
+        // while the persisted acceptance is true (the consent stands — never
+        // a dialog, never a dead-end, never a persisted false).
+        return runApply({ deviceId, settings: clamped, caps, ocMode });
       },
 
       'reset-to-defaults': async (deviceId) => {
@@ -554,6 +613,49 @@ export function createIpcHandlers({
         return startup.get();
       },
 
+      // M4-D (Settings "Start with Windows"): enable/disable the plain-app
+      // scheduled task (ArcPowerAppOnBoot — onlogon /rl highest, no
+      // --apply-profile). Enabling disables the apply-profile registration
+      // and vice versa (the two tasks cannot both be enabled — the startup
+      // module owns the coexistence rule). The default adapter is the MOCK;
+      // the product path injects the real adapter (ONE UAC per enable).
+      'startup-app-set': async (enabled) => {
+        if (typeof enabled !== 'boolean') throw new Error('startup-app-set: enabled must be a boolean');
+        if (typeof startup.setAppOnBoot !== 'function') {
+          throw new Error('startup-app-set: the startup adapter has no app-task variant');
+        }
+        await startup.setAppOnBoot(enabled);
+        return startup.get();
+      },
+
+      // M4-D (user): the system-info read (CPU card + the VRAM enrichment
+      // source). Read-side only, cached at boot in the product path; the
+      // default adapter is the MOCK fixture (tests/--ui-verify never spawn
+      // PowerShell).
+      'sysinfo:get': async (...args) => {
+        assertNoPayload(args, 'sysinfo:get');
+        return sysinfo.get();
+      },
+
+      // M4-D (user): the integrated-title-bar window controls. No payload;
+      // the ops are injected (default no-ops in tests; main.js wires the
+      // real BrowserWindow in the product path, counting probes in
+      // --ui-verify mode).
+      'window-minimize': async (...args) => {
+        assertNoPayload(args, 'window-minimize');
+        await windowOps.minimize();
+      },
+
+      'window-maximize-toggle': async (...args) => {
+        assertNoPayload(args, 'window-maximize-toggle');
+        await windowOps.maximizeToggle();
+      },
+
+      'window-close': async (...args) => {
+        assertNoPayload(args, 'window-close');
+        await windowOps.close();
+      },
+
       // Display-driver registry date (M2b-B, read-only): never touches the
       // registry in mock mode — the default adapter returns the fixture.
       'driver-info': async (...args) => {
@@ -650,8 +752,9 @@ export function createIpcHandlers({
         return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
       },
 
-      // Persisted-settings patch (activeProfileId / ocOnBoot). Read-modify-
-      // write in main so the renderer can never clobber waiverAccepted.
+      // Persisted-settings patch (activeProfileId / ocOnBoot + M4-D the
+      // Settings-tab fields). Read-modify-write in main so the renderer can
+      // never clobber waiverAccepted.
       'profiles-settings-save': async (patch) => {
         if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
           throw new Error('profiles-settings-save: patch must be an object');
@@ -668,6 +771,15 @@ export function createIpcHandlers({
           // M4-B: the once-only Advanced-mode warning acceptance is never
           // touched by the profiles patch either.
           advancedModeAccepted: cur.advancedModeAccepted,
+          // M4-D: the Settings-tab fields (startWithWindows/startMinimized)
+          // — the Settings page persists them through this channel (absent
+          // -> keep the current value, same read-modify-write rule).
+          startWithWindows: patch.startWithWindows === undefined
+            ? cur.startWithWindows
+            : patch.startWithWindows === true,
+          startMinimized: patch.startMinimized === undefined
+            ? cur.startMinimized
+            : patch.startMinimized === true,
         };
         await store.saveSettings(next);
         return next;

@@ -20,6 +20,20 @@ export function trayBalloonProfileFailed(name) {
   return `Arc Power: profile '${name}' failed to apply — defaults restored`;
 }
 
+/**
+ * M4-D Round-1 F5: the tray toggle's window action. A MINIMIZED window
+ * reports isVisible() === true — the old visibility-only toggle would HIDE
+ * a minimized window instead of restoring it (a start-minimized session
+ * could never be restored from the tray). The minimize case wins: restore
+ * first; only a visible, non-minimized window toggles to hidden.
+ * @param {{ isMinimized: boolean, isVisible: boolean }} winState
+ * @returns {'restore' | 'hide' | 'show'}
+ */
+export function trayToggleAction({ isMinimized, isVisible }) {
+  if (isMinimized) return 'restore';
+  return isVisible ? 'hide' : 'show';
+}
+
 /** Balloon text for a gate refusal (nothing was applied or restored). */
 export function trayBalloonProfileRefused(reason) {
   return `Arc Power: profile not applied — ${reason}`;

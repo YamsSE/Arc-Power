@@ -19,6 +19,7 @@ import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { driverLine } from '../components/header.ts';
 import { shaderUnits } from '../pure/driver.ts';
+import { cpuCardRows } from '../pure/sysinfo.ts';
 import type { TelemetrySample } from '../types.ts';
 
 function statTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
@@ -39,7 +40,7 @@ function statTiles(sample: TelemetrySample | null): Array<{ label: string; value
 /** The store slots that decide whether the dashboard must fully re-render. */
 function currentSig(ctx: PageContext): DashboardSig {
   const s = ctx.store.get();
-  return { health: s.health, caps: s.caps, bootError: s.bootError, driverDate: s.driverDate };
+  return { health: s.health, caps: s.caps, bootError: s.bootError, driverDate: s.driverDate, sysinfo: s.sysinfo };
 }
 
 /** Last full-render signature (module state — telemetry ticks never touch it). */
@@ -105,12 +106,29 @@ export const dashboardPage: Page = {
     lastSig = currentSig(ctx);
     const s = ctx.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
+    const sysRows = cpuCardRows(s.sysinfo);
 
     clear(container);
     container.append(
       el('h1', { class: 'page-title', text: 'Dashboard' }),
 
       el('div', { class: 'card-grid' }, [
+        // --- M4-D (user): the CPU & memory card — BEFORE the GPU card. ---
+        // Fed by the sysinfo:get payload (CIM at boot, mock fixture in
+        // --ui-verify); every field degrades honestly to '—' (pure/sysinfo.ts
+        // cpuCardRows). The dashboard sig includes sysinfo, so the card
+        // re-renders when the boot fetch lands after the first render.
+        el('section', { class: 'card sysinfo-card' }, [
+          el('h2', { class: 'card-title', text: 'CPU & memory' }),
+          el('div', { class: 'card-body kv-grid' }, [
+            el('div', { class: 'kv', 'data-label': 'CPU' }, [el('span', { text: sysRows.cpu })]),
+            el('div', { class: 'kv', 'data-label': 'CPU cores' }, [el('span', { text: sysRows.cores })]),
+            el('div', { class: 'kv', 'data-label': 'Max clock' }, [el('span', { text: sysRows.maxClock })]),
+            el('div', { class: 'kv', 'data-label': 'Memory' }, [el('span', { text: sysRows.memory })]),
+            el('div', { class: 'kv', 'data-label': 'Memory speed' }, [el('span', { text: sysRows.memorySpeed })]),
+          ]),
+        ]),
+
         // --- device card ---
         el('section', { class: 'card' }, [
           el('h2', { class: 'card-title', text: device?.name ?? 'No GPU detected' }),
