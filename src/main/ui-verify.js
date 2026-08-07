@@ -22,8 +22,9 @@
 //       version + date like the device card; the app row healthy detail is
 //       "App & Service Running".
 //   2. overclocking cards render from capability ranges; M2b-B: the card
-//      label is "Core offset", the floating Apply is hidden when clean and
-//      appears when dirty;
+//      label is "Core clock" (M4-B user: named Core clock in BOTH Offset and
+//      Clock modes), the floating Apply is hidden when clean and appears
+//      when dirty;
 //   3. first Apply shows the warranty-waiver dialog; Accept persists the
 //      waiver; the apply succeeds and the state read-back refreshes; the
 //      per-control toast count is exactly 1 (the other three controls are
@@ -158,6 +159,12 @@ async function waitFor(win, expr, timeoutMs = 10000) {
 //     prompt appears in its accepted state — title 'Warranty waiver', a
 //     'Status: Accepted' line, exactly one OK button; this step clicks OK
 //     (a reminder — NO waiver-accept IPC happens);
+//   - RID_MOCK_WAIVER_PERSISTED=1 + RID_MOCK_WAIVER_LOST=1 (M4-B user fix) ->
+//     the store STILL says accepted but the DRIVER lost the waiver: the boot
+//     probe (probeWaiverState) flipped store + flag to unaccepted BEFORE the
+//     window, so the boot prompt appears in the CLASSIC state (Accept/Cancel,
+//     NO accepted-status line) — the "the popup lied that it's accepted" bug;
+//     this step CANCELS it and asserts the store now reads unaccepted;
 //   - RID_MOCK_WAIVER_BOOT_ACCEPT=1 -> the prompt appears exactly once and
 //     this step ACCEPTS it (health row green, no dialog anywhere after);
 //   - default -> the prompt appears exactly once and this step CANCELS it
@@ -165,6 +172,7 @@ async function waitFor(win, expr, timeoutMs = 10000) {
 // Returns true when the session booted with the waiver accepted.
 async function bootWaiverStep(win, js, waitFor) {
   const persisted = process.env.RID_MOCK_WAIVER_PERSISTED === '1';
+  const waiverLost = process.env.RID_MOCK_WAIVER_LOST === '1';
   const bootAccept = process.env.RID_MOCK_WAIVER_BOOT_ACCEPT === '1';
   // M4-B step-4 F1/F5a: the boot dialog's .modal-device line must carry the
   // VRAM-suffixed name (mock caps.deviceName = formatDeviceName(...)) — the
@@ -185,6 +193,31 @@ async function bootWaiverStep(win, js, waitFor) {
     }
     return deviceText;
   };
+  if (persisted && waiverLost) {
+    // M4-B (user fix): the store says accepted but the DRIVER lost the
+    // waiver — the boot probe must have flipped the store + flag BEFORE the
+    // window, so the boot prompt shows the CLASSIC Accept/Cancel dialog (the
+    // stale "already accepted" reminder must NOT appear).
+    if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 10000))) {
+      throw new UiVerifyFailure(`the boot waiver prompt did not appear (waiver lost despite the persisted store): page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+    }
+    if (await js(`!!document.querySelector('.modal .modal-status')`)) {
+      throw new UiVerifyFailure('RID_MOCK_WAIVER_LOST=1: the boot prompt shows the accepted-state reminder though the driver lost the waiver (the probe must flip the state before the window)');
+    }
+    if (!(await js(`!!document.querySelector('.modal button.btn-danger')`))) {
+      throw new UiVerifyFailure('RID_MOCK_WAIVER_LOST=1: the boot prompt lacks the classic Accept button');
+    }
+    const deviceLine = await pinDeviceLine();
+    await js(`document.querySelector('.modal button.btn-ghost')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) {
+      throw new UiVerifyFailure('the boot waiver prompt did not close');
+    }
+    await sleep(500);
+    if (await js(`!!document.querySelector('.modal')`)) {
+      throw new UiVerifyFailure('a second modal appeared after the boot prompt was handled (the boot prompt must appear exactly once)');
+    }
+    return false;
+  }
   if (persisted) {
     // M4-B: persisted acceptance at boot -> the boot prompt MUST appear in
     // the accepted state (a reminder, never a re-accept): title + status
@@ -283,7 +316,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // state under RID_MOCK_WAIVER_PERSISTED=1 (reminder with a single OK).
   const bootAcceptedAtBoot = await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', process.env.RID_MOCK_WAIVER_PERSISTED === '1'
-    ? 'persisted acceptance at boot: boot prompt shown in accepted state (OK clicked)'
+    ? (process.env.RID_MOCK_WAIVER_LOST === '1'
+      ? 'persisted store said accepted but the DRIVER lost the waiver: the boot probe flipped store+flag to unaccepted, prompt shown in the CLASSIC state (Cancelled)'
+      : 'persisted acceptance at boot: boot prompt shown in accepted state (OK clicked)')
     : `boot waiver prompt handled: ${bootAcceptedAtBoot ? 'Accepted (no dialog anywhere after)' : 'Cancelled (first apply re-shows the dialog)'}`);
 
   // --- waiver gate seed state (used by every waiver-flow section below) ----
@@ -449,10 +484,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('oc-offgrid', `off-grid driver readout renders '${driverText.trim()}' (slider snapped to '${sliderReadout.trim()}')`);
   }
 
-  // --- 2c. M2b-B tuning UX: "Core offset" label + floating Apply ----------
+  // --- 2c. M2b-B tuning UX: "Core clock" label (M4-B user: named Core
+  // --- clock in BOTH Offset and Clock modes) + floating Apply ----------
   const freqTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-  if (freqTitle.trim() !== 'Core offset') fail(`freq offset card title is '${freqTitle}' (expected 'Core offset')`);
-  step('label', `freq offset card renamed to 'Core offset'`);
+  if (freqTitle.trim() !== 'Core clock') fail(`freq offset card title is '${freqTitle}' (expected 'Core clock' in both modes)`);
+  step('label', `freq offset card renamed to 'Core clock' (mode-independent)`);
 
   const floatingHidden = () => js(`(() => { const b = document.querySelector('.floating-apply'); return !b || b.hidden === true; })()`);
   const setSlider = async (value) => {
@@ -782,6 +818,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Clock')?.click()`);
   await sleep(150);
+  // M4-B (user): the CARD NAME is 'Core clock' in BOTH modes — the toggle
+  // changes the input presentation, never the name.
+  const clockTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
+  if (clockTitle.trim() !== 'Core clock') fail(`M4-B: the freq card title is '${clockTitle}' in Clock mode (must stay 'Core clock')`);
   const clockMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
   const clockMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
   if (clockMin !== '1800' || clockMax !== '2400') fail(`M4-B: Clock-mode slider range is '${clockMin}'..'${clockMax}' (expected 1800..2400 = base 2100 + -300..300)`);

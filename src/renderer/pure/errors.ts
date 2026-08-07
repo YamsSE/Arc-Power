@@ -6,7 +6,9 @@ import type { OcErrorCode } from '../types.ts';
 export const CONTROL_LABELS: Record<string, string> = {
   powerLimitW: 'Power limit',
   gpuVoltOffsetV: 'Voltage offset',
-  gpuFreqOffsetMhz: 'Core offset',
+  // M4-B (user): the card is named 'Core clock' in BOTH Offset and Clock
+  // toggle modes — the mode is the input presentation, not the name.
+  gpuFreqOffsetMhz: 'Core clock',
   tempLimitC: 'Temperature limit',
   vramFreqOffsetGts: 'VRAM frequency offset',
   vramVoltOffsetV: 'VRAM voltage offset',

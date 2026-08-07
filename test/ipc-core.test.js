@@ -19,6 +19,7 @@ import {
   clampSettings,
   createIpcHandlers,
   seedWaiverState,
+  probeWaiverState,
   seedOcMode,
 } from '../src/main/ipc-core.js';
 import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend.js';
@@ -263,6 +264,73 @@ test('seedWaiverState: persisted not-accepted leaves the flag unset', async () =
   const store = fakeStore(); // default waiverAccepted: false on disk
   await seedWaiverState(backend, store);
   assert.equal((await backend.getCapabilities(0)).waiverAccepted, false);
+});
+
+// M4-B (user fix): the boot-time driver-truth probe. A persisted acceptance
+// can be STALE — the driver lost the waiver while settings.json still says
+// accepted (the user: "the popup said already accepted, then changing the
+// voltage threw a no-accepted-waiver error"). The probe writes the CURRENT
+// power limit (value-neutral), surfaces waiver-not-set, and flips store +
+// flag to unaccepted BEFORE the window.
+
+test('probeWaiverState: a stale persisted acceptance is corrected when the DRIVER lost the waiver (M4-B user fix)', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true); // boot seed from the persisted store
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, true);
+  // The driver lost the waiver: the probe's value-neutral write answers
+  // waiver-not-set (once=true — only the probe's write fails).
+  backend.injectFail('powerLimitW', 'waiver-not-set', true);
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced' });
+
+  await probeWaiverState(backend, store);
+
+  // The in-memory flag AND the persisted store are flipped to unaccepted —
+  // the boot prompt must show the classic Accept dialog, not the stale
+  // "already accepted" reminder.
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, false);
+  assert.equal(store.saved.length, 1);
+  assert.equal(store.saved[0].waiverAccepted, false);
+  assert.equal(store.saved[0].ocMode, 'advanced', 'the probe never touches the other settings');
+});
+
+test('probeWaiverState: a driver that HAS the waiver is untouched — no flag flip, no store write', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true);
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+
+  await probeWaiverState(backend, store);
+
+  assert.equal((await backend.getCapabilities(0)).waiverAccepted, true);
+  assert.equal(store.saved.length, 0);
+});
+
+test('probeWaiverState: never accepts anything — setWaiverAccepted is not in the path', async () => {
+  const backend = new MockBackend();
+  await backend.restoreWaiverState(0, true);
+  let setCalls = 0;
+  const original = backend.setWaiverAccepted.bind(backend);
+  backend.setWaiverAccepted = async (...args) => { setCalls += 1; return original(...args); };
+  backend.injectFail('powerLimitW', 'waiver-not-set', true);
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+
+  await probeWaiverState(backend, store);
+
+  assert.equal(setCalls, 0, 'the probe must never auto-accept');
+});
+
+test('probeWaiverState: devices without a powerLimitW control are skipped (no probe write possible)', async () => {
+  let applyCalls = 0;
+  const noPowerBackend = {
+    listDevices: async () => [{ id: 7, name: 'no-power card' }],
+    getCapabilities: async () => ({ ranges: { gpuFreqOffsetMhz: { min: 0, max: 300 } } }),
+    getCurrentSettings: async () => { throw new Error('must not be called'); },
+    applySettings: async () => { applyCalls += 1; throw new Error('must not be called'); },
+    restoreWaiverState: async () => { throw new Error('must not be called'); },
+  };
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null });
+  await probeWaiverState(noPowerBackend, store);
+  assert.equal(applyCalls, 0);
+  assert.equal(store.saved.length, 0);
 });
 
 test('apply-settings: a waiver-not-set apply clears the flag so waiver-get reports unaccepted (G2 regression)', async () => {

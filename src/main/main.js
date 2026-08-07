@@ -23,7 +23,7 @@ import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, seedOcMode } from './ipc-core.js';
+import { seedWaiverState, probeWaiverState, seedOcMode } from './ipc-core.js';
 import { ProfileStore } from './store/profile-store.js';
 import { createStartup, createMockStartup } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
@@ -355,6 +355,22 @@ async function main() {
     } catch (err) {
       console.log(`[boot] waiver session seed skipped: ${err.message}`);
     }
+    // M4-B (user fix): RID_MOCK_WAIVER_LOST=1 reproduces the user's report —
+    // the store says the waiver is ACCEPTED (persisted) but the DRIVER lost
+    // it. The boot probe (probeWaiverState) writes the current power limit
+    // (value-neutral), surfaces the waiver-not-set, and flips the store +
+    // in-memory flag to unaccepted BEFORE the window — so the boot prompt
+    // shows the classic Accept dialog instead of the stale "already
+    // accepted" reminder (ui-verify: RID_MOCK_WAIVER_PERSISTED=1 +
+    // RID_MOCK_WAIVER_LOST=1).
+    if (process.env.RID_MOCK_WAIVER_LOST === '1') {
+      try {
+        backend.injectFail('powerLimitW', 'waiver-not-set', true);
+        await probeWaiverState(backend, store);
+      } catch (err) {
+        console.log(`[boot] waiver probe skipped: ${err.message}`);
+      }
+    }
     // M4-B (user): deterministic Advanced-mode-warning session seed — every
     // mock session boots with the warning UNACCEPTED so the first
     // Stock->Advanced toggle shows the disclaimer (the shared isolated mock
@@ -400,6 +416,22 @@ async function main() {
       await seedWaiverState(backend, store);
     } catch (err) {
       console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
+    }
+    // M4-B (user fix): boot-time driver-truth probe — the persisted
+    // acceptance can be STALE (the driver lost the waiver while settings.json
+    // still says accepted — the user's report: "the popup said already
+    // accepted, then voltage changes threw a no-accepted-waiver error").
+    // Only when ELEVATED (the packaged EXE always is): a value-neutral write
+    // of the current power limit surfaces waiver-not-set when the driver
+    // lost it; probeWaiverState then clears the stale flag + store so the
+    // boot prompt shows the REAL state and applies work first-try. Never in
+    // non-elevated dev (a probe write there would raise a UAC prompt).
+    if (isElevated()) {
+      try {
+        await probeWaiverState(backend, store);
+      } catch (err) {
+        console.log(`[boot] waiver truth probe skipped: ${err.message}`);
+      }
     }
   }
   // M3-C review F3: seed the persisted OC mode into the backend BEFORE the

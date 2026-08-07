@@ -151,6 +151,44 @@ export async function seedWaiverState(backend, store) {
 }
 
 /**
+ * M4-B (user): boot-time driver-truth probe for the REAL path. A persisted
+ * `waiverAccepted: true` can be STALE — the driver-side waiver
+ * (ctlOverclockWaiverSet) can be lost (reinstall, IGS reset) while
+ * settings.json still says accepted. IGCL exposes no waiver getter, so the
+ * only honest check is a write: apply the device's CURRENT power limit (a
+ * no-op value write) and read the outcome. When the driver answers
+ * waiver-not-set, the persisted acceptance is a LIE — clear the in-memory
+ * flag AND the persisted store so the boot waiver prompt shows the real
+ * state (classic Accept dialog) instead of the stale "already accepted"
+ * reminder, and applies succeed first-try after the user accepts.
+ *
+ * The write is value-neutral (current value -> current value) and only
+ * ever surfaces the waiver truth; every other outcome is ignored. Never
+ * accepts anything (setWaiverAccepted is not in this path). Call AFTER
+ * seedWaiverState, before the renderer boots.
+ *
+ * @param {import('./backend/backend.interface.js').IOCBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ */
+export async function probeWaiverState(backend, store) {
+  const devices = await backend.listDevices();
+  for (const device of devices) {
+    const caps = await backend.getCapabilities(device.id);
+    if (!caps?.ranges?.powerLimitW) continue; // no probe control on this device
+    const state = await backend.getCurrentSettings(device.id);
+    if (typeof state?.powerLimitW !== 'number') continue;
+    // Backends return the apply result directly ({ ok, perControl }).
+    const out = await backend.applySettings(device.id, { powerLimitW: state.powerLimitW });
+    const per = out?.perControl?.powerLimitW;
+    if (per?.ok === false && per.errorCode === 'waiver-not-set') {
+      await backend.restoreWaiverState(device.id, false);
+      const settings = await store.loadSettings();
+      await store.saveSettings({ ...settings, waiverAccepted: false });
+    }
+  }
+}
+
+/**
  * M3-C review F3: seed the backend's OC mode from the persisted settings
  * (settings.json via the store). Must run BEFORE the window/IPC exist — the
  * renderer's FIRST getCapabilities must already see the right range set (a
