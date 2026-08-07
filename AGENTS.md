@@ -64,7 +64,7 @@ the host lane commits the whole milestone and pushes to `origin/main`:
 - Commit message: `M<ms>: <short summary>` (e.g. `M2a: UI core`); one commit
   per milestone, no secrets, no `dist/`/`node_modules/` (gitignored).
 - Push with `-u origin main`. The GitHub remote is `origin`
-  (https://github.com/YamiK367/Arc-Power).
+  (https://github.com/YamsSE/Arc-Power).
 - Subagents (implementer/fixer/reviewer prompts) still **never commit** —
   opencode snapshots their work via git; only the host commits, and only at
   milestone boundaries.
