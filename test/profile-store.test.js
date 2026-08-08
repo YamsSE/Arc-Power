@@ -29,13 +29,13 @@ test('profiles: empty store loads [] and saves/loads round trip', async (t) => {
   assert.equal(raw.schemaVersion, SCHEMA_VERSION);
 });
 
-test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWithWindows/startMinimized)', async (t) => {
+test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWithWindows/startMinimized, 1.0.1: theme)', async (t) => {
   const store = new ProfileStore({ dir: tempDir(t) });
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
-    deviceId: null,
+    deviceId: null, theme: 'dark',
   });
   await store.saveSettings({
     waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
@@ -44,7 +44,7 @@ test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWi
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
     advancedModeAccepted: false, startWithWindows: true, startMinimized: true, closeToTray: false,
-    monitorLogToFile: false, deviceId: null,
+    monitorLogToFile: false, deviceId: null, theme: 'dark',
   });
 });
 
@@ -91,7 +91,7 @@ test('F4: stores on separate dirs are fully isolated — a mock-mode write never
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
-    deviceId: null,
+    deviceId: null, theme: 'dark',
   });
   assert.equal(fs.existsSync(path.join(realDir, 'settings.json')), false, 'the mock session never wrote the real dir');
   // A stock mock variant flips only the mock dir — the real store still
@@ -204,7 +204,7 @@ test('load: settings file at current schema passes through (M3-C-E: v2, M4-D abs
     waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
     ocMode: 'advanced', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
-    deviceId: null,
+    deviceId: null, theme: 'dark',
   });
 });
 
@@ -246,7 +246,7 @@ test('M3-C-E: a v1 settings file migrates on load; the absent ocMode follows the
     waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
-    deviceId: null,
+    deviceId: null, theme: 'dark',
   });
   // The migrated file is persisted back at the CURRENT schema (v2).
   const raw = JSON.parse(fs.readFileSync(real.settingsPath, 'utf8'));
@@ -328,4 +328,37 @@ test('M4-F: deviceId survives a save that does not mention it (read-modify-write
   const loaded = await store.loadSettings();
   await store.saveSettings({ ...loaded, ocOnBoot: true });
   assert.equal((await store.loadSettings()).deviceId, 1, 'a spread-save keeps the selection');
+});
+
+// 1.0.1 — the persisted UI theme (absent -> 'dark' default, validated on
+// save; the M7 fold: the round trip is asserted through a FRESH store
+// instance too, so it never rides the in-memory cache alone).
+test('1.0.1: theme — absent on old files reads dark; round trip persists; garbage degrades to dark', async (t) => {
+  const store = new ProfileStore({ dir: tempDir(t) });
+  assert.equal((await store.loadSettings()).theme, 'dark', 'missing settings file -> dark');
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', theme: 'midnight' });
+  assert.equal((await store.loadSettings()).theme, 'midnight');
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', theme: 'light' });
+  assert.equal((await store.loadSettings()).theme, 'light');
+  // A garbage persisted value degrades to 'dark' (never a crash, never a lie).
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', theme: 'rainbow' });
+  assert.equal((await store.loadSettings()).theme, 'dark');
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', theme: 42 });
+  assert.equal((await store.loadSettings()).theme, 'dark', 'non-string garbage degrades too');
+  // FRESH store instances on the same dir read the persisted theme (the
+  // round trip must not ride the in-memory sync cache alone — M7).
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', theme: 'midnight' });
+  assert.equal((await new ProfileStore({ dir: store.dir }).loadSettings()).theme, 'midnight');
+  const fresh = new ProfileStore({ dir: store.dir });
+  assert.equal((await fresh.loadSettings()).theme, 'midnight');
+  assert.equal(fresh.loadSettingsSync().theme, 'midnight', 'the sync cache carries it too');
+  // An OLD v2 settings file without the field reads dark (same absent-field
+  // mechanism as ocMode — NO schema bump).
+  const oldDir = tempDir(t);
+  fs.writeFileSync(path.join(oldDir, 'settings.json'), JSON.stringify({ schemaVersion: 2, waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' }));
+  assert.equal((await new ProfileStore({ dir: oldDir }).loadSettings()).theme, 'dark');
+  // A save that does not mention the theme keeps it (read-modify-write callers).
+  const loaded = await store.loadSettings();
+  await store.saveSettings({ ...loaded, ocOnBoot: true });
+  assert.equal((await store.loadSettings()).theme, 'midnight', 'a spread-save keeps the theme');
 });

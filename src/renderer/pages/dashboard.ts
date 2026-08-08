@@ -52,7 +52,15 @@ function statTiles(sample: TelemetrySample | null): Array<{ label: string; value
 /** The store slots that decide whether the dashboard must fully re-render. */
 function currentSig(ctx: PageContext): DashboardSig {
   const s = ctx.store.get();
-  return { health: s.health, caps: s.caps, bootError: s.bootError, driverDate: s.driverDate, sysinfo: s.sysinfo };
+  return {
+    health: s.health,
+    caps: s.caps,
+    bootError: s.bootError,
+    driverDate: s.driverDate,
+    sysinfo: s.sysinfo,
+    noIntel: s.noIntel,
+    osGpu: s.osGpu,
+  };
 }
 
 /** Last full-render signature (module state — telemetry ticks never touch it). */
@@ -103,6 +111,10 @@ function healthCard(ctx: PageContext): HTMLElement {
     bootError: s.bootError,
     driverDate: s.driverDate,
     waiverAccepted: s.caps?.waiverAccepted ?? null,
+    // 1.0.1 no-Intel round: the rows swap to the honest no-Intel texts on
+    // the no-device path ('No Intel Driver Found' / the OS GPU name).
+    hasIntelGpu: s.noIntel !== true,
+    osGpuName: s.osGpu?.name ?? null,
   });
 
   return el('section', { class: 'card health-card' }, [
@@ -161,13 +173,29 @@ export const dashboardPage: Page = {
         // with <= 1 device — the honest single-device degradation). Both the
         // header name and the card title track the selected device via the
         // store; the switch re-renders this page (selectDevice).
+        // 1.0.1 no-Intel round: on the no-device path the card shows the OS
+        // GPU name (sysinfo primary controller) + the honest 'Non supported
+        // GPU' note; the caps/state rows (driver/compute/clocks/ReBAR)
+        // degrade to '—' — there is no IGCL device to read.
         el('section', { class: 'card device-card' }, [
           el('div', { class: 'device-card-head' }, [
-            el('h2', { class: 'card-title', text: device?.name ?? 'No GPU detected' }),
+            el('h2', { class: 'card-title', text: s.noIntel ? (s.osGpu?.name ?? 'No GPU detected') : (device?.name ?? 'No GPU detected') }),
             buildDeviceSelect(ctx.store, (id) => void selectDevice(id)),
           ]),
-          device
-            ? el('div', { class: 'card-body kv-grid' }, [
+          ...(s.noIntel
+            ? [
+                el('div', { class: 'card-body kv-grid' }, [
+                  el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: '—' })]),
+                  el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: '—' })]),
+                  el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { text: '— MHz Core / — MHz Memory' })]),
+                  el('div', { class: 'kv kv-rebar' }, [
+                    el('span', { class: 'chip rebar-pill status-unknown', text: 'ReBAR —' }),
+                  ]),
+                ]),
+                el('p', { class: 'card-note', text: 'Non supported GPU — overclocking requires an Intel Arc GPU; this state is permanent on non-Intel machines.' }),
+              ]
+            : device
+              ? [el('div', { class: 'card-body kv-grid' }, [
                 el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: driverLine(device, s.driverDate) ?? device.driverVersion })]),
                 // M2b-B: no PCI ID, no persistent waiver status.
                 device.numXeCores > 0
@@ -187,8 +215,8 @@ export const dashboardPage: Page = {
                 el('div', { class: 'kv kv-rebar' }, [
                   el('span', { class: `chip rebar-pill status-${rebar.level}`, text: rebar.label }),
                 ]),
-              ])
-            : el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' }),
+              ])]
+            : [el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' })]),
         ]),
 
         // --- M3-A: the general GPU Health card (was the Service Status card) ---
@@ -235,9 +263,10 @@ export const dashboardPage: Page = {
     }
     // M2C-B B8 (M4-D user update): the device-card COMBINED clocks row
     // tracks the latest sample in place (the card itself only re-renders
-    // on status changes).
+    // on status changes). 1.0.1 no-Intel round: skipped on the no-device
+    // path — the row is the static honest '—' (no IGCL device to track).
     const clocksValue = container.querySelector<HTMLElement>('.card-grid .kv[data-label="Clocks"] span');
-    if (clocksValue) {
+    if (clocksValue && !ctx.store.get().noIntel) {
       const live = ctx.store.get();
       const dev = live.devices.find((d) => d.id === live.deviceId) ?? null;
       const mem = live.latestSample?.memClockMhz;

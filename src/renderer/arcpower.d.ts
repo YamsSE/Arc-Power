@@ -39,8 +39,13 @@ export interface ArcPowerApi {
   resetToDefaults(deviceId: number): Promise<ResetResponse>;
   waiverGet(deviceId: number): Promise<{ accepted: boolean }>;
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;
-  telemetryStart(deviceId: number): Promise<void>;
-  telemetryStop(deviceId: number): Promise<void>;
+  /** 1.0.1 no-Intel round: telemetryStart(null) starts the no-device mode
+   *  (a sentinel-keyed timer pushing sys-stats-ONLY samples). A non-negative
+   *  integer starts the per-device telemetry. */
+  telemetryStart(deviceId: number | null): Promise<void>;
+  /** 1.0.1 no-Intel round: telemetryStop(null) is the symmetric stop for
+   *  the no-device mode. */
+  telemetryStop(deviceId: number | null): Promise<void>;
   /** M3-A (read-side only): the registry-hacks catalog + live states. */
   registryCatalog(): Promise<RegistryCatalogResponse>;
   /** M3-B: apply one catalog action ELEVATED (Enable/Disable/Revert per the

@@ -75,3 +75,25 @@ export function rebarState(controller: VideoControllerInfo | null | undefined): 
   if (controller?.rebarActive === false) return { label: 'ReBAR off', level: 'error' };
   return { label: 'ReBAR —', level: 'unknown' };
 }
+
+/**
+ * 1.0.1 no-Intel round: the OS GPU — the PRIMARY NON-BASIC video controller
+ * of the sysinfo payload (the first controller that is not a
+ * basic-display/Microsoft fallback adapter — the same pick
+ * matchVideoController uses for a model-less device name). Null when the
+ * payload has no usable controller (degraded sysinfo / nothing but basic
+ * adapters). Pure, DOM-free, node-testable.
+ * @param {SysInfo | null} sysinfo
+ * @returns {{ name: string, vramBytes: number | null } | null}
+ */
+export function primaryVideoController(sysinfo: SysInfo | null): { name: string; vramBytes: number | null } | null {
+  const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
+  const primary = controllers.find((c) => c.name && !/basic|microsoft/i.test(c.name));
+  if (!primary?.name) return null;
+  return {
+    name: primary.name,
+    vramBytes: typeof primary.vramBytes === 'number' && Number.isFinite(primary.vramBytes) && primary.vramBytes > 0
+      ? primary.vramBytes
+      : null,
+  };
+}

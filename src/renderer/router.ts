@@ -118,6 +118,14 @@ export interface AppState {
   /** M4-D: the system-info payload (dashboard CPU & memory card). Null until
    *  the boot fetch lands (the card then re-renders via the sig). */
   sysinfo: SysInfo | null;
+  /** 1.0.1 no-Intel round: TRUE when the boot enumerated NO Intel GPU (the
+   *  devices list was empty) — the app runs in the no-device mode (no
+   *  caps/state, null-mode telemetry, honest no-Intel UI). */
+  noIntel: boolean;
+  /** 1.0.1 no-Intel round: the OS GPU (the sysinfo primary non-basic video
+   *  controller — { name, vramBytes } | null). The header, the dashboard
+   *  GPU card and the health rows read it; null while sysinfo has nothing. */
+  osGpu: { name: string; vramBytes: number | null } | null;
 }
 
 const INITIAL: AppState = {
@@ -139,6 +147,8 @@ const INITIAL: AppState = {
   featuresetId: null,
   catalog: null,
   sysinfo: null,
+  noIntel: false,
+  osGpu: null,
 };
 
 export class Store {

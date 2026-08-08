@@ -59,7 +59,7 @@ test('S1: the non-mock isElevated binding is the imported real probe, never unde
 test('F3: the oc-mode pre-seed (seedOcMode) runs BEFORE createWindow and registerIpc', () => {
   const src = fs.readFileSync(mainSrcPath, 'utf8');
   const seedLine = findLineNumber(src, 'seedOcMode(backend, store)');
-  const winLine = findLineNumber(src, 'const win = createWindow()');
+  const winLine = findLineNumber(src, 'const win = createWindow(');
   const ipcLine = findLineNumber(src, 'registerIpc({');
   assert.ok(
     seedLine < winLine && winLine < ipcLine,
@@ -75,7 +75,7 @@ test('F3: the oc-mode pre-seed (seedOcMode) runs BEFORE createWindow and registe
 
 test('F4: the ProfileStore construction uses an ISOLATED mock data dir and precedes createWindow', () => {
   const src = fs.readFileSync(mainSrcPath, 'utf8');
-  const winIdx = src.indexOf('const win = createWindow()');
+  const winIdx = src.indexOf('const win = createWindow(');
   assert.notEqual(winIdx, -1);
   // M4-E: --boot-apply mode constructs its OWN store in an early-return mode
   // (never reaches the window). The WINDOW-PATH store is the LAST
@@ -106,7 +106,7 @@ test('M4-E F1: the setup gate block runs AFTER the --apply-profile early return 
   const src = fs.readFileSync(mainSrcPath, 'utf8');
   const earlyReturnLine = findLineNumber(src, 'if (applyProfileId && !uiVerify)');
   const gateLine = findLineNumber(src, 'const installedBuild = app.isPackaged');
-  const winLine = findLineNumber(src, 'const win = createWindow()');
+  const winLine = findLineNumber(src, 'const win = createWindow(');
   assert.ok(
     earlyReturnLine < gateLine && gateLine < winLine,
     `ordering: the --apply-profile early return (main.js:${earlyReturnLine}) must precede the setup gate (main.js:${gateLine}) which must precede createWindow (main.js:${winLine}) — a tray-only apply must never run the gate (no schtasks waits, no UAC prompt)`,
@@ -125,7 +125,7 @@ test('M4-E F4: the setup gate check is started WITHOUT await and awaited only at
     'the gate check must never be awaited where it is started — a hung schtasks must not stall the first window',
   );
   const checkStartLine = findLineNumber(src, 'bootGateCheck = bootSetup.check()');
-  const winLine = findLineNumber(src, 'const win = createWindow()');
+  const winLine = findLineNumber(src, 'const win = createWindow(');
   assert.ok(
     checkStartLine < winLine,
     `the gate check must START before createWindow (main.js:${checkStartLine} < ${winLine}) so its verdict is typically in hand by the boot-apply decision`,
@@ -149,7 +149,7 @@ test('M4-E F4: the setup gate check is started WITHOUT await and awaited only at
 test('M4-F: the instance lock acquire precedes createWindow (the second instance quits before a window exists)', () => {
   const src = fs.readFileSync(mainSrcPath, 'utf8');
   const lockLine = findLineNumber(src, 'requestSingleInstanceLock: () => app.requestSingleInstanceLock()');
-  const winLine = findLineNumber(src, 'const win = createWindow()');
+  const winLine = findLineNumber(src, 'const win = createWindow(');
   assert.ok(
     lockLine < winLine,
     `ordering: the lock acquire (main.js:${lockLine}) must precede createWindow (main.js:${winLine}) — a second instance must quit before any window/backend work`,
@@ -189,7 +189,7 @@ test('M4-F: the second-instance handler restores the EXISTING window ref set aft
   const src = fs.readFileSync(mainSrcPath, 'utf8');
   const handlerLine = findLineNumber(src, "app.on('second-instance'");
   const assignLine = findLineNumber(src, 'windowForInstance = win;');
-  const winLine = findLineNumber(src, 'const win = createWindow()');
+  const winLine = findLineNumber(src, 'const win = createWindow(');
   assert.ok(
     handlerLine < winLine && winLine < assignLine,
     `ordering: the second-instance handler (main.js:${handlerLine}) is registered before createWindow (${winLine}) and the window ref is assigned after (${assignLine}) — the handler must operate on the live window, never a stale null`,

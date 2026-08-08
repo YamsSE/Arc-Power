@@ -503,9 +503,14 @@ export function vramBytesOfDevice(device, sysinfo) {
  * In-memory fixture — the default sysinfo adapter for tests and --ui-verify
  * (never spawns PowerShell). Fixed values so the dashboard CPU card and the
  * sysinfo IPC payload are deterministic in mock mode.
+ * 1.0.1 no-Intel round: RID_MOCK_NO_INTEL=1 switches the fixture's video
+ * controller to an AMD part ('AMD Radeon RX 7600'-style with vramBytes + a
+ * pnpDeviceId + rebarActive false) — the no-Intel machine shape the
+ * renderer's osGpu / header / GPU card read.
  * @param {{ cpu?: object, ram?: object, videoControllers?: object[] }} [overrides]
  */
 export function createMockSysinfo(overrides = {}) {
+  const noIntel = process.env.RID_MOCK_NO_INTEL === '1';
   return {
     get: async () => ({
       cpu: {
@@ -521,7 +526,15 @@ export function createMockSysinfo(overrides = {}) {
         manufacturer: 'G.Skill',
         ...(overrides.ram ?? {}),
       },
-      videoControllers: [
+      videoControllers: noIntel ? [
+        {
+          name: 'AMD Radeon RX 7600',
+          vramBytes: 8589934592, // 8 GiB
+          pnpDeviceId: 'PCI\\VEN_1002&DEV_7480&SUBSYS_24011462&REV_C7',
+          rebarActive: false,
+        },
+        ...(overrides.videoControllers ?? []),
+      ] : [
         {
           name: 'Intel(R) Arc(TM) A770 Graphics',
           vramBytes: 17179869184, // 16 GiB (the 16 GB config)

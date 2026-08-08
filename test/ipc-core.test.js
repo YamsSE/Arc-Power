@@ -145,7 +145,7 @@ function fakeStore(initial = {}) {
   const defaults = {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
     advancedModeAccepted: false, startWithWindows: false, startMinimized: false,
-    closeToTray: false, monitorLogToFile: false, deviceId: null,
+    closeToTray: false, monitorLogToFile: false, deviceId: null, theme: 'dark',
   };
   return {
     saved,
@@ -539,6 +539,90 @@ test('M4-D2: a throwing sysStats adapter never breaks the telemetry push', async
 });
 
 // ---------------------------------------------------------------------------
+// 1.0.1 no-Intel round — the list-devices init-failure degrade + the
+// no-device (null) telemetry mode
+// ---------------------------------------------------------------------------
+
+test('1.0.1: list-devices DEGRADES to [] on a backend INIT failure (IGCL DLL not found / ctlInit / enumeration failed)', async () => {
+  // The REAL backend on a no-Intel machine: init() fails (no Intel driver
+  // DLL), listDevices throws the init error, the handler answers [] — the
+  // renderer then boots in the no-device mode (health reports igclLoaded
+  // false too).
+  const backend = new IgclBackend({ findDll: () => null });
+  await assert.rejects(backend.init(), /IGCL runtime DLL not found/);
+  assert.ok(backend.initError, 'the initError getter exposes the init failure');
+  const { handlers } = createIpcHandlers({ backend, store: fakeStore(), emit: () => {} });
+  assert.deepEqual(await handlers['list-devices'](), []);
+});
+
+test('1.0.1: list-devices degrades to [] when the backend carries an initError (duck type — any IOCBackend)', async () => {
+  const failing = { listDevices: async () => { throw new Error('IGCL runtime DLL not found'); }, initError: new Error('IGCL runtime DLL not found') };
+  const { handlers } = createIpcHandlers({ backend: failing, store: fakeStore(), emit: () => {} });
+  assert.deepEqual(await handlers['list-devices'](), []);
+});
+
+test('1.0.1: list-devices KEEPS the throw for a NON-init IPC failure (no initError on the backend)', async () => {
+  const broken = { listDevices: async () => { throw new Error('hard IPC failure'); } };
+  const { handlers } = createIpcHandlers({ backend: broken, store: fakeStore(), emit: () => {} });
+  await assert.rejects(() => handlers['list-devices'](), /hard IPC failure/);
+});
+
+test('1.0.1: telemetry-start(null) — the no-device mode pushes sys-stats-ONLY samples (sentinel key, t: Date.now + the 4 OS-level fields)', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const emitted = [];
+  const { handlers, stopAllTelemetry } = createIpcHandlers({
+    backend,
+    store,
+    emit: (ch, p) => emitted.push([ch, p]),
+  });
+
+  // Idempotent start (like the device mode).
+  await handlers['telemetry-start'](null);
+  await handlers['telemetry-start'](null);
+  await new Promise((r) => setTimeout(r, 1100));
+  await stopAllTelemetry();
+
+  assert.ok(emitted.length >= 2, `expected >= 2 no-device samples, got ${emitted.length}`);
+  const sample = emitted[0][1];
+  assert.equal(emitted[0][0], 'telemetry:sample');
+  assert.equal(typeof sample.t, 'number', 't is the wall-clock timestamp');
+  assert.ok(Math.abs(sample.t - Date.now()) < 5000, 't tracks Date.now()');
+  assert.equal(sample.cpuUtilPct, 42, 'the mock sysStats util rides the sample');
+  assert.equal(sample.cpuTempC, 61);
+  assert.equal(sample.cpuFreqMhz, 4300);
+  assert.equal(sample.gpuMemUsedBytes, 2971324416);
+  // Sys-stats-ONLY: no device telemetry fields (the GPU tiles stay '—').
+  assert.equal(sample.gpuClockMhz, undefined);
+  assert.equal(sample.tempC, undefined);
+  assert.equal(sample.powerW, undefined);
+  assert.equal(sample.fanRpm, undefined);
+  assert.equal(sample.throttle, undefined);
+});
+
+test('1.0.1: telemetry-stop(null) stops the no-device mode; a device id is still validated', async () => {
+  const backend = new MockBackend();
+  const store = fakeStore();
+  const emitted = [];
+  const { handlers } = createIpcHandlers({
+    backend,
+    store,
+    emit: (ch, p) => emitted.push([ch, p]),
+  });
+
+  await handlers['telemetry-start'](null);
+  await new Promise((r) => setTimeout(r, 600));
+  await handlers['telemetry-stop'](null);
+  const countAtStop = emitted.length;
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(emitted.length, countAtStop, 'no samples after telemetry-stop(null)');
+  // The sentinel stop is idempotent and the device validation is unchanged.
+  await handlers['telemetry-stop'](null);
+  await assert.rejects(() => handlers['telemetry-start'](-1), /invalid device id/);
+  await assert.rejects(() => handlers['telemetry-stop'](-1), /invalid device id/);
+});
+
+// ---------------------------------------------------------------------------
 // Registry-catalog channel (M3-A) — read-side only: the default adapter is
 // the MOCK (never runs reg.exe), and there is NO apply channel.
 // ---------------------------------------------------------------------------
@@ -817,7 +901,7 @@ test('M4-D2: startup-app-set is REMOVED (tasks are gone — the renderer must dr
 
 function fakeProfileStore(initialProfiles = []) {
   const profiles = [...initialProfiles];
-  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null };
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null, theme: 'dark' };
   return {
     profiles,
     async loadProfiles() { return [...profiles]; },
@@ -858,7 +942,7 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '1.0.0', 'package.json version');
+  assert.equal(version, '1.0.1', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {
@@ -913,7 +997,7 @@ test('profiles channels: list -> save (create) -> rename -> delete round trip wi
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
-  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null } });
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null, theme: 'dark' } });
   await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
 
   const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
@@ -977,12 +1061,12 @@ test('profiles-settings-save: read-modify-write never clobbers waiverAccepted (n
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
   // Seed an accepted waiver (as waiver-accept would).
-  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false });
+  await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, theme: 'dark' });
 
   const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
-  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null, theme: 'dark' });
   const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
-  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null, theme: 'dark' });
 
   for (const bad of [null, 5, 'x', []]) {
     await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
@@ -1028,7 +1112,7 @@ test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWi
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
     advancedModeAccepted: false, startWithWindows: true, startMinimized: true, closeToTray: false,
-    monitorLogToFile: false, deviceId: null,
+    monitorLogToFile: false, deviceId: null, theme: 'dark',
   });
   // Turning one back off keeps the other.
   const back = await handlers['profiles-settings-save']({ startMinimized: false });
@@ -1299,6 +1383,46 @@ test('M4-F (S3): profiles-settings-save carries deviceId read-modify-write — a
   const { handlers: h2 } = createIpcHandlers({ backend: new MockBackend(), store: fresh, emit: () => {} });
   const out2 = await h2['profiles-settings-save']({ monitorLogToFile: true });
   assert.equal(out2.deviceId, null);
+});
+
+// 1.0.1 Themes (M4 + M7): the theme rides the profiles-settings-save
+// envelope read-modify-write — a toggle save keeps it, an explicit patch
+// persists it, and an INVALID patch.theme keeps the CURRENT theme (never a
+// silent reset to 'dark' at the channel — the store fallback stays 'dark'
+// for absent fields on old files).
+test('1.0.1: profiles-settings-save carries theme read-modify-write — a toggle save never clobbers it; invalid patch.theme keeps the current theme', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+  // The absent-field default rides the envelope too (profiles-list shape).
+  assert.equal((await handlers['profiles-list']()).settings.theme, 'dark');
+  // Seed a midnight theme (as a Settings Theme-card save would).
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', theme: 'midnight' });
+  // An explicit theme patch persists.
+  const light = await handlers['profiles-settings-save']({ theme: 'light' });
+  assert.equal(light.theme, 'light');
+  assert.equal((await store.loadSettings()).theme, 'light');
+  // A TOGGLE save (no theme in the patch) keeps the persisted theme (M7:
+  // the envelope carry — the old code path would have dropped it).
+  const toggle = await handlers['profiles-settings-save']({ monitorLogToFile: true });
+  assert.equal(toggle.theme, 'light', 'a toggle save keeps the theme');
+  assert.equal(toggle.monitorLogToFile, true, 'the toggle itself landed');
+  // An INVALID theme patch keeps the CURRENT theme — never a silent reset
+  // to 'dark' (M4).
+  const bad = await handlers['profiles-settings-save']({ theme: 'rainbow' });
+  assert.equal(bad.theme, 'light', 'a garbage patch.theme keeps the current theme');
+  const bad2 = await handlers['profiles-settings-save']({ theme: 42 });
+  assert.equal(bad2.theme, 'light', 'a non-string patch.theme keeps the current theme');
+  const bad3 = await handlers['profiles-settings-save']({ theme: null });
+  assert.equal(bad3.theme, 'light', 'a null patch.theme keeps the current theme');
+  // An explicit valid patch still lands after the invalid attempts.
+  const dark = await handlers['profiles-settings-save']({ theme: 'dark' });
+  assert.equal(dark.theme, 'dark');
+  // The envelope NEVER chooses the theme for the toggles: an absent
+  // persisted field (old file) stays 'dark' through a toggle save.
+  const fresh = fakeProfileStore();
+  const { handlers: h2 } = createIpcHandlers({ backend: new MockBackend(), store: fresh, emit: () => {} });
+  const out2 = await h2['profiles-settings-save']({ monitorLogToFile: true });
+  assert.equal(out2.theme, 'dark', 'an absent persisted theme stays dark');
 });
 
 test('M4-F: the deviceId boot resolution — persisted wins when enumerated, else devices[0] + re-persist (self-healing)', async () => {

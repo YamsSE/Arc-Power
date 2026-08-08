@@ -35,6 +35,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODES } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
+import { THEMES } from './store/profile-store.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -387,8 +388,41 @@ export function createIpcHandlers({
   const mockRegistryState = registryCatalog && registryApply ? null : createMockRegistryState();
   const catalogAdapter = registryCatalog ?? createMockRegistryCatalog(REGISTRY_CATALOG, { state: mockRegistryState });
   const registryApplyAdapter = registryApply ?? createMockRegistryApply(REGISTRY_CATALOG, { state: mockRegistryState });
-  /** @type {Map<number, TelemetryService>} */
+  /**
+   * 1.0.1 no-Intel round (m3): the SENTINEL key for the no-device telemetry
+   * mode (telemetry-start(null)) in the shared telemetry Map. A real device
+   * id is always a non-negative integer, so -1 can never collide.
+   */
+  const NULL_DEVICE_KEY = -1;
+  /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
+
+  /**
+   * 1.0.1 no-Intel round: the no-device telemetry mode — a sentinel-keyed
+   * timer pushing sys-stats-ONLY samples (t: Date.now() + the 4 sys-stats
+   * fields, all OS-level counters that work on ANY GPU). The device
+   * telemetry fields are absent, so the GPU tiles/readouts honestly stay
+   * '—' while the CPU util/temp + GPU-memory tiles go live. Same 500 ms
+   * cadence as the device TelemetryService; the boot-level log-to-file
+   * subscription consumes the same telemetry:sample push, so CSV logging
+   * works for free.
+   */
+  const startNullTelemetry = async () => {
+    if (telemetry.has(NULL_DEVICE_KEY)) return;
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const extra = await sysStats.sample();
+          emit('telemetry:sample', { t: Date.now(), ...extra });
+        } catch {
+          // a stats failure must never break the timer (skip this tick)
+        }
+      })();
+    }, 500);
+    telemetry.set(NULL_DEVICE_KEY, {
+      stop: async () => clearInterval(timer),
+    });
+  };
 
   const startTelemetry = async (deviceId) => {
     if (telemetry.has(deviceId)) return;
@@ -487,7 +521,23 @@ export function createIpcHandlers({
   const handlers = {
     'health': async () => collectHealth(backend),
 
-      'list-devices': async () => backend.listDevices(),
+      'list-devices': async () => {
+        try {
+          return await backend.listDevices();
+        } catch (err) {
+          // 1.0.1 no-Intel round: a backend INIT failure (the IGCL runtime
+          // DLL not found / ctlInit / enumeration failed — health then
+          // reports igclLoaded false) degrades to an EMPTY list instead of
+          // throwing: the renderer distinguishes "no Intel GPU" (health
+          // igclLoaded false + devices empty) and continues booting in the
+          // no-device mode. The catch keeps the throw for any NON-init IPC
+          // failure (the smoke/apply flows keep their own init handling).
+          if (typeof backend.initError !== 'undefined' && backend.initError !== null) {
+            return [];
+          }
+          throw err;
+        }
+      },
 
       // M4-F: the persisted GPU selection. device-get is the boot read (the
       // persisted id may be null — absent field -> the devices[0] fallback
@@ -642,11 +692,28 @@ export function createIpcHandlers({
       },
 
       'telemetry-start': async (deviceId) => {
+        // 1.0.1 no-Intel round: telemetry-start(null) starts the no-device
+        // mode (the sentinel-keyed sys-stats-only timer). A real device id
+        // is still validated as a non-negative integer.
+        if (deviceId === null || deviceId === undefined) {
+          await startNullTelemetry();
+          return;
+        }
         assertValidDeviceId(deviceId);
         await startTelemetry(deviceId);
       },
 
       'telemetry-stop': async (deviceId) => {
+        // 1.0.1 no-Intel round (m3): telemetry-stop(null) is the SYMMETRIC
+        // stop for the no-device mode (sentinel key in the shared Map).
+        if (deviceId === null || deviceId === undefined) {
+          const svc = telemetry.get(NULL_DEVICE_KEY);
+          if (svc) {
+            await svc.stop();
+            telemetry.delete(NULL_DEVICE_KEY);
+          }
+          return;
+        }
         assertValidDeviceId(deviceId);
         const svc = telemetry.get(deviceId);
         if (svc) {
@@ -918,6 +985,14 @@ export function createIpcHandlers({
           // a Settings/Profiles save can never clobber device-set's write
           // (normalized like the store: non-negative integers or null).
           deviceId: Number.isInteger(cur.deviceId) && cur.deviceId >= 0 ? cur.deviceId : null,
+          // 1.0.1 Themes (M4): the persisted UI theme rides the envelope
+          // read-modify-write like the rest. An INVALID patch.theme keeps
+          // the CURRENT theme — never a silent reset to 'dark' (the store
+          // fallback stays 'dark' for absent fields on old files, but a
+          // garbage patch must not blow away the user's choice).
+          theme: patch.theme === undefined
+            ? cur.theme
+            : (THEMES.includes(patch.theme) ? patch.theme : cur.theme),
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when

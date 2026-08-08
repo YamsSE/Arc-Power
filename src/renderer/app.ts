@@ -12,13 +12,15 @@ import { initTitlebar } from './components/titlebar.ts';
 import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { tuningPage } from './pages/tuning.ts';
-import { monitoringPage } from './pages/monitoring.ts';
+import { monitoringPage, redrawMonitoringGraphs } from './pages/monitoring.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
 import { setMonitorLogToFile, setCurrentLogFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
 import { resolveBootDevice } from './pure/device.ts';
+import { isValidTheme } from './pure/theme.ts';
+import { primaryVideoController } from './pure/sysinfo.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -30,6 +32,17 @@ const PAGES: Record<PageId, Page> = {
 };
 
 const store = new Store();
+
+// 1.0.1 Themes: apply a theme id to <html> + recolor the monitoring
+// canvases NOW (N9 — drawSeries reads the CSS vars at draw time; a theme
+// switch must not wait for the next telemetry tick). The dataset write
+// lives HERE (and in settings.ts), never in pure/theme.ts (N8 — that module
+// stays DOM-free). An invalid id degrades to 'dark' (the same fallback the
+// store applies).
+export function applyTheme(theme: string): void {
+  document.documentElement.dataset.theme = isValidTheme(theme) ? theme : 'dark';
+  redrawMonitoringGraphs();
+}
 const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElement, store, {
   // M2D: the mock featureset swap re-reads caps + state + device + health in
   // main (one mock:set-featureset round trip) and re-renders the whole page
@@ -41,6 +54,10 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
   // arc-igpu line across a swap — pairing it with b580's percent ranges
   // would render the wrong surface).
   onFeaturesetSwap: async (id: string) => {
+    // 1.0.1 no-Intel round (m5): the swap is a NO-OP in the no-device mode —
+    // a swap would store caps/state into the no-Intel store and break the
+    // presentation (the dropdown itself is hidden there too).
+    if (store.get().noIntel) return;
     try {
       const out = await api.mockSetFeatureset(id);
       const curId = store.get().deviceId;
@@ -150,6 +167,22 @@ async function boot() {
   }
   store.set({ health });
 
+  // 1.0.1 Themes (M3): the persisted UI theme + the M4-D2 log-to-file
+  // toggle ride the SAME profiles envelope read, hoisted right after health
+  // so the theme applies EARLY (the first paint is already on the persisted
+  // theme — no visible flash) and the boot-level telemetry subscription
+  // below sees the log toggle in time. A read failure degrades to the dark
+  // default + logging off (never blocks boot).
+  let persistedTheme = 'dark';
+  try {
+    const env = await api.profilesList();
+    persistedTheme = isValidTheme(env.settings.theme) ? env.settings.theme : 'dark';
+    setMonitorLogToFile(env.settings.monitorLogToFile === true);
+  } catch {
+    setMonitorLogToFile(false);
+  }
+  applyTheme(persistedTheme);
+
   // M2D: in mock mode fill the featureset dropdown (the mock-only IPC; real
   // mode has no channel — the catch keeps the dropdown hidden).
   if (health.backend === 'mock') {
@@ -168,27 +201,37 @@ async function boot() {
     return;
   }
   store.set({ devices });
-  if (devices.length === 0) {
-    store.set({ bootError: 'No Intel Arc GPU detected. Install the driver or run with RID_BACKEND=mock to try the UI without hardware.' });
-    return;
-  }
 
-  // M4-F: boot selection — the persisted deviceId wins when it matches an
-  // enumerated id (device-get; the MAIN-side boot resolution is the
-  // authority and has already self-healed the persisted id before this
-  // round trip), else devices[0]. The main-side resolution applies the
-  // same rule to the boot-apply target, so the renderer and the boot
-  // apply can never disagree.
-  let persistedDeviceId: number | null = null;
-  try {
-    persistedDeviceId = (await api.deviceGet()).deviceId;
-  } catch {
-    persistedDeviceId = null; // degraded: devices[0]
+  // 1.0.1 no-Intel round (S1): the boot branches on devices.length === 0
+  // (NEVER on a derived flag). On the no-Intel path the WHOLE deviceId
+  // resolution block below is SKIPPED (deviceId stays null — resolveBootDevice
+  // returns null on [] and devices[0].id would throw a TypeError; the block
+  // stays exactly as-is for the non-empty path). caps/state stay null there;
+  // the boot-level telemetry subscription + telemetryStart(null) (the
+  // no-device mode) run on BOTH paths; the noIntel store flag is set after.
+  const noIntel = devices.length === 0;
+  // M4-F: the boot device id — resolved ONLY on the Intel path (S1: the
+  // no-Intel path skips the whole resolution block and deviceId stays
+  // null). Read by the caps/state block and the final telemetryStart below.
+  let deviceId: number | null = null;
+  if (!noIntel) {
+    // M4-F: boot selection — the persisted deviceId wins when it matches an
+    // enumerated id (device-get; the MAIN-side boot resolution is the
+    // authority and has already self-healed the persisted id before this
+    // round trip), else devices[0]. The main-side resolution applies the
+    // same rule to the boot-apply target, so the renderer and the boot
+    // apply can never disagree.
+    let persistedDeviceId: number | null = null;
+    try {
+      persistedDeviceId = (await api.deviceGet()).deviceId;
+    } catch {
+      persistedDeviceId = null; // degraded: devices[0]
+    }
+    // (devices.length > 0 is guaranteed here — the empty enumeration branched
+    // above — so the resolution is always a concrete id).
+    deviceId = resolveBootDevice(devices, persistedDeviceId) ?? devices[0].id;
+    store.set({ deviceId });
   }
-  // (devices.length > 0 is guaranteed here — the empty enumeration returned
-  // above — so the resolution is always a concrete id).
-  const deviceId = resolveBootDevice(devices, persistedDeviceId) ?? devices[0].id;
-  store.set({ deviceId });
 
   // App version for the header line (M2C-B B3). Failure degrades to the
   // initial placeholder — the header stays up.
@@ -227,6 +270,12 @@ async function boot() {
   } catch {
     store.set({ sysinfo: null });
   }
+  // 1.0.1 no-Intel round: the OS GPU — the sysinfo PRIMARY non-basic video
+  // controller (mirror matchVideoController's pick for a model-less device
+  // name; pure helper). Set on the no-Intel path only (the Intel path
+  // renders the IGCL device list instead). Lands in the SAME store.set as
+  // the noIntel flag below so the dashboard GPU card re-renders once.
+  const osGpu = noIntel ? primaryVideoController(store.get().sysinfo) : null;
 
   // M3-A: the registry-hacks catalog (Tweaks page, read-side). Read-only
   // reg queries; a failure degrades to an empty catalog so the page can
@@ -258,48 +307,48 @@ async function boot() {
     store.set({ ocMode: 'stock' });
   }
 
-  try {
-    const caps = await api.getCapabilities(deviceId);
-    const state = await api.getCurrentSettings(deviceId);
-    store.set({ caps, state });
-    // M4-B: the OC waiver prompt shows at EVERY startup while the waiver is
-    // NOT accepted (the user: "please prompt it when the Program opens").
-    // M4-D (user, PERMANENT acceptance): a PERSISTED acceptance is the
-    // user's permanent consent — the boot prompt is SKIPPED entirely then
-    // (the accepted-state reminder dialog is REMOVED; the dashboard health
-    // row remains the status display). The driver-side waiver state cannot
-    // be probed from the renderer (IGCL exposes only ctlOverclockWaiverSet
-    // — no getter), so the dialog at open is the only reliable visibility
-    // for never-accepted sessions. NON-BLOCKING: the boot sequence
-    // continues; a declined prompt must not break it. Accept patches the
-    // store caps so the dashboard GPU Health card row flips to Accepted in
-    // place.
-    if (caps.waiverAccepted !== true) {
-      void (async () => {
-        const decision = await promptWaiverAtBoot(deviceId, caps.deviceName || 'this GPU');
-        if (decision !== 'accepted') return;
-        const live = store.get();
-        if (live.caps && live.caps.waiverAccepted !== true) {
-          store.set({ caps: { ...live.caps, waiverAccepted: true } });
-        }
-      })();
+  if (noIntel) {
+    // 1.0.1 no-Intel round: caps/state are SKIPPED on the no-device path
+    // (they stay null — there is no IGCL device to read, and the waiver
+    // prompt + the OC surface must never render).
+  } else {
+    try {
+      const caps = await api.getCapabilities(deviceId as number);
+      const state = await api.getCurrentSettings(deviceId as number);
+      store.set({ caps, state });
+      // M4-B: the OC waiver prompt shows at EVERY startup while the waiver is
+      // NOT accepted (the user: "please prompt it when the Program opens").
+      // M4-D (user, PERMANENT acceptance): a PERSISTED acceptance is the
+      // user's permanent consent — the boot prompt is SKIPPED entirely then
+      // (the accepted-state reminder dialog is REMOVED; the dashboard health
+      // row remains the status display). The driver-side waiver state cannot
+      // be probed from the renderer (IGCL exposes only ctlOverclockWaiverSet
+      // — no getter), so the dialog at open is the only reliable visibility
+      // for never-accepted sessions. NON-BLOCKING: the boot sequence
+      // continues; a declined prompt must not break it. Accept patches the
+      // store caps so the dashboard GPU Health card row flips to Accepted in
+      // place.
+      if (caps.waiverAccepted !== true) {
+        void (async () => {
+          const decision = await promptWaiverAtBoot(deviceId as number, caps.deviceName || 'this GPU');
+          if (decision !== 'accepted') return;
+          const live = store.get();
+          if (live.caps && live.caps.waiverAccepted !== true) {
+            store.set({ caps: { ...live.caps, waiverAccepted: true } });
+          }
+        })();
+      }
+    } catch (err) {
+      store.set({ bootError: `Could not read device state: ${err instanceof Error ? err.message : String(err)}` });
+      toast('error', 'Device state failed', err instanceof Error ? err.message : String(err));
+      return;
     }
-  } catch (err) {
-    store.set({ bootError: `Could not read device state: ${err instanceof Error ? err.message : String(err)}` });
-    toast('error', 'Device state failed', err instanceof Error ? err.message : String(err));
-    return;
   }
 
-  // M4-D2 (§10): the Monitoring "Log to file" persisted toggle — the BOOT
-  // sequence reads it ONCE (the Settings/Monitoring pages update the shared
-  // state after their saves); a read failure degrades to off (never blocks
-  // boot).
-  try {
-    const env = await api.profilesList();
-    setMonitorLogToFile(env.settings.monitorLogToFile === true);
-  } catch {
-    setMonitorLogToFile(false);
-  }
+  // M4-D2 (§10): the Monitoring "Log to file" + the 1.0.1 theme are read
+  // ONCE at boot from the hoisted profiles envelope (right after health —
+  // M3); the Settings/Monitoring pages update the shared state after their
+  // saves.
 
   // M4-F (M5): the boot-level telemetry subscription is registered OUTSIDE
   // the telemetryStart try — a later switch's telemetryStart must ALWAYS
@@ -312,6 +361,9 @@ async function boot() {
   // sample's own fields make up the rest). Same tick cadence as the
   // telemetry push — NO extra timers. The append result carries the CSV
   // path — surfaced to the Monitoring page's "current log path" line.
+  // 1.0.1 no-Intel round (S1): registered on BOTH boot paths — the
+  // no-device telemetry push (telemetry-start null mode) rides the SAME
+  // subscription, so CSV logging works for free there.
   api.onTelemetrySample((sample) => {
     store.set({ latestSample: sample });
     if (getMonitorLogToFile()) {
@@ -325,13 +377,30 @@ async function boot() {
     }
   });
 
-  try {
-    await api.telemetryStart(deviceId);
-  } catch (err) {
-    toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
-  }
+  if (noIntel) {
+    // 1.0.1 no-Intel round: the no-device telemetry mode —
+    // telemetryStart(null) pushes sys-stats-ONLY samples (t: Date.now() +
+    // cpuUtilPct/cpuTempC/cpuFreqMhz/gpuMemUsedBytes — all OS-level, they
+    // work on any GPU); the monitoring CPU/GPU-mem tiles go live, the GPU
+    // device tiles honestly stay '—'.
+    try {
+      await api.telemetryStart(null);
+    } catch (err) {
+      toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
+    }
+    // S1: the noIntel store flag lands AFTER the null-mode start (and in
+    // the same set as osGpu so the dashboard GPU card re-renders once).
+    store.set({ noIntel: true, osGpu });
+    console.log('[renderer] boot complete — no Intel GPU');
+  } else {
+    try {
+      await api.telemetryStart(deviceId as number);
+    } catch (err) {
+      toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
+    }
 
-  console.log(`[renderer] boot complete — device ${deviceId}${health?.backend === 'mock' ? ' (mock)' : ''}`);
+    console.log(`[renderer] boot complete — device ${deviceId}${health?.backend === 'mock' ? ' (mock)' : ''}`);
+  }
 }
 
 void boot();

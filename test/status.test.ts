@@ -107,6 +107,39 @@ test('deviceRow: device present -> ok with its name; boot error -> error; else u
   assert.deepEqual(deviceRow(bootFailed), { id: 'device', label: 'Device detected', level: 'error', detail: 'No Intel Arc GPU detected' });
 });
 
+// ---------------------------------------------------------------------------
+// 1.0.1 no-Intel round — the health rows on the no-device path
+// ---------------------------------------------------------------------------
+
+test('1.0.1: driverRow on the no-Intel path reads "No Intel Driver Found" (warn) — NEVER the raw IGCL/error text', () => {
+  // The REAL no-Intel machine shape: health carries the IGCL error text, but
+  // the row must show the honest no-Intel text instead (checked BEFORE the
+  // error branches).
+  const noIntelHealth: HealthInput = input({
+    hasIntelGpu: false,
+    device: null,
+    health: { backend: 'igcl', igclLoaded: false, driverVersion: null, levelZeroOk: false, error: 'IGCL runtime DLL not found' },
+  });
+  assert.deepEqual(driverRow(noIntelHealth), { id: 'driver', label: 'Driver installed', level: 'warn', detail: 'No Intel Driver Found' });
+  // Even with NO health report at all (boot in progress) the no-Intel text
+  // wins over the error/bootError branches.
+  assert.deepEqual(driverRow(input({ hasIntelGpu: false, health: null, bootError: 'something' })), {
+    id: 'driver', label: 'Driver installed', level: 'warn', detail: 'No Intel Driver Found',
+  });
+});
+
+test('1.0.1: deviceRow on the no-Intel path shows the OS GPU name (warn, no error)', () => {
+  assert.deepEqual(deviceRow(input({ hasIntelGpu: false, device: null, osGpuName: 'AMD Radeon RX 7600' })), {
+    id: 'device', label: 'Device detected', level: 'warn', detail: 'AMD Radeon RX 7600',
+  });
+  // No OS GPU known -> the honest degradation, never an error.
+  assert.deepEqual(deviceRow(input({ hasIntelGpu: false, device: null, osGpuName: null })), {
+    id: 'device', label: 'Device detected', level: 'warn', detail: 'No GPU detected',
+  });
+  // A real Intel device with hasIntelGpu unset keeps the legacy ok state.
+  assert.equal(deviceRow(input()).level, 'ok');
+});
+
 test('M4-A: waiverRow — LIVE caps.waiverAccepted drives Accepted/Not Accepted (unknown before caps land)', () => {
   assert.deepEqual(waiverRow(input()), { id: 'waiver', label: 'OC waiver', level: 'unknown', detail: 'Waiting for device…' });
   assert.deepEqual(waiverRow(input({ waiverAccepted: true })), { id: 'waiver', label: 'OC waiver', level: 'ok', detail: 'Accepted' });
@@ -176,6 +209,8 @@ const dashSig = (patch: Partial<DashboardSig> = {}): DashboardSig => ({
   bootError: null,
   driverDate: null,
   sysinfo: null,
+  noIntel: false,
+  osGpu: null,
   ...patch,
 });
 
@@ -213,6 +248,12 @@ test('M4-D: the sysinfo landing re-renders the dashboard (the CPU card appears w
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ sysinfo })), true);
   // The same sysinfo object reference does NOT re-render (telemetry-tick-like).
   assert.equal(dashboardNeedsFullRender(sig, dashSig({ sysinfo: null })), false);
+});
+
+test('1.0.1: the noIntel flag + osGpu landing re-render the dashboard (the GPU card switches to the no-Intel layout)', () => {
+  const sig = dashSig();
+  assert.equal(dashboardNeedsFullRender(sig, dashSig({ noIntel: true, osGpu: { name: 'AMD Radeon RX 7600', vramBytes: 8589934592 } })), true);
+  assert.equal(dashboardNeedsFullRender(sig, dashSig({ noIntel: false, osGpu: null })), false);
 });
 
 test('dashboardNeedsFullRender: the first update always renders', () => {

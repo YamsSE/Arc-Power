@@ -117,6 +117,18 @@ export class IgclBackend {
     return next;
   }
 
+  /**
+   * 1.0.1 no-Intel round: the init-class failure — null when init()
+   * succeeded (or never ran). The list-devices IPC handler degrades to an
+   * EMPTY list ONLY when this is set (an AMD machine: the IGCL runtime DLL
+   * is missing, ctlInit fails, or device enumeration fails) — any other
+   * list-devices throw stays a hard IPC failure.
+   * @returns {Error | null}
+   */
+  get initError() {
+    return this._initError ?? null;
+  }
+
   _libOrThrow() {
     if (!this._lib) throw new Error('backend not initialized (call init() first)');
     return this._lib;
@@ -188,6 +200,20 @@ export class IgclBackend {
   // Devices + capabilities
   // -------------------------------------------------------------------------
 
+  /**
+   * 1.0.1 no-Intel round: record an ENUMERATION failure as an init-CLASS
+   * failure (initError) before rethrowing — ctlEnumerateDevices /
+   * ctlGetDeviceProperties failing means the backend cannot enumerate any
+   * usable GPU, which is the same no-Intel degrade the list-devices IPC
+   * maps to [] (health then reports igclLoaded false). Never overwrites a
+   * real init failure.
+   * @param {Error} err
+   */
+  _enumFail(err) {
+    if (!this._initError) this._initError = err;
+    throw err;
+  }
+
   async _ensureDevices() {
     if (this._devices) return this._devices;
     await this.init();
@@ -198,7 +224,7 @@ export class IgclBackend {
     koffi.encode(countBuf, 'uint32', 0);
     let result = lib.ctlEnumerateDevices(api, countBuf, null);
     if (result !== CTL_RESULT.SUCCESS) {
-      throw new Error(`ctlEnumerateDevices(count) failed: ${describeResult(result)}`);
+      this._enumFail(new Error(`ctlEnumerateDevices(count) failed: ${describeResult(result)}`));
     }
     const count = koffi.decode(countBuf, 'uint32');
     const devices = [];
@@ -208,7 +234,7 @@ export class IgclBackend {
     koffi.encode(countBuf, 'uint32', count);
     result = lib.ctlEnumerateDevices(api, countBuf, handlesBuf);
     if (result !== CTL_RESULT.SUCCESS) {
-      throw new Error(`ctlEnumerateDevices(fill) failed: ${describeResult(result)}`);
+      this._enumFail(new Error(`ctlEnumerateDevices(fill) failed: ${describeResult(result)}`));
     }
 
     for (let i = 0; i < count; i++) {
@@ -217,7 +243,7 @@ export class IgclBackend {
       koffi.encode(propsBuf, 'ctl_device_adapter_properties_t', { Size: koffi.sizeof('ctl_device_adapter_properties_t'), Version: 3 });
       result = lib.ctlGetDeviceProperties(handle, propsBuf);
       if (result !== CTL_RESULT.SUCCESS) {
-        throw new Error(`ctlGetDeviceProperties(${i}) failed: ${describeResult(result)}`);
+        this._enumFail(new Error(`ctlGetDeviceProperties(${i}) failed: ${describeResult(result)}`));
       }
       const p = koffi.decode(propsBuf, 'ctl_device_adapter_properties_t');
       // M4-B/M4-D: VRAM source — the bundled bindings expose NO memory-size

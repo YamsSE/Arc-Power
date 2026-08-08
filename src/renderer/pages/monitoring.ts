@@ -490,3 +490,13 @@ function redrawAll(): void {
     drawSeries(canvas, mon.series[id] ?? [], crosshair);
   }
 }
+
+/**
+ * 1.0.1 (N9): redraw the canvases NOW — a theme switch recolors the graphs
+ * immediately (drawSeries reads the CSS vars at draw time; without this
+ * hook the graphs would keep the old palette until the next telemetry
+ * tick). No-op when the Monitoring page is not mounted.
+ */
+export function redrawMonitoringGraphs(): void {
+  redrawAll();
+}

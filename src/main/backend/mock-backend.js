@@ -92,6 +92,12 @@ export class MockBackend {
     // RID_MOCK_MULTI_DEVICE=1 knob (or the constructor flag for tests);
     // device 1 is the arc-igpu line with DISTINCT caps/state/telemetry.
     this._multiDevice = opts.multiDevice === true || process.env.RID_MOCK_MULTI_DEVICE === '1';
+    // 1.0.1 no-Intel round: the no-Intel session (RID_MOCK_NO_INTEL=1 or the
+    // constructor flag) — listDevices enumerates NOTHING and health reports
+    // igclLoaded false, the exact shape a REAL no-Intel machine reports
+    // (the IGCL init failure degrades to an empty list in main). The
+    // renderer then boots in the no-device mode.
+    this._noIntel = opts.noIntel === true || process.env.RID_MOCK_NO_INTEL === '1';
     // Devices > 0 live here; device 0 is the legacy single-device fields
     // (_device/_caps/_state/_tick/_energyStepJ/_waiverAccepted/
     // _telemetryCbs — the pre-M4-F mock, pinned directly by tests).
@@ -413,6 +419,10 @@ export class MockBackend {
   }
 
   async listDevices() {
+    // 1.0.1 no-Intel round: the no-Intel session enumerates NOTHING — the
+    // renderer's no-device boot path (the same shape a real no-Intel
+    // machine produces after the init-failure degrade in main).
+    if (this._noIntel) return [];
     const out = [{ ...this._device }];
     for (const e of this._extraDevices.values()) out.push({ ...e.device });
     return out;
@@ -718,6 +728,18 @@ export class MockBackend {
   }
 
   async health() {
+    // 1.0.1 no-Intel round: the no-Intel session reports the same shape a
+    // REAL no-Intel machine reports — IGCL not loaded (the renderer keys
+    // the no-device mode on health.igclLoaded false + an empty device
+    // list). No error text — the honest no-Intel rows must never show the
+    // raw IGCL error.
+    if (this._noIntel) {
+      return {
+        igclLoaded: false,
+        driverVersion: null,
+        levelZeroOk: false,
+      };
+    }
     return {
       igclLoaded: true,
       driverVersion: `${this._featureset.driverVersion} (mock fixture)`,

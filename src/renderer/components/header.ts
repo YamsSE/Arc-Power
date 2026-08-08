@@ -62,10 +62,12 @@ export class GpuHeader {
     const s = this.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
     const health = s.health;
-    // M2D: the featureset dropdown — mock mode only (empty list in real mode
-    // because the store only fills it from the mock-only IPC).
+    // 1.0.1 no-Intel round (m5): the featureset dropdown is HIDDEN in the
+    // no-device mode (mock mode) — the swap would store caps/state into the
+    // no-Intel store and break the presentation (it is also a no-op in
+    // app.ts). The mock badge stays (it reports the honest backend kind).
     const mockBadge = health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null;
-    const fsSelect = health?.backend === 'mock' && s.featuresets.length > 0
+    const fsSelect = health?.backend === 'mock' && !s.noIntel && s.featuresets.length > 0
       ? el('select', {
           class: 'featureset-select',
           title: 'Mock device featureset (dev only)',
@@ -79,14 +81,24 @@ export class GpuHeader {
           return opt;
         }))
       : null;
+    // 1.0.1 no-Intel round: the header shows the OS GPU (sysinfo primary
+    // controller) with 'Non supported GPU' REPLACING the version line (n10
+    // — the user's exact ask); while the OS GPU is unknown the name reads
+    // '—' (only 'No GPU detected' when sysinfo has nothing at all).
+    const gpuName = s.noIntel
+      ? (s.osGpu?.name ?? (s.sysinfo?.videoControllers?.length ? '—' : 'No GPU detected'))
+      : device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power');
+    const gpuMeta = s.noIntel
+      ? 'Non supported GPU'
+      : s.bootError ?? `${versionLine(s.appVersion)} Alpha`;
     clear(this.mount);
     this.mount.append(
       el('div', { class: 'gpu-header' }, [
         el('div', { class: 'gpu-identity' }, [
-          el('div', { class: 'gpu-name', text: device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power') }),
+          el('div', { class: 'gpu-name', text: gpuName }),
           // M4-A: the display label carries the " Alpha" suffix; the app:version
-          // IPC keeps the bare semver (test/ipc-core pins '1.0.0').
-          el('div', { class: 'gpu-meta', text: s.bootError ?? `${versionLine(s.appVersion)} Alpha` }),
+          // IPC keeps the bare semver (test/ipc-core pins '1.0.1').
+          el('div', { class: 'gpu-meta', text: gpuMeta }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),
       ]),

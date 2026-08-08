@@ -6,7 +6,7 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant — no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.0 Alpha" (app:version IPC + the display Alpha suffix — the IPC
+//       1.0.1 Alpha" (app:version IPC + the display Alpha suffix — the IPC
 //       keeps the bare semver) — the driver version + date live in the
 //       dashboard device card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); no PCI ID anywhere;
@@ -525,8 +525,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
   // the driver line moved to the dashboard device card.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -543,6 +543,23 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (await js(`document.body.textContent.includes('Service Status')`)) fail('M3-A: "Service Status" is still rendered somewhere');
   if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS is still surfaced as a status item');
   step('version-line', `header line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; no status dot / Service Status label`);
+
+  // --- 1.0.1 Themes (M3): the persisted theme applies at BOOT --------------
+  // The attribute lives on <html> (documentElement.dataset.theme), written
+  // by the boot sequence right after health + the hoisted profiles envelope
+  // read. The default session boots on Dark Steel (the M2 mock seed);
+  // RID_MOCK_THEME=light flips the seed for the light-boot sanity run. The
+  // COMPUTED --bg assertion pins the equal-specificity ordering hazard (the
+  // [data-theme] blocks must win over :root).
+  const bootTheme = process.env.RID_MOCK_THEME === 'light' ? 'light' : 'dark';
+  const bootBg = bootTheme === 'light' ? '#f2f4f8' : '#0f1116';
+  if (!(await waitFor(win, `document.documentElement.dataset.theme === '${bootTheme}'`, 8000))) {
+    fail(`1.0.1: the boot theme attribute is '${await js(`document.documentElement.dataset.theme ?? ''`)}' (expected '${bootTheme}')`);
+  }
+  if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '${bootBg}'`, 8000))) {
+    fail(`1.0.1: the boot computed --bg is '${await js(`getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`)}' (expected '${bootBg}')`);
+  }
+  step('themes-boot', `1.0.1: boot theme '${bootTheme}' on <html> + computed --bg ${bootBg} (applied from the persisted envelope, equal-specificity ordering safe)`);
 
   // Device card: driver version kv (B3 move), compute line, the waiver
   // status is a HEALTH-CARD ROW (M4-A user correction — never on the device
@@ -2673,8 +2690,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -2720,7 +2737,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.0`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.1`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists — the profile's
@@ -2854,6 +2871,97 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4d2-boot-apply', `mock boot-apply: the REAL boot-apply flow applied the active profile ('boot-probe') with no refusal; the mock apply log records { profileId: 'boot-probe', applied: true, reason: null }`);
   await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null })`);
   await js(`window.arcPower.profilesDelete('boot-probe')`).catch(() => {});
+
+  // --- 1.0.1 Themes: the Settings Theme card -------------------------------
+  // Placed AFTER the boot-probe section: the store is ACCEPTED here, so the
+  // fresh reload below re-boots WITHOUT the waiver prompt (M4-D permanent
+  // acceptance) and the persisted theme must survive a REAL renderer reload
+  // (M3 — the boot sequence re-applies it from the envelope). The pins:
+  //   1. the card renders 3 swatches (button[data-theme-option=...]) with
+  //      class-driven color chips (CSP-safe) and the current theme marked
+  //      .active;
+  //   2. selecting Midnight flips the <html> attribute AND the COMPUTED
+  //      --bg (getComputedStyle — the equal-specificity ordering hazard,
+  //      N9) + persists (profiles-settings-save) + the swatch goes active;
+  //   3. a FRESH RELOAD re-applies the persisted Midnight at boot;
+  //   4. selecting Light too (its own computed --bg), then back to Dark;
+  //   5. the final step asserts the PERSISTED settings.theme === 'dark'
+  //      (M2 — the session must leave the shared mock dir on the default,
+  //      like the ocMode/waiver seeds).
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  const themeOption = (t) => `document.querySelector('.theme-option[data-theme-option="${t}"]')`;
+  if (!(await waitFor(win, `document.querySelectorAll('.theme-option').length === 3`, 5000))) {
+    fail(`1.0.1: the Theme card renders ${await js(`document.querySelectorAll('.theme-option').length`)} swatches (expected 3)`);
+  }
+  for (const t of ['dark', 'midnight', 'light']) {
+    if (!(await js(`!!${themeOption(t)}`))) fail(`1.0.1: the Theme card has no ${t} swatch`);
+    if (!(await js(`!!document.querySelector('.swatch-chip.swatch-${t}')`))) fail(`1.0.1: the ${t} swatch has no class-driven color chip`);
+  }
+  if (!(await js(`${themeOption(bootTheme)}.classList.contains('active')`))) {
+    fail(`1.0.1: the current (${bootTheme}) swatch is not marked active`);
+  }
+  step('themes-card', `1.0.1: Theme card renders the 3 swatches (dark/midnight/light, class-driven chips) with the current one ('${bootTheme}') active`);
+
+  // Midnight: attribute + computed --bg + persisted + active swatch.
+  await js(`${themeOption('midnight')}.click()`);
+  if (!(await waitFor(win, `document.documentElement.dataset.theme === 'midnight'`, 5000))) {
+    fail(`1.0.1: selecting Midnight did not set the attribute (is '${await js(`document.documentElement.dataset.theme ?? ''`)}')`);
+  }
+  if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#0b1020'`, 5000))) {
+    fail(`1.0.1: selecting Midnight did not change the computed --bg (is '${await js(`getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`)}')`);
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.theme === 'midnight')`, 5000))) {
+    fail('1.0.1: selecting Midnight did not persist theme=midnight');
+  }
+  if (!(await js(`${themeOption('midnight')}.classList.contains('active')`))) fail('1.0.1: the Midnight swatch is not active after selection');
+  if (await js(`${themeOption('dark')}.classList.contains('active')`)) fail('1.0.1: the Dark Steel swatch is still active after selecting Midnight');
+  step('themes-midnight', '1.0.1: Midnight selected -> <html> attribute + computed --bg (#0b1020) + persisted theme=midnight + active swatch');
+
+  // Fresh reload: the persisted theme re-applies at BOOT (M3) — a real
+  // webContents reload re-runs the renderer boot sequence end to end.
+  await win.webContents.reload();
+  if (!(await waitFor(win, `document.documentElement.dataset.theme === 'midnight'`, 10000))) {
+    fail(`1.0.1: after a fresh reload the boot theme is '${await js(`document.documentElement.dataset.theme ?? ''`)}' (expected 'midnight' — the persisted theme must survive a reload)`);
+  }
+  if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#0b1020'`, 8000))) {
+    fail('1.0.1: the reloaded boot did not resolve the midnight computed --bg');
+  }
+  step('themes-reload', '1.0.1: fresh reload -> the persisted Midnight theme re-applied at boot (attribute + computed --bg)');
+
+  // Light: attribute + computed --bg (the Arctic palette) + persisted.
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  if (!(await waitFor(win, `document.querySelectorAll('.theme-option').length === 3`, 5000))) fail('1.0.1: the Theme card did not re-render after the reload');
+  if (!(await js(`${themeOption('midnight')}.classList.contains('active')`))) fail('1.0.1: the Midnight swatch is not active after the reload round trip');
+  await js(`${themeOption('light')}.click()`);
+  if (!(await waitFor(win, `document.documentElement.dataset.theme === 'light'`, 5000))) fail('1.0.1: selecting Light did not set the attribute');
+  if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#f2f4f8'`, 5000))) {
+    fail(`1.0.1: selecting Light did not change the computed --bg (is '${await js(`getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`)}')`);
+  }
+  // 1.0.1 contrast regression pin (final-review round): the light theme's
+  // --on-accent must be white so .btn-primary/.oc-mode-btn.active text stays
+  // readable on the darkened accent (a revert of the contrast fix breaks
+  // this pin, not just the palette values).
+  if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--on-accent').trim() === '#ffffff'`, 5000))) {
+    fail(`1.0.1: the light theme --on-accent is not white (is '${await js(`getComputedStyle(document.documentElement).getPropertyValue('--on-accent').trim()`)}')`);
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.theme === 'light')`, 5000))) fail('1.0.1: selecting Light did not persist theme=light');
+  step('themes-light', '1.0.1: Light selected -> attribute + computed --bg (#f2f4f8) + persisted theme=light');
+
+  // Back to Dark — the final step leaves the session + persisted store on
+  // the default theme (M2: a leaked light theme must never bleed into a
+  // later variant).
+  await js(`${themeOption('dark')}.click()`);
+  if (!(await waitFor(win, `document.documentElement.dataset.theme === 'dark'`, 5000))) fail('1.0.1: selecting Dark Steel did not set the attribute');
+  if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#0f1116'`, 5000))) {
+    fail(`1.0.1: selecting Dark Steel did not restore the computed --bg (is '${await js(`getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`)}')`);
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.theme === 'dark')`, 5000))) {
+    fail('1.0.1: the final theme save did not persist theme=dark (M2: the mock session must end on the default theme)');
+  }
+  step('themes-dark-final', '1.0.1: back to Dark Steel -> attribute + computed --bg (#0f1116) + persisted theme=dark (the session ends on the default)');
+  await clearToasts();
 
   // --- M4-D2: the log-to-file pin (RID_MOCK_LOG_DIR only) -------------------
   // Toggle on -> the CSV appears with the pinned 12-column header + >= 1
@@ -3249,6 +3357,184 @@ export async function runFeaturesetVerify(win, fsId) {
   await runCloseToTrayProbe(win);
 
   console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// 1.0.1 — the no-intel variant (RID_MOCK_NO_INTEL=1)
+// ---------------------------------------------------------------------------
+//
+// The user's AMD-machine test round pinned end to end against the MOCK (the
+// no-Intel session: listDevices [] + health igclLoaded false + the AMD
+// sysinfo fixture + the no-device telemetry push). The runFeaturesetVerify
+// SHAPE, diverging BEFORE bootWaiverStep — the no-device boot NEVER prompts
+// (caps/state are skipped), so no waiver modal may appear anywhere:
+//   1. shell renders (sidebar + brand + mock badge) and the featureset
+//      dropdown is HIDDEN (m5: the swap would store caps/state into the
+//      no-Intel store);
+//   2. the header shows the AMD name + 'Non supported GPU' (n10: the
+//      version line is replaced on no-Intel);
+//   3. the health rows read 'No Intel Driver Found' (warn) + the AMD name
+//      (warn) — NEVER the raw IGCL/error text (body-wide pin);
+//   4. the CPU & Memory card renders the mock CPU fixture + the LIVE freq
+//      half ('/ @ 4.3 GHz' from the no-device telemetry push);
+//   5. the GPU card shows the AMD name + the 'Non supported GPU' note with
+//      the caps/state rows at '—';
+//   6. monitoring: the CPU utilization/temperature + GPU-memory tiles get
+//      the mock sys-stats values (the no-device push); the GPU device tiles
+//      honestly stay '—' (m6: the dashboard readout is all '—' by design);
+//   7. the Tuning page shows 'No GPU available.' — NEVER the caps-loading
+//      text (the deviceId-null branch must win over the caps guard);
+//   8. NO waiver modal and NO toast anywhere in the session (the no-toast
+//      pin runs BEFORE any clear, so a toast fired earlier in the session
+//      fails the verify instead of being swallowed);
+//   9. the close-to-tray REAL close probe — the LAST step.
+
+/**
+ * @param {import('electron').BrowserWindow} win
+ */
+export async function runNoIntelVerify(win) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+
+  // --- 1. shell renders ----------------------------------------------------
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
+    fail('sidebar did not render (6 nav links expected)');
+  }
+  const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
+  if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
+  step('shell', `shell rendered; brand '${brand.trim()}'`);
+
+  // --- 2. the header: the AMD name + 'Non supported GPU' (n10) --------------
+  // The header GPU name is the BOOT-LANDING signal: the noIntel flag + the
+  // OS GPU land together at the END of the no-Intel boot (S1 — the flag is
+  // set after telemetryStart(null)), so the dropdown-hide + health rows
+  // below are asserted only AFTER this lands.
+  if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === 'AMD Radeon RX 7600'`, 10000))) {
+    fail(`1.0.1: the header GPU name is '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' (expected the OS GPU 'AMD Radeon RX 7600')`);
+  }
+  const gpuMeta = await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`);
+  if (gpuMeta.trim() !== 'Non supported GPU') {
+    fail(`1.0.1: the header meta is '${gpuMeta}' (expected 'Non supported GPU' replacing the version line — n10)`);
+  }
+  // m5: the featureset dropdown is HIDDEN once the noIntel flag landed (a
+  // swap would store caps/state into the no-Intel store); the mock badge
+  // stays (the honest backend kind).
+  if (await js(`!!document.querySelector('.featureset-select')`)) {
+    fail('1.0.1 (m5): the featureset dropdown must be HIDDEN on the no-Intel path (a swap would store caps/state into the no-Intel store)');
+  }
+  if (!(await js(`!!document.querySelector('.badge-mock')`))) fail('mock badge missing (the backend kind is still honest)');
+  step('header', `header: 'AMD Radeon RX 7600' + 'Non supported GPU' (the version line is replaced on no-Intel — n10); dropdown hidden (m5), mock badge kept`);
+
+  // --- 3. the health rows: honest no-Intel texts, NEVER the raw errors ------
+  if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 10000))) {
+    fail('expected exactly one GPU Health card');
+  }
+  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
+    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
+  }
+  const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
+  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app)`);
+  const driverDetail = await js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
+  if (driverDetail.trim() !== 'No Intel Driver Found') {
+    fail(`1.0.1: the driver row reads '${driverDetail}' (expected 'No Intel Driver Found' — NEVER the raw IGCL/error text)`);
+  }
+  const driverDot = await js(`document.querySelector('.health-card .health-row[data-row="driver"] .status-dot')?.className ?? ''`);
+  if (!/status-warn/.test(driverDot)) fail(`1.0.1: the driver row dot is '${driverDot}' (expected warn)`);
+  const deviceDetail = await js(`document.querySelector('.health-card .health-row[data-row="device"] .health-row-detail')?.textContent ?? ''`);
+  if (deviceDetail.trim() !== 'AMD Radeon RX 7600') {
+    fail(`1.0.1: the device row reads '${deviceDetail}' (expected the OS GPU name 'AMD Radeon RX 7600')`);
+  }
+  const deviceDot = await js(`document.querySelector('.health-card .health-row[data-row="device"] .status-dot')?.className ?? ''`);
+  if (!/status-warn/.test(deviceDot)) fail(`1.0.1: the device row dot is '${deviceDot}' (expected warn)`);
+  // Body-wide: NO raw IGCL/error text anywhere, no boot-error text.
+  const body = await js(`document.body.textContent`);
+  if (body.includes('IGCL')) fail('1.0.1: the raw IGCL text is still rendered somewhere');
+  if (body.includes('DLL not found')) fail('1.0.1: the raw DLL error text is still rendered somewhere');
+  if (body.includes('No Intel Arc GPU detected')) fail('1.0.1: the old boot-error line is still rendered');
+  step('health', `health card: driver 'No Intel Driver Found' (warn), device 'AMD Radeon RX 7600' (warn); no IGCL/error text anywhere`);
+
+  // --- 4. the CPU & Memory card renders (the sysinfo fixture) ---------------
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid > .card')).some((c) => (c.querySelector('.card-title')?.textContent ?? '') === 'CPU & Memory')`, 5000))) {
+    fail('1.0.1: the CPU & Memory card did not render on the no-Intel path');
+  }
+  const sysRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
+  const rows = JSON.parse(sysRows);
+  if (rows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`1.0.1: the CPU row is '${rows['CPU']}'`);
+  if (rows['Memory'] !== 'G.Skill 32 GB @ 6000 MHz') fail(`1.0.1: the Memory row is '${rows['Memory']}'`);
+  // The LIVE freq half from the no-device telemetry push (cpuFreqMhz 4300).
+  if (!(await waitFor(win, `(document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? '').trim() === '20 Cores / 28 Threads / @ 4.3 GHz'`, 8000))) {
+    fail(`1.0.1: the Cores / clock row is '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? ''`)}' (expected the static bundle + the LIVE '/ @ 4.3 GHz')`);
+  }
+  step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}'`);
+
+  // --- 5. the GPU card: the AMD name + 'Non supported GPU' note, rows '—' ---
+  const gpuCardTitle = await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`);
+  if (gpuCardTitle.trim() !== 'AMD Radeon RX 7600') fail(`1.0.1: the GPU card title is '${gpuCardTitle}' (expected the OS GPU name)`);
+  const gpuCardText = await js(`document.querySelector('.device-card')?.textContent ?? ''`);
+  if (!gpuCardText.includes('Non supported GPU')) fail('1.0.1: the GPU card is missing the "Non supported GPU" note');
+  const driverKv = await js(`document.querySelector('.device-card .kv[data-label="Driver version"]')?.textContent ?? ''`);
+  if (driverKv.trim() !== '—') fail(`1.0.1: the GPU card driver row is '${driverKv}' (expected '—' — caps/state degrade on no-Intel)`);
+  step('gpu-card', `GPU card: title 'AMD Radeon RX 7600', 'Non supported GPU' note, caps/state rows at '—'`);
+
+  // --- 6. monitoring: the OS-level tiles get the mock sys-stats values ------
+  await js(`location.hash = '#/monitoring'`);
+  await sleep(250);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.mon-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'CPU utilization')?.querySelector('.stat-value')?.textContent === '42'`, 8000))) {
+    fail('1.0.1: the monitoring CPU-utilization tile is not 42 % (the no-device sys-stats push)');
+  }
+  const monTiles = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.mon-readout .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()])))`);
+  const tiles = JSON.parse(monTiles);
+  if (tiles['CPU temperature'] !== '61') fail(`1.0.1: the CPU-temperature tile is '${tiles['CPU temperature']}' (expected 61)`);
+  if (tiles['GPU memory'] !== '2834') fail(`1.0.1: the GPU-memory tile is '${tiles['GPU memory']}' (expected 2834 MiB from 2971324416 bytes)`);
+  if (tiles['Core clock'] !== '—') fail(`1.0.1: the core-clock tile is '${tiles['Core clock']}' (expected '—' — the GPU device tiles stay honest)`);
+  step('monitoring', `monitoring: CPU utilization 42 %, CPU temperature 61 °C, GPU memory 2834 MiB (the no-device push); GPU device tiles '—'`);
+
+  // --- 7. the Tuning page: 'No GPU available.', never the caps-loading text --
+  // deviceId is null on no-Intel: the page must present the honest no-device
+  // text, NEVER 'Loading device capabilities…' (the caps guard previously
+  // shadowed the deviceId-null guard — a perpetual loading screen).
+  await js(`location.hash = '#/tuning'`);
+  if (!(await waitFor(win, `(document.querySelector('.page-subtitle')?.textContent ?? '').trim() === 'No GPU available.'`, 5000))) {
+    fail(`1.0.1: the Tuning page reads '${await js(`document.querySelector('.page-subtitle')?.textContent ?? ''`)}' (expected 'No GPU available.' — the deviceId-null branch must win over the caps guard)`);
+  }
+  const tuningBody = await js(`document.body.textContent`);
+  if (tuningBody.includes('Loading device capabilities')) {
+    fail('1.0.1: the Tuning page shows the caps-loading text on no-Intel (no caps fetch can ever land on this path — the page must say No GPU available.)');
+  }
+  step('tuning', `Tuning page: 'No GPU available.' (deviceId null — never 'Loading device capabilities…')`);
+
+  // --- 8. NO waiver modal and NO toast anywhere -----------------------------
+  await js(`location.hash = '#/dashboard'`);
+  await sleep(400);
+  // The no-toast pin runs BEFORE any clear: a toast that fired earlier in
+  // the session (e.g. during boot) must FAIL the verify, not be swallowed.
+  if (await js(`!!document.querySelector('.toast')`)) {
+    fail(`1.0.1: a toast appeared on the no-Intel path: '${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => t.textContent).join(' | ')`)}'`);
+  }
+  await clearToasts();
+  await sleep(1200); // cover a couple of telemetry ticks + any delayed boot flow
+  if (await js(`!!document.querySelector('.modal')`)) {
+    fail('1.0.1: a modal appeared on the no-Intel path (the no-device boot never prompts — caps/state are skipped)');
+  }
+  if (await js(`!!document.querySelector('.toast')`)) {
+    fail(`1.0.1: a toast appeared on the no-Intel path: '${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => t.textContent).join(' | ')`)}'`);
+  }
+  step('silent', 'no waiver modal, no toast anywhere (the no-device boot is silent)');
+
+  // M4-D2 (§1): the shared close-to-tray REAL close probe — the LAST step.
+  await runCloseToTrayProbe(win);
+
+  console.log('\nUI VERIFY OK (no-intel)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }
 

@@ -257,12 +257,17 @@ export const tuningPage: Page = {
     // M4-D2 (§8): the old #/fan hash arrives with the fan view requested.
     if (consumeFanViewRequest()) view = 'fan';
 
-    if (!caps || !state) {
-      container.append(el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
-      return;
-    }
+    // The deviceId-null guard runs FIRST: on the no-Intel path both
+    // deviceId and caps/state are null, and the honest answer is 'No GPU
+    // available.' — never a perpetual 'Loading device capabilities…' (the
+    // caps fetch can never land on that path). When a deviceId IS set the
+    // caps guard still covers the transient boot window.
     if (s.deviceId === null) {
       container.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
+      return;
+    }
+    if (!caps || !state) {
+      container.append(el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
       return;
     }
 

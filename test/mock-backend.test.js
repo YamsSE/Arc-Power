@@ -16,6 +16,20 @@ test('listDevices: one A770-matching fixture device', async () => {
   assert.equal(devices[0].pciDeviceId, '0x000056a0');
 });
 
+test('1.0.1 no-Intel: the mock enumerates NOTHING + health reports igclLoaded false (the no-Intel machine shape)', async () => {
+  const b = new MockBackend({ noIntel: true });
+  assert.deepEqual(await b.listDevices(), []);
+  const h = await b.health();
+  assert.equal(h.igclLoaded, false);
+  assert.equal(h.driverVersion, null);
+  assert.equal(h.levelZeroOk, false);
+  assert.equal(h.error, undefined, 'no raw error text — the honest no-Intel rows must never show the IGCL error');
+  // The featureset machinery still exists (the dropdown data is hidden by
+  // the renderer on the noIntel flag, not by the mock).
+  const fx = await b.listFeaturesets();
+  assert.equal(fx.featuresets.length, 4);
+});
+
 test('getCapabilities: A770 matrix (same ranges/units as the real card)', async () => {
   // M3-D: the a770 featureset base now carries the REAL EDITABLE fan (the
   // live-verified probe path — canControl=true, modes ['auto','curve']); the

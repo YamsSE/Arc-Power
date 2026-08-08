@@ -3,6 +3,8 @@
 // GTS, %. Kept in sync with the main-process typedefs by convention; the IPC
 // layer is the enforcement point, not these types.
 
+import type { Theme } from './pure/theme.ts';
+
 export type OcErrorCode =
   | 'waiver-not-set'
   | 'out-of-range'
@@ -306,7 +308,10 @@ export interface TelemetrySample {
   fanRpm?: number[];
   utilPct?: number;
   powerW?: number;
-  throttle: ThrottleFlags;
+  /** 1.0.1 (m4): OPTIONAL — the no-device telemetry push (telemetry-start
+   *  null mode) emits sys-stats-only samples that carry no throttle flags;
+   *  nothing reads this field and the CSV writer does not use it. */
+  throttle?: ThrottleFlags;
   /** M4-D2: system stats pushed on every tick (rolling deltas; null = honest '—'). */
   cpuUtilPct?: number | null;
   cpuTempC?: number | null;
@@ -343,6 +348,9 @@ export interface ProfileSettingsState {
   /** M4-F: the persisted GPU selection (absent on old files -> null — the
    *  devices[0] fallback resolves at boot; device-set is the ONLY writer). */
   deviceId: number | null;
+  /** 1.0.1: the persisted UI theme ('dark'|'midnight'|'light'; absent on
+   *  old files -> 'dark' — the absent-field default, no schema bump). */
+  theme: Theme;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

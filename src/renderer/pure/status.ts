@@ -55,6 +55,16 @@ export interface HealthInput {
    * false Accepted/Not Accepted).
    */
   waiverAccepted: boolean | null;
+  /**
+   * 1.0.1 no-Intel round: FALSE when the app runs in the no-device mode
+   * (no Intel GPU enumerated) — the driver/device rows then swap to the
+   * honest no-Intel texts ('No Intel Driver Found' / the OS GPU name),
+   * NEVER the raw IGCL/error text.
+   */
+  hasIntelGpu?: boolean;
+  /** 1.0.1 no-Intel round: the OS GPU name (sysinfo primary video
+   *  controller) for the device row on the no-Intel path. */
+  osGpuName?: string | null;
 }
 
 /** Legacy health-only level (kept so the header test contract stays exact). */
@@ -78,8 +88,14 @@ export function worstLevel(levels: HealthLevel[]): HealthLevel {
  * The ok detail shows the driver version + date exactly like the device card
  * does (driverLine: "32.0.101.8861 - Jul 05, 2026") — M3-C-I. A boot error
  * with no report reads as an error (the app is up, the driver side is not).
+ * 1.0.1 no-Intel round: on the no-device path (hasIntelGpu false) the row
+ * reads 'No Intel Driver Found' (warn) — the raw IGCL/error text must NEVER
+ * surface there (checked BEFORE every error branch).
  */
 export function driverRow(input: HealthInput): HealthRow {
+  if (input.hasIntelGpu === false) {
+    return { id: 'driver', label: 'Driver installed', level: 'warn', detail: 'No Intel Driver Found' };
+  }
   const h = input.health;
   if (!h) {
     return input.bootError
@@ -102,8 +118,15 @@ export function driverRow(input: HealthInput): HealthRow {
   return { id: 'driver', label: 'Driver installed', level: 'ok', detail: date ? `${version} - ${date}` : version };
 }
 
-/** "Device detected": the GPU is enumerated (or the boot error says why not). */
+/**
+ * "Device detected": the GPU is enumerated (or the boot error says why not).
+ * 1.0.1 no-Intel round: on the no-device path the row shows the OS GPU name
+ * (warn — no error text, no "searching" state).
+ */
 export function deviceRow(input: HealthInput): HealthRow {
+  if (input.hasIntelGpu === false) {
+    return { id: 'device', label: 'Device detected', level: 'warn', detail: input.osGpuName ?? 'No GPU detected' };
+  }
   if (input.device) {
     return { id: 'device', label: 'Device detected', level: 'ok', detail: input.device.name };
   }
@@ -196,6 +219,11 @@ export interface DashboardSig {
   driverDate: string | null;
   /** M4-D: the system-info payload (CPU & memory card source). */
   sysinfo: SysInfo | null;
+  /** 1.0.1 no-Intel round: the no-device flag + the OS GPU — status slots
+   *  (the GPU card re-renders when they land at the end of the no-Intel
+   *  boot). */
+  noIntel: boolean;
+  osGpu: { name: string; vramBytes: number | null } | null;
 }
 
 /**
@@ -209,5 +237,7 @@ export function dashboardNeedsFullRender(prev: DashboardSig | null, next: Dashbo
     || prev.caps !== next.caps
     || prev.bootError !== next.bootError
     || prev.driverDate !== next.driverDate
-    || prev.sysinfo !== next.sysinfo;
+    || prev.sysinfo !== next.sysinfo
+    || prev.noIntel !== next.noIntel
+    || prev.osGpu !== next.osGpu;
 }

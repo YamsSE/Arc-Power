@@ -13,6 +13,7 @@
   --accent: #4cc2ff;
   --accent-strong: #1f9ce8;
   --accent-soft: rgba(76, 194, 255, 0.12);
+  --on-accent: #07111c;
   --success: #34d399;
   --warn: #fbbf24;
   --error: #f87171;
@@ -22,6 +23,85 @@
   --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+  /* 1.0.1 Themes: the recessed input/option surface (fan-point editor
+     inputs, select dropdown options). REFERENCED by .fan-point-input +
+     .featureset-select/.device-select options but never DEFINED before —
+     the fan editor input fell back to the default white background (a live
+     bug). Defined per theme; Dark Steel keeps a slightly darker inset. */
+  --bg-panel: #0d1017;
+}
+
+/* ------------------------------------------------------------------ themes
+   1.0.1 — three UI themes (Settings > Theme). Dark Steel stays on :root
+   (the user's black/gray default — unchanged); the [data-theme] blocks
+   override ONLY the color tokens (+ --bg-panel). The attribute lives on
+   <html> (documentElement.dataset.theme), written by app.ts/settings.ts
+   through the pure/theme.ts validation. Equal specificity with :root, so
+   these blocks MUST stay AFTER :root in source order (the equal-specificity
+   ordering hazard — pinned by the ui-verify computed-style checks). */
+
+[data-theme="midnight"] {
+  /* Deep indigo/navy: blue-cast elevation, softer borders, ice-cyan accent. */
+  --bg: #0b1020;
+  --bg-elev: #111a33;
+  --bg-inset: #16203f;
+  --border: #24305a;
+  --border-strong: #33427a;
+  --text: #e6ebf7;
+  --text-muted: #93a1c4;
+  --text-dim: #63718f;
+  --accent: #6fd2ff;
+  --accent-strong: #2ea8e8;
+  --accent-soft: rgba(111, 210, 255, 0.12);
+  --on-accent: #081222;
+  --success: #34d399;
+  --warn: #fbbf24;
+  --error: #f87171;
+  --danger: #ef4444;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --bg-panel: #070b16;
+}
+
+[data-theme="light"] {
+  /* Arctic Light: near-white surfaces, dark slate text. M5: the accent
+     trio is DARKER (#4cc2ff on white fails WCAG AA — pills, links and the
+     brand gradient read on light only with the dark blues); the semantic
+     colors are darkened for light-surface contrast too. */
+  --bg: #f2f4f8;
+  --bg-elev: #ffffff;
+  --bg-inset: #e7ebf2;
+  --border: #d4dae4;
+  --border-strong: #b6bfce;
+  --text: #232a36;
+  --text-muted: #5b6575;
+  --text-dim: #8a93a3;
+  --accent: #0a7cc2;
+  --accent-strong: #0869b8;
+  --accent-soft: rgba(10, 124, 194, 0.1);
+  --on-accent: #ffffff;
+  --success: #0d9488;
+  --warn: #b45309;
+  --error: #dc2626;
+  --danger: #b91c1c;
+  --shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+  --bg-panel: #ffffff;
+}
+
+/* The brand gradient on light: the ice end stop (#7ee0ff) disappears on
+   white — the light variant runs the dark-blue trio end-to-end with a
+   reduced/softened glow. The `background` shorthand RESETS background-clip
+   (the base rule's text clip would be wiped) — re-declare it here. */
+[data-theme="light"] .titlebar-brand-power {
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #054a85 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: drop-shadow(0 0 10px rgba(10, 124, 194, 0.22));
+}
+[data-theme="light"] .sidebar-brand-power {
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #054a85 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: drop-shadow(0 0 8px rgba(10, 124, 194, 0.2));
 }
 
 * { box-sizing: border-box; }
@@ -305,16 +385,19 @@ html, body {
   border: 1px solid transparent;
 }
 
+/* M4-D2 (M6): the pill states are VAR-DRIVEN — the hardcoded #34d399 text
+   would stay low-contrast on the light theme; color-mix keeps the border/
+   bg tints following the same var (all three states). */
 .rebar-pill.status-ok {
-  color: #34d399;
-  border-color: rgba(52, 211, 153, 0.45);
-  background: rgba(52, 211, 153, 0.12);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
 }
 
 .rebar-pill.status-error {
   color: var(--danger);
-  border-color: rgba(239, 68, 68, 0.45);
-  background: rgba(239, 68, 68, 0.12);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .rebar-pill.status-unknown {
@@ -600,7 +683,7 @@ html, body {
 .btn:hover:not(:disabled) { border-color: var(--accent); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.btn-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #07111c; font-weight: 650; }
+.btn-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); font-weight: 650; }
 .btn-primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
 
 .btn-ghost { background: transparent; }
@@ -835,7 +918,7 @@ html, body {
 
 .oc-mode-btn.active {
   background: var(--accent);
-  color: #06121d;
+  color: var(--on-accent);
 }
 
 /* --------------------------- M4-B: freq-card Offset/Clock toggle ---------- */
@@ -1335,6 +1418,63 @@ html, body {
 .settings-row { display: flex; align-items: center; gap: 8px; }
 .settings-state { margin-top: 8px; }
 .settings-checkbox { accent-color: var(--accent-strong); width: 15px; height: 15px; }
+
+/* 1.0.1 Themes: the Settings Theme card — 3 swatches
+   (button[data-theme-option="dark|midnight|light"]). The color chips are
+   CLASS-driven (.swatch-*) — CSP style-src 'self' blocks inline style
+   attributes, and classes are pin-friendly (plan-review N10). */
+.theme-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.theme-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+.theme-option:hover { border-color: var(--accent); }
+.theme-option.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 650;
+}
+.swatch-chip {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  position: relative;
+  flex-shrink: 0;
+}
+.swatch-chip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+/* The chip shows the theme's background + its accent dot (the palette
+   preview). Values mirror the [data-theme] blocks above. */
+.swatch-dark { background: #0f1116; }
+.swatch-dark::after { background: #4cc2ff; }
+.swatch-midnight { background: #0b1020; }
+.swatch-midnight::after { background: #6fd2ff; }
+.swatch-light { background: #f2f4f8; }
+.swatch-light::after { background: #0a7cc2; }
 
 .boot-row { display: flex; align-items: center; gap: 8px; }
 

@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatBytes, cpuCardRows, rebarState } from '../src/renderer/pure/sysinfo.ts';
+import { formatBytes, cpuCardRows, rebarState, primaryVideoController } from '../src/renderer/pure/sysinfo.ts';
 import type { SysInfo, VideoControllerInfo } from '../src/renderer/types.ts';
 
 const fixture: SysInfo = {
@@ -92,4 +92,37 @@ test('M4-D (user): rebarState — green on, red off, grey unknown', () => {
   assert.deepEqual(rebarState(rebarController(false)), { label: 'ReBAR off', level: 'error' });
   assert.deepEqual(rebarState(rebarController(null)), { label: 'ReBAR —', level: 'unknown' });
   assert.deepEqual(rebarState(null), { label: 'ReBAR —', level: 'unknown' });
+});
+
+// ---------------------------------------------------------------------------
+// 1.0.1 no-Intel round — the OS GPU pick (primaryVideoController)
+// ---------------------------------------------------------------------------
+
+test('1.0.1: primaryVideoController picks the PRIMARY NON-BASIC controller (the same pick matchVideoController uses for a model-less name)', () => {
+  const sysinfo: SysInfo = {
+    cpu: { name: 'AMD Ryzen 5 7600', cores: 6, threads: 12, maxClockMhz: 5100 },
+    ram: { totalBytes: 34359738368, speedMhz: 6000, manufacturer: 'G.Skill' },
+    videoControllers: [
+      { name: 'Microsoft Basic Display Adapter', vramBytes: null, pnpDeviceId: null, rebarActive: null },
+      { name: 'AMD Radeon RX 7600', vramBytes: 8589934592, pnpDeviceId: 'PCI\\VEN_1002&DEV_7480&SUBSYS_24011462&REV_C7', rebarActive: false },
+    ],
+  };
+  assert.deepEqual(primaryVideoController(sysinfo), { name: 'AMD Radeon RX 7600', vramBytes: 8589934592 });
+});
+
+test('1.0.1: primaryVideoController — an AMD-first list picks the AMD part directly; vramBytes degrades to null', () => {
+  const sysinfo: SysInfo = {
+    cpu: { name: 'AMD Ryzen 5 7600', cores: 6, threads: 12, maxClockMhz: 5100 },
+    ram: { totalBytes: 34359738368, speedMhz: null, manufacturer: null },
+    videoControllers: [
+      { name: 'AMD Radeon RX 7600', vramBytes: null, pnpDeviceId: null, rebarActive: false },
+    ],
+  };
+  assert.deepEqual(primaryVideoController(sysinfo), { name: 'AMD Radeon RX 7600', vramBytes: null });
+});
+
+test('1.0.1: primaryVideoController — null payload / empty list / basic-only degrade to null', () => {
+  assert.deepEqual(primaryVideoController(null), null);
+  assert.deepEqual(primaryVideoController({ cpu: { name: 'x', cores: null, threads: null, maxClockMhz: null }, ram: { totalBytes: 0, speedMhz: null, manufacturer: null }, videoControllers: [] }), null);
+  assert.deepEqual(primaryVideoController({ cpu: { name: 'x', cores: null, threads: null, maxClockMhz: null }, ram: { totalBytes: 0, speedMhz: null, manufacturer: null }, videoControllers: [{ name: 'Microsoft Basic Display Adapter', vramBytes: null, pnpDeviceId: null, rebarActive: null }] }), null);
 });

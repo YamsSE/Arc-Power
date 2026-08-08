@@ -9,6 +9,16 @@ import path from 'node:path';
 import os from 'node:os';
 import { migrateStoreData, SCHEMA_VERSION } from './migrations.js';
 
+// 1.0.1 Themes: the canonical theme ids — the persisted-truth owner of the
+// list. The renderer mirror lives in src/renderer/pure/theme.ts and the
+// envelope-validation mirror in src/main/ipc-core.js (keep the three in
+// lockstep). Absent on old settings files -> 'dark'; a garbage value
+// degrades to 'dark' at the STORE (the channel keeps the current theme —
+// never a silent reset).
+const THEMES = ['dark', 'midnight', 'light'];
+
+export { THEMES };
+
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
 }
@@ -143,7 +153,7 @@ export class ProfileStore {
    * via the device-set channel, NEVER through profiles-settings-save (which
    * carries it read-modify-write so a Settings/Profiles save can never
    * clobber it).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -182,6 +192,8 @@ export class ProfileStore {
         monitorLogToFile: false,
         // M4-F: absent -> null (the devices[0] fallback resolves at boot).
         deviceId: null,
+        // 1.0.1 Themes: absent -> 'dark' (same absent-field mechanism).
+        theme: 'dark',
       };
     }
     return {
@@ -205,11 +217,15 @@ export class ProfileStore {
       // (devices[0] resolves at boot — same absent-field mechanism as
       // ocMode; a garbage value never crashes, it degrades to null).
       deviceId: Number.isInteger(data.deviceId) && data.deviceId >= 0 ? data.deviceId : null,
+      // 1.0.1 Themes: the persisted UI theme. Absent on old files -> 'dark'
+      // (same absent-field mechanism); a garbage value degrades to 'dark'
+      // — never a crash.
+      theme: THEMES.includes(data.theme) ? data.theme : 'dark',
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light' }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -227,6 +243,10 @@ export class ProfileStore {
       // garbage) persists as null — the boot resolution + self-heal then
       // repersists devices[0].
       deviceId: Number.isInteger(settings.deviceId) && settings.deviceId >= 0 ? settings.deviceId : null,
+      // 1.0.1 Themes: validated on save — an absent/garbage theme persists
+      // as 'dark' (the channel already guards patch.theme, so the store
+      // fallback only ever sees absent fields on direct callers).
+      theme: THEMES.includes(settings.theme) ? settings.theme : 'dark',
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write — the
     // close handler must see the very toggle it just persisted.

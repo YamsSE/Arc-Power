@@ -34,7 +34,16 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { versionLine } from '../components/header.ts';
 import { setMonitorLogToFile } from '../log-state.ts';
+import { applyTheme } from '../app.ts';
+import { isValidTheme, THEMES, type Theme } from '../pure/theme.ts';
 import type { StartupGetState } from '../types.ts';
+
+/** 1.0.1 Themes: the display label per theme id (the swatch buttons). */
+const THEME_LABELS: Record<Theme, string> = {
+  dark: 'Dark Steel',
+  midnight: 'Midnight',
+  light: 'Arctic Light',
+};
 
 export const settingsPage: Page = {
   id: 'settings',
@@ -58,7 +67,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const s = ctx.store.get();
   const displayVersion = s.appVersion && s.appVersion !== '0.0.0' ? `${versionLine(s.appVersion)} Alpha` : '—';
 
-  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null };
+  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
   let bootState: StartupGetState | null = null;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
@@ -75,6 +84,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // the profile owns it.
       ocOnBoot: envelope.settings.ocOnBoot === true,
       activeProfileId: envelope.settings.activeProfileId,
+      // 1.0.1: the persisted theme (the store normalizes — an unexpected
+      // value degrades to the dark default defensively).
+      theme: isValidTheme(envelope.settings.theme) ? envelope.settings.theme : 'dark',
     };
   } catch (err) {
     clear(root);
@@ -216,6 +228,27 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
+    // 1.0.1 Themes: the Theme card — one swatch per theme
+    // (button[data-theme-option="dark|midnight|light"]). The color chips
+    // are CSS-class driven (.swatch-*) — CSP style-src 'self' blocks inline
+    // style attributes (plan-review N10). The current theme's swatch is
+    // marked .active.
+    const themeCard = el('section', { class: 'card settings-card theme-card' }, [
+      el('h2', { class: 'card-title', text: 'Theme' }),
+      el('p', { class: 'card-note', text: 'Appearance — Dark Steel (the default black/gray), Midnight (deep indigo) or Arctic Light. The change applies immediately and is saved.' }),
+      el('div', { class: 'theme-options' }, THEMES.map((t) =>
+        el('button', {
+          type: 'button',
+          class: `theme-option${persisted.theme === t ? ' active' : ''}`,
+          dataset: { themeOption: t },
+          onclick: () => void onThemeSelect(t),
+        }, [
+          el('span', { class: `swatch-chip swatch-${t}` }),
+          el('span', { class: 'theme-option-name', text: THEME_LABELS[t] }),
+        ]),
+      )),
+    ]);
+
     const aboutCard = el('section', { class: 'card settings-card' }, [
       el('h2', { class: 'card-title', text: 'About' }),
       el('div', { class: 'card-body kv-grid' }, [
@@ -224,7 +257,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, aboutCard);
+    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, themeCard, aboutCard);
   };
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
@@ -309,6 +342,35 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
     await refresh();
+  };
+
+  // 1.0.1 Themes: one swatch selected — apply IMMEDIATELY (the <html>
+  // attribute + the canvas recolor via app.ts) and persist through
+  // profiles-settings-save. A failed save REVERTS to the last persisted
+  // theme + surfaces the honest error toast (like the other toggles).
+  const onThemeSelect = async (theme: string): Promise<void> => {
+    if (!isValidTheme(theme) || theme === persisted.theme) return;
+    const syncSwatches = (active: Theme): void => {
+      root.querySelectorAll<HTMLElement>('.theme-option').forEach((b) => {
+        b.classList.toggle('active', b.dataset.themeOption === active);
+      });
+    };
+    const previous = persisted.theme;
+    // Apply first — the UI never waits on the save to show the new theme.
+    applyTheme(theme);
+    persisted.theme = theme;
+    syncSwatches(theme);
+    try {
+      await api.profilesSettingsSave({ theme });
+      toast('success', 'Theme changed', `${THEME_LABELS[theme]} is now active.`);
+    } catch (err) {
+      // Revert to the last known persisted theme (the failed save left the
+      // store on `previous`) + honest error toast.
+      toast('error', 'Theme could not be changed', err instanceof Error ? err.message : String(err));
+      applyTheme(previous);
+      persisted.theme = previous;
+      syncSwatches(previous);
+    }
   };
 
   render();
