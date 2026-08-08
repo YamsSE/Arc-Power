@@ -15,6 +15,45 @@
     nav.classList.toggle('scrolled', window.scrollY > 8);
   }, { passive: true });
 
+  /* ---- mobile mode: auto-detect (coarse pointer or narrow screen) ---- */
+  var mobileMQ = window.matchMedia('(pointer: coarse), (max-width: 959px)');
+  function applyMobileMode() {
+    var isMobile = mobileMQ.matches;
+    document.documentElement.classList.toggle('mobile', isMobile);
+    document.documentElement.setAttribute('data-mobile', isMobile ? 'true' : 'false');
+    return isMobile;
+  }
+  applyMobileMode();
+  if (mobileMQ.addEventListener) mobileMQ.addEventListener('change', applyMobileMode);
+  else if (mobileMQ.addListener) mobileMQ.addListener(applyMobileMode);
+
+  /* ---- mobile nav: hamburger toggle ---- */
+  var burger = document.getElementById('navBurger');
+  var navLinks = document.getElementById('navLinks');
+  function setNavOpen(open) {
+    if (nav) nav.classList.toggle('open', open);
+    if (burger) burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (burger) {
+    burger.addEventListener('click', function () {
+      setNavOpen(!nav.classList.contains('open'));
+    });
+    document.addEventListener('click', function (e) {
+      if (nav.classList.contains('open') && !nav.contains(e.target)) setNavOpen(false);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') setNavOpen(false);
+    });
+  }
+  if (navLinks) {
+    navLinks.addEventListener('click', function (e) {
+      if (e.target.tagName === 'A') setNavOpen(false);
+    });
+  }
+  window.addEventListener('resize', function () {
+    if (window.innerWidth > 960) setNavOpen(false);
+  });
+
   /* ---- hero card: random GPU per load ---- */
   var HERO_GPUS = [
     { name: 'Arc A770',     family: 'Alchemist',  core: 2390, mem: 2187, temp: 62, fan: 1462, fps: 118, plMax: 252, ext: 315 },

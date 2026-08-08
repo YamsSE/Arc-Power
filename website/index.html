@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs</title>
-  <meta name="description" content="Arc Power is an open-source overclocking and tuning tool for Intel Arc GPUs - power, clock, voltage and fan control through Intel's official IGCL API, with live telemetry, profiles and safety-first verified applies.">
+  <meta name="description" content="Arc Power is an open-source overclocking and tuning tool for Intel Arc GPUs - power, clock, voltage and fan control through Intel's official IGCL API, with live telemetry, multi-GPU support, themes, profiles and safety-first verified applies.">
   <meta property="og:title" content="Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs">
-  <meta property="og:description" content="Overclock and tune Intel Arc GPUs through Intel's official IGCL API. Power, clocks, voltage, fan curves, live telemetry, profiles - no reverse engineering, no daemons.">
+  <meta property="og:description" content="Overclock and tune Intel Arc GPUs through Intel's official IGCL API. Power, clocks, voltage, fan curves, live telemetry, multi-GPU, themes, profiles - no reverse engineering, no daemons.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://yamsse.github.io/Arc-Power/">
   <meta property="og:image" content="assets/og.png">
@@ -28,15 +28,18 @@
     <a class="nav-brand" href="#top">
       <img class="nav-logo" src="assets/logo.svg" alt="Arc Power logo" width="28" height="28">
       <span class="nav-name">Arc&nbsp;Power</span>
-      <span class="nav-ver mono">0.9.11 alpha</span>
+      <span class="nav-ver mono">1.0.2 alpha</span>
     </a>
-    <div class="nav-links">
+    <div class="nav-links" id="navLinks">
       <a href="#features">Features</a>
       <a href="#gpus">Supported GPUs</a>
       <a href="#safety">Safety</a>
       <a href="#requirements">Requirements</a>
     </div>
-    <a class="btn btn-ghost nav-cta" href="https://github.com/YamsSE/Arc-Power" target="_blank" rel="noopener">
+    <button class="nav-burger" id="navBurger" type="button" aria-label="Toggle menu" aria-expanded="false" aria-controls="navLinks">
+      <span></span><span></span><span></span>
+    </button>
+    <a class="btn btn-ghost nav-cta" href="https://github.com/YamsSE/Arc-Power" target="_blank" rel="noopener" aria-label="Arc Power on GitHub">
       <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
       <span>GitHub</span>
     </a>
@@ -57,7 +60,8 @@
         <p class="hero-sub">
           An open-source overclocking and tuning tool for Intel Arc GPUs - in the spirit of
           MSI Afterburner and AMD Adrenaline, built on Intel's official Graphics Control
-          Library (IGCL). No reverse-engineering. No third-party daemons.
+          Library (IGCL). Multi-GPU support, three UI themes, live telemetry.
+          No reverse-engineering. No third-party daemons.
         </p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="https://github.com/YamsSE/Arc-Power" target="_blank" rel="noopener">
@@ -154,8 +158,8 @@
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17h4l2-5 3 9 3-13 2 6h4"/></svg>
           </div>
-          <h3>Overclocking</h3>
-          <p>Power limit (W), core frequency offset (MHz), voltage offset and temperature limit (&deg;C) - applied through Intel's documented IGCL API with a warranty-waiver gate on first use.</p>
+          <h3>Tuning</h3>
+          <p>Power limit (W), core frequency offset (MHz), voltage offset and temperature limit (&deg;C) - applied through Intel's documented IGCL API with read-back verification and a warranty-waiver gate. Expert controls (VRAM frequency, voltage lock, custom VF curves) appear only when your GPU reports them.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
@@ -169,21 +173,21 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2"/><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/></svg>
           </div>
           <h3>Fan control</h3>
-          <p>Auto, curve and fixed modes with an interactive SVG curve editor - hover/drag readouts and manual per-point boxes. Unlocked on Alchemist through IGCL speed tables; read-only on boards that don't expose control.</p>
+          <p>Auto, curve and fixed modes with an interactive SVG curve editor - hover/drag readouts and adaptive presets (Driver Curve / Quiet / Max) derived from the driver's own curve. Read-only on boards that don't expose control.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17 8 12l4 4 8-9"/><path d="M15 7h5v5"/></svg>
           </div>
           <h3>Live telemetry</h3>
-          <p>Clocks, temperatures, power from GPU energy counters, fan RPM, utilization and throttle reasons - plus FPS via DXGI frame statistics and VRAM usage, as readouts and rolling graphs.</p>
+          <p>Clocks, temperatures, power from GPU energy counters, fan RPM, utilization and throttle reasons - plus FPS via DXGI frame statistics, VRAM usage, and a CPU card with RAM type and cache readouts, as readouts and rolling graphs.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M5 8l7-5 7 5M5 8v13M19 8v13"/><path d="M8 21h8"/></svg>
           </div>
-          <h3>Profiles &amp; boot apply</h3>
-          <p>Save, load, rename and delete named profiles, and apply one silently at every logon through an elevated scheduled task - with a safe default fallback.</p>
+          <h3>Profiles &amp; logon apply</h3>
+          <p>Save, load, rename and delete named profiles, and apply one silently at every logon - elevated through a scheduled task on the installed build - with a safe default fallback.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
@@ -191,6 +195,27 @@
           </div>
           <h3>Reversible tweaks</h3>
           <p>Registry hacks - MPO disable, HAGS and more - with one-click Enable / Disable / Revert, per-step verified writes and honest per-step reporting.</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>
+          </div>
+          <h3>Multi-GPU</h3>
+          <p>Choose which Intel Arc GPU to control on systems with several. The selection persists and drives the dashboard, tuning, telemetry, waiver and boot/tray applies.</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+          </div>
+          <h3>UI themes</h3>
+          <p>Three hand-tuned themes - Dark Steel, Midnight and Arctic Light - selectable in Settings and remembered across restarts, applied at boot.</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v10m0 0 4-4m-4 4-4-4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+          </div>
+          <h3>Installer &amp; packaging</h3>
+          <p>Shipped as a portable EXE and a proper NSIS installer. The installed app is always elevated, so extended-range applies and silent logon applies need no prompts.</p>
         </article>
       </div>
     </section>
