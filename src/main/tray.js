@@ -23,7 +23,7 @@ export function trayBalloonProfileFailed(name) {
 /**
  * M4-D Round-1 F5: the tray toggle's window action. A MINIMIZED window
  * reports isVisible() === true - the old visibility-only toggle would HIDE
- * a minimized window instead of restoring it (a start-minimized session
+ * a minimized window instead of restoring it (a start-hidden (tray) session
  * could never be restored from the tray). The minimize case wins: restore
  * first; only a visible, non-minimized window toggles to hidden.
  * @param {{ isMinimized: boolean, isVisible: boolean }} winState

@@ -52,9 +52,9 @@ export class MockBackend {
    *   telemetryIntervalS?: number,       // mock wall-clock between samples (default 0.5)
    *   energyStepJ?: number,              // energy added per sample (default from the
    *                                      // featureset powerW: powerW * intervalS)
-   *   extendedRanges?: boolean,          // overlay on the featureset extendedRanges flag
-   *   extendedFail?: boolean,            // extended applies fail with the honest unavailable message
-   *   multiDevice?: boolean,             // M4-F: emit device ids 0 AND 1 (device 1 =
+ *   extendedRanges?: boolean,          // overlay on the featureset extendedRanges flag
+ *   extendedFail?: boolean,            // extended applies fail with the honest unavailable message
+ *   multiDevice?: boolean,             // M4-F: emit device ids 0 AND 1 (device 1 =
    *                                      // the arc-igpu line) - the RID_MOCK_MULTI_DEVICE=1
    *                                      // ui-verify knob; tests pass the flag directly
    * }} opts

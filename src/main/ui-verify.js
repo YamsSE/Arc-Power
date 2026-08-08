@@ -6,7 +6,7 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.3 Alpha" (app:version IPC + the display Alpha suffix - the IPC
+//       1.0.4 Alpha" (app:version IPC + the display Alpha suffix - the IPC
 //       keeps the bare semver) - the driver version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
@@ -125,11 +125,13 @@
 //      reads back -100 MHz; (c) the freq card's Offset/Clock toggle: Clock
 //      mode slides over base+[min,max] (2100 + -300..300 = 1800..2400 MHz),
 //      the readout + driver line show the ABSOLUTE clock, and an apply
-//      stores the converted offset (2050 -> -50); (d) the gpuLock editor
-//      card in the Advanced section (a770): "Editing available" expert row,
-//      Apply/Reset round trip through the shared clamp, gated OFF on the
-//      b580 swap; (e) the b580 variant pins the mirrored freq range
-//      (-500..500) + volt % range (-100..100) with percent units intact.
+//      stores the converted offset (2050 -> -50); (d) M4J clarification: the
+//      gpuLock editor + the vfCurve/vramVoltOffset expert rows are REMOVED -
+//      the Advanced section renders ONLY on vramFreqOffset devices (b580 =
+//      the VRAM clock editor) and is GONE on Alchemist (the OC-mode pill
+//      stays on every device); (e) the b580 variant pins the mirrored freq
+//      range (-500..500) + volt % range (-100..100) with percent units
+//      intact + the VRAM-OC editor round trip.
 //  21. M4-B (user): the Advanced OC Mode warning is a ONCE-only gate - the
 //      disclaimer shows ONLY on the first Stock->Advanced toggle (Cancel
 //      keeps stock; it re-asks until Enable), the acceptance is PERSISTED
@@ -320,7 +322,7 @@ export class UiVerifyFailure extends Error {}
  *   instead of performing the real BrowserWindow ops) - run 2 pins the
  *   integrated title-bar buttons through this.
  */
-export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null })) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -351,6 +353,35 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await sleep(250);
     await gotoView('Tuning');
   };
+
+  // --- 0. M4J (G): the tray-start probe (RID_MOCK_START_MINIMIZED=1) ------
+  // Start minimized -> the TRAY: the window is created HIDDEN (show:false -
+  // tray-only, no taskbar entry, no minimize race) when the persisted
+  // setting is on; the tray exists BEFORE the window (S2). The probe:
+  // (a) the block runs in ui-verify under the knob, (b) the knob seeded
+  // startMinimized:true, (c) the injected tray probe recorded the
+  // Show/Hide toggle handler, (d) 'a tray click shows it' is asserted HERE
+  // - the very first pin - so the verify drives a VISIBLE window after.
+  if (process.env.RID_MOCK_START_MINIMIZED === '1') {
+    if (win.isVisible()) {
+      fail('M4J (G): RID_MOCK_START_MINIMIZED=1 - the window must start HIDDEN (tray-only, show:false)');
+    }
+    const probe = getTrayProbe();
+    if (probe.builds < 1) {
+      fail('M4J (G): the injected tray probe never built the menu (setupTray must run BEFORE createWindow)');
+    }
+    if (typeof probe.toggleHandler !== 'function') {
+      fail('M4J (G): the tray probe did not record the Show/Hide toggle handler');
+    }
+    // 'a tray click shows it': invoke the RECORDED toggle handler (the real
+    // hidden->show branch - win.show() + focus()).
+    probe.toggleHandler();
+    await sleep(400);
+    if (!win.isVisible()) fail('M4J (G): a tray toggle click did not show the hidden window');
+    step('m4j-tray-start', `M4J (G): start-minimized session - window created HIDDEN (tray-only, show:false), the tray existed BEFORE the window (menu builds ${probe.builds}), a tray click (recorded toggle handler) showed it (isVisible() true)`);
+  } else {
+    step('m4j-tray-start', 'M4J (G): tray-start probe SKIPPED (RID_MOCK_START_MINIMIZED not set - the window opens normally)');
+  }
 
   // --- 1. shell renders -----------------------------------------------------
   // M4-D2 (§7): 6 nav links - the Overclocking + Fan pages merged into one
@@ -437,25 +468,39 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (region.drag !== 'drag' || region.brand !== 'drag' || region.cluster !== 'no-drag') {
     fail(`M4-D: the title bar drag regions are wrong: ${appRegion} (expected drag on the left zone + brand, no-drag cluster)`);
   }
-  // The max button icon follows the pushed window:maximized-changed state
-  // (single square = maximize, overlapping squares = restore).
+  // The max button icon follows the pushed window:maximized-changed state.
+  // M4J (F): ONE svg - the two inner groups are class-toggled (the svg's
+  // icon-state-restore class + the groups' computed display; the pre-M4J
+  // two-svg hidden-attribute shape is pinned ABSENT).
   const maxIconState = () => js(`(() => {
     const b = document.querySelector('#titlebar .window-btn[data-op="maximize-toggle"]');
-    const restore = b?.querySelector('.icon-restore');
-    const maximize = b?.querySelector('.icon-maximize');
-    return JSON.stringify({ restoreHidden: restore?.hidden, maxHidden: maximize?.hidden });
+    const svg = b?.querySelector('.icon-maximize-restore');
+    if (!svg) return JSON.stringify({ noSvg: true });
+    const restoreGroup = svg.querySelector('.icon-restore');
+    const maximizeGroup = svg.querySelector('.icon-maximize');
+    const restoreVisible = !!restoreGroup && getComputedStyle(restoreGroup).display !== 'none';
+    const maxVisible = !!maximizeGroup && getComputedStyle(maximizeGroup).display !== 'none';
+    return JSON.stringify({
+      nestedSvgCount: svg.querySelectorAll('svg').length,
+      stateClass: svg.classList.contains('icon-state-restore'),
+      restoreVisible,
+      maxVisible,
+    });
   })()`);
   win.webContents.send('window:maximized-changed', { maximized: true });
   await sleep(300);
   let iconState = JSON.parse(await maxIconState());
-  if (iconState.restoreHidden !== false || iconState.maxHidden !== true) {
-    fail(`M4-D: the max button did not flip to the RESTORE icon on window:maximized-changed {maximized:true}: ${JSON.stringify(iconState)}`);
+  if (iconState.noSvg || iconState.nestedSvgCount !== 0) {
+    fail(`M4J (F): the max button must hold ONE svg (got nested svg count ${iconState.nestedSvgCount}): ${JSON.stringify(iconState)}`);
+  }
+  if (!iconState.stateClass || !iconState.restoreVisible || iconState.maxVisible) {
+    fail(`M4J (F): the max button did not flip to the RESTORE icon on window:maximized-changed {maximized:true} (class ${iconState.stateClass}, restore visible ${iconState.restoreVisible}, maximize visible ${iconState.maxVisible}): ${JSON.stringify(iconState)}`);
   }
   win.webContents.send('window:maximized-changed', { maximized: false });
   await sleep(300);
   iconState = JSON.parse(await maxIconState());
-  if (iconState.restoreHidden !== true || iconState.maxHidden !== false) {
-    fail(`M4-D: the max button did not flip back to the MAXIMIZE icon: ${JSON.stringify(iconState)}`);
+  if (iconState.stateClass || !iconState.maxVisible || iconState.restoreVisible) {
+    fail(`M4J (F): the max button did not flip back to the MAXIMIZE icon (class ${iconState.stateClass}, restore visible ${iconState.restoreVisible}, maximize visible ${iconState.maxVisible}): ${JSON.stringify(iconState)}`);
   }
   // Clicking each button performs the injected window op (the counters
   // tick - the real ops would minimize/close the verify window).
@@ -478,16 +523,18 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // as two separate icons).
   const cornerIcon = await js(`document.querySelector('#titlebar .titlebar-corner-icon')?.getAttribute('src') ?? ''`);
   if (!cornerIcon.includes('icon.png')) fail(`M4-D: the title bar corner icon is '${cornerIcon}' (expected the app icon at the top-left)`);
-  // M4-H (D2 - N10): the restore glyph is TWO rects selected EXPLICITLY
-  // (by class - the old single-rect selector would silently pass any
-  // layout). The corrected WINDOWS shape: the HOLLOW back square at the
+  // M4-H (D2 - N10)/M4J (F): the restore glyph is TWO rects selected
+  // EXPLICITLY (by class - the old single-rect selector would silently pass
+  // any layout). The corrected WINDOWS shape: the HOLLOW back square at the
   // TOP-LEFT (1.5,1.5) and the FILLED front square at the BOTTOM-RIGHT
   // (3.5,3.5), the front fill resolving from the .icon-restore-front class
-  // to the titlebar background color (--bg-elev).
+  // to the titlebar background color (--bg-elev). ONE svg element holds
+  // both groups (M4J).
   const restoreGlyph = await js(`(() => {
+    const svg = document.querySelector('#titlebar .icon-maximize-restore');
     const back = document.querySelector('#titlebar .icon-restore .icon-restore-back');
     const front = document.querySelector('#titlebar .icon-restore .icon-restore-front');
-    if (!back || !front) return 'no-rects';
+    if (!svg || !back || !front) return 'no-rects';
     const fill = getComputedStyle(front).fill;
     // The titlebar's background resolves var(--bg-elev) to the same rgb
     // form the fill computes to.
@@ -504,8 +551,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (glyph.back[0] !== '1.5' || glyph.back[1] !== '1.5') fail(`M4-H: the restore BACK square is at (${glyph.back}) (expected the hollow back at TOP-LEFT 1.5,1.5)`);
   if (glyph.front[0] !== '3.5' || glyph.front[1] !== '3.5') fail(`M4-H: the restore FRONT square is at (${glyph.front}) (expected the filled front at BOTTOM-RIGHT 3.5,3.5)`);
   if (glyph.fill !== glyph.bg) fail(`M4-H: the restore front fill is '${glyph.fill}' (expected the resolved --bg-elev '${glyph.bg}' via .icon-restore-front)`);
-  const tbRect = await js(`(() => { const b = document.querySelector('#titlebar .icon-restore'); const r = b.getBoundingClientRect(); return JSON.stringify({ w: r.width, h: r.height }); })()`);
-  step('titlebar-extras', `top-left corner icon OK; restore glyph is ONE icon (M4-H: hollow back at 1.5,1.5 + filled front at 3.5,3.5 with the class fill '${glyph.fill}', ${JSON.parse(tbRect).w}x${JSON.parse(tbRect).h}px)`);
+  const tbRect = await js(`(() => { const b = document.querySelector('#titlebar .icon-maximize-restore'); const r = b.getBoundingClientRect(); return JSON.stringify({ w: r.width, h: r.height }); })()`);
+  step('titlebar-extras', `top-left corner icon OK; restore glyph is ONE icon in ONE svg (M4-H: hollow back at 1.5,1.5 + filled front at 3.5,3.5 with the class fill '${glyph.fill}', ${JSON.parse(tbRect).w}x${JSON.parse(tbRect).h}px; the two groups class-swap by state)`);
 
   // M4-D (user): the sidebar - per-tab icons left of the names, the brand
   // "Power" illuminated like the title bar, the brand BOLD.
@@ -595,12 +642,20 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('waiver-seed', `boot waiver state: store=${persistedWaiver ? 'accepted' : 'not accepted'}, backend=${bootAccepted ? 'accepted' : 'not accepted'}`);
 
+  // M4J clarification: whether THIS session's device carries vramFreqOffset
+  // - the key for the ADVANCED SECTION ONLY (the pure advancedUiVisible
+  // contract; b580 = the VRAM clock editor, a770/arc-igpu/pro-b50 = no
+  // section). The OC-mode column (Stock/Advanced pill) is NOT keyed on it -
+  // the pill renders on EVERY device as in 1.0.3.
+  const vramFreqUi = (await backend.getCapabilities(0)).controls?.vramFreqOffset === true;
+  step('m4j-vramfreq-ui', `M4J (D): this session's device ${vramFreqUi ? 'carries' : 'LACKS'} vramFreqOffset - the Advanced SECTION ${vramFreqUi ? 'renders (the VRAM clock editor)' : 'is GONE (Alchemist - only the bottom expert section is removed; the OC-mode pill stays)'}`);
+
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard GPU card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
   // Driver version row is REMOVED - M4-H).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.4 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.4 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -717,14 +772,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const sysinfoRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const sysRows = JSON.parse(sysinfoRows);
   if (sysRows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`M4-D: CPU row is '${sysRows['CPU']}' (expected the sysinfo fixture name)`);
-  // M4-H (C2): the Memory row reads "G.Skill 32 GB DDR5 @ 6000 MHz" - the
-  // SMBIOS type (34 = DDR5) inserted between the size and the speed; the
-  // speed half renders in its OWN .kv-static-freq span (blue accent via
-  // the shared rule - never the kv-live-freq class itself, N3).
-  if (sysRows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`M4-H: Memory row is '${sysRows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz')`);
+  // M4-H (C2)/M4J (B): the Memory row reads "G.Skill 32 GB DDR5 @ 6.0 GHz" -
+  // the SMBIOS type (34 = DDR5) inserted between the size and the speed;
+  // the speed half is ALWAYS GHz with one decimal (M4J: 6000 MHz -> "6.0
+  // GHz", never MHz) and renders in its OWN .kv-static-freq span (blue
+  // accent via the shared rule - never the kv-live-freq class itself, N3).
+  if (sysRows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6.0 GHz') fail(`M4J: Memory row is '${sysRows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6.0 GHz')`);
   if (!(await waitFor(win, `(() => {
     const span = document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq');
-    if (!span || span.textContent !== '@ 6000 MHz') return false;
+    if (!span || span.textContent !== '@ 6.0 GHz') return false;
     const live = document.querySelector('.sysinfo-card .kv-live-freq');
     if (!live) return false;
     const cs = getComputedStyle(span);
@@ -734,16 +790,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // first-match hazard - N3).
     return cs.color === liveCs.color && cs.fontWeight === liveCs.fontWeight && !span.classList.contains('kv-live-freq');
   })()`, 5000))) {
-    fail(`M4-H: the memory speed span is not the blue .kv-static-freq (text '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq')?.textContent ?? ''`)}')`);
+    fail(`M4J: the memory speed span is not the blue .kv-static-freq (text '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq')?.textContent ?? ''`)}')`);
   }
-  // M4-H (C2)/M4-I (A2): the Cache row below Memory - the mock fixture's
-  // L1/L2/L3/L4 sizes render as "L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB"
-  // (M4-I: "N KB" below 1024 KB, whole-MB FLOOR above, separator ' - ';
-  // the label is 'Cache' - L4 has NO OS source, the fixture carries it).
-  if (sysRows['Cache'] !== 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB') {
-    fail(`M4-I: the Cache row is '${sysRows['Cache']}' (expected 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB')`);
+  // M4J (B): the 'Mainboard' row REPLACES the M4-I 'Cache' row - the mock
+  // fixture's baseboard renders "ASUSTeK MAXIMUS VII RANGER" (the short-map
+  // manufacturer + product). The old Cache/Caches labels must be GONE.
+  if (sysRows['Mainboard'] !== 'ASUSTeK MAXIMUS VII RANGER') {
+    fail(`M4J: the Mainboard row is '${sysRows['Mainboard']}' (expected 'ASUSTeK MAXIMUS VII RANGER' - short-map + product)`);
   }
-  if (sysRows['Caches'] !== undefined) fail(`M4-I: the old 'Caches' data-label is still rendered (the label is 'Cache' now)`);
+  if (sysRows['Cache'] !== undefined || sysRows['Caches'] !== undefined) {
+    fail(`M4J: the Cache row is still rendered (removed with the M4-I cache work - got ${Object.keys(sysRows).join(',')})`);
+  }
   // M4-I (A3): the label is 'Cores / Clock' (was 'Cores / clock').
   if (sysRows['Cores / Clock'] === undefined || sysRows['Cores / clock'] !== undefined) {
     fail(`M4-I: the cores row data-label is not 'Cores / Clock' (got ${Object.keys(sysRows).join(',')})`);
@@ -757,7 +814,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   const liveFreqText = await js(`document.querySelector('.sysinfo-card .kv-live-freq')?.textContent ?? ''`);
   if (liveFreqText !== ' / @ 4.3 GHz') fail(`M4-D2: the live-freq span is '${liveFreqText}' (expected ' / @ 4.3 GHz')`);
-  step('m4d-cpu-card', `CPU & Memory card first in the card-grid: '${sysRows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz', '${sysRows['Memory']}', Cache '${sysRows['Cache']}'`);
+  step('m4j-cpu-card', `CPU & Memory card first in the card-grid: '${sysRows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz', '${sysRows['Memory']}', Mainboard '${sysRows['Mainboard']}' (Cache row removed)`);
 
   // --- M4-I (A4): the sysinfo-card and the device-card kv rows start at
   // the SAME vertical position (the CPU card's title margin-box vs the GPU
@@ -1091,24 +1148,28 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   // M4-D2 (§8): the page title is 'Tuning' and the view toggle exists at the
   // SAME height as the Stock/Advanced pill (getBoundingClientRect top
-  // equality - pinned).
+  // equality - pinned). M4J clarification: the OC pill renders on EVERY
+  // device (the pill is NOT keyed on vramFreqOffset - only the Advanced
+  // section below is).
   const tuningTitle = await js(`document.querySelector('.page-title')?.textContent ?? ''`);
   if (tuningTitle.trim() !== 'Tuning') fail(`M4-D2: the page title is '${tuningTitle}' (expected 'Tuning' - the Overclocking rename)`);
   const pillHeights = await js(`(() => {
     const ocPill = Array.from(document.querySelectorAll('.oc-mode-toggle')).find((t) => Array.from(t.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Stock'));
     const viewPill = Array.from(document.querySelectorAll('.oc-mode-toggle')).find((t) => Array.from(t.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Fan Curve'));
-    if (!ocPill || !viewPill) return 'no-pills';
+    if (!ocPill || !viewPill) return JSON.stringify({ noPills: true });
     const oc = ocPill.getBoundingClientRect();
     const v = viewPill.getBoundingClientRect();
     return JSON.stringify({ ocTop: Math.round(oc.top), vTop: Math.round(v.top), ocBottom: Math.round(oc.bottom), vBottom: Math.round(v.bottom) });
   })()`);
   const pillBox = JSON.parse(pillHeights);
-  if (!pillBox || pillBox.ocTop !== pillBox.vTop) fail(`M4-D2: the view pill is not at the SAME HEIGHT as the OC pill: ${pillHeights}`);
+  if (pillBox.noPills || pillBox.ocTop !== pillBox.vTop) fail(`M4-D2: the view pill is not at the SAME HEIGHT as the OC pill: ${pillHeights}`);
   if (pillBox.ocBottom !== pillBox.vBottom) fail(`M4-D2: the view pill top aligns but the bottoms differ (different heights): ${pillHeights}`);
   const viewToggleState = await js(`JSON.stringify(Array.from(document.querySelectorAll('.tuning-view-btn')).map((b) => [b.textContent.trim(), b.classList.contains('active')]))`);
   if (!/\["Tuning",true\]/.test(viewToggleState)) fail(`M4-D2: the view toggle does not show Tuning active on a '#/tuning' visit: ${viewToggleState}`);
-  // M4-H (A3): on the TUNING view the OC-mode column is PRESENT (the
-  // fan-hide class is off and the Stock/Advanced pills render).
+  // M4-H (A3)/M4J clarification: on the TUNING view the OC-mode column is
+  // PRESENT on EVERY device (the fan-hide class is off and the
+  // Stock/Advanced pills render) - the user clarified that "Advanced gone
+  // for Alchemist" means only the bottom Advanced section, never the pill.
   const tuningRowState = await js(`(() => {
     const row = document.querySelector('.oc-mode-row');
     if (!row) return 'no-row';
@@ -1123,7 +1184,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   // M4-I (E1): the row order is View FIRST, then OC Mode, then the GPU
   // selector (when present - the single-device session has no selector
-  // column), then the compact Save button (the plan's swap).
+  // column), then the compact Save button.
   const modeRowOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-mode-row .oc-mode-col')).map((c) => (c.querySelector('.oc-mode-label')?.textContent ?? '').trim()))`);
   const orderCols = JSON.parse(modeRowOrder);
   if (orderCols[0] !== 'View' || orderCols[1] !== 'OC mode' || orderCols[orderCols.length - 1] !== 'Profile') {
@@ -1419,9 +1480,36 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 3b. M2b-B no-op suppression: the payload carries all 4 controls, but
   // --- only power changed -> EXACTLY one success toast (the no-ops stay
   // --- silent). Off-grid fixture: freq is also dirty -> two toasts.
+  // M4J (note): the M4-D retry flow above consumed the ORIGINAL off-grid
+  // dirtiness (the snapped freq 48 was applied on the retry's first
+  // attempt, and the baseline apply set power 220) - for the off-grid
+  // variant, re-dirty BOTH controls deterministically so ONE apply produces
+  // the two toasts this pin counts, then restore the 220 baseline the later
+  // sections expect (the pre-fix pin counted a stale state and failed since
+  // M4-D).
+  if (offGridFreq !== undefined) {
+    await clearToasts();
+    await js(`(() => {
+      const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+      const input = card.querySelector('input[type="range"]');
+      input.value = '49';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await setSlider(230); // power 230 vs the baseline 220 -> dirty
+    await clickApply(); // -> 2 toasts (power 230 + freq 49)
+  }
   const expectedToasts = offGridFreq !== undefined ? 2 : 1;
   if (!(await waitFor(win, `document.querySelectorAll('.toast-success').length === ${expectedToasts}`, 5000))) {
     fail(`expected ${expectedToasts} success toast(s) (no-op suppression), got ${await js(`document.querySelectorAll('.toast-success').length`)}`);
+  }
+  if (offGridFreq !== undefined) {
+    // Restore the 220 W baseline the later sections (driver readout, reset,
+    // B5) expect.
+    await clearToasts();
+    await setSlider(220);
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4J: the off-grid 220 W baseline restore after the toast count did not land');
+    await clearToasts();
   }
   step('noop-toasts', `no-op suppression: ${expectedToasts} success toast(s) for ${expectedToasts} real change(s), silent elsewhere`);
   await clearToasts();
@@ -1638,146 +1726,35 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4b-clock', `M4-B: Clock mode range ${clockMin}..${clockMax} MHz, slider 2050 -> readout '${clockReadout.trim()}', apply -> offset ${clockState.gpuFreqOffsetMhz} MHz, driver '${clockDriver.trim()}'`);
   await clearToasts();
 
-  // (3) gpuLock editor (a770: gpuLock supported): the card sits in the
-  // Advanced section, the expert row reads "Editing available", Apply/Reset
-  // round-trip through the shared clamp path.
-  if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
-    fail('M4-B: the gpuLock editor card is missing in the Advanced section (a770 supports gpuLock)');
-  }
-  const advText = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
-  if (!advText.includes('Editing available')) fail(`M4-B: the gpuLock expert row does not read 'Editing available': '${advText}'`);
-  const setLockInputs = (v, f) => js(`(() => {
-    const card = document.querySelector('.gpu-lock-editor');
-    const vi = card.querySelector('input[data-lock-field="voltageV"]');
-    const fi = card.querySelector('input[data-lock-field="freqMhz"]');
-    vi.value = '${v}'; fi.value = '${f}';
-    vi.dispatchEvent(new Event('input', { bubbles: true }));
-    fi.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
-  await setLockInputs(0.9, 2100);
-  await clearToasts();
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: gpuLock apply success toast missing');
-  const lockState = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (!lockState.gpuLock || Math.abs(lockState.gpuLock.voltageV - 0.9) > 1e-6 || Math.abs(lockState.gpuLock.freqMhz - 2100) > 1e-6) {
-    fail(`M4-B: gpuLock apply did not stick: ${JSON.stringify(lockState.gpuLock)}`);
-  }
-  await clearToasts();
-
-  // (3b) M4-B step-4 F4: a NULL fresh envelope (degraded state read after a
-  // successful write) must NOT flip the 'Applied:' line to 'Dynamic
-  // (unlocked)' - the driver state is unknown, keep the previous line.
-  const realGetState = backend.getCurrentSettings.bind(backend);
-  backend.getCurrentSettings = async () => {
-    throw new Error('injected degraded state read (ui-verify)');
-  };
-  await setLockInputs(1.2, 2400);
-  await clearToasts();
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: null-state gpuLock apply success toast missing');
-  backend.getCurrentSettings = realGetState;
-  const nullStateLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
-  if (nullStateLine.trim() !== 'Applied: 0.9 V / 2100 MHz') {
-    fail(`M4-B: null-state apply replaced the 'Applied:' line with '${nullStateLine.trim()}' (expected the previous 'Applied: 0.9 V / 2100 MHz')`);
-  }
-  const nullStateRead = await js(`window.arcPower.getCurrentSettings(0)`);
-  // The WRITE landed (the failure was only the state read-back) - the honest
-  // follow-up read must show the applied pair, and the stale store state must
-  // NOT have been clobbered by the null envelope.
-  if (!nullStateRead.gpuLock || Math.abs(nullStateRead.gpuLock.voltageV - 1.2) > 1e-6 || Math.abs(nullStateRead.gpuLock.freqMhz - 2400) > 1e-6) {
-    fail(`M4-B: the null-state apply did not land the write: ${JSON.stringify(nullStateRead.gpuLock)} (expected the applied 1.2 V / 2400 MHz)`);
-  }
-  step('m4b-nullstate', `M4-B: degraded state read (null envelope) -> 'Applied:' line kept '${nullStateLine.trim()}' (never 'Dynamic (unlocked)')`);
-  await clearToasts();
-
-  // (3b2) M4-B step-5 F3: EMPTY inputs must be rejected BEFORE conversion -
-  // Number('') === 0 and the 0 V / 0 MHz pair is the legal UNLOCK: a cleared
-  // field must never silently unlock the GPU (no success toast, no state
-  // change, the 'Applied:' line untouched).
-  await setLockInputs('', '');
-  await clearToasts();
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-error .toast-message')).some((t) => (t.textContent ?? '').includes('must be numbers'))`, 5000))) {
-    fail('M4-B: an empty gpuLock field did not produce the "must be numbers" error toast');
-  }
-  if (await js(`!!document.querySelector('.toast-success')`)) {
-    fail("M4-B: an empty gpuLock field APPLIED (Number('') === 0 silently applied the 0/0 UNLOCK pair)");
-  }
-  const emptyState = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (!emptyState.gpuLock || Math.abs(emptyState.gpuLock.voltageV - 1.2) > 1e-6 || Math.abs(emptyState.gpuLock.freqMhz - 2400) > 1e-6) {
-    fail(`M4-B: an empty gpuLock field changed the driver state to ${JSON.stringify(emptyState.gpuLock)} (must stay the applied 1.2 V / 2400 MHz)`);
-  }
-  const emptyLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
-  if (emptyLine.trim() !== 'Applied: 0.9 V / 2100 MHz') {
-    fail(`M4-B: an empty gpuLock field flipped the 'Applied:' line to '${emptyLine.trim()}' (must keep the previous pair)`);
-  }
-  step('m4b-gpulock-empty', `M4-B: empty gpuLock inputs -> 'must be numbers' toast, no success, driver state untouched (${JSON.stringify(emptyState.gpuLock)}), line '${emptyLine.trim()}'`);
-  await clearToasts();
-  // Back to the default pair for the Reset round trip below.
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Reset')?.click()`);
-
-  // (3c) M4-B step-4 F3: Reset must make the 'Applied:' line agree with the
-  // inputs (0/0). Force a re-render first so the editor's render-time lock
-  // IS the applied pair (0.9 V / 2100 MHz) - the pre-fix code then snapped
-  // the line back to that stale pair on Reset instead of 'Dynamic (unlocked)'.
-  await js(`location.hash = '#/dashboard'`);
-  if (!(await waitFor(win, `!!document.querySelector('.health-card')`, 5000))) fail('M4-B: dashboard did not render for the gpuLock Reset round trip');
-  await gotoOverclocking();
-  if (!(await waitFor(win, `!!document.querySelector('.gpu-lock-editor')`, 5000))) fail('M4-B: OC page did not re-render with the gpuLock editor');
-  const reRenderLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
-  if (reRenderLine.trim() !== 'Applied: 0.9 V / 2100 MHz') {
-    fail(`M4-B: after the re-render the 'Applied:' line is '${reRenderLine.trim()}' (expected the applied 'Applied: 0.9 V / 2100 MHz')`);
-  }
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Reset')?.click()`);
-  const resetInputs = await js(`(() => {
-    const card = document.querySelector('.gpu-lock-editor');
-    return card.querySelector('input[data-lock-field="voltageV"]').value + '/' + card.querySelector('input[data-lock-field="freqMhz"]').value;
-  })()`);
-  if (resetInputs !== '0/0') fail(`M4-B: gpuLock Reset did not restore the default pair: '${resetInputs}'`);
-  const resetLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
-  if (resetLine.trim() !== 'Applied: Dynamic (unlocked)') {
-    fail(`M4-B: gpuLock Reset left the 'Applied:' line as '${resetLine.trim()}' (must agree with the 0/0 inputs - 'Applied: Dynamic (unlocked)')`);
-  }
-  step('m4b-gpulock-reset', `M4-B: gpuLock Reset round trip after re-render: line '${reRenderLine.trim()}' -> Reset -> inputs ${resetInputs}, line '${resetLine.trim()}'`);
-  await clearToasts();
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: gpuLock unlock apply success toast missing');
-  const unlocked = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (!unlocked.gpuLock || unlocked.gpuLock.voltageV !== 0 || unlocked.gpuLock.freqMhz !== 0) {
-    fail(`M4-B: gpuLock unlock (0,0) did not stick: ${JSON.stringify(unlocked.gpuLock)}`);
-  }
-  step('m4b-gpulock', `M4-B: gpuLock editor Apply/Reset round trip (0.9 V / 2100 MHz applied + read back, null-state refusal keeps the line, Reset -> 0/0, unlock applied)`);
-  await clearToasts();
-
-  // (3d) M4-B step-5 F4: the gpuLock SUCCESS toast reports the pair the
-  // driver RECEIVED - main clamps before the write (clampGpuLock: [0, 1.5 V]
-  // / [0, 5000 MHz]), so typing 2.5 V must toast '1.5 V', never re-print
-  // the raw typed value (the toast and the 'Applied:' line must agree).
-  await setLockInputs(2.5, 2400);
-  await clearToasts();
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: over-clamp gpuLock apply success toast missing');
-  const clampToast = await js(`document.querySelector('.toast-success .toast-message')?.textContent ?? ''`);
-  if (!clampToast.includes('1.5 V / 2400 MHz')) {
-    fail(`M4-B: the gpuLock success toast reports '${clampToast}' (expected the clamped read-back '1.5 V / 2400 MHz', not the typed 2.5 V)`);
-  }
-  const clampLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
-  if (!clampLine.includes('1.5 V / 2400 MHz')) {
-    fail(`M4-B: the gpuLock 'Applied:' line is '${clampLine.trim()}' (expected 'Applied: 1.5 V / 2400 MHz' - toast and line must agree)`);
-  }
-  const clampState = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (!clampState.gpuLock || Math.abs(clampState.gpuLock.voltageV - 1.5) > 1e-6 || clampState.gpuLock.freqMhz !== 2400) {
-    fail(`M4-B: the over-clamp gpuLock apply did not clamp: ${JSON.stringify(clampState.gpuLock)} (expected 1.5 V / 2400 MHz)`);
-  }
-  step('m4b-gpulock-honest', `M4-B: gpuLock success toast reports the clamped read-back pair ('${clampToast.trim()}', line '${clampLine.trim()}')`);
-  await clearToasts();
-  // Back to the unlocked default so the baseline restore below is clean.
-  await setLockInputs(0, 0);
-  await js(`Array.from(document.querySelectorAll('.gpu-lock-editor button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: gpuLock unlock restore did not apply');
-  const unlockRestored = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (!unlockRestored.gpuLock || unlockRestored.gpuLock.voltageV !== 0 || unlockRestored.gpuLock.freqMhz !== 0) {
-    fail(`M4-B: gpuLock unlock restore did not land: ${JSON.stringify(unlockRestored.gpuLock)}`);
+  // (3) M4J (D) + clarification: the Advanced section renders ONLY on
+  // vramFreqOffset sessions and holds the VRAM clock editor ONLY (the full
+  // round trip lives in the b580 variant). On the Alchemist surface (a770/
+  // arc-igpu/pro-b50: no vramFreqOffset) the section is GONE - the gpuLock
+  // editor + the vfCurve/vramVoltOffset rows are removed per the user
+  // (profiles can still apply those values via the state machinery -
+  // documented). The OC-mode pill is NOT affected (renders everywhere).
+  if (vramFreqUi) {
+    if (await js(`!!document.querySelector('.advanced-card')`) === false) {
+      fail('M4J (D): the Advanced section is missing on a vramFreqOffset session');
+    }
+    if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
+      fail('M4J (D): the gpuLock editor is still rendered (removed - the section holds the VRAM editor only)');
+    }
+    if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
+      fail('M4J (D): the VRAM clock editor card is missing from the Advanced section');
+    }
+    if (await js(`!!document.querySelector('.expert-row')`)) {
+      fail('M4J (D): the expert rows are still rendered (the vfCurve/vramVoltOffset rows are removed)');
+    }
+    step('m4j-advanced', 'M4J (D): Advanced section = the VRAM clock editor ONLY (no expert rows, no gpuLock editor)');
+  } else {
+    if (await js(`!!document.querySelector('.advanced-card')`)) {
+      fail('M4J (D): the Advanced section is still rendered on a device without vramFreqOffset (Alchemist)');
+    }
+    if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
+      fail('M4J (D): the gpuLock editor is still rendered on Alchemist (the section died with it)');
+    }
+    step('m4j-advanced-absent', 'M4J (D): the Advanced section + the gpuLock editor are ABSENT on Alchemist (only the bottom expert section is gone - the OC-mode pill stays)');
   }
   await clearToasts();
 
@@ -1993,12 +1970,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (b580Caps.controls.gpuLock === true || b580Caps.controls.vfCurve !== true) {
     fail(`M2D swap: b580 control set wrong: ${JSON.stringify(b580Caps.controls)}`);
   }
-  // M4-B: the gpuLock editor is gated on caps.controls.gpuLock - it must
-  // disappear on the b580 swap (gpuLock unsupported there).
+  // M4-B/M4J (D): no gpuLock editor anywhere (removed with the M4J
+  // reshuffle) - and on the b580 swap the Advanced section holds the VRAM
+  // clock editor (vramFreqOffset native there).
   if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-    fail('M4-B: the gpuLock editor is still rendered on b580 (gated off - gpuLock unsupported)');
+    fail('M4-B/M4J: the gpuLock editor is still rendered (removed - the section holds the VRAM editor only)');
   }
-  step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported`);
+  if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
+    fail('M4J (D): the VRAM clock editor is missing on the b580 swap (vramFreqOffset native)');
+  }
+  step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
 
   // M2D: the swap payload replaces the boot driver date - the HEALTH card's
   // driver row (the GPU card's Driver version row is REMOVED - M4-H) must
@@ -2024,10 +2005,24 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const selBack = await js(`document.querySelector('.featureset-select').value`);
   if (selBack !== 'a770') fail(`M2D swap-back: dropdown selection is '${selBack}'`);
   if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) fail('M2D swap: waiver acceptance was lost across the swap');
-  // M4-B: the gpuLock editor returns with the a770 surface (gpuLock
-  // supported again).
-  if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
-    fail('M4-B: the gpuLock editor did not return after the swap back to a770');
+  // M4J (D): the Advanced section after the swap back to a770 follows the
+  // DEVICE surface - the a770 featureset has no vramFreqOffset, so the
+  // section (VRAM editor) drops; only a session that carries the control
+  // natively (b580 featureset sessions) keeps it on the swapped-in a770.
+  if (vramFreqUi) {
+    if (await js(`!!document.querySelector('.advanced-card')`) === false) {
+      fail('M4J (D): the Advanced section vanished after the swap back to a770 (the session overlay keeps vramFreqOffset)');
+    }
+    if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
+      fail('M4J (D): the VRAM clock editor vanished after the swap back to a770 (the session overlay keeps vramFreqOffset)');
+    }
+  } else {
+    if (await js(`!!document.querySelector('.advanced-card')`)) {
+      fail('M4J (D): the Advanced section is still rendered after the swap back to a770 (Alchemist has no vramFreqOffset)');
+    }
+    if (await js(`!!document.querySelector('.vram-editor-card')`)) {
+      fail('M4J (D): the VRAM clock editor is still rendered after the swap back to a770');
+    }
   }
   // M2D: the a770 featureset's own registry date returns with the surface.
   await js(`location.hash = '#/dashboard'`);
@@ -3135,6 +3130,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`window.arcPower.profilesSettingsSave({ activeProfileId: null })`).catch(() => {});
   await clearToasts();
 
+  // M4J clarification (S1/F2 REVERTED): the upgrade-path pin is REMOVED -
+  // a saved 1.0.3 profile carrying an extended PL applies on the a770 as
+  // in 1.0.3 (gated by the OC-mode pill normally; the stock-mode refusal
+  // path is already pinned by the M3-C-E stock variant above).
+  step('m4j-ext-pl-103', 'M4J (clarification): a 1.0.3 extended-PL profile applies on the a770 as in 1.0.3 - gated by the OC-mode pill (the S1 force + the caps-level extended gate are reverted)');
+
   // --- 16. M3-A/M3-B Tweaks page: the catalog renders with the live (mock)
   // --- states; applyable entries get working Enable/Disable/Revert buttons
   // --- (mock apply - no elevation), fullscreen stays read-only ------------
@@ -3217,8 +3218,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.4 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.4 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3240,19 +3241,35 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('M4-D: Close to tray did not persist closeToTray=false');
   }
   // Start minimized round trip: the checkbox persists settings.json
-  // (startMinimized) through the profiles-settings-save channel.
-  await js(`${startMinBox}.click()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === true)`, 5000))) {
-    fail('M4-D: Start minimized did not persist startMinimized=true');
-  }
-  if (!(await js(`${startMinBox}.checked`))) fail('M4-D: the Start minimized checkbox did not reflect its on state');
-  await js(`${startMinBox}.click()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === false)`, 5000))) {
-    fail('M4-D: Start minimized did not persist startMinimized=false');
+  // (startMinimized) through the profiles-settings-save channel. M4J (G):
+  // under RID_MOCK_START_MINIMIZED=1 the session SEEDED startMinimized:true
+  // (the tray-start probe) - the round trip starts from the checked state
+  // (click -> false, click -> true).
+  if (process.env.RID_MOCK_START_MINIMIZED === '1') {
+    if (!(await js(`${startMinBox}.checked`))) fail('M4J (G): the Start minimized checkbox is not checked in the seeded tray-start session');
+    await js(`${startMinBox}.click()`);
+    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === false)`, 5000))) {
+      fail('M4J (G): Start minimized did not persist startMinimized=false (seeded session)');
+    }
+    await js(`${startMinBox}.click()`);
+    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === true)`, 5000))) {
+      fail('M4J (G): Start minimized did not persist startMinimized=true (seeded session)');
+    }
+    if (!(await js(`${startMinBox}.checked`))) fail('M4J (G): the Start minimized checkbox did not reflect its on state (seeded session)');
+  } else {
+    await js(`${startMinBox}.click()`);
+    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === true)`, 5000))) {
+      fail('M4-D: Start minimized did not persist startMinimized=true');
+    }
+    if (!(await js(`${startMinBox}.checked`))) fail('M4-D: the Start minimized checkbox did not reflect its on state');
+    await js(`${startMinBox}.click()`);
+    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === false)`, 5000))) {
+      fail('M4-D: Start minimized did not persist startMinimized=false');
+    }
   }
   // M4-D2 (§10): the Log to file round trip - the persisted monitorLogToFile
   // toggle. Gated on RID_MOCK_LOG_DIR: with the knob the appends land in the
-  // mock dir (and the CSV pins below run); without it the round trip is
+  // mock dir (and the .txt log pins below run); without it the round trip is
   // SKIPPED so the verify never writes to the real Documents folder.
   if (process.env.RID_MOCK_LOG_DIR) {
     await js(`${logBox}.click()`);
@@ -3264,7 +3281,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.3`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.4`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -3490,17 +3507,19 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('themes-dark-final', '1.0.1: back to Dark Steel -> attribute + computed --bg (#0f1116) + persisted theme=dark (the session ends on the default)');
   await clearToasts();
 
-  // --- M4-D2: the log-to-file pin (RID_MOCK_LOG_DIR only) -------------------
-  // Toggle on -> the CSV appears with the pinned 12-column header + >= 1
-  // parseable data line; toggle off -> appends stop (file length stable
-  // across a telemetry tick).
+  // --- M4-D2/M4J: the log-to-file pin (RID_MOCK_LOG_DIR only) --------------
+  // Toggle on -> the .txt appears with the pinned aligned 12-column header
+  // + >= 1 parseable data line (the timestamp cell derives from sample.t
+  // via Date(t*1000) - the mock epoch 9662.768701+ renders 1970-01-01, the
+  // pinned value); toggle off -> appends stop (file length stable across a
+  // telemetry tick).
   if (process.env.RID_MOCK_LOG_DIR) {
     const fsMod = await import('node:fs');
     const pathMod = await import('node:path');
     const logDir = process.env.RID_MOCK_LOG_DIR;
-    const csvFiles = () => fsMod.readdirSync(logDir).filter((f) => f.startsWith('monitor-') && f.endsWith('.csv'));
+    const txtFiles = () => fsMod.readdirSync(logDir).filter((f) => f.startsWith('monitor-') && f.endsWith('.txt'));
     // Clean slate.
-    for (const f of csvFiles()) fsMod.rmSync(pathMod.join(logDir, f), { force: true });
+    for (const f of txtFiles()) fsMod.rmSync(pathMod.join(logDir, f), { force: true });
     await clearToasts();
     await js(`${logBox}.click()`);
     if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.monitorLogToFile === true)`, 5000))) {
@@ -3513,7 +3532,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       return (async () => {
         const t0 = Date.now();
         while (Date.now() - t0 < 6000) {
-          const files = csvFiles();
+          const files = txtFiles();
           if (files.length > 0) {
             const content = fsMod.readFileSync(pathMod.join(logDir, files[0]), 'utf8');
             const lines = content.split(/\r?\n/).filter((l) => l.length > 0);
@@ -3524,27 +3543,37 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
         return null;
       })();
     });
-    if (!fileOk) fail(`M4-D2: the CSV log file did not appear with data lines in ${logDir}`);
+    if (!fileOk) fail(`M4-D2: the .txt log file did not appear with data lines in ${logDir}`);
     const header = fileOk.lines[0];
-    const expectedHeader = 'timestamp,gpuClockMhz,memClockMhz,tempC,powerW,utilPct,fanRpm,cpuUtilPct,cpuTempC,cpuFreqMhz,gpuMemUsedBytes,fps';
-    if (header !== expectedHeader) fail(`M4-D2: the CSV header is '${header}' (expected the pinned 12-column header)`);
+    // M4J: the pinned aligned header - every field right-aligned to its
+    // column, ' | ' separators (the exact byte-for-byte pin).
+    const expectedHeader = '          timestamp | gpuClockMhz | memClockMhz | tempC | powerW | utilPct | fanRpm | cpuUtilPct | cpuTempC | cpuFreqMhz | gpuMemUsedBytes | fps';
+    if (header !== expectedHeader) fail(`M4J: the log header is '${header}' (expected the pinned aligned 12-column header)`);
     for (const line of fileOk.lines.slice(1)) {
-      const fields = line.split(',');
-      if (fields.length !== 12) fail(`M4-D2: a CSV data line has ${fields.length} fields (expected 12): '${line}'`);
-      if (!Number.isFinite(Number(fields[0]))) fail(`M4-D2: the CSV timestamp field is not numeric: '${fields[0]}'`);
+      const fields = line.split(' | ');
+      if (fields.length !== 12) fail(`M4J: a log data line has ${fields.length} columns (expected 12): '${line}'`);
+      const ts = fields[0].trim();
+      if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts)) {
+        fail(`M4J: the timestamp cell is not the pinned 'YYYY-MM-DD HH:MM:SS' format: '${ts}'`);
+      }
+      if (!ts.startsWith('1970-01-01')) {
+        fail(`M4J: the timestamp cell is '${ts}' (expected the mock epoch value's 1970-01-01 date - sample.t via Date(t*1000))`);
+      }
     }
     const sampleLine = fileOk.lines[1];
-    const sampleFields = sampleLine.split(',');
-    // M4-I (C1): the mock temp VARIES 61/62 - the CSV cell accepts either.
+    const sampleFields = sampleLine.split(' | ').map((s) => s.trim());
+    // M4-I (C1): the mock temp VARIES 61/62 - the cell accepts either;
+    // M4J: the '-' null contract (the GPU-memory cell is populated).
     if (sampleFields[7] !== '42' || (sampleFields[8] !== '61' && sampleFields[8] !== '62')) {
-      fail(`M4-D2/M4-I: the CSV data line does not carry the mock system stats (cpuUtilPct 42, cpuTempC 61|62): '${sampleLine}'`);
+      fail(`M4-D2/M4-I: the log data line does not carry the mock system stats (cpuUtilPct 42, cpuTempC 61|62): '${sampleLine}'`);
     }
+    if (sampleFields[10] === '-') fail(`M4J: the gpuMemUsedBytes cell is '-' on the mock line (expected the populated value): '${sampleLine}'`);
     // The Monitoring page's current-log-path line shows the resolved file
     // (the toggle is still ON here - the off-state line is pinned in the
     // monitoring section).
     await js(`location.hash = '#/monitoring'`);
     if (!(await waitFor(win, `(document.querySelector('.mon-log-path')?.textContent ?? '').includes('${fileOk.file}')`, 5000))) {
-      fail(`M4-D2: the Monitoring path line does not show the resolved CSV: '${await js(`document.querySelector('.mon-log-path')?.textContent ?? ''`)}'`);
+      fail(`M4-D2: the Monitoring path line does not show the resolved log file: '${await js(`document.querySelector('.mon-log-path')?.textContent ?? ''`)}'`);
     }
     // Toggle off -> the file length stays stable across a telemetry tick.
     await js(`location.hash = '#/settings'`);
@@ -3556,10 +3585,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const before = fsMod.statSync(pathMod.join(logDir, fileOk.file)).size;
     await sleep(1800); // > 3 telemetry ticks
     const after = fsMod.statSync(pathMod.join(logDir, fileOk.file)).size;
-    if (after !== before) fail(`M4-D2: the CSV file kept growing after the toggle was OFF (${before} -> ${after} bytes)`);
-    step('m4d2-log-file', `log-to-file: ${fileOk.file} appeared with the 12-column header + ${fileOk.lines.length - 1} parseable line(s) (sample carries cpuUtilPct=42, cpuTempC=61); the Monitoring path line shows the file; toggle off -> length stable (${before} bytes)`);
+    if (after !== before) fail(`M4-D2: the log file kept growing after the toggle was OFF (${before} -> ${after} bytes)`);
+    step('m4j-log-file', `log-to-file: ${fileOk.file} appeared with the aligned 12-column header + ${fileOk.lines.length - 1} parseable line(s) (timestamp 1970-01-01 from the mock epoch via Date(t*1000), cpuUtilPct=42, cpuTempC=61); the Monitoring path line shows the file; toggle off -> length stable (${before} bytes)`);
   } else {
-    step('m4d2-log-file', 'log-to-file pin SKIPPED (RID_MOCK_LOG_DIR not set)');
+    step('m4j-log-file', 'log-to-file pin SKIPPED (RID_MOCK_LOG_DIR not set)');
   }
 
   // --- M4-D2 (§1): the close-to-tray REAL close probe - the LAST step. -----
@@ -3713,27 +3742,30 @@ export async function runFeaturesetVerify(win, fsId) {
       const presetCount = await js(`document.querySelectorAll('.oc-card .oc-presets').length`);
       if (presetCount !== 0) fail(`M3-C-G: preset chips still render (${presetCount})`);
       const adv = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
-      // M4-B: vfCurve stays read-only (no apply path) - the honest M5 text.
-      // M4-D (user): the Advanced section renders ONLY supported rows - the
-      // b580 surface shows the supported vfCurve + VRAM-offset rows with
-      // their M5 notes and NO 'Unsupported on this GPU' rows at all (gpuLock
-      // + VRAM voltage are unsupported -> their rows are REMOVED entirely,
-      // the editor gated off).
-      // M4-D review F1 regression: the supported filter keys on the
-      // IGCL-keyed caps.controls (row.control - vramFreqOffset), NOT the
-      // canonical settings key (vramFreqOffsetGts): BOTH supported M5 rows
-      // MUST render (pre-fix the VRAM row was silently dropped and the old
-      // note-only check passed on vfCurve alone).
-      const expertRows = await js(`document.querySelectorAll('.expert-row').length`);
-      if (expertRows !== 2) fail(`M4-D: b580 advanced must render exactly the 2 supported expert rows (vfCurve + VRAM offset), got ${expertRows}: '${adv}'`);
-      if (!adv.includes('Custom VF curve')) fail(`M4-D: b580 advanced is missing the vfCurve row: '${adv}'`);
-      if (!adv.includes('VRAM frequency offset')) fail(`M4-D: b580 advanced is missing the supported VRAM frequency offset row: '${adv}'`);
-      if (!adv.includes('Supported - editing arrives in M5')) fail(`b580 advanced: a supported expert control is missing its M5 note: '${adv}'`);
-      if (adv.includes('Unsupported on this GPU')) fail('M4-D: b580 advanced still renders "Unsupported on this GPU" rows (unsupported controls are removed entirely)');
-      if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-        fail('M4-B: the gpuLock editor is rendered on b580 (gated off - gpuLock unsupported)');
+      // M4J (D): the Advanced section on b580 = the VRAM clock editor ONLY.
+      // The M4-B expert rows (vfCurve/VRAM-offset M5 notes) and the gpuLock
+      // editor are REMOVED; the VRAM editor's slider covers the range
+      // (0..3 Gbps, step 0.1) with the real apply + read-back.
+      if (!adv.includes('VRAM clock')) fail(`M4J (D): b580 advanced is missing the VRAM clock editor: '${adv}'`);
+      if (await js(`document.querySelectorAll('.expert-row').length !== 0`)) {
+        fail('M4J (D): the expert rows are still rendered on b580 (removed - the section holds the VRAM editor only)');
       }
-      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), gpuLock unsupported (no editor) / vfCurve supported`);
+      if (adv.includes('Unsupported on this GPU')) fail('M4-D: b580 advanced still renders "Unsupported on this GPU" rows (removed entirely)');
+      if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
+        fail('M4-B/M4J: the gpuLock editor is rendered on b580 (removed with the reshuffle)');
+      }
+      if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
+        fail('M4J (D): the VRAM clock editor card is missing on b580');
+      }
+      const vramMin = await js(`document.querySelector('.vram-editor-card input[type="range"]')?.getAttribute('min')`);
+      const vramMax = await js(`document.querySelector('.vram-editor-card input[type="range"]')?.getAttribute('max')`);
+      const vramStep = await js(`document.querySelector('.vram-editor-card input[type="range"]')?.getAttribute('step')`);
+      if (vramMin !== '0' || vramMax !== '3' || vramStep !== '0.1') {
+        fail(`M4J (D): the VRAM slider range is ${vramMin}..${vramMax} step ${vramStep} (expected 0..3 step 0.1 - the fixture vramFreqOffsetGts)`);
+      }
+      const vramMeta = await js(`document.querySelector('.vram-editor-card .oc-meta .oc-range')?.textContent ?? ''`);
+      if (!vramMeta.includes('Gbps')) fail(`M4J (D): the VRAM editor meta line does not show the Gbps units: '${vramMeta}'`);
+      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), Advanced = VRAM clock editor (0..3 Gbps step 0.1)`);
     } else {
       step('oc-generic', `'${fsId}': ${cards} OC cards render`);
     }
@@ -3813,10 +3845,14 @@ export async function runFeaturesetVerify(win, fsId) {
     fail('swap to a770 did not re-render the OC page with W units');
   }
   const a770Caps = await js(`window.arcPower.getCapabilities(0)`);
+  // M4J clarification (S1/F2 REVERTED): the swapped-in a770 surface reports
+  // its FULL extended range in advanced mode (the a770 featureset carries
+  // extendedRanges + the mock default mode is advanced) - the caps-level
+  // vramFreqOffset gate is gone, as in 1.0.3.
   if (a770Caps.ranges.powerLimitW.units !== 'W' || a770Caps.ranges.powerLimitW.max !== 315) {
-    fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)}`);
+    fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)} (expected the a770 extended 315 W in advanced mode)`);
   }
-  step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W`);
+  step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W (the a770 extended surface)`);
   // M2D: the swap payload carries the featureset driver date - the HEALTH
   // card's driver row (the GPU card's Driver version row is REMOVED -
   // M4-H) must show its own registry date even when the boot featureset
@@ -3882,6 +3918,47 @@ export async function runFeaturesetVerify(win, fsId) {
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('b580 percent restore did not apply');
     if (await js(`!!document.querySelector('.toast-error')`)) fail('b580 percent restore showed a per-control error toast');
     step('b580-apply', `b580 percent apply round trip: 120 % -> read-back ${applied.powerLimitW} %, restored to 100 % (all 4 controls driverstore, no error toast)`);
+
+    // --- M4J (D): the VRAM-OC editor round trip (b580 only) ----------------
+    // The Advanced toggle: the b580 mock boots ADVANCED (the mock default) -
+    // the pill shows Advanced active; the Advanced section holds the VRAM
+    // clock editor (slider 0..3 Gbps step 0.1). Slide 1.5 -> Apply -> the
+    // read-back + the toast carry 1.5 Gbps; restore 0.
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Advanced' && b.classList.contains('active'))`, 5000))) {
+      fail('M4J (D): the b580 OC-mode pill does not show Advanced active (mock default)');
+    }
+    const setVramSlider = (value) => js(`(() => {
+      const card = document.querySelector('.vram-editor-card');
+      if (!card) return 'no-editor';
+      const input = card.querySelector('input[type="range"]');
+      input.value = '${value}';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return (card.querySelector('.oc-value')?.textContent ?? '').trim();
+    })()`);
+    const vramReadout = await setVramSlider(1.5);
+    if (vramReadout !== '1.5 Gbps') fail(`M4J (D): the VRAM slider readout is '${vramReadout}' (expected '1.5 Gbps' - the vramFreqOffsetGts units)`);
+    await clearToasts();
+    await js(`Array.from(document.querySelectorAll('.vram-editor-card button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4J (D): the VRAM clock apply success toast missing');
+    if (await js(`!!document.querySelector('.toast-error')`)) fail('M4J (D): the VRAM clock apply showed an error toast');
+    const vramToast = await js(`document.querySelector('.toast-success .toast-message')?.textContent ?? ''`);
+    if (!vramToast.includes('1.5 Gbps')) fail(`M4J (D): the VRAM clock success toast is '${vramToast}' (expected the applied '1.5 Gbps')`);
+    const vramApplied = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(vramApplied.vramFreqOffsetGts - 1.5) > 1e-6) {
+      fail(`M4J (D): the VRAM clock apply did not stick: ${vramApplied.vramFreqOffsetGts} (expected 1.5 Gbps)`);
+    }
+    const vramDriver = await js(`document.querySelector('.vram-editor-driver')?.textContent ?? ''`);
+    if (!vramDriver.includes('1.5 Gbps')) fail(`M4J (D): the VRAM editor driver line is '${vramDriver}' (expected the read-back 1.5 Gbps)`);
+    await clearToasts();
+    await setVramSlider(0);
+    await js(`Array.from(document.querySelectorAll('.vram-editor-card button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4J (D): the VRAM clock restore did not apply');
+    const vramRestored = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(vramRestored.vramFreqOffsetGts) > 1e-6) {
+      fail(`M4J (D): the VRAM clock restore did not land: ${vramRestored.vramFreqOffsetGts} (expected 0)`);
+    }
+    step('b580-vram-oc', `M4J (D): VRAM-OC editor round trip - Advanced active, slider 1.5 Gbps -> apply -> toast + read-back 1.5 Gbps, driver line '${vramDriver.trim()}', restored to 0`);
+    await clearToasts();
   }
 
   // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
@@ -4001,17 +4078,20 @@ export async function runNoIntelVerify(win) {
   const sysRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const rows = JSON.parse(sysRows);
   if (rows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`1.0.1: the CPU row is '${rows['CPU']}'`);
-  // M4-H (C2)/M4-I (A2): the no-Intel path shares the fixture - DDR5 in the
-  // memory line + the 'Cache' row (M4-I: ' - ' separator + whole-MB floor).
-  if (rows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`1.0.1/M4-H: the Memory row is '${rows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz')`);
-  if (rows['Cache'] !== 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB') {
-    fail(`M4-I: the no-Intel Cache row is '${rows['Cache']}' (expected 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB')`);
+  // M4-H (C2)/M4J (B): the no-Intel path shares the fixture - DDR5 in the
+  // memory line (GHz always) + the 'Mainboard' row (the Cache row is gone).
+  if (rows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6.0 GHz') fail(`1.0.1/M4J: the Memory row is '${rows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6.0 GHz')`);
+  if (rows['Mainboard'] !== 'ASUSTeK MAXIMUS VII RANGER') {
+    fail(`M4J: the no-Intel Mainboard row is '${rows['Mainboard']}' (expected 'ASUSTeK MAXIMUS VII RANGER')`);
+  }
+  if (rows['Cache'] !== undefined || rows['Caches'] !== undefined) {
+    fail(`M4J: the no-Intel Cache row is still rendered (removed - got ${Object.keys(rows).join(',')})`);
   }
   // The LIVE freq half from the no-device telemetry push (cpuFreqMhz 4300).
   if (!(await waitFor(win, `(document.querySelector('.sysinfo-card .kv[data-label="Cores / Clock"]')?.textContent ?? '').trim() === '20 Cores / 28 Threads / @ 4.3 GHz'`, 8000))) {
     fail(`1.0.1: the Cores / Clock row is '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Cores / Clock"]')?.textContent ?? ''`)}' (expected the static bundle + the LIVE '/ @ 4.3 GHz')`);
   }
-  step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}', Cache '${rows['Cache']}'`);
+  step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}', Mainboard '${rows['Mainboard']}' (Cache row removed)`);
 
   // --- 5. the GPU card (M4-H + M4-I): title 'GPU' + the OS GPU in the 'GPU'
   // --- kv row, 'Non supported GPU' note, and the REAL rows the OS has:

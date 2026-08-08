@@ -1,10 +1,10 @@
 // Arc Power - Settings tab (M4-D + M4-D2): Start with Windows (the HKCU Run
 // value - ONE registration, zero UAC), Start minimized (persisted
-// startMinimized - the window minimizes to the taskbar at boot, the tray
+// startMinimized - the app starts hidden in the system tray at boot, the tray
 // click restores), Close to tray (persisted closeToTray - closing the
 // window hides it to the icon list instead of quitting; the tray menu's
 // Quit still exits), Log to file (persisted monitorLogToFile - the actual
-// CSV writes happen in the BOOT-LEVEL telemetry subscription in app.ts),
+// log writes happen in the BOOT-LEVEL telemetry subscription in app.ts),
 // and the app version row.
 //
 // M4-D2 (r2 F4/F6): the Run value is SHARED with the Profiles page's
@@ -54,7 +54,7 @@ export const settingsPage: Page = {
       el('h1', { class: 'page-title', text: 'Settings' }),
       el('p', {
         class: 'page-subtitle',
-        text: 'Startup behavior and app information. Start with Windows registers Arc Power in the HKCU Run key (no elevation, no prompt); Start minimized hides the window to the taskbar - restore it from the tray icon.',
+        text: 'Startup behavior and app information. Start with Windows registers Arc Power in the HKCU Run key (no elevation, no prompt); Start minimized starts the app in the system tray - restore it from the tray icon.',
       }),
       el('div', { id: 'settings-root', class: 'settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
     );
@@ -168,13 +168,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.startMinimized,
             onchange: (ev: Event) => void onStartMinimizedToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Start the window minimized to the taskbar' }),
+          el('span', { text: 'Start the app in the system tray (no window at boot)' }),
         ]),
       ]),
       el('p', {
         class: 'card-note settings-state',
         text: persisted.startMinimized
-          ? 'The window minimizes to the taskbar after boot - restore it from the tray icon.'
+          ? 'The app starts hidden in the system tray - restore it from the tray icon.'
           : 'The window opens normally.',
       }),
     ]);
@@ -202,7 +202,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     // M4-D2 (§10): the "Log to file" toggle. The persisted value rides in
-    // profiles-settings (monitorLogToFile); the actual CSV writes live in
+    // profiles-settings (monitorLogToFile); the actual log writes live in
     // the BOOT-LEVEL telemetry subscription (app.ts) so logging continues
     // across page navigation. The Monitoring page carries the same toggle
     // + the current log path.
@@ -217,13 +217,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.monitorLogToFile,
             onchange: (ev: Event) => void onLogToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Write every telemetry sample to a CSV file' }),
+          el('span', { text: 'Write every telemetry sample to a text file' }),
         ]),
       ]),
       el('p', {
         class: 'card-note settings-state',
         text: persisted.monitorLogToFile
-          ? 'Every telemetry sample is appended to a daily CSV file in your Documents folder.'
+          ? 'Every telemetry sample is appended to a daily text file (monitor-YYYYMMDD.txt) in your Documents folder.'
           : 'No log file is written.',
       }),
     ]);

@@ -5,7 +5,7 @@
 // telemetry push is global). This tiny module is the shared state:
 //   - `monitorLogToFile` - the persisted toggle value (initialized at boot
 //     from profiles-list; updated by the Settings + Monitoring toggles);
-//   - `currentLogFile` - the last CSV path reported by the monitor-log
+//   - `currentLogFile` - the last log path reported by the monitor-log
 //     append (the channel reports { ok, file } - the Monitoring page shows
 //     it as the "current log path" line);
 //   - `latestFps` - the latest FPS known to the renderer (the Monitoring

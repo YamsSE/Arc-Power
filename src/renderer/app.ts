@@ -379,11 +379,11 @@ async function boot() {
   // the Log-to-file toggle is on, append the sample + the best-effort fps
   // (the module-level latest FPS the Monitoring page's poll updates; the
   // sample's own fields make up the rest). Same tick cadence as the
-  // telemetry push - NO extra timers. The append result carries the CSV
-  // path - surfaced to the Monitoring page's "current log path" line.
+  // telemetry push - NO extra timers. The append result carries the log
+  // file path - surfaced to the Monitoring page's "current log path" line.
   // 1.0.1 no-Intel round (S1): registered on BOTH boot paths - the
   // no-device telemetry push (telemetry-start null mode) rides the SAME
-  // subscription, so CSV logging works for free there.
+  // subscription, so log-file logging works for free there.
   api.onTelemetrySample((sample) => {
     store.set({ latestSample: sample });
     if (getMonitorLogToFile()) {

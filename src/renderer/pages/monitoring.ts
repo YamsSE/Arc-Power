@@ -284,13 +284,13 @@ export const monitoringPage: Page = {
             checked: getMonitorLogToFile(),
             onchange: (ev: Event) => void onLogToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Write every telemetry sample to a CSV file' }),
+          el('span', { text: 'Write every telemetry sample to a text file' }),
         ]),
       ]),
       el('p', { class: 'card-note mon-log-path' }),
       el('p', {
         class: 'card-note',
-        text: 'One CSV line per second (timestamp, GPU + CPU stats, FPS) in your Documents folder. Logging continues while you navigate - it stops when the toggle is off.',
+        text: 'One aligned fixed-width line per second (timestamp, GPU + CPU stats, FPS) in your Documents folder - readable in any text editor. Logging continues while you navigate - it stops when the toggle is off.',
       }),
     ]);
 

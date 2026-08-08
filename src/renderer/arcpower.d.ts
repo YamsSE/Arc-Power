@@ -87,11 +87,12 @@ export interface ArcPowerApi {
   /** M4-B: persist the once-only Advanced OC Mode warning acceptance. */
   advancedModeAcceptedSet(): Promise<{ accepted: boolean }>;
   fpsPoll(deviceId: number): Promise<FpsSample | null>;
-  /** M4-D2 (user): append one full telemetry sample as a CSV line (Log to
-   *  file). The writer reports { ok, file } - the file is the resolved CSV
-   *  path the Monitoring page shows. Never throws (IO errors -> ok:false).
-   *  The optional fps rides along (the renderer's latest FPS, best-effort -
-   *  the sample itself carries the rest of the 12 CSV fields). */
+  /** M4-D2 (user)/M4J: append one full telemetry sample as an ALIGNED
+   *  fixed-width line (Log to file - monitor-YYYYMMDD.txt). The writer
+   *  reports { ok, file } - the file is the resolved log path the
+   *  Monitoring page shows. Never throws (IO errors -> ok:false). The
+   *  optional fps rides along (the renderer's latest FPS, best-effort -
+   *  the sample itself carries the rest of the 12 fields). */
   monitorLogAppend(sample: TelemetrySample & { fps?: number | null }): Promise<{ ok: boolean; error?: string; file?: string }>;
   profilesList(): Promise<ProfilesEnvelope>;
   profilesSave(profile: Partial<Profile> & { id: string; name: string; settings: Settings; ocOnBoot: boolean }): Promise<ProfilesEnvelope>;

@@ -284,14 +284,10 @@ export interface VideoControllerInfo {
 }
 
 /**
- * M4-I: one Win32_CacheMemory row (the L1 CIM fallback source). The SMBIOS
- * Level numbers are unreliable (3/4/5 on the 5775C) - the sizes are the
- * truth (hierarchy: L1-total < L2 < L3; L1 = the SMALLEST InstalledSize).
+ * M4J (B): the CacheMemoryInfo type is REMOVED with the Cache row (the
+ * Win32_CacheMemory query + the l1-l4 payload fields are gone - no dead
+ * pins).
  */
-export interface CacheMemoryInfo {
-  level: number | null;
-  installedSizeKb: number | null;
-}
 
 /**
  * M4-D: the system-info payload (sysinfo:get IPC) - the dashboard CPU card
@@ -304,23 +300,14 @@ export interface SysInfo {
     cores: number | null;
     threads: number | null;
     maxClockMhz: number | null;
-    /** M4-H: Win32_Processor L1CacheSize/L2CacheSize/L3CacheSize (KB).
-     *  null when the payload carries none (os.cpus() fallback). */
-    l1CacheKb: number | null;
-    l2CacheKb: number | null;
-    l3CacheKb: number | null;
-    /** M4-H: L4 cache - NO OS source (CIM has no L4 field); the mock
-     *  fixture carries it so the row renders in verify; real hardware
-     *  leaves it absent. Optional, rendered only when present. */
-    l4CacheKb?: number | null;
   };
   ram: { totalBytes: number; speedMhz: number | null; manufacturer: string | null;
     /** M4-H: Win32_PhysicalMemory.SMBIOSMemoryType (SMBIOS Type-17 code;
      *  null when the payload carries none). */
     memoryType: number | null };
-  /** M4-I: the Win32_CacheMemory rows (Level/InstalledSize KB) - the L1
-   *  CIM fallback source; the payload's own l1-l4 fields always win. */
-  cacheMemory: CacheMemoryInfo[];
+  /** M4J (B): Win32_BaseBoard Manufacturer + Product - the Mainboard row
+   *  source (the renderer's short-map derives the display label). */
+  baseboard: { manufacturer: string | null; product: string | null };
   videoControllers: VideoControllerInfo[];
 }
 
@@ -348,7 +335,7 @@ export interface TelemetrySample {
   powerW?: number;
   /** 1.0.1 (m4): OPTIONAL - the no-device telemetry push (telemetry-start
    *  null mode) emits sys-stats-only samples that carry no throttle flags;
-   *  nothing reads this field and the CSV writer does not use it. */
+   *  nothing reads this field and the log writer does not use it. */
   throttle?: ThrottleFlags;
   /** M4-D2: system stats pushed on every tick (rolling deltas; null = honest '-'). */
   cpuUtilPct?: number | null;

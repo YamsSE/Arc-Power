@@ -576,25 +576,66 @@ export class IgclBackend {
    * M3-D: ctlFanSetDefaultMode + read-back verify, retried once. True only
    * when the card reads back in DEFAULT (auto) mode. A stuck table mode is
    * reported loudly - the caller treats it as probe failure.
+   * M4J (J): the recovery is STRENGTHENED for the live failure mode
+   * ("table write accepted, read-back FAILED, restore-to-default FAILED" -
+   * reproduced on the real A770 2026-08-08, ERROR_NOT_AVAILABLE on the
+   * SetDefaultMode writes): (1) a short settle delay between attempts (the
+   * driver may still be processing the table write); (2) a FINAL mode-flip
+   * recovery - re-assert a FRESH sample table (a new state transition
+   * out of any wedged table mode), then SetDefaultMode again. Every attempt
+   * verifies by read-back. A card the driver refuses to restore stays
+   * honestly reported (probeOk=false - never a fake unlock).
    * @param {object} fan
    * @param {number} deviceId
    * @returns {Promise<boolean>}
    */
   async _restoreFanDefault(fan, deviceId) {
     const lib = this._libOrThrow();
+    const settle = (ms) => new Promise((r) => setTimeout(r, ms));
     if (this._isUnavailable(lib.ctlFanSetDefaultMode) || this._isUnavailable(lib.ctlFanGetConfig)) return false;
+    const inDefaultMode = () => {
+      const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
+      koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
+      const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
+      return getResult === CTL_RESULT.SUCCESS && koffi.decode(cfgBuf, 'ctl_fan_config_t').mode === 0 /* DEFAULT */;
+    };
     for (let attempt = 1; attempt <= 2; attempt++) {
       const setResult = lib.ctlFanSetDefaultMode(fan);
       if (setResult !== CTL_RESULT.SUCCESS) {
         console.error(`[igcl-backend] fan probe: restore-to-default attempt ${attempt} failed (${describeResult(setResult)}) - retrying`);
+        await settle(150);
         continue;
       }
-      const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
-      koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
-      const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
-      if (getResult === CTL_RESULT.SUCCESS && koffi.decode(cfgBuf, 'ctl_fan_config_t').mode === 0 /* DEFAULT */) return true;
+      if (inDefaultMode()) return true;
+      await settle(150);
     }
-    console.error(`[igcl-backend] fan probe: restore-to-default FAILED after retries for device ${deviceId} - the card may be left in table mode`);
+    // M4J (J): the mode-flip recovery - re-assert the TABLE mode with a
+    // fresh safe sample table (a new state transition, distinct from the
+    // probe's own table), then SetDefaultMode again. A card wedged in table
+    // mode gets a fresh state transition; a card that never left default
+    // mode is left untouched by the re-assert + default.
+    try {
+      const pointCount = 3;
+      const table = [];
+      for (let i = 0; i < pointCount; i++) {
+        table.push({
+          Size: koffi.sizeof('ctl_fan_temp_speed_t'),
+          Version: 0,
+          temperature: 20 + i * 30,
+          speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: 30 + i * 20, units: FAN_UNITS_PERCENT },
+        });
+      }
+      const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: table.length, table };
+      const flipSet = lib.ctlFanSetSpeedTableMode(fan, tableObj);
+      if (flipSet === CTL_RESULT.SUCCESS) {
+        await settle(150);
+        const flipDefault = lib.ctlFanSetDefaultMode(fan);
+        if (flipDefault === CTL_RESULT.SUCCESS && inDefaultMode()) return true;
+      }
+    } catch {
+      // the flip recovery threw - the honest failure below stands
+    }
+    console.error(`[igcl-backend] fan probe: restore-to-default FAILED after retries + the mode-flip recovery for device ${deviceId} - the card may be left in table mode`);
     return false;
   }
 
@@ -723,7 +764,7 @@ export class IgclBackend {
         const extendedCapable = this._extended
           ? await this._extended.isCapable()
           : false;
-        // M4-E: the extended concept is W/C-only (the bundled 2023 runtime
+        // M4E: the extended concept is W/C-only (the bundled 2023 runtime
         // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
         // must never be overwritten with the 315 W / 115 C maxes nor flip
         // the flag - their range max is the ceiling. Each override is

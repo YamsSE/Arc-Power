@@ -457,6 +457,15 @@ html, body {
   fill: var(--bg-elev);
 }
 
+/* M4J (F): ONE svg - the two inner groups swap by state (the pre-M4J
+   markup hid one of TWO svg elements; the user's repeat request). The
+   icon-state-restore class on the svg shows the restore group (overlapping
+   squares) and hides the maximize group (the single hollow square); the
+   default shows the maximize group. */
+.icon-maximize-restore .icon-restore { display: none; }
+.icon-maximize-restore.icon-state-restore .icon-maximize { display: none; }
+.icon-maximize-restore.icon-state-restore .icon-restore { display: block; }
+
 /* ------------------------------------------------------------------- shell */
 
 #shell {
@@ -1056,55 +1065,30 @@ html, body {
 .expert-value { font-family: var(--mono); font-size: 12.5px; }
 .expert-status { font-size: 12px; }
 
-/* --------------------- M4-B: gpuLock editor (Advanced section) ------------ */
+/* --------------------- M4J: VRAM clock editor (Advanced section) ---------- */
+/* The M4-B gpuLock editor styles are REMOVED with the editor (the Advanced
+   section holds the VRAM clock editor only). */
 
-.gpu-lock-editor {
+.vram-editor-card {
   margin-top: 12px;
   padding: 12px 14px;
   border: 1px solid var(--border);
 }
 
-.gpu-lock-editor .card-title { font-size: 13.5px; margin-bottom: 2px; }
+.vram-editor-card .card-title { font-size: 13.5px; margin-bottom: 2px; }
 
-.gpu-lock-fields {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin: 10px 0;
-}
-
-.gpu-lock-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.vram-editor-driver-line {
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--text-muted);
+  margin: 6px 0;
 }
 
-.gpu-lock-field input {
-  width: 130px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-inset);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 13px;
-}
-
-.gpu-lock-field input:focus { outline: none; border-color: var(--accent); }
-
-.gpu-lock-actions {
+.vram-editor-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
-}
-
-.gpu-lock-current {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text-muted);
+  margin-top: 8px;
 }
 
 /* --------------------------------------------------------------------- fan */

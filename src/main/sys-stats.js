@@ -20,9 +20,20 @@
 //                      "4.3 GHz" (live-verified 2026-08-07). On machines
 //                      where the counter caps at 100 the row honestly
 //                      reads base × %-of-max (documented in the report);
-//   cpuTempC         - Win32_PerfFormattedData_Counters_ThermalZoneInfo-
-//                      mation Temperature (K×10 → °C; 0 → null); the max
-//                      across all zones is reported (the hottest zone);
+//   cpuTempC         - M4J: TWO sources, precedence MSAcpi FIRST:
+//                      1. MSAcpi_ThermalZoneTemperature (root\wmi,
+//                         CurrentTemperature in Kelvin*10 - the ACPI thermal
+//                         zones; present on many laptops, EMPTY on this
+//                         Z97 desktop);
+//                      2. Win32_PerfFormattedData_Counters_ThermalZoneInfo-
+//                         mation Temperature (K*10 -> C; 0 -> null) - the
+//                         perf counter fallback.
+//                      The max across all zones of the chosen source is
+//                      reported (the hottest zone); the shared frozenDrop
+//                      (last 5 identical samples -> null) applies to BOTH
+//                      sources alike (a static board zone must not
+//                      masquerade as a CPU sensor whichever source reports
+//                      it).
 //   gpuMemUsedBytes  - Win32_PerfFormattedData_GPUPerformanceCounters_
 //                      GPUAdapterMemory "DedicatedUsage" (bytes) for the
 //                      instance whose name encodes the backend device's
@@ -84,6 +95,11 @@ export function buildSysStatsScript() {
     '$cpu = Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -Filter "Name=\'_Total\'" | Select-Object -First 1 Name,PercentProcessorTime,PercentProcessorPerformance',
     '$proc = Get-CimInstance Win32_Processor | Select-Object -First 1 MaxClockSpeed',
     '$tz = @(Get-CimInstance Win32_PerfFormattedData_Counters_ThermalZoneInformation | Select-Object Name,Temperature)',
+    // M4J (C): the MSAcpi ACPI-zone source (root\wmi namespace) - the
+    // FIRST-precedence CPU-temp source; CurrentTemperature is Kelvin*10.
+    // The class is EMPTY on this Z97 desktop (honest degrade to the perf
+    // counter below).
+    '$msa = @(Get-CimInstance -Namespace root\\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object CurrentTemperature)',
     '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage)',
     // M4-I: the GPUEngine rows (Name + UtilizationPercentage) - the OS
     // GPU-utilization counter. Instance names encode the adapter LUID +
@@ -94,7 +110,7 @@ export function buildSysStatsScript() {
     // already in watts (N9). The class is often absent (no metering
     // hardware) -> null, the honest '-' degrade.
     '$pm = @(Get-CimInstance Win32_PerfFormattedData_PowerMeter_PowerMeter | Select-Object -First 1 Power)',
-    '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; gpuMem = $gpu; gpuEng = $gpuEng; powerMeter = $pm } | ConvertTo-Json -Depth 3 -Compress',
+    '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; msaThermal = $msa; gpuMem = $gpu; gpuEng = $gpuEng; powerMeter = $pm } | ConvertTo-Json -Depth 3 -Compress',
   ].join('; ');
 }
 
@@ -107,6 +123,7 @@ export function buildSysStatsScript() {
  * @returns {{
  *   fmtUtil: number | null, fmtPerf: number | null,
  *   maxClockMhz: number | null, tempK10Max: number | null,
+ *   msaTempK10Max: number | null,
  *   gpuMemRows: Array<{ name: string | null, dedicatedUsage: number | null }>,
  *   gpuEngRows: Array<{ name: string | null, utilPct: number | null }>,
  *   powerW: number | null,
@@ -117,13 +134,19 @@ export function parseSysStatsOutput(stdout) {
   try {
     raw = JSON.parse(String(stdout ?? ''));
   } catch {
-    return { fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, gpuMemRows: [], gpuEngRows: [], powerW: null };
+    return { fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, msaTempK10Max: null, gpuMemRows: [], gpuEngRows: [], powerW: null };
   }
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const cpu = raw?.cpu ?? {};
   const thermal = Array.isArray(raw?.thermal) ? raw.thermal : [];
   const temps = thermal
     .map((t) => num(t?.Temperature))
+    .filter((t) => t !== null && t > 0);
+  // M4J (C): the MSAcpi root\wmi zones - CurrentTemperature in Kelvin*10
+  // (same scale as the perf counter, so the same /10 conversion applies).
+  const msaThermal = Array.isArray(raw?.msaThermal) ? raw.msaThermal : [];
+  const msaTemps = msaThermal
+    .map((t) => num(t?.CurrentTemperature))
     .filter((t) => t !== null && t > 0);
   const gpuMemRows = (Array.isArray(raw?.gpuMem) ? raw.gpuMem : []).map((g) => ({
     name: typeof g?.Name === 'string' && g.Name ? g.Name : null,
@@ -140,6 +163,7 @@ export function parseSysStatsOutput(stdout) {
     fmtPerf: num(cpu.PercentProcessorPerformance),
     maxClockMhz: num(raw?.maxClockMhz),
     tempK10Max: temps.length > 0 ? Math.max(...temps) : null,
+    msaTempK10Max: msaTemps.length > 0 ? Math.max(...msaTemps) : null,
     gpuMemRows,
     gpuEngRows,
     // M4-H: the PowerMeter's formatted 'Power' (watts); an absent class /
@@ -327,10 +351,14 @@ export function createSysStats(deps = {}) {
             gpuUtil = null;
           }
         }
-        // M4-I (C1): the frozen-zone drop - the Z97 static board zone trips
-        // it after 5 identical samples (honest '-' instead of the stuck 30;
+        // M4-I (C1)/M4J (C): the CPU temperature - TWO sources with MSAcpi
+        // FIRST (the root\wmi ACPI zones; empty on this box -> the perf
+        // counter fallback). The shared frozenDrop then drops a STATIC zone
+        // whichever source reported it (the Z97 static board zone trips it
+        // after 5 identical samples - honest '-' instead of the stuck 30;
         // the temperature ONLY - the wattage stays raw).
-        const tempC = raw.tempK10Max !== null ? raw.tempK10Max / 10 : null;
+        const tempK10 = raw.msaTempK10Max !== null ? raw.msaTempK10Max : raw.tempK10Max;
+        const tempC = tempK10 !== null ? tempK10 / 10 : null;
         tempWindow = [...tempWindow, tempC].slice(-5);
         last = {
           cpuUtilPct: utilPct,

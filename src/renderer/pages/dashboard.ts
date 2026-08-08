@@ -5,7 +5,7 @@
 // honest rows: driver installed, device detected, OC working, OC waiver -
 // the ONLY persistent waiver display (M4-A user correction), Arc Power
 // working), the CPU & Memory card (M4-D2 - M4-H: DDR5 memory type + the
-// blue .kv-static-freq speed span + the L1/L2/L3/L4 Caches row), and a
+// blue .kv-static-freq GHz speed span + the M4J Mainboard row), and a
 // compact live readout (M4-H: TWO labeled groups - CPU above GPU, both
 // refreshing in place on ticks).
 //
@@ -201,20 +201,21 @@ export const dashboardPage: Page = {
                 el('span', { class: 'kv-live-freq', text: liveFreqText(s.latestSample) }),
               ]),
             ]),
-            // M4-H (C2): the Memory row gains the RAM TYPE (DDR5 from
+            // M4-H (C2)/M4J (B): the Memory row gains the RAM TYPE (DDR5 from
             // Win32_PhysicalMemory.SMBIOSMemoryType via the pure mapping)
             // and the speed half renders in its OWN .kv-static-freq span
             // (sharing the kv-live-freq rule - never that class itself,
-            // the onUpdate first-match hazard - N3).
+            // the onUpdate first-match hazard - N3). M4J: the speed is
+            // ALWAYS GHz ("@ 6.0 GHz" - one decimal, never MHz).
             el('div', { class: 'kv', 'data-label': 'Memory' }, [
               el('span', { text: sysRows.memoryFreq ? `${sysRows.memory} ` : sysRows.memory }),
               ...(sysRows.memoryFreq ? [el('span', { class: 'kv-static-freq', text: sysRows.memoryFreq })] : []),
             ]),
-            // M4-H (C2)/M4-I (A2): the 'Cache' row below Memory - L1/L2/L3/L4
-            // amounts ("N KB" below 1024 KB, whole-MB floor above, joined
-            // with ' - '), FILLED from the payload -> the known-CPU table ->
-            // the CIM Win32_CacheMemory fallback (fills-only).
-            el('div', { class: 'kv', 'data-label': 'Cache' }, [el('span', { text: sysRows.caches })]),
+            // M4J (B): the 'Mainboard' row replaces the M4-I 'Cache' row -
+            // Win32_BaseBoard Manufacturer + Product via the short-map
+            // ("ASUSTeK MAXIMUS VII RANGER"); the Product alone when the
+            // manufacturer is unknown; '-' when neither.
+            el('div', { class: 'kv', 'data-label': 'Mainboard' }, [el('span', { text: sysRows.mainboard })]),
           ]),
         ]),
 

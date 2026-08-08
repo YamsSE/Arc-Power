@@ -44,7 +44,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   advancedModeAcceptedGet: () => ipcRenderer.invoke('advanced-mode-accepted-get'),
   advancedModeAcceptedSet: () => ipcRenderer.invoke('advanced-mode-accepted-set'),
   fpsPoll: (deviceId) => ipcRenderer.invoke('fps-poll', deviceId),
-  // M4-D2: append one full telemetry sample as a CSV line (Log to file).
+  // M4-D2/M4J: append one full telemetry sample as an aligned fixed-width
+  // line (Log to file - monitor-YYYYMMDD.txt).
   monitorLogAppend: (sample) => ipcRenderer.invoke('monitor-log-append', sample),
   profilesList: () => ipcRenderer.invoke('profiles-list'),
   profilesSave: (profile) => ipcRenderer.invoke('profiles-save', profile),

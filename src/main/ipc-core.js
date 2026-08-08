@@ -303,7 +303,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null>, stop?: () => Promise<void> },
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }> },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample)
- *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: CSV log-to-file writer
+ *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
  *   buildKind?: 'installed' | 'portable' | 'dev',  // M4-E: app:build-info
@@ -364,7 +364,7 @@ export function createIpcHandlers({
   // real rolling-delta adapter in the product path. sample() is called on
   // every telemetry tick; its values ride the pushed telemetry sample.
   sysStats = createMockSysStats(),
-  // M4-D2: the CSV log-to-file writer. The DEFAULT is a no-op (tests never
+  // M4-D2: the log-to-file writer (monitor-YYYYMMDD.txt). The DEFAULT is a no-op (tests never
   // write to Documents); ipc.js injects the real writer in the product
   // path (dir: RID_MOCK_LOG_DIR ?? app.getPath('documents')).
   monitorLog = { append: async () => ({ ok: true }) },
@@ -410,7 +410,7 @@ export function createIpcHandlers({
    * telemetry fields are absent, so the GPU tiles/readouts honestly stay
    * '-' while the CPU util/temp + GPU-memory tiles go live. Same 500 ms
    * cadence as the device TelemetryService; the boot-level log-to-file
-   * subscription consumes the same telemetry:sample push, so CSV logging
+   * subscription consumes the same telemetry:sample push, so log-file logging
    * works for free.
    */
   const startNullTelemetry = async () => {
@@ -895,7 +895,7 @@ export function createIpcHandlers({
         return fpsAdapter.poll(deviceId);
       },
 
-      // M4-D2 (user): Monitoring "Log to file" - append one CSV line for a
+      // M4-D2 (user): Monitoring "Log to file" - append one log line for a
       // full telemetry sample (the pushed sample incl. the 4 system-stats
       // fields + fps). The payload is validated as a plain object; the
       // writer appends the line (header on first open) and never throws -

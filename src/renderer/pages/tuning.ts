@@ -67,7 +67,7 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { clockToOffset, offsetToClock, clockRangeFromOffsetRange } from '../pure/clock.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, gpuLockToastPair } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
@@ -86,24 +86,12 @@ export { ocStateChanged, ocCapsChanged } from '../pure/settings.ts';
 
 // Display order only - support comes from caps.ranges, limits from the ranges.
 const CONTROL_ORDER = ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'powerLimitW', 'tempLimitC'];
-// M4-B: per-control expert status. gpuLock ships an editor in the Advanced
-// section ("Editing available"); vfCurve + VRAM offsets have NO apply path
-// yet - honest "editing arrives in M5".
-// M4-D (user): only SUPPORTED controls render (caps.controls[row.control] ===
-// true); the "Unsupported on this GPU" rows are removed entirely.
-// M4-D review F1: `key` is the CANONICAL settings/state key (the expert-value
-// read below uses it); `control` is the caps.controls key (IGCL-keyed in BOTH
-// backends - vramFreqOffset/vramVoltOffset, not the canonical
-// vramFreqOffsetGts/vramVoltOffsetV). The supported filter MUST key on
-// `control`: keying on the canonical name reads undefined for the two VRAM
-// rows and drops them even on devices that support the control (b580, real
-// discrete Arcs). gpuLock/vfCurve are identical in both namespaces.
-const EXPERT_CONTROLS: Array<{ key: string; control: string; label: string; note: string }> = [
-  { key: 'gpuLock', control: 'gpuLock', label: 'GPU lock (voltage/frequency pair)', note: 'Editing available' },
-  { key: 'vfCurve', control: 'vfCurve', label: 'Custom VF curve', note: 'Supported - editing arrives in M5' },
-  { key: 'vramFreqOffsetGts', control: 'vramFreqOffset', label: 'VRAM frequency offset', note: 'Supported - editing arrives in M5' },
-  { key: 'vramVoltOffsetV', control: 'vramVoltOffset', label: 'VRAM voltage offset', note: 'Supported - editing arrives in M5' },
-];
+// M4J (D): the EXPERT_CONTROLS row list is REMOVED with the M4-B expert
+// section - the Advanced section now renders ONLY the VRAM clock editor on
+// devices whose supportedControls carry vramFreqOffset (Battlemage); the
+// vfCurve + vramVoltOffset rows are gone, and the gpuLock editor dies with
+// the section on Alchemist (a770 has no vramFreqOffset - documented:
+// profiles can still apply gpuLock via the state machinery).
 
 export const APPLY_BTN_TEXT = 'Apply';
 export const APPLY_BTN_BUSY_TEXT = 'Applying…';
@@ -275,6 +263,13 @@ export const tuningPage: Page = {
       return;
     }
 
+    // M4J clarification (Alchemist scope): `advancedUi` keys the ADVANCED
+    // SECTION only (caps.controls.vramFreqOffset - Battlemage yes, Alchemist
+    // no). The OC-mode column (Stock/Advanced pill) renders on EVERY device
+    // as in 1.0.3 - the mode + the advanced confirm + the extended ranges
+    // work on Alchemist as before (only the bottom expert section is gone).
+    const advancedUi = advancedUiVisible(caps);
+
     // M4-B: the absolute-clock base = the device's default max clock (the
     // same value the Dashboard device card shows), captured at render.
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
@@ -426,58 +421,42 @@ export const tuningPage: Page = {
       });
     };
 
-    // M4-B: the gpuLock editor card (Advanced section) - Voltage (V) +
-    // Frequency (MHz) inputs + Apply/Reset, gated on caps.controls.gpuLock.
-    // The backend apply path already exists (igcl-backend.applyLock / mock
-    // parity / the ipc-core clamp) - this ships the UI. The clamp bounds
-    // (GPU_LOCK_VOLT_MAX_V 1.5 V, 0 = "don't touch voltage") are enforced
-    // in main, so the inputs mirror them as friendly hints, never a gate.
-    const buildLockEditor = (ctx: PageContext): HTMLElement => {
-      const lock = (state.gpuLock && typeof state.gpuLock === 'object'
-        ? state.gpuLock
-        : { voltageV: 0, freqMhz: 0 }) as { voltageV: number; freqMhz: number };
-      const currentLine = el('div', { class: 'gpu-lock-current' });
-      const refreshCurrent = (pair: { voltageV: number; freqMhz: number } | null | undefined) => {
-        currentLine.textContent = pair && (pair.voltageV !== 0 || pair.freqMhz !== 0)
-          ? `Applied: ${pair.voltageV} V / ${pair.freqMhz} MHz`
-          : 'Applied: Dynamic (unlocked)';
+    // M4J (D): the VRAM clock editor card (Advanced section - Battlemage
+    // ONLY: the section renders when caps.controls.vramFreqOffset is true).
+    // A slider + Apply + read-back over caps.ranges.vramFreqOffsetGts - the
+    // REAL apply path (igcl-backend applyScalar('vramFreqOffset') ->
+    // ctlOverclockVramMemSpeedLimitSetV2, read back via GetV2; the mock
+    // apply/read-back parity) - editor-only work: the backend surface
+    // already existed. The M4-B gpuLock editor is REMOVED (the section dies
+    // on Alchemist - documented: profiles can still apply gpuLock via the
+    // state machinery).
+    const buildVramEditor = (ctx: PageContext): HTMLElement => {
+      const range = caps.ranges.vramFreqOffsetGts as RangeInfo;
+      const vramValue = (() => {
+        const cur = currentState?.vramFreqOffsetGts;
+        return typeof cur === 'number' && Number.isFinite(cur) ? snapToRange(cur, range) : range.default;
+      })();
+      let vramApplied = vramValue;
+      const slider = el('input', {
+        type: 'range',
+        min: range.min,
+        max: range.max,
+        step: range.step,
+        value: vramValue,
+        dataset: { vramEditor: 'slider' },
+      });
+      const readout = el('span', { class: 'vram-editor-value', text: formatValue(vramValue, range.units) });
+      const driverLine = el('span', { class: 'vram-editor-driver' });
+      const refreshDriver = () => {
+        const raw = currentState?.vramFreqOffsetGts;
+        driverLine.textContent = `Driver: ${formatDriverValue(typeof raw === 'number' ? raw : null, range)}`;
       };
-      refreshCurrent(lock);
-
-      const voltageInput = el('input', {
-        type: 'number',
-        min: '0',
-        max: '1.5',
-        step: '0.001',
-        value: lock.voltageV,
-        dataset: { lockField: 'voltageV' },
-        title: 'Absolute lock voltage (V). 0 = don\'t touch voltage (the driver keeps the stock voltage at the locked frequency).',
-      });
-      const freqInput = el('input', {
-        type: 'number',
-        min: '0',
-        max: '5000',
-        step: '1',
-        value: lock.freqMhz,
-        dataset: { lockField: 'freqMhz' },
-        title: 'Absolute lock frequency (MHz).',
-      });
-
-      const applyLock = async () => {
+      refreshDriver();
+      const applyVram = async () => {
         const live = ctx.store.get();
         const deviceId = live.deviceId;
-        if (deviceId === null || !caps) return;
-        // M4-B step-5 F3: parse + validate FIRST - empty/whitespace fields
-        // are rejected before conversion (Number('') === 0 would silently
-        // apply the legal 0 V / 0 MHz UNLOCK pair); non-numeric fields too.
-        const parsed = parseGpuLockInput(voltageInput.value, freqInput.value);
-        if (!parsed.ok) {
-          toast('error', 'GPU lock', 'Voltage and frequency must be numbers.');
-          return;
-        }
-        const { voltageV, freqMhz } = parsed.pair;
-        // Same waiver gate as every apply path (the boot/row acceptance is
-        // read LIVE from the store - never the render-closure caps).
+        if (deviceId === null) return;
+        // Same waiver gate as every apply path (read LIVE from the store).
         const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU');
         if (decision === 'cancelled') {
           toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
@@ -490,24 +469,22 @@ export const tuningPage: Page = {
           }
         }
         try {
-          const { result, state: fresh } = await api.applySettings(deviceId, { gpuLock: { voltageV, freqMhz } });
+          const wanted = snapToRange(Number(slider.value), range);
+          const { result, state: fresh } = await api.applySettings(deviceId, { vramFreqOffsetGts: wanted });
           if (fresh) {
             currentState = fresh;
             ctx.store.set({ state: fresh });
           }
-          const per = result.perControl.gpuLock;
+          const per = result.perControl.vramFreqOffsetGts;
           if (per?.ok) {
-            // M4-B step-5 F4: report the pair the DRIVER received - the
-            // read-back pair when the fresh envelope carried one (main
-            // clamped the typed values; the toast must agree with the
-            // 'Applied:' line), else the locally clamped pair (same bounds
-            // as main's clampGpuLock) so a null envelope never re-prints
-            // out-of-bounds typed values.
-            const appliedPair = gpuLockToastPair({ voltageV, freqMhz }, fresh?.gpuLock);
-            toast('success', 'GPU lock applied', `${appliedPair.voltageV} V / ${appliedPair.freqMhz} MHz`);
+            vramApplied = typeof fresh?.vramFreqOffsetGts === 'number'
+              ? fresh.vramFreqOffsetGts
+              : wanted;
+            readout.textContent = formatValue(vramApplied, range.units);
+            toast('success', 'VRAM clock applied', formatValue(vramApplied, range.units));
             ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
           } else {
-            toast('error', 'GPU lock failed', per?.message ?? errorMessage(per?.errorCode, 'gpuLock'));
+            toast('error', 'VRAM clock failed', per?.message ?? errorMessage(per?.errorCode, 'vramFreqOffsetGts'));
             const freshCaps = await api.getCapabilities(deviceId);
             ctx.store.set({ caps: freshCaps });
           }
@@ -515,55 +492,48 @@ export const tuningPage: Page = {
             lastApply: {
               ok: result.ok,
               at: Date.now(),
-              detail: result.ok ? 'GPU lock applied' : (per?.message ?? 'GPU lock failed'),
+              detail: result.ok ? 'VRAM clock applied' : (per?.message ?? 'VRAM clock failed'),
             },
           });
-          // M4-B step-4 F4: only refresh the "Applied:" line on a NON-NULL
-          // fresh envelope - a refused/null-state apply must keep the
-          // previous line (the driver state is unknown, never "unlocked").
-          if (fresh) {
-            refreshCurrent(fresh.gpuLock ?? null);
-          }
+          refreshDriver();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
-          toast('error', 'GPU lock failed', msg);
+          toast('error', 'VRAM clock failed', msg);
         }
       };
-
-      return el('div', { class: 'card gpu-lock-editor' }, [
-        el('h3', { class: 'card-title', text: 'GPU lock' }),
+      slider.addEventListener('input', () => {
+        readout.textContent = formatValue(snapToRange(Number(slider.value), range), range.units);
+      });
+      return el('div', { class: 'card vram-editor-card' }, [
+        el('h3', { class: 'card-title', text: 'VRAM clock' }),
         el('p', {
           class: 'card-note',
-          text: 'Lock the GPU to a voltage/frequency pair. Voltage 0 means "keep the stock voltage at the locked frequency"; the pair 0 / 0 unlocks (dynamic).',
+          text: `Raise the video memory clock offset (${range.units}) above the driver default. Applied on demand - the driver read-back is shown below.`,
         }),
-        el('div', { class: 'gpu-lock-fields' }, [
-          el('label', { class: 'gpu-lock-field' }, [
-            el('span', { class: 'gpu-lock-label', text: 'Voltage (V)' }),
-            voltageInput,
+        el('div', { class: 'oc-slider-row' }, [
+          el('div', { class: 'oc-slider' }, [
+            el('div', { class: 'oc-track-fill' }),
+            slider,
           ]),
-          el('label', { class: 'gpu-lock-field' }, [
-            el('span', { class: 'gpu-lock-label', text: 'Frequency (MHz)' }),
-            freqInput,
-          ]),
+          el('div', { class: 'oc-value' }, [readout]),
         ]),
-        el('div', { class: 'gpu-lock-actions' }, [
-          el('button', { class: 'btn btn-primary btn-sm', text: 'Apply', onClick: () => void applyLock() }),
+        el('div', { class: 'oc-meta' }, [
+          el('span', { class: 'oc-range', text: `${range.min} - ${range.max} ${range.units} · step ${range.step}` }),
+        ]),
+        el('div', { class: 'vram-editor-driver-line' }, [driverLine]),
+        el('div', { class: 'vram-editor-actions' }, [
+          el('button', { class: 'btn btn-primary btn-sm', text: 'Apply', onClick: () => void applyVram() }),
           el('button', {
             class: 'btn btn-ghost btn-sm',
             text: 'Reset',
-            title: 'Reset the editor to the default unlock pair (0 V / 0 MHz)',
+            title: `Reset the editor to the driver default (${formatValue(range.default, range.units)})`,
             onClick: () => {
-              voltageInput.value = '0';
-              freqInput.value = '0';
-              // M4-B step-4 F3: Reset means "the default unlock pair" - the
-              // line must agree with the inputs (0/0), never snap back to
-              // the render-time closure lock.
-              refreshCurrent({ voltageV: 0, freqMhz: 0 });
+              slider.value = String(range.default);
+              readout.textContent = formatValue(range.default, range.units);
             },
           }),
         ]),
-        currentLine,
       ]);
     };
 
@@ -706,6 +676,10 @@ export const tuningPage: Page = {
           }),
         ]),
       ]),
+      // M4J clarification: the OC-mode column (Stock/Advanced pill) renders
+      // on EVERY device as in 1.0.3 - the user clarified that "Advanced
+      // gone for Alchemist" means ONLY the bottom Advanced EXPERT SETTINGS
+      // section (keyed on advancedUi below), never the mode pill.
       el('div', { class: 'oc-mode-col oc-mode-col-mode' }, [
         el('span', { class: 'oc-mode-label', text: 'OC mode' }),
         el('div', { class: 'oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
@@ -767,35 +741,21 @@ export const tuningPage: Page = {
           ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
 
-        el('details', { class: 'card advanced-card' }, [
-          el('summary', { class: 'card-title advanced-summary', text: 'Advanced (expert controls)' }),
-          el('div', { class: 'card-body' }, [
-            // M4-D (user): ONLY supported rows render - the unsupported ones
-            // are removed entirely (no "Unsupported on this GPU" rows). The
-            // filter keys on row.control (the IGCL-keyed caps.controls key -
-            // M4-D review F1); the state read below keeps the CANONICAL
-            // row.key.
-            ...EXPERT_CONTROLS
-              .filter(({ control }) => caps.controls[control] === true)
-              .map(({ key, label, note }) => {
-                const cur = state[key as keyof DeviceState];
-                const current = key === 'gpuLock'
-                  ? (cur && (cur as { voltageV: number }).voltageV !== 0 ? `${(cur as { voltageV: number }).voltageV} V / ${(cur as { freqMhz: number }).freqMhz} MHz` : 'Dynamic (unlocked)')
-                  : cur === null || cur === undefined ? '-' : JSON.stringify(cur);
-                return el('div', { class: 'expert-row' }, [
-                  el('span', { class: 'expert-label', text: label }),
-                  el('span', { class: 'expert-value', text: String(current) }),
-                  // M4-B: gpuLock has an editor in this section ("Editing
-                  // available"); vfCurve + VRAM offsets have no apply path yet
-                  // - the honest M5 note.
-                  el('span', { class: 'expert-status', text: note }),
-                ]);
-              }),
-            // M4-B: the gpuLock editor - a card in the Advanced section, gated
-            // on caps.controls.gpuLock (the backend apply paths already exist).
-            ...(caps.controls.gpuLock === true ? [buildLockEditor(ctx)] : []),
-          ]),
-        ]),
+        // M4J (D) + clarification: the Advanced section renders ONLY on
+        // vramFreqOffset-capable devices (Battlemage) and holds ONLY the
+        // VRAM clock editor. On Alchemist (a770/arc-igpu/pro-b50) the whole
+        // section is REMOVED - the gpuLock editor + the vfCurve/
+        // vramVoltOffset rows are gone per the user (profiles can still
+        // apply those values via the state machinery - documented). The
+        // OC-mode pill above is NOT affected (renders on every device).
+        ...(advancedUi
+          ? [el('details', { class: 'card advanced-card' }, [
+            el('summary', { class: 'card-title advanced-summary', text: 'Advanced (VRAM overclocking)' }),
+            el('div', { class: 'card-body' }, [
+              buildVramEditor(ctx),
+            ]),
+          ])]
+          : []),
 
         applyBtn as Node,
       ];

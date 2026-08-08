@@ -34,14 +34,15 @@ export function normalizedPosition(value: number, range: RangeInfo): number {
 }
 
 /**
- * Format a value for readouts: volts keep 3 decimals, everything else is
- * integral. Units map C -> °C; everything else passes through. `decimals`
- * overrides the default when given (used for off-grid driver readouts).
+ * Format a value for readouts: volts keep 3 decimals, Gbps (the VRAM clock
+ * offset - step 0.1) keeps 1, everything else is integral. Units map C -> °C;
+ * everything else passes through. `decimals` overrides the default when
+ * given (used for off-grid driver readouts).
  */
 export function formatValue(value: number, units: string, decimals?: number): string {
   if (!Number.isFinite(value)) return '-';
   const unit = units === 'C' ? '°C' : units;
-  const d = decimals ?? (units === 'V' ? 3 : 0);
+  const d = decimals ?? (units === 'V' ? 3 : units === 'Gbps' ? 1 : 0);
   return `${value.toFixed(d)} ${unit}`;
 }
 
@@ -52,7 +53,7 @@ export function formatValue(value: number, units: string, decimals?: number): st
  */
 export function formatDriverValue(value: number | null | undefined, range: RangeInfo): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return 'unavailable';
-  const base = range.units === 'V' ? 3 : 0;
+  const base = range.units === 'V' ? 3 : range.units === 'Gbps' ? 1 : 0;
   return formatValue(value, range.units, base + (isOffGrid(value, range) ? 1 : 0));
 }
 

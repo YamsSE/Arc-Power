@@ -65,17 +65,16 @@ let cached = null;
 export function buildSysinfoScript() {
   return [
     '$ErrorActionPreference = \'SilentlyContinue\'',
-    '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,L1CacheSize,L2CacheSize,L3CacheSize',
-    // M4-I: the Win32_CacheMemory rows (Level/InstalledSize in KB - the
-    // L1 fallback source: the SMALLEST InstalledSize entry is the L1 total
-    // (hierarchy: L1-total < L2 < L3; the SMBIOS "Level" numbers are
-    // unreliable - live on the 5775C they read 3/4/5 while the sizes
-    // 256/1024/6144 are unambiguously L1/L2/L3).
-    '$cache = @(Get-CimInstance Win32_CacheMemory | Select-Object Level,InstalledSize)',
+    '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed',
     '$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory',
     // M4-H: the memory row also reads SMBIOSMemoryType (the Type-17 code -
-    // 34 = DDR5 on the mock; the parse maps it, anything unknown is omitted).
+    // 24 = DDR3, 34 = DDR5 on the mock; the parse maps it, anything unknown
+    // is omitted).
     '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed,SMBIOSMemoryType',
+    // M4J (B): the Mainboard row source - Win32_BaseBoard Manufacturer +
+    // Product (the M4-I Win32_CacheMemory query is REMOVED with the Cache
+    // row; the baseboard replaces it).
+    '$bb = Get-CimInstance Win32_BaseBoard | Select-Object -First 1 Manufacturer,Product',
     // M4-I: the video controllers also carry DriverVersion (the no-Intel
     // device card's Driver version row - works on ANY GPU).
     '$vga = @(Get-CimInstance Win32_VideoController | Select-Object DeviceID,Name,AdapterRAM,PNPDeviceID,DriverVersion)',
@@ -97,7 +96,7 @@ export function buildSysinfoScript() {
     '$dma = @(Get-CimInstance Win32_DeviceMemoryAddress | Select-Object StartingAddress,EndingAddress)',
     '$alloc = @(Get-CimInstance Win32_AllocatedResource)',
     '$barRes = @(foreach ($v in $vga) { $max = 0; foreach ($r in $alloc) { if ("$($r.Dependent)" -match "Win32_VideoController \\(DeviceID = ""$($v.DeviceID)""\\)" -and "$($r.Antecedent)" -match \'StartingAddress = (\\d+)\') { $start = [Convert]::ToInt64($Matches[1]); $e = @($dma | Where-Object { [Convert]::ToInt64($_.StartingAddress) -eq $start })[0]; if ($e) { $sz = [Convert]::ToInt64($e.EndingAddress) - $start + 1; if ($sz -gt $max) { $max = $sz } } } }; [pscustomobject]@{ PNPDeviceID = $v.PNPDeviceID; MaxBarBytes = $max } })',
-    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; physicalMemory = $mem; cacheMemory = $cache; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
+    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
 }
 
@@ -305,12 +304,12 @@ export function parseCimOutput(stdout) {
   } catch {
     // Garbage output (UAC prompt interleaved, PS 2 vs 5 quirks) degrades to
     // the fallback shape's empties - the caller decides whether to fall back.
-    return { cpu: {}, ram: {}, cacheMemory: [], videoControllers: [] };
+    return { cpu: {}, ram: {}, baseboard: {}, videoControllers: [] };
   }
   const cpuRaw = raw && typeof raw === 'object' ? raw.cpu : null;
   const csRaw = raw && typeof raw === 'object' ? raw.computerSystem : null;
   const memRaw = raw && typeof raw === 'object' ? raw.physicalMemory : null;
-  const cacheRaw = Array.isArray(raw?.cacheMemory) ? raw.cacheMemory : [];
+  const bbRaw = raw && typeof raw === 'object' ? raw.baseboard : null;
   const vgaRaw = Array.isArray(raw?.videoControllers) ? raw.videoControllers : [];
 
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
@@ -319,19 +318,14 @@ export function parseCimOutput(stdout) {
     cores: num(cpuRaw?.NumberOfCores),
     threads: num(cpuRaw?.NumberOfLogicalProcessors),
     maxClockMhz: num(cpuRaw?.MaxClockSpeed),
-    // M4-H: the cache sizes (KB; the Caches row renders only the levels
-    // that exist). CIM has NO L4 field - l4CacheKb is never set here.
-    l1CacheKb: num(cpuRaw?.L1CacheSize),
-    l2CacheKb: num(cpuRaw?.L2CacheSize),
-    l3CacheKb: num(cpuRaw?.L3CacheSize),
   };
-  // M4-I: the Win32_CacheMemory rows (Level + InstalledSize KB). The SMBIOS
-  // Level numbers are unreliable (3/4/5 on the 5775C) - the renderer's fill
-  // uses the SIZES only (L1 = the smallest InstalledSize entry; the
-  // hierarchy property L1-total < L2 < L3 holds by construction).
-  const cacheMemory = cacheRaw
-    .map((r) => ({ level: num(r?.Level), installedSizeKb: num(r?.InstalledSize) }))
-    .filter((r) => r.installedSizeKb !== null);
+  // M4J (B): the baseboard row (Mainboard) - the RAW Manufacturer/Product
+  // strings; the renderer's mainboardRow applies the manufacturer short-map
+  // (display concern, renderer-side).
+  const baseboard = {
+    manufacturer: typeof bbRaw?.Manufacturer === 'string' && bbRaw.Manufacturer ? bbRaw.Manufacturer : null,
+    product: typeof bbRaw?.Product === 'string' && bbRaw.Product ? bbRaw.Product : null,
+  };
   const ram = {
     totalBytes: num(csRaw?.TotalPhysicalMemory) ?? 0,
     speedMhz: num(memRaw?.ConfiguredClockSpeed),
@@ -365,7 +359,7 @@ export function parseCimOutput(stdout) {
   // M4-D2: the internal pnputil byte count never surfaces (only the merged
   // verdict does).
   const videoControllers = controllers.map(({ _pnputilBarBytes, ...rest }) => rest);
-  return { cpu, ram, cacheMemory, videoControllers };
+  return { cpu, ram, baseboard, videoControllers };
 }
 
 /**
@@ -378,12 +372,12 @@ export function parseCimOutput(stdout) {
 export function fallbackSysinfo() {
   const cpus = os.cpus();
   const cpu = cpus.length > 0
-    ? { name: cpus[0].model, cores: null, threads: cpus.length, maxClockMhz: cpus[0].speed, l1CacheKb: null, l2CacheKb: null, l3CacheKb: null }
-    : { name: null, cores: null, threads: null, maxClockMhz: null, l1CacheKb: null, l2CacheKb: null, l3CacheKb: null };
+    ? { name: cpus[0].model, cores: null, threads: cpus.length, maxClockMhz: cpus[0].speed }
+    : { name: null, cores: null, threads: null, maxClockMhz: null };
   return {
     cpu,
     ram: { totalBytes: os.totalmem(), speedMhz: null, manufacturer: null, memoryType: null },
-    cacheMemory: [],
+    baseboard: { manufacturer: null, product: null },
     videoControllers: [],
   };
 }
@@ -421,9 +415,6 @@ export async function collectSysinfo(deps = {}) {
           cores: parsed.cpu.cores,
           threads: parsed.cpu.threads,
           maxClockMhz: parsed.cpu.maxClockMhz,
-          l1CacheKb: parsed.cpu.l1CacheKb ?? null,
-          l2CacheKb: parsed.cpu.l2CacheKb ?? null,
-          l3CacheKb: parsed.cpu.l3CacheKb ?? null,
         },
         ram: {
           totalBytes: parsed.ram?.totalBytes || os.totalmem(),
@@ -431,9 +422,11 @@ export async function collectSysinfo(deps = {}) {
           manufacturer: parsed.ram?.manufacturer ?? null,
           memoryType: parsed.ram?.memoryType ?? null,
         },
-        // M4-I: the Win32_CacheMemory rows ride the payload (the renderer's
-        // L1 fallback - the smallest InstalledSize entry).
-        cacheMemory: parsed.cacheMemory ?? [],
+        // M4J (B): the baseboard (Mainboard row) rides the payload.
+        baseboard: {
+          manufacturer: parsed.baseboard?.manufacturer ?? null,
+          product: parsed.baseboard?.product ?? null,
+        },
         videoControllers: parsed.videoControllers ?? [],
       };
     }
@@ -548,9 +541,9 @@ export function vramBytesOfDevice(device, sysinfo) {
  * pnpDeviceId + rebarActive false) - the no-Intel machine shape the
  * renderer's osGpu / header / GPU card read.
  * M4-H: the fixture gains SMBIOSMemoryType 34 (DDR5 - the Memory-row type
- * label) + L1/L2/L3/L4 cache sizes (L4 has NO OS source - the fixture
- * carries it so the Caches row renders in verify; real hardware shows what
- * CIM reports).
+ * label). M4J (B): the fixture drops the l1-l4 cache fields (the Cache row
+ * is REMOVED) and gains the baseboard (the Mainboard row - the ASUSTeK-style
+ * value the pins assert).
  * @param {{ cpu?: object, ram?: object, videoControllers?: object[] }} [overrides]
  */
 export function createMockSysinfo(overrides = {}) {
@@ -562,12 +555,6 @@ export function createMockSysinfo(overrides = {}) {
         cores: 20,
         threads: 28,
         maxClockMhz: 5600,
-        // M4-I: the cache sizes (KB) - the Caches row renders them as
-        // "L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB" (fixture values).
-        l1CacheKb: 1470,
-        l2CacheKb: 36864,
-        l3CacheKb: 688128,
-        l4CacheKb: 393216,
         ...(overrides.cpu ?? {}),
       },
       ram: {
@@ -576,6 +563,13 @@ export function createMockSysinfo(overrides = {}) {
         manufacturer: 'G.Skill',
         memoryType: 34, // DDR5 (SMBIOS Type-17)
         ...(overrides.ram ?? {}),
+      },
+      // M4J (B): the baseboard fixture - the ASUSTeK-style value the
+      // Mainboard row pins ("ASUSTeK MAXIMUS VII RANGER" via the short-map).
+      baseboard: {
+        manufacturer: 'ASUSTeK COMPUTER INC.',
+        product: 'MAXIMUS VII RANGER',
+        ...(overrides.baseboard ?? {}),
       },
       videoControllers: noIntel ? [
         {

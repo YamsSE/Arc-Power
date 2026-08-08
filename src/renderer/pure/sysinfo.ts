@@ -22,6 +22,47 @@ export function formatBytes(bytes: number | null | undefined): string {
 }
 
 /**
+ * M4J (B): the memory speed ALWAYS renders in GHz with one decimal
+ * ("@ 2.4 GHz" for 2400 MHz - the user's format; never MHz, never more
+ * than one decimal). Null when the payload carries no speed.
+ */
+export function ramFreqText(speedMhz: number | null | undefined): string | null {
+  if (typeof speedMhz !== 'number' || !Number.isFinite(speedMhz) || speedMhz <= 0) return null;
+  return `@ ${(speedMhz / 1000).toFixed(1)} GHz`;
+}
+
+/**
+ * M4J (B): the Mainboard manufacturer short-map - Win32_BaseBoard reports
+ * the full legal names; the row renders the short brands. Unknown
+ * manufacturers pass through unchanged (never a wrong claim).
+ */
+export const MAINBOARD_SHORT_MANUFACTURER: Record<string, string> = Object.freeze({
+  'ASUSTeK COMPUTER INC.': 'ASUSTeK',
+  'Gigabyte Technology': 'Gigabyte',
+  'Micro-Star International': 'MSI',
+  'MSI': 'MSI',
+});
+
+/**
+ * M4J (B): the Mainboard row label - "ASUSTeK MAXIMUS VII RANGER" (short
+ * manufacturer + product); the Product ALONE when the manufacturer is
+ * unknown (not in the short-map) / absent; the short manufacturer alone
+ * when the product is absent; '-' when neither exists.
+ */
+export function mainboardRow(sysinfo: SysInfo | null): string {
+  const bb = sysinfo?.baseboard;
+  const manufacturer = typeof bb?.manufacturer === 'string' && bb.manufacturer.length > 0 ? bb.manufacturer : null;
+  const product = typeof bb?.product === 'string' && bb.product.length > 0 ? bb.product : null;
+  if (!manufacturer && !product) return '-';
+  // Unknown manufacturers are NOT passed through here - the plan: the
+  // Product alone when the manufacturer is unknown (a full legal name
+  // before a bare product would read as a wrong brand claim).
+  const short = manufacturer ? (MAINBOARD_SHORT_MANUFACTURER[manufacturer] ?? null) : null;
+  if (!short) return product ?? '-';
+  return product ? `${short} ${product}` : short;
+}
+
+/**
  * M4-H: the CPU card's kv rows (data-label -> text). Honest '-' per null field.
  * M4-D (user): the cores/threads and the RAM brand/size/speed are BUNDLED
  * into single rows ("4 Cores / 8 Threads", "G.Skill 32 GB @ 2400 MHz").
@@ -33,22 +74,20 @@ export function formatBytes(bytes: number | null | undefined): string {
  * renders it in a `.kv-static-freq` span - the blue accent styling via its
  * OWN class sharing the kv-live-freq rule, never the kv-live-freq class
  * itself: the onUpdate querySelector takes the FIRST match in the card).
- * A new Caches row (L1/L2/L3/L4 amounts, KB -> "L1 1.4 MB" style) renders
- * only the levels the sysinfo payload carries.
+ * M4J (B): the speed half is ALWAYS GHz ("@ 6.0 GHz" - one decimal); the
+ * Cache row is REMOVED (a Mainboard row replaces it).
  */
 export interface CpuCardRows {
   cpu: string;
   coresClock: string;
   /** The memory bundle WITHOUT the speed piece ("G.Skill 32 GB DDR5"). */
   memory: string;
-  /** The speed piece ("@ 6000 MHz") for the styled .kv-static-freq span;
+  /** The speed piece ("@ 6.0 GHz") for the styled .kv-static-freq span;
    *  null when the payload carries no speed. */
   memoryFreq: string | null;
-  /** "L1 256 KB - L2 1 MB - L3 6 MB - L4 128 MB" - only existing levels,
-   *  '-' when none. M4-I: FILLED from the payload -> the known-CPU table ->
-   *  the CIM fallback (fills-only), "N KB" below 1024 KB else whole-MB
-   *  floor, separator ' - '. */
-  caches: string;
+  /** M4J (B): the Mainboard row ("ASUSTeK MAXIMUS VII RANGER" - short-map
+   *  manufacturer + product; product alone when unknown; '-' when none). */
+  mainboard: string;
 }
 
 /**
@@ -77,91 +116,20 @@ export function ramMemoryType(code: number | null | undefined): string | null {
 }
 
 /**
- * M4-I: the KNOWN-CPU cache table - keyed by a WORD-BOUNDARY token of the
- * exact Win32_Processor name (the tokensOf regex - an exact token, never a
- * substring). Supplies ONLY the levels CIM cannot: L1 (Win32_Processor.
- * L1CacheSize is NULL on many boards) and L4 (NO OS source anywhere).
- * FILLS-ONLY: the payload's own l1-l4 fields always win.
- *
- * 5775C (i7-5775C, Broadwell - this machine, live-verified 2026-08-08):
- *   L1 64 KB/core x 4 = 256 KB (ARK/microarchitecture; the probe's
- *   Win32_CacheMemory smallest InstalledSize entry is 256 KB - consistent),
- *   L2 256 KB/core x 4 = 1024 KB (Win32_Processor.L2CacheSize 1024),
- *   L3 6 MB = 6144 KB (Win32_Processor.L3CacheSize 6144),
- *   L4 128 MB eDRAM = 131072 KB (ARK; no OS source - the table supplies it).
- * Every entry re-verified against the same sources before landing.
+ * M4J (B): the KNOWN_CPU_CACHE_KB table, knownCpuCacheKb, fillCacheKb and
+ * cacheLine are REMOVED with the Cache row (the M4-I known-CPU table is
+ * gone - no dead pins).
  */
-export const KNOWN_CPU_CACHE_KB: Record<string, { l1CacheKb?: number; l2CacheKb?: number; l3CacheKb?: number; l4CacheKb?: number }> = {
-  '5775c': { l1CacheKb: 256, l2CacheKb: 1024, l3CacheKb: 6144, l4CacheKb: 131072 },
-};
-
-/**
- * M4-I: the known-CPU table lookup - a word-boundary token of the exact
- * processor name ('Intel(R) Core(TM) i7-5775C CPU @ 3.30GHz' -> the
- * '5775c' token). Null when no entry matches.
- */
-export function knownCpuCacheKb(cpuName: string | null | undefined): { l1CacheKb?: number; l2CacheKb?: number; l3CacheKb?: number; l4CacheKb?: number } | null {
-  const tokens = new Set(String(cpuName ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []);
-  for (const token of Object.keys(KNOWN_CPU_CACHE_KB)) {
-    if (tokens.has(token)) return KNOWN_CPU_CACHE_KB[token];
-  }
-  return null;
-}
-
-/**
- * M4-I: FILL the cache levels from the three sources, fills-only (the
- * payload values ALWAYS win; the table + the CIM fallback supply only
- * ABSENT levels):
- *   a. the payload's own l1/l2/l3/l4 fields;
- *   b. the known-CPU table (word-boundary model token);
- *   c. the CIM fallback - L1 = the SMALLEST Win32_CacheMemory InstalledSize
- *      entry when present (hierarchy property: L1-total < L2 < L3; the
- *      SMBIOS Level numbers are unreliable, the SIZES are not); L4 comes
- *      only from the table (no OS source).
- * @returns {{ l1CacheKb: number|null, l2CacheKb: number|null, l3CacheKb: number|null, l4CacheKb: number|null }}
- */
-export function fillCacheKb(sysinfo: SysInfo | null) {
-  const cpu = sysinfo?.cpu;
-  const known = knownCpuCacheKb(cpu?.name);
-  const sizes = (Array.isArray(sysinfo?.cacheMemory) ? sysinfo.cacheMemory : [])
-    .map((r) => r?.installedSizeKb)
-    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0);
-  const cimL1 = sizes.length > 0 ? Math.min(...sizes) : null;
-  const pick = (payload: number | null | undefined, table: number | undefined, fallback: number | null = null): number | null => {
-    if (typeof payload === 'number' && Number.isFinite(payload) && payload > 0) return payload;
-    if (typeof table === 'number' && Number.isFinite(table) && table > 0) return table;
-    return fallback;
-  };
-  return {
-    l1CacheKb: pick(cpu?.l1CacheKb, known?.l1CacheKb, cimL1),
-    l2CacheKb: pick(cpu?.l2CacheKb, known?.l2CacheKb),
-    l3CacheKb: pick(cpu?.l3CacheKb, known?.l3CacheKb),
-    l4CacheKb: pick(cpu?.l4CacheKb, known?.l4CacheKb),
-  };
-}
-
-/**
- * M4-I: format one cache amount (KB) as "L1 256 KB" below 1024 KB, else
- * whole-MB FLOOR ("L2 1 MB", "L3 6 MB"). null -> null (the caller omits
- * the level entirely). The separator between levels is ' - ' (pinned in
- * the pure tests - the fixture's 1470 KB -> '1 MB' either way, so the
- * ui-verify pins alone cannot catch the rounding).
- */
-export function cacheLine(label: string, kb: number | null | undefined): string | null {
-  if (typeof kb !== 'number' || !Number.isFinite(kb) || kb <= 0) return null;
-  if (kb < 1024) return `${label} ${kb} KB`;
-  return `${label} ${Math.floor(kb / 1024)} MB`;
-}
 
 /**
  * Build the CPU-card rows from the sysinfo payload (null payload -> all
  * '-'). Cores/threads bundle: "4 Cores / 8 Threads" (physical cores
  * degrade to null in the os.cpus() fallback - never an estimate, so the
  * bundle shows the logical half only then). Memory bundle:
- * "G.Skill 32 GB DDR5 @ 6000 MHz" (the manufacturer + type + speed pieces
- * degrade to absent, never invented). Caches: only the levels the payload
- * carries (L4 has NO OS source - the CIM query cannot report it; the mock
- * fixture carries one so the row renders in verify).
+ * "G.Skill 32 GB DDR5 @ 6.0 GHz" (the manufacturer + type + speed pieces
+ * degrade to absent, never invented; the speed is ALWAYS GHz with one
+ * decimal - M4J). Mainboard: "ASUSTeK MAXIMUS VII RANGER" (short-map
+ * manufacturer + product; product alone when unknown).
  */
 export function cpuCardRows(sysinfo: SysInfo | null): CpuCardRows {
   const cpu = sysinfo?.cpu;
@@ -175,22 +143,13 @@ export function cpuCardRows(sysinfo: SysInfo | null): CpuCardRows {
     formatBytes(ram?.totalBytes),
     type,
   ].filter(Boolean) as string[];
-  const freqPart = typeof ram?.speedMhz === 'number' && ram.speedMhz > 0 ? `@ ${ram.speedMhz} MHz` : null;
-  // M4-I: the cache levels are FILLED (payload -> known-CPU table -> the
-  // CIM Win32_CacheMemory fallback - fills-only) and joined with ' - '.
-  const filled = fillCacheKb(sysinfo);
-  const cacheParts = [
-    cacheLine('L1', filled.l1CacheKb),
-    cacheLine('L2', filled.l2CacheKb),
-    cacheLine('L3', filled.l3CacheKb),
-    cacheLine('L4', filled.l4CacheKb),
-  ].filter((c): c is string => c !== null);
+  const freqPart = ramFreqText(ram?.speedMhz);
   return {
     cpu: typeof cpu?.name === 'string' && cpu.name.length > 0 ? cpu.name : '-',
     coresClock: coreClockParts.length > 0 ? coreClockParts.join(' / ') : '-',
     memory: memParts.length > 0 ? memParts.join(' ') : '-',
     memoryFreq: freqPart,
-    caches: cacheParts.length > 0 ? cacheParts.join(' - ') : '-',
+    mainboard: mainboardRow(sysinfo),
   };
 }
 

@@ -23,21 +23,17 @@ export function initTitlebar(): void {
     ?.addEventListener('click', () => { void api.windowClose(); });
 
   // M4-D: the max button icon follows the live maximize state (main pushes
-  // window:maximized-changed on maximize/unmaximize). The single square is
-  // "maximize", the overlapping squares are "restore".
+  // window:maximized-changed on maximize/unmaximize). M4J (F): ONE svg -
+  // the two inner groups are class-toggled (the pre-M4J markup hid one of
+  // TWO svg elements; the user's repeat request). Maximized -> the
+  // icon-state-restore class shows the restore group (overlapping squares);
+  // else the maximize group (the single hollow square).
   api.onWindowMaximizedChanged(({ maximized }) => {
     const btn = document.querySelector<HTMLButtonElement>(MAX_BTN_SEL);
     if (!btn) return;
     btn.title = maximized ? 'Restore' : 'Maximize';
     btn.setAttribute('aria-label', maximized ? 'Restore' : 'Maximize');
-    const restore = btn.querySelector<SVGElement>('.icon-restore');
-    const maximize = btn.querySelector<SVGElement>('.icon-maximize');
-    // SVGElement has no `hidden` in the TS lib - the hidden attribute works
-    // on SVG in Chromium; cast through HTMLElement.
-    const setHidden = (node: SVGElement | null, hidden: boolean) => {
-      if (node) (node as unknown as HTMLElement).hidden = hidden;
-    };
-    setHidden(restore, !maximized);
-    setHidden(maximize, maximized);
+    const svg = btn.querySelector<SVGElement>('.icon-maximize-restore');
+    svg?.classList.toggle('icon-state-restore', maximized);
   });
 }

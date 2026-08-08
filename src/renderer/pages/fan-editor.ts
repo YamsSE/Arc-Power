@@ -605,8 +605,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
         // point to 0 °C / 0 % (or the between-neighbor clamp), rewrote the
         // box to '0', and a blur without retyping left the point at 0 - a
         // curve mutation the user never intended. Same empty-input policy
-        // as the gpuLock editor (parseGpuLockInput rejects '' for exactly
-        // this reason): keep the previous value and leave the box as the
+        // as the gpuLock editor ('' is rejected for exactly this reason): keep the previous value and leave the box as the
         // user left it.
         if (input.value.trim() === '') return;
         if (!Number.isFinite(raw)) return;
