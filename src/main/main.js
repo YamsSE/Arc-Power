@@ -31,6 +31,7 @@ import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, cre
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createDxgiFpsAdapter } from './fps-dxgi.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
+import { createMsrReader } from './msr-reader.js';
 import { createMonitorLog } from './monitor-log.js';
 import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar } from './sysinfo.js';
 import { applyProfile, runApplyOnStartup, applyProfileBoot, resolveApplyDeviceId } from './apply-on-boot.js';
@@ -803,6 +804,7 @@ async function main() {
   // controllers' PCI device id (DEV_56A0 on the A770). Unmatched -> null
   // (honest '-').
   let sysStats;
+  let msrReader = null;
   if (mock) {
     sysStats = createMockSysStats();
   } else {
@@ -817,9 +819,22 @@ async function main() {
     } catch {
       deviceIdHex = null;
     }
+    // M4L (B): the PawnIO MSR reader (CPU temp + wattage - the HWiNFO-class
+    // route). Lazy open + module load once per session (the reader's
+    // contract); every read returns null on any error (device absent,
+    // install failed, AV quarantine) - the honest degrade. The install
+    // state is checked by the reader at the first sample (the bundled
+    // official setup runs silently once when the device is absent).
+    msrReader = createMsrReader({});
     sysStats = createSysStats({
       deviceIdHex,
       luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
+      msrReader,
+      // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
+      // download link included) - logged when the MSR path is unavailable.
+      onMsrDegrade: (text) => {
+        console.log(`[sys-stats] ${text}`);
+      },
     });
   }
   // M4-D2: the Monitoring log-to-file writer. RID_MOCK_LOG_DIR redirects
@@ -838,6 +853,8 @@ async function main() {
     void teardown?.().catch(() => {});
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
+    // M4L (N2): release the PawnIO device handle (msr-reader close hygiene).
+    try { msrReader?.close?.(); } catch { /* best effort */ }
   });
 
   // Boot-time health + waiver seeding (shared by the window path and the

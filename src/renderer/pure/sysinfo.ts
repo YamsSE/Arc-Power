@@ -22,13 +22,14 @@ export function formatBytes(bytes: number | null | undefined): string {
 }
 
 /**
- * M4J (B): the memory speed ALWAYS renders in GHz with one decimal
- * ("@ 2.4 GHz" for 2400 MHz - the user's format; never MHz, never more
- * than one decimal). Null when the payload carries no speed.
+ * M4L (A): the memory speed renders in MHz with the '@ ' prefix ("@ 2400
+ * MHz" - the M4-H format REVERTED; M4J's always-GHz rule is inverted, the
+ * mock's 6000 MHz renders "@ 6000 MHz"). Null when the payload carries no
+ * speed.
  */
 export function ramFreqText(speedMhz: number | null | undefined): string | null {
   if (typeof speedMhz !== 'number' || !Number.isFinite(speedMhz) || speedMhz <= 0) return null;
-  return `@ ${(speedMhz / 1000).toFixed(1)} GHz`;
+  return `@ ${speedMhz} MHz`;
 }
 
 /**
@@ -74,15 +75,17 @@ export function mainboardRow(sysinfo: SysInfo | null): string {
  * renders it in a `.kv-static-freq` span - the blue accent styling via its
  * OWN class sharing the kv-live-freq rule, never the kv-live-freq class
  * itself: the onUpdate querySelector takes the FIRST match in the card).
- * M4J (B): the speed half is ALWAYS GHz ("@ 6.0 GHz" - one decimal); the
+ * M4J (B): the speed half was ALWAYS GHz ("@ 6.0 GHz" - one decimal); the
  * Cache row is REMOVED (a Mainboard row replaces it).
+ * M4L (A): the speed half is INVERTED back to MHz ("@ 6000 MHz" - the
+ * '@ ' prefix kept, the M4-H format restored).
  */
 export interface CpuCardRows {
   cpu: string;
   coresClock: string;
   /** The memory bundle WITHOUT the speed piece ("G.Skill 32 GB DDR5"). */
   memory: string;
-  /** The speed piece ("@ 6.0 GHz") for the styled .kv-static-freq span;
+  /** The speed piece ("@ 6000 MHz") for the styled .kv-static-freq span;
    *  null when the payload carries no speed. */
   memoryFreq: string | null;
   /** M4J (B): the Mainboard row ("ASUSTeK MAXIMUS VII RANGER" - short-map
@@ -126,10 +129,10 @@ export function ramMemoryType(code: number | null | undefined): string | null {
  * '-'). Cores/threads bundle: "4 Cores / 8 Threads" (physical cores
  * degrade to null in the os.cpus() fallback - never an estimate, so the
  * bundle shows the logical half only then). Memory bundle:
- * "G.Skill 32 GB DDR5 @ 6.0 GHz" (the manufacturer + type + speed pieces
- * degrade to absent, never invented; the speed is ALWAYS GHz with one
- * decimal - M4J). Mainboard: "ASUSTeK MAXIMUS VII RANGER" (short-map
- * manufacturer + product; product alone when unknown).
+ * "G.Skill 32 GB DDR5 @ 6000 MHz" (the manufacturer + type + speed pieces
+ * degrade to absent, never invented; the speed is MHz with the '@ '
+ * prefix - M4L inverted the M4J GHz rule). Mainboard: "ASUSTeK MAXIMUS VII
+ * RANGER" (short-map manufacturer + product; product alone when unknown).
  */
 export function cpuCardRows(sysinfo: SysInfo | null): CpuCardRows {
   const cpu = sysinfo?.cpu;

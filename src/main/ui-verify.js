@@ -6,7 +6,7 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.4 Alpha" (app:version IPC + the display Alpha suffix - the IPC
+//       1.0.5 Alpha" (app:version IPC + the display Alpha suffix - the IPC
 //       keeps the bare semver) - the driver version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
@@ -654,8 +654,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
   // Driver version row is REMOVED - M4-H).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.4 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.4 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.5 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.5 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -772,15 +772,18 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const sysinfoRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const sysRows = JSON.parse(sysinfoRows);
   if (sysRows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`M4-D: CPU row is '${sysRows['CPU']}' (expected the sysinfo fixture name)`);
-  // M4-H (C2)/M4J (B): the Memory row reads "G.Skill 32 GB DDR5 @ 6.0 GHz" -
-  // the SMBIOS type (34 = DDR5) inserted between the size and the speed;
-  // the speed half is ALWAYS GHz with one decimal (M4J: 6000 MHz -> "6.0
-  // GHz", never MHz) and renders in its OWN .kv-static-freq span (blue
-  // accent via the shared rule - never the kv-live-freq class itself, N3).
-  if (sysRows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6.0 GHz') fail(`M4J: Memory row is '${sysRows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6.0 GHz')`);
+  // M4-H (C2)/M4J (B)/M4L (A): the Memory row reads "G.Skill 32 GB DDR5 @
+  // 6000 MHz" - the SMBIOS type (34 = DDR5) inserted between the size and
+  // the speed; the speed half renders in its OWN .kv-static-freq span
+  // (blue accent via the shared rule - never the kv-live-freq class
+  // itself, N3). M4J made the speed ALWAYS GHz ("@ 6.0 GHz"); M4L
+  // INVERTS it back to MHz ("@ 6000 MHz" - the mock's 6000 MHz; the '@ '
+  // prefix kept). The inversion is documented like the M4-I driver-row
+  // inversion (the pin changed, the feature intent unchanged).
+  if (sysRows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`M4L: Memory row is '${sysRows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz' - the M4J GHz pin is INVERTED back to MHz)`);
   if (!(await waitFor(win, `(() => {
     const span = document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq');
-    if (!span || span.textContent !== '@ 6.0 GHz') return false;
+    if (!span || span.textContent !== '@ 6000 MHz') return false;
     const live = document.querySelector('.sysinfo-card .kv-live-freq');
     if (!live) return false;
     const cs = getComputedStyle(span);
@@ -790,8 +793,63 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // first-match hazard - N3).
     return cs.color === liveCs.color && cs.fontWeight === liveCs.fontWeight && !span.classList.contains('kv-live-freq');
   })()`, 5000))) {
-    fail(`M4J: the memory speed span is not the blue .kv-static-freq (text '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq')?.textContent ?? ''`)}')`);
+    fail(`M4L: the memory speed span is not the blue .kv-static-freq (text '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq')?.textContent ?? ''`)}')`);
   }
+  // M4L (A): the F1-grid fix - the Memory row is ONE line. The two spans
+  // (the static "G.Skill 32 GB DDR5 " piece + the speed span) sit inside a
+  // SINGLE .kv-memory wrapper (the .kv-cores-clock precedent), so the row
+  // never wraps and the Mainboard row sits DIRECTLY below (top-to-top, the
+  // 6px grid gap allowed). NOTE: the .kv row itself is display:contents
+  // (no box - a 0-height rect), so the geometry is measured on the
+  // .kv-memory wrapper span (the actual text box).
+  const memoryOneLine = await js(`(() => {
+    const kv = document.querySelector('.sysinfo-card .kv[data-label="Memory"]');
+    const wrapper = kv?.querySelector('.kv-memory');
+    const span = kv?.querySelector('.kv-static-freq');
+    if (!kv || !wrapper || !span) return 'no-nodes';
+    const wRect = wrapper.getBoundingClientRect();
+    const spanRect = span.getBoundingClientRect();
+    const kvStyle = getComputedStyle(wrapper);
+    const lineH = parseFloat(kvStyle.lineHeight) || parseFloat(kvStyle.fontSize) * 1.2;
+    const oneLine = Math.abs(wRect.height - lineH) <= 2;
+    const noWrap = wrapper.scrollWidth <= wrapper.clientWidth + 2;
+    // Same-line semantic: the span's box starts INSIDE the wrapper's single
+    // text line (the mono font's inline metrics differ from the row font, so
+    // top-to-top would be a false negative). A span dropped to the NEXT row
+    // starts >= one line-height below the wrapper's top.
+    const sameLine = (spanRect.top - wRect.top) < lineH - 1 && spanRect.bottom > wRect.top;
+    const wrapperHasBoth = wrapper.children.length === 2;
+    return JSON.stringify({ oneLine, noWrap, sameLine, wrapperHasBoth, h: wRect.height, lineH, spanTop: spanRect.top, wTop: wRect.top });
+  })()`);
+  if (memoryOneLine === 'no-nodes') fail('M4L: the Memory kv row / .kv-memory wrapper / .kv-static-freq span are missing');
+  const memGeo = JSON.parse(memoryOneLine);
+  if (!memGeo.wrapperHasBoth) fail('M4L: the .kv-memory wrapper does not contain BOTH spans (the F1-grid fix - expected 2 children)');
+  if (!memGeo.oneLine) fail(`M4L: the Memory row is NOT one text line (height ${memGeo.h}px vs line-height ${memGeo.lineH}px)`);
+  if (!memGeo.noWrap) fail('M4L: the Memory row wraps (scrollWidth > clientWidth + 2 - the .kv-memory nowrap is missing)');
+  if (!memGeo.sameLine) fail('M4L: the speed span is NOT on the same line as the DDR5 flag (the sibling dropped to another row)');
+  // M4L (A): the Mainboard row sits DIRECTLY below the Memory row (the F1
+  // bug scrambled it: the un-wrapped freq span auto-placed into the next
+  // row's label column). The .kv rows are display:contents (no box), so the
+  // real text boxes are measured: the Memory row's .kv-memory wrapper vs the
+  // Mainboard row's value span. "Directly below" = the Mainboard value
+  // starts on the row AFTER the Memory row: its top is >= the Memory row's
+  // top + one line (never the same row), and the gap to the Memory row's
+  // bottom is within the 6px grid gap (+ 2px tolerance).
+  const mainboardBelow = await js(`(() => {
+    const mem = document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-memory');
+    const mb = document.querySelector('.sysinfo-card .kv[data-label="Mainboard"] > span');
+    if (!mem || !mb) return 'no-nodes';
+    const memRect = mem.getBoundingClientRect();
+    const mbRect = mb.getBoundingClientRect();
+    const gap = mbRect.top - memRect.bottom;
+    const nextRow = mbRect.top >= memRect.top + memRect.height - 1;
+    // the 6px grid gap (+ 2px tolerance for the line-height rounding).
+    return JSON.stringify({ nextRow, gap: Math.round(gap * 10) / 10, maxGap: 8 });
+  })()`);
+  if (mainboardBelow === 'no-nodes') fail('M4L: the Mainboard row is missing (the Memory-row wrap check needs it)');
+  const mbGeo = JSON.parse(mainboardBelow);
+  if (!mbGeo.nextRow) fail(`M4L: the Mainboard row starts ON the Memory row (top diff ${mbGeo.gap}px - the F1 scramble is back)`);
+  if (mbGeo.gap > mbGeo.maxGap + 2) fail(`M4L: the Mainboard row is NOT directly below the Memory row (gap ${mbGeo.gap}px - the 6px grid gap allowed)`);
   // M4J (B): the 'Mainboard' row REPLACES the M4-I 'Cache' row - the mock
   // fixture's baseboard renders "ASUSTeK MAXIMUS VII RANGER" (the short-map
   // manufacturer + product). The old Cache/Caches labels must be GONE.
@@ -3218,8 +3276,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.4 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.4 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.5 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.5 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3281,7 +3339,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.4`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.5`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -4078,9 +4136,12 @@ export async function runNoIntelVerify(win) {
   const sysRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const rows = JSON.parse(sysRows);
   if (rows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`1.0.1: the CPU row is '${rows['CPU']}'`);
-  // M4-H (C2)/M4J (B): the no-Intel path shares the fixture - DDR5 in the
-  // memory line (GHz always) + the 'Mainboard' row (the Cache row is gone).
-  if (rows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6.0 GHz') fail(`1.0.1/M4J: the Memory row is '${rows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6.0 GHz')`);
+  // M4-H (C2)/M4J (B)/M4L (A): the no-Intel path shares the fixture - DDR5
+  // in the memory line + the 'Mainboard' row (the Cache row is gone).
+  // M4L INVERTS the M4J always-GHz pin back to MHz ("@ 6000 MHz" - the
+  // mock's 6000 MHz; the '@ ' prefix kept; documented like the M4-I
+  // driver-row inversion).
+  if (rows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`1.0.1/M4L: the Memory row is '${rows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz' - the M4J GHz pin is INVERTED back to MHz)`);
   if (rows['Mainboard'] !== 'ASUSTeK MAXIMUS VII RANGER') {
     fail(`M4J: the no-Intel Mainboard row is '${rows['Mainboard']}' (expected 'ASUSTeK MAXIMUS VII RANGER')`);
   }

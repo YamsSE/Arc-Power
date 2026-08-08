@@ -1,9 +1,9 @@
-# Third-Party Notices
+﻿# Third-Party Notices
 
 Arc Power bundles third-party components. Their licenses are reproduced
 below.
 
-## Intel Graphics Control Library (IGCL) — IntelControlLib.dll v1.0.100
+## Intel Graphics Control Library (IGCL) - IntelControlLib.dll v1.0.100
 
 - Component: `src/main/backend/igcl2023/IntelControlLib.dll`
   ("Intel Graphics Control Lib Runtime", v1.0.100, built 2022-09-29,
@@ -19,7 +19,7 @@ below.
 - Purpose: extended-range OC writes (power limit above 252 W, temperature
   limit above 90 C) on Alchemist-class GPUs, where the newer DriverStore
   runtime clamps the supported range client-side. See
-  docs/igcl-integration.md §8c.
+  docs/igcl-integration.md Â§8c.
 
 ```
 BSD 3-Clause License
@@ -52,4 +52,78 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## PawnIO (kernel driver) - the CPU MSR reader's kernel component
+
+- Component: the PawnIO kernel driver (PawnIO.sys, version 2.2.0 - the
+  official signed edition). The app does NOT bundle the driver binary: it
+  opens the installed driver's device and loads a module into it. The
+  official PawnIO_setup.exe (see below) installs the driver system-wide
+  (its own Uninstall key + device + service - the app never creates
+  services).
+- License: GNU General Public License v2.0 (or later) with a special
+  exception (reproduced below).
+- Source: https://github.com/namazso/PawnIO
+- Purpose: reading the CPU's MSRs (temperature target, package therm
+  status, RAPL energy) - the HWiNFO/GPU-Z/LibreHardwareMonitor-class
+  mechanism for CPU temperature + wattage, which Windows exposes in no
+  user-mode API on this machine.
+- The special exception: "as a special exception, the copyright holders of
+  PawnIO give you permission to combine PawnIO program with free software
+  programs or libraries that are released under the GNU LGPL and with
+  independent modules that communicate with PawnIO solely through the
+  device IO control interface. You may copy and distribute such a system
+  following the terms of the GNU GPL for PawnIO and the licenses of the
+  other code concerned, provided that you include the source code of that
+  other code when and as the GNU GPL requires distribution of source code."
+  Arc Power communicates with the driver SOLELY through the device IOCTL
+  interface (IOCTL_PIO_LOAD_BINARY / IOCTL_PIO_EXECUTE_FN) and loads the
+  LGPL-2.1 IntelMSR module (below) - the exact use the exception covers.
+  The LibreHardwareMonitor project (MPL-2.0) is the precedent: it
+  integrates PawnIO the same way.
+
+```
+GNU GENERAL PUBLIC LICENSE
+Version 2, June 1991
+
+Copyright (C) 1989, 1991 Free Software Foundation, Inc.
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+
+Everyone is permitted to copy and distribute verbatim copies
+of this license document, but changing it is not allowed.
+
+[GPLv2 text (the full license text is distributed with the
+project source (LICENSE-GPL-2.0.txt) and published at
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt]
+```
+
+## PawnIO.Modules - IntelMSR.bin (the CPU MSR module)
+
+- Component: `src/main/backend/IntelMSR.bin`, the PawnIO module exposing
+  "ioctl_read_msr" (PawnIO.Modules 0.2.10 - the LibreHardwareMonitor-
+  integrated release; pinned).
+- License: GNU Lesser General Public License v2.1 (reproduced in
+  `src/main/backend/COPYING`, verbatim from the 0.2.10 release).
+- Source: https://github.com/namazso/PawnIO.Modules (tag 0.2.10;
+  release asset release_0_2_10.zip).
+- SHA-256: D6ED85D65AB17A22F813EF98207D6D537155EE2DED5976A21CB48413C9B92E5F
+- Purpose: the MSR read function the driver executes (TjMax, package DTS,
+  RAPL energy - the CPU temp + wattage source).
+- The module communicates with the driver solely via the device IOCTL
+  interface, per the PawnIO GPLv2 special exception above.
+
+## PawnIO Setup (the official signed installer)
+
+- Component: `src/main/backend/PawnIO_setup.exe` (version 2.2.0, the
+  OFFICIAL signed edition - Authenticode: CN=namazso.eu, O=namazso,
+  issued by GLOBALTRUST 2015 CODESIGNING 1, valid to 2027-08-05). The app
+  runs it silently once (-install -silent) when the PawnIO device is
+  absent at first use; a failed/declined install degrades honestly (the
+  https://pawnio.eu download link is shown). The "unrestricted" edition is
+  NEVER installed (the module signature check must not be skipped).
+- Distribution: https://github.com/namazso/PawnIO.Setup/releases (tag
+  2.2.0) and https://pawnio.eu.
+- SHA-256: 1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032
+- The installer may be redistributed unmodified (its own usage text
+  states: "This installer can be redistributed unmodified.").
 

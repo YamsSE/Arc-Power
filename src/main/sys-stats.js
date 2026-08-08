@@ -20,7 +20,9 @@
 //                      "4.3 GHz" (live-verified 2026-08-07). On machines
 //                      where the counter caps at 100 the row honestly
 //                      reads base × %-of-max (documented in the report);
-//   cpuTempC         - M4J: TWO sources, precedence MSAcpi FIRST:
+//   cpuTempC         - M4L (B4): the PawnIO MSR provider FIRST (the REAL
+//                      package sensor: TjMax - DTS, bit-31 gated; null on
+//                      any driver/AV problem), then the WMI fallback:
 //                      1. MSAcpi_ThermalZoneTemperature (root\wmi,
 //                         CurrentTemperature in Kelvin*10 - the ACPI thermal
 //                         zones; present on many laptops, EMPTY on this
@@ -30,10 +32,10 @@
 //                         perf counter fallback.
 //                      The max across all zones of the chosen source is
 //                      reported (the hottest zone); the shared frozenDrop
-//                      (last 5 identical samples -> null) applies to BOTH
-//                      sources alike (a static board zone must not
-//                      masquerade as a CPU sensor whichever source reports
-//                      it).
+//                      (last 5 identical samples -> null) applies ONLY to
+//                      the WMI sources (a static board zone must not
+//                      masquerade as a CPU sensor) - the MSR reading is a
+//                      live sensor and never trips it.
 //   gpuMemUsedBytes  - Win32_PerfFormattedData_GPUPerformanceCounters_
 //                      GPUAdapterMemory "DedicatedUsage" (bytes) for the
 //                      instance whose name encodes the backend device's
@@ -43,7 +45,9 @@
 //                      resolved through the DXGI display enumeration link
 //                      (fps-dxgi.js GetDesc1: DeviceId 0x56A0 → LUID
 //                      0xADFB); null when unmatched.
-//   cpuPowerW         - M4-H: the CPU package wattage from
+//   cpuPowerW         - M4L (B4): the PawnIO MSR RAPL provider FIRST (the
+//                      (dE x 2^-ESU) / dt package-energy delta; the first
+//                      sample calibrates -> null), then the WMI fallback:
 //                      Win32_PerfFormattedData_PowerMeter_PowerMeter, the
 //                      FORMATTED counter property 'Power' (already watts -
 //                      no conversion). The class is often ABSENT on
@@ -289,24 +293,55 @@ export function gpuUtilPctOf(rows, luid) {
  * the DXGI display enumeration link (fps-dxgi.js GetDesc1 - matched by
  * PCI device id); null when the device cannot be matched (gpuMem then
  * reports null honestly).
+ * M4L (B4): the MSR provider (createMsrReader) is tried FIRST for the CPU
+ * temperature + wattage - the REAL package sensor via PawnIO (TjMax - DTS
+ * and the RAPL delta). Each field falls back PER-FIELD to the WMI source
+ * when the MSR reading is null (temp -> the frozen-drop-guarded zone
+ * sources; power -> the PowerMeter counter). The driver open + module load
+ * happen ONCE (lazy, inside the reader - never per tick); the single
+ * PowerShell query stays the only WMI source. `onMsrDegrade` fires ONCE
+ * with the reader's honest degrade text (the pawnio.eu download link)
+ * when the MSR path is unavailable - the log surface for the honest note.
  * @param {{
  *   execFile?: typeof execFile,
  *   powershellExe?: string,
  *   luidOf?: (deviceIdHex: string) => Promise<{ high: number, low: number } | null>,
  *   deviceIdHex?: string | null,   // e.g. '0x56a0' - the backend device's PCI id
+ *   msrReader?: {                   // M4L: the PawnIO MSR provider (optional)
+ *     packageTempC: () => Promise<number | null>,
+ *     packagePowerW: () => Promise<number | null>,
+ *     status: () => string,
+ *     describe: () => string,
+ *   } | null,
+ *   onMsrDegrade?: (text: string) => void,  // M4L: once-per-session degrade note
  * }} [deps]
  */
 export function createSysStats(deps = {}) {
   const exec = deps.execFile ?? execFile;
   const luidOf = deps.luidOf ?? (async () => null);
   const deviceIdHex = deps.deviceIdHex ?? null;
+  const msrReader = deps.msrReader ?? null;
+  const onMsrDegrade = deps.onMsrDegrade ?? null;
   let maxClockMhz = null; // cached Win32_Processor MaxClockSpeed
   let inflight = null;
   // M4-I (C1): the rolling thermal window (last 5 samples) for the shared
   // frozenDrop - the Z97 static board zone trips it ('-' - no real CPU-temp
   // source on this machine; the plan's ground truth).
   let tempWindow = [];
+  let msrDegradeFired = false;
   let last = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
+
+  // M4L (B4): the once-per-session MSR degrade note - fired when the MSR
+  // provider reports an unavailable state (device absent, install failed,
+  // AV quarantine) so the honest text (with the pawnio.eu link) reaches
+  // the log exactly once, never per tick.
+  const fireMsrDegrade = () => {
+    if (msrDegradeFired || !msrReader || !onMsrDegrade) return;
+    const st = msrReader.status();
+    if (st === 'ready' || st === 'closed') return;
+    msrDegradeFired = true;
+    onMsrDegrade(msrReader.describe());
+  };
 
   return {
     /**
@@ -351,23 +386,42 @@ export function createSysStats(deps = {}) {
             gpuUtil = null;
           }
         }
-        // M4-I (C1)/M4J (C): the CPU temperature - TWO sources with MSAcpi
-        // FIRST (the root\wmi ACPI zones; empty on this box -> the perf
-        // counter fallback). The shared frozenDrop then drops a STATIC zone
-        // whichever source reported it (the Z97 static board zone trips it
-        // after 5 identical samples - honest '-' instead of the stuck 30;
-        // the temperature ONLY - the wattage stays raw).
+        // M4-I (C1)/M4J (C)/M4L (B4): the CPU temperature - the MSR provider
+        // FIRST (the REAL package sensor via PawnIO: TjMax - DTS, bit-31
+        // gated; null on any driver/AV problem), then the TWO WMI sources
+        // with MSAcpi first (the root\wmi ACPI zones; empty on this box ->
+        // the perf counter fallback). The MSR reading is the live sensor -
+        // the frozenDrop NEVER applies to it (only the static WMI zones
+        // must not masquerade as a CPU sensor; the per-field fallback still
+        // trips it on the WMI-sourced value after 5 identical samples).
+        let msrTemp = null;
+        try {
+          msrTemp = msrReader ? await msrReader.packageTempC() : null;
+        } catch {
+          msrTemp = null;
+        }
         const tempK10 = raw.msaTempK10Max !== null ? raw.msaTempK10Max : raw.tempK10Max;
-        const tempC = tempK10 !== null ? tempK10 / 10 : null;
-        tempWindow = [...tempWindow, tempC].slice(-5);
+        const wmiTempC = tempK10 !== null ? tempK10 / 10 : null;
+        tempWindow = [...tempWindow, wmiTempC].slice(-5);
+        const tempC = msrTemp !== null ? msrTemp : frozenDrop(tempWindow);
+        // M4-H/M4L (B4): the CPU wattage - the MSR RAPL provider FIRST (the
+        // (dE x 2^-ESU) / dt delta; the first sample calibrates -> null),
+        // then the PowerMeter's formatted 'Power' (watts, single sample);
+        // null when both are unavailable (honest '-').
+        let msrPower = null;
+        try {
+          msrPower = msrReader ? await msrReader.packagePowerW() : null;
+        } catch {
+          msrPower = null;
+        }
+        if (msrReader && msrTemp === null && msrPower === null) fireMsrDegrade();
         last = {
           cpuUtilPct: utilPct,
           cpuFreqMhz: freqMhz,
-          cpuTempC: frozenDrop(tempWindow),
+          cpuTempC: tempC,
           gpuMemUsedBytes: gpuBytes,
-          // M4-H: the PowerMeter's formatted 'Power' - watts, single
-          // sample; null when the class is absent (honest '-').
-          cpuPowerW: raw.powerW,
+          // M4L (B4): the MSR RAPL wattage wins; the PowerMeter fallback.
+          cpuPowerW: msrPower !== null ? msrPower : raw.powerW,
           // M4-I (D1): the OS GPU-utilization counter; null when
           // unpopulated (the honest '-').
           gpuUtilPct: gpuUtil,

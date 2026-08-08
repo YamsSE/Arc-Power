@@ -201,15 +201,25 @@ export const dashboardPage: Page = {
                 el('span', { class: 'kv-live-freq', text: liveFreqText(s.latestSample) }),
               ]),
             ]),
-            // M4-H (C2)/M4J (B): the Memory row gains the RAM TYPE (DDR5 from
-            // Win32_PhysicalMemory.SMBIOSMemoryType via the pure mapping)
-            // and the speed half renders in its OWN .kv-static-freq span
-            // (sharing the kv-live-freq rule - never that class itself,
-            // the onUpdate first-match hazard - N3). M4J: the speed is
-            // ALWAYS GHz ("@ 6.0 GHz" - one decimal, never MHz).
+            // M4-H (C2)/M4J (B)/M4L (A): the Memory row gains the RAM TYPE
+            // (DDR5 from Win32_PhysicalMemory.SMBIOSMemoryType via the pure
+            // mapping) and the speed half renders in its OWN
+            // .kv-static-freq span (sharing the kv-live-freq rule - never
+            // that class itself, the onUpdate first-match hazard - N3).
+            // M4J: the speed was ALWAYS GHz ("@ 6.0 GHz" - one decimal);
+            // M4L: INVERTED back to MHz ("@ 6000 MHz", the '@ ' prefix
+            // kept). M4L (F1 grid fix): BOTH spans live inside ONE
+            // .kv-memory container span (the .kv-cores-clock precedent) -
+            // two sibling spans inside .kv (display:contents) let
+            // auto-placement drop the .kv-static-freq span into the NEXT
+            // row's label column (the orphan line + the scrambled
+            // Mainboard row); .kv-memory { white-space: nowrap } keeps the
+            // row on one line.
             el('div', { class: 'kv', 'data-label': 'Memory' }, [
-              el('span', { text: sysRows.memoryFreq ? `${sysRows.memory} ` : sysRows.memory }),
-              ...(sysRows.memoryFreq ? [el('span', { class: 'kv-static-freq', text: sysRows.memoryFreq })] : []),
+              el('span', { class: 'kv-memory' }, [
+                el('span', { text: sysRows.memoryFreq ? `${sysRows.memory} ` : sysRows.memory }),
+                ...(sysRows.memoryFreq ? [el('span', { class: 'kv-static-freq', text: sysRows.memoryFreq })] : []),
+              ]),
             ]),
             // M4J (B): the 'Mainboard' row replaces the M4-I 'Cache' row -
             // Win32_BaseBoard Manufacturer + Product via the short-map

@@ -402,6 +402,14 @@ html, body {
 /* M4-D2 (§6): the CPU card's LIVE frequency span ("@ 4.3 GHz" - the
    telemetry-tick half of the bundled Cores/clock row). */
 .kv-cores-clock { white-space: nowrap; }
+
+/* M4L (A): the Memory row's container span - BOTH spans (the static
+   "G.Skill 32 GB DDR5 " piece + the .kv-static-freq speed span) wrapped in
+   ONE .kv-memory span (the .kv-cores-clock precedent). Without the
+   wrapper, .kv (display:contents) auto-placement drops the second sibling
+   span into the NEXT row's label column (the F1-grid orphan line + the
+   scrambled Mainboard row). nowrap keeps the row on one text line. */
+.kv-memory { white-space: nowrap; }
 .kv-live-freq {
   font-family: var(--mono);
   color: var(--accent);
