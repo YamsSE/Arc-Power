@@ -1,14 +1,14 @@
-// Arc Power — M2C-C apply-worker (`--apply-worker <reqFile> <outFile>`).
+// Arc Power - M2C-C apply-worker (`--apply-worker <reqFile> <outFile>`).
 //
 // The elevated self-worker: reads the request JSON, runs the SAME routed
 // instant-apply core as the UI path (apply-routing.js) plus the runtime
 // routing, then writes the result JSON and exits. The worker:
-//   - never creates a window or tray (hidden by construction — main.js
+//   - never creates a window or tray (hidden by construction - main.js
 //     enters this branch before any UI setup);
-//   - never re-elevates (it IS the elevated process — spawning another
+//   - never re-elevates (it IS the elevated process - spawning another
 //     elevated instance would be pointless);
 //   - exits after writing the result file (exit 0 = result written, even
-//     for an apply failure — the parent reads the honest result).
+//     for an apply failure - the parent reads the honest result).
 //
 // Electron-free: the whole contract is testable under plain node --test.
 
@@ -21,10 +21,10 @@ import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefu
  * M2 orphan guard: refuse to run when the request directory holds an
  * EXPIRED parent-owned token (`arcpower-tok-<requestId>.json` written by
  * the parent with an expiresAt). An expired token means the parent already
- * gave up (timeout/crash) before this worker started — applying anyway
+ * gave up (timeout/crash) before this worker started - applying anyway
  * would land a write the user was told was canceled.
  *
- * M1 (step-5): the guard is PER-REQUEST, not per-directory — only the token
+ * M1 (step-5): the guard is PER-REQUEST, not per-directory - only the token
  * belonging to THIS request may block. The token is matched by its
  * `requestId` field (or, failing that, its filename suffix) against the
  * request's own id; a foreign leftover from another request's crashed
@@ -40,7 +40,7 @@ export async function findStaleSiblingToken(dir, requestId, now = Date.now()) {
   try {
     files = await fs.promises.readdir(dir);
   } catch {
-    return null; // no dir — nothing to judge
+    return null; // no dir - nothing to judge
   }
   for (const f of files) {
     if (!f.startsWith('arcpower-tok-') || !f.endsWith('.json')) continue;
@@ -48,7 +48,7 @@ export async function findStaleSiblingToken(dir, requestId, now = Date.now()) {
     try {
       tok = JSON.parse(await fs.promises.readFile(path.join(dir, f), 'utf8'));
     } catch {
-      continue; // unreadable token — not ours to judge
+      continue; // unreadable token - not ours to judge
     }
     if (typeof requestId === 'string' && requestId !== '') {
       const tokId = typeof tok.requestId === 'string' ? tok.requestId : f.slice('arcpower-tok-'.length, -'.json'.length);
@@ -96,9 +96,9 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
 
   // M2 orphan guard: the parent writes a token with an expiry BEFORE
   // spawning; an already-expired token FOR THIS REQUEST means the parent
-  // gave up (timeout/crash) before this worker started — refuse to apply so
+  // gave up (timeout/crash) before this worker started - refuse to apply so
   // the write can never land after the user was told the apply was canceled.
-  // M1: per-request correlation — the parent keys its token by the SAME id
+  // M1: per-request correlation - the parent keys its token by the SAME id
   // it stamped on our request file, so a foreign leftover's expired token
   // never blocks this request (and vice versa). Derive the id from our own
   // file name when the request content lacks one (the runner always writes
@@ -116,7 +116,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
   try {
     await backend.init();
     // The parent already accepted the waiver through the user dialog; the
-    // worker only ever seeds the IN-MEMORY flag (restoreWaiverState — never
+    // worker only ever seeds the IN-MEMORY flag (restoreWaiverState - never
     // ctlOverclockWaiverSet, which runs only on explicit user acceptance
     // via the waiver-accept op).
     if (req.waiverAccepted === true) {
@@ -137,7 +137,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       return 0;
     }
 
-    // op === 'apply' — the routed instant-apply core (clamps internally via
+    // op === 'apply' - the routed instant-apply core (clamps internally via
     // executeApply, routes extended values to the 2023 runtime).
     if (typeof req.settings !== 'object' || req.settings === null || Array.isArray(req.settings)) {
       await finish({ ok: false, error: 'invalid request: settings must be an object' });
@@ -145,14 +145,14 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     }
     const settings = sanitizeSettings(req.settings);
     // M3-C-E: the OC-mode gate runs BEFORE the clamp. The request carries
-    // the parent's ocMode — the worker's own caps always report the mode's
+    // the parent's ocMode - the worker's own caps always report the mode's
     // extended ranges (its backend is pinned to advanced by main.js), so a
     // caps-keyed MODE gate here would silently clamp extended values in
     // stock mode: exactly the forbidden behavior. The gate's refusal reports
     // the mode message only and never touches the GPU (no defaults restore
-    // downstream — the parent's applyProfile path gates BEFORE delegating,
+    // downstream - the parent's applyProfile path gates BEFORE delegating,
     // and a direct worker request refuses here the same way).
-    // M4-E: the gate is unit-aware — it receives the capability RANGES
+    // M4-E: the gate is unit-aware - it receives the capability RANGES
     // (a device property from the same probe as the parent), so percent-unit
     // devices are never mode-refused. NOT the extendedRanges flag.
     const caps = await backend.getCapabilities(deviceId);
@@ -160,7 +160,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     if (refusal) {
       log(`[apply-worker] oc-mode refusal: ${refusal.message} (${refusal.controls.join(', ')})`);
       // M3-C review F2: the refusal carries the FRESH device state, never
-      // null — the parent renderer stores the envelope's state into its
+      // null - the parent renderer stores the envelope's state into its
       // store (a null would null the store's device state and crash the
       // dirty helpers). The refusal never touched the GPU, so the read-back
       // is the state before the refused apply. Degraded to null only if the
@@ -174,12 +174,12 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // THIS driver -> refuse extended values BEFORE the clamp, never a silent
     // 252 W / 90 C cap reported as ok:true. Safe here: the worker's backend
     // derives caps from the SAME isCapable probe as the parent, so keying on
-    // caps.extendedRanges is a capability refusal — not the caps-keyed mode
+    // caps.extendedRanges is a capability refusal - not the caps-keyed mode
     // gate the plan forbids. The refusal never touches the GPU and carries
     // the fresh state.
     const unavailable = extendedUnavailableRefusal(settings, caps);
     if (unavailable) {
-      log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) — nothing applied`);
+      log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
       let state = null;
       try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: false, perControl: extendedUnavailablePerControl(unavailable.controls), state, extendedUnavailable: true });

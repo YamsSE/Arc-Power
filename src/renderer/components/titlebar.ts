@@ -1,4 +1,4 @@
-// Arc Power — M4-D (user): the integrated title bar wiring (frameless
+// Arc Power - M4-D (user): the integrated title bar wiring (frameless
 // window). The markup lives in index.html: the brand CENTERED (assets/
 // icon.png on top, "Arc Power" below with "Power" in the website's blue
 // gradient + glow), the window controls (minimize / maximize-restore /
@@ -32,7 +32,7 @@ export function initTitlebar(): void {
     btn.setAttribute('aria-label', maximized ? 'Restore' : 'Maximize');
     const restore = btn.querySelector<SVGElement>('.icon-restore');
     const maximize = btn.querySelector<SVGElement>('.icon-maximize');
-    // SVGElement has no `hidden` in the TS lib — the hidden attribute works
+    // SVGElement has no `hidden` in the TS lib - the hidden attribute works
     // on SVG in Chromium; cast through HTMLElement.
     const setHidden = (node: SVGElement | null, hidden: boolean) => {
       if (node) (node as unknown as HTMLElement).hidden = hidden;

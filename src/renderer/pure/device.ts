@@ -1,4 +1,4 @@
-// Arc Power — M4-F pure device-selection helpers (no DOM): the boot
+// Arc Power - M4-F pure device-selection helpers (no DOM): the boot
 // selection preference, the selector visibility rule and the selector
 // option list. The DOM `<select>` lives in components/device-select.ts; the
 // switch flow lives in device.ts (createDeviceSwitcher). Unit-tested.
@@ -10,9 +10,9 @@ import type { DeviceInfo } from '../types.ts';
  * enumerated device id; otherwise devices[0] (the honest single-device
  * default). The MAIN-side boot resolution (resolveBootDeviceId) is the
  * authority and has already self-healed the persisted id before the
- * renderer's first device-get round trip — this is the renderer's mirror
+ * renderer's first device-get round trip - this is the renderer's mirror
  * of the same rule for the id the IPC returned. Null when nothing is
- * enumerated (the caller degrades — never a crash).
+ * enumerated (the caller degrades - never a crash).
  */
 export function resolveBootDevice(devices: DeviceInfo[], persistedId: number | null): number | null {
   if (devices.length === 0) return null;
@@ -21,7 +21,7 @@ export function resolveBootDevice(devices: DeviceInfo[], persistedId: number | n
 }
 
 /**
- * M4-F: the device selector renders ONLY with 2+ devices — the honest
+ * M4-F: the device selector renders ONLY with 2+ devices - the honest
  * single-device degradation (the live 1-GPU machine shows nothing new).
  */
 export function showDeviceSelector(devices: DeviceInfo[]): boolean {
@@ -31,7 +31,7 @@ export function showDeviceSelector(devices: DeviceInfo[]): boolean {
 /**
  * M4-F: the selector option list. Each option carries the device NAME
  * (the backend formats the VRAM suffix into device.name at enumeration
- * time — the option text never re-derives it); `selected` marks the
+ * time - the option text never re-derives it); `selected` marks the
  * current device.
  */
 export function deviceSelectorOptions(
@@ -39,4 +39,17 @@ export function deviceSelectorOptions(
   currentId: number | null,
 ): Array<{ id: number; label: string; selected: boolean }> {
   return devices.map((d) => ({ id: d.id, label: d.name, selected: d.id === currentId }));
+}
+
+/**
+ * M4I (final-review F1): strip the VRAM suffix the backend formats into
+ * device.name at enumeration ("Name 8GB GDDR6" / "Name 8GB") so a name
+ * comparison (the dashboard's matchedController controller lookup) sees
+ * the plain GPU name on BOTH sides. The M4H suffix (" 16 GB") was removed
+ * by the M4I ceil+type format - without the strip the match falls back to
+ * videoControllers[0] and the ReBAR pill can bind to the wrong GPU on
+ * multi-GPU machines. Unit-tested.
+ */
+export function stripVramSuffix(name: string): string {
+  return name.trim().replace(/\s+\d+\s*GB(\s+\S+)?$/i, '').trim();
 }

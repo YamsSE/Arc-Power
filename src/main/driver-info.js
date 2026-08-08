@@ -1,9 +1,9 @@
-// Arc Power — M2b-B driver-info helper (display-driver registry date).
+// Arc Power - M2b-B driver-info helper (display-driver registry date).
 //
 // Reads the Windows display-driver `DriverDate` value (REG_SZ, "7-5-2026")
 // from the display class registry key:
 //   HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000
-// via `reg.exe` (execFile, no extra deps) — READ-ONLY, safe at boot. The
+// via `reg.exe` (execFile, no extra deps) - READ-ONLY, safe at boot. The
 // lookup is best-effort: any failure (key absent, reg.exe missing, parse
 // miss) returns `{ driverDate: null }` and the renderer falls back to
 // showing the driver version without a date.
@@ -37,7 +37,7 @@ export function parseRegDriverDate(stdout, exitCode = 0) {
 
 /**
  * Real driver-info adapter (reg.exe via injectable execFile for tests).
- * Never throws — a failed lookup degrades to `{ driverDate: null }`.
+ * Never throws - a failed lookup degrades to `{ driverDate: null }`.
  * @param {{ execFile?: typeof execFile, classKey?: string, adapterIndex?: number }} [deps]
  */
 export function createDriverInfo(deps = {}) {
@@ -55,7 +55,7 @@ export function createDriverInfo(deps = {}) {
         return { driverDate: parseRegDriverDate(stdout) };
       } catch {
         // reg.exe failure (missing key/value, spawn error, timeout) is the
-        // same null answer — the renderer falls back to the version alone.
+        // same null answer - the renderer falls back to the version alone.
         return { driverDate: null };
       }
     },
@@ -63,7 +63,7 @@ export function createDriverInfo(deps = {}) {
 }
 
 /**
- * In-memory fake — the default for tests, --ui-verify and mock mode; never
+ * In-memory fake - the default for tests, --ui-verify and mock mode; never
  * runs reg.exe. Returns the fixture date (matches the real machine: driver
  * 32.0.101.8861, DriverDate 7-5-2026).
  * @param {string} [date]

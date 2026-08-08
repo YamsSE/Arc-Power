@@ -1,6 +1,6 @@
-// Arc Power — preset computation (pure, DOM-free).
+// Arc Power - preset computation (pure, DOM-free).
 //
-// Preset chips are derived from the device's capability range at runtime —
+// Preset chips are derived from the device's capability range at runtime -
 // never hardcoded. 'stock' = the capability default, 'medium' = 45% of the
 // way from stock toward max, 'max' = the range max. All snapped to step and
 // clamped so a chip value is always a legal apply value.

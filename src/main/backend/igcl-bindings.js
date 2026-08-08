@@ -373,20 +373,20 @@ for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
 
 export function findIgclDll() {
   // Loader (ControlLib.dll, System32) enforces a UID whitelist (registered
-  // Intel UIDs only — an invented UID is rejected with
+  // Intel UIDs only - an invented UID is rejected with
   // CTL_RESULT_ERROR_UNKNOWN_APPLICATION_UID). The runtime
   // (IntelControlLib.dll, "Intel Graphics Control Lib Runtime", DriverStore
-  // igfx package) accepts any UID — that is what the probe uses.
+  // igfx package) accepts any UID - that is what the probe uses.
   //
   // The DriverStore keeps packages from every install, so there can be
   // several iigd_dch_d.inf_amd64_* folders. Selection order:
   //   1. the package whose INF DriverVer matches the ACTIVE display driver
   //      version (read from the display class registry key, preferring the
-  //      discrete-GPU block — see activeDriverVersion()) — the newest
+  //      discrete-GPU block - see activeDriverVersion()) - the newest
   //      folder is NOT necessarily the active driver (staged/rolled-back
   //      packages linger);
   //   2. the most recently written package;
-  //   3. env IGCL_DLL_PATH, then System32 ControlLib.dll (loader — init will
+  //   3. env IGCL_DLL_PATH, then System32 ControlLib.dll (loader - init will
   //      fail with a clear "unregistered UID" error), then System32
   //      IntelControlLib.dll (runtime), then the IGS dir.
   const store = 'C:\\Windows\\System32\\DriverStore\\FileRepository';
@@ -431,7 +431,7 @@ export function findIgclDll() {
 
 function driverVerFromInf(infPath) {
   // [Version] section of the package INF, e.g. "DriverVer = 07/05/2026,32.0.101.8861".
-  // Some driver packages ship UTF-16 LE INFs — sniff the BOM before decoding.
+  // Some driver packages ship UTF-16 LE INFs - sniff the BOM before decoding.
   try {
     const raw = fs.readFileSync(infPath);
     let text;
@@ -452,7 +452,7 @@ function activeDriverVersion() {
   // Selection order (avoids the iGPU-vs-dGPU trap on multi-GPU boxes, where
   // "last Intel block" can be the integrated adapter's subkey):
   //   1. Intel blocks whose DriverDesc names a discrete GPU (Intel's discrete
-  //      product line is "Arc"); the last such block wins — the iGPU block
+  //      product line is "Arc"); the last such block wins - the iGPU block
   //      ("UHD/Iris/HD Graphics") is never picked while a discrete block
   //      exists;
   //   2. otherwise the last block with an Intel DriverDesc;
@@ -569,11 +569,11 @@ export function loadIgcl(dllPath) {
 
   bind('ctlPowerTelemetryGet', 'ctl_result_t', ['void*', 'ctl_power_telemetry_t*']);
 
-  // M4-D2 (user): the driver's PCI properties — resizable_bar_supported /
+  // M4-D2 (user): the driver's PCI properties - resizable_bar_supported /
   // resizable_bar_enabled (the same driver state IGS + GPU-Z report).
   // Raw 'void*' params: a typed 'ctl_pci_properties_t*' arg makes koffi
   // validate the buffer type and reject the raw 64-byte buffer the caller
-  // passes (live-verified — the driver build's struct differs from koffi's
+  // passes (live-verified - the driver build's struct differs from koffi's
   // padded layout, so the caller allocates raw bytes + Size 64).
   bind('ctlPciGetProperties', 'ctl_result_t', ['void*', 'void*']);
 

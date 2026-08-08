@@ -1,4 +1,4 @@
-// Arc Power — M1 TelemetryService.
+// Arc Power - M1 TelemetryService.
 //
 // Owns the poll cadence (default 500 ms; clamped to the 50 ms IGCL rate
 // limit), derives powerW from energy-counter deltas, and keeps a ring

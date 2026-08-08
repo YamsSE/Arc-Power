@@ -1,4 +1,4 @@
-// Arc Power — sandboxed preload bridge (CommonJS: sandboxed preloads cannot
+// Arc Power - sandboxed preload bridge (CommonJS: sandboxed preloads cannot
 // be ESM). Exposes a typed, whitelisted surface to the renderer; every
 // channel is validated in src/main/ipc-core.js before reaching the backend.
 
@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   health: () => ipcRenderer.invoke('health'),
   listDevices: () => ipcRenderer.invoke('list-devices'),
   // M4-F: the persisted GPU selection (device-get reads it at boot;
-  // device-set is the ONLY writer — like oc-mode-set).
+  // device-set is the ONLY writer - like oc-mode-set).
   deviceGet: () => ipcRenderer.invoke('device-get'),
   deviceSet: (deviceId) => ipcRenderer.invoke('device-set', deviceId),
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
@@ -24,18 +24,18 @@ contextBridge.exposeInMainWorld('arcPower', {
   startupGet: () => ipcRenderer.invoke('startup-get'),
   startupSet: (enabled) => ipcRenderer.invoke('startup-set', enabled),
   sysinfo: () => ipcRenderer.invoke('sysinfo:get'),
-  // M4-D: the integrated-title-bar window controls (no payload — the
+  // M4-D: the integrated-title-bar window controls (no payload - the
   // channels assert it in main).
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),
   windowMaximizeToggle: () => ipcRenderer.invoke('window-maximize-toggle'),
   windowClose: () => ipcRenderer.invoke('window-close'),
-  // M4-H: the sidebar GitHub link — opens the URL in the default browser
+  // M4-H: the sidebar GitHub link - opens the URL in the default browser
   // via shell.openExternal (STRICTLY validated in ipc-core.js: https: +
   // github.com + the /YamsSE/Arc-Power path).
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
-  // M4-E: distribution kind — 'installed' | 'portable' | 'dev'
+  // M4-E: distribution kind - 'installed' | 'portable' | 'dev'
   // (the Settings start-with-Windows hint differentiates by it).
   appBuildInfo: () => ipcRenderer.invoke('app:build-info'),
   appElevated: () => ipcRenderer.invoke('app-elevated'),
@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   profilesSettingsSave: (patch) => ipcRenderer.invoke('profiles-settings-save', patch),
   trayRebuild: () => ipcRenderer.invoke('tray-rebuild'),
   // M2D: mock-only featureset control. The channels exist ONLY in mock mode
-  // (real mode rejects with "No handler registered" — the renderer never
+  // (real mode rejects with "No handler registered" - the renderer never
   // calls them there: the dropdown renders only when health.backend === 'mock').
   mockListFeaturesets: () => ipcRenderer.invoke('mock:list-featuresets'),
   mockSetFeatureset: (id) => ipcRenderer.invoke('mock:set-featureset', id),

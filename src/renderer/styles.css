@@ -1,4 +1,4 @@
-/* Arc Power — design system (dark, Adrenaline-clean).
+/* Arc Power - design system (dark, Adrenaline-clean).
    Tokens as CSS custom properties; no framework. */
 
 :root {
@@ -25,20 +25,20 @@
   --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
   /* 1.0.1 Themes: the recessed input/option surface (fan-point editor
      inputs, select dropdown options). REFERENCED by .fan-point-input +
-     .featureset-select/.device-select options but never DEFINED before —
+     .featureset-select/.device-select options but never DEFINED before -
      the fan editor input fell back to the default white background (a live
      bug). Defined per theme; Dark Steel keeps a slightly darker inset. */
   --bg-panel: #0d1017;
 }
 
 /* ------------------------------------------------------------------ themes
-   1.0.1 — three UI themes (Settings > Theme). Dark Steel stays on :root
-   (the user's black/gray default — unchanged); the [data-theme] blocks
+   1.0.1 - three UI themes (Settings > Theme). Dark Steel stays on :root
+   (the user's black/gray default - unchanged); the [data-theme] blocks
    override ONLY the color tokens (+ --bg-panel). The attribute lives on
    <html> (documentElement.dataset.theme), written by app.ts/settings.ts
    through the pure/theme.ts validation. Equal specificity with :root, so
    these blocks MUST stay AFTER :root in source order (the equal-specificity
-   ordering hazard — pinned by the ui-verify computed-style checks). */
+   ordering hazard - pinned by the ui-verify computed-style checks). */
 
 [data-theme="midnight"] {
   /* Deep indigo/navy: blue-cast elevation, softer borders, ice-cyan accent. */
@@ -64,7 +64,7 @@
 
 [data-theme="light"] {
   /* Arctic Light: near-white surfaces, dark slate text. M5: the accent
-     trio is DARKER (#4cc2ff on white fails WCAG AA — pills, links and the
+     trio is DARKER (#4cc2ff on white fails WCAG AA - pills, links and the
      brand gradient read on light only with the dark blues); the semantic
      colors are darkened for light-surface contrast too. */
   --bg: #f2f4f8;
@@ -88,9 +88,9 @@
 }
 
 /* The brand gradient on light: the ice end stop (#7ee0ff) disappears on
-   white — the light variant runs the dark-blue trio end-to-end with a
+   white - the light variant runs the dark-blue trio end-to-end with a
    reduced/softened glow. The `background` shorthand RESETS background-clip
-   (the base rule's text clip would be wiped) — re-declare it here. */
+   (the base rule's text clip would be wiped) - re-declare it here. */
 [data-theme="light"] .titlebar-brand-power {
   background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #054a85 90%);
   -webkit-background-clip: text;
@@ -119,7 +119,7 @@ html, body {
   scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
 
-/* M2C-B B4: styled scrollbars — thin, inset track, blue-accent thumb that
+/* M2C-B B4: styled scrollbars - thin, inset track, blue-accent thumb that
    lights up on hover. Applies to every scroll container in the client. */
 ::-webkit-scrollbar {
   width: 10px;
@@ -152,7 +152,7 @@ html, body {
    the top, above the sidebar+shell. Grid with equal side columns so the
    brand sits CENTERED (user: "move the logo & writing to the middle of the
    top"): left zone (icon + drag, 1fr), centered brand (auto), right
-   controls cluster (1fr). The drag zones (-webkit-app-region: drag —
+   controls cluster (1fr). The drag zones (-webkit-app-region: drag -
    Electron handles double-click-to-maximize there) are the left zone AND
    the brand; the controls cluster is no-drag. */
 .titlebar {
@@ -190,13 +190,13 @@ html, body {
   min-width: 0;
   align-self: stretch;
   /* Explicit (not just inherited from .titlebar): the computed
-     -webkit-app-region does not propagate to children — the pin asserts
+     -webkit-app-region does not propagate to children - the pin asserts
      this element's own value. */
   -webkit-app-region: drag;
 }
 
 /* The brand: the logo (assets/icon.png) on TOP, the "Arc Power" name BELOW
-   it — "Power" in the website's blue gradient + glow (website style.css
+   it - "Power" in the website's blue gradient + glow (website style.css
    .grad-text: linear-gradient(100deg, accent, accent-2, #7ee0ff),
    background-clip text, drop-shadow). The brand is draggable too. Vertically
    CENTERED with equal gaps top/bottom (user: "the gap between top and
@@ -291,7 +291,7 @@ html, body {
   scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
 
-/* M4-D (user): the sidebar brand — "Arc Power" with "Power" ILLUMINATED
+/* M4-D (user): the sidebar brand - "Arc Power" with "Power" ILLUMINATED
    like the title bar (the blue gradient + glow, M3-A accent bar below) and
    a BOLD weight. The bar is the ::after pseudo-element, so .sidebar-brand
    stays a block (the two spans sit inline). */
@@ -327,7 +327,7 @@ html, body {
   gap: 2px;
 }
 
-/* M4-D (user): one fitting icon per tab, left of the name — mask-image
+/* M4-D (user): one fitting icon per tab, left of the name - mask-image
    (currentColor) so the icon follows the link color (accent on active). */
 .sidebar-link {
   display: flex;
@@ -350,7 +350,7 @@ html, body {
 }
 
 .sidebar-icon-dashboard { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z'/%3E%3C/svg%3E"); }
-/* M4-D2 (§7): the Tuning tab icon — a tuning-slider glyph (the OC page's
+/* M4-D2 (§7): the Tuning tab icon - a tuning-slider glyph (the OC page's
    lightning bolt + the Fan page's fan icons are gone; one fitting icon). */
 .sidebar-icon-tuning { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M2 5h11v2H2zm13 0h7v2h-7zM2 11h7v2H2zm10 0h10v2H12zM2 17h4v2H2zm7 0h13v2H9z'/%3E%3C/svg%3E"); }
 .sidebar-icon-monitoring { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z'/%3E%3C/svg%3E"); }
@@ -361,7 +361,7 @@ html, body {
 .sidebar-link:hover { background: var(--bg-inset); color: var(--text); }
 .sidebar-link.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
-/* M4-H (D1): the sidebar FOOTER — the GitHub link pinned to the BOTTOM-LEFT
+/* M4-H (D1): the sidebar FOOTER - the GitHub link pinned to the BOTTOM-LEFT
    (margin-top:auto pushes it below the nav; the sidebar is a flex column).
    GitHub icon via the same mask-image pattern as the nav icons. */
 .sidebar-footer {
@@ -392,14 +392,14 @@ html, body {
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
-/* M4-D (user): the GPU-card ReBAR pill — green when a multi-GiB BAR is
+/* M4-D (user): the GPU-card ReBAR pill - green when a multi-GiB BAR is
    present (Resizable BAR working), red when only the small aperture BAR
    exists, grey when unknown. */
 .kv-clocks {
   white-space: nowrap;
 }
 
-/* M4-D2 (§6): the CPU card's LIVE frequency span ("@ 4.3 GHz" — the
+/* M4-D2 (§6): the CPU card's LIVE frequency span ("@ 4.3 GHz" - the
    telemetry-tick half of the bundled Cores/clock row). */
 .kv-cores-clock { white-space: nowrap; }
 .kv-live-freq {
@@ -408,9 +408,9 @@ html, body {
   font-weight: 650;
 }
 
-/* M4-H (C2 — N3): the Memory row's STATIC speed span ("@ 6000 MHz") gets
+/* M4-H (C2 - N3): the Memory row's STATIC speed span ("@ 6000 MHz") gets
    the SAME blue-accent styling via its OWN class sharing the kv-live-freq
-   rule — never the kv-live-freq class itself (the onUpdate
+   rule - never the kv-live-freq class itself (the onUpdate
    querySelector takes the FIRST match in the card, so reusing the live
    class would let the dashboard's tick update hit the static span). */
 .kv-live-freq,
@@ -428,7 +428,7 @@ html, body {
   border: 1px solid transparent;
 }
 
-/* M4-D2 (M6): the pill states are VAR-DRIVEN — the hardcoded #34d399 text
+/* M4-D2 (M6): the pill states are VAR-DRIVEN - the hardcoded #34d399 text
    would stay low-contrast on the light theme; color-mix keeps the border/
    bg tints following the same var (all three states). */
 .rebar-pill.status-ok {
@@ -449,10 +449,10 @@ html, body {
   background: var(--bg-inset);
 }
 
-/* M4-H (D2): the restore glyph's FRONT square fill — the Windows restore
+/* M4-H (D2): the restore glyph's FRONT square fill - the Windows restore
    icon is a HOLLOW back square (top-left) with a FILLED front square
    (bottom-right). The fill comes from this class (var() in the rect
-   attribute was dropped — N5; the swapped rects were the real bug). */
+   attribute was dropped - N5; the swapped rects were the real bug). */
 .icon-restore-front {
   fill: var(--bg-elev);
 }
@@ -656,7 +656,7 @@ html, body {
 .chip-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
 /* M4-C: a disabled mode chip (the Fixed tab on a card that cannot write it)
-   — same honest treatment as a disabled button. */
+   - same honest treatment as a disabled button. */
 .chip-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .chip-btn:disabled:hover { border-color: var(--border); }
 
@@ -689,7 +689,7 @@ html, body {
 .featureset-select:hover { border-color: var(--accent); }
 .featureset-select option { background: var(--bg-panel); color: var(--text); }
 
-/* M4-F: the compact GPU selector — styled exactly like the featureset
+/* M4-F: the compact GPU selector - styled exactly like the featureset
    dropdown (the Dashboard GPU card header + the Tuning oc-mode row). */
 .device-select {
   appearance: none;
@@ -706,16 +706,21 @@ html, body {
 .device-select:hover { border-color: var(--accent); }
 .device-select option { background: var(--bg-panel); color: var(--text); }
 
-/* M4-F: the Dashboard GPU card header row — the card title LEFT, the
-   device selector RIGHT (hidden entirely with <= 1 device). */
+/* M4-F: the Dashboard GPU card header row - the card title LEFT, the
+   device selector RIGHT (hidden entirely with <= 1 device).
+   M4-I (A4): the kv rows of the GPU card start at the SAME vertical
+   position as the CPU card's - the head carries the title's OWN standard
+   margin (margin: 0 0 12px like every .card-title) so the head's height
+   equals the CPU card's title margin-box (the selector top-aligns next to
+   the title; both cards' first kv rows then share one y - pinned). */
 .device-card-head {
   display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
 }
-.device-card-head .card-title { margin: 0; }
+.device-card-head .card-title { margin: 0 0 12px; }
 
 /* ------------------------------------------------------------------ buttons */
 
@@ -807,7 +812,7 @@ html, body {
 
 /* --------------------------------------------------------------- stat tiles */
 
-/* M2C-B B9: the dashboard live readout is compact — shorter tiles, tighter
+/* M2C-B B9: the dashboard live readout is compact - shorter tiles, tighter
    padding, larger values (user: "a bit too long and small, 5 boxes next to
    each other"). */
 .readout-card { margin-top: 2px; padding: 12px 16px; }
@@ -833,9 +838,9 @@ html, body {
 .stat-unit { font-size: 10.5px; color: var(--accent); font-family: var(--mono); margin-top: 1px; }
 .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 
-/* M4-H (C3): the dashboard live readout is TWO labeled groups — CPU above
-   GPU — each with its own grid. The tile lookups in ui-verify are SCOPED
-   to the group containers (N8 — both groups carry Temperature/Util-like
+/* M4-H (C3): the dashboard live readout is TWO labeled groups - CPU above
+   GPU - each with its own grid. The tile lookups in ui-verify are SCOPED
+   to the group containers (N8 - both groups carry Temperature/Util-like
    labels). */
 .readout-group {
   margin-bottom: 10px;
@@ -930,7 +935,7 @@ html, body {
 
 /* ------------------------------------------- OC-mode toggle (M3-C-E) ---- */
 
-/* M4-D2 (§8): the OC-mode row is a FLEX ROW — LEFT the Stock/Advanced
+/* M4-D2 (§8): the OC-mode row is a FLEX ROW - LEFT the Stock/Advanced
    pill, RIGHT the "Tuning | Fan Curve" view pill at the SAME HEIGHT (two
    identical label-over-toggle columns; the ui-verify pin asserts the pills'
    getBoundingClientRect tops are equal). */
@@ -944,10 +949,16 @@ html, body {
 }
 
 /* M4-H (A3): while the FAN view is active the OC-mode (Stock/Advanced)
-   column of the Tuning page's shared mode row is HIDDEN — the View pill +
+   column of the Tuning page's shared mode row is HIDDEN - the View pill +
    the GPU selector stay. The class is applied on the initial fan-view
-   render (#/fan redirect — N6) AND in setView. */
+   render (#/fan redirect - N6) AND in setView.
+   M4-I (E2): the compact Save-as-Profile button column hides on the fan
+   view the same way (the 'absent on fan view' pin targets the button). */
 .oc-mode-row.fan-hides-oc-column .oc-mode-col-mode {
+  display: none;
+}
+
+.oc-mode-row.fan-hides-save-btn .profile-save-col {
   display: none;
 }
 
@@ -1119,7 +1130,7 @@ html, body {
   overflow: hidden;
 }
 
-/* M2C-B B1: the plot area is a flex child — the right-side 0-100% axis
+/* M2C-B B1: the plot area is a flex child - the right-side 0-100% axis
    lives OUTSIDE it (the old labels sat inside the SVG at x:99/x:1). */
 .fan-plot {
   position: relative;
@@ -1163,7 +1174,7 @@ html, body {
 }
 
 /* M2C-B review B1: the 100%/0% labels centered on the stage edges would
-   lose their outer half to .fan-stage { overflow: hidden } — hug the edge
+   lose their outer half to .fan-stage { overflow: hidden } - hug the edge
    instead (label edge on the grid line) so all five render fully. */
 .fan-yaxis-tick-edge-top { transform: translateY(0); }
 .fan-yaxis-tick-edge-bottom { transform: translateY(-100%); }
@@ -1184,11 +1195,15 @@ html, body {
 .fan-dot:hover { background: var(--accent-soft); }
 .fan-dot-selected { background: var(--accent); }
 
-/* M4-C: the floating point readout — above a hovered/dragged dot, in the
+/* M4-C: the floating point readout - above a hovered/dragged dot, in the
    dots layer (inset 0) so the % left/top position matches the dot.
-   M4-H (A2): the popup is now EDITABLE (Fan % + Temp inputs) — it needs
+   M4-H (A2): the popup is EDITABLE (Fan % + Temp inputs) - it needs
    pointer-events: auto (the vanish guard relies on pointerenter/leave
-   firing for the popup, and the inputs must be clickable). */
+   firing for the popup, and the inputs must be clickable).
+   M4-I (F1): HOVER shows the PLAIN label readout (pre-M4H behavior) -
+   pointer-events: none, the fields hidden; a CLICK elevates the dot to the
+   EDITABLE popup (.fan-dot-readout-editing - pointer-events auto, the
+   fields visible). */
 .fan-dot-readout {
   position: absolute;
   transform: translate(-50%, -100%);
@@ -1201,7 +1216,7 @@ html, body {
   font-size: 11.5px;
   font-family: var(--mono);
   white-space: nowrap;
-  pointer-events: auto;
+  pointer-events: none;
   z-index: 5;
   box-shadow: var(--shadow);
   display: flex;
@@ -1210,12 +1225,22 @@ html, body {
   align-items: flex-start;
 }
 
+.fan-dot-readout-editing {
+  pointer-events: auto;
+}
+
 .fan-dot-readout-label {
   color: var(--accent);
   font-weight: 650;
 }
 
+/* M4-I (F1): the editable fields are part of the EDITABLE popup only - the
+   hover readout is the plain label (pre-M4H behavior). */
 .fan-dot-readout-fields {
+  display: none;
+}
+
+.fan-dot-readout-editing .fan-dot-readout-fields {
   display: flex;
   gap: 8px;
 }
@@ -1241,7 +1266,7 @@ html, body {
 
 .fan-readout-input:focus { outline: none; border-color: var(--accent); }
 
-/* M4-C (round-1 fix): top-edge dots flip the readout BELOW the dot — the
+/* M4-C (round-1 fix): top-edge dots flip the readout BELOW the dot - the
    above-dot default (translate(-50%,-100%) + margin-top:-8px) parks the box
    up to ~30px above the dot center and .fan-stage overflow:hidden clips it
    for dots at speed >= ~91% (the default curve's 100% points, the 'Max
@@ -1252,7 +1277,7 @@ html, body {
   margin-top: 10px;
 }
 
-/* M4-H (A2): the per-point boxes row (.fan-points-editor) is DELETED — the
+/* M4-H (A2): the per-point boxes row (.fan-points-editor) is DELETED - the
    popup's two editable inputs replace it. The Add/Remove action row stays. */
 
 .fan-marker {
@@ -1352,7 +1377,7 @@ html, body {
 
 .oc-stack { gap: 8px; }
 
-/* M3-C-J: tighter cards/rows — preset-chip removal (M3-C-G) freed the meta
+/* M3-C-J: tighter cards/rows - preset-chip removal (M3-C-G) freed the meta
    row; the slider row + value stay inline, the meta is a single line. */
 .oc-card { padding: 10px 14px; }
 .oc-card-head { margin-bottom: 4px; }
@@ -1410,7 +1435,7 @@ html, body {
   border-top: 1px solid var(--border);
   padding: 8px 10px 4px;
   /* M4-C: the hover popup positions against the segment body (the canvas
-     starts at the padding box + 10px/8px padding — the handler offsets). */
+     starts at the padding box + 10px/8px padding - the handler offsets). */
   position: relative;
 }
 
@@ -1439,7 +1464,7 @@ html, body {
   box-shadow: var(--shadow);
 }
 
-/* M4-C (round-2 fix): top-edge samples flip the popup BELOW the sample —
+/* M4-C (round-2 fix): top-edge samples flip the popup BELOW the sample -
    the above default (translate(-50%,-100%) + margin-top:-6px) parks the
    box ~12px above the canvas top at the max-value sample (y = padT = 8),
    overlaying the segment header. monitoring.ts measures the segment body +
@@ -1452,7 +1477,7 @@ html, body {
 
 .mon-fps-note { margin: 6px 0 0; }
 
-/* M4-D2 (§11): the Monitoring page is COMPACT — tighter tile grid (smaller
+/* M4-D2 (§11): the Monitoring page is COMPACT - tighter tile grid (smaller
    min tile width + gap), tighter tiles (smaller padding/value), tighter
    segment headers + stack gap. The dashboard readout grid is untouched. */
 .mon-readout {
@@ -1494,9 +1519,9 @@ html, body {
 .settings-state { margin-top: 8px; }
 .settings-checkbox { accent-color: var(--accent-strong); width: 15px; height: 15px; }
 
-/* 1.0.1 Themes: the Settings Theme card — 3 swatches
+/* 1.0.1 Themes: the Settings Theme card - 3 swatches
    (button[data-theme-option="dark|midnight|light"]). The color chips are
-   CLASS-driven (.swatch-*) — CSP style-src 'self' blocks inline style
+   CLASS-driven (.swatch-*) - CSP style-src 'self' blocks inline style
    attributes, and classes are pin-friendly (plan-review N10). */
 .theme-options {
   display: flex;

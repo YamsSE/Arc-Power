@@ -1,4 +1,4 @@
-// Arc Power — M1 store migrations.
+// Arc Power - M1 store migrations.
 //
 // Every persisted file (profiles.json, settings.json) carries a
 // schemaVersion. Migrations are pure functions chained 0->1->2...; a file
@@ -7,7 +7,7 @@
 //
 // M4-D: settings gains startWithWindows + startMinimized. Both ride the
 // ABSENT-FIELD DEFAULTS mechanism in loadSettings (like ocMode and
-// advancedModeAccepted) — an old file without them reads false, so there is
+// advancedModeAccepted) - an old file without them reads false, so there is
 // deliberately NO SCHEMA_VERSION bump (Round-1 F8).
 
 export const SCHEMA_VERSION = 2;
@@ -42,7 +42,7 @@ const MIGRATIONS = [
   },
   // v1 -> v2 (M3-C-E): settings gains the OC mode slot. The migration does
   // NOT write a value: an ABSENT ocMode means "follow the store default"
-  // (real product = stock, mock/ui-verify = advanced) — a hardcoded 'stock'
+  // (real product = stock, mock/ui-verify = advanced) - a hardcoded 'stock'
   // here would leak into mock sessions and break the extended-flow pins.
   // The first explicit toggle persists 'stock'|'advanced' and wins thereafter.
   {
@@ -84,7 +84,7 @@ function assertSupported(version) {
   if (version > SCHEMA_VERSION) {
     throw new Error(
       `Store data has schemaVersion ${version}, but this app only supports up to ${SCHEMA_VERSION}. ` +
-      'Refusing to load — the file was written by a newer version of Arc Power.',
+      'Refusing to load - the file was written by a newer version of Arc Power.',
     );
   }
 }

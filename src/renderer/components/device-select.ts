@@ -1,7 +1,7 @@
-// Arc Power — M4-F compact GPU selector (`<select>`, styled like the
+// Arc Power - M4-F compact GPU selector (`<select>`, styled like the
 // featureset dropdown). Rendered (a) on the Dashboard GPU card header row
 // and (b) on the Tuning page top (the oc-mode row area); both drive the
-// same selectDevice switch. Returns null when 1 device or fewer — the
+// same selectDevice switch. Returns null when 1 device or fewer - the
 // honest single-device degradation (the live 1-GPU machine shows nothing).
 
 import { el } from '../dom.ts';

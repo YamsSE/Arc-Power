@@ -1,25 +1,25 @@
-// Arc Power — M2b/M2C-C apply-on-startup flow (`--apply-profile <id>`) and
+// Arc Power - M2b/M2C-C apply-on-startup flow (`--apply-profile <id>`) and
 // the shared profile-apply flow (tray "Apply active profile").
 //
 // Electron-free so the whole flow is testable under plain `node --test`
 // with MockBackend. Gates: the persisted settings must have waiverAccepted
-// (the waiver must also be accepted on the device — seedWaiverState runs
+// (the waiver must also be accepted on the device - seedWaiverState runs
 // before this at boot). The ocOnBoot gate applies ONLY to the boot path:
 // an explicit user action (tray click, renderer Load) skips it but keeps
 // the waiver gates. Applies the profile with read-back verification (the
 // backend's per-control read-back + the routing layer's delayed re-read);
-// on failure applies defaults (resetToDefaults) and reports the fallback —
+// on failure applies defaults (resetToDefaults) and reports the fallback -
 // never a silent partial apply. The "defaults restored" claim is only ever
 // made when a restore actually ran (fallbackApplied !== undefined).
 // M4-D (PERMANENT acceptance): when the apply answers waiver-not-set with a
 // PERSISTED acceptance (settings.waiverAccepted), the flow silently re-sets
 // the driver waiver and retries the apply ONCE (mirror runApply) before any
-// defaults fallback — the logon/tray apply must honor the user's permanent
+// defaults fallback - the logon/tray apply must honor the user's permanent
 // consent, never restore defaults over a stale driver waiver.
 //
 // M2C-C: the apply goes through the ROUTED core (DriverStore runtime for
 // values within range, bundled 2023 runtime above 252 W / 90 C) and through
-// the elevation-aware apply runner — the boot task runs elevated (/rl
+// the elevation-aware apply runner - the boot task runs elevated (/rl
 // highest), so its runner applies in-process; a manually-launched
 // non-elevated instance fails honestly per control.
 
@@ -34,7 +34,7 @@ const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
  * M4-F (S2): resolve the apply's target device. Priority:
  *   1. an explicit `deviceId` that matches an enumerated device;
  *   2. the persisted settings' deviceId (when it matches an enumerated id);
- *   3. devices[0] (the historical behavior — a 1-device machine is
+ *   3. devices[0] (the historical behavior - a 1-device machine is
  *      unaffected; the persisted/selected device is honored on 2-GPU
  *      machines so a logon apply never silently targets the iGPU).
  * Returns null when no devices are enumerated (callers degrade).
@@ -71,7 +71,7 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
  *   oldIgcl?: object,            // M2C-C: bundled-2023-runtime adapter (null in tests that never extend)
  *   applyRunner?: object | null, // M2C-C: elevation-aware apply runner (null = in-process)
  *   skipDefaultsFallback?: boolean,  // M4-D2: the in-app (unelevated) boot
- *                                    // variant — NEVER restores defaults
+ *                                    // variant - NEVER restores defaults
  *                                    // (keyed on the SESSION, not the
  *                                    // errorCode: the unelevated PL refusal
  *                                    // maps to 'out-of-range')
@@ -111,7 +111,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     return { applied: false, reason: `capability query failed: ${err.message}` };
   }
   if (caps.waiverAccepted !== true) {
-    // The driver lost the waiver since the last session — never auto-accept.
+    // The driver lost the waiver since the last session - never auto-accept.
     return { applied: false, reason: 'waiver not accepted on the device' };
   }
 
@@ -123,17 +123,17 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
 
   // M3-C-E: the OC-mode gate runs BEFORE any apply (and before the clamp).
   // A mode refusal is a CONFIG refusal, not a hardware failure: it reports
-  // the mode message ONLY and NEVER runs the reset-to-defaults fallback —
+  // the mode message ONLY and NEVER runs the reset-to-defaults fallback -
   // a saved 300 W profile applied at every logon in stock mode must refuse
   // cleanly, never wipe the live OC state and never balloon "defaults
   // restored" (fallbackApplied stays undefined -> the tray shows the
   // reason-specific refused balloon). Same for the tray path (shared flow).
   // M4-E: unit-aware via the capability ranges (percent-unit devices are
-  // never mode-refused — their range max is the ceiling, not the W/C
+  // never mode-refused - their range max is the ceiling, not the W/C
   // extended thresholds).
   const refusal = ocModeRefusal(settings.ocMode, profile.settings, caps.ranges);
   if (refusal) {
-    log(`[apply-on-boot] oc-mode refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) — nothing applied, NO defaults restore`);
+    log(`[apply-on-boot] oc-mode refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) - nothing applied, NO defaults restore`);
     return { applied: false, reason: refusal.message, ocModeRefused: true };
   }
 
@@ -143,11 +143,11 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // Same refusal classification as the mode gate: no defaults-restore
   // fallback, the live OC state survives, and the tray balloon is the
   // reason-specific refusal (fallbackApplied stays undefined). Keyed on the
-  // capability (caps.extendedRanges), never the mode — identical probe on
+  // capability (caps.extendedRanges), never the mode - identical probe on
   // both sides of the worker boundary.
   const unavailable = extendedUnavailableRefusal(profile.settings, caps);
   if (unavailable) {
-    log(`[apply-on-boot] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) — nothing applied, NO defaults restore`);
+    log(`[apply-on-boot] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied, NO defaults restore`);
     return { applied: false, reason: unavailable.message, extendedUnavailable: true };
   }
 
@@ -156,7 +156,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // with the UI apply path. A non-elevated parent delegates to the elevated
   // self-worker; the boot task runs elevated and applies in-process.
   // M4-D (PERMANENT acceptance): a waiver-not-set answer with a persisted
-  // acceptance gets exactly ONE silent re-set + retry (mirror runApply) —
+  // acceptance gets exactly ONE silent re-set + retry (mirror runApply) -
   // the M4-D boot probe that restores the driver waiver runs only in the
   // window path, so the logon/tray apply must honor the permanent consent
   // itself instead of restoring defaults over a stale driver waiver.
@@ -183,14 +183,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     result = out.result;
     state = out.state;
     // M4-D: the apply answered waiver-not-set while the persisted acceptance
-    // is true (settings.json — the user's permanent consent). Silently
+    // is true (settings.json - the user's permanent consent). Silently
     // re-set the driver waiver (in-process on the elevated boot task;
     // runner.waiverAccept on the tray path) and retry the apply ONCE. A
     // declined/unavailable re-set falls through to the honest failure path
-    // (never a fake success). Exactly one retry — a second waiver-not-set
+    // (never a fake success). Exactly one retry - a second waiver-not-set
     // lands in the defaults restore below, never an endless loop.
     if (!result.ok && hasWaiverNotSet(result) && settings.waiverAccepted === true) {
-      log('[apply-on-boot] apply answered waiver-not-set with a persisted acceptance — silently re-setting the driver waiver and retrying ONCE');
+      log('[apply-on-boot] apply answered waiver-not-set with a persisted acceptance - silently re-setting the driver waiver and retrying ONCE');
       try {
         if (applyRunner?.needsWorker?.()) {
           await applyRunner.waiverAccept(deviceId_);
@@ -202,7 +202,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         result = out.result;
         state = out.state;
       } catch (err) {
-        log(`[apply-on-boot] waiver re-set failed: ${err.message} — falling through to the honest failure path`);
+        log(`[apply-on-boot] waiver re-set failed: ${err.message} - falling through to the honest failure path`);
       }
     }
     log(`[apply-on-boot] attempt(s) completed with ${Object.keys(result.perControl).length} per-control result(s)`);
@@ -213,7 +213,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     try {
       state = await backend.getCurrentSettings(deviceId_);
     } catch {
-      // Read-back failure (M2b step-5 NIT 5): degrade to a null state — the
+      // Read-back failure (M2b step-5 NIT 5): degrade to a null state - the
       // outcome is still reported from `result`; never crash the flow.
     }
   }
@@ -225,20 +225,20 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
 
   // Failure -> defaults, never a silent partial apply. Reached either by a
   // non-waiver failure or by the M4-D retry also failing (the retry ran
-  // exactly once above — a second waiver-not-set lands here honestly).
+  // exactly once above - a second waiver-not-set lands here honestly).
   //
   // M4-D2 (no-UAC boot variant): the in-app boot apply runs applyRunner-less
-  // (in-process ONLY — never the elevated worker, no UAC at logon). The
+  // (in-process ONLY - never the elevated worker, no UAC at logon). The
   // unelevated igcl writes are refused, and the refusal maps to an
   // errorCode that an errorCode-keyed skip could never match ('out-of-range'
-  // for the PL refusal) — so the fallback-skip is keyed on the SESSION
+  // for the PL refusal) - so the fallback-skip is keyed on the SESSION
   // (skipDefaultsFallback), REGARDLESS of errorCode: logon must NEVER
   // wipe the live OC state over an elevation refusal. The honest balloon
-  // ("needs administrator approval — the elevated logon apply is not set
+  // ("needs administrator approval - the elevated logon apply is not set
   // up") is the caller's job; the ELEVATED logon applies come from the
   // ArcPowerBootApply task (--boot-apply mode, M4-E).
   if (skipDefaultsFallback) {
-    log('[apply-on-boot] boot variant (applyRunner-less, unelevated): apply failed — defaults-restore fallback SKIPPED (logon applies need an elevated session — the installed app applies elevated at logon via the ArcPowerBootApply task)');
+    log('[apply-on-boot] boot variant (applyRunner-less, unelevated): apply failed - defaults-restore fallback SKIPPED (logon applies need an elevated session - the installed app applies elevated at logon via the ArcPowerBootApply task)');
     return {
       applied: false,
       reason: 'apply failed; defaults restore skipped (logon applies need an elevated session)',
@@ -247,7 +247,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       fallbackSkipped: true,
     };
   }
-  log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} — restoring defaults`);
+  log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} - restoring defaults`);
   let fallbackApplied = true;
   try {
     if (applyRunner?.needsWorker?.()) {
@@ -264,7 +264,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   try {
     afterFallback = await backend.getCurrentSettings(deviceId_);
   } catch {
-    // Read-back failure (M2b step-5 NIT 5): degrade to a null state — the
+    // Read-back failure (M2b step-5 NIT 5): degrade to a null state - the
     // fallback flag + reason still report the outcome.
   }
   return {
@@ -300,9 +300,9 @@ export async function applyProfileOnBoot({ backend, store, profileId, deviceId =
 }
 
 /**
- * M4-D2: the IN-APP boot variant (window path — the app launched from the
+ * M4-D2: the IN-APP boot variant (window path - the app launched from the
  * HKCU Run value). Runs the boot-gated shared flow with applyRunner: null
- * (in-process ONLY — NEVER the elevated worker, no UAC at logon) and the
+ * (in-process ONLY - NEVER the elevated worker, no UAC at logon) and the
  * defaults-restore fallback SKIPPED regardless of errorCode (an unelevated
  * logon apply must never wipe the live OC state over an elevation refusal).
  * @param {{
@@ -334,11 +334,11 @@ export async function applyProfileBoot({ backend, store, profileId, deviceId = n
 /**
  * M2b `--apply-profile <id>` CLI flow (no window, tray only). Runs the
  * boot-gated apply and owns the tray lifecycle: exactly ONE tray is created
- * (it keeps the app alive in this mode) and reused for the outcome balloon —
+ * (it keeps the app alive in this mode) and reused for the outcome balloon -
  * never two Tray instances (M2b review F2). The balloon claims "defaults
  * restored" ONLY when a restore actually ran (fallbackApplied !== undefined);
  * gate refusals balloon too, with the same reason-specific messages as the
- * tray click path (M2b step-5 NIT 1) — never a false "defaults restored".
+ * tray click path (M2b step-5 NIT 1) - never a false "defaults restored".
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
@@ -369,7 +369,7 @@ export async function runApplyOnStartup({ backend, store, profileId, deviceId = 
     return out;
   }
   log(`[apply-on-boot] NOT applied: ${out.reason}`);
-  // NIT 1: refusal outcomes balloon on the boot path too (the tray exists) —
+  // NIT 1: refusal outcomes balloon on the boot path too (the tray exists) -
   // same reason-specific messages as the tray click path (main.js); the
   // balloon never claims "defaults restored" unless a restore actually ran.
   const profiles = await store.loadProfiles().catch(() => []);

@@ -1,4 +1,4 @@
-// Arc Power — Electron main process entry.
+// Arc Power - Electron main process entry.
 //
 // Modes:
 //   electron .                -> UI (M2a: design system, Dashboard, OC, Fan)
@@ -9,7 +9,7 @@
 //     writing the result file. Spawned by the non-elevated app via
 //     Start-Process -Verb RunAs (one UAC per apply).
 //
-// The smoke path constructs the backend with allowAutoWaiver: true — the
+// The smoke path constructs the backend with allowAutoWaiver: true - the
 // ONLY place product code may do that (developer's own machine, no value
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
@@ -51,7 +51,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const headless = process.argv.includes('--headless');
 const uiVerify = process.argv.includes('--ui-verify');
 // M4-E: the ArcPowerBootApply logon task's action (`"<exe>" --boot-apply`).
-// No id argument — reads the ACTIVE profile from the store like the
+// No id argument - reads the ACTIVE profile from the store like the
 // window-path boot apply; exits silently when the boot setting is off and
 // NEVER lingers (no long-lived tray process). The task runs ELEVATED so the
 // in-process apply persists.
@@ -81,10 +81,10 @@ function createWindow(backgroundColor = '#0f1116') {
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
     autoHideMenuBar: true,
-    // M4-D (user): the INTEGRATED title bar — the window is frameless and
+    // M4-D (user): the INTEGRATED title bar - the window is frameless and
     // the renderer draws the title bar (draggable region + brand + window
     // controls wired to window-minimize/maximize-toggle/close). Resizing
-    // still works (resizable defaults true — Windows draws the edge resize
+    // still works (resizable defaults true - Windows draws the edge resize
     // handles for frameless windows).
     frame: false,
     webPreferences: {
@@ -100,7 +100,7 @@ function createWindow(backgroundColor = '#0f1116') {
     const message = typeof event.message === 'string' ? event.message : '';
     if (level >= 2) console.error(`[renderer] ${message}`);
   });
-  // M4-D (user): the pushed window:maximized-changed channel — the
+  // M4-D (user): the pushed window:maximized-changed channel - the
   // title-bar max button follows the live maximize state (the renderer
   // subscribes via preload's onWindowMaximizedChanged).
   const sendMaximized = () => {
@@ -110,7 +110,7 @@ function createWindow(backgroundColor = '#0f1116') {
   };
   win.on('maximize', sendMaximized);
   win.on('unmaximize', sendMaximized);
-  // M4-D (user): push the INITIAL state once the renderer is up — the max
+  // M4-D (user): push the INITIAL state once the renderer is up - the max
   // button must reflect a window that starts (or was restored to) the
   // maximized state even before any later maximize/unmaximize event.
   win.webContents.on('did-finish-load', sendMaximized);
@@ -118,7 +118,7 @@ function createWindow(backgroundColor = '#0f1116') {
   return win;
 }
 
-// --- system tray (normal app path only — never headless) -------------------
+// --- system tray (normal app path only - never headless) -------------------
 // The menu is rebuilt from the persisted active profile at boot; M2b-B can
 // rebuild it when the profile changes.
 let trayRef = null;
@@ -139,7 +139,7 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner }) {
         const win = getWindow();
         if (!win) return;
         // M4-D Round-1 F5 (tray restore): a MINIMIZED window reports
-        // isVisible() === true — the old `if (win.isVisible()) hide()` would
+        // isVisible() === true - the old `if (win.isVisible()) hide()` would
         // hide a minimized window instead of restoring it (the user could
         // never restore a start-minimized session from the tray). The
         // isMinimized -> restore branch runs FIRST; only a visible,
@@ -161,17 +161,17 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner }) {
           const profiles = await store.loadProfiles();
           const profile = profiles.find((p) => p.id === settings.activeProfileId);
           // M3-C-D (double-dialog decision): the per-apply extended-range
-          // confirm is DROPPED from the tray entirely — in Advanced mode the
+          // confirm is DROPPED from the tray entirely - in Advanced mode the
           // mode-enable confirm already warned; in Stock mode the shared
           // oc-mode gate refuses extended values with a balloon (never a
           // dead-end confirm). applyProfile below owns that honesty.
           // Explicit user action: skips the ocOnBoot gate (like the
           // renderer's Load button) but keeps the waiver gates. The balloon
           // only claims "defaults restored" when a restore actually ran
-          // (M2b review F1) — gate refusals (incl. the oc-mode refusal)
+          // (M2b review F1) - gate refusals (incl. the oc-mode refusal)
           // get a reason-specific message.
           // M4-F (S2): the tray apply targets the PERSISTED/SELECTED device
-          // (resolved like every other apply — explicit id ?? persisted ?? devices[0]).
+          // (resolved like every other apply - explicit id ?? persisted ?? devices[0]).
           const deviceId = await resolveApplyDeviceId(backend, store, null);
           const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, deviceId, oldIgcl, applyRunner });
           if (!out.applied && trayRef && !trayRef.isDestroyed()) {
@@ -187,7 +187,7 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner }) {
         } catch (err) {
           console.error(`[tray] apply active profile failed: ${err.message}`);
           if (trayRef && !trayRef.isDestroyed()) {
-            trayRef.displayBalloon({ title: 'Arc Power', content: `Arc Power: profile apply failed — ${err.message}` });
+            trayRef.displayBalloon({ title: 'Arc Power', content: `Arc Power: profile apply failed - ${err.message}` });
           }
         }
       },
@@ -213,11 +213,11 @@ async function main() {
       return;
     }
     // M2C-C S1: the extended-capability probe is constructed BEFORE the
-    // backend and injected — the worker's getCapabilities (its clamp ranges)
+    // backend and injected - the worker's getCapabilities (its clamp ranges)
     // must report the same extended ranges the UI path does.
     // M3-C-E: the worker's backend is pinned to ADVANCED mode so its caps
     // report the extended ranges whenever the 2023 runtime is capable (the
-    // M3-C step-5 F1 capability refusal keys on the SAME probe result —
+    // M3-C step-5 F1 capability refusal keys on the SAME probe result -
     // when the runtime cannot load, the worker's caps report the standard
     // ranges and extended values refuse with EXTENDED_UNAVAILABLE_MSG). The
     // worker's MODE refusal gate keys on the request's ocMode (a stock-mode
@@ -242,11 +242,11 @@ async function main() {
   }
 
   // --- M4-E --boot-apply mode (the ArcPowerBootApply logon task's action): --
-  // no id arg — reads the ACTIVE profile from the store. ocOnBoot off / no
-  // active profile -> exit 0 SILENTLY (no window, no tray — the task's logon
+  // no id arg - reads the ACTIVE profile from the store. ocOnBoot off / no
+  // active profile -> exit 0 SILENTLY (no window, no tray - the task's logon
   // spawn is invisible when off). On -> the boot-gated IN-PROCESS apply
   // (applyProfileBoot: applyRunner-less, defaults-restore fallback skipped
-  // regardless of errorCode — the task runs ELEVATED so the apply persists).
+  // regardless of errorCode - the task runs ELEVATED so the apply persists).
   // BOTH outcomes exit: success -> right after the apply; failure -> tray
   // balloon + ~10 s dwell so it is visible, then app.exit(0). An invisible
   // elevated process + tray icon must NEVER linger after a logon apply.
@@ -264,7 +264,7 @@ async function main() {
     });
     // Mirror the window/apply-profile boot seeding (bootBackend): the
     // persisted waiver acceptance + OC mode must ride into the in-process
-    // apply — the ELEVATED task's apply gates on them exactly like the
+    // apply - the ELEVATED task's apply gates on them exactly like the
     // window path's (never calls the driver, never auto-accepts).
     try { await bootBackend.init(); } catch { /* health-level degrade */ }
     try { await seedWaiverState(bootBackend, bootStore); } catch (err) {
@@ -277,7 +277,7 @@ async function main() {
       console.log(`[boot-apply] oc-mode seeding skipped: ${err.message}`);
     }
     // M4-F (S2): resolve the persisted/selected device the SAME way the
-    // window path does (persisted ?? devices[0]) — the logon apply must
+    // window path does (persisted ?? devices[0]) - the logon apply must
     // target the selected GPU, never silently devices[0] (the 2-GPU iGPU trap).
     let bootDeviceId = null;
     try {
@@ -305,9 +305,9 @@ async function main() {
         }),
         log: (s) => console.log(`[boot-apply] ${s}`),
       });
-      console.log(`[boot-apply] ${out.action}${out.reason ? ` — ${out.reason}` : ''} — exiting 0`);
+      console.log(`[boot-apply] ${out.action}${out.reason ? ` - ${out.reason}` : ''} - exiting 0`);
     } catch (err) {
-      console.log(`[boot-apply] mode failed (${err.message}) — exiting 0`);
+      console.log(`[boot-apply] mode failed (${err.message}) - exiting 0`);
     } finally {
       await bootBackend.close().catch(() => {});
     }
@@ -316,11 +316,11 @@ async function main() {
   }
 
   if (headless) {
-    // M2C-C S1: the smoke path is a real-backend path too — same probe wiring
+    // M2C-C S1: the smoke path is a real-backend path too - same probe wiring
     // as the app/worker so its caps match the product path. The bundled
     // 2023-runtime probe degrades safely here: a missing/unloadable DLL makes
     // OldIgcl.isCapable() return false (cached), so the smoke's caps stay in
-    // the standard range and every health line still runs — the smoke never
+    // the standard range and every health line still runs - the smoke never
     // fails on the probe alone.
     const smokeOldIgcl = mock ? null : new OldIgcl();
     const backend = createBackend({
@@ -329,21 +329,21 @@ async function main() {
         allowAutoWaiver: true, // smoke/tests only (plan §9 M1 waiver clause)
         extended: smokeOldIgcl ? { isCapable: () => smokeOldIgcl.isCapable() } : undefined,
         // M3-C-E: the smoke's no-op round trips must never clamp a device
-        // that currently holds an extended value — expose the full range.
+        // that currently holds an extended value - expose the full range.
         ocMode: 'advanced',
       },
       mock: {},
     });
     try {
       // M4-D2 (§13 smoke gate): unelevated smoke runs SKIP the no-op write
-      // round trips (reported as "skipped (unelevated)") — the real A770
+      // round trips (reported as "skipped (unelevated)") - the real A770
       // refuses/silently-lies unelevated, and the packaged gate must stay
       // exit 0. Mock smoke reports elevated (its round trips genuinely
       // pass) so the full sequence still runs in --headless --mock.
       const { lines } = await runSmoke(backend, {
         isElevated: mock ? () => true : isElevatedReal,
       });
-      console.log('\nSMOKE OK — ' + lines.filter((l) => l.startsWith('[health]')).length + ' health line(s), see above for the full sequence.');
+      console.log('\nSMOKE OK - ' + lines.filter((l) => l.startsWith('[health]')).length + ' health line(s), see above for the full sequence.');
       app.exit(0);
     } catch (err) {
       console.error(`\nSMOKE FAILED: ${err.message}`);
@@ -357,17 +357,17 @@ async function main() {
   // --- M4-F single-instance lock (UI WINDOW mode ONLY) ---------------------
   // Helpers (--headless / --ui-verify / --boot-apply / --apply-profile /
   // --apply-worker) + mock-UI skip the lock BY CONSTRUCTION
-  // (shouldUseInstanceLock) — the gate decides per mode, so this block sits
+  // (shouldUseInstanceLock) - the gate decides per mode, so this block sits
   // EARLY (right after ready) and the second UI instance quits FAST instead
   // of booting the backend first (~20 s). --apply-worker is the hard case
   // (M2C-C S1): the elevated-apply worker is a SECOND instance spawned
-  // WHILE the UI runs — if it failed the lock it would quit without writing
+  // WHILE the UI runs - if it failed the lock it would quit without writing
   // the out file and every elevated apply would hang. When the lock is NOT
   // acquired, another instance holds it: quit immediately (the holder's
   // second-instance event restores its window). The lock is userData-based:
   // portable + installed builds share %APPDATA%\ArcPower -> mutually
   // exclusive; the dev tree + the packaged app also share the userData
-  // (expected — close one before launching the other).
+  // (expected - close one before launching the other).
   const instanceLockMode = { headless, uiVerify, bootApply, applyProfileId, workerReqFile, mock };
   let windowForInstance = null;
   if (shouldUseInstanceLock(instanceLockMode)) {
@@ -376,22 +376,22 @@ async function main() {
       mode: instanceLockMode,
     });
     if (!acquired) {
-      console.log('[boot] another Arc Power instance is running — quitting');
+      console.log('[boot] another Arc Power instance is running - quitting');
       app.quit();
       return;
     }
     app.on('second-instance', () => {
       // Focus/restore the existing window (the tray-restore pattern: a
-      // MINIMIZED window reports isVisible() === true — restore first).
+      // MINIMIZED window reports isVisible() === true - restore first).
       focusExistingWindow(windowForInstance);
     });
   }
   // --ui-verify runs against MockBackend; the env knobs act as OVERLAYS on
   // the featureset base (mock/featuresets/*.json, RID_MOCK_FEATURESET):
   //   - the a770 featureset base is the real card's TRUE editable fan fixture
-  //     (canControl=true + modes ['auto','curve'] — M3-D live-verified probe
+  //     (canControl=true + modes ['auto','curve'] - M3-D live-verified probe
   //     path); RID_MOCK_FAN_READONLY=1 flips it to the read-only overlay (the
-  //     card's modes are kept, only the control grant differs — a hasFan:false
+  //     card's modes are kept, only the control grant differs - a hasFan:false
   //     featureset always stays fan-less regardless of the overlay);
   //   - RID_MOCK_OFFGRID_FREQ_MHZ makes the mock report a freq offset off the
   //     1 MHz grid (verifies the off-grid driver readout);
@@ -407,26 +407,26 @@ async function main() {
   }
   if (uiVerify && process.env.RID_MOCK_EXTENDED_RANGES === '1') mockOpts.extendedRanges = true;
   if (uiVerify && process.env.RID_MOCK_EXTENDED_FAIL === '1') mockOpts.extendedFail = true;
-  // M3-C-E: RID_MOCK_STOCK_MODE=1 flips the mock's OC mode to stock — the
+  // M3-C-E: RID_MOCK_STOCK_MODE=1 flips the mock's OC mode to stock - the
   // ui-verify stock variant exercises the refusal path (extended values
   // refuse with the mode message; no confirm dialog anywhere). The mock
   // default is advanced (the extended-flow pins stay green).
   if (mock && process.env.RID_MOCK_STOCK_MODE === '1') mockOpts.ocMode = 'stock';
   // 1.0.1 no-Intel round: RID_MOCK_NO_INTEL=1 runs the mock in the no-Intel
-  // session — listDevices enumerates nothing + health reports igclLoaded
+  // session - listDevices enumerates nothing + health reports igclLoaded
   // false (the exact shape a real AMD machine reports after the init
   // degrade); the ui-verify no-intel variant pins the whole no-device flow.
   if (mock && process.env.RID_MOCK_NO_INTEL === '1') mockOpts.noIntel = true;
   // M2C-C S1: the real bundled-2023-runtime adapter is constructed BEFORE
-  // the backend (mock mode leaves it null — the mock adapter wraps the
+  // the backend (mock mode leaves it null - the mock adapter wraps the
   // backend instead). The backend's extended probe consults it lazily
   // (isCapable runs on the first caps query).
   const realOldIgcl = mock ? null : new OldIgcl();
-  // M4-D: the sysinfo cache (PowerShell CIM, ONE query per session — the
+  // M4-D: the sysinfo cache (PowerShell CIM, ONE query per session - the
   // dashboard CPU card + the real-GPU VRAM suffix source). Run BEFORE the
   // backend so the VRAM lookup can enrich the device names at enumeration
   // time. Mock/ui-verify uses the fixed fixture (never spawns PowerShell).
-  // M4-D review F3: the query timeout is SHORT (10 s) — a hung PowerShell
+  // M4-D review F3: the query timeout is SHORT (10 s) - a hung PowerShell
   // must not block the first window for a minute; the timeout degrades to
   // the honest os.cpus() fallback (cpu populated, RAM speed + video
   // controllers null/empty).
@@ -434,27 +434,27 @@ async function main() {
   if (mock) {
     sysinfo = createMockSysinfo();
   } else if (applyProfileId) {
-    // M4-D review F3 (logon latency): the --apply-profile flow is TRAY-ONLY —
+    // M4-D review F3 (logon latency): the --apply-profile flow is TRAY-ONLY -
     // the VRAM name suffix is never displayed there, so the PowerShell CIM
     // query (1-5 s typical, up to the 10 s timeout) would only delay the
     // apply. Skip it: vramBytesOfDevice(device, undefined) degrades to null
     // and formatDeviceName keeps the plain name. The window path still runs
-    // the query — it enriches the real-GPU name and the CPU card.
+    // the query - it enriches the real-GPU name and the CPU card.
     sysinfo = null;
   } else {
     // M4-D FIX (user: the CPU card was EMPTY in the product): the sysinfo:get
-    // handler calls `sysinfo.get()` — the REAL path previously passed the raw
+    // handler calls `sysinfo.get()` - the REAL path previously passed the raw
     // query RESULT here, so the handler threw and the renderer degraded to
     // null (empty card; the mock adapter masked it in tests/ui-verify). Wrap
     // the cached result in the SAME adapter shape the mock uses.
-    // M4-D2 (user: ReBAR): the driver's BAR state (ctlPciGetProperties —
-    // resizable_bar_enabled) is the PRIMARY ReBAR source — the same driver
+    // M4-D2 (user: ReBAR): the driver's BAR state (ctlPciGetProperties -
+    // resizable_bar_enabled) is the PRIMARY ReBAR source - the same driver
     // state IGS + GPU-Z report (live-verified: this A770's driver reports
     // resizable_bar_enabled=1 while the OS resource map shows no large BAR
     // window on this Z97 platform). The OS-resource check stays as the
     // fallback when the driver cannot report (unbound symbol / ctl error).
     // The driver query runs ONCE, LAZILY at the first sysinfo:get (the
-    // renderer asks after boot — the backend exists by then; no boot
+    // renderer asks after boot - the backend exists by then; no boot
     // latency added).
     const cached = await collectSysinfo({ timeoutMs: 10000 });
     let driverBarCached = null;
@@ -484,7 +484,7 @@ async function main() {
     igcl: realOldIgcl
       ? {
           extended: { isCapable: () => realOldIgcl.isCapable() },
-          // M4-D (user): the REAL GPU name gets the "16 GB" suffix — the
+          // M4-D (user): the REAL GPU name gets the "16 GB" suffix - the
           // lookup matches the IGCL device name against the cached CIM
           // video controllers (GPU-family token match, else the primary
           // non-basic adapter); honest null when unmatched/degraded.
@@ -494,18 +494,18 @@ async function main() {
     mock: mockOpts,
   });
   // M2C-C: the bundled 2023 IGCL runtime adapter (extended-range writes).
-  // Mock mode (incl. --ui-verify) uses the mock adapter — the real DLL is
+  // Mock mode (incl. --ui-verify) uses the mock adapter - the real DLL is
   // never loaded there. In the real path the OLD runtime is probed lazily
   // (isCapable runs on the first extended write or caps query) and both
   // runtimes can coexist in one process (probe-verified, §8c). S1: the real
   // adapter is constructed BEFORE the backend so the backend's extended
-  // probe (above) can consult it — the extended ranges are wired into
+  // probe (above) can consult it - the extended ranges are wired into
   // getCapabilities on hardware, never dead code.
   const oldIgcl = mock ? createMockOldIgcl(backend) : realOldIgcl;
   // M2C-C elevation probe: real detection in the product path; ui-verify
   // knobs let the mock report elevated (RID_MOCK_ELEVATED=1) so the
   // elevated-in-app UI state is verifiable without elevation. Declared HERE
-  // (before the applyRunner block below) — the runner's deps evaluate this
+  // (before the applyRunner block below) - the runner's deps evaluate this
   // identifier eagerly, so any later declaration would be a TDZ crash on the
   // real product path (step-5 S1).
   const isElevated = mock
@@ -513,14 +513,14 @@ async function main() {
     : isElevatedReal;
   // M2C-C: the elevation-aware apply runner. The product path (non-mock)
   // delegates applies to the elevated self-worker when not elevated; mock
-  // mode applies in-process (applyRunner null) — ui-verify's worker-apply
+  // mode applies in-process (applyRunner null) - ui-verify's worker-apply
   // toast variant injects a FAKE runner (never spawns anything).
   let applyRunner = null;
   if (!mock) {
     applyRunner = createApplyRunner({
       isElevated,
       execPath: process.execPath,
-      // Dev mode (`electron .`): process.execPath is electron.exe — the
+      // Dev mode (`electron .`): process.execPath is electron.exe - the
       // worker spawn must pass the app path along. Packaged EXEs ignore it.
       appPath: process.defaultApp ? app.getAppPath() : null,
       inProcess: {
@@ -536,7 +536,7 @@ async function main() {
     });
   } else if (uiVerify && process.env.RID_MOCK_WORKER_APPLY === '1') {
     // Dev-only: report the worker-apply path (elevation toast UX) while
-    // still applying in-process — never spawns a worker in mock mode.
+    // still applying in-process - never spawns a worker in mock mode.
     applyRunner = {
       needsWorker: () => true,
       apply: async ({ deviceId, settings }) => executeApply({ backend, oldIgcl, deviceId, settings }),
@@ -547,11 +547,11 @@ async function main() {
       },
     };
   }
-  // M3-C-E: the store's OC-mode default — real product stock; mock/ui-verify
+  // M3-C-E: the store's OC-mode default - real product stock; mock/ui-verify
   // advanced (extended-flow pins stay green), except RID_MOCK_STOCK_MODE=1
   // which flips the whole mock session to stock (the refusal-path variant).
   // M3-C review F4: mock/ui-verify sessions NEVER touch the real
-  // %APPDATA%\ArcPower\settings.json — they read/write an ISOLATED temp
+  // %APPDATA%\ArcPower\settings.json - they read/write an ISOLATED temp
   // data dir (%TEMP%\arcpower-mock). A default mock run used to silently
   // flip the real product's persisted mode to advanced (and a stock variant
   // made the next real launch refuse a saved 300 W profile); with the
@@ -565,7 +565,7 @@ async function main() {
     ocModeDefault: mock ? (process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced') : 'stock',
   });
   // Mock/ui-verify sessions seed the session mode into the ISOLATED store
-  // (never the real settings.json — F4 above). The real product path never
+  // (never the real settings.json - F4 above). The real product path never
   // writes at boot.
   if (mock) {
     try {
@@ -575,7 +575,7 @@ async function main() {
       console.log(`[boot] oc-mode session seed skipped: ${err.message}`);
     }
     // 1.0.1 Themes (M2): every mock session seeds theme 'dark' like the
-    // ocMode/waiver seeds — a leaked light/midnight theme from an
+    // ocMode/waiver seeds - a leaked light/midnight theme from an
     // interrupted run must never bleed into the next variant (the isolated
     // mock dir is shared across variants). RID_MOCK_THEME=light flips the
     // session (the light-boot sanity pin).
@@ -585,15 +585,15 @@ async function main() {
     } catch (err) {
       console.log(`[boot] theme session seed skipped: ${err.message}`);
     }
-    // M4-A/M4-B: deterministic waiver session seed — every mock session
+    // M4-A/M4-B: deterministic waiver session seed - every mock session
     // boots UNACCEPTED so the boot waiver prompt shows in the classic
     // Cancel/Accept state (ui-verify F4: the prompt would otherwise hit
     // every variant unpredictably, and a previous run's persisted
     // acceptance would change its state). The RID_MOCK_WAIVER_PERSISTED=1
-    // ui-verify variant seeds an ACCEPTED store instead — M4-D (PERMANENT
+    // ui-verify variant seeds an ACCEPTED store instead - M4-D (PERMANENT
     // acceptance, user: "skipped IF permanently accepted after accepting
     // once"): the accepted store means the boot prompt is SKIPPED entirely
-    // (the accepted-state reminder dialog is REMOVED — the dashboard health
+    // (the accepted-state reminder dialog is REMOVED - the dashboard health
     // row remains the status display), and an apply-time waiver-not-set is
     // silently re-set + retried in main.
     try {
@@ -603,11 +603,11 @@ async function main() {
       console.log(`[boot] waiver session seed skipped: ${err.message}`);
     }
     // M4-B (user fix)/M4-D: RID_MOCK_WAIVER_LOST=1 reproduces the user's
-    // report — the store says the waiver is ACCEPTED (persisted) but the
+    // report - the store says the waiver is ACCEPTED (persisted) but the
     // DRIVER lost it. The boot probe (probeWaiverState) writes the current
     // power limit (value-neutral) and surfaces the waiver-not-set. M4-D
     // (PERMANENT acceptance): with the persisted acceptance true the probe
-    // now RESTORES the driver waiver (setWaiverAccepted) — the consent
+    // now RESTORES the driver waiver (setWaiverAccepted) - the consent
     // stands, the store is never flipped to false, and the boot prompt
     // stays SKIPPED like the plain persisted variant (ui-verify:
     // RID_MOCK_WAIVER_PERSISTED=1 + RID_MOCK_WAIVER_LOST=1 asserts NO boot
@@ -620,12 +620,12 @@ async function main() {
         console.log(`[boot] waiver probe skipped: ${err.message}`);
       }
     }
-    // M4-B (user): deterministic Advanced-mode-warning session seed — every
+    // M4-B (user): deterministic Advanced-mode-warning session seed - every
     // mock session boots with the warning UNACCEPTED so the first
     // Stock->Advanced toggle shows the disclaimer (the shared isolated mock
     // dir would otherwise leak a previous run's acceptance). The
     // RID_MOCK_ADVANCED_ACCEPTED=1 ui-verify variant seeds an ACCEPTED
-    // store instead — its step asserts the toggle then shows NO dialog
+    // store instead - its step asserts the toggle then shows NO dialog
     // (the user: "once accepted, saved, next boot doesn't need this accept").
     try {
       const cur = await store.loadSettings();
@@ -634,11 +634,11 @@ async function main() {
       console.log(`[boot] advanced-mode session seed skipped: ${err.message}`);
     }
     // M4-A review F2: seed the backend's IN-MEMORY waiver flag HERE, before
-    // createWindow — the renderer's FIRST getCapabilities (right after the
+    // createWindow - the renderer's FIRST getCapabilities (right after the
     // window loads) must already see the seeded flag. A post-window seed
     // races the renderer boot: the persisted variant would show the boot
     // prompt despite the accepted store. Same pattern as seedOcMode above
-    // (seedWaiverState only touches the in-memory flag — safe pre-init in
+    // (seedWaiverState only touches the in-memory flag - safe pre-init in
     // mock mode; listDevices is fixture-backed).
     try {
       await seedWaiverState(backend, store);
@@ -647,7 +647,7 @@ async function main() {
     }
   } else {
     // M4-A review F1 (M4-B/M4-D update): the REAL path must pre-seed the
-    // waiver flag BEFORE createWindow too — the renderer's FIRST
+    // waiver flag BEFORE createWindow too - the renderer's FIRST
     // getCapabilities (right after the window loads) must already see a
     // persisted acceptance, or the M4-D boot decision renders wrong: the
     // accepted store must SKIP the boot prompt entirely (permanent
@@ -666,9 +666,9 @@ async function main() {
     } catch (err) {
       console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
     }
-    // M4-B (user fix): boot-time driver-truth probe — the persisted
+    // M4-B (user fix): boot-time driver-truth probe - the persisted
     // acceptance can be STALE (the driver lost the waiver while settings.json
-    // still says accepted — the user's report: "the popup said already
+    // still says accepted - the user's report: "the popup said already
     // accepted, then voltage changes threw a no-accepted-waiver error").
     // Only when ELEVATED (the packaged EXE always is): a value-neutral write
     // of the current power limit surfaces waiver-not-set when the driver
@@ -684,12 +684,12 @@ async function main() {
     }
   }
   // M3-C review F3: seed the persisted OC mode into the backend BEFORE the
-  // window and the IPC surface exist — the renderer's FIRST getCapabilities
+  // window and the IPC surface exist - the renderer's FIRST getCapabilities
   // must already expose the right range set (a persisted-advanced session
   // must never render 252 W / 90 C sliders until a later self-heal). For
   // mock/ui-verify this reads the ISOLATED store (the variant's mode seeded
   // above), so the backend gets the same mode the variant expects. setOcMode
-  // is an in-memory caps-cache invalidation — safe before backend.init().
+  // is an in-memory caps-cache invalidation - safe before backend.init().
   const seededMode = await seedOcMode(backend, store);
   if (seededMode) console.log(`[boot] oc-mode pre-seed: ${seededMode}`);
   // Run-key adapter: the real one writes HKCU only on an explicit user click
@@ -714,7 +714,7 @@ async function main() {
   // actions still exercise a step-1 failure); RID_MOCK_REGAPPLY_CANCEL=1
   // simulates a UAC decline for the mpo entry; RID_MOCK_REGAPPLY_DELAY_MS
   // adds simulated elevation latency so the in-flight disabled button state
-  // can be asserted — all exercise the honest partial/cancel/in-flight UI
+  // can be asserted - all exercise the honest partial/cancel/in-flight UI
   // paths.
   const regApplyFail = process.env.RID_MOCK_REGAPPLY_FAIL;
   const regApplyDelay = Number(process.env.RID_MOCK_REGAPPLY_DELAY_MS);
@@ -730,13 +730,13 @@ async function main() {
         canceledActions: process.env.RID_MOCK_REGAPPLY_CANCEL === '1' ? new Set(['mpo']) : new Set(),
         delayMs: regApplyDelay > 0 ? regApplyDelay : 0,
       })
-    : // M3-C-B: the real adapter is elevation-aware — an elevated process
+    : // M3-C-B: the real adapter is elevation-aware - an elevated process
       // (the packaged EXE always is) runs reg.exe directly with per-step
       // honest reporting; non-elevated dev keeps the PowerShell RunAs chain.
       // M4-B: the CATALOG is the first argument (a deps-only call used to
       // land the deps in `catalog` -> "catalog.find is not a function").
       createRegistryApply(REGISTRY_CATALOG, { isElevated });
-  // FPS adapter (M4-D2): DXGI GetFrameStatistics — unelevated, system-wide,
+  // FPS adapter (M4-D2): DXGI GetFrameStatistics - unelevated, system-wide,
   // no service. Mock mode reports unavailable (never loads dxgi.dll/koffi),
   // counts polls so --ui-verify can assert the Monitoring page stops
   // polling on navigation away (M2b review F4), and returns a FIXED sample
@@ -753,11 +753,11 @@ async function main() {
     : createDxgiFpsAdapter();
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory used).
   // Mock: fixed deterministic values. Real: the rolling-delta CIM adapter;
-  // its GPU-memory match needs the backend device's LUID — the IGCL
+  // its GPU-memory match needs the backend device's LUID - the IGCL
   // bindings expose none, so the DXGI display-enumeration link resolves it
   // (GetDesc1: DeviceId -> LUID), matched against the sysinfo video
   // controllers' PCI device id (DEV_56A0 on the A770). Unmatched -> null
-  // (honest '—').
+  // (honest '-').
   let sysStats;
   if (mock) {
     sysStats = createMockSysStats();
@@ -785,7 +785,7 @@ async function main() {
   });
 
   let teardown = null;
-  // M4-D (user): close-to-tray — the tray's Quit (app.quit) must NOT be
+  // M4-D (user): close-to-tray - the tray's Quit (app.quit) must NOT be
   // swallowed by the window close interception (the close event fires
   // during a quit too; the flag lets it through).
   let isQuitting = false;
@@ -824,10 +824,10 @@ async function main() {
     // M2b review F2: the flow creates exactly ONE tray (it keeps the app
     // alive in this tray-only mode) and reuses it for the failure balloon.
     // M2C-C: the boot task runs with /rl highest (elevated) so applies are
-    // in-process here (applyRunner stays null — a manual non-elevated run
+    // in-process here (applyRunner stays null - a manual non-elevated run
     // fails honestly per control instead of prompting).
     const bootOldIgcl = mock ? createMockOldIgcl(backend) : new OldIgcl();
-    // M4-F (S2): the logon apply targets the persisted/selected device —
+    // M4-F (S2): the logon apply targets the persisted/selected device -
     // never silently devices[0] (the 2-GPU iGPU trap).
     let applyDeviceId = null;
     try {
@@ -847,34 +847,34 @@ async function main() {
     return;
   }
 
-  // M4-E (setup gate — UI window path ONLY): placed IMMEDIATELY before
-  // createWindow and AFTER the --apply-profile early return above — the gate
+  // M4-E (setup gate - UI window path ONLY): placed IMMEDIATELY before
+  // createWindow and AFTER the --apply-profile early return above - the gate
   // feeds ONLY the window-path boot-apply decision at the bottom, so it must
   // NEVER run on the --apply-profile path (the tray-only, latency-optimized
   // logon apply: no gate queries, no UAC prompt) nor in --headless /
   // --boot-apply / --ui-verify (all return earlier); the dev tree and the
-  // PORTABLE build never run it either (installedBuild — that env var is set
+  // PORTABLE build never run it either (installedBuild - that env var is set
   // ONLY by the portable wrapper). Gate GREEN = the ArcPowerBootApply task
   // exists AND its action's exe path equals the CURRENT installed exe AND
   // the task is enabled (unelevated reads; a reinstall to a different dir
-  // must never leave a dead-action task silently — the stale-action hole; a
+  // must never leave a dead-action task silently - the stale-action hole; a
   // DISABLED task reads NOT green so the elevated setup re-runs with /f and
   // self-heals). Gate NOT green -> the elevated setup spawns ONCE per launch
-  // (create/overwrite with /f; a declined UAC is non-fatal — the gate
+  // (create/overwrite with /f; a declined UAC is non-fatal - the gate
   // re-triggers next launch) and the window-path boot apply below STAYS
   // (never a silent-dead logon apply on installed builds until the setup
   // lands). The schtasks reads are unelevated + quick; a check failure
-  // degrades to "gate unknown" (the in-app apply stays — the safe side).
+  // degrades to "gate unknown" (the in-app apply stays - the safe side).
   // The check is started WITHOUT awaiting (a hung schtasks must never stall
   // the first window) and awaited at the boot-apply decision below with the
   // same degraded-to-null catch.
   const installedBuild = app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR;
-  let bootGate = null; // { green: boolean } | null — null = not applicable/unknown
-  let bootGateCheck = null; // the in-flight check promise — awaited at the boot-apply decision
+  let bootGate = null; // { green: boolean } | null - null = not applicable/unknown
+  let bootGateCheck = null; // the in-flight check promise - awaited at the boot-apply decision
   if (installedBuild && !mock) {
     const bootSetup = createBootSetup();
     // NOT awaited: the first window must never wait on schtasks (two
-    // queries, 10 s timeout each). The promise never rejects — the catch
+    // queries, 10 s timeout each). The promise never rejects - the catch
     // degrades to null ("gate unknown" -> the in-app apply stays).
     bootGateCheck = bootSetup.check()
       .then((task) => {
@@ -882,12 +882,12 @@ async function main() {
         console.log(`[boot] setup gate: ${bootGate.green ? 'GREEN' : 'NOT GREEN'} (task ${task.exists ? 'exists' : 'missing'}, action exe ${task.command ? `'${task.command}'` : 'unknown'})`);
         if (!bootGate.green) {
           // Fire-and-forget: the UAC prompt must not block the window boot.
-          // createBootSetup latches — exactly ONE elevated spawn per launch.
+          // createBootSetup latches - exactly ONE elevated spawn per launch.
           bootSetup.setup({ execPath: process.execPath })
             .then((r) => {
-              if (r.ok) console.log('[boot] elevated setup OK — ArcPowerBootApply task created/overwritten');
+              if (r.ok) console.log('[boot] elevated setup OK - ArcPowerBootApply task created/overwritten');
               else if (r.alreadyStarted) console.log('[boot] elevated setup already started this launch');
-              else console.log('[boot] elevated setup declined or failed — the gate re-triggers next launch');
+              else console.log('[boot] elevated setup declined or failed - the gate re-triggers next launch');
             })
             .catch((err) => console.log(`[boot] elevated setup spawn failed: ${err.message}`));
         }
@@ -901,28 +901,28 @@ async function main() {
   }
 
   // 1.0.1 Themes (M3): the BrowserWindow backgroundColor follows the
-  // persisted theme — a light theme with a dark flash at open would look
+  // persisted theme - a light theme with a dark flash at open would look
   // broken (and the seed/probe sequence above already has the settings in
   // hand on the mock path; the real path reads its own settings.json).
-  // Best effort — a read failure keeps the Dark Steel default.
+  // Best effort - a read failure keeps the Dark Steel default.
   let windowBackground = '#0f1116';
   try {
     const bootTheme = await store.loadSettings();
     windowBackground = bootTheme.theme === 'light' ? '#f2f4f8' : bootTheme.theme === 'midnight' ? '#0b1020' : '#0f1116';
   } catch {
-    // keep the Dark Steel default — never block the window on a theme read
+    // keep the Dark Steel default - never block the window on a theme read
   }
   const win = createWindow(windowBackground);
   windowForInstance = win;
   // M4-D2 (§1 close-to-tray FIX): the close handler reads the SYNC settings
   // cache (loadSettingsSync) and calls event.preventDefault() IN THE SAME
-  // TICK — the old async loadSettings().then(...) ran preventDefault too
-  // late (the window had already closed — the user's "toggle doesn't
+  // TICK - the old async loadSettings().then(...) ran preventDefault too
+  // late (the window had already closed - the user's "toggle doesn't
   // work"). The handler is registered in EVERY mode (incl. --ui-verify,
   // plan-review F2): the mock store updates the sync cache correctly, and
   // the REAL close-interception probe needs the handler live. A settings
   // read failure degrades to the normal close (never silently swallows a
-  // quit — isQuitting lets the tray Quit through).
+  // quit - isQuitting lets the tray Quit through).
   win.on('close', (event) => {
     if (event.defaultPrevented) return;
     if (win.isDestroyed() || isQuitting) return;
@@ -936,19 +936,19 @@ async function main() {
       // fall through: normal close
     }
   });
-  // M4-D (user): Start minimized — when the persisted setting is on, the
+  // M4-D (user): Start minimized - when the persisted setting is on, the
   // window starts minimized to the taskbar right after ready-to-show; the
   // tray click restores it (the tray toggle's isMinimized -> restore branch
-  // above — Round-1 F5). Skipped in --ui-verify (the verify drives a
+  // above - Round-1 F5). Skipped in --ui-verify (the verify drives a
   // visible window; the toggle persistence is pinned there instead). A
-  // settings read failure must never block boot — best effort.
+  // settings read failure must never block boot - best effort.
   if (!uiVerify) {
     try {
       const bootSettings = await store.loadSettings();
       if (bootSettings.startMinimized === true) {
         // M4-D2 (user): start minimized must be DETERMINISTIC. The old
         // once('ready-to-show', minimize) was flaky (live-verified: the
-        // window sometimes opened normal) — a minimize issued while the
+        // window sometimes opened normal) - a minimize issued while the
         // frameless window is still being mapped can be dropped by
         // Windows. Minimize shortly AFTER the window is shown, with a
         // retry on the 'show' event until it actually reports minimized.
@@ -962,11 +962,11 @@ async function main() {
       console.log(`[boot] start-minimized read skipped: ${err.message}`);
     }
   }
-  // M2D: the mock-featureset IPC surface exists ONLY in mock mode — real
+  // M2D: the mock-featureset IPC surface exists ONLY in mock mode - real
   // mode has no such channel (the renderer's dropdown never renders either).
   // M4-D2: mock mode ALSO records every boot-apply attempt in a session
   // mock apply log + exposes the REAL boot-apply flow as a mock-only
-  // channel (mock:run-boot-apply) — ui-verify proves the flow: the log
+  // channel (mock:run-boot-apply) - ui-verify proves the flow: the log
   // records the active profile with no refusal.
   const mockBootApplyLog = [];
   const recordBootApply = (profileId, out) => {
@@ -1023,7 +1023,7 @@ async function main() {
   // M4-D: the injected window ops for the integrated title bar. The product
   // path performs the real BrowserWindow ops; --ui-verify mode injects
   // COUNTING probes instead (performing minimize/close mid-verify would
-  // disrupt the assertions) — run 2 pins the title-bar buttons through
+  // disrupt the assertions) - run 2 pins the title-bar buttons through
   // getWindowOpCounts.
   let windowOpCounts = { minimize: 0, maximizeToggle: 0, close: 0 };
   const windowOps = uiVerify
@@ -1041,9 +1041,9 @@ async function main() {
         },
         close: async () => { if (!win.isDestroyed()) win.close(); },
       };
-  // M4-H (D1): the open-external op — shell.openExternal in the product
+  // M4-H (D1): the open-external op - shell.openExternal in the product
   // path; --ui-verify injects a COUNTING probe (opening a real browser
-  // mid-verify would disrupt the assertions) — the GitHub-link pin asserts
+  // mid-verify would disrupt the assertions) - the GitHub-link pin asserts
   // the count ticked and the strict URL validation rejects bad hosts.
   let openExternalCount = 0;
   const openExternal = uiVerify
@@ -1070,7 +1070,7 @@ async function main() {
     // start-with-Windows hint differentiates by it). Mock/ui-verify reports
     // 'portable' (the mock applies in-process like the portable build); the
     // packaged PORTABLE build (PORTABLE_EXECUTABLE_DIR set) reports
-    // 'portable' too — never 'dev' (deriveBuildKind pin).
+    // 'portable' too - never 'dev' (deriveBuildKind pin).
     buildKind: deriveBuildKind({ mock, installedBuild, isPackaged: app.isPackaged }),
     mock: mockCtl,
     rebuildTray: async () => {
@@ -1083,18 +1083,18 @@ async function main() {
 
   if (uiVerify) {
     // Dev-only end-to-end check against MockBackend (never hardware). The
-    // waiver flag is already seeded above (pre-window, F2) — no re-seed.
+    // waiver flag is already seeded above (pre-window, F2) - no re-seed.
     await backend.init();
     await new Promise((resolve) => {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
     });
     // M2D featureset variant: RID_MOCK_FEATURESET=<id> (b580 / pro-b50 /
-    // arc-igpu) runs the reduced per-featureset verification flow — the full
+    // arc-igpu) runs the reduced per-featureset verification flow - the full
     // default flow is pinned to A770 values.
     const fsVariant = process.env.RID_MOCK_FEATURESET;
     if (process.env.RID_MOCK_NO_INTEL === '1') {
-      // 1.0.1 no-Intel round: the no-intel variant — an EARLY-diverging
+      // 1.0.1 no-Intel round: the no-intel variant - an EARLY-diverging
       // reduced flow (no waiver boot step: the no-device boot never prompts)
       // pinning the whole no-Intel behavior end to end.
       await runNoIntelVerify(win);
@@ -1102,17 +1102,17 @@ async function main() {
       await runFeaturesetVerify(win, fsVariant);
     } else if (process.env.RID_MOCK_TWEAKS_APPLY === '1') {
       // M3-B tweaks-apply variant: drives the full apply flow (mock adapter,
-      // no elevation) — enable/disable/revert round trips, per-step toasts,
+      // no elevation) - enable/disable/revert round trips, per-step toasts,
       // the partial-failure + UAC-cancel honesty paths.
       await runTweaksApplyVerify(win);
     } else if (process.env.RID_MOCK_FAN_GATE === '1') {
-      // M4-A fan-gate variant: the unaccepted-waiver fan apply regression —
+      // M4-A fan-gate variant: the unaccepted-waiver fan apply regression -
       // dialog -> Cancel aborts with the honest toast, dialog -> Accept
       // lands, and the G2 self-heal re-shows the dialog after the driver
       // loses the waiver (the "fan applies fail without a prompt" bug).
       await runFanGateVerify(win, backend);
     } else {
-      // M4-D: the window-ops probe rides along — run 2 pins the title-bar
+      // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides
       // too (the GitHub-link pin asserts the counting op ticked).
       await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts, () => openExternalCount);
@@ -1123,7 +1123,7 @@ async function main() {
   await bootBackend();
   // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
   // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
-  // (self-healing, M7 — a stale selection or an absent field must never
+  // (self-healing, M7 - a stale selection or an absent field must never
   // wedge the app on a dead id). The renderer's boot read (device-get) and
   // the window-path boot apply both consume this resolution.
   let bootDeviceId = null;
@@ -1137,36 +1137,36 @@ async function main() {
 
   await setupTray({ getWindow: () => win, backend, store, oldIgcl, applyRunner });
 
-  // M4-D2 (boot apply — pinned F3/F4) + M4-E (S1 branching): the app
+  // M4-D2 (boot apply - pinned F3/F4) + M4-E (S1 branching): the app
   // launched from the HKCU Run value boots into the UI; when the profile's
   // start-at-boot is on AND an active profile exists, the boot-gated IN-APP
-  // apply runs — UNLESS the M4-E setup gate is GREEN on the installed build
+  // apply runs - UNLESS the M4-E setup gate is GREEN on the installed build
   // (task exists + action matches the current exe): the ELEVATED logon task
   // owns logon applies then, and the in-app apply is SKIPPED (the /xml
-  // result from the gate check above is in hand on the same launch — no
+  // result from the gate check above is in hand on the same launch - no
   // extra query). Gate NOT green (first-run UAC declined, transient
-  // failure) or portable/dev: the in-app apply + honest balloon stay — a
+  // failure) or portable/dev: the in-app apply + honest balloon stay - a
   // silent-dead logon apply with no signal must never happen until the
   // setup lands. It runs AFTER setupTray (a failure balloon must never hit
-  // a null trayRef — pinned F3). The boot variant is applyRunner: null —
+  // a null trayRef - pinned F3). The boot variant is applyRunner: null -
   // in-process ONLY, NEVER the elevated worker, NEVER a UAC at logon (hard
   // constraint); when it fails in this unelevated boot variant, the
   // defaults-restore fallback is SKIPPED regardless of errorCode
   // (applyProfileBoot) and the balloon says the honest line. Mock mode
-  // records the attempt in the mock boot-apply log. Never crashes — every
+  // records the attempt in the mock boot-apply log. Never crashes - every
   // failure is a logged balloon or a console line.
   try {
     const bootSettings = await store.loadSettings();
     if (bootSettings.ocOnBoot === true && bootSettings.activeProfileId) {
-      // M4-E S1: the gate verdict is awaited HERE (the only consumer) — the
+      // M4-E S1: the gate verdict is awaited HERE (the only consumer) - the
       // check was started before createWindow WITHOUT awaiting, so a hung
       // schtasks never stalls the first window; by this point (after the
       // window, health, tray) the promise is normally already resolved.
-      // bootGateCheck never rejects (degraded-to-null catch above) — a null
+      // bootGateCheck never rejects (degraded-to-null catch above) - a null
       // verdict keeps the in-app apply (never a silent-dead logon apply).
       if (bootGateCheck) await bootGateCheck;
       if (bootGate?.green === true) {
-        console.log('[boot] setup gate GREEN — the elevated logon task owns logon applies; in-app boot apply SKIPPED');
+        console.log('[boot] setup gate GREEN - the elevated logon task owns logon applies; in-app boot apply SKIPPED');
       } else {
         const out = await applyProfileBoot({
           backend,
@@ -1180,7 +1180,7 @@ async function main() {
         if (!out.applied && trayRef && !trayRef.isDestroyed()) {
           trayRef.displayBalloon({
             title: 'Arc Power',
-            content: 'Profile apply needs administrator approval — the elevated logon apply is not set up.',
+            content: 'Profile apply needs administrator approval - the elevated logon apply is not set up.',
           });
         }
       }

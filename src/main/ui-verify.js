@@ -1,16 +1,16 @@
-// Arc Power — dev-only UI verification (`electron . --ui-verify`).
+// Arc Power - dev-only UI verification (`electron . --ui-verify`).
 //
 // Drives the REAL window (renderer + preload + IPC + MockBackend) through
 // the M2a/M2b-B/M2C-B/M2D/M3-A product flows and asserts the outcomes:
 //   1. shell renders (sidebar + header); M3-A: the sidebar brand is the
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
-//      preferred variant — no logo image);
+//      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.2 Alpha" (app:version IPC + the display Alpha suffix — the IPC
-//       keeps the bare semver) — the driver version + date live in the
+//       1.0.3 Alpha" (app:version IPC + the display Alpha suffix - the IPC
+//       keeps the bare semver) - the driver version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
-//       is 'GPU' with the name in a 'GPU' kv row — the Driver version row
+//       is 'GPU' with the name in a 'GPU' kv row - the Driver version row
 //       moved OUT of the card (the health card keeps it); no PCI ID
 //       anywhere;
 //       M2C-B B2: NO capsSummary chips footer on the device card; M2C-B B8:
@@ -19,33 +19,33 @@
 //       NO "Service Status" label (the IGS indicator is gone);
 //   1c. M3-A + M3-C-I: the dashboard shows the general GPU HEALTH card (four
 //       rows: Driver installed / Device detected / OC Status (M4-B rename of
-//       "OC working") / Arc Power working — the "Clocks normal" row is
-//       REMOVED) — the merged Service Status card is GONE, as is everything
+//       "OC working") / Arc Power working - the "Clocks normal" row is
+//       REMOVED) - the merged Service Status card is GONE, as is everything
 //       IGS (dot, half-state note, toggle button). The driver row detail is
 //       version + date like the device card; the app row healthy detail is
 //       "App & Service Running".
 //   2. Tuning (renamed from Overclocking, M4-D2): control cards render from
 //      capability ranges; the page-title is 'Tuning'; the OC-mode row is a
 //      flex row with the Stock/Advanced pill LEFT and the "Tuning | Fan
-//      Curve" view pill RIGHT (same height — the pills' getBoundingClientRect
+//      Curve" view pill RIGHT (same height - the pills' getBoundingClientRect
 //      tops are pinned equal); M2b-B: the card label is "Core clock" (M4-B
 //      user: named Core clock in BOTH Offset and Clock modes), the floating
 //      Apply is hidden when clean and appears when dirty;
 //   3. first Apply shows the warranty-waiver dialog; Accept persists the
 //      waiver; the apply succeeds and the state read-back refreshes; the
 //      per-control toast count is exactly 1 (the other three controls are
-//      no-ops and stay silent — M2b-B suppression);
+//      no-ops and stay silent - M2b-B suppression);
 //   4. a second apply does NOT re-show the dialog;
 //   5. per-card reset-to-default + apply round-trips the default;
 //   5b. M2C-B F3 instant apply: ONE attempt, no retry note, no progress
-//       label — an io-failed apply fails instantly with the composed
+//       label - an io-failed apply fails instantly with the composed
 //       refusal toast (plain "The GPU driver refused the change" + the
 //       error code); M3-C-G: the per-control chips are hidden until the
 //       first apply, then green "Applied" (value == last applied) or warn
-//       "Unapplied" — the applied reference clears them even while the
+//       "Unapplied" - the applied reference clears them even while the
 //       driver read-back lags (B5); M3-C-F: the "Driver:" readout refreshes
 //       from the fresh state after an apply without navigating away;
-//   6. fan editor (the Tuning page's "Fan Curve" sub-view — #/fan redirects
+//   6. fan editor (the Tuning page's "Fan Curve" sub-view - #/fan redirects
 //      to the tuning page with the fan view active): mode toggle, add point,
 //      preset, apply; M2C-B B1: the right-side 0-100% axis renders outside
 //      the plot;
@@ -67,11 +67,11 @@
 //  12. M3-C-D/E extended variant (RID_MOCK_EXTENDED_RANGES=1, mock default
 //      OC mode = advanced): the power slider max is 315 W and the temp
 //      slider max 115 C; setting PL 300 and applying SKIPS the per-apply
-//      confirm (double-dialog decision — the mode-enable confirm already
+//      confirm (double-dialog decision - the mode-enable confirm already
 //      warned) and the read-back sticks at 300 W; restored to 210 W after.
 //  12b. M3-C-E stock variant (RID_MOCK_STOCK_MODE=1): sliders pinned to the
 //      standard limits (252 W / 90 C), no extendedRanges flag, and a direct
-//      300 W apply REFUSES with the mode message — device untouched, no
+//      300 W apply REFUSES with the mode message - device untouched, no
 //      dead-end confirm dialog.
 //  13. M2C-C worker-apply toast variant (RID_MOCK_WORKER_APPLY=1, runs on
 //      top of the extended variant): before the apply, an info toast
@@ -81,39 +81,39 @@
 //      units and back (waiver preserved); the mem-clock pins track the
 //      a770 featureset (2187 MHz).
 //  15. M2D featureset variants (RID_MOCK_FEATURESET=b580|pro-b50|arc-igpu):
-//      runFeaturesetVerify — a reduced flow per device line (OC cards /
+//      runFeaturesetVerify - a reduced flow per device line (OC cards /
 //      no-OC note, fan editor / read-only / no-fan, monitoring, swap round
 //      trip, b580 percent-unit apply).
 //  16. M3-A/M3-B Tweaks page: the registry-hacks catalog renders with live
-//      (mock) states — mpo=Off, hags=Active, game-dvr=Default,
+//      (mock) states - mpo=Off, hags=Active, game-dvr=Default,
 //      fullscreen-optimizations=Active; applyable entries get working
-//      Enable/Disable/Revert buttons (mock apply — no elevation), fullscreen
+//      Enable/Disable/Revert buttons (mock apply - no elevation), fullscreen
 //      stays read-only; one apply round trip refreshes the card state.
 //  17. M3-B tweaks-apply variant (RID_MOCK_TWEAKS_APPLY=1): the full apply
-//      flow — every entry through enable/disable/revert with per-step
+//      flow - every entry through enable/disable/revert with per-step
 //      toasts + state refresh; with RID_MOCK_REGAPPLY_FAIL='<id>:<action>'
 //      the honest partial-failure path, with RID_MOCK_REGAPPLY_CANCEL=1 the
 //      honest UAC-decline path.
 //  18. M4-A/M4-B waiver-prompt variants: every mock session boots with a
-//      DETERMINISTIC waiver state (session-seeded in main.js, pre-window —
+//      DETERMINISTIC waiver state (session-seeded in main.js, pre-window -
 //      the persisted variant never races the renderer's first caps query).
 //      M4-B (user: "please prompt it when the Program opens"): the boot
-//      waiver prompt appears in EVERY variant — CANCELLED here in the
+//      waiver prompt appears in EVERY variant - CANCELLED here in the
 //      unaccepted sessions (default / stock / extended / worker / featureset
 //      / tweaks variants), ACCEPTED under RID_MOCK_WAIVER_BOOT_ACCEPT=1
 //      (row green, no dialog anywhere after), and shown in its ACCEPTED
-//      state under RID_MOCK_WAIVER_PERSISTED=1 — title + 'Status: Accepted'
+//      state under RID_MOCK_WAIVER_PERSISTED=1 - title + 'Status: Accepted'
 //      line + single OK, clicked here (persisted acceptance at boot: the
 //      boot prompt appears as a reminder, never a re-accept). The waiver
 //      STATUS lives ONLY in the dashboard GPU Health card row ("OC waiver:
-//      Accepted / Not Accepted", green/red — user correction, mid-M4-A): the
+//      Accepted / Not Accepted", green/red - user correction, mid-M4-A): the
 //      OC and Fan pages render NO waiver status (the apply-time dialog gate
 //      only); the unaccepted row is clickable (opens the waiver dialog;
 //      Cancel leaves it red and the next apply still gates), the accepted
 //      row has no click action, and the row flips green IN PLACE on the
 //      caps-change re-render.
 //  19. M4-A fan-gate variant (RID_MOCK_FAN_GATE=1): the unaccepted-waiver fan
-//      apply regression — the waiver dialog appears on the first fan apply
+//      apply regression - the waiver dialog appears on the first fan apply
 //      (Cancel -> aborted with the honest toast, device untouched; Accept ->
 //      the apply lands and the dashboard waiver row flips green), plus the
 //      G2 self-heal: after a waiver-not-set failure the store flag flips
@@ -121,7 +121,7 @@
 //      dialog (the "fan applies fail without a prompt" bug).
 //  20. M4-B: (a) the dashboard health row is renamed "OC Status" (was "OC
 //      working"); (b) the freq offset ranges mirror into the negative half
-//      (a770 -300..300) — the slider reaches the negative half, applies and
+//      (a770 -300..300) - the slider reaches the negative half, applies and
 //      reads back -100 MHz; (c) the freq card's Offset/Clock toggle: Clock
 //      mode slides over base+[min,max] (2100 + -300..300 = 1800..2400 MHz),
 //      the readout + driver line show the ABSOLUTE clock, and an apply
@@ -130,26 +130,26 @@
 //      Apply/Reset round trip through the shared clamp, gated OFF on the
 //      b580 swap; (e) the b580 variant pins the mirrored freq range
 //      (-500..500) + volt % range (-100..100) with percent units intact.
-//  21. M4-B (user): the Advanced OC Mode warning is a ONCE-only gate — the
+//  21. M4-B (user): the Advanced OC Mode warning is a ONCE-only gate - the
 //      disclaimer shows ONLY on the first Stock->Advanced toggle (Cancel
 //      keeps stock; it re-asks until Enable), the acceptance is PERSISTED
 //      (advanced-mode-accepted-set), and neither a later toggle in the same
 //      session nor a later BOOT (RID_MOCK_ADVANCED_ACCEPTED=1 seeds the
 //      accepted store) ever shows it again. Stock variant: full once-flow.
 //      Knob variant: boot-persisted acceptance -> toggle shows no dialog.
-// This script is dev tooling only — it always uses MockBackend (it never
+// This script is dev tooling only - it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
 
 import { app } from 'electron';
 
 // M4-D2 (§1): the close-to-tray REAL close probe DESTROYS the window as its
-// final step — without a 'window-all-closed' handler Electron would
+// final step - without a 'window-all-closed' handler Electron would
 // auto-quit right there, BEFORE the variant's final "UI VERIFY OK" print +
 // app.exit(0). Keep the app alive in --ui-verify ONLY (the variant exits
 // explicitly; in product mode the default quit behavior is untouched).
 if (process.argv.includes('--ui-verify')) {
-  app.on('window-all-closed', () => { /* keep alive — the variant exits via app.exit(0) */ });
+  app.on('window-all-closed', () => { /* keep alive - the variant exits via app.exit(0) */ });
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -165,17 +165,17 @@ async function waitFor(win, expr, timeoutMs = 10000) {
 }
 
 /**
- * M4-D2 (§1): the close-to-tray REAL close-interception probe — a SHARED
+ * M4-D2 (§1): the close-to-tray REAL close-interception probe - a SHARED
  * final step invoked after EVERY ui-verify variant entry point (plan-review
  * M6: it covers all 11 variants, not just the default). Drives the REAL
  * BrowserWindow directly:
  *   1. enable closeToTray (the mock store updates the SYNC cache the close
- *      handler reads — run 1's fix);
+ *      handler reads - run 1's fix);
  *   2. win.close() -> the window must NOT be destroyed and must be hidden
  *      (event.preventDefault() + win.hide() in the same tick);
  *   3. win.show() restores it;
  *   4. disable closeToTray -> win.close() -> the window IS destroyed (the
- *      app then exits — this is the last step of every variant).
+ *      app then exits - this is the last step of every variant).
  * The probe runs BEFORE the final "UI VERIFY OK" print so a failure still
  * surfaces as a thrown UiVerifyFailure.
  */
@@ -197,7 +197,7 @@ async function runCloseToTrayProbe(win) {
   win.show();
   await sleep(400);
   if (!win.isVisible()) fail('close-to-tray probe: win.show() did not restore the window');
-  console.log('[ui-verify] close-to-tray probe: close() hid the window (not destroyed), show() restored it — now disabling closeToTray');
+  console.log('[ui-verify] close-to-tray probe: close() hid the window (not destroyed), show() restored it - now disabling closeToTray');
   await js(`window.arcPower.profilesSettingsSave({ closeToTray: false })`);
   await sleep(400);
   win.close();
@@ -205,25 +205,25 @@ async function runCloseToTrayProbe(win) {
   if (!win.isDestroyed()) {
     fail('close-to-tray probe: win.close() with closeToTray OFF did not destroy the window (the handler must only intercept while closeToTray is on)');
   }
-  console.log('[ui-verify] close-to-tray probe: close() with closeToTray off destroyed the window — probe OK');
+  console.log('[ui-verify] close-to-tray probe: close() with closeToTray off destroyed the window - probe OK');
 }
 
-// M4-A/M4-B/M4-D: the shared waiver boot-step — MUST run in EVERY ui-verify
+// M4-A/M4-B/M4-D: the shared waiver boot-step - MUST run in EVERY ui-verify
 // variant BEFORE its own assertions (F4: the extended/stock/featureset
 // variants assert modal absence around applies; the boot prompt would
 // otherwise be the modal being clicked or asserted there). Every mock
 // session boots with a deterministic waiver state (session-seeded in
-// main.js BEFORE the window exists — the persisted variant never races the
-// renderer's first caps query, F2). M4-D (user, PERMANENT acceptance —
+// main.js BEFORE the window exists - the persisted variant never races the
+// renderer's first caps query, F2). M4-D (user, PERMANENT acceptance -
 // "skipped IF permanently accepted after accepting once"):
 //   - RID_MOCK_WAIVER_PERSISTED=1 -> the store is ACCEPTED at boot: the boot
 //     prompt is SKIPPED ENTIRELY (the accepted-state reminder dialog is
-//     REMOVED — the dashboard health row remains the status display); this
+//     REMOVED - the dashboard health row remains the status display); this
 //     step asserts NO modal ever appears after the boot sequence lands;
 //   - RID_MOCK_WAIVER_PERSISTED=1 + RID_MOCK_WAIVER_LOST=1 (M4-B user fix,
 //     M4-D update) -> the store STILL says accepted and the DRIVER lost the
 //     waiver: the boot probe (probeWaiverState) now RESTORES the driver
-//     waiver instead of clearing the store (M4-D PERMANENT acceptance — the
+//     waiver instead of clearing the store (M4-D PERMANENT acceptance - the
 //     consent stands, the store is never flipped to false), so the boot
 //     prompt is STILL skipped (same as the plain persisted variant) and
 //     waiver-get reads accepted (the restore is pinned);
@@ -231,28 +231,29 @@ async function runCloseToTrayProbe(win) {
 //     the prompt appears exactly once and this step ACCEPTS it (health row
 //     green, no dialog anywhere after);
 //   - default -> the prompt appears exactly once and this step CANCELS it
-//     (row red, the first apply re-shows the dialog — the classic flow).
+//     (row red, the first apply re-shows the dialog - the classic flow).
 // Returns true when the session booted with the waiver accepted.
 async function bootWaiverStep(win, js, waitFor) {
   const persisted = process.env.RID_MOCK_WAIVER_PERSISTED === '1';
   const waiverLost = process.env.RID_MOCK_WAIVER_LOST === '1';
   const bootAccept = process.env.RID_MOCK_WAIVER_BOOT_ACCEPT === '1';
   // M4-B step-4 F1/F5a: the boot dialog's .modal-device line must carry the
-  // VRAM-suffixed name (mock caps.deviceName = formatDeviceName(...)) — the
+  // VRAM-suffixed name (mock caps.deviceName = formatDeviceName(...)) - the
   // regression pin for the caps-vs-device divergence. Featureset-aware:
-  // a770 -> "16 GB" (the mock models the 16 GB config; the REAL card on
-  // this machine is the 8 GB config — its driver qwMemorySize ~7.91 GiB
-  // rounds to "8 GB" via formatDeviceName; M4-D user correction),
-  // b580/pro-b50 -> "12 GB", arc-igpu -> plain (no VRAM).
+  // a770 -> "16GB GDDR6" (the mock models the 16 GB config; the REAL card on
+  // this machine is the 8 GB config - its driver qwMemorySize ~7.91 GiB
+  // ceils to "8GB" via formatDeviceName; M4-I S1 contract),
+  // b580/pro-b50 -> "12GB GDDR6" (fold r2.2: the pro-b50 token is covered),
+  // arc-igpu -> plain (no VRAM).
   const fsId = process.env.RID_MOCK_FEATURESET;
-  const expectedSuffix = fsId === 'b580' || fsId === 'pro-b50' ? ' 12 GB'
+  const expectedSuffix = fsId === 'b580' || fsId === 'pro-b50' ? '12GB GDDR6'
     : fsId === 'arc-igpu' ? null
-    : ' 16 GB';
+    : '16GB GDDR6';
   const pinDeviceLine = async () => {
     const deviceText = await js(`document.querySelector('.modal .modal-device')?.textContent ?? ''`);
     if (expectedSuffix === null) {
       if (deviceText.includes(' GB')) {
-        throw new UiVerifyFailure(`the boot waiver prompt names '${deviceText}' (arc-igpu has no VRAM — expected the plain name, no suffix)`);
+        throw new UiVerifyFailure(`the boot waiver prompt names '${deviceText}' (arc-igpu has no VRAM - expected the plain name, no suffix)`);
       }
     } else if (!deviceText.includes(expectedSuffix)) {
       throw new UiVerifyFailure(`the boot waiver prompt names '${deviceText}' (expected the VRAM-suffixed name containing '${expectedSuffix}')`);
@@ -261,9 +262,9 @@ async function bootWaiverStep(win, js, waitFor) {
   };
   if (persisted) {
     // M4-D (PERMANENT acceptance): the boot prompt must NOT appear at all.
-    // The accepted store never asks again — the accepted-state reminder
+    // The accepted store never asks again - the accepted-state reminder
     // dialog is REMOVED. Wait for the boot sequence to land (the dashboard
-    // GPU Health card renders only after caps arrive — the point where a
+    // GPU Health card renders only after caps arrive - the point where a
     // (buggy) boot prompt would have shown), then assert no modal. The
     // WAIVER_LOST overlay changes nothing: the boot probe RESTORED the
     // driver waiver for the accepted store (the consent stands), so the
@@ -273,10 +274,10 @@ async function bootWaiverStep(win, js, waitFor) {
     }
     await sleep(600);
     if (await js(`!!document.querySelector('.modal')`)) {
-      throw new UiVerifyFailure(`M4-D: the boot waiver prompt appeared in a PERSISTED-ACCEPTED session (${persisted ? 'RID_MOCK_WAIVER_PERSISTED=1' : ''}${waiverLost ? ' + RID_MOCK_WAIVER_LOST=1' : ''}) — a persisted acceptance skips the boot prompt entirely; page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+      throw new UiVerifyFailure(`M4-D: the boot waiver prompt appeared in a PERSISTED-ACCEPTED session (${persisted ? 'RID_MOCK_WAIVER_PERSISTED=1' : ''}${waiverLost ? ' + RID_MOCK_WAIVER_LOST=1' : ''}) - a persisted acceptance skips the boot prompt entirely; page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
     }
     if (waiverLost) {
-      // M4-D pin: the boot probe RESTORED the driver waiver — the backend
+      // M4-D pin: the boot probe RESTORED the driver waiver - the backend
       // flag is accepted again (the store was never flipped to false).
       const flag = await js(`window.arcPower.waiverGet(0)`);
       if (flag.accepted !== true) {
@@ -308,15 +309,15 @@ export class UiVerifyFailure extends Error {}
  * @param {import('electron').BrowserWindow} win
  * @param {import('./backend/mock-backend.js').MockBackend} backend
  * @param {import('./store/profile-store.js').ProfileStore} store the session
- *   store (mock sessions use the ISOLATED data dir — the persisted-state
+ *   store (mock sessions use the ISOLATED data dir - the persisted-state
  *   checks must read THIS store, never a default-dir store that would read
  *   the real %APPDATA%\ArcPower settings.json)
  * @param {() => number} [getTrayRebuilds] dev probe: tray-rebuild invocations
  * @param {() => number} [getFpsPolls] dev probe: fps-poll invocations (M2b
- *   review F4 — asserts the Monitoring poll stops on navigation away)
+ *   review F4 - asserts the Monitoring poll stops on navigation away)
  * @param {() => { minimize: number, maximizeToggle: number, close: number }} [getWindowOpCounts]
  *   M4-D dev probe: the injected window-op counters (ui-verify mode counts
- *   instead of performing the real BrowserWindow ops) — run 2 pins the
+ *   instead of performing the real BrowserWindow ops) - run 2 pins the
  *   integrated title-bar buttons through this.
  */
 export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0) {
@@ -333,10 +334,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
   // M4-D2 (§7/§8): the old Overclocking + Fan pages are the Tuning page now.
   // Navigating to '#/tuning' renders the TUNING sub-view by default, but the
-  // view is module-level page state — a prior '#/fan' visit leaves it on the
+  // view is module-level page state - a prior '#/fan' visit leaves it on the
   // fan sub-view, so every '#/tuning' navigation below also CLICKS the
   // 'Tuning' view pill (idempotent when already active). Fan content uses
-  // '#/fan' — the router redirect forces the fan sub-view.
+  // '#/fan' - the router redirect forces the fan sub-view.
   const gotoView = async (viewLabel) => {
     await js(`(() => {
       const b = Array.from(document.querySelectorAll('.tuning-view-btn')).find((x) => x.textContent.trim() === '${viewLabel}');
@@ -352,14 +353,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   };
 
   // --- 1. shell renders -----------------------------------------------------
-  // M4-D2 (§7): 6 nav links — the Overclocking + Fan pages merged into one
+  // M4-D2 (§7): 6 nav links - the Overclocking + Fan pages merged into one
   // Tuning page.
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected — Overclocking + Fan merged into Tuning)');
+    fail('sidebar did not render (6 nav links expected - Overclocking + Fan merged into Tuning)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
-  // M3-A: the logo IMAGE is gone — the user's preferred variant is the text
+  // M3-A: the logo IMAGE is gone - the user's preferred variant is the text
   // with the small blue accent bar BELOW it (the ::after pseudo-element).
   if (await js(`!!document.querySelector('.sidebar-brand img.sidebar-logo')`)) {
     fail('M3-A: the sidebar logo image is still rendered (the blue-bar variant was requested)');
@@ -377,7 +378,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // The title bar spans the top of the window: the left drag zone, the
   // brand CENTERED (logo + 'Arc Power' with the blue gradient 'Power'),
   // the three window controls in the right cluster. The buttons are wired
-  // to the injected window ops (getWindowOpCounts — ui-verify counts
+  // to the injected window ops (getWindowOpCounts - ui-verify counts
   // instead of performing real minimize/close mid-verify); the max
   // button's icon follows the pushed window:maximized-changed state.
   if (!(await waitFor(win, `!!document.querySelector('#titlebar .titlebar-logo')`))) {
@@ -401,7 +402,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   })()`);
   if (brandCentered !== true) fail('M4-D: the title bar brand is not centered (expected the logo+name in the middle of the top)');
   // The website gradient treatment: 'Power' is background-clip:text over the
-  // blue linear-gradient + glow — the name renders as the brand mark.
+  // blue linear-gradient + glow - the name renders as the brand mark.
   const powerGradient = await js(`(() => {
     const el = document.querySelector('#titlebar .titlebar-brand-power');
     if (!el) return 'no-el';
@@ -457,7 +458,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-D: the max button did not flip back to the MAXIMIZE icon: ${JSON.stringify(iconState)}`);
   }
   // Clicking each button performs the injected window op (the counters
-  // tick — the real ops would minimize/close the verify window).
+  // tick - the real ops would minimize/close the verify window).
   const tbOpsBefore = { ...getWindowOpCounts() };
   await js(`document.querySelector('#titlebar .window-btn[data-op="minimize"]').click()`);
   await js(`document.querySelector('#titlebar .window-btn[data-op="maximize-toggle"]').click()`);
@@ -472,13 +473,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('titlebar', `integrated title bar: logo (${logo}), brand '${brandName.trim()}' (blue gradient 'Power'), ${await js(`document.querySelectorAll('#titlebar .window-btn').length`)} window buttons; max icon follows window:maximized-changed; buttons ticked the window-op counters (${JSON.stringify(tbOpsAfter)})`);
   // M4-D (user): the app icon ALSO sits at the title bar's top-LEFT corner,
   // and the max/restore icons are exactly one glyph each (the restore glyph
-  // is TWO overlapping squares drawn as one icon — a filled front square
+  // is TWO overlapping squares drawn as one icon - a filled front square
   // over the back outline; the pin asserts the fill so it no longer reads
   // as two separate icons).
   const cornerIcon = await js(`document.querySelector('#titlebar .titlebar-corner-icon')?.getAttribute('src') ?? ''`);
   if (!cornerIcon.includes('icon.png')) fail(`M4-D: the title bar corner icon is '${cornerIcon}' (expected the app icon at the top-left)`);
-  // M4-H (D2 — N10): the restore glyph is TWO rects selected EXPLICITLY
-  // (by class — the old single-rect selector would silently pass any
+  // M4-H (D2 - N10): the restore glyph is TWO rects selected EXPLICITLY
+  // (by class - the old single-rect selector would silently pass any
   // layout). The corrected WINDOWS shape: the HOLLOW back square at the
   // TOP-LEFT (1.5,1.5) and the FILLED front square at the BOTTOM-RIGHT
   // (3.5,3.5), the front fill resolving from the .icon-restore-front class
@@ -506,7 +507,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const tbRect = await js(`(() => { const b = document.querySelector('#titlebar .icon-restore'); const r = b.getBoundingClientRect(); return JSON.stringify({ w: r.width, h: r.height }); })()`);
   step('titlebar-extras', `top-left corner icon OK; restore glyph is ONE icon (M4-H: hollow back at 1.5,1.5 + filled front at 3.5,3.5 with the class fill '${glyph.fill}', ${JSON.parse(tbRect).w}x${JSON.parse(tbRect).h}px)`);
 
-  // M4-D (user): the sidebar — per-tab icons left of the names, the brand
+  // M4-D (user): the sidebar - per-tab icons left of the names, the brand
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
@@ -526,10 +527,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- M4-H (D1): the sidebar GitHub footer + the open-external channel ----
   // The footer link (GitHub icon + 'GitHub') sits at the BOTTOM-LEFT of the
   // sidebar (margin-top:auto below the nav); clicking it invokes the NEW
-  // 'open-external' IPC channel (an INJECTED op — the counting probe in
+  // 'open-external' IPC channel (an INJECTED op - the counting probe in
   // ui-verify mode). The channel STRICTLY validates (S3): new URL() +
   // protocol https: + hostname github.com + the '/YamsSE/Arc-Power' path
-  // (exact or a '/YamsSE/Arc-Power/' prefix) — anything else rejects and
+  // (exact or a '/YamsSE/Arc-Power/' prefix) - anything else rejects and
   // never opens.
   if (!(await waitFor(win, `!!document.querySelector('.sidebar-footer-link')`, 5000))) {
     fail('M4-H: the sidebar GitHub footer link is missing');
@@ -570,22 +571,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const ghOpAfter = getOpenExternalCount();
   step('m4h-github-footer', `M4-H: sidebar GitHub footer (icon + 'GitHub', bottom-left) -> open-external counter ticked (${ghOpBefore} -> ${ghOpAfter}); channel validation: repo URL ok, ${badUrls.length} bad URLs rejected`);
 
-  // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
+  // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session: cancelled in the unaccepted sessions (Cancel here;
   // Accept under RID_MOCK_WAIVER_BOOT_ACCEPT=1), or shown in its ACCEPTED
   // state under RID_MOCK_WAIVER_PERSISTED=1 (reminder with a single OK).
   const bootAcceptedAtBoot = await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', process.env.RID_MOCK_WAIVER_PERSISTED === '1'
     ? (process.env.RID_MOCK_WAIVER_LOST === '1'
-      ? 'persisted store said accepted but the DRIVER lost the waiver: the boot probe RESTORED the driver waiver — boot prompt SKIPPED (permanent acceptance), waiver-get accepted'
-      : 'persisted acceptance at boot: boot prompt SKIPPED entirely (permanent acceptance — the accepted-state reminder dialog is removed)')
+      ? 'persisted store said accepted but the DRIVER lost the waiver: the boot probe RESTORED the driver waiver - boot prompt SKIPPED (permanent acceptance), waiver-get accepted'
+      : 'persisted acceptance at boot: boot prompt SKIPPED entirely (permanent acceptance - the accepted-state reminder dialog is removed)')
     : `boot waiver prompt handled: ${bootAcceptedAtBoot ? 'Accepted (no dialog anywhere after)' : 'Cancelled (first apply re-shows the dialog)'}`);
 
   // --- waiver gate seed state (used by every waiver-flow section below) ----
-  // M3-C review F4: the persisted state read must use the SESSION store — a
+  // M3-C review F4: the persisted state read must use the SESSION store - a
   // default-dir ProfileStore would read the REAL settings.json while the
   // mock session reads/writes its isolated dir (the check would always see
-  // a mismatch). bootAccepted is the device-side flag (waiver-get) — the
+  // a mismatch). bootAccepted is the device-side flag (waiver-get) - the
   // source the renderer's health row reads.
   const persistedWaiver = (await store.loadSettings()).waiverAccepted === true;
   const bootAccepted = (await js(`window.arcPower.waiverGet(0)`)).accepted === true;
@@ -595,22 +596,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('waiver-seed', `boot waiver state: store=${persistedWaiver ? 'accepted' : 'not accepted'}, backend=${bootAccepted ? 'accepted' : 'not accepted'}`);
 
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard GPU card ------
-  // B3: the line below the GPU name is the APP version (app:version IPC) —
+  // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
-  // Driver version row is REMOVED — M4-H).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.2 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.2 Alpha')`);
+  // Driver version row is REMOVED - M4-H).
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
   if (!favicon.includes('favicon.png')) fail(`favicon link is '${favicon}'`);
   // M4-D (user): the pin must catch the old PCI-ID text ('PCI\VEN...'), not
   // the word 'PCI'. M4-D2 (§2): the PCIe ROW is gone (the unpopulated 1/1
-  // kernel pattern made it a permanent '—') — the body must not contain the
+  // kernel pattern made it a permanent '-') - the body must not contain the
   // 'PCIe' row either.
   if (await js(`document.body.textContent.includes('PCI\\\\')`)) fail('PCI ID is still shown somewhere in the UI');
   if (await js(`document.querySelector('.card-grid .kv[data-label="PCIe"]')`)) fail('M4-D2: the PCIe kv row is still rendered (the row was removed)');
-  // M3-A: the header status indicator is REMOVED — no dot, no 'Service
+  // M3-A: the header status indicator is REMOVED - no dot, no 'Service
   // Status' label anywhere (IGS is no longer a status item).
   if (await js(`!!document.querySelector('.gpu-header .status-dot')`)) fail('M3-A: the header still renders a status dot');
   if (await js(`document.body.textContent.includes('Service Status')`)) fail('M3-A: "Service Status" is still rendered somewhere');
@@ -634,10 +635,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('themes-boot', `1.0.1: boot theme '${bootTheme}' on <html> + computed --bg ${bootBg} (applied from the persisted envelope, equal-specificity ordering safe)`);
 
-  // M4-H (C1): the GPU card — title 'GPU', the device name in a 'GPU' kv
+  // M4-H (C1): the GPU card - title 'GPU', the device name in a 'GPU' kv
   // row under it (the CPU-card layout mirrored: title, then the 'CPU' kv
-  // row — the GPU card mirrors that with a 'GPU' row), NO Driver version
-  // row anywhere in the card (the health card keeps it — pinned below),
+  // row - the GPU card mirrors that with a 'GPU' row), NO Driver version
+  // row anywhere in the card (the health card keeps it - pinned below),
   // Compute + Clocks + the standalone ReBAR pill stay.
   if (!(await waitFor(win, `(() => {
     const card = document.querySelector('.card-grid .device-card');
@@ -649,7 +650,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-H: the GPU card layout is wrong (title '${await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`)}', GPU kv '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`)}')`);
   }
   if (await js(`!!document.querySelector('.card-grid .kv[data-label="Driver version"]')`)) {
-    fail('M4-H: the GPU card still renders the Driver version row (removed — the health card keeps it)');
+    fail('M4-H: the GPU card still renders the Driver version row (removed - the health card keeps it)');
   }
   const gpuNameKv = await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`);
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
@@ -659,14 +660,28 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // device card: no 'OC waiver' text in any device-card kv row.
   if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Health card)');
   // B2: the chips footer ("Fan curve N points", power/volt/freq/temp notes)
-  // is GONE from the device card — no chips inside the card grid EXCEPT the
+  // is GONE from the device card - no chips inside the card grid EXCEPT the
   // M4-D ReBAR pill (a deliberate new chip, excluded here).
   const gridChips = await js(`document.querySelectorAll('.card-grid .chip:not(.rebar-pill)').length`);
   if (gridChips !== 0) fail(`B2: device card chips footer still renders ${gridChips} chips`);
   step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row, no chips footer (ReBAR pill is the only chip)');
 
+  // M4-I (B2): the VRAM row below the Shader info - the same ceil contract
+  // as formatDeviceName with the memType CARRIED ON THE DEVICE PAYLOAD
+  // (the mock fixture supplies 'GDDR6'; the header/card/selector/waiver all
+  // read the SAME device.name - one format everywhere, no renderer-side
+  // composition).
+  if (!(await waitFor(win, `(() => {
+    const row = Array.from(document.querySelectorAll('.card-grid .device-card .kv'))
+      .find((k) => (k.getAttribute('data-label') ?? '') === 'VRAM');
+    return row && (row.textContent ?? '').trim() === '16GB GDDR6';
+  })()`, 5000))) {
+    fail(`M4-I: the device-card VRAM row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="VRAM"]')?.textContent ?? ''`)}' (expected '16GB GDDR6' - ceil GiB + the payload memType)`);
+  }
+  step('m4i-vram-row', 'M4-I (B2): the device card renders the VRAM row (16GB GDDR6 - ceil + the payload-carried memType)');
+
   // M4-D (user): the core + memory clock BUNDLED row ("… MHz Core /
-  // 2187 MHz Memory" — a770 featureset telemetry memClockMhz = 2187).
+  // 2187 MHz Memory" - a770 featureset telemetry memClockMhz = 2187).
   if (!(await waitFor(win, `(() => {
     const row = Array.from(document.querySelectorAll('.card-grid .kv'))
       .find((k) => (k.getAttribute('data-label') ?? '') === 'Clocks');
@@ -678,8 +693,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('clocks-kv', `device card combined clocks kv = ${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}`);
 
   // Memory clock readout next to core clock (a770 featureset: 2187 MHz).
-  // M4-H (C3): the readout is TWO labeled groups — the GPU tiles live in
-  // the GPU group container (tile lookups SCOPED to the group — N8).
+  // M4-H (C3): the readout is TWO labeled groups - the GPU tiles live in
+  // the GPU group container (tile lookups SCOPED to the group - N8).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2187')`))) {
     fail('memory-clock readout missing or not 2187 MHz');
   }
@@ -688,9 +703,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- M4-D (user) + M4-D2 (§9): the CPU & memory card (sysinfo:get fixture)
   // The card sits BEFORE the GPU card in the card-grid and renders the mock
   // fixture: CPU name + the BUNDLED cores/threads row (the CLOCK half is
-  // LIVE — cpuFreqMhz from the telemetry tick, GHz always — pinned below)
+  // LIVE - cpuFreqMhz from the telemetry tick, GHz always - pinned below)
   // + the BUNDLED RAM brand/size/speed rows (user formats). Every field
-  // degrades to '—' when null (pinned by the pure/sysinfo.ts unit tests;
+  // degrades to '-' when null (pinned by the pure/sysinfo.ts unit tests;
   // the fixture here is all-populated).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid > .card')).some((c) => (c.querySelector('.card-title')?.textContent ?? '') === 'CPU & Memory')`, 5000))) {
     fail('M4-D: the CPU & Memory card did not render');
@@ -702,10 +717,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const sysinfoRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const sysRows = JSON.parse(sysinfoRows);
   if (sysRows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`M4-D: CPU row is '${sysRows['CPU']}' (expected the sysinfo fixture name)`);
-  // M4-H (C2): the Memory row reads "G.Skill 32 GB DDR5 @ 6000 MHz" — the
+  // M4-H (C2): the Memory row reads "G.Skill 32 GB DDR5 @ 6000 MHz" - the
   // SMBIOS type (34 = DDR5) inserted between the size and the speed; the
   // speed half renders in its OWN .kv-static-freq span (blue accent via
-  // the shared rule — never the kv-live-freq class itself, N3).
+  // the shared rule - never the kv-live-freq class itself, N3).
   if (sysRows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`M4-H: Memory row is '${sysRows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz')`);
   if (!(await waitFor(win, `(() => {
     const span = document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq');
@@ -715,41 +730,65 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const cs = getComputedStyle(span);
     const liveCs = getComputedStyle(live);
     // The static span SHARES the kv-live-freq rule (same computed color +
-    // weight) — it must never BE the kv-live-freq class (the onUpdate
-    // first-match hazard — N3).
+    // weight) - it must never BE the kv-live-freq class (the onUpdate
+    // first-match hazard - N3).
     return cs.color === liveCs.color && cs.fontWeight === liveCs.fontWeight && !span.classList.contains('kv-live-freq');
   })()`, 5000))) {
     fail(`M4-H: the memory speed span is not the blue .kv-static-freq (text '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq')?.textContent ?? ''`)}')`);
   }
-  // M4-H (C2): the Caches row below Memory — the mock fixture's L1/L2/L3/L4
-  // sizes render as "L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB"
-  // (L4 has NO OS source — the fixture carries it so the row renders).
-  if (sysRows['Caches'] !== 'L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB') {
-    fail(`M4-H: the Caches row is '${sysRows['Caches']}' (expected 'L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB')`);
+  // M4-H (C2)/M4-I (A2): the Cache row below Memory - the mock fixture's
+  // L1/L2/L3/L4 sizes render as "L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB"
+  // (M4-I: "N KB" below 1024 KB, whole-MB FLOOR above, separator ' - ';
+  // the label is 'Cache' - L4 has NO OS source, the fixture carries it).
+  if (sysRows['Cache'] !== 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB') {
+    fail(`M4-I: the Cache row is '${sysRows['Cache']}' (expected 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB')`);
   }
-  // M4-D2 (§6): the LIVE frequency half of the Cores/clock row — the mock
+  if (sysRows['Caches'] !== undefined) fail(`M4-I: the old 'Caches' data-label is still rendered (the label is 'Cache' now)`);
+  // M4-I (A3): the label is 'Cores / Clock' (was 'Cores / clock').
+  if (sysRows['Cores / Clock'] === undefined || sysRows['Cores / clock'] !== undefined) {
+    fail(`M4-I: the cores row data-label is not 'Cores / Clock' (got ${Object.keys(sysRows).join(',')})`);
+  }
+  // M4-D2 (§6): the LIVE frequency half of the Cores/Clock row - the mock
   // telemetry pushes cpuFreqMhz=4300 -> the row reads "20 Cores / 28
   // Threads / @ 4.3 GHz" (GHz ALWAYS, 1 decimal), updated IN PLACE on
   // ticks (the waitFor also covers the telemetry landing).
-  if (!(await waitFor(win, `(document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? '').trim() === '20 Cores / 28 Threads / @ 4.3 GHz'`, 8000))) {
-    fail(`M4-D2: the Cores / clock row is '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? ''`)}' (expected the static '20 Cores / 28 Threads' + the LIVE '/ @ 4.3 GHz' from the mock cpuFreqMhz 4300)`);
+  if (!(await waitFor(win, `(document.querySelector('.sysinfo-card .kv[data-label="Cores / Clock"]')?.textContent ?? '').trim() === '20 Cores / 28 Threads / @ 4.3 GHz'`, 8000))) {
+    fail(`M4-D2: the Cores / Clock row is '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Cores / Clock"]')?.textContent ?? ''`)}' (expected the static '20 Cores / 28 Threads' + the LIVE '/ @ 4.3 GHz' from the mock cpuFreqMhz 4300)`);
   }
   const liveFreqText = await js(`document.querySelector('.sysinfo-card .kv-live-freq')?.textContent ?? ''`);
   if (liveFreqText !== ' / @ 4.3 GHz') fail(`M4-D2: the live-freq span is '${liveFreqText}' (expected ' / @ 4.3 GHz')`);
-  step('m4d-cpu-card', `CPU & Memory card first in the card-grid: '${sysRows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz', '${sysRows['Memory']}', Caches '${sysRows['Caches']}'`);
+  step('m4d-cpu-card', `CPU & Memory card first in the card-grid: '${sysRows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz', '${sysRows['Memory']}', Cache '${sysRows['Cache']}'`);
+
+  // --- M4-I (A4): the sysinfo-card and the device-card kv rows start at
+  // the SAME vertical position (the CPU card's title margin-box vs the GPU
+  // card's head - equalized in CSS).
+  const kvTopDiff = await js(`(() => {
+    const cpuKv = document.querySelector('.sysinfo-card .card-body');
+    const gpuKv = document.querySelector('.device-card .card-body');
+    if (!cpuKv || !gpuKv) return 'no-bodies';
+    return Math.abs(cpuKv.getBoundingClientRect().top - gpuKv.getBoundingClientRect().top);
+  })()`);
+  if (kvTopDiff === 'no-bodies' || Number(kvTopDiff) > 1) {
+    fail(`M4-I (A4): the CPU-card and GPU-card kv rows do not start at the same y (diff ${kvTopDiff}px - expected <= 1px)`);
+  }
+  step('m4i-card-align', `M4-I (A4): the sysinfo-card and device-card kv rows start at the same y (diff ${kvTopDiff}px)`);
 
   // --- M4-H (C3): the TWO-GROUP live readout (CPU above GPU) --------------
-  // The tile lookups are SCOPED to the group containers (N8 — both groups
+  // The tile lookups are SCOPED to the group containers (N8 - both groups
   // carry Temperature/Util-like labels). CPU: 4 tiles incl. the NEW
   // Wattage (cpuPowerW 125.5 from the mock PowerMeter fixture); GPU: 6
-  // tiles incl. the NEW Util (utilPct 42 — the mock emits it now, N1).
+  // tiles incl. the NEW Util (utilPct 42 - the mock emits it now, N1).
   const groupLabels = await js(`JSON.stringify(Array.from(document.querySelectorAll('.readout-card .readout-group-label')).map((l) => l.textContent))`);
-  if (JSON.parse(groupLabels).join(',') !== 'CPU,GPU') fail(`M4-H: the readout groups are '${groupLabels}' (expected 'CPU','GPU' — CPU ABOVE GPU)`);
+  if (JSON.parse(groupLabels).join(',') !== 'CPU,GPU') fail(`M4-H: the readout groups are '${groupLabels}' (expected 'CPU','GPU' - CPU ABOVE GPU)`);
   const cpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
   const cpuParsed = JSON.parse(cpuTiles);
   if (cpuParsed.length !== 4) fail(`M4-H: the CPU group has ${cpuParsed.length} tiles (expected 4): ${cpuTiles}`);
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Wattage' && (t.querySelector('.stat-value')?.textContent ?? '') === '125.5')`, 8000))) {
-    fail(`M4-H: the CPU Wattage tile is missing/not 125.5 W: ${cpuTiles}`);
+  // M4-I (C2): RID_MOCK_NO_POWER_METER=1 -> the mock cpuPowerW stays null -
+  // the Wattage tile honestly reads '-' (the no-metering shape; the gated
+  // pin below asserts it explicitly).
+  const wantWattage = process.env.RID_MOCK_NO_POWER_METER === '1' ? '-' : '125.5';
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Wattage' && (t.querySelector('.stat-value')?.textContent ?? '') === '${wantWattage}')`, 8000))) {
+    fail(`M4-H/M4-I: the CPU Wattage tile is missing/not ${wantWattage} W: ${cpuTiles}`);
   }
   for (const want of ['Core Frequency', 'Util', 'Temperature']) {
     if (!cpuParsed.some(([l]) => l === want)) fail(`M4-H: the CPU group is missing the '${want}' tile: ${cpuTiles}`);
@@ -792,7 +831,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app — the clocks row is removed)`);
+  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app - the clocks row is removed)`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
   for (const want of ['Driver installed', 'Device detected', 'OC Status', 'OC waiver', 'Arc Power working']) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
@@ -817,7 +856,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- M4-A (user correction): the waiver STATUS row in the health card ---
   // The ONLY persistent waiver display in the app: green "Accepted" when the
-  // store caps say accepted, red "Not Accepted" otherwise — read LIVE at
+  // store caps say accepted, red "Not Accepted" otherwise - read LIVE at
   // render (the dashboard re-renders on caps changes). Unaccepted -> the row
   // is CLICKABLE (opens the waiver dialog); accepted -> no click action.
   // The boot-accept variant accepted via the boot prompt while the dashboard
@@ -833,11 +872,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-A: the waiver row dot is '${waiverDot}' (expected ${bootAccepted ? 'ok (green)' : 'error (red)'})`);
   }
   const waiverClickable = await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.classList.contains('health-row-clickable')`);
-  if (waiverClickable === bootAccepted) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${!bootAccepted} — clickable only while unaccepted)`);
-  step('waiver-row', `health-card waiver row: 'OC waiver — ${waiverExpected}' (${bootAccepted ? 'green, no click action' : 'red, clickable'})`);
+  if (waiverClickable === bootAccepted) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${!bootAccepted} - clickable only while unaccepted)`);
+  step('waiver-row', `health-card waiver row: 'OC waiver - ${waiverExpected}' (${bootAccepted ? 'green, no click action' : 'red, clickable'})`);
 
   if (!bootAccepted) {
-    // M4-A review F1: the unaccepted row is CLICKABLE — click it: the waiver
+    // M4-A review F1: the unaccepted row is CLICKABLE - click it: the waiver
     // dialog appears; Cancel closes it; the row STAYS red (no store patch on
     // a cancel) and the first OC apply below still gates.
     await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.click()`);
@@ -853,31 +892,31 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
 
   // --- M4-F: multi-device block (RID_MOCK_MULTI_DEVICE=1) ------------------
-  // The mock enumerates devices 0 AND 1 (device 1 = the arc-igpu line) —
+  // The mock enumerates devices 0 AND 1 (device 1 = the arc-igpu line) -
   // every pin here runs ONLY in the multi-device session and RESTORES the
   // device-0 session state before the flow continues:
   //   1. the selector renders BOTH names on the Dashboard GPU card + the
-  //      Tuning tab (and is ABSENT in the single-device default — the
+  //      Tuning tab (and is ABSENT in the single-device default - the
   //      selector-absent pin below);
   //   2. switching via the dashboard selector changes the header name +
-  //      caps + state (device 1 is telemetry-only: no ranges, no controls —
+  //      caps + state (device 1 is telemetry-only: no ranges, no controls -
   //      the Tuning page degrades to the no-OC note, never device-0's
   //      ranges);
   //   3. F1: a featureset SWAP while device 1 is selected re-reads the
-  //      CURRENT device's pair — the swap never pairs device 1 with
+  //      CURRENT device's pair - the swap never pairs device 1 with
   //      device-0's (b580) ranges;
-  //   4. the telemetry switches (per-device ramps — the readout reflects
+  //   4. the telemetry switches (per-device ramps - the readout reflects
   //      device 1's values: 1067 MHz memory clock vs the a770's 2187 MHz);
   //   5. the persisted deviceId survives a profiles-settings-save round
   //      trip (S3: toggling monitorLogToFile must not clobber device-set's
   //      write);
   //   6. the boot apply targets the selected device (mock:run-boot-apply
   //      with an active profile + ocOnBoot seeded via profiles-settings-
-  //      save — the OTHER device's state unchanged);
+  //      save - the OTHER device's state unchanged);
   //   7. switching BACK via the Tuning selector restores the a770 surface
   //      (both selectors drive the same selectDevice flow).
   if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
-    const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16 GB';
+    const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
     const IGPU_NAME = 'Mock Arc iGPU (fixture)';
     const driveSelector = (value) => js(`(() => {
       const s = document.querySelector('.device-select');
@@ -931,7 +970,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('m4f-switch', `M4-F: dashboard selector -> device 1: header '${IGPU_NAME}', caps telemetry-only (no ranges/controls), deviceGet=1 persisted, Tuning no-OC note, Tuning selector renders both names`);
 
     // (3) F1: a featureset swap while device 1 is selected must re-read the
-    // CURRENT device's pair — the Tuning page keeps the no-OC note, never
+    // CURRENT device's pair - the Tuning page keeps the no-OC note, never
     // b580's percent ranges (the swap response carries device-0's pair).
     const swapFsTo = (id) => js(`(() => {
       const s = document.querySelector('.featureset-select');
@@ -949,30 +988,30 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!(await waitFor(win, `(document.querySelector('.featureset-select').value) === 'a770' && document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
       fail('M4-F (F1): the swap back to a770 did not restore the session (device 1 must stay the no-OC surface)');
     }
-    step('m4f-f1-swap', 'M4-F (F1): swap b580 -> a770 while device 1 is selected — the Tuning page stays the no-OC note (the current device is re-read, never paired with device-0 ranges)');
+    step('m4f-f1-swap', 'M4-F (F1): swap b580 -> a770 while device 1 is selected - the Tuning page stays the no-OC note (the current device is re-read, never paired with device-0 ranges)');
 
     // (4) the telemetry switched: the readout reflects device 1's ramp
     // (memClock 1067 vs the a770's 2187; core base 2000 MHz on the card).
     await js(`location.hash = '#/dashboard'`);
     if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '1067')`, 10000))) {
-      fail(`M4-F: the readout does not reflect device 1's telemetry (memory clock = ${await js(`Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} — expected 1067, the device-1 ramp)`);
+      fail(`M4-F: the readout does not reflect device 1's telemetry (memory clock = ${await js(`Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} - expected 1067, the device-1 ramp)`);
     }
     if (!(await waitFor(win, `(() => {
       const row = Array.from(document.querySelectorAll('.card-grid .kv')).find((k) => (k.getAttribute('data-label') ?? '') === 'Clocks');
       return (row?.textContent ?? '').includes('2000 MHz Core') && (row?.textContent ?? '').includes('1067');
     })()`, 5000))) {
-      fail(`M4-F: the Clocks kv does not reflect device 1 (got '${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}' — expected '2000 MHz Core / 1067 MHz Memory')`);
+      fail(`M4-F: the Clocks kv does not reflect device 1 (got '${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}' - expected '2000 MHz Core / 1067 MHz Memory')`);
     }
-    step('m4f-telemetry', 'M4-F: telemetry switched with the device — readout shows the device-1 ramp (Memory clock 1067 MHz, Clocks kv 2000 MHz Core / 1067 MHz Memory)');
+    step('m4f-telemetry', 'M4-F: telemetry switched with the device - readout shows the device-1 ramp (Memory clock 1067 MHz, Clocks kv 2000 MHz Core / 1067 MHz Memory)');
 
     // (5) S3: the persisted deviceId survives a profiles-settings-save
-    // round trip (toggle monitorLogToFile — a Settings/Profiles save must
+    // round trip (toggle monitorLogToFile - a Settings/Profiles save must
     // never clobber device-set's write).
     await js(`window.arcPower.profilesSettingsSave({ monitorLogToFile: true })`);
     await js(`window.arcPower.profilesSettingsSave({ monitorLogToFile: false })`);
     const s3Device = await js(`window.arcPower.deviceGet()`);
     if (s3Device.deviceId !== 1) {
-      fail(`M4-F (S3): profiles-settings-save clobbered the persisted deviceId (deviceGet=${JSON.stringify(s3Device)} after a monitorLogToFile round trip — expected 1)`);
+      fail(`M4-F (S3): profiles-settings-save clobbered the persisted deviceId (deviceGet=${JSON.stringify(s3Device)} after a monitorLogToFile round trip - expected 1)`);
     }
     step('m4f-s3-save', 'M4-F (S3): the persisted deviceId survives a profiles-settings-save round trip (monitorLogToFile toggled, deviceGet still 1)');
 
@@ -982,7 +1021,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // REAL boot-apply flow via mock:run-boot-apply. A device-1 target hits
     // the telemetry-only surface: the PL profile control is unsupported ->
     // the honest fallback-skipped refusal (applied false, reason 'defaults
-    // restore skipped') — while a device-0 target (the S2 bug) would have
+    // restore skipped') - while a device-0 target (the S2 bug) would have
     // APPLIED the 250 W profile. The OTHER device's state stays unchanged.
     await js(`window.arcPower.profilesSave({ id: 'boot-probe-multi', name: 'boot-probe-multi', settings: { powerLimitW: 250 }, ocOnBoot: false })`);
     await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: true, activeProfileId: 'boot-probe-multi' })`);
@@ -996,10 +1035,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail(`M4-F: the boot-apply precondition baseline is wrong (device 0 PL = ${otherBefore.powerLimitW}, expected 210)`);
     }
     if (multiBootOut.applied === true) {
-      fail(`M4-F: the boot apply APPLIED to device 0 (applied=true) — the S2 bug: the selected device 1 was ignored; device 0 is now ${(await js(`window.arcPower.getCurrentSettings(0)`)).powerLimitW} W`);
+      fail(`M4-F: the boot apply APPLIED to device 0 (applied=true) - the S2 bug: the selected device 1 was ignored; device 0 is now ${(await js(`window.arcPower.getCurrentSettings(0)`)).powerLimitW} W`);
     }
     if (!(multiBootOut.reason ?? '').includes('defaults restore skipped')) {
-      fail(`M4-F: the boot apply did not target device 1 (reason '${multiBootOut.reason}' — the unsupported-control refusal only occurs when the apply ran against the telemetry-only device 1 with its waiver accepted; a device-0 target would apply the profile or refuse on device 0's waiver)`);
+      fail(`M4-F: the boot apply did not target device 1 (reason '${multiBootOut.reason}' - the unsupported-control refusal only occurs when the apply ran against the telemetry-only device 1 with its waiver accepted; a device-0 target would apply the profile or refuse on device 0's waiver)`);
     }
     const otherAfter = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(otherAfter.powerLimitW - 210) > 1e-6) {
@@ -1015,7 +1054,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: waiverStoreBefore });
     await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null })`);
     await js(`window.arcPower.profilesDelete('boot-probe-multi')`).catch(() => {});
-    step('m4f-boot-apply', `M4-F: mock:run-boot-apply targeted the SELECTED device 1 (${multiBootOut.reason}; log records { profileId 'boot-probe-multi', applied: false }) — device 0 state unchanged (${otherAfter.powerLimitW} W), waiver states restored`);
+    step('m4f-boot-apply', `M4-F: mock:run-boot-apply targeted the SELECTED device 1 (${multiBootOut.reason}; log records { profileId 'boot-probe-multi', applied: false }) - device 0 state unchanged (${otherAfter.powerLimitW} W), waiver states restored`);
 
     // (7) switch BACK via the TUNING selector: the a770 surface returns
     // (header name, control cards, 210 W readout) and the persisted
@@ -1026,7 +1065,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     if ((await driveSelector('0')) !== 'ok') fail('M4-F: the Tuning selector change did not dispatch');
     if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
-      fail(`M4-F: the switch back to device 0 failed (header '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' — expected '${A770_NAME}')`);
+      fail(`M4-F: the switch back to device 0 failed (header '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' - expected '${A770_NAME}')`);
     }
     if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length >= 4 && (document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 8000))) {
       fail(`M4-F: the Tuning page did not restore the a770 surface after the switch back (cards=${await js(`document.querySelectorAll('.oc-card').length`)}; PL='${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}')`);
@@ -1034,13 +1073,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 0)`, 5000))) {
       fail(`M4-F: the switch back did not persist deviceId=0 (deviceGet=${JSON.stringify(await js(`window.arcPower.deviceGet()`))})`);
     }
-    step('m4f-switch-back', `M4-F: Tuning selector -> device 0: header '${A770_NAME}', 4+ control cards, PL '210 W', deviceGet=0 persisted — both selectors drive the same switch`);
+    step('m4f-switch-back', `M4-F: Tuning selector -> device 0: header '${A770_NAME}', 4+ control cards, PL '210 W', deviceGet=0 persisted - both selectors drive the same switch`);
   } else {
-    // M4-F: single-device degradation — the live 1-GPU machine shows NO
+    // M4-F: single-device degradation - the live 1-GPU machine shows NO
     // selector anywhere (the default variant pins the absent state).
     await sleep(300);
     if (await js(`!!document.querySelector('.device-select')`)) {
-      fail('M4-F: the device selector renders with a single device (must be hidden — the honest single-device degradation)');
+      fail('M4-F: the device selector renders with a single device (must be hidden - the honest single-device degradation)');
     }
     step('m4f-selector-absent', 'M4-F: no device selector with 1 device (single-device degradation)');
   }
@@ -1052,9 +1091,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   // M4-D2 (§8): the page title is 'Tuning' and the view toggle exists at the
   // SAME height as the Stock/Advanced pill (getBoundingClientRect top
-  // equality — pinned).
+  // equality - pinned).
   const tuningTitle = await js(`document.querySelector('.page-title')?.textContent ?? ''`);
-  if (tuningTitle.trim() !== 'Tuning') fail(`M4-D2: the page title is '${tuningTitle}' (expected 'Tuning' — the Overclocking rename)`);
+  if (tuningTitle.trim() !== 'Tuning') fail(`M4-D2: the page title is '${tuningTitle}' (expected 'Tuning' - the Overclocking rename)`);
   const pillHeights = await js(`(() => {
     const ocPill = Array.from(document.querySelectorAll('.oc-mode-toggle')).find((t) => Array.from(t.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Stock'));
     const viewPill = Array.from(document.querySelectorAll('.oc-mode-toggle')).find((t) => Array.from(t.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Fan Curve'));
@@ -1082,20 +1121,43 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (tuneRowState.hasClass || !tuneRowState.stockVisible || !tuneRowState.advancedVisible) {
     fail(`M4-H: the OC-mode column must be PRESENT on the tuning view (class ${tuneRowState.hasClass}, Stock visible ${tuneRowState.stockVisible}, Advanced visible ${tuneRowState.advancedVisible})`);
   }
-  // M4-H (B): the "Save as Profile" card (OC view only) — the button reads
-  // 'Save as Profile' when no profile is applied; the card must NOT render
-  // on the fan view.
-  if (!(await waitFor(win, `!!document.querySelector('.profile-save-card .profile-save-btn')`, 5000))) {
-    fail('M4-H: the Save as Profile card is missing on the tuning view');
+  // M4-I (E1): the row order is View FIRST, then OC Mode, then the GPU
+  // selector (when present - the single-device session has no selector
+  // column), then the compact Save button (the plan's swap).
+  const modeRowOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-mode-row .oc-mode-col')).map((c) => (c.querySelector('.oc-mode-label')?.textContent ?? '').trim()))`);
+  const orderCols = JSON.parse(modeRowOrder);
+  if (orderCols[0] !== 'View' || orderCols[1] !== 'OC mode' || orderCols[orderCols.length - 1] !== 'Profile') {
+    fail(`M4-I (E1): the mode-row column order is '${modeRowOrder}' (expected 'View' first, 'OC mode' second, 'Profile' last)`);
   }
-  const saveBtnText = await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`);
-  if (saveBtnText.trim() !== 'Save as Profile') fail(`M4-H: the save button reads '${saveBtnText}' (expected 'Save as Profile' — no profile applied yet)`);
+  if (orderCols.includes('GPU') && orderCols.indexOf('GPU') !== 2) {
+    fail(`M4-I (E1): the GPU selector column must sit right after 'OC mode' (got '${modeRowOrder}')`);
+  }
+  // M4-I (E2): the compact Save-as-Profile button (btn-sm) sits in the mode
+  // row right of the selector, its bounding TOP equal to the pills' (the
+  // label-over-button column pattern); the old full-width
+  // Save-as-Profile CARD is gone.
+  if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .profile-save-btn')`, 5000))) {
+    fail('M4-I: the compact Save-as-Profile button is missing from the mode row');
+  }
+  if (await js(`!!document.querySelector('.profile-save-card')`)) {
+    fail('M4-I (E2): the old full-width Save-as-Profile card is still rendered (replaced by the row button)');
+  }
+  const saveBtnText = await js(`document.querySelector('.oc-mode-row .profile-save-btn')?.textContent ?? ''`);
+  if (saveBtnText.trim() !== 'Save as Profile') fail(`M4-I: the save button reads '${saveBtnText}' (expected 'Save as Profile' - no profile applied yet)`);
+  const saveBtnAlign = await js(`(() => {
+    const ocPill = Array.from(document.querySelectorAll('.oc-mode-toggle')).find((t) => Array.from(t.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Stock'));
+    const btn = document.querySelector('.oc-mode-row .profile-save-btn');
+    if (!ocPill || !btn) return 'no-elements';
+    return JSON.stringify({ btnTop: Math.round(btn.getBoundingClientRect().top), pillTop: Math.round(ocPill.getBoundingClientRect().top) });
+  })()`);
+  const btnBox = JSON.parse(saveBtnAlign);
+  if (!btnBox || btnBox.btnTop !== btnBox.pillTop) fail(`M4-I (E2): the save button's top ${JSON.stringify(saveBtnAlign)} does not equal the pills' (the button must align in height with the pills)`);
   // M4-D2 (§7): the OLD '#/overclocking' hash (bookmarks + old pins) must
-  // land on the Tuning page with the tuning controls — the router alias.
+  // land on the Tuning page with the tuning controls - the router alias.
   await js(`location.hash = '#/overclocking'`);
   await sleep(250);
   const aliasTitle = await js(`document.querySelector('.page-title')?.textContent ?? ''`);
-  if (aliasTitle.trim() !== 'Tuning') fail(`M4-D2: '#/overclocking' landed on '${aliasTitle}' (expected the Tuning page — the alias redirect)`);
+  if (aliasTitle.trim() !== 'Tuning') fail(`M4-D2: '#/overclocking' landed on '${aliasTitle}' (expected the Tuning page - the alias redirect)`);
   if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length >= 4`, 5000))) {
     fail('M4-D2: the #/overclocking alias did not render the tuning controls');
   }
@@ -1152,7 +1214,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
 
   // --- 3. waiver gate: persisted acceptance must skip the dialog (F1) --------
-  // (bootAccepted / persistedWaiver were read right after the boot step —
+  // (bootAccepted / persistedWaiver were read right after the boot step -
   // the dashboard health-row section already consumed them.)
 
   // ocOnBoot gate check (M2b-B): with an unaccepted waiver the start-at-boot
@@ -1161,10 +1223,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await js(`location.hash = '#/profiles'`);
     if (!(await waitFor(win, `!!document.querySelector('.boot-checkbox')`))) fail('boot checkbox did not render');
     if (!(await js(`document.querySelector('.boot-checkbox').disabled`))) fail('start-at-boot must be gated on the waiver (unaccepted)');
-    // M4-D (user): in an UNACCEPTED session the profile LOAD PROMPTS — the
+    // M4-D (user): in an UNACCEPTED session the profile LOAD PROMPTS - the
     // classic waiver gate. Create a throwaway profile, click Load, Cancel
     // the dialog: the load is aborted, the device stays untouched (the
-    // accepted-store variants never see this — their loads are silent).
+    // accepted-store variants never see this - their loads are silent).
     await js(`document.querySelector('.profile-create').click()`);
     if (!(await waitFor(win, `!!document.querySelector('.modal-input')`))) fail('M4-D: create-profile modal did not open (boot-gate step)');
     await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'ui-verify gate'; })()`);
@@ -1194,7 +1256,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // M3-C review F4: the navigation above re-rendered the OC page from the
   // driver state (210 W), dropping the earlier 220 W slider move. The
   // isolated mock data dir makes the unaccepted-waiver branch reachable on
-  // a FRESH store, so re-move the slider deterministically — the readout
+  // a FRESH store, so re-move the slider deterministically - the readout
   // checks below must not depend on a persisted acceptance from a previous
   // run.
   await setSlider(220);
@@ -1221,14 +1283,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`))) fail('success toast missing after apply');
     const state = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
-    // M4-B (user): a SAVED waiver must survive the boot AND the apply — the
+    // M4-B (user): a SAVED waiver must survive the boot AND the apply - the
     // clock write lands with no waiver-not-set and the device still reports
     // the acceptance afterwards (the persisted flag is not consumed).
     const waiverAfter = await js(`window.arcPower.waiverGet(0)`);
     if (waiverAfter.accepted !== true) fail('M4-B: the waiver acceptance was lost across the apply (persisted-accepted session)');
     step('waiver-persisted', `waiver accepted at boot (persisted or boot-accept): apply without dialog -> read-back ${state.powerLimitW} W, waiverGet still accepted`);
     // M4-D (user, PERMANENT acceptance): an ACCEPTED store + a driver that
-    // loses the waiver mid-session — the apply is SILENTLY re-set + retried
+    // loses the waiver mid-session - the apply is SILENTLY re-set + retried
     // ONCE in main (never a dialog, never a dead-end, never a persisted
     // false). Inject a one-shot waiver-not-set on the power limit: the apply
     // lands WITHOUT any dialog, the read-back sticks, and waiver-get stays
@@ -1250,7 +1312,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (waiverAfterRetry.accepted !== true) fail('M4-D: the waiver acceptance was lost across the silent re-set');
     step('m4d-waiver-silent-retry', `driver lost the waiver mid-session (accepted store): the apply silently re-set + retried ONCE (230 W read back, no dialog), waiverGet still accepted`);
     // Restore the flow's expected baseline (the driver readout + noop-toast
-    // sections below expect 220 W applied and EXACTLY ONE success toast —
+    // sections below expect 220 W applied and EXACTLY ONE success toast -
     // the restore apply's toast is the one they count).
     await clearToasts();
     await setSlider(220);
@@ -1260,7 +1322,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // M3-C review F4: with the isolated mock data dir the unaccepted branch
     // is reachable on a FRESH store (pre-fix, the shared real settings.json
     // always carried a persisted acceptance, so this branch was dead). The
-    // apply click is what triggers the dialog — it was missing here.
+    // apply click is what triggers the dialog - it was missing here.
     await clickApply();
     if (!(await waitFor(win, `!!document.querySelector('.modal')`))) fail('waiver dialog did not appear on first apply');
     step('waiver', 'waiver dialog shown before first apply (not auto-accepted)');
@@ -1285,12 +1347,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('apply', `accept -> apply -> toast -> read-back refreshed to ${state.powerLimitW} W`);
 
     // --- M4-D review F5: the OC-side renderer auto re-prompt pin ---------
-    // (the profiles twin is pinned below via m4d-profiles-retry — this pins
+    // (the profiles twin is pinned below via m4d-profiles-retry - this pins
     // the OC page's copy of the SAME never-accepted-session defense, which
     // ui-verify no longer exercised after the accepted-store silent retry
     // replaced the old dialog-based re-prompt pin). The gate Accept above
     // persisted the acceptance; simulate a NEVER-ACCEPTED session at apply
-    // time — the STORE loses the persisted acceptance (settings.json) while
+    // time - the STORE loses the persisted acceptance (settings.json) while
     // the renderer caps + driver flag still say accepted (no gate dialog):
     // the apply answers waiver-not-set, main's silent re-set is correctly
     // NOT available (unaccepted store), and the renderer must AUTO
@@ -1301,7 +1363,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await setSlider(230);
     await clearToasts();
     await clickApply();
-    // No gate dialog was clicked — the dialog must appear BY ITSELF (the
+    // No gate dialog was clicked - the dialog must appear BY ITSELF (the
     // renderer-side re-prompt after the surfaced waiver-not-set).
     if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Warranty waiver'`, 5000))) {
       fail('M4-D: the OC apply did not auto re-prompt the waiver dialog after a waiver-not-set failure (never-accepted store, renderer-side retry)');
@@ -1329,7 +1391,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('m4d-oc-retry', `M4-D: OC apply hit waiver-not-set (never-accepted store) -> ONE auto re-prompt by itself -> accept -> the retry landed (${ocRetried.powerLimitW} W read back, honest per-control error toast on the first attempt); a clean apply after shows no dialog (counter reset)`);
   }
 
-  // M4-A: the dashboard health row now reflects the acceptance — the
+  // M4-A: the dashboard health row now reflects the acceptance - the
   // accept-time + post-apply store re-sets ({ ...caps, waiverAccepted })
   // trigger the dashboard's caps-change full re-render, flipping the row
   // green. The M3-C-G chip checks below prove the OC page did NOT
@@ -1346,7 +1408,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('waiver-row-live', 'dashboard waiver row flipped to Accepted (re-render on the caps patch)');
 
   // M3-C-F: the "Driver:" readout refreshes from the FRESH state after the
-  // apply — WITHOUT navigating away (previously built once at render, the
+  // apply - WITHOUT navigating away (previously built once at render, the
   // stale part that forced the leave-and-return dance).
   const driverAfterApply = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-driver-value')?.textContent ?? ''`);
   if (!driverAfterApply.includes('220')) {
@@ -1393,7 +1455,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 5b. M2C-B F3 instant apply: ONE attempt, composed refusal toasts,
   // --- no retry note, no progress label. M2C-B B5: chips + floating Apply
   // --- clear per-`result.ok` even while the driver read-back lags. --------
-  // (M3-A: the IGS-on/IGS-off refusal variants are unified — IGS is no
+  // (M3-A: the IGS-on/IGS-off refusal variants are unified - IGS is no
   // longer a status item, and the refusal wording never named IGS anyway.)
 
   // B5 first: simulate a read-back that LAGS (the driver write succeeded,
@@ -1426,7 +1488,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const plChip = chips.find(([c]) => c === 'powerLimitW');
   if (!plChip || plChip[1] !== 'Applied') fail(`M3-C-G: powerLimitW chip is '${plChip?.[1]}' (expected 'Applied' after the successful apply)`);
   for (const [c, s] of chips) {
-    if (s !== 'Applied') fail(`M3-C-G: chip '${c}' is '${s}' (expected 'Applied' — the control was in the applied payload)`);
+    if (s !== 'Applied') fail(`M3-C-G: chip '${c}' is '${s}' (expected 'Applied' - the control was in the applied payload)`);
   }
   if (!(await floatingHidden())) fail('B5: floating Apply still visible after a successful apply (read-back lags)');
   step('b5-lag', `B5/G: apply ok with lagging read-back (${lagState.powerLimitW} W) -> chip 'Applied', others hidden, Apply hidden`);
@@ -1437,14 +1499,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/dashboard'`);
   await gotoOverclocking();
   if (!(await floatingHidden())) fail('floating Apply visible on a clean re-render');
-  // M3-C-G: on a fresh re-render no control was applied in this render —
+  // M3-C-G: on a fresh re-render no control was applied in this render -
   // every chip is hidden again.
   const freshChips = await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-card')).map((c) => c.querySelector('.oc-chip-status')?.hidden !== false))`);
   if (!JSON.parse(freshChips).every(Boolean)) fail('M3-C-G: a chip is visible on a clean re-render (applied reference is per-render state)');
   step('b5-fresh', 'B5: fresh re-render is clean (applied reference is per-render state)');
 
   // An io-failed powerLimit apply fails INSTANTLY and the toast is the plain
-  // driver message + code (M2C-C: the IGS-naming wording is REMOVED — the
+  // driver message + code (M2C-C: the IGS-naming wording is REMOVED - the
   // real gate was elevation, docs §8c).
   backend.injectFail('powerLimitW', 'io-failed');
   await setSlider(220);
@@ -1458,11 +1520,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (/Intel Graphics Software/.test(refusalMsg)) fail(`M2C-C: refusal toast still names IGS (obsolete wording): '${refusalMsg}'`);
   if (!/\(io-failed\)/.test(refusalMsg)) fail(`M2C-C: refusal toast is missing the error code: '${refusalMsg}'`);
   if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
-  // The "Applying — retry N/9" surface is gone: the button never shows it.
+  // The "Applying - retry N/9" surface is gone: the button never shows it.
   const btnLabel = await js(`document.querySelector('.floating-apply')?.textContent ?? ''`);
   if (btnLabel.includes('retry')) fail(`floating Apply shows a retry label: '${btnLabel}'`);
   // A one-shot io-failed backend (would succeed on a retry) must STILL
-  // fail instantly — no retry attempt ever happens.
+  // fail instantly - no retry attempt ever happens.
   backend.injectFail('powerLimitW', 'io-failed', true);
   await clearToasts();
   await clickApply();
@@ -1501,12 +1563,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     return card.querySelector('.oc-value')?.textContent ?? '';
   })()`);
 
-  // (1) NEGATIVE HALF: the mirrored freq range -300..300 (a770) — the slider
+  // (1) NEGATIVE HALF: the mirrored freq range -300..300 (a770) - the slider
   // reaches the negative half, the readout renders it, and an apply writes
   // + reads back the negative offset.
   const freqMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
   const freqMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
-  if (freqMin !== '-300' || freqMax !== '300') fail(`M4-B: freq slider range is '${freqMin}'..'${freqMax}' (expected -300..300 — the mirrored min)`);
+  if (freqMin !== '-300' || freqMax !== '300') fail(`M4-B: freq slider range is '${freqMin}'..'${freqMax}' (expected -300..300 - the mirrored min)`);
   const negReadout = await setFreqSlider(-100);
   if (negReadout.trim() !== '-100 MHz') fail(`M4-B: freq slider readout is '${negReadout}' (expected '-100 MHz')`);
   if (await floatingHidden()) fail('M4-B: floating Apply did not appear for the negative freq move');
@@ -1519,7 +1581,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await clearToasts();
 
   // (1b) NEGATIVE VOLT half-plane: the mirrored volt range -0.234..0.234 V
-  // (a770) — a -0.050 V apply writes + reads back through the clamp (the
+  // (a770) - a -0.050 V apply writes + reads back through the clamp (the
   // finding-5b negative-volt e2e pin; step 0.005, so -0.05 is on-grid).
   const setVoltSlider = (value) => js(`(() => {
     const card = document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]');
@@ -1530,9 +1592,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   })()`);
   const voltMin = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('min')`);
   const voltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
-  if (voltMin !== '-0.234' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.234..0.234 — the mirrored min)`);
+  if (voltMin !== '-0.234' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.234..0.234 - the mirrored min)`);
   const voltReadout = await setVoltSlider(-0.05);
-  if (voltReadout.trim() !== '-0.050 V') fail(`M4-B: volt slider readout is '${voltReadout}' (expected '-0.050 V' — 3-decimal volt format)`);
+  if (voltReadout.trim() !== '-0.050 V') fail(`M4-B: volt slider readout is '${voltReadout}' (expected '-0.050 V' - 3-decimal volt format)`);
   if (await floatingHidden()) fail('M4-B: floating Apply did not appear for the negative volt move');
   await clearToasts();
   await clickApply();
@@ -1550,7 +1612,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Clock')?.click()`);
   await sleep(150);
-  // M4-B (user): the CARD NAME is 'Core clock' in BOTH modes — the toggle
+  // M4-B (user): the CARD NAME is 'Core clock' in BOTH modes - the toggle
   // changes the input presentation, never the name.
   const clockTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
   if (clockTitle.trim() !== 'Core clock') fail(`M4-B: the freq card title is '${clockTitle}' in Clock mode (must stay 'Core clock')`);
@@ -1558,14 +1620,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const clockMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
   if (clockMin !== '1800' || clockMax !== '2400') fail(`M4-B: Clock-mode slider range is '${clockMin}'..'${clockMax}' (expected 1800..2400 = base 2100 + -300..300)`);
   // M4-B step-5 F2: the .oc-range meta caption under the slider must follow
-  // the mode — in Clock mode it describes the ABSOLUTE-clock range (the
+  // the mode - in Clock mode it describes the ABSOLUTE-clock range (the
   // pre-fix caption stayed on the OFFSET range the card was built with).
   const clockCaption = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-meta .oc-range')?.textContent ?? ''`);
   if (!clockCaption.includes('1800') || !clockCaption.includes('2400') || clockCaption.includes('-300')) {
-    fail(`M4-B: Clock-mode range caption is '${clockCaption}' (expected the 1800..2400 MHz absolute-clock range — the stale offset caption must not survive the mode flip)`);
+    fail(`M4-B: Clock-mode range caption is '${clockCaption}' (expected the 1800..2400 MHz absolute-clock range - the stale offset caption must not survive the mode flip)`);
   }
   const clockReadout = await setFreqSlider(2050);
-  if (clockReadout.trim() !== '2050 MHz') fail(`M4-B: Clock-mode readout is '${clockReadout}' (expected '2050 MHz' — the absolute clock)`);
+  if (clockReadout.trim() !== '2050 MHz') fail(`M4-B: Clock-mode readout is '${clockReadout}' (expected '2050 MHz' - the absolute clock)`);
   await clearToasts();
   await clickApply();
   if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: clock-mode apply success toast missing');
@@ -1604,7 +1666,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // (3b) M4-B step-4 F4: a NULL fresh envelope (degraded state read after a
   // successful write) must NOT flip the 'Applied:' line to 'Dynamic
-  // (unlocked)' — the driver state is unknown, keep the previous line.
+  // (unlocked)' - the driver state is unknown, keep the previous line.
   const realGetState = backend.getCurrentSettings.bind(backend);
   backend.getCurrentSettings = async () => {
     throw new Error('injected degraded state read (ui-verify)');
@@ -1619,7 +1681,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-B: null-state apply replaced the 'Applied:' line with '${nullStateLine.trim()}' (expected the previous 'Applied: 0.9 V / 2100 MHz')`);
   }
   const nullStateRead = await js(`window.arcPower.getCurrentSettings(0)`);
-  // The WRITE landed (the failure was only the state read-back) — the honest
+  // The WRITE landed (the failure was only the state read-back) - the honest
   // follow-up read must show the applied pair, and the stale store state must
   // NOT have been clobbered by the null envelope.
   if (!nullStateRead.gpuLock || Math.abs(nullStateRead.gpuLock.voltageV - 1.2) > 1e-6 || Math.abs(nullStateRead.gpuLock.freqMhz - 2400) > 1e-6) {
@@ -1628,7 +1690,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4b-nullstate', `M4-B: degraded state read (null envelope) -> 'Applied:' line kept '${nullStateLine.trim()}' (never 'Dynamic (unlocked)')`);
   await clearToasts();
 
-  // (3b2) M4-B step-5 F3: EMPTY inputs must be rejected BEFORE conversion —
+  // (3b2) M4-B step-5 F3: EMPTY inputs must be rejected BEFORE conversion -
   // Number('') === 0 and the 0 V / 0 MHz pair is the legal UNLOCK: a cleared
   // field must never silently unlock the GPU (no success toast, no state
   // change, the 'Applied:' line untouched).
@@ -1656,7 +1718,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // (3c) M4-B step-4 F3: Reset must make the 'Applied:' line agree with the
   // inputs (0/0). Force a re-render first so the editor's render-time lock
-  // IS the applied pair (0.9 V / 2100 MHz) — the pre-fix code then snapped
+  // IS the applied pair (0.9 V / 2100 MHz) - the pre-fix code then snapped
   // the line back to that stale pair on Reset instead of 'Dynamic (unlocked)'.
   await js(`location.hash = '#/dashboard'`);
   if (!(await waitFor(win, `!!document.querySelector('.health-card')`, 5000))) fail('M4-B: dashboard did not render for the gpuLock Reset round trip');
@@ -1674,7 +1736,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (resetInputs !== '0/0') fail(`M4-B: gpuLock Reset did not restore the default pair: '${resetInputs}'`);
   const resetLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
   if (resetLine.trim() !== 'Applied: Dynamic (unlocked)') {
-    fail(`M4-B: gpuLock Reset left the 'Applied:' line as '${resetLine.trim()}' (must agree with the 0/0 inputs — 'Applied: Dynamic (unlocked)')`);
+    fail(`M4-B: gpuLock Reset left the 'Applied:' line as '${resetLine.trim()}' (must agree with the 0/0 inputs - 'Applied: Dynamic (unlocked)')`);
   }
   step('m4b-gpulock-reset', `M4-B: gpuLock Reset round trip after re-render: line '${reRenderLine.trim()}' -> Reset -> inputs ${resetInputs}, line '${resetLine.trim()}'`);
   await clearToasts();
@@ -1688,7 +1750,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await clearToasts();
 
   // (3d) M4-B step-5 F4: the gpuLock SUCCESS toast reports the pair the
-  // driver RECEIVED — main clamps before the write (clampGpuLock: [0, 1.5 V]
+  // driver RECEIVED - main clamps before the write (clampGpuLock: [0, 1.5 V]
   // / [0, 5000 MHz]), so typing 2.5 V must toast '1.5 V', never re-print
   // the raw typed value (the toast and the 'Applied:' line must agree).
   await setLockInputs(2.5, 2400);
@@ -1701,7 +1763,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   const clampLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
   if (!clampLine.includes('1.5 V / 2400 MHz')) {
-    fail(`M4-B: the gpuLock 'Applied:' line is '${clampLine.trim()}' (expected 'Applied: 1.5 V / 2400 MHz' — toast and line must agree)`);
+    fail(`M4-B: the gpuLock 'Applied:' line is '${clampLine.trim()}' (expected 'Applied: 1.5 V / 2400 MHz' - toast and line must agree)`);
   }
   const clampState = await js(`window.arcPower.getCurrentSettings(0)`);
   if (!clampState.gpuLock || Math.abs(clampState.gpuLock.voltageV - 1.5) > 1e-6 || clampState.gpuLock.freqMhz !== 2400) {
@@ -1719,7 +1781,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   await clearToasts();
 
-  // Restore: Offset mode + freq 0 + volt 0 — the later sections expect the
+  // Restore: Offset mode + freq 0 + volt 0 - the later sections expect the
   // a770 baseline (the freq card must never be left in Clock mode, and the
   // volt slider must never be left in the negative half-plane).
   await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Offset')?.click()`);
@@ -1737,9 +1799,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 5c. M3-C-D/E extended + stock variants. ------------------------------
   // RID_MOCK_EXTENDED_RANGES=1 (mock default OC mode = advanced): full slider
   // range (315 W / 115 C), the extended apply SKIPS the per-apply confirm
-  // (the mode-enable confirm already warned — double-dialog decision);
+  // (the mode-enable confirm already warned - double-dialog decision);
   // optional RID_MOCK_WORKER_APPLY=1 adds the elevation toast on top.
-  // RID_MOCK_STOCK_MODE=1: stock mode — sliders pinned to the standard
+  // RID_MOCK_STOCK_MODE=1: stock mode - sliders pinned to the standard
   // limits and a direct above-limit apply REFUSES with the mode message
   // (never clamps, never a dead-end confirm).
   const extendedRanges = process.env.RID_MOCK_EXTENDED_RANGES === '1';
@@ -1756,7 +1818,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
     // The extended ranges are exposed: slider maxes 315 W / 115 C.
     const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
-    if (plMax !== '315') fail(`M3-C-D: power slider max is '${plMax}' (expected 315 — live-verified ceiling)`);
+    if (plMax !== '315') fail(`M3-C-D: power slider max is '${plMax}' (expected 315 - live-verified ceiling)`);
     const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
     if (tlMax !== '115') fail(`M3-C-D: temp slider max is '${tlMax}' (expected 115)`);
     // The mode toggle renders with Advanced active (mock default advanced).
@@ -1796,11 +1858,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('extended-restore', 'extended baseline restored to 210 W');
   } else if (stockMode) {
     // M3-C-E stock variant: the sliders stay within the standard limits and
-    // a DIRECT above-limit request REFUSES with the mode message — never
+    // a DIRECT above-limit request REFUSES with the mode message - never
     // clamps, never a confirm dialog (the mock default is advanced; this
     // variant flipped it to stock via RID_MOCK_STOCK_MODE=1).
     const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
-    if (plMax !== '252') fail(`M3-C-E stock: power slider max is '${plMax}' (expected 252 — standard limit)`);
+    if (plMax !== '252') fail(`M3-C-E stock: power slider max is '${plMax}' (expected 252 - standard limit)`);
     const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
     if (tlMax !== '90') fail(`M3-C-E stock: temp slider max is '${tlMax}' (expected 90)`);
     const stockBtn = await js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === 'Stock')?.classList.contains('active')`);
@@ -1810,7 +1872,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     step('stock-ranges', `stock mode: PL slider max ${plMax} W, TL slider max ${tlMax} C, no extendedRanges flag`);
 
-    // A direct 300 W apply (bypasses the slider — the UI cannot produce it)
+    // A direct 300 W apply (bypasses the slider - the UI cannot produce it)
     // must REFUSE with the mode message, never clamp to 252 and never show
     // a confirm dialog.
     const refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: 300 })`);
@@ -1833,7 +1895,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   //     Enable flips the mode AND persists; a later Stock->Advanced round
   //     trip shows NO dialog (the persistence is the regression pin).
   //   - RID_MOCK_ADVANCED_ACCEPTED=1 (boot-persisted acceptance): a
-  //     Stock->Advanced toggle shows NO dialog at all — the "saved onto
+  //     Stock->Advanced toggle shows NO dialog at all - the "saved onto
   //     next boot" case the user asked for.
   const advancedAccepted = process.env.RID_MOCK_ADVANCED_ACCEPTED === '1';
   const clickModeBtn = (label) => js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === '${label}')?.click()`);
@@ -1878,7 +1940,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('m4b-advanced-once', 'Advanced OC Mode warning: shown on the first toggle (Cancel keeps stock, re-asked until Enable), persisted on accept, NEVER re-asked after');
   } else if (advancedAccepted && !stockMode) {
     // Boot-persisted acceptance (RID_MOCK_ADVANCED_ACCEPTED=1): a fresh
-    // toggle must skip the warning entirely — the "saved onto the next
+    // toggle must skip the warning entirely - the "saved onto the next
     // boot" case. Default variant boots Advanced, so round-trip through
     // Stock first and back.
     await clickModeBtn('Stock');
@@ -1931,15 +1993,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (b580Caps.controls.gpuLock === true || b580Caps.controls.vfCurve !== true) {
     fail(`M2D swap: b580 control set wrong: ${JSON.stringify(b580Caps.controls)}`);
   }
-  // M4-B: the gpuLock editor is gated on caps.controls.gpuLock — it must
+  // M4-B: the gpuLock editor is gated on caps.controls.gpuLock - it must
   // disappear on the b580 swap (gpuLock unsupported there).
   if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-    fail('M4-B: the gpuLock editor is still rendered on b580 (gated off — gpuLock unsupported)');
+    fail('M4-B: the gpuLock editor is still rendered on b580 (gated off - gpuLock unsupported)');
   }
   step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported`);
 
-  // M2D: the swap payload replaces the boot driver date — the HEALTH card's
-  // driver row (the GPU card's Driver version row is REMOVED — M4-H) must
+  // M2D: the swap payload replaces the boot driver date - the HEALTH card's
+  // driver row (the GPU card's Driver version row is REMOVED - M4-H) must
   // NOT pair 32.0.140.4109 with the a770 boot registry date (7-5-2026).
   const healthDriverRow = () => js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
   await js(`location.hash = '#/dashboard'`);
@@ -1978,7 +2040,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 6. fan editor (M4-D2: the Tuning page's "Fan Curve" sub-view) -------
   const fanReadonly = process.env.RID_MOCK_FAN_READONLY === '1';
   // M4-D2 (§8): the old '#/fan' hash redirects to the Tuning page with the
-  // FAN sub-view active (router consumeFanViewRequest) — the pins below run
+  // FAN sub-view active (router consumeFanViewRequest) - the pins below run
   // inside the sub-view, unchanged selectors.
   await js(`location.hash = '#/fan'`);
   await sleep(250);
@@ -1990,7 +2052,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const fanPageTitle = await js(`document.querySelector('.page-title')?.textContent ?? ''`);
   if (fanPageTitle.trim() !== 'Tuning') fail(`M4-D2: the #/fan redirect must land on the Tuning page (title is '${fanPageTitle}')`);
   // M4-H (A3): while the FAN view is active the OC-mode (Stock/Advanced)
-  // column of the shared mode row is HIDDEN (a class on the row + CSS —
+  // column of the shared mode row is HIDDEN (a class on the row + CSS -
   // N6: applied on the INITIAL #/fan render too, not only in setView);
   // the View pill + the GPU selector stay.
   const fanModeRow = await js(`(() => {
@@ -2005,11 +2067,23 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!fanRowState.hasClass || fanRowState.stockVisible || !fanRowState.viewVisible) {
     fail(`M4-H: the OC-mode column must be hidden on the fan view (class ${fanRowState.hasClass}, Stock visible ${fanRowState.stockVisible}, view pill visible ${fanRowState.viewVisible})`);
   }
-  // M4-H (B): the Save-as-Profile card is OC-view only — never on the fan view.
-  if (await js(`!!document.querySelector('.profile-save-card')`)) {
-    fail('M4-H: the Save as Profile card renders on the fan view (OC view only)');
+  // M4-H (B)/M4-I (E2): the Save-as-Profile action is OC-view only - never
+  // on the fan view (the compact row button is HIDDEN like the OC column -
+  // the pin targets the button's VISIBILITY, the element lives in the row).
+  const fanSaveBtnHidden = await js(`(() => {
+    const row = document.querySelector('.oc-mode-row');
+    const btn = document.querySelector('.profile-save-btn');
+    if (!row || !btn) return 'no-elements';
+    return JSON.stringify({
+      rowClass: row.classList.contains('fan-hides-save-btn'),
+      visible: btn.offsetParent !== null,
+    });
+  })()`);
+  const fanSaveState = JSON.parse(fanSaveBtnHidden);
+  if (!fanSaveState.rowClass || fanSaveState.visible) {
+    fail(`M4-I: the Save-as-Profile button must be HIDDEN on the fan view (class ${fanSaveState.rowClass}, visible ${fanSaveState.visible}): ${fanSaveBtnHidden}`);
   }
-  step('fan-redirect', `#/fan -> Tuning page with the Fan Curve sub-view active; M4-H: OC-mode column hidden on the fan view (View pill stays, no Save-as-Profile card)`);
+  step('fan-redirect', `#/fan -> Tuning page with the Fan Curve sub-view active; M4-H/M4-I: OC-mode column + Save-as-Profile button hidden on the fan view (View pill stays, no Save-as-Profile card)`);
   // M2C-B B1: the right-side 0-100% axis renders OUTSIDE the plot (one tick
   // per grid line, top-down: 100% first) and the old in-plot labels are gone.
   if (!(await waitFor(win, `document.querySelectorAll('.fan-yaxis .fan-yaxis-tick').length === 5`))) {
@@ -2021,7 +2095,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `!!document.querySelector('.fan-plot .fan-svg')`))) fail('fan plot wrapper missing');
   // M2C-B review B1: the 100%/0% edge labels must NOT be centered on the
   // stage edges (translateY(-50%) would clip their outer half under
-  // .fan-stage overflow:hidden) — they hug the edge (translateY(0) /
+  // .fan-stage overflow:hidden) - they hug the edge (translateY(0) /
   // translateY(-100%)) so all five render fully while the interior ticks
   // stay centered on their grid lines.
   if (!(await waitFor(win, `(() => {
@@ -2038,7 +2112,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('B1: fan axis edge ticks are not edge-clamped (their outer half is clipped by .fan-stage)');
   }
   step('fan-axis', `B1: right-side axis '${axisTicks}' outside the plot, aligned to the grid, edge ticks clamped`);
-  // M4-A (user correction): the Fan page renders NO waiver status — the row
+  // M4-A (user correction): the Fan page renders NO waiver status - the row
   // lives only in the dashboard GPU Health card (the waiver was accepted
   // during the OC flow; the fan apply-time dialog gate is unaffected).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
@@ -2055,7 +2129,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (applyBtn) fail('read-only fan page shows an Apply button');
     step('fan-readonly', 'read-only fan path: mode + curve + RPM rendered, editing disabled, note shown');
     // M4-D2 (§1): the shared close-to-tray REAL close probe is the LAST step
-    // of EVERY variant — incl. the fan-readonly early exit.
+    // of EVERY variant - incl. the fan-readonly early exit.
     await runCloseToTrayProbe(win);
     console.log('\nUI VERIFY OK\n' + steps.map((s) => '  ' + s).join('\n'));
     app.exit(0);
@@ -2081,7 +2155,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- M4-C: Fixed tab always rendered + the honest disabled state ---------
   // The editable a770 overlay's learned modes are ['auto','curve'] (fixed
-  // writes are genuinely unsupported on this card) — the Fixed chip must
+  // writes are genuinely unsupported on this card) - the Fixed chip must
   // ALWAYS render, DISABLED, with the honest note.
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).some((c) => (c.textContent ?? '').trim() === 'Fixed')`))) {
     fail('M4-C: the Fixed mode chip is missing from the toggle (it must ALWAYS render)');
@@ -2103,14 +2177,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!fixedNote.includes('Fixed speed is not supported on this GPU')) {
     fail(`M4-C: the honest fixed note is missing: '${fixedNote}'`);
   }
-  step('fan-m4c-fixed', `M4-C: Fixed tab always renders — chip disabled (${toggleState}), note '${fixedNote.trim()}'`);
+  step('fan-m4c-fixed', `M4-C: Fixed tab always renders - chip disabled (${toggleState}), note '${fixedNote.trim()}'`);
 
   // --- M4-C + M4-H: dot hover readout + live drag readout ------------------
   // Hover a dot: the popup shows the label ("85% @ 72 °C · #N"-style) and
   // the two editable inputs (Fan % + Temp) synced to the point (M4-H: the
-  // label is a NODE — showReadout updates the label + the input values,
+  // label is a NODE - showReadout updates the label + the input values,
   // never textContent). Round-1 strengthening: the LAST dot is the
-  // 88C/100% TOP-EDGE point — the readout must be FULLY VISIBLE (inside
+  // 88C/100% TOP-EDGE point - the readout must be FULLY VISIBLE (inside
   // the stage bounds).
   const hoverOk = await js(`(() => {
     const dots = Array.from(document.querySelectorAll('.fan-dot'));
@@ -2139,8 +2213,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     return 'ok';
   })()`);
   if (hoverOk !== 'ok') fail(`M4-C/M4-H: hover readout: ${hoverOk}`);
-  // M4-H (S2 — the vanish guard): a pointerout whose relatedTarget is
-  // INSIDE the popup must NOT hide it (the popup is a sibling of the dots —
+  // M4-H (S2 - the vanish guard): a pointerout whose relatedTarget is
+  // INSIDE the popup must NOT hide it (the popup is a sibling of the dots -
   // moving from a dot into the popup fires exactly this event; hiding there
   // would kill the popup before a click can land). The popup must also
   // STAY visible while the pointer is over it.
@@ -2186,7 +2260,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (dragOk !== 'ok') fail(`M4-C: drag readout: ${dragOk}`);
   step('fan-m4c-hover', 'M4-C/M4-H: dot hover popup (label + editable inputs synced), vanish guard (pointerout with relatedTarget inside the popup / pointer over the popup keeps it; leaving hides), live during drag, hidden on pointerout/up');
 
-  // M4-C round-1 fix: a stale hover readout must NOT survive a mode switch —
+  // M4-C round-1 fix: a stale hover readout must NOT survive a mode switch -
   // hover a dot, click Auto, click Curve: the readout must stay hidden
   // (the old renderEditor-scope state survived the switch and popped the
   // readout up for the selected point with no pointer near a dot).
@@ -2206,23 +2280,101 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('fan-m4c-mode-switch', 'M4-C: the mode switch clears the hover readout (no stale readout on returning to Curve)');
 
   // --- M4-H (A2): the POPUP EDIT path (the per-point boxes are DELETED) --
-  // The popup's two inputs replace the old .fan-points-editor row — the
+  // The popup's two inputs replace the old .fan-points-editor row - the
   // row must be GONE everywhere. The edit clamps: a typed temp clamps
   // strictly between the neighbors (dot dataset.t + the input value must
   // show the clamped temp), a typed speed clamps 0..100, the clamped value
   // reflects back into the input, an EMPTIED input keeps the previous
   // value.
   if (await js(`!!document.querySelector('.fan-points-editor')`)) {
-    fail('M4-H: the per-point boxes row (.fan-points-editor) is still rendered (deleted — the popup inputs replace it)');
+    fail('M4-H: the per-point boxes row (.fan-points-editor) is still rendered (deleted - the popup inputs replace it)');
   }
-  const showPopupFor = (idx) => js(`(() => {
+  // M4-I (F1): HOVER shows the PLAIN label readout (pre-M4H behavior) -
+  // pointer-events: none with the editable FIELDS hidden; hovering never
+  // edits.
+  const hoverIsPlain = await js(`(() => {
+    const dots = Array.from(document.querySelectorAll('.fan-dot'));
+    const dot = dots.find((d) => Number(d.dataset.idx) === 3);
+    dot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    const ro = document.querySelector('.fan-dot-readout');
+    if (!ro || ro.hidden) return 'readout-hidden';
+    const editing = ro.classList.contains('fan-dot-readout-editing');
+    const fieldsDisplay = getComputedStyle(ro.querySelector('.fan-dot-readout-fields')).display;
+    const pe = getComputedStyle(ro).pointerEvents;
+    dot.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: null }));
+    const hiddenAfter = ro.hidden === true;
+    return !editing && fieldsDisplay === 'none' && pe === 'none' && hiddenAfter
+      ? 'ok'
+      : JSON.stringify({ editing, fieldsDisplay, pe, hiddenAfter });
+  })()`);
+  if (hoverIsPlain !== 'ok') fail(`M4-I (F1): hover must show the PLAIN label readout (pointer-events none, fields hidden, hides on pointerout): ${hoverIsPlain}`);
+  step('fan-m4i-hover-plain', 'M4-I (F1): hover = the plain label readout (pointer-events none, fields hidden, hides on pointerout) - hovering never edits');
+
+  // M4-I (F1): CLICK (pointerdown+up with NO movement) elevates the dot to
+  // the EDITABLE popup - the fields become visible and the popup STAYS.
+  // The click sequence is embedded (page-side) - the helper is a source
+  // string so it can ride INSIDE larger executeJavaScript expressions.
+  const EDIT_DOT_SRC = (idx) => `(() => {
     const dot = Array.from(document.querySelectorAll('.fan-dot')).find((d) => Number(d.dataset.idx) === ${idx});
     if (!dot) return false;
-    dot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
-    return document.querySelector('.fan-dot-readout')?.hidden === false;
+    const r = dot.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7, clientX: x, clientY: y }));
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7, clientX: x, clientY: y }));
+    return true;
+  })()`;
+  const editDotFor = (idx) => js(EDIT_DOT_SRC(idx));
+  const clickEditOk = await js(`(() => {
+    ${EDIT_DOT_SRC(3)}
+    const ro = document.querySelector('.fan-dot-readout');
+    if (!ro || ro.hidden) return 'readout-hidden';
+    const editing = ro.classList.contains('fan-dot-readout-editing');
+    const fieldsDisplay = getComputedStyle(ro.querySelector('.fan-dot-readout-fields')).display;
+    const pe = getComputedStyle(ro).pointerEvents;
+    return editing && fieldsDisplay === 'flex' && pe === 'auto' ? 'ok' : JSON.stringify({ editing, fieldsDisplay, pe });
   })()`);
+  if (clickEditOk !== 'ok') fail(`M4-I (F1): clicking a dot must elevate it to the EDITABLE popup (fields visible, pointer-events auto): ${clickEditOk}`);
+  step('fan-m4i-click-edit', 'M4-I (F1): clicking a dot (pointerdown+up, no movement) elevates it to the EDITABLE popup (fields visible, pointer-events auto)');
+
+  // M4-I (F1): while EDITING the hover-dismiss is DISABLED - a pointerout
+  // (or a focus-out) never closes the editable popup; it only closes via
+  // another dot's click (the popup moves) or an outside click.
+  const editingKeeps = await js(`(() => {
+    const ro = document.querySelector('.fan-dot-readout');
+    const tInp = ro.querySelector('input[data-readout-field="t"]');
+    const dot = Array.from(document.querySelectorAll('.fan-dot')).find((d) => Number(d.dataset.idx) === 3);
+    dot.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: null }));
+    const keptAfterPointerout = ro.hidden === false;
+    ro.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+    const keptAfterPointerleave = ro.hidden === false;
+    tInp.focus();
+    tInp.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }));
+    const keptAfterFocusout = ro.hidden === false;
+    return keptAfterPointerout && keptAfterPointerleave && keptAfterFocusout ? 'ok' : JSON.stringify({ keptAfterPointerout, keptAfterPointerleave, keptAfterFocusout });
+  })()`);
+  if (editingKeeps !== 'ok') fail(`M4-I (F1): while editing the popup must survive pointerout/pointerleave/focusout: ${editingKeeps}`);
+  // Clicking ANOTHER dot moves the editable popup to it (the editing
+  // switches; the popup stays open).
+  const clickMoves = await js(`(() => {
+    ${EDIT_DOT_SRC(1)}
+    const ro = document.querySelector('.fan-dot-readout');
+    const stillOpen = !!ro && !ro.hidden && ro.classList.contains('fan-dot-readout-editing');
+    const idx = ro?.dataset['idx'] ?? '';
+    return stillOpen && idx === '1' ? 'ok' : JSON.stringify({ stillOpen, idx });
+  })()`);
+  if (clickMoves !== 'ok') fail(`M4-I (F1): clicking another dot must MOVE the editable popup to it: ${clickMoves}`);
+  // A click OUTSIDE (a document-level pointerdown while editing) closes the
+  // editable popup and ends the editing.
+  const clickOutside = await js(`(() => {
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5 }));
+    const ro = document.querySelector('.fan-dot-readout');
+    return !ro || ro.hidden === true ? 'ok' : 'popup-still-open';
+  })()`);
+  if (clickOutside !== 'ok') fail(`M4-I (F1): a click outside must close the editable popup: ${clickOutside}`);
+  step('fan-m4i-edit-lifecycle', 'M4-I (F1): while editing, pointerout/pointerleave/focusout keep the popup; clicking another dot moves it; a click outside closes it');
+
   // Typing a colliding temp clamps between the neighbors.
-  await showPopupFor(2);
+  await editDotFor(2);
   const popupTemp = await js(`(() => {
     const inp = document.querySelector('.fan-dot-readout input[data-readout-field="t"]');
     inp.value = '80';
@@ -2230,7 +2382,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const dot = document.querySelector('.fan-dot[data-idx="2"]');
     return dot.dataset.t + '/' + inp.value;
   })()`);
-  if (popupTemp !== '69/69') fail(`M4-H: popup temp edit: got '${popupTemp}' (expected 69/69 — clamped strictly between the neighbors)`);
+  if (popupTemp !== '69/69') fail(`M4-H: popup temp edit: got '${popupTemp}' (expected 69/69 - clamped strictly between the neighbors)`);
   // Typing an over-range speed clamps to 100.
   const popupSpeed = await js(`(() => {
     const inp = document.querySelector('.fan-dot-readout input[data-readout-field="speed"]');
@@ -2239,33 +2391,31 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const dot = document.querySelector('.fan-dot[data-idx="2"]');
     return dot.dataset.speed + '/' + inp.value;
   })()`);
-  if (popupSpeed !== '100/100') fail(`M4-H: popup speed edit: got '${popupSpeed}' (expected 100/100 — clamped to 0..100)`);
+  if (popupSpeed !== '100/100') fail(`M4-H: popup speed edit: got '${popupSpeed}' (expected 100/100 - clamped to 0..100)`);
   // TYPED temps are clamped to the static 0..100 domain like the drag path
   // (typing 150 / -5 into the OUTER points must clamp to 100 / 0). The
-  // popup holds ONE input pair — the last-dot values are captured BEFORE
-  // switching the popup to the first dot.
+  // popup holds ONE input pair - the last-dot values are captured BEFORE
+  // switching the popup to the first dot (a click MOVES the editing).
   const popupOuter = await js(`(() => {
     const dots = Array.from(document.querySelectorAll('.fan-dot'));
-    const lastDot = dots[dots.length - 1];
-    lastDot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    ${EDIT_DOT_SRC('(dots.length - 1)')}
     const lastInp = document.querySelector('.fan-dot-readout input[data-readout-field="t"]');
     lastInp.value = '150';
     lastInp.dispatchEvent(new Event('input', { bubbles: true }));
     const lastT = document.querySelector('.fan-dot[data-idx="' + (dots.length - 1) + '"]').dataset.t;
     const lastVal = lastInp.value;
-    const firstDot = dots[0];
-    firstDot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    ${EDIT_DOT_SRC(0)}
     const firstInp = document.querySelector('.fan-dot-readout input[data-readout-field="t"]');
     firstInp.value = '-5';
     firstInp.dispatchEvent(new Event('input', { bubbles: true }));
     const firstT = document.querySelector('.fan-dot[data-idx="0"]').dataset.t;
     return lastT + '/' + lastVal + '/' + firstT + '/' + firstInp.value;
   })()`);
-  if (popupOuter !== '100/100/0/0') fail(`M4-H: popup temp domain clamp: got '${popupOuter}' (expected 100/100/0/0 — typing 150 / -5 clamps to the static 0..100 domain)`);
-  // An EMPTIED input must NOT be treated as 0 — clearing the temp AND
+  if (popupOuter !== '100/100/0/0') fail(`M4-H: popup temp domain clamp: got '${popupOuter}' (expected 100/100/0/0 - typing 150 / -5 clamps to the static 0..100 domain)`);
+  // An EMPTIED input must NOT be treated as 0 - clearing the temp AND
   // speed inputs of point 1 must leave the dot dataset unchanged and both
   // inputs as the user left them ('').
-  await showPopupFor(1);
+  await editDotFor(1);
   const popupEmpty = await js(`(() => {
     const dot = document.querySelector('.fan-dot[data-idx="1"]');
     const before = dot.dataset.t + '/' + dot.dataset.speed;
@@ -2280,22 +2430,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     return before + '|' + after + '|' + tVal + '|' + sVal;
   })()`);
   const [peBefore, peAfter, peT, peS] = popupEmpty.split('|');
-  if (peBefore !== peAfter) fail(`M4-H: clearing a popup input moved the point (${peBefore} -> ${peAfter}) — an empty input must keep the previous value (Number('') is 0)`);
-  if (peT !== '' || peS !== '') fail(`M4-H: cleared popup inputs were rewritten to '${peT}'/'${peS}' (expected both to stay '' — no point mutation on empty input)`);
-  // M4-H (S2): the popup stays visible while an input is FOCUSED (focus
-  // leaves BOTH inputs + the pointer is away -> hides; the input focus
-  // alone never hides the popup).
-  const focusKeeps = await js(`(() => {
-    const ro = document.querySelector('.fan-dot-readout');
-    const tInp = ro.querySelector('input[data-readout-field="t"]');
-    tInp.focus();
-    tInp.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: ro.querySelector('input[data-readout-field="speed"]') }));
-    const keptOnInnerFocus = ro.hidden === false;
-    tInp.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }));
-    const hiddenAfterOuterFocus = ro.hidden === true;
-    return keptOnInnerFocus && hiddenAfterOuterFocus ? 'ok' : JSON.stringify({ keptOnInnerFocus, hiddenAfterOuterFocus });
-  })()`);
-  if (focusKeeps !== 'ok') fail(`M4-H: the popup blur rule failed: ${focusKeeps}`);
+  if (peBefore !== peAfter) fail(`M4-H: clearing a popup input moved the point (${peBefore} -> ${peAfter}) - an empty input must keep the previous value (Number('') is 0)`);
+  if (peT !== '' || peS !== '') fail(`M4-H: cleared popup inputs were rewritten to '${peT}'/'${peS}' (expected both to stay '' - no point mutation on empty input)`);
   // The 'Remove point' ACTION-ROW button: one click removes the selected
   // point; at the 2-point floor the button is disabled and clicking is a
   // no-op (the per-point row remove is gone with the boxes).
@@ -2319,13 +2455,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // Re-seed a couple of points so the preset step below has a sane curve.
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Add point'))?.click()`);
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Add point'))?.click()`);
-  step('fan-m4h-popup-edit', 'M4-H: popup edit path — colliding temp clamped between (69), speed clamped to 100, outer domain clamp (150/-5 -> 100/0), empty input keeps the value, focus keeps the popup, action-row remove floors at 2 (disabled); no .fan-points-editor anywhere');
+  step('fan-m4h-popup-edit', 'M4-H: popup edit path - colliding temp clamped between (69), speed clamped to 100, outer domain clamp (150/-5 -> 100/0), empty input keeps the value, focus keeps the popup, action-row remove floors at 2 (disabled); no .fan-points-editor anywhere');
 
-  // --- M4-H (A1): the ADAPTIVE preset chips --------------------------------
-  // Exactly THREE chips: 'Driver Curve' (the base itself — read LIVE at
-  // click time from the store, the chip REPLACES the removed reset button),
-  // 'Quiet' (speeds ×0.5, clamp 0..100), 'Max' (speeds ×1.35, clamp 0..100,
-  // renamed from 'Max cooling'). No 'Max cooling' text anywhere.
+  // --- M4-H (A1)/M4-I (F2): the ADAPTIVE preset chips ----------------------
+  // Exactly THREE chips: 'Intel Curve' (M4-I rename of 'Driver Curve' - the
+  // base itself, read LIVE at click time from the store, the chip REPLACES
+  // the removed reset button), 'Quiet' (speeds ×0.5 with the FIRST point
+  // pinned to 20 % at the base's first temp), 'Max' (speeds ×1.35 with the
+  // SAME 20 % first-point pin, clamp 0..100, renamed from 'Max cooling').
+  // No 'Max cooling' text anywhere.
   if (await js(`document.body.textContent.includes('Max cooling')`)) {
     fail('M4-H: "Max cooling" is still rendered somewhere (renamed to "Max")');
   }
@@ -2333,38 +2471,40 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('M4-H: the "Reset to driver curve" button is still rendered (the chip replaces it)');
   }
   const presetChips = await js(`JSON.stringify(Array.from(document.querySelectorAll('.fan-presets .chip')).map((c) => c.textContent.trim()))`);
-  if (JSON.parse(presetChips).join(',') !== 'Driver Curve,Quiet,Max') {
-    fail(`M4-H: the preset chips are '${presetChips}' (expected 'Driver Curve,Quiet,Max')`);
+  if (JSON.parse(presetChips).join(',') !== 'Intel Curve,Quiet,Max') {
+    fail(`M4-I: the preset chips are '${presetChips}' (expected 'Intel Curve,Quiet,Max' - the M4-I rename)`);
   }
   const presetDots = () => js(`JSON.stringify(Array.from(document.querySelectorAll('.fan-dot')).map((d) => ({ t: Number(d.dataset.t), s: Number(d.dataset.speed) })))`);
   const clickPreset = (name) => js(`Array.from(document.querySelectorAll('.fan-presets .chip')).find((c) => c.textContent.trim() === '${name}')?.click()`);
-  // 'Driver Curve' restores the SEEDED BASE — the store's fanCurve (the
+  // 'Intel Curve' restores the SEEDED BASE - the store's fanCurve (the
   // fixture curve) through the same seedCurvePoints the editor starts from.
-  await clickPreset('Driver Curve');
+  await clickPreset('Intel Curve');
   await sleep(250);
   const driverDots = JSON.parse(await presetDots());
   const fixtureCurve = (await js(`window.arcPower.getCurrentSettings(0)`).then((s) => s.fanCurve))
     .map((p) => ({ t: p.t, s: p.speedPct }));
   if (JSON.stringify(driverDots) !== JSON.stringify(fixtureCurve)) {
-    fail(`M4-H: 'Driver Curve' did not restore the seeded base: ${JSON.stringify(driverDots)} != ${JSON.stringify(fixtureCurve)}`);
+    fail(`M4-I: 'Intel Curve' did not restore the seeded base: ${JSON.stringify(driverDots)} != ${JSON.stringify(fixtureCurve)}`);
   }
-  // 'Quiet' = the base's speeds ×0.5 (same temps).
+  // 'Quiet' = the FIRST point pinned to 20 (the mock base already starts at
+  // 20 - the pure unit test discriminates on a NON-20 base), the REST ×0.5
+  // (same temps).
   await clickPreset('Quiet');
   await sleep(250);
   const quietDots = JSON.parse(await presetDots());
-  if (quietDots.length !== fixtureCurve.length) fail(`M4-H: 'Quiet' point count is ${quietDots.length} (expected ${fixtureCurve.length})`);
-  const quietOk = quietDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === Math.round(fixtureCurve[i].s * 0.5));
-  if (!quietOk) fail(`M4-H: 'Quiet' math is wrong (expected speeds ×0.5): ${JSON.stringify(quietDots)} vs base ${JSON.stringify(fixtureCurve)}`);
-  // 'Max' = the base's speeds ×1.35 (clamp 0..100 — the ramp reaches 100%
-  // sooner).
+  if (quietDots.length !== fixtureCurve.length) fail(`M4-I: 'Quiet' point count is ${quietDots.length} (expected ${fixtureCurve.length})`);
+  const quietOk = quietDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === (i === 0 ? 20 : Math.round(fixtureCurve[i].s * 0.5)));
+  if (!quietOk) fail(`M4-I: 'Quiet' math is wrong (first point pinned to 20, rest speeds ×0.5): ${JSON.stringify(quietDots)} vs base ${JSON.stringify(fixtureCurve)}`);
+  // 'Max' = the FIRST point pinned to 20 (20×1.35 = 27 must NOT apply to
+  // it), the rest ×1.35 (clamp 0..100 - the ramp reaches 100% sooner).
   await clickPreset('Max');
   await sleep(250);
   const maxDots = JSON.parse(await presetDots());
-  if (maxDots.length !== fixtureCurve.length) fail(`M4-H: 'Max' point count is ${maxDots.length} (expected ${fixtureCurve.length})`);
-  const maxOk = maxDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === Math.min(100, Math.round(fixtureCurve[i].s * 1.35)));
-  if (!maxOk) fail(`M4-H: 'Max' math is wrong (expected speeds ×1.35 capped 100): ${JSON.stringify(maxDots)} vs base ${JSON.stringify(fixtureCurve)}`);
-  if (maxDots.at(-1).s !== 100) fail(`M4-H: the 'Max' preset must end at 100 % (got ${maxDots.at(-1).s})`);
-  step('fan-presets', `M4-H: preset chips '${presetChips}'; Driver Curve restores the seeded base; Quiet ×0.5 -> ${JSON.stringify(quietDots)}; Max ×1.35 capped 100 -> ${JSON.stringify(maxDots)}; no 'Max cooling' text`);
+  if (maxDots.length !== fixtureCurve.length) fail(`M4-I: 'Max' point count is ${maxDots.length} (expected ${fixtureCurve.length})`);
+  const maxOk = maxDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === (i === 0 ? 20 : Math.min(100, Math.round(fixtureCurve[i].s * 1.35))));
+  if (!maxOk) fail(`M4-I: 'Max' math is wrong (first point pinned to 20, rest ×1.35 capped 100): ${JSON.stringify(maxDots)} vs base ${JSON.stringify(fixtureCurve)}`);
+  if (maxDots.at(-1).s !== 100) fail(`M4-I: the 'Max' preset must end at 100 % (got ${maxDots.at(-1).s})`);
+  step('fan-presets', `M4-I: preset chips '${presetChips}'; Intel Curve restores the seeded base; Quiet 20%-pinned first point + ×0.5 -> ${JSON.stringify(quietDots)}; Max 20%-pinned first point + ×1.35 capped 100 -> ${JSON.stringify(maxDots)}; no 'Max cooling' text`);
 
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings'))?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing');
@@ -2379,7 +2519,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const errMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
   if (!/outside the range/i.test(errMsg)) fail(`fan failure toast not mapped via errorMessage: '${errMsg}'`);
   // F3 instant: a fan REFUSAL (io-failed) must toast the COMPOSED refusal
-  // message (per.message wins over the errorCode mapping — review MINOR 1).
+  // message (per.message wins over the errorCode mapping - review MINOR 1).
   backend.injectFail('fanCurve', 'io-failed');
   await clearToasts();
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings'))?.click()`);
@@ -2407,18 +2547,18 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (setOff.startWithWindows !== false || setOff.applyOnBoot !== false) fail(`startupSet(false): ${JSON.stringify(setOff)}`);
   await js(`window.arcPower.profilesSettingsSave({ startWithWindows: false })`);
   // Derivation B: the profile's start-at-boot (ocOnBoot + active profile)
-  // owns the SAME value — applyOnBoot composes true, startWithWindows false.
+  // owns the SAME value - applyOnBoot composes true, startWithWindows false.
   await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: true, activeProfileId: 'profile-1' })`);
   const bootOn = await js(`window.arcPower.startupSet(true)`);
   if (bootOn.startWithWindows !== false || bootOn.applyOnBoot !== true) fail(`startupSet(true) with ocOnBoot: ${JSON.stringify(bootOn)}`);
   const bootOff = await js(`window.arcPower.startupSet(false)`);
   if (bootOff.startWithWindows !== false || bootOff.applyOnBoot !== false) fail(`startupSet(false) with ocOnBoot: ${JSON.stringify(bootOff)}`);
   // Validation: enabled must be a boolean (the old two-arg call shape is
-  // gone — a second arg is ignored, never required).
+  // gone - a second arg is ignored, never required).
   const badRejected = await js(`(async () => { try { await window.arcPower.startupSet('yes'); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
   if (badRejected !== 'rejected') fail(`startupSet('yes') was not rejected (${badRejected})`);
   const twoArgIgnored = await js(`window.arcPower.startupSet(true, 'profile-1')`);
-  if (twoArgIgnored.startWithWindows !== false) fail(`startupSet(true, id) — the second arg must be ignored: ${JSON.stringify(twoArgIgnored)}`);
+  if (twoArgIgnored.startWithWindows !== false) fail(`startupSet(true, id) - the second arg must be ignored: ${JSON.stringify(twoArgIgnored)}`);
   // Restore the baseline (value off, ocOnBoot off).
   await js(`window.arcPower.startupSet(false)`);
   await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null })`);
@@ -2427,7 +2567,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 8b. M4-D: sysinfo + window-op channels through the REAL preload ------
   // The mock adapter serves the fixed fixture (never PowerShell); the
   // injected window ops COUNT in ui-verify mode (performing minimize/close
-  // mid-verify would disrupt the flow) — run 2 pins the title-bar buttons
+  // mid-verify would disrupt the flow) - run 2 pins the title-bar buttons
   // via getWindowOpCounts.
   const sysinfo = await js(`window.arcPower.sysinfo()`);
   if (sysinfo?.cpu?.name !== 'Intel(R) Core(TM) i7-14700K' || sysinfo?.cpu?.cores !== 20) {
@@ -2437,7 +2577,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`sysinfo videoControllers wrong: ${JSON.stringify(sysinfo?.videoControllers)}`);
   }
   // Snapshot BEFORE the calls (a live reference would read the post-call
-  // values for both sides — the counters are a single mutable object).
+  // values for both sides - the counters are a single mutable object).
   const opsBefore = { ...getWindowOpCounts() };
   await js(`window.arcPower.windowMinimize()`);
   await js(`window.arcPower.windowMaximizeToggle()`);
@@ -2470,7 +2610,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   const monLabels = await js(`Array.from(document.querySelectorAll('.mon-readout .stat-label')).map((l) => l.textContent).join(',')`);
   // M4-D2 (§11): the readout gained the CPU utilization / CPU temperature /
-  // GPU memory tiles — ALL the old tiles stay (the compact layout must not
+  // GPU memory tiles - ALL the old tiles stay (the compact layout must not
   // drop them).
   for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Utilization', 'Fan', 'FPS', 'CPU utilization', 'CPU temperature', 'GPU memory']) {
     if (!monLabels.includes(want)) fail(`monitoring readout missing '${want}' (got '${monLabels}')`);
@@ -2479,16 +2619,46 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 61 °C, 2834 MiB = 2971324416 / 1048576).
   const tileOf = (label) => `Array.from(document.querySelectorAll('.mon-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === '${label}')?.querySelector('.stat-value')?.textContent ?? ''`;
   if (!(await waitFor(win, `(${tileOf('CPU utilization')}) === '42'`, 8000))) {
-    fail(`CPU utilization tile is '${await js(tileOf('CPU utilization'))}' (expected '42' — the mock cpuUtilPct)`);
+    fail(`CPU utilization tile is '${await js(tileOf('CPU utilization'))}' (expected '42' - the mock cpuUtilPct)`);
   }
-  if ((await js(tileOf('CPU temperature'))) !== '61') fail(`CPU temperature tile is '${await js(tileOf('CPU temperature'))}' (expected '61' — the mock cpuTempC)`);
-  if ((await js(tileOf('GPU memory'))) !== '2834') fail(`GPU memory tile is '${await js(tileOf('GPU memory'))}' (expected '2834 MiB' — 2971324416/1048576)`);
-  step('mon-readout', `monitoring readout grid: ${monLabels}; new tiles 42 % / 61 °C / 2834 MiB (compact)`);
+  // M4-I (C1): the mock temp VARIES 61/62 - the exact-value pin accepts both
+  // (under RID_MOCK_FROZEN_TEMP=1 the shared frozenDrop already reports '-'
+  // by the time the verify reaches monitoring - the gated pin below asserts
+  // that state explicitly).
+  const cpuTemp = await js(tileOf('CPU temperature'));
+  const frozenActive = process.env.RID_MOCK_FROZEN_TEMP === '1';
+  if (!(cpuTemp === '61' || cpuTemp === '62' || (frozenActive && cpuTemp === '-'))) {
+    fail(`CPU temperature tile is '${cpuTemp}' (expected '61'|'62' - the varying mock${frozenActive ? ', or the frozen "-"' : ''})`);
+  }
+  if ((await js(tileOf('GPU memory'))) !== '2834') fail(`GPU memory tile is '${await js(tileOf('GPU memory'))}' (expected '2834 MiB' - 2971324416/1048576)`);
+  step('mon-readout', `monitoring readout grid: ${monLabels}; new tiles 42 % / ${cpuTemp} °C / 2834 MiB (compact)`);
+
+  // M4-I (C1): RID_MOCK_FROZEN_TEMP=1 -> the mock temp is CONSTANT, so the
+  // shared frozenDrop reports null after 5 identical samples - the CPU
+  // temperature tile reads the honest '-' (the verifiable Z97-static-zone
+  // shape). Gated: the knob is NOT part of the default matrix.
+  if (process.env.RID_MOCK_FROZEN_TEMP === '1') {
+    if (!(await waitFor(win, `(${tileOf('CPU temperature')}) === '-'`, 12000))) {
+      fail(`M4-I (C1): RID_MOCK_FROZEN_TEMP=1 - the CPU-temperature tile is '${await js(tileOf('CPU temperature'))}' (expected '-' - 5 identical samples trip the shared frozenDrop)`);
+    }
+    step('mon-frozen', 'M4-I (C1): RID_MOCK_FROZEN_TEMP=1 - the frozen mock temp drops to the honest "-" (the Z97 static-zone shape)');
+  }
+  // M4-I (C2): RID_MOCK_NO_POWER_METER=1 -> the mock's cpuPowerW stays null
+  // (the honest no-metering shape) - the dashboard Wattage tile reads '-'.
+  if (process.env.RID_MOCK_NO_POWER_METER === '1') {
+    await js(`location.hash = '#/dashboard'`);
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Wattage')?.querySelector('.stat-value')?.textContent === '-'`, 8000))) {
+      fail('M4-I (C2): RID_MOCK_NO_POWER_METER=1 - the Wattage tile does not read "-" (the mock cpuPowerW must stay null-honest)');
+    }
+    await js(`location.hash = '#/monitoring'`);
+    await sleep(250);
+    step('mon-no-power', 'M4-I (C2): RID_MOCK_NO_POWER_METER=1 - the Wattage tile reads "-" (no PowerMeter -> honest)');
+  }
 
   if (process.env.RID_MOCK_FPS === '1') {
     // M4-D2: RID_MOCK_FPS=1 -> the FPS tile shows the FIXED mock value.
     if (!(await waitFor(win, `(${tileOf('FPS')}) === '60'`, 8000))) {
-      fail(`FPS tile is '${await js(tileOf('FPS'))}' (expected '60' — the RID_MOCK_FPS fixed sample)`);
+      fail(`FPS tile is '${await js(tileOf('FPS'))}' (expected '60' - the RID_MOCK_FPS fixed sample)`);
     }
     step('mon-fps-mock', `RID_MOCK_FPS=1: FPS tile reads the fixed mock value (60)`);
   } else {
@@ -2534,15 +2704,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-C: monitor popup text is '${popupText}' (expected '<value> MHz · <n> s ago' on the clock segment)`);
   }
   step('mon-m4c-popup', `M4-C: hover popup on the expanded clock segment: '${popupText}'`);
-  // M4-C round-2 fix: RIGHT-EDGE hovers — the NEWEST sample, the common
-  // case — must keep the popup inside the card. The old unclamped
+  // M4-C round-2 fix: RIGHT-EDGE hovers - the NEWEST sample, the common
+  // case - must keep the popup inside the card. The old unclamped
   // centering (left = 10 + x with x up to w - 8) pushed the ~120px box up
   // to ~60px past the card's right edge and .seg-card{overflow:hidden}
   // clipped the "· N s ago" tail. Hover exactly at the canvas's right edge
   // (xNorm = 1 -> the newest sample) and assert the popup's
   // getBoundingClientRect() is inside the seg-card's. The flip-below is
   // asserted whenever the hovered sample sits in the no-room-above zone
-  // (top-edge samples — the box used to park over the segment header):
+  // (top-edge samples - the box used to park over the segment header):
   // whether that zone is hit depends on the telemetry value at the newest
   // sample, so the class check is conditional, the inside-card check is
   // unconditional (it fails ~60px past the right edge without the clamp).
@@ -2569,20 +2739,20 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       : JSON.stringify({ pLeft: Math.round(pr.left), pRight: Math.round(pr.right), pTop: Math.round(pr.top), pBottom: Math.round(pr.bottom), cLeft: Math.round(cr.left), cRight: Math.round(cr.right), cTop: Math.round(cr.top), cBottom: Math.round(cr.bottom), inside, below, py, styleLeft: popup.style.left, needFlip: py - 6 - pr.height < 0 });
   })()`);
   if (popupInCard !== 'ok') fail(`M4-C: right-edge hover popup escapes the seg-card (clamp + flip-below): ${popupInCard}`);
-  step('mon-m4c-popup-edge', 'M4-C: right-edge hover (newest sample) keeps the popup inside the card — horizontal clamp + top-edge flip-below');
-  // M4-C round-1 fix: a STATIONARY hover must survive telemetry ticks —
+  step('mon-m4c-popup-edge', 'M4-C: right-edge hover (newest sample) keeps the popup inside the card - horizontal clamp + top-edge flip-below');
+  // M4-C round-1 fix: a STATIONARY hover must survive telemetry ticks -
   // redrawAll passes the persisted hover crosshair back into drawSeries
   // (before the fix the crosshair vanished on every tick while the popup
   // stayed). Probe canvas pixels in the crosshair's column away from the
   // sample: the dashed vertical line lights roughly half of them; without
   // persistence the column is bare (the polyline crosses it at ONE point
-  // only — excluded by the band around y; the horizontal grid lines add a
+  // only - excluded by the band around y; the horizontal grid lines add a
   // handful at most).
-  // M4-F (run 2): the wait is now a POLL instead of one fixed 2.6 s sleep —
+  // M4-F (run 2): the wait is now a POLL instead of one fixed 2.6 s sleep -
   // the fixed sleep flaked under machine load (the pin then raced the
   // redraw timing). The poll waits for the FIRST tick to have landed (a
   // pre-tick pass would prove nothing), then retries up to 8 s: the
-  // crosshair persists across ticks, so any post-tick check catches it —
+  // crosshair persists across ticks, so any post-tick check catches it -
   // while a lost crosshair (the bug) stays gone after the first tick and
   // the poll times out honestly.
   const crosshairOk = await js(`(async () => {
@@ -2609,7 +2779,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const before = columnLits();
     if (before < 10) return 'no-crosshair-at-hover:' + before;
     // Let at least one telemetry tick land (0.5 s cadence) BEFORE the
-    // first post-tick check — a pre-tick pass would prove nothing.
+    // first post-tick check - a pre-tick pass would prove nothing.
     await new Promise((r) => setTimeout(r, 750));
     const t0 = Date.now();
     while (Date.now() - t0 < 8000) {
@@ -2691,7 +2861,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `!!${rowByName('ui-verify profile')}`))) fail('created profile did not appear in the list');
   step('profiles-create', `created 'ui-verify profile' from current settings`);
 
-  // Change the driver state THROUGH the OC UI (keeps the store honest — a
+  // Change the driver state THROUGH the OC UI (keeps the store honest - a
   // raw api.applySettings would bypass the store and break the no-op
   // comparison in the profile load), then load the profile: real change ->
   // exactly two success toasts (power + freq).
@@ -2726,10 +2896,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- M4-D (user): the profile LOAD auto re-prompt + single retry -------
   // A NEVER-accepted session whose load hits waiver-not-set (the driver
   // lost the waiver, no consent is persisted): MAIN cannot silently re-set
-  // (the store is unaccepted), so the failure surfaces — and the renderer
+  // (the store is unaccepted), so the failure surfaces - and the renderer
   // re-prompts ONCE (the fresh caps show the driver truth) + retries on
   // accept. The retry lands with REAL changes and exactly one dialog.
-  // 1. Dirty the driver state through the OC UI (the session is accepted —
+  // 1. Dirty the driver state through the OC UI (the session is accepted -
   //    no dialog) so the retry is a real change (the profile holds 210 W /
   //    0 MHz).
   await gotoOverclocking();
@@ -2741,9 +2911,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/profiles'`);
   await sleep(250);
   // 2. The STORE loses the persisted acceptance (a never-accepted session)
-  //    while the driver flag + renderer caps still say accepted — the load
+  //    while the driver flag + renderer caps still say accepted - the load
   //    gate reads the caps (no gate dialog), the silent re-set in main
-  //    reads the store (no auto re-set — the failure surfaces).
+  //    reads the store (no auto re-set - the failure surfaces).
   await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: false });
   // 3. One-shot driver waiver loss on the profile apply.
   backend.injectFail('powerLimitW', 'waiver-not-set', true);
@@ -2757,7 +2927,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`document.querySelector('.modal button.btn-danger')?.click()`);
   // 5. Accept -> the retry runs ONCE -> the failed control (power limit)
   //    lands. NOTE: the first attempt partially applied the OTHER controls
-  //    (per-control apply semantics — the injected failure only hit
+  //    (per-control apply semantics - the injected failure only hit
   //    powerLimitW, so the freq 50->0 landed there), so the retry's only
   //    REAL change is the power limit: exactly ONE success toast + the
   //    'Profile loaded' info + no error toast + no second dialog.
@@ -2812,7 +2982,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- Fix-round F1 + F3 (M4-D2 review 1): profiles-settings-save is the
   // --- ONLY Run-value writer; a failed toggle re-renders from startup-get --
-  // F1: the value derives from the persisted intent and SELF-HEALS — ocOnBoot
+  // F1: the value derives from the persisted intent and SELF-HEALS - ocOnBoot
   // on + the value dropped externally, a NON-toggle settings save re-writes
   // it (the old design never re-derived; the app silently stopped registering).
   const f1ActiveId = await js(`window.arcPower.profilesList().then((e) => e.settings.activeProfileId)`);
@@ -2820,10 +2990,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: true, activeProfileId: '${f1ActiveId}' })`);
   if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot === true)`, 5000))) fail('F1: enabling ocOnBoot through profiles-settings-save did not write the Run value');
   await js(`window.arcPower.startupSet(false)`); // simulate external deletion
-  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot === false)`, 5000))) fail('F1: setup — the value removal did not land');
+  if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot === false)`, 5000))) fail('F1: setup - the value removal did not land');
   await js(`window.arcPower.profilesSettingsSave({ activeProfileId: '${f1ActiveId}' })`); // non-toggle save
   if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot === true)`, 5000))) fail('F1: a non-toggle settings save did not self-heal the Run value');
-  // F3: a FAILED toggle-off (settings save throws) — the value write landed
+  // F3: a FAILED toggle-off (settings save throws) - the value write landed
   // (set-before-save), the intent did NOT change -> applyOnBoot stays false
   // while the persisted ocOnBoot stays true: the boot card must re-render
   // from startup-get (checkbox follows the derivation, mismatch hint shows).
@@ -2852,7 +3022,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await clearToasts();
   await js(`document.querySelector('.boot-checkbox').click()`);
   if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot === true)`, 5000))) fail('F3: the recovery click after the failed toggle did not land applyOnBoot=true');
-  // Restore the baseline (value off, ocOnBoot off — the state the rename/
+  // Restore the baseline (value off, ocOnBoot off - the state the rename/
   // delete steps below expect).
   await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null })`);
   if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.applyOnBoot === false)`, 5000))) fail('F3: the baseline restore (ocOnBoot off) did not land');
@@ -2894,61 +3064,61 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // Override flow: with the profile loaded (active), the button reads
   // 'Override Profile' and the click PRE-FILLS the modal with the applied
   // profile's name; the save OVERWRITES the ACTIVE profile (same id) and
-  // carries its OWN ocOnBoot (never silently zeroed — N2). The reload
+  // carries its OWN ocOnBoot (never silently zeroed - N2). The reload
   // check: a fresh reload keeps the button on 'Override Profile' (the
   // activeProfileId persists).
   await js(`location.hash = '#/tuning'`);
   await sleep(250);
-  if (!(await waitFor(win, `(document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? '').trim() === 'Save as Profile'`, 5000))) {
-    fail(`M4-H: the save button does not read 'Save as Profile' with no profile applied: '${await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(win, `(document.querySelector('.oc-mode-row .profile-save-btn')?.textContent ?? '').trim() === 'Save as Profile'`, 5000))) {
+    fail(`M4-H: the save button does not read 'Save as Profile' with no profile applied: '${await js(`document.querySelector('.oc-mode-row .profile-save-btn')?.textContent ?? ''`)}'`);
   }
   const m4hRowByName = (name) => `Array.from(document.querySelectorAll('.profile-row')).find((r) => (r.querySelector('.profile-name')?.textContent ?? '') === '${name}')`;
   const m4hClickRowButton = (name, label) => js(`(() => { const r = ${m4hRowByName(name)}; if (!r) return false; const b = Array.from(r.querySelectorAll('button')).find((b) => b.textContent.trim() === '${label}'); if (!b) return false; b.click(); return true; })()`);
   // Create: the modal opens EMPTY with the create title.
   await js(`document.querySelector('.profile-save-btn').click()`);
   if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Save as Profile'`, 5000))) {
-    fail(`M4-H: the save-card modal title is '${await js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`)}' (expected 'Save as Profile' on create)`);
+    fail(`M4-I: the save-button modal title is '${await js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`)}' (expected 'Save as Profile' on create)`);
   }
   if ((await js(`document.querySelector('.modal-input')?.value ?? 'x'`) !== '')) fail('M4-H: the create modal must NOT be prefilled');
   await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'M4H saved profile'; })()`);
   await js(`document.querySelector('.modal button.btn-primary').click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-H: the save-card create did not toast success');
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-I: the save-button create did not toast success');
   const createdM4h = await js(`window.arcPower.profilesList().then((e) => (e.profiles.find((p) => p.name === 'M4H saved profile') ?? null))`);
-  if (!createdM4h) fail('M4-H: the save-card create did not write the profile');
-  if (createdM4h.ocOnBoot !== false) fail(`M4-H: a created profile must have ocOnBoot false (got ${createdM4h.ocOnBoot})`);
-  if (!createdM4h.settings || Object.keys(createdM4h.settings).length === 0) fail('M4-H: the created profile has no settings');
+  if (!createdM4h) fail('M4-I: the save-button create did not write the profile');
+  if (createdM4h.ocOnBoot !== false) fail(`M4-I: a created profile must have ocOnBoot false (got ${createdM4h.ocOnBoot})`);
+  if (!createdM4h.settings || Object.keys(createdM4h.settings).length === 0) fail('M4-I: the created profile has no settings');
   const m4hCreatedId = createdM4h.id;
-  step('m4h-save-create', `M4-H: save-card create flow — modal (empty) -> 'M4H saved profile' written (id '${m4hCreatedId}', ocOnBoot false, ${Object.keys(createdM4h.settings).length} settings keys) + success toast`);
+  step('m4h-save-create', `M4-H: save-card create flow - modal (empty) -> 'M4H saved profile' written (id '${m4hCreatedId}', ocOnBoot false, ${Object.keys(createdM4h.settings).length} settings keys) + success toast`);
   await clearToasts();
   // Load the profile (the real Profiles-page Load flow marks it active).
   await js(`location.hash = '#/profiles'`);
   await sleep(250);
   if (!(await m4hClickRowButton('M4H saved profile', 'Load'))) fail('M4-H: the profile Load button did not click');
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.activeProfileId === '${m4hCreatedId}')`, 5000))) {
-    fail('M4-H: the load did not mark the profile active');
+    fail('M4-I: the load did not mark the profile active');
   }
   await js(`location.hash = '#/tuning'`);
   await sleep(250);
-  if (!(await waitFor(win, `(document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? '').trim() === 'Override Profile'`, 5000))) {
-    fail(`M4-H: the save button does not read 'Override Profile' with the profile applied: '${await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(win, `(document.querySelector('.oc-mode-row .profile-save-btn')?.textContent ?? '').trim() === 'Override Profile'`, 5000))) {
+    fail(`M4-H: the save button does not read 'Override Profile' with the profile applied: '${await js(`document.querySelector('.oc-mode-row .profile-save-btn')?.textContent ?? ''`)}'`);
   }
   // Override: the modal PRE-FILLS the applied profile's name; saving
   // overwrites the ACTIVE id with the same ocOnBoot.
   await js(`document.querySelector('.profile-save-btn').click()`);
   if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Override Profile'`, 5000))) {
-    fail(`M4-H: the override modal title is '${await js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`)}' (expected 'Override Profile')`);
+    fail(`M4-I: the override modal title is '${await js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`)}' (expected 'Override Profile')`);
   }
   if ((await js(`document.querySelector('.modal-input')?.value ?? ''`)) !== 'M4H saved profile') {
-    fail(`M4-H: the override modal must be prefilled with the applied profile's name (got '${await js(`document.querySelector('.modal-input')?.value ?? ''`)}')`);
+    fail(`M4-I: the override modal must be prefilled with the applied profile's name (got '${await js(`document.querySelector('.modal-input')?.value ?? ''`)}')`);
   }
   await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'M4H saved profile v2'; })()`);
   await js(`document.querySelector('.modal button.btn-primary').click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-H: the save-card override did not toast success');
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-I: the save-button override did not toast success');
   const overridden = await js(`window.arcPower.profilesList().then((e) => (e.profiles.find((p) => p.id === '${m4hCreatedId}') ?? null))`);
-  if (!overridden) fail(`M4-H: the override LOST the profile id '${m4hCreatedId}' (must overwrite the ACTIVE profile)`);
-  if (overridden.name !== 'M4H saved profile v2') fail(`M4-H: the override did not rename the profile (name '${overridden.name}')`);
+  if (!overridden) fail(`M4-I: the override LOST the profile id '${m4hCreatedId}' (must overwrite the ACTIVE profile)`);
+  if (overridden.name !== 'M4H saved profile v2') fail(`M4-I: the override did not rename the profile (name '${overridden.name}')`);
   await clearToasts();
-  step('m4h-save-override', `M4-H: override flow — button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
+  step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`, 15000))) {
@@ -2956,8 +3126,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   await js(`location.hash = '#/tuning'`);
   await sleep(300);
-  if (!(await waitFor(win, `(document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? '').trim() === 'Override Profile'`, 8000))) {
-    fail(`M4-H: after a fresh reload the save button reads '${await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`)}' (expected 'Override Profile' — the activeProfileId persists)`);
+  if (!(await waitFor(win, `(document.querySelector('.oc-mode-row .profile-save-btn')?.textContent ?? '').trim() === 'Override Profile'`, 8000))) {
+    fail(`M4-H: after a fresh reload the save button reads '${await js(`document.querySelector('.oc-mode-row .profile-save-btn')?.textContent ?? ''`)}' (expected 'Override Profile' - the activeProfileId persists)`);
   }
   step('m4h-save-reload', 'M4-H: fresh reload keeps the active profile -> the save button still reads "Override Profile"');
   // Cleanup the M4-H profile + clear the active slot.
@@ -2967,7 +3137,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- 16. M3-A/M3-B Tweaks page: the catalog renders with the live (mock)
   // --- states; applyable entries get working Enable/Disable/Revert buttons
-  // --- (mock apply — no elevation), fullscreen stays read-only ------------
+  // --- (mock apply - no elevation), fullscreen stays read-only ------------
   await js(`location.hash = '#/tweaks'`);
   if (!(await waitFor(win, `document.querySelectorAll('.tweak-card').length === 4`))) {
     fail(`tweaks page did not render 4 catalog cards (got ${await js(`document.querySelectorAll('.tweak-card').length`)})`);
@@ -2978,7 +3148,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // game-dvr=Default, fullscreen-optimizations=Active.
   const tweakStateOf = (id) => js(`document.querySelector('.tweak-card[data-tweak="${id}"] .tweak-state-label')?.textContent ?? ''`);
   if (!(await waitFor(win, `(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-state-label')?.textContent ?? '').trim() === 'Off'`))) {
-    fail(`mpo state is '${await tweakStateOf('mpo')}' (expected 'Off' — the fixture default)`);
+    fail(`mpo state is '${await tweakStateOf('mpo')}' (expected 'Off' - the fixture default)`);
   }
   if ((await tweakStateOf('hags')).trim() !== 'Active') fail(`hags state is '${await tweakStateOf('hags')}' (expected 'Active')`);
   if ((await tweakStateOf('game-dvr')).trim() !== 'Default') fail(`game-dvr state is '${await tweakStateOf('game-dvr')}' (expected 'Default')`);
@@ -3037,7 +3207,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('tweaks', `Tweaks: ${tweakIds} rendered; mpo=Off, hags=Active (HwSchMode=0x2), game-dvr=Default, fullscreen=Active; Enable/Disable/Revert per applyable card (mock round trip: mpo -> Active -> revert -> Default), fullscreen read-only`);
 
   // --- M4-D (user) + M4-D2: the Settings tab ------------------------------
-  // Start with Windows (the HKCU Run value via the MOCK startup adapter —
+  // Start with Windows (the HKCU Run value via the MOCK startup adapter -
   // never spawns, never elevates), Start minimized (persisted), Close to
   // tray (persisted), Log to file (persisted monitorLogToFile), the app
   // version row.
@@ -3047,8 +3217,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.2 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.2 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3080,7 +3250,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startMinimized === false)`, 5000))) {
     fail('M4-D: Start minimized did not persist startMinimized=false');
   }
-  // M4-D2 (§10): the Log to file round trip — the persisted monitorLogToFile
+  // M4-D2 (§10): the Log to file round trip - the persisted monitorLogToFile
   // toggle. Gated on RID_MOCK_LOG_DIR: with the knob the appends land in the
   // mock dir (and the CSV pins below run); without it the round trip is
   // SKIPPED so the verify never writes to the real Documents folder.
@@ -3094,17 +3264,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.2`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.3`);
 
   // Start with Windows round trip + the honest shared-value state. The
-  // Settings checkbox shows ON whenever the Run value exists — the profile's
+  // Settings checkbox shows ON whenever the Run value exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
   await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: true, activeProfileId: 'profile-1' })`);
   await js(`window.arcPower.startupSet(true)`);
   await js(`location.hash = '#/dashboard'`);
   await js(`location.hash = '#/settings'`);
   await sleep(250);
-  // The checkbox is ON (the value exists — the profile owns it) + the
+  // The checkbox is ON (the value exists - the profile owns it) + the
   // reworded hint explains the ownership.
   if (!(await waitFor(win, `${startWithBox}.checked === true`, 5000))) {
     fail('M4-D2: the Settings checkbox must show ON whenever the value exists (the profile start-at-boot owns it here)');
@@ -3149,9 +3319,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- M4-D review F4: the PARTIAL-FAILURE honesty path (M4-D2 shape) ------
   // The value write lands but the settings save throws: the catch path must
   // re-query startup-get so the card re-renders from the DERIVED state
-  // (never a blindly reverted checkbox that lies — the derivation is the
+  // (never a blindly reverted checkbox that lies - the derivation is the
   // truth the startup-get channel composes). The settings-save failure is
-  // injected by wrapping the SESSION store's saveSettings — the very store
+  // injected by wrapping the SESSION store's saveSettings - the very store
   // the IPC handler writes through.
   await store.saveSettings({ ...(await store.loadSettings()), startWithWindows: false });
   const realSaveSettings = store.saveSettings.bind(store);
@@ -3177,7 +3347,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('M4-D: the partial-failure settings save did not surface the honest error toast');
   }
   // The card re-rendered from startup-get (no crash, the checkbox follows
-  // the DERIVED truth — settings still say false, so the value the write
+  // the DERIVED truth - settings still say false, so the value the write
   // landed is not composable into startWithWindows; the honest error toast
   // is the surfaced truth, and the next click recovers).
   if (!(await waitFor(win, `!!${startWithBox}`, 5000))) {
@@ -3209,7 +3379,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // in the session mock apply log: applied with NO refusal. The persisted
   // acceptance is seeded (the M4-D profiles-retry section above deliberately
   // flipped the store to false mid-run; the DEVICE-side waiver is accepted
-  // in every variant by this point — this seed mirrors a real accepted
+  // in every variant by this point - this seed mirrors a real accepted
   // session).
   await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: true });
   const bootProbeProfile = await js(`window.arcPower.profilesSave({ id: 'boot-probe', name: 'boot-probe', settings: { powerLimitW: 210 }, ocOnBoot: false })`);
@@ -3233,17 +3403,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // Placed AFTER the boot-probe section: the store is ACCEPTED here, so the
   // fresh reload below re-boots WITHOUT the waiver prompt (M4-D permanent
   // acceptance) and the persisted theme must survive a REAL renderer reload
-  // (M3 — the boot sequence re-applies it from the envelope). The pins:
+  // (M3 - the boot sequence re-applies it from the envelope). The pins:
   //   1. the card renders 3 swatches (button[data-theme-option=...]) with
   //      class-driven color chips (CSP-safe) and the current theme marked
   //      .active;
   //   2. selecting Midnight flips the <html> attribute AND the COMPUTED
-  //      --bg (getComputedStyle — the equal-specificity ordering hazard,
+  //      --bg (getComputedStyle - the equal-specificity ordering hazard,
   //      N9) + persists (profiles-settings-save) + the swatch goes active;
   //   3. a FRESH RELOAD re-applies the persisted Midnight at boot;
   //   4. selecting Light too (its own computed --bg), then back to Dark;
   //   5. the final step asserts the PERSISTED settings.theme === 'dark'
-  //      (M2 — the session must leave the shared mock dir on the default,
+  //      (M2 - the session must leave the shared mock dir on the default,
   //      like the ocMode/waiver seeds).
   await js(`location.hash = '#/settings'`);
   await sleep(250);
@@ -3275,11 +3445,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (await js(`${themeOption('dark')}.classList.contains('active')`)) fail('1.0.1: the Dark Steel swatch is still active after selecting Midnight');
   step('themes-midnight', '1.0.1: Midnight selected -> <html> attribute + computed --bg (#0b1020) + persisted theme=midnight + active swatch');
 
-  // Fresh reload: the persisted theme re-applies at BOOT (M3) — a real
+  // Fresh reload: the persisted theme re-applies at BOOT (M3) - a real
   // webContents reload re-runs the renderer boot sequence end to end.
   await win.webContents.reload();
   if (!(await waitFor(win, `document.documentElement.dataset.theme === 'midnight'`, 10000))) {
-    fail(`1.0.1: after a fresh reload the boot theme is '${await js(`document.documentElement.dataset.theme ?? ''`)}' (expected 'midnight' — the persisted theme must survive a reload)`);
+    fail(`1.0.1: after a fresh reload the boot theme is '${await js(`document.documentElement.dataset.theme ?? ''`)}' (expected 'midnight' - the persisted theme must survive a reload)`);
   }
   if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#0b1020'`, 8000))) {
     fail('1.0.1: the reloaded boot did not resolve the midnight computed --bg');
@@ -3306,7 +3476,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.theme === 'light')`, 5000))) fail('1.0.1: selecting Light did not persist theme=light');
   step('themes-light', '1.0.1: Light selected -> attribute + computed --bg (#f2f4f8) + persisted theme=light');
 
-  // Back to Dark — the final step leaves the session + persisted store on
+  // Back to Dark - the final step leaves the session + persisted store on
   // the default theme (M2: a leaked light theme must never bleed into a
   // later variant).
   await js(`${themeOption('dark')}.click()`);
@@ -3336,7 +3506,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.monitorLogToFile === true)`, 5000))) {
       fail('M4-D2: the log toggle did not persist monitorLogToFile=true (pin setup)');
     }
-    // The boot-level subscription appends on every telemetry push (0.5 s) —
+    // The boot-level subscription appends on every telemetry push (0.5 s) -
     // the file appears with the header + data lines.
     const fileOk = await waitFor(win, `true`, 6000).then(() => {
       // poll the filesystem from the MAIN side (the renderer cannot read it)
@@ -3365,11 +3535,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     const sampleLine = fileOk.lines[1];
     const sampleFields = sampleLine.split(',');
-    if (sampleFields[7] !== '42' || sampleFields[8] !== '61') {
-      fail(`M4-D2: the CSV data line does not carry the mock system stats (cpuUtilPct/cpuTempC): '${sampleLine}'`);
+    // M4-I (C1): the mock temp VARIES 61/62 - the CSV cell accepts either.
+    if (sampleFields[7] !== '42' || (sampleFields[8] !== '61' && sampleFields[8] !== '62')) {
+      fail(`M4-D2/M4-I: the CSV data line does not carry the mock system stats (cpuUtilPct 42, cpuTempC 61|62): '${sampleLine}'`);
     }
     // The Monitoring page's current-log-path line shows the resolved file
-    // (the toggle is still ON here — the off-state line is pinned in the
+    // (the toggle is still ON here - the off-state line is pinned in the
     // monitoring section).
     await js(`location.hash = '#/monitoring'`);
     if (!(await waitFor(win, `(document.querySelector('.mon-log-path')?.textContent ?? '').includes('${fileOk.file}')`, 5000))) {
@@ -3391,7 +3562,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('m4d2-log-file', 'log-to-file pin SKIPPED (RID_MOCK_LOG_DIR not set)');
   }
 
-  // --- M4-D2 (§1): the close-to-tray REAL close probe — the LAST step. -----
+  // --- M4-D2 (§1): the close-to-tray REAL close probe - the LAST step. -----
   await runCloseToTrayProbe(win);
 
   console.log('\nUI VERIFY OK\n' + steps.map((s) => '  ' + s).join('\n'));
@@ -3399,7 +3570,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 }
 
 // ---------------------------------------------------------------------------
-// M2D — featureset variants (RID_MOCK_FEATURESET=b580|pro-b50|arc-igpu)
+// M2D - featureset variants (RID_MOCK_FEATURESET=b580|pro-b50|arc-igpu)
 // ---------------------------------------------------------------------------
 //
 // The full default flow is pinned to A770 values (W units, 210 W, editable
@@ -3425,7 +3596,7 @@ export async function runFeaturesetVerify(win, fsId) {
   const js = (code) => win.webContents.executeJavaScript(code);
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
   const noOc = fsId === 'pro-b50' || fsId === 'arc-igpu';
-  // M4-D2 (§7/§8): the old Overclocking + Fan pages are the Tuning page —
+  // M4-D2 (§7/§8): the old Overclocking + Fan pages are the Tuning page -
   // same gotoView pattern as the default flow.
   const gotoView = async (viewLabel) => {
     await js(`(() => {
@@ -3459,7 +3630,7 @@ export async function runFeaturesetVerify(win, fsId) {
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
 
-  // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
+  // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the per-featureset assertions (F4: the
   // b580 apply-dialog section below must see a clean page, not the boot
   // modal).
@@ -3469,7 +3640,7 @@ export async function runFeaturesetVerify(win, fsId) {
   // --- boot: wait for caps + state in the store -----------------------------
   // The renderer boot (health -> devices -> probes -> caps -> telemetry)
   // finishes AFTER the shell renders; the dashboard full-renders when caps
-  // arrive (its render signature includes caps) — the device-card 'Compute'
+  // arrive (its render signature includes caps) - the device-card 'Compute'
   // row is the signal. Navigating to a caps-driven page before this leaves
   // it stuck on 'Loading device capabilities…' (no page onUpdate).
   await js(`location.hash = '#/dashboard'`);
@@ -3479,7 +3650,7 @@ export async function runFeaturesetVerify(win, fsId) {
   step('boot-caps', `boot delivered caps (device card 'Compute' row)`);
 
   // M4-A review F2: the featureset variants must not drift from the shared
-  // waiver display — the dashboard GPU Health card + waiver row are pinned
+  // waiver display - the dashboard GPU Health card + waiver row are pinned
   // here like the default flow (5 rows, live per-caps waiver detail).
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) {
     fail('expected exactly one GPU Health card');
@@ -3503,8 +3674,8 @@ export async function runFeaturesetVerify(win, fsId) {
     fail(`M4-A: the waiver row dot is '${waiverDot}' (expected ${bootAccepted ? 'ok (green)' : 'error (red)'})`);
   }
   const waiverClickable = await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.classList.contains('health-row-clickable')`);
-  if (waiverClickable === bootAccepted) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${!bootAccepted} — clickable only while unaccepted)`);
-  step('health-card', `GPU Health card: 5 rows '${rowLabels}'; waiver row 'OC waiver — ${waiverExpected}' (${bootAccepted ? 'green, no click action' : 'red, clickable'})`);
+  if (waiverClickable === bootAccepted) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${!bootAccepted} - clickable only while unaccepted)`);
+  step('health-card', `GPU Health card: 5 rows '${rowLabels}'; waiver row 'OC waiver - ${waiverExpected}' (${bootAccepted ? 'green, no click action' : 'red, clickable'})`);
 
   // --- tuning surface per featureset (M4-D2: #/overclocking -> #/tuning) ---
   await gotoOverclocking();
@@ -3542,14 +3713,14 @@ export async function runFeaturesetVerify(win, fsId) {
       const presetCount = await js(`document.querySelectorAll('.oc-card .oc-presets').length`);
       if (presetCount !== 0) fail(`M3-C-G: preset chips still render (${presetCount})`);
       const adv = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
-      // M4-B: vfCurve stays read-only (no apply path) — the honest M5 text.
-      // M4-D (user): the Advanced section renders ONLY supported rows — the
+      // M4-B: vfCurve stays read-only (no apply path) - the honest M5 text.
+      // M4-D (user): the Advanced section renders ONLY supported rows - the
       // b580 surface shows the supported vfCurve + VRAM-offset rows with
       // their M5 notes and NO 'Unsupported on this GPU' rows at all (gpuLock
       // + VRAM voltage are unsupported -> their rows are REMOVED entirely,
       // the editor gated off).
       // M4-D review F1 regression: the supported filter keys on the
-      // IGCL-keyed caps.controls (row.control — vramFreqOffset), NOT the
+      // IGCL-keyed caps.controls (row.control - vramFreqOffset), NOT the
       // canonical settings key (vramFreqOffsetGts): BOTH supported M5 rows
       // MUST render (pre-fix the VRAM row was silently dropped and the old
       // note-only check passed on vfCurve alone).
@@ -3557,10 +3728,10 @@ export async function runFeaturesetVerify(win, fsId) {
       if (expertRows !== 2) fail(`M4-D: b580 advanced must render exactly the 2 supported expert rows (vfCurve + VRAM offset), got ${expertRows}: '${adv}'`);
       if (!adv.includes('Custom VF curve')) fail(`M4-D: b580 advanced is missing the vfCurve row: '${adv}'`);
       if (!adv.includes('VRAM frequency offset')) fail(`M4-D: b580 advanced is missing the supported VRAM frequency offset row: '${adv}'`);
-      if (!adv.includes('Supported — editing arrives in M5')) fail(`b580 advanced: a supported expert control is missing its M5 note: '${adv}'`);
+      if (!adv.includes('Supported - editing arrives in M5')) fail(`b580 advanced: a supported expert control is missing its M5 note: '${adv}'`);
       if (adv.includes('Unsupported on this GPU')) fail('M4-D: b580 advanced still renders "Unsupported on this GPU" rows (unsupported controls are removed entirely)');
       if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-        fail('M4-B: the gpuLock editor is rendered on b580 (gated off — gpuLock unsupported)');
+        fail('M4-B: the gpuLock editor is rendered on b580 (gated off - gpuLock unsupported)');
       }
       step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), gpuLock unsupported (no editor) / vfCurve supported`);
     } else {
@@ -3568,7 +3739,7 @@ export async function runFeaturesetVerify(win, fsId) {
     }
   }
   // M4-A review F2: the OC page renders NO waiver status (the row lives only
-  // in the dashboard GPU Health card — the apply-time dialog gate below is
+  // in the dashboard GPU Health card - the apply-time dialog gate below is
   // unaffected).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
     fail('M4-A: the OC page still renders the waiver status (dashboard health card only)');
@@ -3597,7 +3768,7 @@ export async function runFeaturesetVerify(win, fsId) {
     step('fan-readonly', `'${fsId}' + RID_MOCK_FAN_READONLY: read-only fan rendered`);
   } else {
     if (!(await waitFor(win, `!!document.querySelector('.fan-dot')`))) fail('fan editor dots did not render');
-    // M4-C: the Fixed tab ALWAYS renders in the editable editor — disabled
+    // M4-C: the Fixed tab ALWAYS renders in the editable editor - disabled
     // with the honest note (the editable overlay's modes stay ['auto','curve']
     // until the live probe proves fixed writes work).
     if (!(await waitFor(win, `Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).some((c) => (c.textContent ?? '').trim() === 'Fixed' && c.disabled === true)`))) {
@@ -3624,7 +3795,7 @@ export async function runFeaturesetVerify(win, fsId) {
   }
   const fanTile = await js(`Array.from(document.querySelectorAll('.mon-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Fan')?.querySelector('.stat-value')?.textContent ?? ''`);
   if (fsId === 'arc-igpu') {
-    if (fanTile !== '—') fail(`iGPU fan tile should read '—' (no fan), got '${fanTile}'`);
+    if (fanTile !== '-') fail(`iGPU fan tile should read '-' (no fan), got '${fanTile}'`);
     step('mon-igpu', `arc-igpu: monitoring renders, fan tile '${fanTile}'`);
   } else {
     step('mon', `'${fsId}': monitoring readouts render (fan tile '${fanTile}')`);
@@ -3646,8 +3817,8 @@ export async function runFeaturesetVerify(win, fsId) {
     fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)}`);
   }
   step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W`);
-  // M2D: the swap payload carries the featureset driver date — the HEALTH
-  // card's driver row (the GPU card's Driver version row is REMOVED —
+  // M2D: the swap payload carries the featureset driver date - the HEALTH
+  // card's driver row (the GPU card's Driver version row is REMOVED -
   // M4-H) must show its own registry date even when the boot featureset
   // had none.
   const healthDriverRow = () => js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
@@ -3697,7 +3868,7 @@ export async function runFeaturesetVerify(win, fsId) {
     }
     // NIT 3 (M2D): a per-control routing failure (tempLimitC 100 % routed to
     // the 2023 runtime) would toast an error even when the PL toast is
-    // green — assert the whole apply succeeded: no error toast + ALL four
+    // green - assert the whole apply succeeded: no error toast + ALL four
     // scalar controls read back their applied values.
     if (await js(`!!document.querySelector('.toast-error')`)) fail('b580 percent apply showed a per-control error toast');
     const applied = await js(`window.arcPower.getCurrentSettings(0)`);
@@ -3713,7 +3884,7 @@ export async function runFeaturesetVerify(win, fsId) {
     step('b580-apply', `b580 percent apply round trip: 120 % -> read-back ${applied.powerLimitW} %, restored to 100 % (all 4 controls driverstore, no error toast)`);
   }
 
-  // M4-D2 (§1): the shared close-to-tray REAL close probe — the LAST step.
+  // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   await runCloseToTrayProbe(win);
 
   console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
@@ -3721,13 +3892,13 @@ export async function runFeaturesetVerify(win, fsId) {
 }
 
 // ---------------------------------------------------------------------------
-// 1.0.1 — the no-intel variant (RID_MOCK_NO_INTEL=1)
+// 1.0.1 - the no-intel variant (RID_MOCK_NO_INTEL=1)
 // ---------------------------------------------------------------------------
 //
 // The user's AMD-machine test round pinned end to end against the MOCK (the
 // no-Intel session: listDevices [] + health igclLoaded false + the AMD
 // sysinfo fixture + the no-device telemetry push). The runFeaturesetVerify
-// SHAPE, diverging BEFORE bootWaiverStep — the no-device boot NEVER prompts
+// SHAPE, diverging BEFORE bootWaiverStep - the no-device boot NEVER prompts
 // (caps/state are skipped), so no waiver modal may appear anywhere:
 //   1. shell renders (sidebar + brand + mock badge) and the featureset
 //      dropdown is HIDDEN (m5: the swap would store caps/state into the
@@ -3735,20 +3906,20 @@ export async function runFeaturesetVerify(win, fsId) {
 //   2. the header shows the AMD name + 'Non supported GPU' (n10: the
 //      version line is replaced on no-Intel);
 //   3. the health rows read 'No Intel Driver Found' (warn) + the AMD name
-//      (warn) — NEVER the raw IGCL/error text (body-wide pin);
+//      (warn) - NEVER the raw IGCL/error text (body-wide pin);
 //   4. the CPU & Memory card renders the mock CPU fixture + the LIVE freq
 //      half ('/ @ 4.3 GHz' from the no-device telemetry push);
 //   5. the GPU card shows the AMD name + the 'Non supported GPU' note with
-//      the caps/state rows at '—';
+//      the caps/state rows at '-';
 //   6. monitoring: the CPU utilization/temperature + GPU-memory tiles get
 //      the mock sys-stats values (the no-device push); the GPU device tiles
-//      honestly stay '—' (m6: the dashboard readout is all '—' by design);
-//   7. the Tuning page shows 'No GPU available.' — NEVER the caps-loading
+//      honestly stay '-' (m6: the dashboard readout is all '-' by design);
+//   7. the Tuning page shows 'No GPU available.' - NEVER the caps-loading
 //      text (the deviceId-null branch must win over the caps guard);
 //   8. NO waiver modal and NO toast anywhere in the session (the no-toast
 //      pin runs BEFORE any clear, so a toast fired earlier in the session
 //      fails the verify instead of being swallowed);
-//   9. the close-to-tray REAL close probe — the LAST step.
+//   9. the close-to-tray REAL close probe - the LAST step.
 
 /**
  * @param {import('electron').BrowserWindow} win
@@ -3776,7 +3947,7 @@ export async function runNoIntelVerify(win) {
 
   // --- 2. the header: the AMD name + 'Non supported GPU' (n10) --------------
   // The header GPU name is the BOOT-LANDING signal: the noIntel flag + the
-  // OS GPU land together at the END of the no-Intel boot (S1 — the flag is
+  // OS GPU land together at the END of the no-Intel boot (S1 - the flag is
   // set after telemetryStart(null)), so the dropdown-hide + health rows
   // below are asserted only AFTER this lands.
   if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === 'AMD Radeon RX 7600'`, 10000))) {
@@ -3784,7 +3955,7 @@ export async function runNoIntelVerify(win) {
   }
   const gpuMeta = await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`);
   if (gpuMeta.trim() !== 'Non supported GPU') {
-    fail(`1.0.1: the header meta is '${gpuMeta}' (expected 'Non supported GPU' replacing the version line — n10)`);
+    fail(`1.0.1: the header meta is '${gpuMeta}' (expected 'Non supported GPU' replacing the version line - n10)`);
   }
   // m5: the featureset dropdown is HIDDEN once the noIntel flag landed (a
   // swap would store caps/state into the no-Intel store); the mock badge
@@ -3793,7 +3964,7 @@ export async function runNoIntelVerify(win) {
     fail('1.0.1 (m5): the featureset dropdown must be HIDDEN on the no-Intel path (a swap would store caps/state into the no-Intel store)');
   }
   if (!(await js(`!!document.querySelector('.badge-mock')`))) fail('mock badge missing (the backend kind is still honest)');
-  step('header', `header: 'AMD Radeon RX 7600' + 'Non supported GPU' (the version line is replaced on no-Intel — n10); dropdown hidden (m5), mock badge kept`);
+  step('header', `header: 'AMD Radeon RX 7600' + 'Non supported GPU' (the version line is replaced on no-Intel - n10); dropdown hidden (m5), mock badge kept`);
 
   // --- 3. the health rows: honest no-Intel texts, NEVER the raw errors ------
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 10000))) {
@@ -3806,7 +3977,7 @@ export async function runNoIntelVerify(win) {
   if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app)`);
   const driverDetail = await js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
   if (driverDetail.trim() !== 'No Intel Driver Found') {
-    fail(`1.0.1: the driver row reads '${driverDetail}' (expected 'No Intel Driver Found' — NEVER the raw IGCL/error text)`);
+    fail(`1.0.1: the driver row reads '${driverDetail}' (expected 'No Intel Driver Found' - NEVER the raw IGCL/error text)`);
   }
   const driverDot = await js(`document.querySelector('.health-card .health-row[data-row="driver"] .status-dot')?.className ?? ''`);
   if (!/status-warn/.test(driverDot)) fail(`1.0.1: the driver row dot is '${driverDot}' (expected warn)`);
@@ -3830,31 +4001,46 @@ export async function runNoIntelVerify(win) {
   const sysRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const rows = JSON.parse(sysRows);
   if (rows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`1.0.1: the CPU row is '${rows['CPU']}'`);
-  // M4-H (C2): the no-Intel path shares the fixture — DDR5 in the memory
-  // line + the Caches row.
+  // M4-H (C2)/M4-I (A2): the no-Intel path shares the fixture - DDR5 in the
+  // memory line + the 'Cache' row (M4-I: ' - ' separator + whole-MB floor).
   if (rows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`1.0.1/M4-H: the Memory row is '${rows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz')`);
-  if (rows['Caches'] !== 'L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB') {
-    fail(`M4-H: the no-Intel Caches row is '${rows['Caches']}'`);
+  if (rows['Cache'] !== 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB') {
+    fail(`M4-I: the no-Intel Cache row is '${rows['Cache']}' (expected 'L1 1 MB - L2 36 MB - L3 672 MB - L4 384 MB')`);
   }
   // The LIVE freq half from the no-device telemetry push (cpuFreqMhz 4300).
-  if (!(await waitFor(win, `(document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? '').trim() === '20 Cores / 28 Threads / @ 4.3 GHz'`, 8000))) {
-    fail(`1.0.1: the Cores / clock row is '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? ''`)}' (expected the static bundle + the LIVE '/ @ 4.3 GHz')`);
+  if (!(await waitFor(win, `(document.querySelector('.sysinfo-card .kv[data-label="Cores / Clock"]')?.textContent ?? '').trim() === '20 Cores / 28 Threads / @ 4.3 GHz'`, 8000))) {
+    fail(`1.0.1: the Cores / Clock row is '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Cores / Clock"]')?.textContent ?? ''`)}' (expected the static bundle + the LIVE '/ @ 4.3 GHz')`);
   }
-  step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}', Caches '${rows['Caches']}'`);
+  step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}', Cache '${rows['Cache']}'`);
 
-  // --- 5. the GPU card (M4-H): title 'GPU' + the OS GPU in the 'GPU' kv row,
-  // --- 'Non supported GPU' note, NO Driver version row (N7 — the no-Intel
-  // --- branch gets the SAME restructure as the Intel one) -------------------
+  // --- 5. the GPU card (M4-H + M4-I): title 'GPU' + the OS GPU in the 'GPU'
+  // --- kv row, 'Non supported GPU' note, and the REAL rows the OS has:
+  // --- Driver version (NEW videoControllers driverVersion field - works on
+  // --- ANY GPU), Compute '-', Clocks '- MHz Core / - MHz Memory', VRAM
+  // --- (size + type-when-known), ReBAR pill REAL (the OS pnputil/allocated
+  // --- sources are GPU-agnostic). NOTE: this REVERSES the M4-H pin that
+  // --- asserted the driver row's ABSENCE - the inversion is explicit.
   const gpuCardTitle = await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`);
-  if (gpuCardTitle.trim() !== 'GPU') fail(`M4-H: the GPU card title is '${gpuCardTitle}' (expected 'GPU' — the name lives in the kv row)`);
+  if (gpuCardTitle.trim() !== 'GPU') fail(`M4-H: the GPU card title is '${gpuCardTitle}' (expected 'GPU' - the name lives in the kv row)`);
   const gpuNameKv = await js(`document.querySelector('.device-card .kv[data-label="GPU"]')?.textContent ?? ''`);
   if (gpuNameKv.trim() !== 'AMD Radeon RX 7600') fail(`M4-H: the GPU card name row is '${gpuNameKv}' (expected the OS GPU name 'AMD Radeon RX 7600')`);
-  if (await js(`!!document.querySelector('.device-card .kv[data-label="Driver version"]')`)) {
-    fail('M4-H: the no-Intel GPU card still renders the Driver version row (removed — N7)');
+  const driverRowKv = await js(`document.querySelector('.device-card .kv[data-label="Driver version"]')?.textContent ?? ''`);
+  if (!driverRowKv.includes('31.0.12027.9001')) {
+    fail(`M4-I (D3): the no-Intel Driver version row is '${driverRowKv}' (expected the controller driverVersion '31.0.12027.9001' - the M4-H absence pin is REVERSED)`);
+  }
+  const vramRowKv = await js(`document.querySelector('.device-card .kv[data-label="VRAM"]')?.textContent ?? ''`);
+  if (vramRowKv.trim() !== '8GB') {
+    fail(`M4-I (D3): the no-Intel VRAM row is '${vramRowKv}' (expected '8GB' - size + type-when-known; the type table is Intel-only, an AMD part shows the size)`);
+  }
+  if (!(await waitFor(win, `(() => {
+    const pill = document.querySelector('.device-card .rebar-pill');
+    return !!pill && pill.textContent === 'ReBAR off' && pill.className.includes('status-error');
+  })()`, 5000))) {
+    fail(`M4-I (D3): the no-Intel ReBAR pill must be REAL (the AMD fixture rebarActive false -> red 'ReBAR off'): '${await js(`document.querySelector('.device-card .rebar-pill')?.textContent ?? ''`)}'`);
   }
   const gpuCardText = await js(`document.querySelector('.device-card')?.textContent ?? ''`);
   if (!gpuCardText.includes('Non supported GPU')) fail('1.0.1: the GPU card is missing the "Non supported GPU" note');
-  step('gpu-card', `GPU card: title 'GPU', name row 'AMD Radeon RX 7600', 'Non supported GPU' note, NO Driver version row`);
+  step('gpu-card', `GPU card: title 'GPU', name row 'AMD Radeon RX 7600', Driver version row '${driverRowKv.trim()}' (M4-I - the M4-H absence pin is REVERSED), VRAM '${vramRowKv.trim()}', ReBAR 'ReBAR off' (real), 'Non supported GPU' note`);
 
   // --- 6. monitoring: the OS-level tiles get the mock sys-stats values ------
   await js(`location.hash = '#/monitoring'`);
@@ -3864,24 +4050,30 @@ export async function runNoIntelVerify(win) {
   }
   const monTiles = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.mon-readout .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()])))`);
   const tiles = JSON.parse(monTiles);
-  if (tiles['CPU temperature'] !== '61') fail(`1.0.1: the CPU-temperature tile is '${tiles['CPU temperature']}' (expected 61)`);
+  // M4-I (C1): the mock temp VARIES 61/62 - accept either.
+  if (tiles['CPU temperature'] !== '61' && tiles['CPU temperature'] !== '62') {
+    fail(`1.0.1: the CPU-temperature tile is '${tiles['CPU temperature']}' (expected 61|62 - the varying mock)`);
+  }
   if (tiles['GPU memory'] !== '2834') fail(`1.0.1: the GPU-memory tile is '${tiles['GPU memory']}' (expected 2834 MiB from 2971324416 bytes)`);
-  if (tiles['Core clock'] !== '—') fail(`1.0.1: the core-clock tile is '${tiles['Core clock']}' (expected '—' — the GPU device tiles stay honest)`);
-  step('monitoring', `monitoring: CPU utilization 42 %, CPU temperature 61 °C, GPU memory 2834 MiB (the no-device push); GPU device tiles '—'`);
+  if (tiles['Core clock'] !== '-') fail(`1.0.1: the core-clock tile is '${tiles['Core clock']}' (expected '-' - the GPU device tiles stay honest)`);
+  // M4-I (D4): the Util tile reads `gpuUtilPct ?? utilPct` - on no-Intel the
+  // OS GPUEngine counter (the mock's fixed 42) is the only source.
+  if (tiles['Utilization'] !== '42') fail(`1.0.1/M4-I: the monitoring Utilization tile is '${tiles['Utilization']}' (expected 42 - gpuUtilPct from the no-device sys-stats push)`);
+  step('monitoring', `monitoring: CPU utilization 42 %, CPU temperature ${tiles['CPU temperature']} °C, GPU memory 2834 MiB, GPU Utilization 42 % (M4-I: gpuUtilPct ?? utilPct); GPU device tiles '-'`);
 
   // --- 7. the Tuning page: 'No GPU available.', never the caps-loading text --
   // deviceId is null on no-Intel: the page must present the honest no-device
   // text, NEVER 'Loading device capabilities…' (the caps guard previously
-  // shadowed the deviceId-null guard — a perpetual loading screen).
+  // shadowed the deviceId-null guard - a perpetual loading screen).
   await js(`location.hash = '#/tuning'`);
   if (!(await waitFor(win, `(document.querySelector('.page-subtitle')?.textContent ?? '').trim() === 'No GPU available.'`, 5000))) {
-    fail(`1.0.1: the Tuning page reads '${await js(`document.querySelector('.page-subtitle')?.textContent ?? ''`)}' (expected 'No GPU available.' — the deviceId-null branch must win over the caps guard)`);
+    fail(`1.0.1: the Tuning page reads '${await js(`document.querySelector('.page-subtitle')?.textContent ?? ''`)}' (expected 'No GPU available.' - the deviceId-null branch must win over the caps guard)`);
   }
   const tuningBody = await js(`document.body.textContent`);
   if (tuningBody.includes('Loading device capabilities')) {
-    fail('1.0.1: the Tuning page shows the caps-loading text on no-Intel (no caps fetch can ever land on this path — the page must say No GPU available.)');
+    fail('1.0.1: the Tuning page shows the caps-loading text on no-Intel (no caps fetch can ever land on this path - the page must say No GPU available.)');
   }
-  step('tuning', `Tuning page: 'No GPU available.' (deviceId null — never 'Loading device capabilities…')`);
+  step('tuning', `Tuning page: 'No GPU available.' (deviceId null - never 'Loading device capabilities…')`);
 
   // --- 8. NO waiver modal and NO toast anywhere -----------------------------
   await js(`location.hash = '#/dashboard'`);
@@ -3894,14 +4086,14 @@ export async function runNoIntelVerify(win) {
   await clearToasts();
   await sleep(1200); // cover a couple of telemetry ticks + any delayed boot flow
   if (await js(`!!document.querySelector('.modal')`)) {
-    fail('1.0.1: a modal appeared on the no-Intel path (the no-device boot never prompts — caps/state are skipped)');
+    fail('1.0.1: a modal appeared on the no-Intel path (the no-device boot never prompts - caps/state are skipped)');
   }
   if (await js(`!!document.querySelector('.toast')`)) {
     fail(`1.0.1: a toast appeared on the no-Intel path: '${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => t.textContent).join(' | ')`)}'`);
   }
   step('silent', 'no waiver modal, no toast anywhere (the no-device boot is silent)');
 
-  // M4-D2 (§1): the shared close-to-tray REAL close probe — the LAST step.
+  // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   await runCloseToTrayProbe(win);
 
   console.log('\nUI VERIFY OK (no-intel)\n' + steps.map((s) => '  ' + s).join('\n'));
@@ -3909,7 +4101,7 @@ export async function runNoIntelVerify(win) {
 }
 
 // ---------------------------------------------------------------------------
-// M3-B — tweaks-apply variant (RID_MOCK_TWEAKS_APPLY=1)
+// M3-B - tweaks-apply variant (RID_MOCK_TWEAKS_APPLY=1)
 // ---------------------------------------------------------------------------
 //
 // Drives the FULL Tweaks apply flow against the MOCK adapters (never
@@ -3946,7 +4138,7 @@ export async function runTweaksApplyVerify(win) {
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
     fail('sidebar did not render (6 nav links expected)');
   }
-  // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
+  // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
   // sit over the page while the tweaks assertions run).
   await bootWaiverStep(win, js, waitFor);
@@ -4008,15 +4200,15 @@ export async function runTweaksApplyVerify(win) {
     const msg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
     if (!/Partial apply/.test(msg)) fail(`partial-failure toast is not honest: '${msg}'`);
     if (!/1 of 2 step\(s\) landed, step 2 failed/.test(msg)) fail(`partial-failure toast misses the landed/failed steps: '${msg}'`);
-    if (!/Nothing was rolled back automatically — use Revert/.test(msg)) fail(`partial-failure toast misses the no-auto-revert note: '${msg}'`);
+    if (!/Nothing was rolled back automatically - use Revert/.test(msg)) fail(`partial-failure toast misses the no-auto-revert note: '${msg}'`);
     // The state refresh reflects what actually landed: the knob fails at the
     // action's LAST step (the mock clamps it there), so for mpo enable the
     // HKLM hive landed (MPOHack=1 -> 'Active') while the failing HKCU step
     // never ran. The two single-step actions (hags/game-dvr) fail their only
     // step -> nothing lands, the fixture state stays.
-    if ((await stateLabelOf(failEntry)).trim() !== 'Active') fail(`partial apply state is '${await stateLabelOf(failEntry)}' (expected Active — the landed HKLM hive)`);
+    if ((await stateLabelOf(failEntry)).trim() !== 'Active') fail(`partial apply state is '${await stateLabelOf(failEntry)}' (expected Active - the landed HKLM hive)`);
     await clearToasts();
-    // The user can still Revert (a real revert works — the failure knob is
+    // The user can still Revert (a real revert works - the failure knob is
     // per-action).
     if (!(await waitButtonsEnabled(failEntry))) fail('card absent or buttons still disabled before the next action (failEntry revert)');
     await clickAction(failEntry, 'revert');
@@ -4075,7 +4267,7 @@ export async function runTweaksApplyVerify(win) {
   const catalog = await js(`window.arcPower.registryCatalog()`);
   if (catalog.entries.length !== 4 || catalog.states.length !== 4) fail('registry-catalog IPC mismatch after the apply flow');
 
-  // M4-D2 (§1): the shared close-to-tray REAL close probe — the LAST step.
+  // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   await runCloseToTrayProbe(win);
 
   console.log(`\nUI VERIFY OK (tweaks-apply${failKnob ? `, fail=${failKnob}` : ''}${cancelKnob ? ', cancel' : ''})\n` + steps.map((s) => '  ' + s).join('\n'));
@@ -4083,12 +4275,12 @@ export async function runTweaksApplyVerify(win) {
 }
 
 // ---------------------------------------------------------------------------
-// M4-A — fan-gate regression variant (RID_MOCK_FAN_GATE=1)
+// M4-A - fan-gate regression variant (RID_MOCK_FAN_GATE=1)
 // ---------------------------------------------------------------------------
 //
 // The user report: fan-curve applies FAIL without a waiver prompt. This
 // variant regression-tests the unaccepted-waiver fan apply through the mock
-// (the fan editor is the product apply surface — the dialog gate lives in
+// (the fan editor is the product apply surface - the dialog gate lives in
 // the renderer, so it is exercised end-to-end here, not unit-testable):
 //   1. unaccepted boot (shared boot-step cancels the boot prompt); the
 //      dashboard health-card waiver row reads Not Accepted (red, clickable);
@@ -4098,12 +4290,12 @@ export async function runTweaksApplyVerify(win) {
 //      reflects the edited curve) and the dashboard waiver row flips green;
 //   4. M4-D (PERMANENT acceptance): with the store ACCEPTED (the Accept
 //      above), the driver losing the waiver mid-session (injected one-shot
-//      waiver-not-set) is handled SILENTLY in main — the apply re-sets the
+//      waiver-not-set) is handled SILENTLY in main - the apply re-sets the
 //      driver waiver + retries ONCE (no dialog, no error), the read-back
 //      lands, and the dashboard waiver row stays green (the consent stands;
 //      the store is never flipped to false).
 // The packaged always-elevated path applies in-process (waiver-accept +
-// apply run inside the EXE — pinned by elevated-apply.test.js); this
+// apply run inside the EXE - pinned by elevated-apply.test.js); this
 // variant never elevates (mock adapters).
 
 /**
@@ -4126,17 +4318,17 @@ export async function runFanGateVerify(win, backend) {
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
     fail('sidebar did not render (6 nav links expected)');
   }
-  // M4-A/M4-B: the shared boot-step — the session boots unaccepted -> the
+  // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then
   // sees a clean page with a still-unaccepted waiver).
   await bootWaiverStep(win, js, waitFor);
-  step('waiver-boot', 'boot waiver prompt handled (cancelled — the fan gate runs unaccepted)');
+  step('waiver-boot', 'boot waiver prompt handled (cancelled - the fan gate runs unaccepted)');
 
   const pointsCount = () => js(`document.querySelectorAll('.fan-dot').length`);
   const clickApply = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings')); if (!b) return false; b.click(); return true; })()`);
   const clickRemove = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Remove point')); if (!b) return false; b.click(); return true; })()`);
   // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
-  // GPU Health card — assert the row state there (red + clickable while
+  // GPU Health card - assert the row state there (red + clickable while
   // unaccepted, green + no click action once accepted).
   const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
   const expectRow = async (detail, clickable) => {
@@ -4209,7 +4401,7 @@ export async function runFanGateVerify(win, backend) {
   if (landed.fanCurve?.length !== pointsBefore - 1 || landed.fanMode !== 'curve') {
     fail(`fan apply did not land: read-back=${JSON.stringify({ mode: landed.fanMode, points: landed.fanCurve?.length })}`);
   }
-  // The dashboard row flipped green — the accept-time + post-apply store
+  // The dashboard row flipped green - the accept-time + post-apply store
   // re-sets trigger the caps-change re-render.
   await goDashboard('fan-gate-row-accepted');
   await expectRow('Accepted', false);
@@ -4222,9 +4414,9 @@ export async function runFanGateVerify(win, backend) {
   // The injected ONE-SHOT waiver-not-set mirrors the real driver losing the
   // waiver. M4-D (user, PERMANENT acceptance): with the persisted
   // acceptance TRUE (the fan Accept above), a waiver-not-set apply is
-  // SILENTLY re-set + retried ONCE in main — never a dialog, never a
+  // SILENTLY re-set + retried ONCE in main - never a dialog, never a
   // dead-end, never a persisted false. The dashboard row stays green (the
-  // consent stands — the M4-B "flip to unaccepted + re-prompt" behavior is
+  // consent stands - the M4-B "flip to unaccepted + re-prompt" behavior is
   // gone for accepted stores).
   backend.injectFail('fanCurve', 'waiver-not-set', true);
   await clearToasts();
@@ -4248,7 +4440,7 @@ export async function runFanGateVerify(win, backend) {
   }
   step('fan-gate-g2', `M4-D: waiver-not-set apply with an accepted store -> silent re-set + retry landed (${healed.fanCurve?.length} points), NO dialog, dashboard row stays Accepted (the consent stands)`);
 
-  // M4-D2 (§1): the shared close-to-tray REAL close probe — the LAST step.
+  // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   await runCloseToTrayProbe(win);
 
   console.log('\nUI VERIFY OK (fan-gate)\n' + steps.map((s) => '  ' + s).join('\n'));

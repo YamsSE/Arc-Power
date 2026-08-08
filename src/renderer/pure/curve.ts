@@ -1,11 +1,11 @@
-// Arc Power — fan curve editor math (pure, DOM-free).
+// Arc Power - fan curve editor math (pure, DOM-free).
 //
 // The SVG editor renders a normalized 0..100 x (temp) / 0..100 y (speed)
 // space; all point math (insert, move, clamp, sort, ascending-temp
 // enforcement, point-count clamping, presets) lives here so it is testable
 // without a DOM. Temps are rounded to whole °C, speeds to whole %.
 //
-// M4-B (user): the temp axis is STATIC 0..100 °C — deleting/adding/dragging
+// M4-B (user): the temp axis is STATIC 0..100 °C - deleting/adding/dragging
 // points never changes the domain (deleting the outer point of a curve used
 // to narrow the axis so the remaining points could not be dragged back to
 // higher/lower temps). Only the RPM y-axis is dynamic.
@@ -136,7 +136,7 @@ export function addPointAtMidGap(points: CurvePoint[], max: number): CurvePoint[
 
 /**
  * The temp domain of the fan editor: STATIC 0..100 °C (M4-B, user
- * requirement). Deleting/adding/dragging points NEVER changes the domain —
+ * requirement). Deleting/adding/dragging points NEVER changes the domain -
  * the whole axis always spans FAN_DOMAIN so a point removed from one end
  * can still be dragged to 0 °C / 100 °C. (The `points` argument is kept for
  * call-site compatibility; it is intentionally unused.)
@@ -167,7 +167,7 @@ export function rpmMarkerY(rpm: number, maxRpm: number): number {
   return 100 - Math.min(100, (rpm / maxRpm) * 100);
 }
 
-// M2C-B B1 — right-side 0-100% fan axis (mirror of the bottom temp axis).
+// M2C-B B1 - right-side 0-100% fan axis (mirror of the bottom temp axis).
 // The axis labels live OUTSIDE the plot (the labels used to sit inside the
 // SVG at x:99/x:1); each tick aligns with the horizontal grid line at the
 // same normalized y (0 = top, 100 = bottom).
@@ -177,7 +177,7 @@ export const FAN_AXIS_TICKS = [0, 25, 50, 75, 100];
 
 export interface FanAxisTick {
   pct: number;
-  /** Normalized top-down y (0..100) — the grid line the tick aligns to. */
+  /** Normalized top-down y (0..100) - the grid line the tick aligns to. */
   y: number;
 }
 
@@ -196,34 +196,46 @@ export interface CurvePreset {
 }
 
 /**
- * M4-H: the ADAPTIVE fan curve presets — every preset derives from the
+ * M4-H/M4-I: the ADAPTIVE fan curve presets - every preset derives from the
  * DRIVER's own curve (the base), scaled in SPEED only (same temps):
- *   - 'Driver Curve': the base itself (the driver's curve — stock IS the
- *     driver's curve; the chip replaces the old "Reset to driver curve"
- *     button, so the base is read LIVE at click time — the editor seeds it
- *     with seedCurvePoints, see fan-editor.ts);
- *   - 'Quiet': the base's speeds ×0.5 (clamped 0..100) — quieter by
+ *   - 'Intel Curve' (M4-I rename of 'Driver Curve'): the base itself (the
+ *     driver's curve - stock IS the driver's curve; the chip replaces the
+ *     old "Reset to driver curve" button, so the base is read LIVE at click
+ *     time - the editor seeds it with seedCurvePoints, see fan-editor.ts);
+ *   - 'Quiet': the base's speeds x0.5 (clamped 0..100) - quieter by
  *     spinning slower;
- *   - 'Max': the base's speeds ×1.35 (clamped 0..100) — the ramp reaches
+ *   - 'Max': the base's speeds x1.35 (clamped 0..100) - the ramp reaches
  *     100 % sooner.
+ * M4-I (F2): 'Quiet' and 'Max' PIN their FIRST point to speedPct 20 at the
+ * base's FIRST temp (the lowest temp after the ascending sort) - a minimum
+ * floor so the fan never drops below 20 % at the curve's low end; the
+ * x0.5/x1.35 scale applies to the REST only. 'Intel Curve' is the base
+ * AS-IS (no 20% pin). The mock base already starts at 20 - the pure-curve
+ * unit test discriminates with a NON-20 base.
  * The base's point count is clamped to the device max (`numPoints`), and
  * every preset keeps the enforceAscending guarantee. A degenerate base
- * (< MIN_CURVE_POINTS points — empty state) degrades to the existing
+ * (< MIN_CURVE_POINTS points - empty state) degrades to the existing
  * 20 -> 100 ramp across the domain, exactly like seedCurvePoints.
  */
 export function fanCurvePresets(base: CurvePoint[], d: CurveDomain, numPoints: number): CurvePreset[] {
   const n = Math.max(MIN_CURVE_POINTS, Math.min(Math.floor(numPoints), MAX_CURVE_POINTS));
-  const seeded = base.length >= MIN_CURVE_POINTS
-    ? base
-    : [{ t: d.minT, speedPct: 20 }, { t: d.maxT, speedPct: 100 }];
-  const scaled = (factor: number): CurvePoint[] => enforceAscending(
+  const seeded = enforceAscending(
     clampPointCount(
-      seeded.map((p) => ({ t: p.t, speedPct: clampPct(p.speedPct * factor) })),
+      base.length >= MIN_CURVE_POINTS
+        ? base
+        : [{ t: d.minT, speedPct: 20 }, { t: d.maxT, speedPct: 100 }],
       n,
     ),
   );
+  // M4-I (F2): the pinned first point - speedPct 20 at the base's FIRST
+  // (lowest) temp; the scale applies to the rest.
+  const scaled = (factor: number): CurvePoint[] => {
+    const rest = seeded.slice(1).map((p) => ({ t: p.t, speedPct: clampPct(p.speedPct * factor) }));
+    const points = [{ t: seeded[0].t, speedPct: 20 }, ...rest];
+    return enforceAscending(clampPointCount(points, n));
+  };
   return [
-    { id: 'driver', name: 'Driver Curve', points: enforceAscending(clampPointCount(seeded.map((p) => ({ ...p })), n)) },
+    { id: 'driver', name: 'Intel Curve', points: seeded.map((p) => ({ ...p })) },
     { id: 'quiet', name: 'Quiet', points: scaled(0.5) },
     { id: 'max', name: 'Max', points: scaled(1.35) },
   ];

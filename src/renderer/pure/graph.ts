@@ -1,4 +1,4 @@
-// Arc Power — rolling-graph series math (pure, DOM-free).
+// Arc Power - rolling-graph series math (pure, DOM-free).
 //
 // The Monitoring page keeps one series per segment (clock/temp/power/util/
 // fan) fed by telemetry samples and draws them on a Canvas. This module
@@ -27,12 +27,12 @@ export function pushSeries(series: SeriesPoint[], t: number, v: number | undefin
 }
 
 /**
- * M4-D2 fix (user: "the monitoring graphs are glitched — the lines
+ * M4-D2 fix (user: "the monitoring graphs are glitched - the lines
  * overlap"): the REAL driver's telemetry timestamp occasionally ticks
- * BACKWARD (live-verified: 8 folds in 40 s under load on the A770 — a
+ * BACKWARD (live-verified: 8 folds in 40 s under load on the A770 - a
  * counter-readout race in the driver). A non-monotonic t folds the drawn
  * polyline back over itself ("overlapping lines"). Sort by t so the drawn
- * line is ALWAYS the true chronological timeline — never a fold. Sorting
+ * line is ALWAYS the true chronological timeline - never a fold. Sorting
  * is stable and cheap (≤ GRAPH_MAX_POINTS points).
  * @param series the series (possibly out of time order)
  * @returns a NEW series sorted by t
@@ -94,7 +94,7 @@ export function downsample(points: SeriesPoint[], maxPoints: number): SeriesPoin
 
 /**
  * M4-C: the index of the series point nearest to a normalized x position
- * (0..1 across the DRAWN window: points[0].t .. points[last].t — the same
+ * (0..1 across the DRAWN window: points[0].t .. points[last].t - the same
  * linear mapping the canvas uses). The Monitoring hover feeds it the pointer
  * x so the crosshair + popup snap to the nearest sample on the line.
  * Returns -1 for an empty series. `xNorm` is clamped to [0, 1] (hovering

@@ -1,13 +1,13 @@
-// Arc Power — M4-E --boot-apply CLI mode orchestration (electron-free).
+// Arc Power - M4-E --boot-apply CLI mode orchestration (electron-free).
 //
 // The ArcPowerBootApply logon task runs ELEVATED with the FIXED action
 // `"<installed exe>" --boot-apply`. This mode is the task's action: it reads
-// the ACTIVE profile from the store (like the window-path boot apply — no id
+// the ACTIVE profile from the store (like the window-path boot apply - no id
 // argument) and:
 //   - settings.ocOnBoot !== true || !activeProfileId -> silent exit 0
-//     (no window, no tray — the task's logon spawn is invisible when off);
+//     (no window, no tray - the task's logon spawn is invisible when off);
 //   - on -> the boot-gated in-process apply (applyProfileBoot: applyRunner-
-//     less, defaults-restore fallback skipped regardless of errorCode —
+//     less, defaults-restore fallback skipped regardless of errorCode -
 //     logon must never wipe the live OC state; the task runs elevated so the
 //     in-process apply persists), then exit in BOTH outcomes:
 //     success -> exit right after the apply; failure -> tray balloon + a
@@ -44,13 +44,13 @@ export async function runBootApplyMode({ store, apply, setupTray, log = () => {}
     settings = await store.loadSettings();
   } catch (err) {
     // A settings read failure at logon: exit silently (a logon task must
-    // never error-spam or hang the session) — the window path's honest
+    // never error-spam or hang the session) - the window path's honest
     // state lines still surface the problem for the user.
-    log(`settings read failed (${err.message}) — silent exit`);
+    log(`settings read failed (${err.message}) - silent exit`);
     return { action: 'silent-exit' };
   }
   if (settings.ocOnBoot !== true || !settings.activeProfileId) {
-    log('ocOnBoot is off or no active profile — silent exit');
+    log('ocOnBoot is off or no active profile - silent exit');
     return { action: 'silent-exit' };
   }
 
@@ -61,7 +61,7 @@ export async function runBootApplyMode({ store, apply, setupTray, log = () => {}
     out = { applied: false, reason: `apply threw: ${err.message}` };
   }
   if (out.applied === true) {
-    log(`applied profile '${settings.activeProfileId}' — exiting`);
+    log(`applied profile '${settings.activeProfileId}' - exiting`);
     return { action: 'applied' };
   }
 
@@ -79,7 +79,7 @@ export async function runBootApplyMode({ store, apply, setupTray, log = () => {}
       log(`tray balloon sent: ${content}`);
     }
   } catch (err) {
-    // The tray/balloon is best-effort — the exit semantics must not depend
+    // The tray/balloon is best-effort - the exit semantics must not depend
     // on it (a logon session without a shell notification surface).
     log(`failure balloon skipped: ${err.message}`);
   }

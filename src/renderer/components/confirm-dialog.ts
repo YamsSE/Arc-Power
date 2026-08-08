@@ -1,11 +1,11 @@
-// Arc Power — M3-C-D/M3-C-E Advanced OC Mode enable confirm modal.
+// Arc Power - M3-C-D/M3-C-E Advanced OC Mode enable confirm modal.
 //
 // Shown once when the user switches the OC mode from Stock to Advanced on
 // the Overclocking tab: the honest beyond-Intel-specs disclaimer. Only the
 // user's explicit confirm enables the mode; Cancel keeps stock mode.
 //
 // M3-C-D (double-dialog decision): the PER-APPLY extended-range confirm is
-// GONE from every apply path (OC tab, Profiles page, tray) — in Advanced
+// GONE from every apply path (OC tab, Profiles page, tray) - in Advanced
 // mode this mode-enable confirm already warned; in Stock mode the shared
 // oc-mode gate refuses extended values with a toast/balloon, never a
 // dead-end confirm dialog.

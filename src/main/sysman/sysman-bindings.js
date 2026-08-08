@@ -1,4 +1,4 @@
-// Arc Power — M2b Level Zero Sysman koffi bindings (the IGS-independent OC
+// Arc Power - M2b Level Zero Sysman koffi bindings (the IGS-independent OC
 // experiment). Transcribed from the official Level Zero headers, pinned to
 // oneapi-src/level-zero v1.32.0 (see docs/sysman.md for exact URLs):
 //   ze_api.h  (zeInit/zeDriverGet/zeDeviceGet, ze_result_t)
@@ -6,7 +6,7 @@
 //
 // The IGS hypothesis (plan §9 M2b): IGCL power/freq/temp setters are refused
 // while IGS components run (half-states) and raw sets above the 252 W cap
-// return 0x44000004 — the cap is enforced inside IntelControlLib. The Level
+// return 0x44000004 - the cap is enforced inside IntelControlLib. The Level
 // Zero Sysman path sits BELOW IntelControlLib (ze_loader.dll -> KMD) and may
 // not share its arbitration/cap; this module + tools/validate/sysman-probe.js
 // test that hypothesis on the real A770.
@@ -32,7 +32,7 @@ import path from 'node:path';
 // Enums (zes_api.h v1.32.0)
 // ---------------------------------------------------------------------------
 
-// zes_overclock_domain_t — bitmask values.
+// zes_overclock_domain_t - bitmask values.
 export const ZES_OVERCLOCK_DOMAIN = {
   1: 'CARD',
   2: 'PACKAGE',
@@ -45,7 +45,7 @@ export const ZES_OVERCLOCK_DOMAIN = {
   256: 'ADM',
 };
 
-// zes_overclock_control_t — bitmask values.
+// zes_overclock_control_t - bitmask values.
 export const ZES_OVERCLOCK_CONTROL = {
   1: 'VF',
   2: 'FREQ_OFFSET',
@@ -94,7 +94,7 @@ export function bitmaskNames(mask, map) {
 }
 
 // ---------------------------------------------------------------------------
-// ze_result_t — dual-era map (see header note above)
+// ze_result_t - dual-era map (see header note above)
 // ---------------------------------------------------------------------------
 
 export const ZE_RESULT_NAME = {
@@ -102,7 +102,7 @@ export const ZE_RESULT_NAME = {
   0x00000000: 'SUCCESS',
   0x00000001: 'NOT_READY',
   // OLD era (driver's loader is built against this; the 0x78000001..
-  // 0x78000021 "validation" block shifted meaning in v1.32 — the OLD names
+  // 0x78000021 "validation" block shifted meaning in v1.32 - the OLD names
   // are the ones the driver actually returns, so they win on collision)
   0x78000001: 'ERROR_UNINITIALIZED',
   0x78000002: 'ERROR_DEVICE_LOST',
@@ -161,7 +161,7 @@ export const ZE_RESULT_NAME = {
   0x78000037: 'ERROR_INVALID_POWER_LEVEL_INTERVAL',
   0x78000038: 'ERROR_INVALID_POWER_LEVEL_AND_INTERVAL',
   0x78000039: 'ERROR_DEVICE_REQUIRES_RESET',
-  // NEW era core codes (v1.32.0 moved the core block to 0x7000xxxx — no
+  // NEW era core codes (v1.32.0 moved the core block to 0x7000xxxx - no
   // collision with the old block; added for completeness)
   0x70000001: 'ERROR_DEVICE_LOST',
   0x70000002: 'ERROR_OUT_OF_HOST_MEMORY',
@@ -254,7 +254,7 @@ export function findZeLoaderDll() {
   // ze_loader.dll ships in System32 with the driver package (plan §9 M2b
   // research verdict). Fallbacks: the DriverStore igfx package dirs (some
   // driver packages also place it there) and the LZ_LOADER_PATH env override
-  // (dev only — lets a test point at a fixture).
+  // (dev only - lets a test point at a fixture).
   const candidates = [
     process.env.LZ_LOADER_PATH,
     'C:\\Windows\\System32\\ze_loader.dll',

@@ -1,4 +1,4 @@
-// Arc Power — toast notifications (bottom-right stack, auto-dismiss).
+// Arc Power - toast notifications (bottom-right stack, auto-dismiss).
 
 import { el } from '../dom.ts';
 

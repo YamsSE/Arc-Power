@@ -1,4 +1,4 @@
-// Arc Power — apply-settings payload validation + building (pure, DOM-free).
+// Arc Power - apply-settings payload validation + building (pure, DOM-free).
 //
 // Mirrors the main-process contract (src/main/ipc-core.js sanitizeSettings):
 // keys must be CONTROLS, scalar values finite numbers, gpuLock a well-formed
@@ -13,11 +13,11 @@ import { MAX_CURVE_POINTS } from './curve.ts';
 // (0x44000005); the exposed max is pinned here on top of the backend clamp so
 // sliders/presets can never offer an un-appliable value. M2C-C: the pin
 // yields to the extended range (115 C) when the device reports
-// caps.extendedRanges — values above 90 C then route to the bundled 2023
+// caps.extendedRanges - values above 90 C then route to the bundled 2023
 // IGCL runtime.
 export const TEMP_LIMIT_MAX_C = 90;
 // M3-C-D: the extended PL ceiling. Live-verified 2026-08-06: 400/350/330 W
-// are refused by the runtime (0x44000004), 315 W persists — 315 W IS the
+// are refused by the runtime (0x44000004), 315 W persists - 315 W IS the
 // ceiling on this card (in lockstep with old-igcl.js / the backend ranges /
 // the mock featureset / every pinning test). Requests above it are refused
 // honestly by main, never clamped.
@@ -33,8 +33,8 @@ export const STD_TL_MAX_C = 90;
  * controls pass through untouched. Backend capabilities are already capped,
  * but a stale cache or a future driver props drift must not widen the slider.
  * M2C-C: when the device reports extended ranges, the temp slider may go up
- * to 115 C (the backend range already says so — pass it through).
- * M2D: the W/C pins apply ONLY to canonical-unit ranges — percent-unit
+ * to 115 C (the backend range already says so - pass it through).
+ * M2D: the W/C pins apply ONLY to canonical-unit ranges - percent-unit
  * featuresets (Battlemage mock: volt/PL/TL as %) are not DriverStore W/C
  * limits and must pass through untouched.
  */
@@ -50,11 +50,11 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
 }
 
 /**
- * M4-B step-5 F1: the slider range ONE OC card exposes — the raw capability
+ * M4-B step-5 F1: the slider range ONE OC card exposes - the raw capability
  * range passed through clampExposedRange. buildCard AND refreshCard must
  * derive from the SAME clamped range: the refresh path used to read the raw
  * range directly, so after any apply the slider min/max/step were rewritten
- * from the UNCLAMPED caps — a stale cache or a future driver props drift
+ * from the UNCLAMPED caps - a stale cache or a future driver props drift
  * would have silently widened the slider, removing the UI half of the M2C-A
  * F3 guard. Undefined (unknown control / no caps) -> undefined; the callers
  * guard before use.
@@ -65,10 +65,10 @@ export function cardSliderRange(caps: Capabilities | null | undefined, key: stri
 
 /**
  * M2C-C: true when the pending settings contain an extended-range value
- * (PL > 252 W or TL > 90 C) — the apply must pass the extended-range confirm
+ * (PL > 252 W or TL > 90 C) - the apply must pass the extended-range confirm
  * dialog first (honest warning: beyond Intel's standard limit; card/driver
  * dependent; the Acer BiFrost profile used 300 W).
- * M2D: the extended-range concept is W/C-only — when the device caps are
+ * M2D: the extended-range concept is W/C-only - when the device caps are
  * known, percent-unit ranges (Battlemage mock: volt/PL/TL as %) never count
  * as extended (e.g. a 100% temp limit is not 100 C).
  */
@@ -162,9 +162,9 @@ function samePointArray(a: unknown, b: unknown): boolean {
 
 /**
  * True when one control of `settings` differs from the driver's read-back
- * `state` (a missing driver value counts as dirty — the UI must surface an
+ * `state` (a missing driver value counts as dirty - the UI must surface an
  * unapplied state it cannot verify).
- * M3-C review F2: NULL-SAFE — a null state means "nothing applied yet"
+ * M3-C review F2: NULL-SAFE - a null state means "nothing applied yet"
  * (the store's state slot was never populated / a refusal never landed a
  * state): missing controls are NOT dirty, never a throw.
  */
@@ -182,10 +182,10 @@ export function isControlDirty(control: string, settings: Settings, state: Devic
 
 /**
  * No-op apply predicate (M2b-B toast suppression): true when the requested
- * value for `control` equals the driver's value BEFORE the apply — i.e. the
+ * value for `control` equals the driver's value BEFORE the apply - i.e. the
  * apply changed nothing for that control, so a success toast would be noise.
  * Call with the pre-apply state snapshot. (M2C-B B5(b): the no-op comparison
- * STAYS against the driver read-back — the silent-success rule survives the
+ * STAYS against the driver read-back - the silent-success rule survives the
  * applied-reference change.)
  */
 export function isNoopApply(control: string, settings: Settings, beforeState: DeviceState | null): boolean {
@@ -193,7 +193,7 @@ export function isNoopApply(control: string, settings: Settings, beforeState: De
 }
 
 // ---------------------------------------------------------------------------
-// M2C-B B5 — applied-reference dirty detection (chips + floating Apply)
+// M2C-B B5 - applied-reference dirty detection (chips + floating Apply)
 // ---------------------------------------------------------------------------
 //
 // Two separate references, deliberately NOT merged:
@@ -218,7 +218,7 @@ function sameValue(a: unknown, b: unknown): boolean {
 /**
  * B5(a): is `control` dirty against the APPLIED reference (per-control
  * result.ok values from the last apply) falling back to the driver state?
- * A control in `applied` is judged against the applied value alone — the
+ * A control in `applied` is judged against the applied value alone - the
  * lagging driver read-back cannot re-dirty a chip that just applied.
  * M3-C review F2: null-safe via isControlDirty (a null state never throws).
  */
@@ -231,7 +231,7 @@ export function isControlDirtyVsApplied(control: string, settings: Settings, sta
 
 /**
  * B5(a): any-dirty predicate for the floating Apply button against the
- * applied reference + driver state. M3-C review F2: null-safe — a null
+ * applied reference + driver state. M3-C review F2: null-safe - a null
  * state (nothing applied yet) is never dirty, never throws.
  */
 export function computeDirtyVsApplied(settings: Settings, state: DeviceState | null, applied: Record<string, unknown>): boolean {
@@ -243,8 +243,8 @@ export function computeDirtyVsApplied(settings: Settings, state: DeviceState | n
 
 /**
  * B5(a): scalar variant for the per-card "Unapplied" chips (slider values
- * are numbers; the driver may report none — then it counts as dirty).
- * M3-C review F2: null-safe — a null state with no applied reference is
+ * are numbers; the driver may report none - then it counts as dirty).
+ * M3-C review F2: null-safe - a null state with no applied reference is
  * NOT dirty (nothing applied yet), never a throw.
  */
 export function isScalarDirtyVsApplied(control: string, value: number, state: DeviceState | null, applied: Record<string, unknown>): boolean {
@@ -256,7 +256,7 @@ export function isScalarDirtyVsApplied(control: string, value: number, state: De
 
 /**
  * Post-apply profile-load outcome (M2b step-5 NIT 2): the active-profile
- * mark and the "applied to the GPU" wording are gated on `result.ok` — a
+ * mark and the "applied to the GPU" wording are gated on `result.ok` - a
  * partially-failed load (some controls errored, `ok === false`) must NOT
  * mark the profile active nor claim the GPU state; the per-control error
  * toasts already covered it. Returns no toast when nothing should be shown.
@@ -271,12 +271,12 @@ export function profileApplyOutcome(
     markActive: true,
     toast: changed > 0
       ? `"${name}" applied to the GPU.`
-      : `"${name}" matches the current GPU state — nothing changed.`,
+      : `"${name}" matches the current GPU state - nothing changed.`,
   };
 }
 
 // ---------------------------------------------------------------------------
-// M3-C-F — OC-page refresh signatures (pure, unit-tested)
+// M3-C-F - OC-page refresh signatures (pure, unit-tested)
 // ---------------------------------------------------------------------------
 
 /**
@@ -305,7 +305,7 @@ export function ocStateChanged(prev: DeviceState | null, next: DeviceState | nul
 }
 
 /**
- * True when the capability SURFACE changed (mode toggle / featureset swap) —
+ * True when the capability SURFACE changed (mode toggle / featureset swap) -
  * the OC page must fully re-render then. Content comparison, NOT reference:
  * the page itself re-sets caps after every apply ({ ...caps, waiverAccepted })
  * and a full re-render on that would clobber the applied-reference chips.
@@ -319,11 +319,11 @@ export function ocCapsChanged(prev: Capabilities | null, next: Capabilities | nu
 }
 
 // ---------------------------------------------------------------------------
-// M4-B — gpuLock editor (pure; mirrors the main-side clamp bounds)
+// M4-B - gpuLock editor (pure; mirrors the main-side clamp bounds)
 // ---------------------------------------------------------------------------
 // The main process clamps the lock pair to these bounds before it reaches
 // the driver (src/main/backend/units.js clampGpuLock). The renderer mirrors
-// them ONLY for honest toasts when no read-back envelope exists — main stays
+// them ONLY for honest toasts when no read-back envelope exists - main stays
 // the authoritative gate.
 
 /** Renderer mirror of units.js GPU_LOCK_VOLT_MAX_V (the absolute VF-point
@@ -334,7 +334,7 @@ export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
 
 /**
  * M4-B step-5 F3: parse the gpuLock editor inputs. Empty / whitespace-only
- * fields are rejected BEFORE numeric conversion — `Number('') === 0` and the
+ * fields are rejected BEFORE numeric conversion - `Number('') === 0` and the
  * 0 V / 0 MHz pair is the legal UNLOCK, so a cleared field (or a number
  * input's empty-value state after an invalid entry) must never silently
  * unlock the GPU. Non-finite conversions are rejected too.
@@ -355,7 +355,7 @@ export function parseGpuLockInput(
 /**
  * M4-B step-5 F4: the pair the gpuLock SUCCESS toast must report. Main
  * clamps the typed pair before the write, so the driver received the
- * CLAMPED values — the toast must show the read-back pair when the fresh
+ * CLAMPED values - the toast must show the read-back pair when the fresh
  * envelope carried one (honesty: toast == the 'Applied:' line), else the
  * locally clamped pair (same bounds as main's clampGpuLock) so a
  * null/degraded envelope still cannot re-print an out-of-bounds typed

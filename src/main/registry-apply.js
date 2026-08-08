@@ -1,18 +1,18 @@
-// Arc Power — M3-B registry hacks APPLY side (electron-free, never writes
+// Arc Power - M3-B registry hacks APPLY side (electron-free, never writes
 // anything non-elevated).
 //
 // The catalog (registry-catalog.js) carries the APPLY descriptor per entry:
 // the exact reg.exe commands for the tweak's enabled state, its disabled
-// state, and the revert (restore prior value — delete = system default).
+// state, and the revert (restore prior value - delete = system default).
 // THIS module runs those commands ELEVATED and reports honestly what landed.
 //
 // Elevation (same pattern as elevated-apply.js / igs-service.js): the parent
 // spawns PowerShell (injectable for tests) which Start-Process -Verb RunAs
-// -Wait -PassThru an ELEVATED PowerShell running the reg commands — ONE UAC
+// -Wait -PassThru an ELEVATED PowerShell running the reg commands - ONE UAC
 // prompt per apply. The elevated script writes a per-step JSON result file
 // (arcpower-reg-<uuid>.json in the temp dir) and exits non-zero on the
 // first failed step:
-//   - every step that ran is recorded (step index + ok) — the parent fills
+//   - every step that ran is recorded (step index + ok) - the parent fills
 //     the steps after the first failure as 'not-run';
 //   - a UAC DECLINE leaves no result file (the elevated process never
 //     started) -> the parent reports the honest "requires administrator
@@ -20,12 +20,12 @@
 //   - a TIMEOUT kills the launcher, but the elevated child may still run
 //     (late approval): the parent polls the result file for a grace window
 //     and reports the REAL outcome if it lands, else the honest TIMED-OUT
-//     wording — the two are never conflated;
+//     wording - the two are never conflated;
 //   - there is NEVER an auto-revert: a partial apply is reported step by
 //     step and the user reverts via the Revert button (documented in the
 //     result message).
 //
-// Safety: every write here goes through the elevated PowerShell — the
+// Safety: every write here goes through the elevated PowerShell - the
 // non-elevated app never runs reg.exe add/delete. The default adapter for
 // tests/--ui-verify/mock mode is the MOCK (never spawns, never elevates);
 // it shares the mock registry state with the read adapter so the state
@@ -45,20 +45,20 @@ const execFile = promisify(nodeExecFile);
 export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 // The elevated script must finish within this window (reg.exe commands are
 // fast; the bound exists so a hung PowerShell or a never-answered UAC prompt
-// cannot stall the UI forever — 3 minutes is generous for a real approval).
+// cannot stall the UI forever - 3 minutes is generous for a real approval).
 export const REG_APPLY_TIMEOUT_MS = 180000;
 // After the bound kills the launcher, the ELEVATED child may still be
-// running — an approval granted just after the kill still executes the reg
+// running - an approval granted just after the kill still executes the reg
 // commands and writes the result file. This window is polled for the result
 // file before declaring a timeout, so a late landing is reported honestly
 // instead of being conflated with a decline.
 export const REG_APPLY_GRACE_MS = 5000;
 // The honest UAC-decline wording (same pattern as elevated-apply.js
-// APPLY_CANCELED_ERROR) — DISTINCT from the timeout wording below.
+// APPLY_CANCELED_ERROR) - DISTINCT from the timeout wording below.
 export const REG_APPLY_CANCELED_ERROR = 'Applying this tweak requires administrator approval.';
-// The honest TIMEOUT wording — a kill after the bound is NOT a decline: the
+// The honest TIMEOUT wording - a kill after the bound is NOT a decline: the
 // approval may have been granted just too late, so the write may still land.
-export const REG_APPLY_TIMEOUT_ERROR = `The elevated apply timed out after ${REG_APPLY_TIMEOUT_MS / 60000} minutes — no administrator approval completed in time (or the elevated process hung). If approval was granted after this message, the registry write may still have landed — refresh the state and use Revert if needed.`;
+export const REG_APPLY_TIMEOUT_ERROR = `The elevated apply timed out after ${REG_APPLY_TIMEOUT_MS / 60000} minutes - no administrator approval completed in time (or the elevated process hung). If approval was granted after this message, the registry write may still have landed - refresh the state and use Revert if needed.`;
 export const REG_ACTIONS = ['enable', 'disable', 'revert'];
 
 // ---------------------------------------------------------------------------
@@ -103,13 +103,13 @@ function psSingleQuote(s) {
  * Build the ELEVATED PowerShell script that runs one action's command list.
  * The script:
  *   1. runs each reg.exe command via the full path (PATH is not a trust
- *      boundary at the elevation boundary — same rule as igs-service.js);
+ *      boundary at the elevation boundary - same rule as igs-service.js);
  *   2. records every executed step as { step: <index>, ok: <bool> };
  *   3. stops at the FIRST failed step, writes the partial results to the
  *      result file and exits 1;
  *   4. on full success writes the results and exits 0.
  * The parent (createRegistryApply) spawns THIS script via
- * buildElevatedLaunch (Start-Process -Verb RunAs -Wait -PassThru) — a UAC
+ * buildElevatedLaunch (Start-Process -Verb RunAs -Wait -PassThru) - a UAC
  * decline fails the spawn before any command runs, so no result file is
  * ever written and the parent reports the cancellation honestly.
  * @param {import('./registry-catalog.js').RegistryEntry} entry
@@ -131,7 +131,7 @@ export function buildRegApplyScript(entry, action, outPath) {
     lines.push(`if ($LASTEXITCODE -ne 0) { ConvertTo-Json -Compress -InputObject $res | Out-File -Encoding ascii $out; exit 1 }`);
   }
   // M3-C-A (BOM fix): the result file is written with `-Encoding ascii`, NOT
-  // utf8 — PowerShell 5.1's `-Encoding utf8` emits a UTF-8 BOM (EF BB BF,
+  // utf8 - PowerShell 5.1's `-Encoding utf8` emits a UTF-8 BOM (EF BB BF,
   // reproduced live) whose leading \uFEFF makes the parent's JSON.parse
   // reject the whole file, so every real tweak apply was reported as
   // failed/never-run while the reg writes had actually landed. The content
@@ -143,7 +143,7 @@ export function buildRegApplyScript(entry, action, outPath) {
 
 /**
  * Parse the elevated script's result file into the executed steps. Returns
- * null on garbage — the caller then treats the apply as canceled/failed
+ * null on garbage - the caller then treats the apply as canceled/failed
  * honestly. Handles both array output and the single-step object shape.
  * @param {unknown} raw the file content (or JSON.parse output)
  * @returns {Array<{ step: number, ok: boolean }> | null}
@@ -151,7 +151,7 @@ export function buildRegApplyScript(entry, action, outPath) {
 export function parseApplyOutcome(raw) {
   let parsed;
   try {
-    // M3-C-A: defensively strip a leading UTF-8 BOM (\uFEFF) before parsing —
+    // M3-C-A: defensively strip a leading UTF-8 BOM (\uFEFF) before parsing -
     // guards any future result-file writer that BOMs (PS 5.1 `-Encoding
     // utf8` was one; the current writer uses ascii, but the parse must not
     // depend on the writer staying perfect).
@@ -169,7 +169,7 @@ export function parseApplyOutcome(raw) {
 }
 
 // ---------------------------------------------------------------------------
-// Result assembly (per-step honesty — no silent partial state)
+// Result assembly (per-step honesty - no silent partial state)
 // ---------------------------------------------------------------------------
 
 /**
@@ -195,9 +195,9 @@ function assembleResult(entry, action, steps, executed, canceled, cancelMessage 
     message = `${entry.name}: ${perStep.map((p) => p.label).join('; ')}`;
   } else if (failed > 0) {
     const failedAt = perStep.find((p) => p.status === 'failed');
-    message = `Partial apply: ${done} of ${steps.length} step(s) landed, step ${failedAt.step + 1} failed, ${notRun} not run. Nothing was rolled back automatically — use Revert to restore the previous state.`;
+    message = `Partial apply: ${done} of ${steps.length} step(s) landed, step ${failedAt.step + 1} failed, ${notRun} not run. Nothing was rolled back automatically - use Revert to restore the previous state.`;
   } else {
-    message = `No steps landed — the apply failed before writing anything.`;
+    message = `No steps landed - the apply failed before writing anything.`;
   }
   return { ok: done === steps.length, canceled, message, perStep };
 }
@@ -215,7 +215,7 @@ async function readOutFile(filePath) {
 }
 
 /**
- * Poll the result file for up to `timeoutMs` — used ONLY after the launcher
+ * Poll the result file for up to `timeoutMs` - used ONLY after the launcher
  * was killed by the bound, where the elevated child may legitimately still
  * be running (late approval). Returns the parsed outcome as soon as a
  * readable file appears, or null when the window elapses. The unlink must
@@ -234,19 +234,19 @@ async function waitForResultFile(filePath, timeoutMs, pollMs = 250) {
 async function unlinkIfExists(filePath) {
   try {
     await fs.promises.unlink(filePath);
-  } catch { /* absent — nothing to do */ }
+  } catch { /* absent - nothing to do */ }
 }
 
 /**
- * Real adapter — injected into the IPC handlers in the product path.
+ * Real adapter - injected into the IPC handlers in the product path.
  *
  * M3-C-B (elevation-aware): when the current process runs as administrator
- * (the packaged EXE always does — portable.requestExecutionLevel: admin),
+ * (the packaged EXE always does - portable.requestExecutionLevel: admin),
  * reg.exe is executed DIRECTLY (no PowerShell, no RunAs, no result file):
  * each step runs through the injected execFile with per-step honest
  * reporting, stopping at the first failure exactly like the elevated script
  * does. The non-elevated fallback (dev mode) keeps the PowerShell RunAs
- * chain — one UAC prompt per action.
+ * chain - one UAC prompt per action.
  * @param {import('./registry-catalog.js').RegistryEntry[]} [catalog]
  * @param {{
  *   execFile?: typeof execFile,
@@ -259,7 +259,7 @@ async function unlinkIfExists(filePath) {
  * }} [deps]
  */
 export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
-  // M4-B: make the whole bug CLASS loud at construction time — the first
+  // M4-B: make the whole bug CLASS loud at construction time - the first
   // parameter is the CATALOG array (apply() calls catalog.find(...)), but
   // two product call sites used to pass the deps object there, throwing
   // "catalog.find is not a function" mid-apply in the packaged EXE. The
@@ -278,11 +278,11 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
   const isElevated = deps.isElevated ?? (() => false);
 
   /**
-   * M3-C-B direct path: the process is ALREADY elevated — run the reg
+   * M3-C-B direct path: the process is ALREADY elevated - run the reg
    * commands directly with the injected execFile. Per-step honest reporting
    * (same assembleResult envelope as the script path), stop at the first
    * failed step, NO result file, NO PowerShell, NO RunAs (the UAC-decline
-   * wording is unreachable here by construction — the process holds the
+   * wording is unreachable here by construction - the process holds the
    * privilege already).
    */
   async function applyDirect(entry, action, steps) {
@@ -332,7 +332,7 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
       let timedOut = false;
       try {
         // Success path (exit 0) or a script-reported failure (non-zero) both
-        // reject-or-resolve through execFile; the RESULT FILE is the truth —
+        // reject-or-resolve through execFile; the RESULT FILE is the truth -
         // the exit code only distinguishes "script ran" from "elevation
         // failed". A UAC decline leaves no result file at all.
         await exec(powershellExe, ['-NoProfile', '-Command', buildElevatedLaunch(script)], {
@@ -341,7 +341,7 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
         });
         executed = await readOutFile(outPath);
         if (!executed) {
-          // Script "succeeded" but produced no readable result — a defensive
+          // Script "succeeded" but produced no readable result - a defensive
           // honest failure, never a silent success claim.
           return assembleResult(entry, action, steps, null, false);
         }
@@ -352,13 +352,13 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
           // process never started) or the bound killed the launcher (a late
           // approval still runs the elevated reg commands). The two must NOT
           // be conflated: on a timeout, poll the result file for a grace
-          // window — a late landing is reported as the real outcome, never
+          // window - a late landing is reported as the real outcome, never
           // as a cancel.
           timedOut = err?.killed === true || err?.code === 'ETIMEDOUT';
           if (timedOut) {
-            log(`[registry-apply] ${entryId} ${action}: bound exceeded — polling the result file for ${graceMs}ms`);
+            log(`[registry-apply] ${entryId} ${action}: bound exceeded - polling the result file for ${graceMs}ms`);
             executed = await waitForResultFile(outPath, graceMs);
-            if (executed) log(`[registry-apply] ${entryId} ${action}: late result file appeared during the grace window — reporting the real outcome`);
+            if (executed) log(`[registry-apply] ${entryId} ${action}: late result file appeared during the grace window - reporting the real outcome`);
           }
           if (!executed) {
             canceled = true;
@@ -366,7 +366,7 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
           }
         }
       } finally {
-        // The unlink happens only AFTER the grace poll — never before: the
+        // The unlink happens only AFTER the grace poll - never before: the
         // late elevated write must stay readable for the whole window.
         await unlinkIfExists(outPath);
       }
@@ -377,7 +377,7 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Mock adapter — used whenever the app runs in mock mode (tests, --ui-verify,
+// Mock adapter - used whenever the app runs in mock mode (tests, --ui-verify,
 // RID_BACKEND=mock). Applies the descriptor's commands to the shared mock
 // registry state (never spawns, never elevates); the read adapter then
 // reflects the "written" values. Failure/cancel knobs exist so ui-verify can
@@ -405,7 +405,7 @@ export function createMockRegistryApply(catalog = REGISTRY_CATALOG, { state = cr
         throw new Error(`registry-apply: '${entryId}' is read-only (no ${action} commands)`);
       }
       const steps = entry.apply.actions[action];
-      // Simulated elevation latency — lets ui-verify assert the buttons are
+      // Simulated elevation latency - lets ui-verify assert the buttons are
       // disabled while the apply promise is pending.
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
       if (canceledActions.has(entryId)) {

@@ -1,4 +1,4 @@
-// Arc Power — M1 health report aggregator.
+// Arc Power - M1 health report aggregator.
 //
 // The IOCBackend.health() method reports backend-local health (igclLoaded,
 // driverVersion, levelZeroOk); this module wraps it with the backend kind

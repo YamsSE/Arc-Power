@@ -1,4 +1,4 @@
-// Arc Power — GPU header: device name, app version line, mock-mode badge,
+// Arc Power - GPU header: device name, app version line, mock-mode badge,
 // featureset dropdown (mock mode). Rendered once, updated by store
 // subscriptions.
 //
@@ -6,13 +6,13 @@
 //   - the driver line moved OUT of the header (M2C-B B3): the line below the
 //     GPU name is now "Arc Power Ver. X.XX" (the app version via the
 //     `app:version` IPC; M4-A: the DISPLAY label carries the " Alpha"
-//     suffix — the IPC keeps the bare semver); the driver version + registry
+//     suffix - the IPC keeps the bare semver); the driver version + registry
 //     date stay in the dashboard device card ('Driver version' kv, driver-info
 //     IPC);
 //   - PCI ID is gone;
 //   - M3-A: the top-right status dot + "Service Status" label are REMOVED
 //     (with the M2C-C elevation gate, IGS state is no longer relevant to
-//     OC-applicability — the general GPU Health card on the dashboard
+//     OC-applicability - the general GPU Health card on the dashboard
 //     carries the status now). The header keeps the GPU name + version line
 //     + the mock badge + the mock featureset dropdown.
 //
@@ -63,7 +63,7 @@ export class GpuHeader {
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
     const health = s.health;
     // 1.0.1 no-Intel round (m5): the featureset dropdown is HIDDEN in the
-    // no-device mode (mock mode) — the swap would store caps/state into the
+    // no-device mode (mock mode) - the swap would store caps/state into the
     // no-Intel store and break the presentation (it is also a no-op in
     // app.ts). The mock badge stays (it reports the honest backend kind).
     const mockBadge = health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null;
@@ -83,10 +83,10 @@ export class GpuHeader {
       : null;
     // 1.0.1 no-Intel round: the header shows the OS GPU (sysinfo primary
     // controller) with 'Non supported GPU' REPLACING the version line (n10
-    // — the user's exact ask); while the OS GPU is unknown the name reads
-    // '—' (only 'No GPU detected' when sysinfo has nothing at all).
+    // - the user's exact ask); while the OS GPU is unknown the name reads
+    // '-' (only 'No GPU detected' when sysinfo has nothing at all).
     const gpuName = s.noIntel
-      ? (s.osGpu?.name ?? (s.sysinfo?.videoControllers?.length ? '—' : 'No GPU detected'))
+      ? (s.osGpu?.name ?? (s.sysinfo?.videoControllers?.length ? '-' : 'No GPU detected'))
       : device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power');
     const gpuMeta = s.noIntel
       ? 'Non supported GPU'
@@ -97,7 +97,7 @@ export class GpuHeader {
         el('div', { class: 'gpu-identity' }, [
           el('div', { class: 'gpu-name', text: gpuName }),
           // M4-A: the display label carries the " Alpha" suffix; the app:version
-          // IPC keeps the bare semver (test/ipc-core pins '1.0.2').
+          // IPC keeps the bare semver (test/ipc-core pins '1.0.3').
           el('div', { class: 'gpu-meta', text: gpuMeta }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),

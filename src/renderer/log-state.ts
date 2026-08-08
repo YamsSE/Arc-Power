@@ -1,14 +1,14 @@
-// Arc Power — M4-D2 (§10): renderer-wide log-to-file + FPS state.
+// Arc Power - M4-D2 (§10): renderer-wide log-to-file + FPS state.
 //
 // The Monitoring "Log to file" toggle lives in the BOOT-LEVEL telemetry
-// subscription in app.ts (logging continues across page navigation — the
+// subscription in app.ts (logging continues across page navigation - the
 // telemetry push is global). This tiny module is the shared state:
-//   - `monitorLogToFile` — the persisted toggle value (initialized at boot
+//   - `monitorLogToFile` - the persisted toggle value (initialized at boot
 //     from profiles-list; updated by the Settings + Monitoring toggles);
-//   - `currentLogFile` — the last CSV path reported by the monitor-log
-//     append (the channel reports { ok, file } — the Monitoring page shows
+//   - `currentLogFile` - the last CSV path reported by the monitor-log
+//     append (the channel reports { ok, file } - the Monitoring page shows
 //     it as the "current log path" line);
-//   - `latestFps` — the latest FPS known to the renderer (the Monitoring
+//   - `latestFps` - the latest FPS known to the renderer (the Monitoring
 //     page's 1 s poll updates it; the log line carries it best-effort).
 
 let monitorLogToFile = false;

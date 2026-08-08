@@ -1,4 +1,4 @@
-// Arc Power — tiny DOM helper (vanilla TS; no framework).
+// Arc Power - tiny DOM helper (vanilla TS; no framework).
 
 export type Attrs = {
   class?: string;

@@ -1,8 +1,8 @@
-// Arc Power — M3-A/M3-B registry hacks CATALOG (file-driven data).
+// Arc Power - M3-A/M3-B registry hacks CATALOG (file-driven data).
 //
 // The catalog is file-driven data: what each known, reversible Windows GPU
 // tweak is, which registry values prove its current state, and how to read
-// that state — all read-only (reg.exe `query`, no elevation). Each entry
+// that state - all read-only (reg.exe `query`, no elevation). Each entry
 // also carries the M3-B APPLY descriptor: the exact elevated reg.exe
 // commands that write the tweak's enabled/disabled state and the revert
 // (restore prior value). APPLYING runs ELEVATED (every entry requires
@@ -13,10 +13,10 @@
 // tests/--ui-verify/mock mode is the MOCK (never spawns reg.exe).
 //
 // Catalog state vocabulary per entry:
-//   enabled  — a read value matches the entry's `on` (the tweak is active);
-//   disabled — a read value matches the entry's `off`;
-//   default  — the key/value is not present (system default behavior);
-//   unknown  — present but with an unexpected value (honest: show the raw).
+//   enabled  - a read value matches the entry's `on` (the tweak is active);
+//   disabled - a read value matches the entry's `off`;
+//   default  - the key/value is not present (system default behavior);
+//   unknown  - present but with an unexpected value (honest: show the raw).
 // Entry state = any unknown wins; otherwise enabled > disabled > default.
 
 import { execFile as nodeExecFile } from 'node:child_process';
@@ -28,7 +28,7 @@ const execFile = promisify(nodeExecFile);
 export const REG_NOT_FOUND = 1;
 
 // ---------------------------------------------------------------------------
-// The catalog (file-driven data — public knowledge, each entry marked
+// The catalog (file-driven data - public knowledge, each entry marked
 // "verify on this machine in M3-B" where the key/value could vary by
 // driver/Windows build).
 // ---------------------------------------------------------------------------
@@ -63,9 +63,9 @@ export const REG_NOT_FOUND = 1;
  * @typedef {{
  *   kind: 'add' | 'delete',
  *   path: string,       // hive-qualified key path ("HKLM\..." / "HKCU\...")
- *   value: string,      // value name ('' for delete-by-path-only — unused today)
+ *   value: string,      // value name ('' for delete-by-path-only - unused today)
  *   type?: string,      // REG_DWORD etc. (add steps only)
- *   data?: string,      // the value data (add steps only; decimal — reg.exe stores DWORD)
+ *   data?: string,      // the value data (add steps only; decimal - reg.exe stores DWORD)
  * }} RegistryApplyStep
  */
 
@@ -76,9 +76,9 @@ export const REGISTRY_CATALOG = [
     // M3-C-H: plain-language, 1-2 lines (the long canonical-location /
     // hive-caveat prose is gone).
     description:
-      'MPO lets Windows composite windows on separate planes; some GPUs/drivers stutter, flicker or black-screen with it active. Disabling it fixes that on some setups — it is off by default in Windows anyway.',
+      'MPO lets Windows composite windows on separate planes; some GPUs/drivers stutter, flicker or black-screen with it active. Disabling it fixes that on some setups - it is off by default in Windows anyway.',
     requiresElevation: true,
-    absentLabel: 'Not set — MPO follows the driver default (usually on)',
+    absentLabel: 'Not set - MPO follows the driver default (usually on)',
     reads: [
       { path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
       { path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
@@ -89,7 +89,7 @@ export const REGISTRY_CATALOG = [
     // canonical key/value on this machine (see the description note above).
     apply: {
       applyable: true,
-      revertNote: 'Revert deletes MPOHack from both hives — MPO follows the driver default again (usually on).',
+      revertNote: 'Revert deletes MPOHack from both hives - MPO follows the driver default again (usually on).',
       actions: {
         enable: [
           { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '1' },
@@ -110,9 +110,9 @@ export const REGISTRY_CATALOG = [
     id: 'hags',
     name: 'Hardware-accelerated GPU scheduling',
     description:
-      'HAGS lets the GPU scheduler manage VRAM instead of the CPU driver thread — better input latency on some systems, stutter on others. Needs a reboot to take effect.',
+      'HAGS lets the GPU scheduler manage VRAM instead of the CPU driver thread - better input latency on some systems, stutter on others. Needs a reboot to take effect.',
     requiresElevation: true,
-    absentLabel: 'Not set — follows the Windows default (on for recent builds)',
+    absentLabel: 'Not set - follows the Windows default (on for recent builds)',
     reads: [
       { path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'DWORD', on: '2', off: '1' },
     ],
@@ -120,7 +120,7 @@ export const REGISTRY_CATALOG = [
     // the Windows default applies.
     apply: {
       applyable: true,
-      revertNote: 'Revert deletes HwSchMode — the Windows default applies (on for recent builds).',
+      revertNote: 'Revert deletes HwSchMode - the Windows default applies (on for recent builds).',
       actions: {
         enable: [
           { kind: 'add', path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'REG_DWORD', data: '2' },
@@ -140,17 +140,17 @@ export const REGISTRY_CATALOG = [
     description:
       'Game Bar background recording can cost a few percent of FPS; this disables it machine-wide.',
     requiresElevation: true,
-    absentLabel: 'Not configured — recording follows the user setting',
+    absentLabel: 'Not configured - recording follows the user setting',
     reads: [
       { path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'DWORD', on: '0', off: '1' },
     ],
     // M3-B apply: AllowGameDVR=0 disables background recording (the tweak's
     // active state); 1 = inactive. REVERT deletes the VALUE and keeps the
-    // policy key (safer than deleting the key — other policies may live in
+    // policy key (safer than deleting the key - other policies may live in
     // it), so recording follows the per-user Game Bar setting again.
     apply: {
       applyable: true,
-      revertNote: 'Revert deletes AllowGameDVR (the policy key stays) — recording follows the per-user Game Bar setting again.',
+      revertNote: 'Revert deletes AllowGameDVR (the policy key stays) - recording follows the per-user Game Bar setting again.',
       actions: {
         enable: [
           { kind: 'add', path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'REG_DWORD', data: '0' },
@@ -168,17 +168,17 @@ export const REGISTRY_CATALOG = [
     id: 'fullscreen-optimizations',
     name: 'Disable fullscreen optimizations (per-app)',
     description:
-      'A per-app compatibility flag — some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.',
+      'A per-app compatibility flag - some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.',
     requiresElevation: true,
     absentLabel: 'No per-app compatibility flags set',
     reads: [
       { path: 'HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers', value: null, type: 'REG_SZ', on: 'FULLSCREENOPTIMIZATIONS' },
     ],
-    // M3-B: read-only INFO entry — there is no single system-wide switch to
+    // M3-B: read-only INFO entry - there is no single system-wide switch to
     // write (the flag is per-app), so this entry has NO apply commands.
     apply: {
       applyable: false,
-      revertNote: 'Read-only — no system-wide setting to apply or revert.',
+      revertNote: 'Read-only - no system-wide setting to apply or revert.',
     },
   },
 ];
@@ -206,7 +206,7 @@ export function parseRegValueOutput(stdout, exitCode = 0) {
 }
 
 /**
- * Parse `reg query <path>` (no /v — key enumeration) stdout into the
+ * Parse `reg query <path>` (no /v - key enumeration) stdout into the
  * key's values.
  * @param {string} stdout
  * @param {number} [exitCode]
@@ -246,14 +246,14 @@ export function interpretRead(read, res) {
 
 /**
  * Combine per-read states into the entry state. Unknown (unexpected value)
- * wins — the UI must not guess; then enabled > disabled > default.
+ * wins - the UI must not guess; then enabled > disabled > default.
  * @param {import('../renderer/types.ts').RegistryEntry} entry
  * @param {Array<{ read: object, res: { found: boolean, value?: string|null, values?: Array<object> } }>} reads
  * @returns {{ state: 'enabled'|'disabled'|'unknown'|'default', detail: string }}
  */
 export function interpretEntry(entry, reads) {
   const interpreted = reads.map(({ read, res }) => ({ read, res, out: interpretRead(read, res) }));
-  if (interpreted.some(({ out }) => out.state === 'unknown')) return { state: 'unknown', detail: 'Unexpected registry values — inspect the reads below' };
+  if (interpreted.some(({ out }) => out.state === 'unknown')) return { state: 'unknown', detail: 'Unexpected registry values - inspect the reads below' };
   if (interpreted.some(({ out }) => out.state === 'enabled')) {
     return { state: 'enabled', detail: interpreted.map(({ out }) => out.detail).join(' · ') };
   }
@@ -268,7 +268,7 @@ export function interpretEntry(entry, reads) {
 // ---------------------------------------------------------------------------
 
 /**
- * Query one registry value read-only. Never throws — an absent key/value,
+ * Query one registry value read-only. Never throws - an absent key/value,
  * a spawn failure or a timeout all degrade to { found: false }.
  */
 async function queryRead(read, exec) {
@@ -282,7 +282,7 @@ async function queryRead(read, exec) {
       : parseRegValueOutput(stdout);
   } catch (err) {
     // reg.exe exits 1 for absent keys/values; anything else (spawn failure,
-    // timeout) also degrades to not-found — the catalog reads as 'default'.
+    // timeout) also degrades to not-found - the catalog reads as 'default'.
     return read.value === null
       ? parseRegKeyEnum(typeof err?.stdout === 'string' ? err.stdout : '', err?.code)
       : parseRegValueOutput(typeof err?.stdout === 'string' ? err.stdout : '', err?.code);
@@ -323,14 +323,14 @@ export async function readCatalogStates(catalog = REGISTRY_CATALOG, { exec = exe
 }
 
 /**
- * Real adapter — injected into the IPC handlers in the product path.
+ * Real adapter - injected into the IPC handlers in the product path.
  */
 export function createRegistryCatalog(deps = {}) {
   return { get: () => readCatalogStates(REGISTRY_CATALOG, { exec: deps.execFile ?? execFile }) };
 }
 
 // ---------------------------------------------------------------------------
-// Mock registry STATE — a mutable, in-memory stand-in for the real registry
+// Mock registry STATE - a mutable, in-memory stand-in for the real registry
 // shared by the mock READ adapter (createMockRegistryCatalog) and the mock
 // APPLY adapter (createMockRegistryApply in registry-apply.js). Applying a
 // command step mutates the state exactly like the real reg.exe command
@@ -345,7 +345,7 @@ const MOCK_READ_STATES = {
     { found: false, value: null, state: 'default', detail: 'not present' },
     { found: true, value: '0x0', state: 'disabled', detail: 'MPOHack=0x0' },
   ],
-  // HAGS on (HwSchMode=2 — the common Win11 default).
+  // HAGS on (HwSchMode=2 - the common Win11 default).
   hags: [{ found: true, value: '0x2', state: 'enabled', detail: 'HwSchMode=0x2' }],
   // Game DVR policy not configured.
   'game-dvr': [{ found: false, value: null, state: 'default', detail: 'not present' }],
@@ -365,7 +365,7 @@ const MOCK_READ_STATES = {
  * applies ONE command step (the exact shape the M3-B descriptors use):
  * add -> the matching read becomes present with the step's data; delete ->
  * the matching read becomes absent. A step that matches no read is a no-op
- * (the catalog only writes what it reads — but it must not throw).
+ * (the catalog only writes what it reads - but it must not throw).
  * @param {RegistryEntry[]} [catalog]
  */
 export function createMockRegistryState(catalog = REGISTRY_CATALOG) {
@@ -403,7 +403,7 @@ export function createMockRegistryState(catalog = REGISTRY_CATALOG) {
 }
 
 /**
- * Mock adapter — used whenever the app runs in mock mode (tests, --ui-verify,
+ * Mock adapter - used whenever the app runs in mock mode (tests, --ui-verify,
  * RID_BACKEND=mock). Deterministic fixture states, one per vocabulary entry;
  * never spawns reg.exe. When a `state` (createMockRegistryState) is shared
  * with the mock apply adapter, applies are reflected in subsequent reads.

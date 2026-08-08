@@ -1,7 +1,7 @@
-// Arc Power — warranty-waiver decision logic (pure, DOM-free).
+// Arc Power - warranty-waiver decision logic (pure, DOM-free).
 //
 // The rule is deliberately trivial and total: an apply must not proceed
-// while the device waiver is not accepted — the only way to reach 'accepted'
+// while the device waiver is not accepted - the only way to reach 'accepted'
 // is an explicit user decision (the dialog's Accept button). There is no
 // auto-accept path in this module or anywhere in product code; auto-accept
 // exists only under `allowAutoWaiver` in smoke/test backends. The tests pin

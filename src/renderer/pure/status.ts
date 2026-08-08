@@ -1,23 +1,23 @@
-// Arc Power — GPU health row model (pure, DOM-free; shared by the dashboard
+// Arc Power - GPU health row model (pure, DOM-free; shared by the dashboard
 // health card).
 //
 // M3-A rework: the IGS service indicator is REMOVED (with the M2C-C elevation
-// gate, IGS state is no longer relevant to OC-applicability — the user's
+// gate, IGS state is no longer relevant to OC-applicability - the user's
 // decision, docs). The old health + IGS combined mapping (mapStatus /
 // IGS_LABELS / igsHalfState / IGS_NOTE) is gone; the general GPU HEALTH card
 // replaces the merged Service Status card. M3-C-I trims it to four honest
 // rows (the "Clocks normal" row is REMOVED per the user's dashboard picture):
 //
-//   driver — "Driver installed": the IGCL runtime loaded + a driver version;
+//   driver - "Driver installed": the IGCL runtime loaded + a driver version;
 //            the detail shows the driver version + date like the device card
 //            (driverLine: "32.0.101.8861 - Jul 05, 2026");
-//   device — "Device detected": a GPU is enumerated (or the boot error);
-//   oc — "OC Status" (M4-B rename of "OC working"): the last apply outcome
+//   device - "Device detected": a GPU is enumerated (or the boot error);
+//   oc - "OC Status" (M4-B rename of "OC working"): the last apply outcome
 //        (ok / failed / never applied);
-//   waiver — "OC waiver": the LIVE waiver status (Accepted ok / Not Accepted
-//            error) — the ONLY persistent waiver display in the app (user
+//   waiver - "OC waiver": the LIVE waiver status (Accepted ok / Not Accepted
+//            error) - the ONLY persistent waiver display in the app (user
 //            correction, mid-M4-A: not on the OC or Fan pages);
-//   app — "Arc Power working": booted, backend live — healthy detail reads
+//   app - "Arc Power working": booted, backend live - healthy detail reads
 //         "App & Service Running" (app-only, NO IGS probe).
 //
 // Each row carries a level (ok/warn/error/unknown) + a human detail line.
@@ -51,13 +51,13 @@ export interface HealthInput {
   driverDate: string | null;
   /**
    * M4-A: the LIVE waiver flag (caps.waiverAccepted); null while no device
-   * caps have landed (the row then reads "Waiting for device…" — never a
+   * caps have landed (the row then reads "Waiting for device…" - never a
    * false Accepted/Not Accepted).
    */
   waiverAccepted: boolean | null;
   /**
    * 1.0.1 no-Intel round: FALSE when the app runs in the no-device mode
-   * (no Intel GPU enumerated) — the driver/device rows then swap to the
+   * (no Intel GPU enumerated) - the driver/device rows then swap to the
    * honest no-Intel texts ('No Intel Driver Found' / the OS GPU name),
    * NEVER the raw IGCL/error text.
    */
@@ -69,13 +69,13 @@ export interface HealthInput {
 
 /** Legacy health-only level (kept so the header test contract stays exact). */
 export function healthLevel(h: HealthReport | null): HealthLevel {
-  if (!h) return 'unknown'; // no health report yet — boot in progress
+  if (!h) return 'unknown'; // no health report yet - boot in progress
   if (h.error) return 'error';
   if (!h.igclLoaded || !h.levelZeroOk) return 'warn';
   return 'ok';
 }
 
-/** The worst (most severe) of a set of levels — error > warn > unknown > ok. */
+/** The worst (most severe) of a set of levels - error > warn > unknown > ok. */
 export function worstLevel(levels: HealthLevel[]): HealthLevel {
   if (levels.includes('error')) return 'error';
   if (levels.includes('warn')) return 'warn';
@@ -86,10 +86,10 @@ export function worstLevel(levels: HealthLevel[]): HealthLevel {
 /**
  * "Driver installed": the IGCL runtime loaded AND a driver version is known.
  * The ok detail shows the driver version + date exactly like the device card
- * does (driverLine: "32.0.101.8861 - Jul 05, 2026") — M3-C-I. A boot error
+ * does (driverLine: "32.0.101.8861 - Jul 05, 2026") - M3-C-I. A boot error
  * with no report reads as an error (the app is up, the driver side is not).
  * 1.0.1 no-Intel round: on the no-device path (hasIntelGpu false) the row
- * reads 'No Intel Driver Found' (warn) — the raw IGCL/error text must NEVER
+ * reads 'No Intel Driver Found' (warn) - the raw IGCL/error text must NEVER
  * surface there (checked BEFORE every error branch).
  */
 export function driverRow(input: HealthInput): HealthRow {
@@ -109,7 +109,7 @@ export function driverRow(input: HealthInput): HealthRow {
     return { id: 'driver', label: 'Driver installed', level: 'warn', detail: 'IGCL loaded, driver version unknown' };
   }
   // M3-C-I: version + date like the device card (driverLine). Prefer the
-  // device's own driverVersion (the device card's source — the mock device
+  // device's own driverVersion (the device card's source - the mock device
   // reports a clean dotted string while the health report appends a mock
   // suffix), fall back to the health report's.
   const raw = input.device?.driverVersion ?? h.driverVersion;
@@ -121,7 +121,7 @@ export function driverRow(input: HealthInput): HealthRow {
 /**
  * "Device detected": the GPU is enumerated (or the boot error says why not).
  * 1.0.1 no-Intel round: on the no-device path the row shows the OS GPU name
- * (warn — no error text, no "searching" state).
+ * (warn - no error text, no "searching" state).
  */
 export function deviceRow(input: HealthInput): HealthRow {
   if (input.hasIntelGpu === false) {
@@ -137,7 +137,7 @@ export function deviceRow(input: HealthInput): HealthRow {
 }
 
 /**
- * "OC Status" (M4-B rename of "OC working"): the last apply outcome —
+ * "OC Status" (M4-B rename of "OC working"): the last apply outcome -
  * honest: never applied, last apply ok, or last apply failed (with a hint
  * of what failed).
  */
@@ -153,7 +153,7 @@ export function ocRow(input: HealthInput): HealthRow {
 }
 
 /**
- * M4-A: "OC waiver" — the LIVE waiver acceptance status, the ONLY persistent
+ * M4-A: "OC waiver" - the LIVE waiver acceptance status, the ONLY persistent
  * waiver display in the app (user correction, mid-M4-A: the dashboard's GPU
  * Health card, NOT the OC/Fan pages). Reads caps.waiverAccepted at render
  * time; the dashboard full-re-renders on caps changes (its sig includes
@@ -171,7 +171,7 @@ export function waiverRow(input: HealthInput): HealthRow {
 
 /**
  * "Arc Power working": the app booted and the backend answered. M3-C-I: the
- * healthy detail reads "App & Service Running" (app-only — the app's own
+ * healthy detail reads "App & Service Running" (app-only - the app's own
  * engine/backend; NO IGS probe, per the user's decision). Honest warn/error
  * states as before.
  */
@@ -203,14 +203,14 @@ export function overallHealthLevel(rows: HealthRow[]): HealthLevel {
 /**
  * The store slots that drive the dashboard's static content (device card,
  * GPU health card, M4-D CPU & memory card). Telemetry ticks only touch
- * `latestSample` — those must NOT trigger a full page rebuild; the
+ * `latestSample` - those must NOT trigger a full page rebuild; the
  * dashboard refreshes the readout grid and the clocks row in place instead.
  * driverDate is fetched once at boot (it can arrive after the first render,
  * so it counts as a status slot). M4-D: `sysinfo` lands once at boot (the
- * CPU card must re-render when it arrives — the boot fetch is fire-and-
+ * CPU card must re-render when it arrives - the boot fetch is fire-and-
  * forget, so it can land after the first render). M3-A: the IGS slot is
  * gone (no longer surfaced); the OC row reads lastApply at render time
- * (applies happen on other pages — the dashboard re-renders on navigation).
+ * (applies happen on other pages - the dashboard re-renders on navigation).
  */
 export interface DashboardSig {
   health: HealthReport | null;
@@ -219,7 +219,7 @@ export interface DashboardSig {
   driverDate: string | null;
   /** M4-D: the system-info payload (CPU & memory card source). */
   sysinfo: SysInfo | null;
-  /** 1.0.1 no-Intel round: the no-device flag + the OS GPU — status slots
+  /** 1.0.1 no-Intel round: the no-device flag + the OS GPU - status slots
    *  (the GPU card re-renders when they land at the end of the no-Intel
    *  boot). */
   noIntel: boolean;

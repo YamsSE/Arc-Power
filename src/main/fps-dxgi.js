@@ -1,11 +1,11 @@
-﻿// Arc Power — M4-D2 FPS adapter: DXGI GetFrameStatistics via koffi.
+// Arc Power - M4-D2 FPS adapter: DXGI GetFrameStatistics via koffi.
 //
 // Replaces the PresentMon wiring (the ETW metrics are unexported on this
-// machine — dead code). DXGI is unelevated, system-wide and needs no
+// machine - dead code). DXGI is unelevated, system-wide and needs no
 // service: CreateDXGIFactory1 (dxgi.dll export) → IDXGIFactory1 vtable →
 // EnumAdapters1 → IDXGIAdapter vtable → EnumOutputs → IDXGIOutput vtable
 // → GetFrameStatistics. The PresentCount delta of every output of every
-// adapter is summed and divided by the wall-clock delta — the system-wide
+// adapter is summed and divided by the wall-clock delta - the system-wide
 // presented-frame count (covers the hybrid iGPU-present case).
 //
 // Pinned vtable slots (verified against the Windows SDK dxgi.idl layout /
@@ -13,67 +13,67 @@
 //   IDXGIFactory (0-6 IDXGIObject): 7 EnumAdapters, 8 MakeWindowAssociation,
 //     9 GetWindowAssociation, 10 CreateSwapChain, 11 CreateSoftwareAdapter;
 //     IDXGIFactory1: 12 EnumAdapters1, 13 IsCurrent;
-//   IDXGIAdapter (0-6 IDXGIObject — inherits IDXGIObject DIRECTLY, no
+//   IDXGIAdapter (0-6 IDXGIObject - inherits IDXGIObject DIRECTLY, no
 //     IDXGIDeviceSubObject layer): 7 EnumOutputs, 8 GetDesc,
 //     9 CheckInterfaceSupport; IDXGIAdapter1: 10 GetDesc1;
 //   IDXGIOutput (0-6 IDXGIObject): 7 GetDesc, 8 GetDisplayModeList,
 //     9 FindClosestMatchingMode, 10 WaitForVBlank, 11 TakeOwnership,
 //     12 ReleaseOwnership, 13 GetGammaControlCapabilities, 14 SetGammaControl,
 //     15 GetGammaControl, 16 SetDisplaySurface, 17 GetDisplaySurfaceData,
-//     18 GetFrameStatistics. (12 methods — NO GetDevice, verified against
+//     18 GetFrameStatistics. (12 methods - NO GetDevice, verified against
 //     the Windows SDK dxgi.h layout + Microsoft's interface docs in run-1b.)
 // The live "PresentCount sanity" checkpoint is the backstop: a wrong slot
-// = garbage/crash — the probe MUST assert a plausible PresentCount.
+// = garbage/crash - the probe MUST assert a plausible PresentCount.
 //
 // Semantics pinned (M4-D2 §11):
 //   - the FIRST poll() takes the baseline (PresentCount deltas start at 0);
 //   - DXGI_ERROR_FRAME_STATISTICS_DISCONTINUOUS (0x887A000B) re-baselines
-//     that output — never '—', never a garbage jump;
-//   - a zero PresentCount delta → honest 0 FPS (a static desktop — DWM
+//     that output - never '-', never a garbage jump;
+//   - a zero PresentCount delta → honest 0 FPS (a static desktop - DWM
 //     stops presenting; bitblt-presented windows never increment
-//     PresentCount — documented in the report);
+//     PresentCount - documented in the report);
 //   - LIVE FINDING (2026-08-07, this A770): IDXGIOutput::GetFrameStatistics
-//     is "only supported while in full-screen mode" (Microsoft docs) — on
+//     is "only supported while in full-screen mode" (Microsoft docs) - on
 //     the windowed desktop it answers DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
 //     (0x887A0001) and the counters never move. When NO output maintains
-//     usable statistics, poll() returns null (honest '—', exactly like the
-//     old PresentMon state) — NEVER a fake 0;
+//     usable statistics, poll() returns null (honest '-', exactly like the
+//     old PresentMon state) - NEVER a fake 0;
 //   - DXGI unavailable (load/factory failure) → poll() returns null;
-//   - poll() returns { fps, frameTimeMs: null, gpuBusy: null } — the same
+//   - poll() returns { fps, frameTimeMs: null, gpuBusy: null } - the same
 //     shape as the old PresentMon adapter.
 //
 // The adapter also exposes adapterLuidOf(deviceIdHex): GetDesc1 carries the
-// adapter LUID + DeviceId — the display-enumeration link that sys-stats.js
+// adapter LUID + DeviceId - the display-enumeration link that sys-stats.js
 // uses to match the GPU-perf-counter instance names (the IGCL bindings
 // expose no adapter LUID).
 //
 // FALLBACK (M4-D2 r2 amendment, implemented as run 1b): on a windowed
 // desktop no output maintains GetFrameStatistics (every output answers
-// DXGI_ERROR_NOT_CURRENTLY_AVAILABLE 0x887A0001 — the counters are only
-// maintained in fullscreen mode). A pure-GFS path would honestly show '—'
+// DXGI_ERROR_NOT_CURRENTLY_AVAILABLE 0x887A0001 - the counters are only
+// maintained in fullscreen mode). A pure-GFS path would honestly show '-'
 // forever. When a poll finds NO output with usable GFS statistics, the poll
 // falls back to IDXGIOutputDuplication frame counting (the OBS-style
-// measure — counts DWM-presented frames per output, works windowed +
+// measure - counts DWM-presented frames per output, works windowed +
 // borderless, unelevated, per-process duplication):
-//   - IDXGIOutput1::DuplicateOutput — vtable slot 22 (CORRECTED live in
-//     run 1b: the Windows SDK IDXGIOutput has 12 methods — GetDesc 7 …
-//     GetFrameStatistics 18 — and NO GetDevice, so IDXGIOutput1 adds
+//   - IDXGIOutput1::DuplicateOutput - vtable slot 22 (CORRECTED live in
+//     run 1b: the Windows SDK IDXGIOutput has 12 methods - GetDesc 7 …
+//     GetFrameStatistics 18 - and NO GetDevice, so IDXGIOutput1 adds
 //     GetDisplayModeList1 19, FindClosestMatchingMode1 20,
 //     GetDisplaySurfaceData1 21, DuplicateOutput 22; slot 23 is
 //     IDXGIOutput2::SupportsOverlays). Signature
 //     (this, IUnknown* pDevice, IDXGIOutputDuplication**).
-//   - pDevice MUST be a Direct3D device — the "NULL duplicates the whole
+//   - pDevice MUST be a Direct3D device - the "NULL duplicates the whole
 //     desktop" semantics belong to DuplicateOutput1 (IDXGIOutput5), NOT
 //     DuplicateOutput (verified live: DuplicateOutput with NULL / the
 //     factory / the output / an explicit-adapter device → E_INVALIDARG
 //     0x80070057). The working recipe (verified live):
 //     D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE=1, NULL, 0, NULL, 0,
-//     D3D11_SDK_VERSION=7, &device, NULL, NULL) — the DEFAULT-adapter
+//     D3D11_SDK_VERSION=7, &device, NULL, NULL) - the DEFAULT-adapter
 //     device; a device created with an explicit adapter pointer is rejected
 //     by DuplicateOutput. One device per session, shared by all outputs
-//     (d3d11.dll is always present; the device never renders — it is only
+//     (d3d11.dll is always present; the device never renders - it is only
 //     the duplication handle).
-//   - IDXGIOutputDuplication inherits IDXGIObject (0-6 — NOT IUnknown!):
+//   - IDXGIOutputDuplication inherits IDXGIObject (0-6 - NOT IUnknown!):
 //     GetDesc 7, AcquireNextFrame 8 ((this, UINT TimeoutInMilliseconds,
 //     DXGI_OUTDUPL_FRAME_INFO*, IDXGIResource**)), GetFrameDirtyRects 9,
 //     GetFrameMoveRects 10, GetFramePointerShape 11, MapDesktopSurface 12,
@@ -84,19 +84,19 @@
 //     AcquireNextFrame fails if the previous frame is not released).
 //     DXGI_ERROR_ACCESS_LOST (0x887A0026) → drop the duplication object,
 //     recreate it on the NEXT poll.
-//   - COUNTING (corrected live in run 1b): the duplication COALESCES — the
+//   - COUNTING (corrected live in run 1b): the duplication COALESCES - the
 //     operating system accumulates ALL desktop updates since the last
 //     acquire into a SINGLE frame ("the operating system accumulates all
-//     the desktop image updates into a single update" — IDXGIOutput-
+//     the desktop image updates into a single update" - IDXGIOutput-
 //     Duplication docs). On this 180 Hz machine each 1.5 s poll returned
 //     ONE acquired frame whose AccumulatedFrames field (DXGI_OUTDUPL_FRAME_
-//     INFO@16, uint32) counted ~270 presented frames — counting acquires
+//     INFO@16, uint32) counted ~270 presented frames - counting acquires
 //     alone would report 0.7 fps on a 180 fps desktop. The honest measure
 //     is therefore the SUM of AccumulatedFrames over the drain
-//     (Math.max(1, …) per acquired frame — the very first frame after
+//     (Math.max(1, …) per acquired frame - the very first frame after
 //     creation carries 0, but every acquired frame represents at least one
 //     presented frame). Verified live: accum 91/0.5 s, 179/1 s, 269/1.5 s,
-//     541/3 s — linear in the window at the 180 Hz refresh rate.
+//     541/3 s - linear in the window at the 180 Hz refresh rate.
 //   - DXGI_OUTDUPL_FRAME_INFO is a 48-byte buffer (the HRESULT + the
 //     AccumulatedFrames@16 field are read); the resource out-ptr is a
 //     'void*' buffer.
@@ -104,13 +104,13 @@
 //     FIRST poll that needs the fallback (multiple processes may duplicate
 //     the same output); creation failures are retried on later polls.
 //   - Each poll drains the frames since the last drain and divides by the
-//     wall-clock Δt (the same baselineAt discipline as the GFS path — the
+//     wall-clock Δt (the same baselineAt discipline as the GFS path - the
 //     first fallback poll takes the baseline). The drain window always
 //     matches the Δt window (the duplication queue accumulates exactly what
 //     was presented since the last drain, including across GFS-active
 //     polls), so mode flip-flops stay honest.
 //   - GFS first; duplication ONLY when no GFS output answered. Both
-//     unavailable → poll() returns null (honest '—'). Never throws.
+//     unavailable → poll() returns null (honest '-'). Never throws.
 
 import koffi from 'koffi';
 
@@ -121,7 +121,7 @@ export const DXGI_ERROR_NOT_CURRENTLY_AVAILABLE = 0x887A0001;
 export const DXGI_ERROR_WAIT_TIMEOUT = 0x887A0027;
 export const DXGI_ERROR_ACCESS_LOST = 0x887A0026;
 
-// IID_IDXGIFactory1 = {770aae78-f26f-4dba-a829-253c83d1b387} — little-endian
+// IID_IDXGIFactory1 = {770aae78-f26f-4dba-a829-253c83d1b387} - little-endian
 // GUID bytes (Data1/Data2/Data3 LE, Data4 verbatim).
 export const IID_IDXGIFACTORY1_BYTES = [
   0x78, 0xae, 0x0a, 0x77, 0x6f, 0xf2, 0xba, 0x4d,
@@ -129,7 +129,7 @@ export const IID_IDXGIFACTORY1_BYTES = [
 ];
 
 // DXGI_FRAME_STATISTICS: UINT PresentCount@0, UINT PresentRefreshCount@4,
-// LARGE_INTEGER SyncRefreshCount@8, SyncQPCTime@16, SyncGPUTime@24 — 32 bytes.
+// LARGE_INTEGER SyncRefreshCount@8, SyncQPCTime@16, SyncGPUTime@24 - 32 bytes.
 export const DXGI_FRAME_STATISTICS_SIZE = 32;
 export const FRAME_STATS_PRESENT_COUNT_OFF = 0;
 
@@ -138,7 +138,7 @@ export const FRAME_STATS_PRESENT_COUNT_OFF = 0;
 // BOOL RectsCoalesced@20, BOOL ProtectedContentMaskedOut@24,
 // DXGI_OUTDUPL_POINTER_POSITION PointerPosition@28 (8 bytes),
 // UINT TotalMetadataBufferSize@36, UINT PointerShapeBufferSize@40,
-// pad@44 — 48 bytes. The fallback reads AccumulatedFrames@16 (uint32).
+// pad@44 - 48 bytes. The fallback reads AccumulatedFrames@16 (uint32).
 export const DXGI_OUTDUPL_FRAME_INFO_SIZE = 48;
 export const OUTDUPL_ACCUMULATED_FRAMES_OFF = 16;
 
@@ -146,14 +146,14 @@ export const OUTDUPL_ACCUMULATED_FRAMES_OFF = 16;
 // UINT DeviceId@260, UINT SubSysId@264, UINT Revision@268,
 // SIZE_T DedicatedVideoMemory@272, DedicatedSystemMemory@280,
 // SharedSystemMemory@288, LUID AdapterLuid@296 (LowPart@296, HighPart@300),
-// UINT Flags@304 — 308 bytes padded to 312 (8-alignment).
+// UINT Flags@304 - 308 bytes padded to 312 (8-alignment).
 export const DXGI_ADAPTER_DESC1_SIZE = 312;
 export const DESC1_DEVICE_ID_OFF = 260;
 export const DESC1_LUID_LOW_OFF = 296;
 export const DESC1_LUID_HIGH_OFF = 300;
 
 // Function-pointer prototypes for the vtable slots (COM 'this' is the
-// first explicit argument — x64 unifies the calling conventions).
+// first explicit argument - x64 unifies the calling conventions).
 const HR = koffi.proto('int32', ['void*', 'uint32', 'void**']); // (this, idx, out*)
 const HR1 = koffi.proto('int32', ['void*', 'void*']); // (this, out*)
 const REL = koffi.proto('uint32', ['void*']); // Release
@@ -175,7 +175,7 @@ const SLOT_ACQUIRE_NEXT_FRAME = 8;
 const SLOT_RELEASE_FRAME = 14;
 
 // D3D11CreateDevice constants (the DuplicateOutput device recipe, live-
-// verified): D3D_DRIVER_TYPE_HARDWARE = 1 (with pAdapter = NULL — the
+// verified): D3D_DRIVER_TYPE_HARDWARE = 1 (with pAdapter = NULL - the
 // default adapter), D3D11_SDK_VERSION = 7.
 const D3D_DRIVER_TYPE_HARDWARE = 1;
 const D3D11_SDK_VERSION = 7;
@@ -183,7 +183,7 @@ const D3D11_SDK_VERSION = 7;
 /**
  * Call one COM vtable slot. The object is a pointer to a COM object whose
  * first member is the vtable pointer; the slot's raw pointer is read and
- * invoked via koffi.call (the documented function-pointer call API — a
+ * invoked via koffi.call (the documented function-pointer call API - a
  * directly-decoded proto is NOT callable on this koffi version, verified
  * live: direct invocation of a decoded slot AVs the process).
  * Exported so the live probe can wrap it (deps.callSlot) to log the
@@ -224,7 +224,7 @@ export function wrappedDelta(curr, base) {
  * PresentMon adapter): poll(deviceId) → sample|null, stop(), and the
  * M4-D2 addition adapterLuidOf(deviceIdHex) for sys-stats.
  * Graceful degradation: a load/factory/enumeration failure leaves
- * available=false and poll() returns null forever — never throws.
+ * available=false and poll() returns null forever - never throws.
  * @param {{
  *   load?: (name: string) => object,   // injectable koffi load (tests)
  *   now?: () => number,                // injectable wall clock (ms)
@@ -235,7 +235,7 @@ export function createDxgiFpsAdapter(deps = {}) {
   const load = deps.load ?? ((name) => koffi.load(name));
   const now = deps.now ?? (() => Date.now());
   // Testability seam: the tests inject a fake slot caller that scripts the
-  // HRESULTs (a real vtable call cannot be faked in-process — koffi.call on
+  // HRESULTs (a real vtable call cannot be faked in-process - koffi.call on
   // a fake pointer would crash). The live probe wraps the real one to log
   // the DuplicateOutput creation results.
   const slotFn = deps.callSlot ?? defaultCallSlot;
@@ -284,7 +284,7 @@ export function createDxgiFpsAdapter(deps = {}) {
           if (hrDesc >= 0) {
             deviceId = koffi.decode(desc1, DESC1_DEVICE_ID_OFF, 'uint32');
           }
-        } catch { /* GetDesc1 best effort — the LUID link degrades */ }
+        } catch { /* GetDesc1 best effort - the LUID link degrades */ }
         const outputBuf = koffi.alloc('void*', 1);
         for (let oidx = 0; ; oidx++) {
           koffi.encode(outputBuf, 'void*', 0);
@@ -309,7 +309,7 @@ export function createDxgiFpsAdapter(deps = {}) {
 
   // --- Duplication fallback (M4-D2 r2 amendment) -------------------------
   // The DuplicateOutput pDevice: one D3D11 device per session, created via
-  // D3D11CreateDevice(NULL, HARDWARE, …) — the DEFAULT-adapter device.
+  // D3D11CreateDevice(NULL, HARDWARE, …) - the DEFAULT-adapter device.
   // Live-verified in run 1b: (a) DuplicateOutput REJECTS a device created
   // with an explicit adapter pointer (E_INVALIDARG) but accepts the
   // default-adapter device; (b) NULL is NOT accepted (the "NULL = whole
@@ -349,7 +349,7 @@ export function createDxgiFpsAdapter(deps = {}) {
   // (multiple processes may duplicate the same output; Windows caps
   // concurrent duplications at 4 processes per session); failures are
   // retried on later polls. Returns whether any object was created this
-  // call (a creation poll is always a baseline poll — fresh objects have
+  // call (a creation poll is always a baseline poll - fresh objects have
   // empty queues).
   const ensureDuplications = (device) => {
     let createdAny = false;
@@ -362,7 +362,7 @@ export function createDxgiFpsAdapter(deps = {}) {
           dupObjects.set(output, koffi.decode(dupBuf, 0, 'void*'));
           createdAny = true;
         }
-      } catch { /* creation failed — retried on the next poll */ }
+      } catch { /* creation failed - retried on the next poll */ }
     }
     return createdAny;
   };
@@ -380,14 +380,14 @@ export function createDxgiFpsAdapter(deps = {}) {
   // exactly what was presented since the last drain (including across
   // GFS-active polls), so the count window always matches the Δt window.
   // Returns null when no duplication exists at all (both paths
-  // unavailable — honest '—'); never throws.
+  // unavailable - honest '-'); never throws.
   const pollViaDuplication = (at) => {
     const device = ensureDupDevice();
     if (!device) return null; // d3d11 unavailable → duplication impossible
     const createdAny = ensureDuplications(device);
     if (dupObjects.size === 0) return null; // GFS + duplication both unavailable
     if (createdAny || dupBaselineAt === null) {
-      // baseline poll: fresh objects have empty queues — nothing to drain
+      // baseline poll: fresh objects have empty queues - nothing to drain
       dupBaselineAt = at;
       return { fps: 0, frameTimeMs: null, gpuBusy: null };
     }
@@ -399,19 +399,19 @@ export function createDxgiFpsAdapter(deps = {}) {
         let hr;
         try {
           hr = slotFn(dup, SLOT_ACQUIRE_NEXT_FRAME, HR_ACQ, dup, 0, frameInfo, resource);
-        } catch { break; } // defensive — never throw out of poll()
+        } catch { break; } // defensive - never throw out of poll()
         const hrU = hr >>> 0;
         if (hrU === 0) {
           // The duplication COALESCES: each acquired frame carries the
           // number of presented frames accumulated since the last acquire
           // in DXGI_OUTDUPL_FRAME_INFO.AccumulatedFrames@16 (live-verified
           // on the 180 Hz desktop: ~270 per 1.5 s poll in ONE frame). The
-          // honest present count is the SUM — with a floor of 1 per
+          // honest present count is the SUM - with a floor of 1 per
           // acquired frame (the very first frame after creation carries 0).
           let accum = 0;
           try { accum = koffi.decode(frameInfo, OUTDUPL_ACCUMULATED_FRAMES_OFF, 'uint32'); } catch { /* defensive */ }
           frameCount += Math.max(1, accum);
-          // NEVER skip the ReleaseFrame — the next AcquireNextFrame fails
+          // NEVER skip the ReleaseFrame - the next AcquireNextFrame fails
           // if the previous frame is not released.
           try { slotFn(dup, SLOT_RELEASE_FRAME, HR_O, dup); } catch { break; }
           continue;
@@ -428,7 +428,7 @@ export function createDxgiFpsAdapter(deps = {}) {
     dupBaselineAt = at;
     if (dtSec <= 0) return { fps: 0, frameTimeMs: null, gpuBusy: null };
     const fps = frameCount / dtSec;
-    // Honest 0 for a static desktop (DWM stops presenting) — never '—'.
+    // Honest 0 for a static desktop (DWM stops presenting) - never '-'.
     return { fps: Math.round(fps * 10) / 10, frameTimeMs: null, gpuBusy: null };
   };
 
@@ -476,11 +476,11 @@ export function createDxgiFpsAdapter(deps = {}) {
 
     /**
      * System-wide FPS via GetFrameStatistics. The FIRST call takes the
-     * baseline (PresentCount deltas start at 0 — an honest 0 FPS sample,
-     * never '—'). Later calls: sum the wrap-aware PresentCount deltas of
+     * baseline (PresentCount deltas start at 0 - an honest 0 FPS sample,
+     * never '-'). Later calls: sum the wrap-aware PresentCount deltas of
      * every output / wall-clock Δt; a DISCONTINUOUS answer re-baselines
      * that output. DXGI unavailable → null.
-     * @param {number} _deviceId (ignored — system-wide)
+     * @param {number} _deviceId (ignored - system-wide)
      * @returns {Promise<{ fps: number | null, frameTimeMs: null, gpuBusy: null } | null>}
      */
     async poll(_deviceId) {
@@ -493,12 +493,12 @@ export function createDxgiFpsAdapter(deps = {}) {
           const stats = koffi.alloc('uint8', DXGI_FRAME_STATISTICS_SIZE);
           const hr = slotFn(output, SLOT_GET_FRAME_STATISTICS, HR1, output, stats);
           if ((hr >>> 0) === DXGI_ERROR_FRAME_STATISTICS_DISCONTINUOUS) {
-            // re-baseline this output — never a garbage jump, never '—'
+            // re-baseline this output - never a garbage jump, never '-'
             anyOk = true;
             baselinePresent.set(output, presentCountOf(stats));
             continue;
           }
-          if (hr < 0) continue; // NOT_CURRENTLY_AVAILABLE / other — no stats
+          if (hr < 0) continue; // NOT_CURRENTLY_AVAILABLE / other - no stats
           anyOk = true;
           const count = presentCountOf(stats);
           const base = baselinePresent.has(output) ? baselinePresent.get(output) : null;
@@ -511,17 +511,17 @@ export function createDxgiFpsAdapter(deps = {}) {
         }
         if (!anyOk) {
           // No output maintains usable frame statistics (live on this
-          // machine: the windowed desktop answers NOT_CURRENTLY_AVAILABLE —
+          // machine: the windowed desktop answers NOT_CURRENTLY_AVAILABLE -
           // GetFrameStatistics is only supported in fullscreen mode).
           // FALLBACK (r2 amendment): count DWM-presented frames via
-          // IDXGIOutputDuplication — the OBS-style measure that works
+          // IDXGIOutputDuplication - the OBS-style measure that works
           // windowed + borderless, unelevated. GFS first; duplication ONLY
           // when no GFS output answered. Both unavailable → null (honest
-          // '—', never a fake 0).
+          // '-', never a fake 0).
           return pollViaDuplication(at);
         }
         if (baselineAt === null) {
-          // first poll: baseline only — the delta starts at 0
+          // first poll: baseline only - the delta starts at 0
           baselineAt = at;
           return { fps: 0, frameTimeMs: null, gpuBusy: null };
         }
@@ -529,7 +529,7 @@ export function createDxgiFpsAdapter(deps = {}) {
         baselineAt = at;
         if (dtSec <= 0) return { fps: 0, frameTimeMs: null, gpuBusy: null };
         const fps = presentSum / dtSec;
-        // Honest 0 for a static desktop (DWM stops presenting) — never '—'.
+        // Honest 0 for a static desktop (DWM stops presenting) - never '-'.
         return { fps: Math.round(fps * 10) / 10, frameTimeMs: null, gpuBusy: null };
       } catch {
         return null;

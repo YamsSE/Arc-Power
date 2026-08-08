@@ -1,6 +1,6 @@
-// Arc Power — M1 backend factory: real (IGCL) vs mock via env/opts.
+// Arc Power - M1 backend factory: real (IGCL) vs mock via env/opts.
 // The sidecar bridge is a future fallback (plan §2) behind the same
-// IOCBackend interface — not built in M1.
+// IOCBackend interface - not built in M1.
 
 import { IgclBackend } from './igcl-backend.js';
 import { MockBackend } from './mock-backend.js';
@@ -11,7 +11,7 @@ import { MockBackend } from './mock-backend.js';
  *   kind 'mock' -> MockBackend (fixtures / demo / tests)
  *   kind 'igcl' -> IgclBackend (koffi -> IntelControlLib.dll)
  * IgclBackend opts (opts.igcl): dllPath / allowAutoWaiver / lib / findDll /
- *   extended — the M2C-C extended-capability probe
+ *   extended - the M2C-C extended-capability probe
  *   ({ extended: { isCapable: () => oldIgcl.isCapable() } }), forwarded
  *   verbatim by this factory.
  * @param {{ kind?: 'igcl'|'mock', igcl?: object, mock?: object }} opts

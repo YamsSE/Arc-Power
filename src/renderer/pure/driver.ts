@@ -1,4 +1,4 @@
-// Arc Power — driver display helpers (pure, DOM-free).
+// Arc Power - driver display helpers (pure, DOM-free).
 //
 // DeviceInfo.driverVersion from IGCL is a hex uint64 whose four 16-bit
 // words are the dotted version parts, MSB first: 0x002000000065229d ->

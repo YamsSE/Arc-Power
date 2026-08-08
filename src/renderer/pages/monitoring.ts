@@ -1,13 +1,13 @@
-// Arc Power — Monitoring page (M2b-B): live readout grid fed by the
+// Arc Power - Monitoring page (M2b-B): live readout grid fed by the
 // telemetry IPC push + one rolling Canvas graph per segment (core clock,
 // temperature, power, utilization, fan) with a 60 s window. Each segment is
 // COLLAPSIBLE (header row + chevron; collapsed by default except the first).
 // FPS comes from the fps-poll IPC channel (the DXGI frame-statistics /
 // output-duplication adapter); when no frame statistics are being reported
-// the page shows "FPS unavailable" gracefully — never an error.
+// the page shows "FPS unavailable" gracefully - never an error.
 //
 // The graph math lives in pure/graph.ts (series push, time-window trim,
-// min/max scaling, downsampling — unit-tested); this file only owns the DOM
+// min/max scaling, downsampling - unit-tested); this file only owns the DOM
 // and the thin Canvas drawing.
 
 import { el, clear } from '../dom.ts';
@@ -29,9 +29,9 @@ import type { SeriesPoint } from '../pure/graph.ts';
 
 const FPS_POLL_MS = 1000;
 const DRAW_MAX_POINTS = 240;
-// M4-D2 (plan-review M5): the PresentMon mention is gone — the FPS source is
-// the DXGI frame-statistics/duplication adapter; unavailable -> honest '—'.
-const FPS_UNAVAILABLE_NOTE = 'FPS unavailable — no frame statistics are being reported on this machine.';
+// M4-D2 (plan-review M5): the PresentMon mention is gone - the FPS source is
+// the DXGI frame-statistics/duplication adapter; unavailable -> honest '-'.
+const FPS_UNAVAILABLE_NOTE = 'FPS unavailable - no frame statistics are being reported on this machine.';
 const FPS_CHECKING_NOTE = 'Checking FPS…';
 
 interface SegmentDef {
@@ -45,7 +45,10 @@ const SEGMENTS: SegmentDef[] = [
   { id: 'clock', label: 'Core clock', unit: 'MHz', value: (s) => s?.gpuClockMhz },
   { id: 'temp', label: 'Temperature', unit: '°C', value: (s) => s?.tempC },
   { id: 'power', label: 'Power', unit: 'W', value: (s) => s?.powerW },
-  { id: 'util', label: 'Utilization', unit: '%', value: (s) => s?.utilPct },
+  // M4-I (D4): the util segment reads `gpuUtilPct ?? utilPct` - the no-Intel
+  // OS GPUEngine counter is the only source there; the IGCL activity counter
+  // wins on Intel when the OS counter is unpopulated.
+  { id: 'util', label: 'Utilization', unit: '%', value: (s) => s?.gpuUtilPct ?? s?.utilPct },
   { id: 'fan', label: 'Fan', unit: 'RPM', value: (s) => s?.fanRpm?.[0] },
 ];
 
@@ -57,7 +60,7 @@ interface MonState {
   fpsTileValue: HTMLElement | null;
   fpsNote: HTMLElement | null;
   // M4-C (round-1 fix): the last hover's crosshair position (canvas CSS
-  // px), persisted so a STATIONARY hover survives telemetry ticks —
+  // px), persisted so a STATIONARY hover survives telemetry ticks -
   // redrawAll passes it back into drawSeries. Without it the crosshair
   // vanished on every tick (the popup stayed, the crosshair flickered out
   // until the next pointermove). Cleared on pointer-leave / collapse.
@@ -80,22 +83,24 @@ function statTile(label: string, value: string, unit: string, extraClass = ''): 
 }
 
 function readoutTiles(sample: TelemetrySample | null): HTMLElement[] {
-  const num = (v: number | undefined | null, decimals = 0): string => (v === undefined || v === null || !Number.isFinite(v) ? '—' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v)));
-  const fpsTile = statTile('FPS', '—', 'FPS', 'mon-fps-tile');
+  const num = (v: number | undefined | null, decimals = 0): string => (v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v)));
+  const fpsTile = statTile('FPS', '-', 'FPS', 'mon-fps-tile');
   // M4-D2 (§11): the GPU-memory tile shows the used VRAM as whole MiB
-  // (integer; 2971324416 bytes -> 2834 MiB). Null -> honest '—'.
+  // (integer; 2971324416 bytes -> 2834 MiB). Null -> honest '-'.
   const gpuMemMiB = typeof sample?.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)
     ? String(Math.round(sample.gpuMemUsedBytes / 1024 ** 2))
-    : '—';
+    : '-';
   return [
     statTile('Core clock', num(sample?.gpuClockMhz), 'MHz'),
     statTile('Memory clock', num(sample?.memClockMhz), 'MHz'),
     statTile('Temperature', num(sample?.tempC), '°C'),
     statTile('Power', num(sample?.powerW, 1), 'W'),
-    statTile('Utilization', num(sample?.utilPct), '%'),
+    // M4-I (D4): the util tile reads `gpuUtilPct ?? utilPct` like the graph
+    // segment (the no-Intel OS-counter source; IGCL wins when populated).
+    statTile('Utilization', num(sample?.gpuUtilPct ?? sample?.utilPct), '%'),
     statTile('Fan', num(sample?.fanRpm?.[0]), 'RPM'),
     // M4-D2 (§11): the new system-stat tiles (the sample carries them on
-    // every push; null = honest '—' — never a fake number).
+    // every push; null = honest '-' - never a fake number).
     statTile('CPU utilization', num(sample?.cpuUtilPct), '%'),
     statTile('CPU temperature', num(sample?.cpuTempC), '°C'),
     statTile('GPU memory', gpuMemMiB, 'MiB'),
@@ -105,7 +110,7 @@ function readoutTiles(sample: TelemetrySample | null): HTMLElement[] {
 
 /**
  * Thin Canvas 2D draw: grid + min/max labels + the downsampled polyline.
- * Pure data in, pixels out — no math of consequence lives here.
+ * Pure data in, pixels out - no math of consequence lives here.
  * M4-C: an optional `crosshair` ({x, y} in CSS pixels, from the nearest
  * sample of a hover) draws the dashed crosshair + a dot on the sample.
  */
@@ -175,7 +180,7 @@ function drawSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], crosshair:
   });
   ctx.stroke();
 
-  // M4-C: the hover crosshair — dashed cross lines through the nearest
+  // M4-C: the hover crosshair - dashed cross lines through the nearest
   // sample + a dot on the sample itself.
   if (crosshair) {
     ctx.strokeStyle = dim;
@@ -207,7 +212,7 @@ async function pollFps(): Promise<void> {
   }
   if (!mon) return; // navigated away while polling
   // M4-D2 (§10): the log-to-file sender reads the latest FPS through the
-  // shared module — the log line carries the best-effort fps even when the
+  // shared module - the log line carries the best-effort fps even when the
   // Monitoring page is not the current page (the BOOT-level subscription
   // does the logging).
   setLatestFps(sample?.fps ?? null);
@@ -216,7 +221,7 @@ async function pollFps(): Promise<void> {
       mon.fpsTileValue.textContent = String(Math.round(sample.fps));
       mon.fpsNote.textContent = sample.frameTimeMs !== null ? `Frame time ${sample.frameTimeMs.toFixed(1)} ms` : '';
     } else {
-      mon.fpsTileValue.textContent = '—';
+      mon.fpsTileValue.textContent = '-';
       mon.fpsNote.textContent = FPS_UNAVAILABLE_NOTE;
     }
   }
@@ -249,7 +254,7 @@ export const monitoringPage: Page = {
     // M4-D2 (§10): the "Log to file" toggle + the current log path. The
     // persisted value lives in profiles-settings (monitorLogToFile); the
     // WRITE itself happens in the BOOT-LEVEL telemetry subscription in
-    // app.ts (logging continues across page navigation) — this card only
+    // app.ts (logging continues across page navigation) - this card only
     // owns the toggle + the honest path display.
     const syncLogToggle = async (): Promise<void> => {
       try {
@@ -266,7 +271,7 @@ export const monitoringPage: Page = {
       const p = getCurrentLogFile();
       line.textContent = getMonitorLogToFile()
         ? (p ? `Log file: ${p}` : 'Waiting for the first telemetry sample…')
-        : 'Logging is off — no file is written.';
+        : 'Logging is off - no file is written.';
     };
     const logCard = el('section', { class: 'card mon-log-card' }, [
       el('h2', { class: 'card-title', text: 'Log to file' }),
@@ -285,7 +290,7 @@ export const monitoringPage: Page = {
       el('p', { class: 'card-note mon-log-path' }),
       el('p', {
         class: 'card-note',
-        text: 'One CSV line per second (timestamp, GPU + CPU stats, FPS) in your Documents folder. Logging continues while you navigate — it stops when the toggle is off.',
+        text: 'One CSV line per second (timestamp, GPU + CPU stats, FPS) in your Documents folder. Logging continues while you navigate - it stops when the toggle is off.',
       }),
     ]);
 
@@ -338,7 +343,7 @@ export const monitoringPage: Page = {
       // Collapsed by default except the first segment.
       if (idx !== 0) body.hidden = true;
 
-      // M4-C: hover crosshair + nearest-sample popup — only while the
+      // M4-C: hover crosshair + nearest-sample popup - only while the
       // segment is EXPANDED (the collapsed body is hidden, and the handler
       // re-checks so a collapse mid-hover can never leave a popup behind).
       const hideHover = () => {
@@ -372,11 +377,11 @@ export const monitoringPage: Page = {
         const nowT = points[points.length - 1].t;
         popup.textContent = `${Math.round(p.v)} ${seg.unit} · ${Math.round(nowT - p.t)} s ago`;
         // The canvas starts at the body's padding box + 10px/8px padding.
-        // M4-C (round-2 fix): the popup must stay FULLY inside the card —
+        // M4-C (round-2 fix): the popup must stay FULLY inside the card -
         // the old unclamped `left: 10 + x` (x reaches w - 8 at the canvas's
         // right edge) centered the ~120px box up to ~60px past the card's
         // right edge, and .seg-card{overflow:hidden} clipped the "· N s
-        // ago" tail — and the rightmost ~5 s of the graph is where the
+        // ago" tail - and the rightmost ~5 s of the graph is where the
         // NEWEST sample (the common hover) sits. Top-edge samples
         // (v = max -> y = padT = 8) parked the box ~12px above the canvas,
         // over the segment header. Mirror the fan readout's round-1 fix:
@@ -424,7 +429,7 @@ export const monitoringPage: Page = {
     redrawAll();
   },
 
-  // M2b review F4: the router calls this on navigation away — the 1 s FPS
+  // M2b review F4: the router calls this on navigation away - the 1 s FPS
   // poll must not keep firing (and touching stale DOM) on other pages.
   leave() {
     if (fpsTimer !== null) {
@@ -443,9 +448,9 @@ export const monitoringPage: Page = {
       if (value !== undefined) {
         // M4-D2 fix (user: "the lines overlap"): the REAL driver's
         // telemetry t occasionally ticks BACKWARD (live-verified: 8 folds
-        // in 40 s under load) — an unsorted push would fold the polyline
+        // in 40 s under load) - an unsorted push would fold the polyline
         // over itself. sortSeriesByTime keeps the drawn line on the true
-        // chronological timeline — never a fold, never overlapping.
+        // chronological timeline - never a fold, never overlapping.
         mon.series[seg.id] = trimSeriesWindow(
           sortSeriesByTime(pushSeries(mon.series[seg.id], sample?.t ?? now, value)),
           now,
@@ -454,7 +459,7 @@ export const monitoringPage: Page = {
       }
     }
     // Refresh the readout grid tiles in place (values only). The FPS tile is
-    // owned by pollFps — telemetry ticks must never stomp it.
+    // owned by pollFps - telemetry ticks must never stomp it.
     const grid = mon.readoutGrid;
     if (grid && sample) {
       const tiles = readoutTiles(sample);
@@ -467,13 +472,13 @@ export const monitoringPage: Page = {
     }
     // M4-D2 (§10): the log path line follows the last append result (the
     // append runs in the boot subscription; telemetry ticks are the natural
-    // refresh beat — no extra timers).
+    // refresh beat - no extra timers).
     const pathLine = container.querySelector<HTMLElement>('.mon-log-path');
     if (pathLine) {
       const p = getCurrentLogFile();
       pathLine.textContent = getMonitorLogToFile()
         ? (p ? `Log file: ${p}` : 'Waiting for the first telemetry sample…')
-        : 'Logging is off — no file is written.';
+        : 'Logging is off - no file is written.';
     }
     redrawAll();
   },
@@ -483,7 +488,7 @@ function redrawAll(): void {
   if (!mon) return;
   for (const [id, canvas] of mon.canvases) {
     // M4-C (round-1 fix): pass the persisted hover crosshair through every
-    // redraw — without it a stationary hover lost the crosshair on each
+    // redraw - without it a stationary hover lost the crosshair on each
     // telemetry tick (the popup stayed but the crosshair vanished until the
     // next pointermove).
     const crosshair = mon.hover && mon.hover.segId === id ? { x: mon.hover.x, y: mon.hover.y } : null;
@@ -492,7 +497,7 @@ function redrawAll(): void {
 }
 
 /**
- * 1.0.1 (N9): redraw the canvases NOW — a theme switch recolors the graphs
+ * 1.0.1 (N9): redraw the canvases NOW - a theme switch recolors the graphs
  * immediately (drawSeries reads the CSS vars at draw time; without this
  * hook the graphs would keep the old palette until the next telemetry
  * tick). No-op when the Monitoring page is not mounted.

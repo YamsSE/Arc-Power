@@ -1,11 +1,11 @@
-// Arc Power — M2C-C bundled 2023 IGCL runtime (extended-range unlock).
+// Arc Power - M2C-C bundled 2023 IGCL runtime (extended-range unlock).
 //
 // The DriverStore IGCL runtime (v1.2.x) clamps OC writes CLIENT-SIDE: the
 // power limit is refused above 252 W (0x44000004) and the temp limit above
 // 90 C (0x44000005) for any zero-UID client. The bundled 2023 runtime
-// (IntelControlLib.dll v1.0.100, from the Arc OC Tool distribution — see
+// (IntelControlLib.dll v1.0.100, from the Arc OC Tool distribution - see
 // THIRD_PARTY_NOTICES.txt) + AppVersion 1.0 + zero UID + waiver + ELEVATION
-// writes 280/300/315 W and 100/110/115 C — SUCCESS and PERSISTED (verified
+// writes 280/300/315 W and 100/110/115 C - SUCCESS and PERSISTED (verified
 // live on this machine, 2026-08-05, docs/igcl-integration.md §8c).
 //
 // This module is the ONLY product-code consumer of that DLL. It uses the V1
@@ -16,7 +16,7 @@
 //
 // Verification lesson (the momentary lie): non-elevated OC writes return
 // SUCCESS with a momentary read-back match and then revert. Every setter
-// here therefore ALWAYS re-reads once after ~400 ms before reporting ok —
+// here therefore ALWAYS re-reads once after ~400 ms before reporting ok -
 // an immediate match is never trusted on this runtime (the lie's shape is
 // match-then-revert); a delayed match is a real persisted write, a mismatch
 // (immediate or delayed) is an honest per-control failure. The DriverStore
@@ -24,7 +24,7 @@
 // live-proven for it, docs/igcl-integration.md §8c).
 //
 // Safety ceilings (verified on the A770, KMD-refused above these):
-//   315 W power limit, 115 C temp limit — never exceeded here.
+//   315 W power limit, 115 C temp limit - never exceeded here.
 //
 // Electron-free so tests run under plain `node --test` (koffi lib injected).
 
@@ -45,9 +45,9 @@ export const OLD_IGCL_FILENAME = 'IntelControlLib.dll';
 // and 115 C; 125 C clamps to 115. These are the ONLY extended range bounds
 // the old runtime ever writes.
 // M3-C-D: the exposed extended PL ceiling. LIVE-VERIFIED 2026-08-06:
-// 400/350/330 W are refused by the runtime (0x44000004), 315 W persists —
+// 400/350/330 W are refused by the runtime (0x44000004), 315 W persists -
 // 315 W IS the ceiling on this card. Requests above it are refused honestly
-// (never clamped) — the refusal regression test pins that.
+// (never clamped) - the refusal regression test pins that.
 export const EXTENDED_PL_MAX_W = 315;
 export const EXTENDED_PL_MIN_W = 105;
 export const EXTENDED_TL_MAX_C = 115;
@@ -65,7 +65,7 @@ const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0]
 
 // 2023-era ctl_oc_properties_t (igcl repo ~v109/v127): 6 controls, Size 296,
 // Version 0. Uses the ctl_oc_control_info_t layout already defined by
-// igcl-bindings.js. Read for diagnostics only — never gates anything (the
+// igcl-bindings.js. Read for diagnostics only - never gates anything (the
 // verified probes prove init/enum/waiver/V1 writes work without it).
 koffi.struct('ctl_oc_properties_old_t', {
   Size: 'uint32',
@@ -84,7 +84,7 @@ const OLD_PROPS_EXPECTED_SIZE = 296;
 /**
  * Layout sanity for the 2023-era properties struct (N2): assert the koffi
  * layout once at CONSTRUCTION (the load/isCapable path) so a koffi version
- * change fails at the first real use — never at module import, which runs
+ * change fails at the first real use - never at module import, which runs
  * in every mode (incl. headless/mock) even when the old runtime is never
  * loaded. `sizeofFn` is injectable for tests.
  * @param {(name: string) => number} sizeofFn
@@ -109,7 +109,7 @@ export function mwToW(mw) {
 
 /**
  * Locate the vendored 2023 runtime DLL. Packaged apps keep it in
- * resources/app.asar.unpacked (asarUnpack — native DLLs cannot load from
+ * resources/app.asar.unpacked (asarUnpack - native DLLs cannot load from
  * inside the asar archive); dev runs read the repo copy.
  * @returns {string}
  */
@@ -145,7 +145,7 @@ export class OldIgcl {
    */
   constructor(opts = {}) {
     // N2: the 2023-era struct layout assert runs at construction (the load
-    // path) — module import never throws, in any mode.
+    // path) - module import never throws, in any mode.
     checkOldPropsSize();
     this._dllPath = opts.dllPath ?? null;
     this._lib = opts.lib ?? null;
@@ -186,7 +186,7 @@ export class OldIgcl {
     if (!this._lib) {
       this._dllPath = this._dllPath ?? this._findDll();
       if (!this._dllPath || !fs.existsSync(this._dllPath)) {
-        throw new Error(`bundled 2023 IGCL runtime not found (${this._dllPath ?? 'no path'}) — see THIRD_PARTY_NOTICES.txt`);
+        throw new Error(`bundled 2023 IGCL runtime not found (${this._dllPath ?? 'no path'}) - see THIRD_PARTY_NOTICES.txt`);
       }
       this._lib = loadIgcl(this._dllPath);
     }
@@ -210,7 +210,7 @@ export class OldIgcl {
     this._apiHandle = koffi.decode(apiBuf, 0, 'void*');
     if (!this._apiHandle) throw new Error('bundled 2023 IGCL runtime ctlInit returned SUCCESS but the handle is NULL');
 
-    // Enumerate — the old runtime needs the two-pass pattern like any IGCL
+    // Enumerate - the old runtime needs the two-pass pattern like any IGCL
     // runtime: count with a null list, then fill.
     const countBuf = koffi.alloc('uint32', 1);
     koffi.encode(countBuf, 'uint32', 0);
@@ -258,7 +258,7 @@ export class OldIgcl {
    * One extended write with the momentary-lie guard: set, immediate read,
    * then ALWAYS one delayed re-read (~400 ms) before reporting ok. The lie's
    * documented shape is a SUCCESS write with an immediate read-back MATCH
-   * that later reverts — so an immediate match is never trusted; only a
+   * that later reverts - so an immediate match is never trusted; only a
    * match on the delayed re-read is a real persisted write. Anything else is
    * an honest per-control failure.
    * @param {'powerLimitW'|'tempLimitC'} control
@@ -287,7 +287,7 @@ export class OldIgcl {
         message: `IGCL ${describeResult(setRes)}`,
       };
     }
-    // Immediate read (informational — a match here proves nothing; the lie
+    // Immediate read (informational - a match here proves nothing; the lie
     // matches momentarily and then reverts), then the ALWAYS-delayed re-read
     // that is the only trusted verification.
     this._read(control);

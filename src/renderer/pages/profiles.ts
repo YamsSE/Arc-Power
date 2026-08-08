@@ -1,21 +1,21 @@
-// Arc Power — Profiles page (M2b-B): list/create/save/rename/delete/load
+// Arc Power - Profiles page (M2b-B): list/create/save/rename/delete/load
 // profiles persisted by the main-process ProfileStore (via the profiles-*
 // IPC channels), plus the "start at boot" toggle (ocOnBoot) backed by the
 // shared HKCU Run value with honest state reporting. M4-D2 (plan F4): the
-// toggle ONLY persists the intent — profilesSettingsSave owns the
+// toggle ONLY persists the intent - profilesSettingsSave owns the
 // Run-value write (main re-derives the value from the merged intent; the
 // renderer never calls startupSet directly).
 // Loading a profile applies its settings through the same waiver gate and
 // toast rules as the Overclocking page (no-op applies stay silent; errors
-// always toast; M2C-B F3 instant apply — one attempt, no retry UI). Every
+// always toast; M2C-B F3 instant apply - one attempt, no retry UI). Every
 // mutation rebuilds the tray menu (tray-rebuild IPC) and marks the active
 // profile.
 //
 // M4-D (user): the load keeps its waiver gate and gains the SAME auto
-// re-prompt + single retry as OC/fan — a load whose apply answers
+// re-prompt + single retry as OC/fan - a load whose apply answers
 // waiver-not-set re-prompts ONCE (the fresh caps show the driver truth) and
 // retries on accept; the counter resets on success. This renderer-side
-// retry is the defense for NEVER-accepted sessions — with a persisted
+// retry is the defense for NEVER-accepted sessions - with a persisted
 // acceptance MAIN silently re-sets the driver waiver and retries (the
 // renderer never sees the failure).
 
@@ -31,10 +31,10 @@ import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings, St
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 
-// M4-D (user): the automatic waiver re-prompt + single retry counter — a
+// M4-D (user): the automatic waiver re-prompt + single retry counter - a
 // profile load can hit waiver-not-set (the driver lost the waiver while the
 // store had no persisted acceptance); the load then re-prompts ONCE and
-// retries on accept. Reset on every successful load — a later driver-side
+// retries on accept. Reset on every successful load - a later driver-side
 // loss still gets its own retry. Module-level (per-page state, same pattern
 // as the OC page).
 let waiverRetryCount = 0;
@@ -49,7 +49,7 @@ export { newProfileId };
 
 /**
  * Build a Settings payload from the driver's current read-back (only
- * controls the UI understands; expert controls gpuLock/vfCurve are excluded —
+ * controls the UI understands; expert controls gpuLock/vfCurve are excluded -
  * they are not editable in M2b and a saved {0,0} lock pair would mislead).
  */
 export function settingsFromState(state: DeviceState): Settings {
@@ -174,7 +174,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const state = s.state;
   if (!caps || !state) {
     clear(root);
-    root.append(el('p', { class: 'page-subtitle', text: 'Device state not loaded yet — try again in a moment.' }));
+    root.append(el('p', { class: 'page-subtitle', text: 'Device state not loaded yet - try again in a moment.' }));
     return;
   }
   if (s.deviceId === null) {
@@ -209,7 +209,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const waiverAccepted = caps.waiverAccepted === true;
     // Honest ocOnBoot state: the startup-get derivation is the truth
     // (applyOnBoot = the Run value exists AND ocOnBoot is on AND an active
-    // profile exists), settings.json the persisted intent — a mismatch
+    // profile exists), settings.json the persisted intent - a mismatch
     // surfaces as a hint, never a lie.
     const applyOnBoot = bootState?.applyOnBoot === true;
     const bootMismatch = applyOnBoot !== (envelope.settings.ocOnBoot === true && !!envelope.settings.activeProfileId);
@@ -232,16 +232,16 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ? el('p', { class: 'card-note', text: 'Accept the warranty waiver to enable start-at-boot.' })
         : activeProfile
           ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot.` })
-          : el('p', { class: 'card-note', text: 'Load a profile first — start-at-boot applies the active profile.' }),
+          : el('p', { class: 'card-note', text: 'Load a profile first - start-at-boot applies the active profile.' }),
       bootMismatch
-        ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree — the toggle reflects the registration.' })
+        ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree - the toggle reflects the registration.' })
         : null,
     ]);
 
     const listCard = el('section', { class: 'card' }, [
       el('h2', { class: 'card-title', text: 'Profiles' }),
       envelope.profiles.length === 0
-        ? el('p', { class: 'card-note', text: 'No profiles yet — save the current settings as a profile to get started.' })
+        ? el('p', { class: 'card-note', text: 'No profiles yet - save the current settings as a profile to get started.' })
         : el('div', { class: 'profile-list' }, envelope.profiles.map((p) => profileRow(p, p.id === activeId, activeId))),
       el('div', { class: 'card-footer' }, [
         el('button', {
@@ -257,7 +257,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const profileRow = (p: Profile, active: boolean, activeId: string | null): HTMLElement => {
-    // F3 instant apply (M2C-B): the Load button is a single trigger — one
+    // F3 instant apply (M2C-B): the Load button is a single trigger - one
     // attempt, immediate result (no in-flight cancel surface anymore).
     const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load' });
     let loadInFlight = false;
@@ -290,33 +290,33 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       const activeId = envelope.settings.activeProfileId;
       const activeProfile = envelope.profiles.find((p) => p.id === activeId) ?? null;
       if (!activeProfile) {
-        toast('warn', 'No active profile', 'Load a profile first — start-at-boot applies the active profile.');
+        toast('warn', 'No active profile', 'Load a profile first - start-at-boot applies the active profile.');
         if (box) box.checked = false;
         return;
       }
       try {
-        // M4-D2 (plan F4): the toggle only persists the intent —
+        // M4-D2 (plan F4): the toggle only persists the intent -
         // profilesSettingsSave({ ocOnBoot }) is the ONLY writer of the Run
         // value (main re-derives it from the merged intent; NO direct
         // startupSet call).
         await api.profilesSettingsSave({ ocOnBoot: true, activeProfileId: activeProfile.id });
       } catch (err) {
         toast('error', 'Start at boot could not be set', err instanceof Error ? err.message : String(err));
-        if (box) box.checked = false; // transient honest state — the re-render below follows startup-get
+        if (box) box.checked = false; // transient honest state - the re-render below follows startup-get
         await refresh(); // F3: re-render the card from startup-get so the honest state shows immediately
         return;
       }
       toast('success', 'Start at boot enabled', `"${activeProfile.name}" will apply when Arc Power starts.`);
     } else {
       try {
-        // M4-D2 (plan F4): disabling just persists the intent — main
+        // M4-D2 (plan F4): disabling just persists the intent - main
         // removes the Run value only when nothing else owns it (the merged
         // intent derivation). NO direct startupSet call, no renderer-side
         // ownership guard (the single writer cannot double-remove).
         await api.profilesSettingsSave({ ocOnBoot: false });
       } catch (err) {
         toast('error', 'Start at boot could not be removed', err instanceof Error ? err.message : String(err));
-        if (box) box.checked = true; // transient honest state — the re-render below follows startup-get
+        if (box) box.checked = true; // transient honest state - the re-render below follows startup-get
         await refresh(); // F3: re-render the card from startup-get so the honest state shows immediately
         return;
       }
@@ -331,7 +331,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     if (!name) return;
     const settings = settingsFromState(ctx.store.get().state as DeviceState);
     if (!validateSettingsPayload(settings)) {
-      toast('error', 'Could not save profile', 'The settings payload failed validation — this is a bug.');
+      toast('error', 'Could not save profile', 'The settings payload failed validation - this is a bug.');
       return;
     }
     try {
@@ -347,7 +347,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onSave = async (p: Profile): Promise<void> => {
     const settings = settingsFromState(ctx.store.get().state as DeviceState);
     if (!validateSettingsPayload(settings)) {
-      toast('error', 'Could not save profile', 'The settings payload failed validation — this is a bug.');
+      toast('error', 'Could not save profile', 'The settings payload failed validation - this is a bug.');
       return;
     }
     try {
@@ -381,7 +381,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       await api.profilesDelete(p.id);
       if (wasActive) {
         // M4-D2 (plan F4): clearing the active slot + ocOnBoot re-derives
-        // the Run value in main — removed unless the Settings page's
+        // the Run value in main - removed unless the Settings page's
         // startWithWindows still owns it (no renderer-side guard needed;
         // the single writer cannot double-remove).
         await api.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null });
@@ -398,7 +398,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onLoad = async (p: Profile, done: () => void): Promise<void> => {
     const deviceId = s.deviceId;
     if (deviceId === null) return;
-    // M3-C review F4: the waiver gate reads the LIVE store's caps — an
+    // M3-C review F4: the waiver gate reads the LIVE store's caps - an
     // in-session acceptance must not re-prompt (the mount-time caps lag
     // until a re-render).
     const liveCaps = ctx.store.get().caps;
@@ -409,13 +409,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
     // M3-C-D (double-dialog decision): NO per-apply extended-range confirm
-    // on the Profiles page — in Advanced mode the mode-enable confirm
+    // on the Profiles page - in Advanced mode the mode-enable confirm
     // already warned; in Stock mode the shared oc-mode gate refuses
     // extended values with the per-control mode-message toasts below
     // (never a dead-end confirm).
-    // M2C-C: a non-elevated product app delegates to the elevated worker —
+    // M2C-C: a non-elevated product app delegates to the elevated worker -
     // explain before the UAC prompt. M4-D2: the packaged EXE is asInvoker
-    // now — the workerApply toast applies (the worker still spawns elevated
+    // now - the workerApply toast applies (the worker still spawns elevated
     // when the user approves).
     if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
@@ -423,7 +423,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     try {
       const before = ctx.store.get().state as DeviceState;
       const { result, state: fresh } = await api.applySettings(deviceId, p.settings);
-      // M3-C review F2: only store a NON-NULL fresh state — a refusal
+      // M3-C review F2: only store a NON-NULL fresh state - a refusal
       // envelope's null state must never null out the store's device state
       // (that renders the OC page 'Loading device capabilities…' forever
       // and throws in the dirty helpers).
@@ -443,12 +443,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         });
       }
       // M4-D (user): a waiver-not-set failure must not dead-end the load
-      // with a confusing error — re-prompt the waiver dialog AUTOMATICALLY
+      // with a confusing error - re-prompt the waiver dialog AUTOMATICALLY
       // (the fresh caps reflect the driver truth, refreshed like the OC
       // page does) and retry ONCE. Never a loop; the counter resets on
       // success, so a later driver-side loss still gets its own retry.
       // Accepted-store sessions never reach this branch (MAIN silently
-      // re-sets + retries — the failure does not surface).
+      // re-sets + retries - the failure does not surface).
       if (!result.ok) {
         const freshCaps = await api.getCapabilities(deviceId);
         ctx.store.set({ caps: freshCaps });
@@ -457,10 +457,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           waiverRetryCount += 1;
           const retryDecision = await ensureWaiver(deviceId, freshCaps.waiverAccepted === true, caps.deviceName || 'this GPU');
           if (retryDecision === 'accepted') {
-            // The store caps flag must be patched BEFORE the retry — the
+            // The store caps flag must be patched BEFORE the retry - the
             // retry re-enters the pre-load waiver gate, which reads the
             // store flag; without the patch it would re-show the dialog
-            // (the user just accepted — no second prompt).
+            // (the user just accepted - no second prompt).
             const cur2 = ctx.store.get();
             if (cur2.caps && cur2.caps.waiverAccepted !== true) {
               ctx.store.set({ caps: { ...cur2.caps, waiverAccepted: true } });
@@ -481,11 +481,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }
       }
       ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
-      // M4-D: a successful load resets the auto-retry counter — a later
+      // M4-D: a successful load resets the auto-retry counter - a later
       // driver-side waiver loss gets its own single retry.
       if (result.ok) waiverRetryCount = 0;
       // M2b step-5 NIT 2: only a fully-successful apply (result.ok) may mark
-      // the profile active and claim "applied to the GPU" — a partially-
+      // the profile active and claim "applied to the GPU" - a partially-
       // failed load keeps the per-control error toasts but marks nothing.
       const outcome = profileApplyOutcome(result, p.name, changed);
       if (outcome.markActive) {

@@ -1,20 +1,20 @@
-// Arc Power — Tweaks page (M3-A catalog + M3-B APPLY). Each card lists what
+// Arc Power - Tweaks page (M3-A catalog + M3-B APPLY). Each card lists what
 // the tweak is, the registry values that prove its state, the current read
-// (reg.exe query results via the registry-catalog IPC — never a write), and
-// — for applyable entries — working Enable/Disable/Revert buttons.
+// (reg.exe query results via the registry-catalog IPC - never a write), and
+// - for applyable entries - working Enable/Disable/Revert buttons.
 //
 // APPLYING (M3-B): the button click calls the registry-apply IPC, which
 // resolves the entry's apply descriptor (the exact elevated reg.exe
-// commands) in MAIN and runs them in an elevated PowerShell — one UAC
+// commands) in MAIN and runs them in an elevated PowerShell - one UAC
 // prompt per action. The result is reported per step (perStep) with honest
 // wording: full success, partial failure (which steps landed, no auto-
-// rollback — the user reverts via the button), or the UAC-decline message.
+// rollback - the user reverts via the button), or the UAC-decline message.
 // After every apply the catalog is re-read so the card state refreshes.
 //
 // The catalog is fetched at boot (app.ts) into the store; the page re-fetches
 // only when the store slot is empty (early navigation before boot finished)
 // or via the explicit Refresh button. onUpdate re-renders when the store
-// slot changes — no polling.
+// slot changes - no polling.
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
@@ -40,10 +40,10 @@ const STATE_LEVEL: Record<RegistryState, string> = {
 const ACTION_LABEL = { enable: 'Enable', disable: 'Disable', revert: 'Revert' } as const;
 type ApplyAction = keyof typeof ACTION_LABEL;
 
-/** One elevated apply is in flight — all apply buttons disable until it returns. */
+/** One elevated apply is in flight - all apply buttons disable until it returns. */
 let applyInFlight = false;
 
-/** Human label for one command step (mirrors main's stepLabel — honest tooltips). */
+/** Human label for one command step (mirrors main's stepLabel - honest tooltips). */
 function stepLabel(step: RegistryApplyStep): string {
   return step.kind === 'add'
     ? `${step.value}=${step.data} written to ${step.path}`
@@ -61,7 +61,7 @@ async function loadCatalog(ctx: PageContext): Promise<void> {
   }
 }
 
-/** Explicit refresh (read-only reg queries — safe, no elevation). */
+/** Explicit refresh (read-only reg queries - safe, no elevation). */
 async function refreshCatalog(ctx: PageContext): Promise<void> {
   try {
     const catalog = await api.registryCatalog();
@@ -74,7 +74,7 @@ async function refreshCatalog(ctx: PageContext): Promise<void> {
 /**
  * Toggle every apply button's disabled state. Called at flight START (before
  * the await) so the buttons visually disable for the whole elevation window
- * — the re-render only happens after the apply resolves, so without this the
+ * - the re-render only happens after the apply resolves, so without this the
  * `disabled: applyInFlight` attribute would always render false.
  */
 function setApplyButtonsDisabled(disabled: boolean): void {
@@ -96,7 +96,7 @@ async function runApply(ctx: PageContext, entry: RegistryEntry, action: ApplyAct
   setApplyButtonsDisabled(true);
   try {
     if (ctx.store.get().workerApply) {
-      toast('info', 'Administrator approval needed', `Applying this tweak requires administrator approval — approve the Windows prompt.`);
+      toast('info', 'Administrator approval needed', `Applying this tweak requires administrator approval - approve the Windows prompt.`);
     }
     const out = await api.registryApply(entry.id, action);
     if (out.canceled) {
@@ -118,7 +118,7 @@ async function runApply(ctx: PageContext, entry: RegistryEntry, action: ApplyAct
 function actionButtons(entry: RegistryEntry, onApply: (action: ApplyAction) => void): HTMLElement {
   const descriptor = entry.apply;
   if (!descriptor?.applyable) {
-    return el('p', { class: 'tweak-readonly-note', text: descriptor?.revertNote ?? 'Read-only info — no system-wide setting to apply.' });
+    return el('p', { class: 'tweak-readonly-note', text: descriptor?.revertNote ?? 'Read-only info - no system-wide setting to apply.' });
   }
   const tooltip = (action: ApplyAction): string => {
     const steps = descriptor.actions?.[action] ?? [];
@@ -153,7 +153,7 @@ function tweakCard(entry: RegistryEntry, state: RegistryEntryState | undefined, 
   const detail = state?.detail ?? 'State not read yet';
   return el('section', { class: 'card tweak-card', 'data-tweak': entry.id }, [
     el('h2', { class: 'card-title tweak-title' }, [
-      el('span', { class: `status-dot status-${level}`, title: `${label} — ${detail}` }),
+      el('span', { class: `status-dot status-${level}`, title: `${label} - ${detail}` }),
       el('span', { text: entry.name }),
     ]),
     el('div', { class: 'card-body' }, [
@@ -191,7 +191,7 @@ export const tweaksPage: Page = {
       el('h1', { class: 'page-title', text: 'Tweaks' }),
       el('p', {
         class: 'page-subtitle',
-        text: 'Well-known, reversible registry tweaks that affect GPU behavior. Enable/Disable/Revert run ELEVATED — one Windows administrator prompt per action; every write is reported per registry value. Fullscreen optimizations is read-only info (it is a per-app flag, not a system-wide switch).',
+        text: 'Well-known, reversible registry tweaks that affect GPU behavior. Enable/Disable/Revert run ELEVATED - one Windows administrator prompt per action; every write is reported per registry value. Fullscreen optimizations is read-only info (it is a per-app flag, not a system-wide switch).',
       }),
       el('div', { class: 'page-actions' }, [
         el('button', {
@@ -203,7 +203,7 @@ export const tweaksPage: Page = {
       catalog === null
         ? el('p', { class: 'text-unknown', text: 'Loading registry state…' })
         : entries.length === 0
-          ? el('p', { class: 'text-error', text: 'The registry catalog could not be read — no tweaks to show.' })
+          ? el('p', { class: 'text-error', text: 'The registry catalog could not be read - no tweaks to show.' })
           : el('div', { class: 'card-stack' }, entries.map((entry) =>
               tweakCard(entry, states.find((s) => s.id === entry.id), (action) => {
                 void runApply(ctx, entry, action);

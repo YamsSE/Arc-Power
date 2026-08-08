@@ -1,4 +1,4 @@
-// Arc Power — IPC registration over ipcMain. The whitelisted channel set and
+// Arc Power - IPC registration over ipcMain. The whitelisted channel set and
 // all handler logic live in ipc-core.js (electron-free, unit-testable); this
 // module only binds the map to ipcMain.handle.
 

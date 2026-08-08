@@ -1,8 +1,8 @@
-// Arc Power — slider math (pure, DOM-free).
+// Arc Power - slider math (pure, DOM-free).
 //
 // Sliders render capability ranges from the backend and must snap to the
 // capability step on every user interaction; the driver's current value may
-// be off-grid (e.g. the A770's ~48.3 MHz offset) — the slider value and the
+// be off-grid (e.g. the A770's ~48.3 MHz offset) - the slider value and the
 // driver value are deliberately distinct and both shown in the UI.
 
 import type { RangeInfo } from '../types.ts';
@@ -23,7 +23,7 @@ export function snapToRange(value: number, range: RangeInfo): number {
 }
 
 /**
- * Normalized 0..1 position of `value` within [min, max] — drives the
+ * Normalized 0..1 position of `value` within [min, max] - drives the
  * slider's filled-track width.
  */
 export function normalizedPosition(value: number, range: RangeInfo): number {
@@ -39,7 +39,7 @@ export function normalizedPosition(value: number, range: RangeInfo): number {
  * overrides the default when given (used for off-grid driver readouts).
  */
 export function formatValue(value: number, units: string, decimals?: number): string {
-  if (!Number.isFinite(value)) return '—';
+  if (!Number.isFinite(value)) return '-';
   const unit = units === 'C' ? '°C' : units;
   const d = decimals ?? (units === 'V' ? 3 : 0);
   return `${value.toFixed(d)} ${unit}`;

@@ -1,52 +1,66 @@
-// Arc Power — M4-D2 sys-stats module (electron-free).
+// Arc Power - M4-D2 sys-stats module (electron-free).
 //
 // Four live system stats for the telemetry sample:
-//   cpuUtilPct       — the FORMATTED "% Processor Time" — single sample of
+//   cpuUtilPct       - the FORMATTED "% Processor Time" - single sample of
 //                      Win32_PerfFormattedData_Counters_ProcessorInformation
 //                      (_Total instance). The OS already publishes it as
 //                      0..100, so there is NO delta math (the raw-counter
 //                      rolling delta was removed in fix round 2: on the
 //                      live machine the raw _Total counters behave as a
-//                      per-logical-processor accumulation — ~8× inflated,
+//                      per-logical-processor accumulation - ~8× inflated,
 //                      collapsed under load);
-//   cpuFreqMhz       — round(MaxClockSpeed × "% Processor Performance" /
-//                      100) — single sample of the SAME formatted class
+//   cpuFreqMhz       - round(MaxClockSpeed × "% Processor Performance" /
+//                      100) - single sample of the SAME formatted class
 //                      (fix round 2): freqFromPerfPct(fmtPerf, maxClock).
 //                      The formatted counter is the honest frequency
 //                      signal: on this BCLK-overclocked Z97 machine it
-//                      reads 130 (load-invariant — the ratio is locked at
+//                      reads 130 (load-invariant - the ratio is locked at
 //                      33 and the bus at ~130 MHz), so the row shows
 //                      round(3301 × 130 / 100) = 4291 MHz = the user's
 //                      "4.3 GHz" (live-verified 2026-08-07). On machines
 //                      where the counter caps at 100 the row honestly
 //                      reads base × %-of-max (documented in the report);
-//   cpuTempC         — Win32_PerfFormattedData_Counters_ThermalZoneInfo-
+//   cpuTempC         - Win32_PerfFormattedData_Counters_ThermalZoneInfo-
 //                      mation Temperature (K×10 → °C; 0 → null); the max
 //                      across all zones is reported (the hottest zone);
-//   gpuMemUsedBytes  — Win32_PerfFormattedData_GPUPerformanceCounters_
+//   gpuMemUsedBytes  - Win32_PerfFormattedData_GPUPerformanceCounters_
 //                      GPUAdapterMemory "DedicatedUsage" (bytes) for the
 //                      instance whose name encodes the backend device's
-//                      LUID ("luid_0x00000000_0x0000ADFB_phys_0" — live on
+//                      LUID ("luid_0x00000000_0x0000ADFB_phys_0" - live on
 //                      the A770). The IGCL bindings expose NO adapter LUID
 //                      (verified against igcl-bindings.js), so the LUID is
 //                      resolved through the DXGI display enumeration link
 //                      (fps-dxgi.js GetDesc1: DeviceId 0x56A0 → LUID
 //                      0xADFB); null when unmatched.
-//   cpuPowerW         — M4-H: the CPU package wattage from
+//   cpuPowerW         - M4-H: the CPU package wattage from
 //                      Win32_PerfFormattedData_PowerMeter_PowerMeter, the
-//                      FORMATTED counter property 'Power' (already watts —
+//                      FORMATTED counter property 'Power' (already watts -
 //                      no conversion). The class is often ABSENT on
 //                      desktops (no power-metering hardware), so it
-//                      honestly degrades to null ('—' in the UI).
+//                      honestly degrades to null ('-' in the UI).
+//   gpuUtilPct        - M4-I: the OS GPU-utilization counter - the
+//                      Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
+//                      rows for the matched LUID (aggregate: per (eng#,
+//                      engtype) the MAX across the process rows, then SUM,
+//                      cap 100). Null when the counter is unpopulated
+//                      (every matched row's UtilizationPercentage is
+//                      null/absent - honest '-'; live probe 2026-08-08 on
+//                      the A770: the field is POPULATED but reads 0 on
+//                      every row - an Intel-Arc driver quirk; the AMD
+//                      tester's box may feed it for real).
 //
 // ONE PowerShell query per sample() reads every source at once (all
-// single-sample formatted values — no cross-tick state, no deltas). A
-// query in flight is never doubled (the previous result is served) — at
+// single-sample formatted values - no cross-tick state, no deltas). A
+// query in flight is never doubled (the previous result is served) - at
 // most one PowerShell per tick. Any failure degrades per-field to null
-// (honest '—' in the UI, never a crash).
+// (honest '-' in the UI, never a crash).
 //
 // Mock mode (createMockSysStats): fixed deterministic values so ui-verify
-// pins are stable; never spawns PowerShell.
+// pins are stable; never spawns PowerShell. M4-I: the mock temperature
+// VARIES (61/62 alternating) so the pins stay live, with the RID_MOCK_
+// FROZEN_TEMP=1 knob returning a CONSTANT (the shared frozenDrop then
+// reports '-' - the verifiable Z97-static-zone shape) and a RID_MOCK_
+// NO_POWER_METER=1 knob (cpuPowerW null - the honest no-metering shape).
 
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -71,24 +85,30 @@ export function buildSysStatsScript() {
     '$proc = Get-CimInstance Win32_Processor | Select-Object -First 1 MaxClockSpeed',
     '$tz = @(Get-CimInstance Win32_PerfFormattedData_Counters_ThermalZoneInformation | Select-Object Name,Temperature)',
     '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage)',
-    // M4-H: the PowerMeter perf counter — the FORMATTED 'Power' property is
+    // M4-I: the GPUEngine rows (Name + UtilizationPercentage) - the OS
+    // GPU-utilization counter. Instance names encode the adapter LUID +
+    // the engine: "pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_
+    // engtype_3D" (live-verified 2026-08-08).
+    '$gpuEng = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | Select-Object Name,UtilizationPercentage)',
+    // M4-H: the PowerMeter perf counter - the FORMATTED 'Power' property is
     // already in watts (N9). The class is often absent (no metering
-    // hardware) -> null, the honest '—' degrade.
+    // hardware) -> null, the honest '-' degrade.
     '$pm = @(Get-CimInstance Win32_PerfFormattedData_PowerMeter_PowerMeter | Select-Object -First 1 Power)',
-    '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; gpuMem = $gpu; powerMeter = $pm } | ConvertTo-Json -Depth 3 -Compress',
+    '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; gpuMem = $gpu; gpuEng = $gpuEng; powerMeter = $pm } | ConvertTo-Json -Depth 3 -Compress',
   ].join('; ');
 }
 
 /**
  * Parse the JSON output into the per-tick sample. Any missing piece
- * degrades to null / empty — the single-sample mapping below then reports
+ * degrades to null / empty - the single-sample mapping below then reports
  * null honestly (fix round 2: the fields are the OS-formatted values, NOT
- * raw counters — no Timestamp_PerfTime is queried or parsed anymore).
+ * raw counters - no Timestamp_PerfTime is queried or parsed anymore).
  * @param {string} stdout
  * @returns {{
  *   fmtUtil: number | null, fmtPerf: number | null,
  *   maxClockMhz: number | null, tempK10Max: number | null,
  *   gpuMemRows: Array<{ name: string | null, dedicatedUsage: number | null }>,
+ *   gpuEngRows: Array<{ name: string | null, utilPct: number | null }>,
  *   powerW: number | null,
  * }}
  */
@@ -97,7 +117,7 @@ export function parseSysStatsOutput(stdout) {
   try {
     raw = JSON.parse(String(stdout ?? ''));
   } catch {
-    return { fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, gpuMemRows: [], powerW: null };
+    return { fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, gpuMemRows: [], gpuEngRows: [], powerW: null };
   }
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const cpu = raw?.cpu ?? {};
@@ -109,24 +129,31 @@ export function parseSysStatsOutput(stdout) {
     name: typeof g?.Name === 'string' && g.Name ? g.Name : null,
     dedicatedUsage: num(g?.DedicatedUsage),
   }));
+  // M4-I: the GPUEngine rows - UtilizationPercentage may be null/absent
+  // (an unpopulated counter -> gpuUtilPct reports null, the honest '-').
+  const gpuEngRows = (Array.isArray(raw?.gpuEng) ? raw.gpuEng : []).map((g) => ({
+    name: typeof g?.Name === 'string' && g.Name ? g.Name : null,
+    utilPct: num(g?.UtilizationPercentage),
+  }));
   return {
     fmtUtil: num(cpu.PercentProcessorTime),
     fmtPerf: num(cpu.PercentProcessorPerformance),
     maxClockMhz: num(raw?.maxClockMhz),
     tempK10Max: temps.length > 0 ? Math.max(...temps) : null,
     gpuMemRows,
+    gpuEngRows,
     // M4-H: the PowerMeter's formatted 'Power' (watts); an absent class /
-    // 0 reading degrades to null (the honest '—' — never a fake 0 W).
+    // 0 reading degrades to null (the honest '-' - never a fake 0 W).
     powerW: num(raw?.powerMeter?.Power) > 0 ? num(raw?.powerMeter?.Power) : null,
   };
 }
 
 /**
  * The cpuFreqMhz single-sample mapping (fix round 2): the FORMATTED
- * "% Processor Performance" counter is a percentage of the max clock —
+ * "% Processor Performance" counter is a percentage of the max clock -
  * round(MaxClockSpeed × PercentProcessorPerformance / 100). On this
  * BCLK-overclocked machine: round(3301 × 130 / 100) = 4291 MHz (the
- * user's "4.3 GHz"). No delta math — the OS publishes the value directly.
+ * user's "4.3 GHz"). No delta math - the OS publishes the value directly.
  * Null when the percentage or the max clock is unknown.
  * @param {number | null} perfPct
  * @param {number | null} maxClockMhz
@@ -141,7 +168,7 @@ export function freqFromPerfPct(perfPct, maxClockMhz) {
  * The GPU instance-name matcher: the perf-counter instance names encode
  * the adapter LUID as "luid_0x<high:08X>_0x<low:08X>_phys<N>". Returns
  * true when the name starts with the LUID's encoded prefix (any phys
- * index — an adapter can expose several).
+ * index - an adapter can expose several).
  * @param {string | null} instanceName
  * @param {{ high: number, low: number } | null} luid
  * @returns {boolean}
@@ -149,21 +176,100 @@ export function freqFromPerfPct(perfPct, maxClockMhz) {
 export function instanceMatchesLuid(instanceName, luid) {
   if (!instanceName || !luid) return false;
   // The perf-counter names render the LUID in UPPERCASE hex
-  // ("luid_0x00000000_0x0000ADFB_phys_0" — live on the A770).
+  // ("luid_0x00000000_0x0000ADFB_phys_0" - live on the A770).
   const prefix = `luid_0x${(luid.high >>> 0).toString(16).padStart(8, '0')}_0x${(luid.low >>> 0).toString(16).padStart(8, '0')}_phys_`;
   return instanceName.toLowerCase().startsWith(prefix);
 }
 
 /**
+ * M4-I (C1): the shared FROZEN-zone drop - given the rolling window of the
+ * last thermal samples, report null when the last 5 are IDENTICAL (a
+ * static board zone, NOT a CPU sensor - the Z97 machine's thermal zones
+ * report 301/303 Kx10 and NEVER change, so the "stuck 30" is exactly this
+ * value; with no real CPU-temp source the honest answer is '-').
+ * Otherwise the LATEST sample. Applies to the temperature only (the
+ * wattage stays raw). Pure; shared by the real adapter AND the mock
+ * (RID_MOCK_FROZEN_TEMP=1 makes the mock's constant temp trip it).
+ * @param {Array<number|null>} lastSamples the rolling window (oldest
+ *   first; the caller keeps the last 5)
+ * @returns {number | null}
+ */
+export function frozenDrop(lastSamples) {
+  const window = Array.isArray(lastSamples) ? lastSamples : [];
+  if (window.length >= 5) {
+    const first = window[0];
+    if (first !== null && window.every((v) => v === first)) return null;
+  }
+  const last = window[window.length - 1];
+  return typeof last === 'number' && Number.isFinite(last) ? last : null;
+}
+
+/**
+ * M4-I (D1): the engine key of a GPUEngine instance name - per (eng#,
+ * engtype) grouping key. The live name format (probed 2026-08-08):
+ * "pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_engtype_3D" (the
+ * engtype half may be EMPTY: "eng_10_engtype_"). Unparseable names fall
+ * back to the whole name (a distinct key - never a cross-engine merge).
+ * @param {string | null} instanceName
+ * @returns {string}
+ */
+export function engineKeyOf(instanceName) {
+  const m = String(instanceName ?? '').match(/_eng_(\d+)_engtype_([A-Za-z0-9]*)/);
+  return m ? `${m[2]}_${m[1]}` : String(instanceName ?? '');
+}
+
+/**
+ * M4-I (D1): the engine-row LUID matcher - the GPUEngine names carry a
+ * pid_<n>_ PREFIX ("pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_
+ * engtype_3D" - live-verified 2026-08-08), so the LUID half must match as
+ * a SUBSTRING, never a startswith (the GPUAdapterMemory names start with
+ * the LUID directly - instanceMatchesLuid stays for those).
+ * @param {string | null} instanceName
+ * @param {{ high: number, low: number } | null} luid
+ * @returns {boolean}
+ */
+export function engineRowMatchesLuid(instanceName, luid) {
+  if (!instanceName || !luid) return false;
+  const encoded = `luid_0x${(luid.high >>> 0).toString(16).padStart(8, '0')}_0x${(luid.low >>> 0).toString(16).padStart(8, '0')}_phys_`;
+  return instanceName.toLowerCase().includes(encoded);
+}
+
+/**
+ * M4-I (D1): aggregate the GPUEngine rows for the matched LUID into one
+ * utilization percentage - per (eng#, engtype) the MAX across the process
+ * rows, then SUM the engine maxima, capped at 100. Null when the counter
+ * is unpopulated (no matched rows, or every matched row's utilPct is
+ * null/absent - the honest '-'; a populated-but-zero counter reports 0).
+ * @param {Array<{ name: string | null, utilPct: number | null }>} rows
+ * @param {{ high: number, low: number } | null} luid
+ * @returns {number | null}
+ */
+export function gpuUtilPctOf(rows, luid) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!luid) return null;
+  const matched = list.filter((r) => engineRowMatchesLuid(r.name, luid));
+  if (matched.length === 0) return null;
+  const byEngine = new Map();
+  for (const r of matched) {
+    if (typeof r?.utilPct !== 'number' || !Number.isFinite(r.utilPct)) continue;
+    const key = engineKeyOf(r.name);
+    byEngine.set(key, Math.max(byEngine.get(key) ?? 0, r.utilPct));
+  }
+  if (byEngine.size === 0) return null;
+  const sum = [...byEngine.values()].reduce((a, b) => a + b, 0);
+  return Math.min(100, sum);
+}
+
+/**
  * The real adapter. `luidOf` resolves the backend device's LUID through
- * the DXGI display enumeration link (fps-dxgi.js GetDesc1 — matched by
+ * the DXGI display enumeration link (fps-dxgi.js GetDesc1 - matched by
  * PCI device id); null when the device cannot be matched (gpuMem then
  * reports null honestly).
  * @param {{
  *   execFile?: typeof execFile,
  *   powershellExe?: string,
  *   luidOf?: (deviceIdHex: string) => Promise<{ high: number, low: number } | null>,
- *   deviceIdHex?: string | null,   // e.g. '0x56a0' — the backend device's PCI id
+ *   deviceIdHex?: string | null,   // e.g. '0x56a0' - the backend device's PCI id
  * }} [deps]
  */
 export function createSysStats(deps = {}) {
@@ -172,15 +278,19 @@ export function createSysStats(deps = {}) {
   const deviceIdHex = deps.deviceIdHex ?? null;
   let maxClockMhz = null; // cached Win32_Processor MaxClockSpeed
   let inflight = null;
-  let last = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null };
+  // M4-I (C1): the rolling thermal window (last 5 samples) for the shared
+  // frozenDrop - the Z97 static board zone trips it ('-' - no real CPU-temp
+  // source on this machine; the plan's ground truth).
+  let tempWindow = [];
+  let last = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
 
   return {
     /**
      * Compute the four stats from the FORMATTED per-tick sample (single
-     * samples — no cross-tick delta state; fix round 2 removed the raw
+     * samples - no cross-tick delta state; fix round 2 removed the raw
      * rolling deltas, which were garbage on the live machine).
      * Never throws: every failure degrades to null per-field (and the
-     * previous result is served while a query is in flight — at most one
+     * previous result is served while a query is in flight - at most one
      * PowerShell at a time).
      * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null, cpuPowerW: number | null }>}
      */
@@ -196,35 +306,47 @@ export function createSysStats(deps = {}) {
         const raw = parseSysStatsOutput(stdout);
         if (raw.maxClockMhz !== null) maxClockMhz = raw.maxClockMhz;
         // Fix round 2: single samples of the OS-formatted counters.
-        //   cpuUtilPct = "% Processor Time" (already 0..100 — no delta);
+        //   cpuUtilPct = "% Processor Time" (already 0..100 - no delta);
         //   cpuFreqMhz = round(MaxClockSpeed × "% Processor Performance" / 100)
-        //   — on this BCLK-overclocked machine: round(3301 × 130 / 100) = 4291.
+        //   - on this BCLK-overclocked machine: round(3301 × 130 / 100) = 4291.
         const utilPct = raw.fmtUtil;
         const freqMhz = freqFromPerfPct(raw.fmtPerf, maxClockMhz);
         // GPU memory: the perf-counter instance whose name encodes the
         // device's LUID (resolved via DXGI GetDesc1 by PCI device id).
         let gpuBytes = null;
+        let gpuUtil = null;
         if (deviceIdHex) {
           try {
             const luid = await luidOf(deviceIdHex);
             const row = raw.gpuMemRows.find((r) => instanceMatchesLuid(r.name, luid));
             if (row && row.dedicatedUsage !== null && row.dedicatedUsage >= 0) gpuBytes = row.dedicatedUsage;
+            // M4-I (D1): the GPUEngine aggregation for the SAME LUID.
+            gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
           } catch {
             gpuBytes = null;
+            gpuUtil = null;
           }
         }
+        // M4-I (C1): the frozen-zone drop - the Z97 static board zone trips
+        // it after 5 identical samples (honest '-' instead of the stuck 30;
+        // the temperature ONLY - the wattage stays raw).
+        const tempC = raw.tempK10Max !== null ? raw.tempK10Max / 10 : null;
+        tempWindow = [...tempWindow, tempC].slice(-5);
         last = {
           cpuUtilPct: utilPct,
           cpuFreqMhz: freqMhz,
-          cpuTempC: raw.tempK10Max !== null ? raw.tempK10Max / 10 : null,
+          cpuTempC: frozenDrop(tempWindow),
           gpuMemUsedBytes: gpuBytes,
-          // M4-H: the PowerMeter's formatted 'Power' — watts, single
-          // sample; null when the class is absent (honest '—').
+          // M4-H: the PowerMeter's formatted 'Power' - watts, single
+          // sample; null when the class is absent (honest '-').
           cpuPowerW: raw.powerW,
+          // M4-I (D1): the OS GPU-utilization counter; null when
+          // unpopulated (the honest '-').
+          gpuUtilPct: gpuUtil,
         };
         return last;
       } catch {
-        // a stats failure degrades honestly — never breaks the tick
+        // a stats failure degrades honestly - never breaks the tick
         return last;
       } finally {
         inflight = null;
@@ -234,24 +356,51 @@ export function createSysStats(deps = {}) {
 }
 
 /**
- * The in-memory fixture — the default sysStats adapter for tests and
+ * The in-memory fixture - the default sysStats adapter for tests and
  * --ui-verify (fixed deterministic values, never spawns PowerShell).
- * M4-H: the fixture carries a fixed cpuPowerW (the PowerMeter pin — the
+ * M4-H: the fixture carries a fixed cpuPowerW (the PowerMeter pin - the
  * real adapter's sample shape includes it; the absent class degrades).
- * @param {{ cpuUtilPct?: number, cpuTempC?: number, cpuFreqMhz?: number, gpuMemUsedBytes?: number, cpuPowerW?: number }} [overrides]
+ * M4-I (C1): the mock temperature VARIES (61/62 alternating) so the pins
+ * stay live - the shared frozenDrop NEVER trips on a varying window.
+ * Knobs: RID_MOCK_FROZEN_TEMP=1 makes the temperature CONSTANT (after 5
+ * identical samples frozenDrop reports null - the verifiable '-' pin);
+ * RID_MOCK_NO_POWER_METER=1 makes cpuPowerW null (the honest no-metering
+ * shape). The mock also emits a deterministic gpuUtilPct (D1 - the
+ * no-Intel util tile reads it; the value matches utilPct 42).
+ * @param {{ cpuUtilPct?: number, cpuTempC?: number, cpuFreqMhz?: number, gpuMemUsedBytes?: number, cpuPowerW?: number, gpuUtilPct?: number }} [overrides]
  */
 export function createMockSysStats(overrides = {}) {
-  const fixed = {
+  const frozen = process.env.RID_MOCK_FROZEN_TEMP === '1';
+  const noPowerMeter = process.env.RID_MOCK_NO_POWER_METER === '1';
+  let tick = 0;
+  let tempWindow = [];
+  const base = {
     cpuUtilPct: 42,
-    cpuTempC: 61,
     cpuFreqMhz: 4300,
     gpuMemUsedBytes: 2971324416, // ~2.77 GiB (the A770's live-ish dedicated usage)
     cpuPowerW: 125.5, // M4-H: the fixed PowerMeter fixture (watts)
+    gpuUtilPct: 42, // M4-I (D1): the fixed OS GPU-utilization fixture
     ...overrides,
   };
   return {
     async sample() {
-      return { ...fixed };
+      // M4-I (C1): 61 on even ticks, 62 on odd - the pins stay LIVE (the
+      // exact-value pins move to 61|62); RID_MOCK_FROZEN_TEMP=1 (or a
+      // numeric cpuTempC override) returns a constant so the shared
+      // frozenDrop trips to null ('-').
+      const rawTemp = typeof overrides.cpuTempC === 'number'
+        ? overrides.cpuTempC
+        : frozen ? 61 : (tick % 2 === 0 ? 61 : 62);
+      tick += 1;
+      tempWindow = [...tempWindow, rawTemp].slice(-5);
+      return {
+        cpuUtilPct: base.cpuUtilPct,
+        cpuTempC: frozenDrop(tempWindow),
+        cpuFreqMhz: base.cpuFreqMhz,
+        gpuMemUsedBytes: base.gpuMemUsedBytes,
+        cpuPowerW: noPowerMeter ? null : base.cpuPowerW,
+        gpuUtilPct: base.gpuUtilPct,
+      };
     },
   };
 }

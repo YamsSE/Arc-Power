@@ -1,8 +1,8 @@
-// Arc Power — M1 canonical-unit conversion + range helpers.
+// Arc Power - M1 canonical-unit conversion + range helpers.
 //
 // IGCL capability entries carry a `units` field (see CTL_UNITS in
-// igcl-bindings.js). The V2 OC API follows those units — power can be W or
-// mW, voltage V or mV, frequency MHz or GTS/MTS — while Settings fields are
+// igcl-bindings.js). The V2 OC API follows those units - power can be W or
+// mW, voltage V or mV, frequency MHz or GTS/MTS - while Settings fields are
 // pinned to canonical units (W, V, MHz, GTS, C, %). These helpers convert
 // and clamp; both real and mock backends snap applies to capability steps.
 
@@ -133,14 +133,14 @@ export function normalizeFanCurve(points, maxPoints) {
 /**
  * Documented sane ceiling for the gpuLock frequency (absolute MHz lock).
  * IGCL exposes no capability range for the lock pair, so both main and the
- * backends share this ceiling — far above any shipping Arc clock.
+ * backends share this ceiling - far above any shipping Arc clock.
  */
 export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
 
 /**
  * M4-B: the documented ABSOLUTE ceiling for a gpuLock voltage (V). The lock
  * pair is an absolute voltage/frequency point (real locks sit ~0.7–1.2 V),
- * NOT a voltage OFFSET — the old clamp used the gpuVoltOffsetV.max (0.234 V,
+ * NOT a voltage OFFSET - the old clamp used the gpuVoltOffsetV.max (0.234 V,
  * an offset bound) which made any real lock impossible. This documented
  * ceiling (~1.5 V, well above any shipping Arc voltage) keeps defense-in-
  * depth: a user-typed value can never reach ctlOverclockGpuLockSet unbounded.
@@ -153,14 +153,14 @@ export const GPU_LOCK_VOLT_MAX_V = 1.5;
  * Hard ceiling for the exposed temperature limit (M2C-A F3 PT fix). The A770
  * driver's OC properties report 60–90 °C, but applying a value above 90 is
  * refused with 0x44000005 (TEMPERATURE_OUTSIDE_RANGE) while the props may
- * drift on other driver versions — so the exposed max is pinned here and
+ * drift on other driver versions - so the exposed max is pinned here and
  * applied by every backend + the renderer. Never expose/apply above this.
  */
 export const TEMP_LIMIT_MAX_C = 90;
 
 /**
  * Clamp a gpuLock pair to the DOCUMENTED ABSOLUTE bounds before it reaches
- * the driver (M4-B: the lock pair is an absolute VF point, not an offset —
+ * the driver (M4-B: the lock pair is an absolute VF point, not an offset -
  * the voltage bound is the absolute ceiling GPU_LOCK_VOLT_MAX_V, floor 0
  * ("don't touch voltage"), NEVER the gpuVoltOffsetV offset range):
  *   - voltageV -> [0, GPU_LOCK_VOLT_MAX_V];
@@ -177,26 +177,67 @@ export function clampGpuLock(lock) {
 }
 
 /**
- * M4-B: format a GPU display name with its VRAM amount ("Intel Arc A770
- * 16 GB"), formatted ONCE at listDevices time by the backends (never per
- * render — every consumer reads device.name). Rules:
+ * M4-I (S1 - ONE contract): the Intel memory-type tokens that map to GDDR6.
+ * A-series (Alchemist: A310/A350/A370/A380/A580/A750/A770) + B-series
+ * (Battlemage: B570/B580/B60 + the Arc Pro B50 - its fixture's 'b50' token
+ * must resolve so the pro-b50 never renders "12GB" bare while b580 renders
+ * "12GB GDDR6") all ship GDDR6. Matched as a WORD-BOUNDARY token of the
+ * device name (the tokensOf regex - a '5775C'-style exact token, never a
+ * substring: '15775C' can never match '5775C'). Anything else (iGPUs,
+ * non-Intel GPUs) -> null -> the type is OMITTED (never a wrong claim).
+ */
+export const INTEL_GDDR6_TOKENS = Object.freeze([
+  'a310', 'a350', 'a370', 'a380', 'a580', 'a750', 'a770',
+  'b50', 'b570', 'b580', 'b60',
+]);
+
+/**
+ * M4-I: derive the memory type from a device NAME (word-boundary token
+ * against the known-Intel table). Null when unknown - the renderer's VRAM
+ * row then shows the size only ("VRAM 8GB").
+ * @param {string | null | undefined} name
+ * @returns {string | null}
+ */
+export function vramMemTypeOfName(name) {
+  const tokens = new Set(String(name ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  for (const token of INTEL_GDDR6_TOKENS) {
+    if (tokens.has(token)) return 'GDDR6';
+  }
+  return null;
+}
+
+/**
+ * M4-B/M4-I: format a GPU display name with its VRAM amount + type
+ * ("Intel Arc A770 16GB GDDR6"), formatted ONCE at listDevices time by the
+ * backends (never per render - every consumer reads device.name). Rules:
  *   - vramBytes null / 0 / missing -> the plain name (no suffix);
- *   - >= 1 GiB -> "X GB" (rounded down to whole GiB);
- *   - < 1 GiB -> "X MB" (rounded down to whole MiB).
+ *   - >= 1 GiB -> "XGB" - CEIL to the next whole GiB (M4-I S1: the user's
+ *     "round to the next number" - 8 GiB -> 8GB, 16 GiB -> 16GB, 2.4 GiB ->
+ *     3GB; the M4-B nearest-GiB rounding is REPLACED);
+ *   - < 1 GiB -> "X MB" (rounded down to whole MiB - the sub-GiB branch
+ *     stays floor-MiB, fold r2.8);
+ *   - memType: the explicit `memType` argument wins when supplied (the mock
+ *     passes the fixture's value); otherwise derived INTERNALLY from the
+ *     name's word-boundary token table (the igcl call site needs no new
+ *     plumbing); unknown -> the type is omitted ("Name 8GB").
  * @param {string} name
  * @param {number|null|undefined} vramBytes
+ * @param {string|null|undefined} [memType]
  * @returns {string}
  */
-export function formatDeviceName(name, vramBytes) {
+export function formatDeviceName(name, vramBytes, memType) {
   if (!name || !Number.isInteger(vramBytes) || vramBytes <= 0) return name;
-  // M4-D (user, live-verified): the driver's qwMemorySize is the honest
-  // source but carries a small reserved margin (the 8 GB A770 reports
-  // ~7.91 GiB) — ROUND to the nearest whole GiB so the suffix matches the
-  // card's actual size ("8 GB"), never a floored undershoot ("7 GB").
-  // Values under 1 GiB stay whole-MiB (a 512 MiB card never rounds to
-  // "1 GB").
-  const gib = vramBytes >= 1024 * 1024 * 1024 ? Math.round(vramBytes / (1024 * 1024 * 1024)) : 0;
-  if (gib >= 1) return `${name} ${gib} GB`;
+  const type = typeof memType === 'string' && memType.length > 0 ? memType : vramMemTypeOfName(name);
+  const suffix = type ? ` ${type}` : '';
+  // M4-I (S1): the GB branch moves to CEIL (the user's "round to the next
+  // number" - no two-numbers-on-one-screen: 8 GiB -> "8GB", 16 GiB ->
+  // "16GB"); the sub-GiB branch stays whole-MiB floor (a 512 MiB card never
+  // rounds to "1GB" - the >= 1 GiB gate keeps the ceil from ever touching
+  // the MiB branch).
+  if (vramBytes >= 1024 * 1024 * 1024) {
+    const gib = Math.ceil(vramBytes / (1024 * 1024 * 1024));
+    return `${name} ${gib}GB${suffix}`;
+  }
   const mib = Math.floor(vramBytes / (1024 * 1024));
   return `${name} ${mib} MB`;
 }

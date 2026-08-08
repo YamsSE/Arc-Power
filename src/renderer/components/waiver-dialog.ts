@@ -1,9 +1,9 @@
-// Arc Power — warranty-waiver modal. Shown before the first OC apply while
+// Arc Power - warranty-waiver modal. Shown before the first OC apply while
 // the device waiver is not accepted, AND at every startup while the waiver
-// is NOT accepted (M4-B, user: "please prompt it when the Program opens" —
+// is NOT accepted (M4-B, user: "please prompt it when the Program opens" -
 // the driver exposes no waiver getter, so the dialog at open is the only
 // reliable visibility). M4-D (user, PERMANENT acceptance): a PERSISTED
-// acceptance is the user's permanent consent — the boot prompt is SKIPPED
+// acceptance is the user's permanent consent - the boot prompt is SKIPPED
 // entirely then (the accepted-state reminder dialog is REMOVED; the
 // dashboard health row remains the status display), and an apply-time
 // waiver-not-set with an accepted store is silently re-set + retried in
@@ -24,10 +24,10 @@ const WAIVER_TEXT =
   'You are proceeding at your own risk.';
 
 /**
- * Show the warranty-waiver modal — the classic Cancel/Accept pair (only an
+ * Show the warranty-waiver modal - the classic Cancel/Accept pair (only an
  * explicit Accept resolves to 'accepted'). M4-D: the accepted-state
  * reminder variant is REMOVED (a persisted acceptance skips the prompt
- * entirely — the boot flow only calls this for unaccepted sessions).
+ * entirely - the boot flow only calls this for unaccepted sessions).
  */
 export function showWaiverDialog(deviceName: string): Promise<WaiverDialogResult> {
   return new Promise((resolve) => {
@@ -59,12 +59,12 @@ export function showWaiverDialog(deviceName: string): Promise<WaiverDialogResult
 }
 
 /**
- * M4-B/M4-D: the boot waiver prompt — shown ONLY while the waiver is not
- * accepted (the CALLER decides — app.ts fires it only when
+ * M4-B/M4-D: the boot waiver prompt - shown ONLY while the waiver is not
+ * accepted (the CALLER decides - app.ts fires it only when
  * caps.waiverAccepted !== true; a persisted acceptance is the user's
  * permanent consent and the app never asks again). Classic Cancel/Accept
  * pair; an explicit Accept persists via IPC (a persistence failure toasts
- * and returns 'cancelled' — same pattern as ensureWaiver). Never
+ * and returns 'cancelled' - same pattern as ensureWaiver). Never
  * auto-accepts. Non-blocking by construction: the caller runs it detached
  * from the boot sequence.
  */
@@ -92,7 +92,7 @@ export async function ensureWaiver(deviceId: number, waiverAccepted: boolean, de
   if (decision === 'cancelled') return 'cancelled';
   try {
     await api.waiverAccept(deviceId);
-    // `decision` was already 'accepted' when we got here — the persisted
+    // `decision` was already 'accepted' when we got here - the persisted
     // acceptance is the only thing left to do.
     return 'accepted';
   } catch (err) {

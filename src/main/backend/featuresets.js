@@ -1,4 +1,4 @@
-// Arc Power — M2D mock featureset loader + validator.
+// Arc Power - M2D mock featureset loader + validator.
 //
 // The mock distribution file: one JSON per device line (a770 / b580 /
 // pro-b50 / arc-igpu), the single source of truth for MockBackend caps,
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // src/main/backend -> repo root (dev); app.asar/src/main/backend in the
-// packaged app (mock/ is optional there — a missing dir degrades to the
+// packaged app (mock/ is optional there - a missing dir degrades to the
 // a770 default with a warning, never a crash).
 export const FEATURESETS_DIR = path.resolve(__dirname, '..', '..', '..', 'mock', 'featuresets');
 export const DEFAULT_FEATURESET_ID = 'a770';
@@ -66,7 +66,7 @@ export function validateFeatureset(raw, expectedId) {
   if (!isNonEmptyString(fs.name)) throw new Error(`featureset '${fs.id}': name must be a non-empty string`);
   if (!isNonEmptyString(fs.deviceName)) throw new Error(`featureset '${fs.id}': deviceName must be a non-empty string`);
   if (!isNonEmptyString(fs.driverVersion)) throw new Error(`featureset '${fs.id}': driverVersion must be a non-empty string`);
-  // M2D: the display-driver registry date ("7-5-2026") is optional — null or
+  // M2D: the display-driver registry date ("7-5-2026") is optional - null or
   // absent when unverified (estimated featuresets), the swap payload then
   // nulls the card date instead of pairing a stale boot date.
   if (fs.driverDate !== undefined && fs.driverDate !== null && !isNonEmptyString(fs.driverDate)) {
@@ -81,7 +81,7 @@ export function validateFeatureset(raw, expectedId) {
     }
   }
   // M4-B: the VRAM amount in BYTES for the display-name suffix ("Arc A770
-  // 16 GB"). Optional (null when absent) — integrated GPUs have no VRAM.
+  // 16 GB"). Optional (null when absent) - integrated GPUs have no VRAM.
   if (fs.vramBytes !== undefined && fs.vramBytes !== null
     && (!Number.isInteger(fs.vramBytes) || fs.vramBytes <= 0)) {
     throw new Error(`featureset '${fs.id}': vramBytes must be a positive integer (bytes) or null`);
@@ -170,7 +170,7 @@ export function validateFeatureset(raw, expectedId) {
 
 /**
  * Load + validate one featureset by id (file must be `<id>.json`). Returns
- * null with a clear console error when the file is missing or malformed —
+ * null with a clear console error when the file is missing or malformed -
  * callers fall back (see loadFeaturesetOrFallback).
  * @param {string} id
  * @returns {object|null}
@@ -182,7 +182,7 @@ export function loadFeatureset(id) {
   }
   const file = path.join(FEATURESETS_DIR, `${id}.json`);
   if (!existsSync(file)) {
-    console.error(`[featuresets] featureset '${id}' not found (${file}) — falling back to '${DEFAULT_FEATURESET_ID}'`);
+    console.error(`[featuresets] featureset '${id}' not found (${file}) - falling back to '${DEFAULT_FEATURESET_ID}'`);
     return null;
   }
   try {
@@ -196,7 +196,7 @@ export function loadFeatureset(id) {
 
 /**
  * Resolve a featureset id (defaults to RID_MOCK_FEATURESET, then a770).
- * A missing/invalid id degrades to the a770 default with a warning —
+ * A missing/invalid id degrades to the a770 default with a warning -
  * mock mode must never crash on a bad env value.
  * @param {string} [id]
  * @returns {{ featureset: object, warning: string|null }}
@@ -211,7 +211,7 @@ export function loadFeaturesetOrFallback(id = process.env.RID_MOCK_FEATURESET) {
   }
   return {
     featureset: fallback,
-    warning: `featureset '${requested}' unavailable — using '${DEFAULT_FEATURESET_ID}'`,
+    warning: `featureset '${requested}' unavailable - using '${DEFAULT_FEATURESET_ID}'`,
   };
 }
 

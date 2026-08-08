@@ -1,4 +1,4 @@
-// Arc Power — renderer-side type mirror of the main-process JSDoc contract
+// Arc Power - renderer-side type mirror of the main-process JSDoc contract
 // (src/main/backend/backend.interface.js). Canonical units: W, V, MHz, C,
 // GTS, %. Kept in sync with the main-process typedefs by convention; the IPC
 // layer is the enforcement point, not these types.
@@ -17,7 +17,7 @@ export type OcErrorCode =
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
 
-/** M3-C-E: the OC mode — which limit set the device exposes + the apply gate. */
+/** M3-C-E: the OC mode - which limit set the device exposes + the apply gate. */
 export type OcMode = 'stock' | 'advanced';
 
 /** Apply intent; an absent field means "leave the driver value untouched". */
@@ -61,11 +61,15 @@ export interface RangeInfo {
 export interface Capabilities {
   oemName: string;
   deviceName: string;
+  /** M4-I (S1): the memory type carried on the caps payload (the igcl
+   *  backend derives it once from the token table; the mock fixture
+   *  supplies it). Null when unknown. */
+  memType?: string | null;
   waiverAccepted: boolean;
   controls: Record<string, boolean>;
   ranges: Record<string, RangeInfo>;
   fan: { canControl: boolean; modes: string[]; maxRpm: number; maxCurvePoints: number };
-  /** M2C-C: the bundled 2023 IGCL runtime loaded — PL/TL ranges are extended
+  /** M2C-C: the bundled 2023 IGCL runtime loaded - PL/TL ranges are extended
    *  (max 315 W / 115 C) and applies above the DriverStore clamp route to it. */
   extendedRanges?: boolean;
 }
@@ -77,7 +81,7 @@ export interface PerControlResult {
    *  message here; hard errors are mapped via pure/errors.ts errorMessage). */
   message?: string;
   readBackEqual?: boolean;
-  /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op — must NOT be reported as applied). */
+  /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */
   silentNoop?: boolean;
 }
 
@@ -107,9 +111,14 @@ export interface DeviceInfo {
   graphicsClockMHz: number;
   numXeCores: number;
   /** M4-B: VRAM in bytes for the display-name suffix (set by the backend at
-   *  listDevices time; null when unknown — iGPU, real backend until the
+   *  listDevices time; null when unknown - iGPU, real backend until the
    *  M4-D sysinfo fallback lands). */
   vramBytes?: number | null;
+  /** M4-I (S1): the memory type CARRIED ON THE DEVICE PAYLOAD (the igcl
+   *  backend derives it once from the token table; the mock fixture
+   *  supplies it) - the renderer's VRAM row never re-derives it. Null when
+   *  unknown (the row shows the size only). */
+  memType?: string | null;
 }
 
 export interface HealthReport {
@@ -122,7 +131,7 @@ export interface HealthReport {
 
 /**
  * The last OC apply outcome (M3-A "OC working" health row). Recorded by the
- * overclocking/fan/profiles pages after every apply attempt — honest: the
+ * overclocking/fan/profiles pages after every apply attempt - honest: the
  * row reads 'never applied' until the first attempt, then ok/failed.
  */
 export interface LastApply {
@@ -137,13 +146,13 @@ export interface LastApply {
 export interface ElevationState {
   /** This process runs as administrator. */
   elevated: boolean;
-  /** Applies go through the elevated self-worker (product path, not elevated) —
+  /** Applies go through the elevated self-worker (product path, not elevated) -
    *  the renderer shows the "Administrator approval is needed" toast then. */
   workerApply: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// M3-A — registry hacks catalog (read-side only; applying is M3-B)
+// M3-A - registry hacks catalog (read-side only; applying is M3-B)
 // ---------------------------------------------------------------------------
 
 /** One registry value the catalog reads (mirrors src/main/registry-catalog.js). */
@@ -165,7 +174,7 @@ export interface RegistryEntry {
   id: string;
   name: string;
   description: string;
-  /** Requires administrator to change (all of the M3-A catalog does — M3-B). */
+  /** Requires administrator to change (all of the M3-A catalog does - M3-B). */
   requiresElevation: boolean;
   /** Shown when no read is configured (never in the current catalog). */
   reads: RegistryRead[];
@@ -177,7 +186,7 @@ export interface RegistryEntry {
 
 /**
  * One elevated reg.exe command step (M3-B). The renderer never executes
- * these — the IPC resolves them from the catalog in main; they are exposed
+ * these - the IPC resolves them from the catalog in main; they are exposed
  * for honest display (tooltips, revert notes).
  */
 export interface RegistryApplyStep {
@@ -186,15 +195,15 @@ export interface RegistryApplyStep {
   value: string;
   /** REG_DWORD etc. (add steps only). */
   type?: string;
-  /** The value data (add steps only; decimal — reg.exe stores DWORD). */
+  /** The value data (add steps only; decimal - reg.exe stores DWORD). */
   data?: string;
 }
 
 /** The M3-B apply surface of one catalog entry. */
 export interface RegistryApplyDescriptor {
-  /** False = read-only info entry (fullscreen-optimizations) — no buttons. */
+  /** False = read-only info entry (fullscreen-optimizations) - no buttons. */
   applyable: boolean;
-  /** What the revert restores — shown on the card. */
+  /** What the revert restores - shown on the card. */
   revertNote: string;
   /** The exact command lists per action (present iff applyable). */
   actions?: Record<'enable' | 'disable' | 'revert', RegistryApplyStep[]>;
@@ -212,7 +221,7 @@ export interface RegistryApplyStepResult {
 /** The registry-apply IPC envelope. */
 export interface RegistryApplyResponse {
   ok: boolean;
-  /** True when the UAC prompt was declined/timed out — nothing ran. */
+  /** True when the UAC prompt was declined/timed out - nothing ran. */
   canceled?: boolean;
   /** Honest outcome text (success / partial with the failed step / cancel). */
   message: string;
@@ -245,7 +254,7 @@ export interface RegistryCatalogResponse {
 }
 
 /**
- * M4-D2: the startup-get shape — ONE HKCU Run value serves both toggles;
+ * M4-D2: the startup-get shape - ONE HKCU Run value serves both toggles;
  * the derivation is composed in main from the raw value + the persisted
  * settings: startWithWindows = value exists AND the Settings toggle is on;
  * applyOnBoot = value exists AND the profile's start-at-boot is on AND an
@@ -261,17 +270,31 @@ export interface VideoControllerInfo {
   name: string | null;
   vramBytes: number | null;
   pnpDeviceId: string | null;
-  /** M4-D (user): ReBAR verdict — true when the device's memory resources
+  /** M4-I: the controller's display-driver version (works on ANY GPU -
+   *  the no-Intel device card's Driver version row source; null when the
+   *  CIM query degraded). */
+  driverVersion?: string | null;
+  /** M4-D (user): ReBAR verdict - true when the device's memory resources
    *  include a multi-GiB BAR (a functioning Resizable BAR), false when only
    *  the small aperture BAR exists, null when unknown. M4-D2: sourced from
    *  BOTH the per-device pnputil resources AND the Win32_AllocatedResource
    *  cross-check (any >= 1 GiB range from either). The PCIe row was
-   *  REMOVED (the unpopulated 1/1 pattern made it a permanent '—'). */
+   *  REMOVED (the unpopulated 1/1 pattern made it a permanent '-'). */
   rebarActive: boolean | null;
 }
 
 /**
- * M4-D: the system-info payload (sysinfo:get IPC) — the dashboard CPU card
+ * M4-I: one Win32_CacheMemory row (the L1 CIM fallback source). The SMBIOS
+ * Level numbers are unreliable (3/4/5 on the 5775C) - the sizes are the
+ * truth (hierarchy: L1-total < L2 < L3; L1 = the SMALLEST InstalledSize).
+ */
+export interface CacheMemoryInfo {
+  level: number | null;
+  installedSizeKb: number | null;
+}
+
+/**
+ * M4-D: the system-info payload (sysinfo:get IPC) - the dashboard CPU card
  * + the real-GPU VRAM suffix source. `cores`/`speedMhz`/`videoControllers`
  * degrade honestly to null/empty in the os.cpus() fallback.
  */
@@ -286,7 +309,7 @@ export interface SysInfo {
     l1CacheKb: number | null;
     l2CacheKb: number | null;
     l3CacheKb: number | null;
-    /** M4-H: L4 cache — NO OS source (CIM has no L4 field); the mock
+    /** M4-H: L4 cache - NO OS source (CIM has no L4 field); the mock
      *  fixture carries it so the row renders in verify; real hardware
      *  leaves it absent. Optional, rendered only when present. */
     l4CacheKb?: number | null;
@@ -295,6 +318,9 @@ export interface SysInfo {
     /** M4-H: Win32_PhysicalMemory.SMBIOSMemoryType (SMBIOS Type-17 code;
      *  null when the payload carries none). */
     memoryType: number | null };
+  /** M4-I: the Win32_CacheMemory rows (Level/InstalledSize KB) - the L1
+   *  CIM fallback source; the payload's own l1-l4 fields always win. */
+  cacheMemory: CacheMemoryInfo[];
   videoControllers: VideoControllerInfo[];
 }
 
@@ -320,20 +346,25 @@ export interface TelemetrySample {
   fanRpm?: number[];
   utilPct?: number;
   powerW?: number;
-  /** 1.0.1 (m4): OPTIONAL — the no-device telemetry push (telemetry-start
+  /** 1.0.1 (m4): OPTIONAL - the no-device telemetry push (telemetry-start
    *  null mode) emits sys-stats-only samples that carry no throttle flags;
    *  nothing reads this field and the CSV writer does not use it. */
   throttle?: ThrottleFlags;
-  /** M4-D2: system stats pushed on every tick (rolling deltas; null = honest '—'). */
+  /** M4-D2: system stats pushed on every tick (rolling deltas; null = honest '-'). */
   cpuUtilPct?: number | null;
   cpuTempC?: number | null;
   cpuFreqMhz?: number | null;
   gpuMemUsedBytes?: number | null;
   /** M4-H: CPU package wattage from the PowerMeter perf counter
-   *  (Win32_PerfFormattedData_PowerMeter_PowerMeter — property 'Power' in
+   *  (Win32_PerfFormattedData_PowerMeter_PowerMeter - property 'Power' in
    *  watts). The class is often ABSENT on desktops, so it honestly
-   *  degrades to null ('—'). */
+   *  degrades to null ('-'). */
   cpuPowerW?: number | null;
+  /** M4-I: the OS GPU-utilization counter (the GPUEngine rows for the
+   *  matched LUID - per (eng#, engtype) max across the process rows, sum,
+   *  cap 100). Null when the counter is unpopulated; the readout tiles
+   *  read `gpuUtilPct ?? utilPct` (the no-Intel util source). */
+  gpuUtilPct?: number | null;
 }
 
 /** A saved profile (mirrors the main-process Profile typedef). */
@@ -362,11 +393,11 @@ export interface ProfileSettingsState {
   closeToTray: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
-  /** M4-F: the persisted GPU selection (absent on old files -> null — the
+  /** M4-F: the persisted GPU selection (absent on old files -> null - the
    *  devices[0] fallback resolves at boot; device-set is the ONLY writer). */
   deviceId: number | null;
   /** 1.0.1: the persisted UI theme ('dark'|'midnight'|'light'; absent on
-   *  old files -> 'dark' — the absent-field default, no schema bump). */
+   *  old files -> 'dark' - the absent-field default, no schema bump). */
   theme: Theme;
 }
 
@@ -384,7 +415,7 @@ export interface FpsSample {
 }
 
 // ---------------------------------------------------------------------------
-// M2D — mock featuresets (mock mode only)
+// M2D - mock featuresets (mock mode only)
 // ---------------------------------------------------------------------------
 
 /** One mock distribution file (mock/featuresets/<id>.json). */
@@ -400,7 +431,7 @@ export interface MockFeaturesetsResponse {
   current: string;
 }
 
-/** mock:set-featureset response — everything the UI renders from one swap. */
+/** mock:set-featureset response - everything the UI renders from one swap. */
 export interface MockSwapResponse {
   featureset: FeaturesetInfo;
   devices: DeviceInfo[];

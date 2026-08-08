@@ -1,4 +1,4 @@
-// Arc Power — IPC handlers factory + payload validation (the security
+// Arc Power - IPC handlers factory + payload validation (the security
 // surface). Kept electron-free so the whole contract is unit-testable under
 // plain `node --test` (no electron import). Registration over ipcMain lives
 // in ipc.js.
@@ -6,7 +6,7 @@
 // Contract:
 //   - deviceId is a non-negative integer, validated on every handler;
 //   - apply-settings payload: plain object, keys ⊆ CONTROLS, values finite
-//     numbers / well-formed arrays or objects — anything else is rejected
+//     numbers / well-formed arrays or objects - anything else is rejected
 //     before it can reach the backend;
 //   - apply-settings re-clamps scalar values against the device's capability
 //     ranges in main (product applies snap to the capability step);
@@ -19,7 +19,7 @@
 //     by the renderer only after the user explicitly accepted the dialog.
 //     M4-D (PERMANENT acceptance): once the store says accepted (the user
 //     accepted once), MAIN silently re-sets the driver waiver + retries the
-//     apply ONCE on a waiver-not-set answer — the persisted consent stands,
+//     apply ONCE on a waiver-not-set answer - the persisted consent stands,
 //     the store is never flipped back to false (persistWaiverLost removed).
 
 import { createRequire } from 'node:module';
@@ -39,7 +39,7 @@ import { THEMES } from './store/profile-store.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
-// product path injects app.getVersion() from ipc.js — this is the default
+// product path injects app.getVersion() from ipc.js - this is the default
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
@@ -48,7 +48,7 @@ const SCALAR_CONTROLS = new Set([
   'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct',
 ]);
 const FAN_MODES = new Set(['auto', 'curve', 'fixed']);
-// ctl_fan_speed_table_t.table size — must match pure/curve.ts MAX_CURVE_POINTS.
+// ctl_fan_speed_table_t.table size - must match pure/curve.ts MAX_CURVE_POINTS.
 const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
@@ -115,7 +115,7 @@ export function sanitizeSettings(payload) {
 
 /**
  * Re-clamp scalar settings against the device capability ranges (snap to
- * the capability step). Non-scalar controls pass through — the backend
+ * the capability step). Non-scalar controls pass through - the backend
  * gates them itself; gpuLock is clamped to the documented lock bounds
  * (clampGpuLock) so an extreme pair never reaches the driver.
  * @param {import('./backend/backend.interface.js').Settings} settings
@@ -137,9 +137,9 @@ export function clampSettings(settings, ranges) {
 /**
  * Boot-time waiver seeding (F1): restore a persisted acceptance (settings.json
  * written by waiver-accept) into the backend's IN-MEMORY flag WITHOUT calling
- * the driver — ctlOverclockWaiverSet must only run on explicit user
+ * the driver - ctlOverclockWaiverSet must only run on explicit user
  * acceptance, so this never implicitly accepts. A store read failure degrades
- * to not-accepted (the waiver dialog re-shows on the next apply — safe).
+ * to not-accepted (the waiver dialog re-shows on the next apply - safe).
  * Call once after backend.init() before the renderer boots.
  * @param {import('./backend/backend.interface.js').IOCBackend} backend
  * @param {import('./store/profile-store.js').ProfileStore} store
@@ -150,7 +150,7 @@ export async function seedWaiverState(backend, store) {
   try {
     accepted = (await store.loadSettings()).waiverAccepted === true;
   } catch {
-    // degraded: treat as not accepted — never a false "accepted"
+    // degraded: treat as not accepted - never a false "accepted"
   }
   for (const device of devices) {
     await backend.restoreWaiverState(device.id, accepted);
@@ -159,7 +159,7 @@ export async function seedWaiverState(backend, store) {
 
 /**
  * M4-D (user): boot-time driver-truth probe for the REAL path. A persisted
- * `waiverAccepted: true` can be STALE — the driver-side waiver
+ * `waiverAccepted: true` can be STALE - the driver-side waiver
  * (ctlOverclockWaiverSet) can be lost (reinstall, IGS reset) while
  * settings.json still says accepted. IGCL exposes no waiver getter, so the
  * only honest check is a write: apply the device's CURRENT power limit (a
@@ -168,7 +168,7 @@ export async function seedWaiverState(backend, store) {
  * M4-D (user, PERMANENT acceptance): when the driver answers waiver-not-set
  * while the persisted acceptance is TRUE, the elevated boot probe now
  * RESTORES the driver waiver (backend.setWaiverAccepted) instead of
- * clearing the store — the persisted acceptance is the user's permanent
+ * clearing the store - the persisted acceptance is the user's permanent
  * consent, it stands until the user revokes it, and the store is never
  * flipped to false on a driver refusal (persistWaiverLost is REMOVED). The
  * probe writes nothing else. When the store says unaccepted, the behavior
@@ -197,14 +197,14 @@ export async function probeWaiverState(backend, store) {
       try {
         persistedAccepted = (await store.loadSettings()).waiverAccepted === true;
       } catch {
-        // degraded: treat as unaccepted — never restore on an unknown store
+        // degraded: treat as unaccepted - never restore on an unknown store
       }
       if (persistedAccepted) {
-        // M4-D: the consent stands — RESTORE the driver waiver (elevated
+        // M4-D: the consent stands - RESTORE the driver waiver (elevated
         // boot probe). setWaiverAccepted also re-sets the in-memory flag.
         await backend.setWaiverAccepted(device.id);
       } else {
-        // Unaccepted store: unchanged M4-B behavior — clear the in-memory
+        // Unaccepted store: unchanged M4-B behavior - clear the in-memory
         // flag AND the persisted store so the boot prompt shows the classic
         // Accept dialog.
         await backend.restoreWaiverState(device.id, false);
@@ -217,12 +217,12 @@ export async function probeWaiverState(backend, store) {
 
 /**
  * M3-C review F3: seed the backend's OC mode from the persisted settings
- * (settings.json via the store). Must run BEFORE the window/IPC exist — the
+ * (settings.json via the store). Must run BEFORE the window/IPC exist - the
  * renderer's FIRST getCapabilities must already see the right range set (a
  * persisted-advanced session must never render 252 W / 90 C sliders until a
  * later self-heal). setOcMode is an in-memory caps-cache invalidation, safe
  * before init(). Returns the seeded mode, or null when the store read fails
- * (degraded: the backend keeps its construction default — bootBackend's own
+ * (degraded: the backend keeps its construction default - bootBackend's own
  * seeding runs again later, and the mode toggle re-seeds on demand).
  * @param {import('./backend/backend.interface.js').IOCBackend} backend
  * @param {import('./store/profile-store.js').ProfileStore} store
@@ -251,11 +251,11 @@ export function assertNoPayload(args, channel) {
 /**
  * M4-F: resolve the boot device selection + self-heal. The persisted
  * deviceId wins when it matches an enumerated device id; otherwise
- * devices[0] AND the fallback is re-persisted (self-healing — a stale
+ * devices[0] AND the fallback is re-persisted (self-healing - a stale
  * selection (device removed, ordering changed) or an absent field must
  * never wedge the app on a dead id). A store read failure degrades to
  * devices[0] WITHOUT re-persisting (never a false write). Returns null when
- * no devices are enumerated (the caller degrades — never a crash).
+ * no devices are enumerated (the caller degrades - never a crash).
  * @param {import('./backend/backend.interface.js').IOCBackend} backend
  * @param {import('./store/profile-store.js').ProfileStore} store
  * @returns {Promise<number|null>}
@@ -276,7 +276,7 @@ export async function resolveBootDeviceId(backend, store) {
     try {
       await store.saveSettings({ ...settings, deviceId: resolved });
     } catch (err) {
-      // a re-persist failure must never break boot — the session still
+      // a re-persist failure must never break boot - the session still
       // uses the resolved device; the next boot re-attempts the self-heal
       console.log(`[boot] deviceId self-heal persist skipped: ${err.message}`);
     }
@@ -312,7 +312,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   isElevated?: () => boolean,  // elevation probe for the app-elevated channel
  *   mock?: {                     // M2D: mock-only featureset control. When null
  *                                // (real mode) the mock:* channels are NOT
- *                                // registered at all — an honest 404.
+ *                                // registered at all - an honest 404.
  *     listFeaturesets: () => Promise<{ featuresets: Array<{id: string, name: string, tag: string}>, current: string }>,
  *     setFeatureset: (id: string) => Promise<{ featureset: object, devices: object[], caps: object, state: object, health: object, driverDate: string | null }>,
  *     // M4-D2: run the REAL window-path boot-apply code path in mock mode
@@ -350,7 +350,7 @@ export function createIpcHandlers({
   openExternal = async () => {},
   // M3-A: the registry-catalog adapter. The DEFAULT is the MOCK (never runs
   // reg.exe); ipc.js injects the real adapter in the product path. The
-  // catalog is read-side only — the M3-B apply channel is 'registry-apply'.
+  // catalog is read-side only - the M3-B apply channel is 'registry-apply'.
   registryCatalog,
   // M3-B: the registry-apply adapter. The DEFAULT is the MOCK (never spawns
   // PowerShell, never elevates); ipc.js injects the real adapter in the
@@ -360,7 +360,7 @@ export function createIpcHandlers({
   registryApply,
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory).
   // The DEFAULT is the MOCK (fixed deterministic values, never spawns
-  // PowerShell — ui-verify pins are deterministic); ipc.js injects the
+  // PowerShell - ui-verify pins are deterministic); ipc.js injects the
   // real rolling-delta adapter in the product path. sample() is called on
   // every telemetry tick; its values ride the pushed telemetry sample.
   sysStats = createMockSysStats(),
@@ -368,7 +368,7 @@ export function createIpcHandlers({
   // write to Documents); ipc.js injects the real writer in the product
   // path (dir: RID_MOCK_LOG_DIR ?? app.getPath('documents')).
   monitorLog = { append: async () => ({ ok: true }) },
-  // M2b-B: the FPS adapter. The DEFAULT is the mock (always unavailable —
+  // M2b-B: the FPS adapter. The DEFAULT is the mock (always unavailable -
   // never loads koffi/dxgi); ipc.js injects the real DXGI adapter in the
   // product path. On this machine the real adapter may also degrade to
   // null (DXGI unavailable), so mock and product agree on 'unavailable'.
@@ -380,7 +380,7 @@ export function createIpcHandlers({
   buildKind = 'dev',
   // M2C-C: the 2023-runtime adapter + the elevation-aware apply runner.
   // Defaults: a no-op old runtime (never loads the DLL) and no runner
-  // (applies run in-process) — safe for tests and mock mode.
+  // (applies run in-process) - safe for tests and mock mode.
   oldIgcl = createNullOldIgcl(),
   applyRunner = null,
   isElevated = detectElevated,
@@ -389,7 +389,7 @@ export function createIpcHandlers({
   // M3-A/M3-B mock defaults: the read + apply mock adapters share ONE mock
   // registry state (in-memory; never touches the real registry), so a mock
   // apply flips the very next mock read. When either adapter is injected,
-  // both are product/real or test-injected — a shared state is only built
+  // both are product/real or test-injected - a shared state is only built
   // for the default pair.
   const mockRegistryState = registryCatalog && registryApply ? null : createMockRegistryState();
   const catalogAdapter = registryCatalog ?? createMockRegistryCatalog(REGISTRY_CATALOG, { state: mockRegistryState });
@@ -404,11 +404,11 @@ export function createIpcHandlers({
   const telemetry = new Map();
 
   /**
-   * 1.0.1 no-Intel round: the no-device telemetry mode — a sentinel-keyed
+   * 1.0.1 no-Intel round: the no-device telemetry mode - a sentinel-keyed
    * timer pushing sys-stats-ONLY samples (t: Date.now() + the 4 sys-stats
    * fields, all OS-level counters that work on ANY GPU). The device
    * telemetry fields are absent, so the GPU tiles/readouts honestly stay
-   * '—' while the CPU util/temp + GPU-memory tiles go live. Same 500 ms
+   * '-' while the CPU util/temp + GPU-memory tiles go live. Same 500 ms
    * cadence as the device TelemetryService; the boot-level log-to-file
    * subscription consumes the same telemetry:sample push, so CSV logging
    * works for free.
@@ -434,10 +434,15 @@ export function createIpcHandlers({
     if (telemetry.has(deviceId)) return;
     const svc = new TelemetryService(backend, deviceId);
     // M4-D2: the pushed sample carries the system stats (CPU util/freq/
-    // temp + GPU memory) — OS-formatted counters sampled once per tick by
-    // the injected sysStats adapter (one PowerShell query per tick — no
+    // temp + GPU memory) - OS-formatted counters sampled once per tick by
+    // the injected sysStats adapter (one PowerShell query per tick - no
     // extra polling latency). The mock adapter returns fixed values; the
-    // real adapter degrades per-field to null (honest '—' in the UI).
+    // real adapter degrades per-field to null (honest '-' in the UI).
+    // M4-I (D2 - merge precedence): the DEVICE telemetry wins -
+    // { ...extra, ...sample } - DEFENSIVE: today the field sets share zero
+    // keys (N1), but an injected colliding field must never let an OS
+    // stat overwrite the device's IGCL reading (igcl-wins; pinned by the
+    // injected-collision unit test).
     svc.onSample(async (sample) => {
       let extra = {};
       try {
@@ -446,7 +451,7 @@ export function createIpcHandlers({
         // a stats failure must never break the telemetry push
         extra = {};
       }
-      emit('telemetry:sample', { ...sample, ...extra });
+      emit('telemetry:sample', { ...extra, ...sample });
     });
     svc.onPollError(() => { /* stale readouts recover on the next tick */ });
     await svc.start();
@@ -467,13 +472,13 @@ export function createIpcHandlers({
    * M4-D (user, PERMANENT acceptance): ONE apply attempt through the
    * elevation-aware worker or the in-process routed core, with the silent
    * waiver re-set + single retry. When the driver answers waiver-not-set
-   * AND the persisted acceptance is true (settings.json — the user's
+   * AND the persisted acceptance is true (settings.json - the user's
    * permanent consent), MAIN silently re-sets the driver waiver
-   * (runner.waiverAccept / backend.setWaiverAccepted — elevated) and
+   * (runner.waiverAccept / backend.setWaiverAccepted - elevated) and
    * retries the apply ONCE; the FIRST attempt is never surfaced as a
-   * failure to the renderer. Exactly one retry — a second waiver-not-set
+   * failure to the renderer. Exactly one retry - a second waiver-not-set
    * returns the retry's envelope as-is. An unaccepted store keeps the
-   * current behavior (no auto re-set — the renderer's dialog flow handles
+   * current behavior (no auto re-set - the renderer's dialog flow handles
    * it). persistWaiverLost is REMOVED: the store never flips to false on a
    * driver refusal.
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced' }} req
@@ -485,7 +490,7 @@ export function createIpcHandlers({
         // S2 G2 mirror: when the driver lost the waiver, the worker's
         // per-control results carry waiver-not-set. Clear the parent-side
         // in-memory flag so getCapabilities reports unaccepted and the
-        // dialog re-shows — the wedge (stale-true parent flag with failing
+        // dialog re-shows - the wedge (stale-true parent flag with failing
         // applies) must never happen.
         if (hasWaiverNotSet(out.result)) await backend.restoreWaiverState(deviceId, false);
         return out;
@@ -504,12 +509,12 @@ export function createIpcHandlers({
       // accept anything).
     }
     if (!persistedAccepted) {
-      // Unaccepted store: current behavior — the renderer's dialog flow
+      // Unaccepted store: current behavior - the renderer's dialog flow
       // re-prompts and re-applies.
       return { result: first.result, state: first.state };
     }
     // M4-D: silent re-set + retry ONCE. A declined re-set (UAC) surfaces the
-    // FIRST attempt's envelope — never a fake success, never a crash.
+    // FIRST attempt's envelope - never a fake success, never a crash.
     try {
       if (applyRunner?.needsWorker?.()) {
         await applyRunner.waiverAccept(deviceId);
@@ -532,7 +537,7 @@ export function createIpcHandlers({
           return await backend.listDevices();
         } catch (err) {
           // 1.0.1 no-Intel round: a backend INIT failure (the IGCL runtime
-          // DLL not found / ctlInit / enumeration failed — health then
+          // DLL not found / ctlInit / enumeration failed - health then
           // reports igclLoaded false) degrades to an EMPTY list instead of
           // throwing: the renderer distinguishes "no Intel GPU" (health
           // igclLoaded false + devices empty) and continues booting in the
@@ -546,8 +551,8 @@ export function createIpcHandlers({
       },
 
       // M4-F: the persisted GPU selection. device-get is the boot read (the
-      // persisted id may be null — absent field -> the devices[0] fallback
-      // resolves at boot); device-set is the ONLY writer (like oc-mode-set —
+      // persisted id may be null - absent field -> the devices[0] fallback
+      // resolves at boot); device-set is the ONLY writer (like oc-mode-set -
       // profiles-settings-save carries it read-modify-write but never
       // chooses it). The id is validated as a non-negative integer; the
       // enumerated-set check is the boot resolution's job (self-heal).
@@ -577,17 +582,17 @@ export function createIpcHandlers({
       'apply-settings': async (deviceId, payload) => {
         assertValidDeviceId(deviceId);
         const settings = sanitizeSettings(payload);
-        // M3-C-E: the OC-mode gate runs BEFORE every clamp — an explicit
+        // M3-C-E: the OC-mode gate runs BEFORE every clamp - an explicit
         // pre-clamp REFUSAL, never a clamp. Stock mode refuses anything
         // beyond the standard limits (252 W / 90 C) with the mode message;
         // advanced mode refuses only above the extended ceiling (315 W /
-        // 115 C — never clamps, so a >315 W request is reported honestly).
+        // 115 C - never clamps, so a >315 W request is reported honestly).
         // A config-refusal is NOT a hardware failure: it must never trigger
         // the reset-to-defaults fallback anywhere downstream.
-        // M4-E: the gate is unit-aware — it receives the capability RANGES
+        // M4-E: the gate is unit-aware - it receives the capability RANGES
         // so percent-unit devices (Battlemage) are never mode-refused (the
         // units probe is a device property, identical on both sides of the
-        // worker boundary — never the extendedRanges flag). The caps read
+        // worker boundary - never the extendedRanges flag). The caps read
         // is a capability probe, not a write; the gate still refuses before
         // any clamp.
         const ocMode = (await store.loadSettings()).ocMode;
@@ -595,19 +600,19 @@ export function createIpcHandlers({
         const refusal = ocModeRefusal(ocMode, settings, caps.ranges);
         if (refusal) {
           // M3-C review F2: the refusal envelope carries the FRESH device
-          // state (getCurrentSettings is cheap — the refusal never touched
+          // state (getCurrentSettings is cheap - the refusal never touched
           // the GPU). A null state would be stored by the renderer
           // unconditionally and null out its device state (the OC page
           // renders 'Loading device capabilities…' forever and the dirty
           // helpers throw on it). Degraded to null only if the read itself
-          // fails — the renderer's non-null guard covers that too.
+          // fails - the renderer's non-null guard covers that too.
           let state = null;
           try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
           return { result: { ok: false, perControl: refusalPerControl(refusal) }, state, ocModeRefused: true };
         }
         // M3-C step-5 F1: advanced mode + a NOT-capable bundled 2023 runtime
         // (the future-driver degradation EXTENDED_UNAVAILABLE_MSG exists
-        // for) must refuse extended values BEFORE any clamp — clamping
+        // for) must refuse extended values BEFORE any clamp - clamping
         // 300 W to 252 W and reporting ok:true would be a false success
         // claim. Keyed on caps.extendedRanges (the capability probe is
         // identical on both sides of the worker boundary), never on the
@@ -625,11 +630,11 @@ export function createIpcHandlers({
         // mock mode, where applyRunner is null) applies in-process through
         // the routed core (DriverStore runtime <=252 W / <=90 C, bundled
         // 2023 runtime above). The worker runs the SAME core + gate (the
-        // request file carries ocMode — the worker's own caps always report
+        // request file carries ocMode - the worker's own caps always report
         // extendedRanges, so a caps-keyed gate there would silently clamp).
         // M4-D (user, PERMANENT acceptance): runApply silently re-sets the
         // driver waiver + retries ONCE when the driver answers waiver-not-set
-        // while the persisted acceptance is true (the consent stands — never
+        // while the persisted acceptance is true (the consent stands - never
         // a dialog, never a dead-end, never a persisted false).
         return runApply({ deviceId, settings: clamped, caps, ocMode });
       },
@@ -637,7 +642,7 @@ export function createIpcHandlers({
       'reset-to-defaults': async (deviceId) => {
         assertValidDeviceId(deviceId);
         // M2C-C: the reset write needs elevation like any other OC write
-        // (0-value writes are refused even elevated — reset runs
+        // (0-value writes are refused even elevated - reset runs
         // ctlOverclockResetToDefault, which works elevated only). The
         // non-elevated app delegates to the elevated self-worker.
         let state;
@@ -681,10 +686,10 @@ export function createIpcHandlers({
         assertValidDeviceId(deviceId);
         // Product path: explicit user acceptance ONLY. Never auto-accept.
         // M2C-C: the driver-side waiver write needs elevation like any other
-        // OC write — the non-elevated app delegates to the elevated worker.
+        // OC write - the non-elevated app delegates to the elevated worker.
         if (applyRunner?.needsWorker?.()) {
           await applyRunner.waiverAccept(deviceId);
-          // S2: the worker accepted on the driver — mirror the acceptance
+          // S2: the worker accepted on the driver - mirror the acceptance
           // into the parent's in-memory flag so getCapabilities/waiver-get
           // reflect it for the whole session (the worker's state is not
           // visible across the boundary).
@@ -728,7 +733,7 @@ export function createIpcHandlers({
         }
       },
 
-      // M3-A: the registry-hacks catalog (Tweaks page) — read-side only.
+      // M3-A: the registry-hacks catalog (Tweaks page) - read-side only.
       // Real reg.exe queries in the product path (no elevation); the default
       // adapter is the MOCK so tests and --ui-verify never touch the real
       // registry. The M3-B apply channel is 'registry-apply'.
@@ -740,9 +745,9 @@ export function createIpcHandlers({
       // M3-B: apply one catalog action ELEVATED (Enable/Disable/Revert per
       // the entry's apply descriptor). The default adapter is the MOCK
       // (never spawns PowerShell, never elevates); ipc.js injects the real
-      // adapter in the product path — every write then runs in an elevated
+      // adapter in the product path - every write then runs in an elevated
       // PowerShell (one UAC per action) and the result reports per-step
-      // truth (including the UAC-cancel and partial-failure paths — no
+      // truth (including the UAC-cancel and partial-failure paths - no
       // silent partial state, no auto-revert). The entry's apply descriptor
       // is resolved HERE from the catalog: the renderer supplies only
       // entryId + action, never raw commands.
@@ -758,7 +763,7 @@ export function createIpcHandlers({
 
       // Run-key (start-with-windows / apply-at-boot) state (M2b/M4-D2).
       // startup.set writes the HKCU Run value ONLY on an explicit user
-      // click (unelevated reg.exe — zero UAC); the default adapter is the
+      // click (unelevated reg.exe - zero UAC); the default adapter is the
       // MOCK so tests/ui-verify never touch the real registry.
       'startup-get': async (...args) => {
         assertNoPayload(args, 'startup-get');
@@ -778,7 +783,7 @@ export function createIpcHandlers({
         };
       },
 
-      // M4-D2: enable/disable the HKCU Run value (the bare "<exe>" — no
+      // M4-D2: enable/disable the HKCU Run value (the bare "<exe>" - no
       // profile id, no tasks, no elevation). Validates the boolean and
       // returns the composed state (same derivation as startup-get).
       'startup-set': async (enabled) => {
@@ -795,7 +800,7 @@ export function createIpcHandlers({
         assertNoPayload(args, 'sysinfo:get');
         // Defensive: the adapter shape ({ get }) is the contract, but the
         // raw result would be a silent-empty CPU card if ever passed
-        // directly (the M4-D product bug) — accept both.
+        // directly (the M4-D product bug) - accept both.
         return typeof sysinfo.get === 'function' ? sysinfo.get() : sysinfo;
       },
 
@@ -818,11 +823,11 @@ export function createIpcHandlers({
         await windowOps.close();
       },
 
-      // M4-H (D1): the sidebar GitHub link — open a URL in the default
+      // M4-H (D1): the sidebar GitHub link - open a URL in the default
       // browser via the injected shell.openExternal op. STRICT validation
       // (S3): new URL() + protocol https: + hostname github.com + the
       // pathname is exactly '/YamsSE/Arc-Power' or a '/YamsSE/Arc-Power/'
-      // prefix — NEVER a string-prefix check (host-boundary tricks like
+      // prefix - NEVER a string-prefix check (host-boundary tricks like
       // 'github.com.evil.example' or 'github.com@evil.example' must fail).
       'open-external': async (url) => {
         if (typeof url !== 'string' || url.length === 0) {
@@ -844,7 +849,7 @@ export function createIpcHandlers({
       },
 
       // Display-driver registry date (M2b-B, read-only): never touches the
-      // registry in mock mode — the default adapter returns the fixture.
+      // registry in mock mode - the default adapter returns the fixture.
       'driver-info': async (...args) => {
         assertNoPayload(args, 'driver-info');
         return driverInfo.get();
@@ -858,10 +863,10 @@ export function createIpcHandlers({
         return { version: appVersion };
       },
 
-      // M4-E (build kind, read-only): which distribution this process is —
-      // 'installed' (packaged, no PORTABLE_EXECUTABLE_DIR — the elevated
+      // M4-E (build kind, read-only): which distribution this process is -
+      // 'installed' (packaged, no PORTABLE_EXECUTABLE_DIR - the elevated
       // ArcPowerBootApply task story), 'portable' (the portable wrapper set
-      // PORTABLE_EXECUTABLE_DIR — unelevated in-app applies), or 'dev' (the
+      // PORTABLE_EXECUTABLE_DIR - unelevated in-app applies), or 'dev' (the
       // dev tree / tests). The Settings card's start-with-Windows hint text
       // differentiates by it. The default is 'dev' (tests); main.js injects
       // the real kind.
@@ -870,7 +875,7 @@ export function createIpcHandlers({
         return { kind: buildKind };
       },
 
-      // M2C-C elevation state (read-only, cached koffi probe — no spawn):
+      // M2C-C elevation state (read-only, cached koffi probe - no spawn):
       // `elevated` = this process runs as administrator; `workerApply` =
       // applies go through the elevated self-worker (product path, not
       // elevated). The renderer uses `workerApply` to show the
@@ -881,7 +886,7 @@ export function createIpcHandlers({
         return { elevated, workerApply: applyRunner?.needsWorker?.() === true };
       },
 
-      // FPS via DXGI GetFrameStatistics (M4-D2 — replaced PresentMon). The
+      // FPS via DXGI GetFrameStatistics (M4-D2 - replaced PresentMon). The
       // default adapter is the mock (always null); the product path injects
       // the real DXGI adapter, which itself degrades to null when DXGI is
       // unavailable. Never throws.
@@ -890,10 +895,10 @@ export function createIpcHandlers({
         return fpsAdapter.poll(deviceId);
       },
 
-      // M4-D2 (user): Monitoring "Log to file" — append one CSV line for a
+      // M4-D2 (user): Monitoring "Log to file" - append one CSV line for a
       // full telemetry sample (the pushed sample incl. the 4 system-stats
       // fields + fps). The payload is validated as a plain object; the
-      // writer appends the line (header on first open) and never throws —
+      // writer appends the line (header on first open) and never throws -
       // IO errors are reported as { ok: false, error } so the renderer can
       // show an honest note instead of a crash.
       'monitor-log-append': async (sample) => {
@@ -906,7 +911,7 @@ export function createIpcHandlers({
       // Profiles (M2b-B). Every channel returns the full envelope
       // { profiles, settings } so the renderer can re-render from one
       // response. `settings` mirrors ProfileStore.loadSettings() (the
-      // persisted ocOnBoot / activeProfileId — the Run-key truth lives in
+      // persisted ocOnBoot / activeProfileId - the Run-key truth lives in
       // startup-get). Payloads are validated before touching the store.
       'profiles-list': async (...args) => {
         assertNoPayload(args, 'profiles-list');
@@ -920,7 +925,7 @@ export function createIpcHandlers({
         if (typeof profile.id !== 'string' || profile.id.length === 0) {
           throw new Error('profiles-save: id must be a non-empty string');
         }
-        // M2b review F6: profile ids become Run-key values (startup-set) —
+        // M2b review F6: profile ids become Run-key values (startup-set) -
         // whitespace would silently break the startup-get round trip.
         if (!/^\S+$/.test(profile.id)) {
           throw new Error('profiles-save: id must not contain whitespace');
@@ -969,7 +974,7 @@ export function createIpcHandlers({
       // Settings-tab fields). Read-modify-write in main so the renderer can
       // never clobber waiverAccepted. M4-D2 (plan F4 / review F1): THIS
       // handler is the ONLY writer of the HKCU Run value (via the startup
-      // adapter) — every settings save re-derives the value from the MERGED
+      // adapter) - every settings save re-derives the value from the MERGED
       // intent (startWithWindows || (ocOnBoot && an active profile)), so a
       // missing/externally-deleted value self-heals on the next save.
       // One reg.exe call per save; a registry failure degrades to the
@@ -977,7 +982,7 @@ export function createIpcHandlers({
       // mismatch hint surfaces the disagreement until the next save
       // re-derives). The value write lands BEFORE the settings save: a
       // partial failure (save threw) leaves the registration ahead of the
-      // intent — the renderer's catch re-queries startup-get and the
+      // intent - the renderer's catch re-queries startup-get and the
       // mismatch hint explains the disagreement honestly.
       'profiles-settings-save': async (patch) => {
         if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
@@ -996,7 +1001,7 @@ export function createIpcHandlers({
           // touched by the profiles patch either.
           advancedModeAccepted: cur.advancedModeAccepted,
           // M4-D: the Settings-tab fields (startWithWindows/startMinimized)
-          // — the Settings page persists them through this channel (absent
+          // - the Settings page persists them through this channel (absent
           // -> keep the current value, same read-modify-write rule).
           startWithWindows: patch.startWithWindows === undefined
             ? cur.startWithWindows
@@ -1012,13 +1017,13 @@ export function createIpcHandlers({
             ? cur.monitorLogToFile
             : patch.monitorLogToFile === true,
           // M4-F (S3): the persisted GPU selection is NEVER chosen by the
-          // profiles patch — the envelope carries it read-modify-write so
+          // profiles patch - the envelope carries it read-modify-write so
           // a Settings/Profiles save can never clobber device-set's write
           // (normalized like the store: non-negative integers or null).
           deviceId: Number.isInteger(cur.deviceId) && cur.deviceId >= 0 ? cur.deviceId : null,
           // 1.0.1 Themes (M4): the persisted UI theme rides the envelope
           // read-modify-write like the rest. An INVALID patch.theme keeps
-          // the CURRENT theme — never a silent reset to 'dark' (the store
+          // the CURRENT theme - never a silent reset to 'dark' (the store
           // fallback stays 'dark' for absent fields on old files, but a
           // garbage patch must not blow away the user's choice).
           theme: patch.theme === undefined
@@ -1027,7 +1032,7 @@ export function createIpcHandlers({
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
-        // false — one reg.exe call per save, mock-safe). A registry failure
+        // false - one reg.exe call per save, mock-safe). A registry failure
         // degrades to the honest save envelope below (never a failed save).
         try {
           await startup.set(
@@ -1067,7 +1072,7 @@ export function createIpcHandlers({
       },
 
       // M4-B (user): the Advanced OC Mode warning is accepted ONCE and
-      // persisted — the renderer shows the disclaimer only on the FIRST
+      // persisted - the renderer shows the disclaimer only on the FIRST
       // Stock->Advanced toggle and skips it on every later boot. There is
       // no revoke path (nothing resets the acceptance), mirroring the
       // waiver's persisted-acceptance pattern.
@@ -1095,7 +1100,7 @@ export function createIpcHandlers({
     };
 
     // M2D: the mock-featureset channels exist ONLY in mock mode (mock ctx
-    // injected by ipc.js/main.js). Real mode has no such channel — invoking
+    // injected by ipc.js/main.js). Real mode has no such channel - invoking
     // it rejects with the honest "No handler registered" 404.
     if (mock) {
       handlers['mock:list-featuresets'] = async (...args) => {
@@ -1110,7 +1115,7 @@ export function createIpcHandlers({
       };
       // M4-D2: the boot-apply flow probe. mock.runBootApply runs the REAL
       // window-path boot apply (applyRunner-less, defaults-fallback
-      // skipped — the exact unelevated-boot semantics) and records the
+      // skipped - the exact unelevated-boot semantics) and records the
       // outcome in the mock apply log; ui-verify asserts the log records
       // the active profile with no refusal.
       if (typeof mock.runBootApply === 'function') {

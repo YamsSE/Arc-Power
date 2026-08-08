@@ -1,4 +1,4 @@
-// Arc Power — M2C-C elevation-aware apply orchestration (electron-free).
+// Arc Power - M2C-C elevation-aware apply orchestration (electron-free).
 //
 // The elevation gate (docs/igcl-integration.md §8c): OC writes persist ONLY
 // from an elevated client. A non-elevated app therefore delegates every OC
@@ -11,7 +11,7 @@
 //   request file  (JSON): { requestId, op: 'apply'|'waiver-accept'|'reset',
 //                           deviceId, settings?, profileName?,
 //                           waiverAccepted? }
-//   token file    (JSON): { requestId, expiresAt } — written by the parent
+//   token file    (JSON): { requestId, expiresAt } - written by the parent
 //                           BEFORE the request file; the parent-owned
 //                           timeout marker the startup sweep + the worker's
 //                           stale-token guard key off.
@@ -26,21 +26,21 @@
 //     apply via the injected executor.
 //
 // Orphan policy (worker timeout): killing the PowerShell wrapper does NOT
-// kill the elevated electron worker — it may still perform the apply and
+// kill the elevated electron worker - it may still perform the apply and
 // write the result file after the parent reported APPLY_CANCELED_ERROR.
 // Mitigations:
-//   - the parent removes its request + token files on timeout — a worker
+//   - the parent removes its request + token files on timeout - a worker
 //     that has not yet read the request then fails honestly ("request
 //     unreadable") instead of silently applying;
 //   - the result file is NEVER unlinked while the worker may still write it
-//     (removed only after a successful read or a visible worker exit) — no
+//     (removed only after a successful read or a visible worker exit) - no
 //     torn-write race, no stray file from a late write;
 //   - the parent-owned token expires `tokenTtlMs` after spawning; the next
 //     app start sweeps expired request/result/token triples, and a worker
 //     that starts into a directory holding an EXPIRED token refuses to run
 //     (the parent already gave up);
 //   - a worker already mid-apply when the parent gives up completes its
-//     write and its result file records the truth — a bounded, documented
+//     write and its result file records the truth - a bounded, documented
 //     orphan, cleaned by the next startup sweep.
 //
 // Electron-free so the worker contract is unit-testable under node --test
@@ -63,13 +63,13 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
 /**
  * Build the PowerShell launch line that starts OUR executable elevated and
  * waits for it: Start-Process -Verb RunAs -Wait -PassThru, propagating the
- * worker's exit code. UAC decline makes Start-Process fail (exit 1) — the
+ * worker's exit code. UAC decline makes Start-Process fail (exit 1) - the
  * parent then finds no result file and reports the honest cancellation.
  *
  * Dev mode (`electron .`): process.execPath is electron.exe and the app
  * path must ride along. Quoting trap (found live at CP3a): passing a
  * space-containing app path through Start-Process -ArgumentList hangs
- * electron's own CLI parsing — the app path is therefore passed as '.'
+ * electron's own CLI parsing - the app path is therefore passed as '.'
  * with -WorkingDirectory pointing at the app dir (no spaces in the arg
  * list); the packaged portable EXE needs no app path at all.
  * @param {string} execPath absolute path of our executable
@@ -89,7 +89,7 @@ export function buildWorkerLaunch(execPath, appPath, reqPath, outPath) {
 
 /**
  * Write a JSON file (atomic-ish: temp + rename not needed for the worker
- * contract — the parent reads only AFTER the spawn returned; a torn write
+ * contract - the parent reads only AFTER the spawn returned; a torn write
  * would fail the parse and surface as an honest error).
  */
 export async function writeJsonFile(filePath, value) {
@@ -109,7 +109,7 @@ async function unlinkIfExists(filePath) {
 /**
  * Fresh-startup sweep of stale worker files (a crashed/killed parent's
  * leftovers). Safety rule: a request/result file is removed ONLY when its
- * parent-owned token is expired (the parent gave up) — a live request's
+ * parent-owned token is expired (the parent gave up) - a live request's
  * fresh token is never touched. Request/result files WITHOUT a token are
  * old-format garbage and are removed once older than the token TTL. Expired
  * tokens are removed even when their request/result files are gone.
@@ -122,7 +122,7 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
   try {
     files = await fs.promises.readdir(dir);
   } catch {
-    return 0; // no dir yet — nothing to sweep
+    return 0; // no dir yet - nothing to sweep
   }
   let removed = 0;
   const reqIds = new Set();
@@ -143,7 +143,7 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
     } catch {
       // The parent always COMPLETES its token write before writing the
       // request file (runWorker order), so an existing-but-unreadable token
-      // is a torn-write leftover — the parent's apply already failed and no
+      // is a torn-write leftover - the parent's apply already failed and no
       // worker was spawned for it. Treat it as expired-and-removable (N2)
       // instead of letting it linger forever.
       try {
@@ -166,7 +166,7 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
         try {
           const st = await fs.promises.stat(path.join(dir, f));
           if (now - st.mtimeMs > tokenTtlMs) removed += await unlinkIfExists(path.join(dir, f));
-        } catch { /* absent — nothing to remove */ }
+        } catch { /* absent - nothing to remove */ }
       }
     }
   }
@@ -180,7 +180,7 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
       remove = typeof tok.expiresAt === 'number' && tok.expiresAt < now;
     } catch {
       // Unreadable/partial token with no siblings: nothing will ever parse
-      // it and no request depends on it — remove it (N2).
+      // it and no request depends on it - remove it (N2).
       remove = true;
     }
     if (remove) removed += await unlinkIfExists(path.join(dir, f));
@@ -221,19 +221,19 @@ export function createApplyRunner({
   log = () => {},
 } = {}) {
   const elevated = isElevated();
-  log(`[apply-runner] process is ${elevated ? 'ELEVATED' : 'not elevated'} — ${elevated ? 'in-process apply' : 'elevated self-worker'}`);
+  log(`[apply-runner] process is ${elevated ? 'ELEVATED' : 'not elevated'} - ${elevated ? 'in-process apply' : 'elevated self-worker'}`);
   const spawn = spawnFn ?? nodeSpawn;
 
   async function runWorker(req) {
     const dir = tmpdir();
-    // M2: request/result/token files are keyed by the SAME requestId — a
+    // M2: request/result/token files are keyed by the SAME requestId - a
     // paired cleanup story + the sweep's identity.
     const rid = req.requestId ?? randomUUID();
     const reqPath = path.join(dir, `arcpower-req-${rid}.json`);
     const outPath = path.join(dir, `arcpower-out-${rid}.json`);
     const tokPath = path.join(dir, `arcpower-tok-${rid}.json`);
     // M2: fresh-startup sweep of a crashed parent's leftovers. Only files
-    // whose parent-owned token expired are removed — a live request's fresh
+    // whose parent-owned token expired are removed - a live request's fresh
     // token keeps its files untouched.
     await sweepStaleWorkerFiles(dir, { tokenTtlMs });
     // M2: the parent-owned token (written BEFORE the request file) marks
@@ -259,7 +259,7 @@ export function createApplyRunner({
           resolve();
         };
         const timer = setTimeout(() => {
-          log('[apply-runner] elevated worker TIMED OUT — killing');
+          log('[apply-runner] elevated worker TIMED OUT - killing');
           killed = true;
           try { child.kill(); } catch { /* best effort */ }
           done(null);
@@ -283,8 +283,8 @@ export function createApplyRunner({
       //  - req + token are always removed: a late worker that has not yet
       //    read the request then fails honestly instead of silently applying;
       //  - the result file is NEVER unlinked while the worker may still
-      //    write it — removed only after a successful read (result set), a
-      //    visible worker exit (killed === false — the wrapper's -Wait only
+      //    write it - removed only after a successful read (result set), a
+      //    visible worker exit (killed === false - the wrapper's -Wait only
       //    returns after the worker exited), or a failed spawn (the worker
       //    never started). A killed wrapper's elevated worker may still be
       //    writing, so its out file is left for the next startup sweep.
@@ -314,7 +314,7 @@ export function createApplyRunner({
       }
       // S2: the parent-side waiver flag rides in the request so the worker
       // restores it into its own in-memory state (apply-worker.js).
-      // M3-C-E: the parent-side ocMode rides too — the worker's own backend
+      // M3-C-E: the parent-side ocMode rides too - the worker's own backend
       // always reports extendedRanges, so ITS refusal gate is keyed on the
       // request's ocMode (a caps-keyed gate there would silently clamp).
       const { result } = await runWorker({
@@ -331,7 +331,7 @@ export function createApplyRunner({
       return { worker: true, result: { ok: result.ok === true, perControl: result.perControl ?? {} }, state: result.state ?? null };
     },
     /**
-     * Accept the warranty waiver (elevated — the driver-side waiver write
+     * Accept the warranty waiver (elevated - the driver-side waiver write
      * needs the same elevation as any other OC write).
      * @param {number} deviceId
      */
@@ -347,7 +347,7 @@ export function createApplyRunner({
       return { ok: true };
     },
     /**
-     * Reset to defaults (elevated — 0-value writes are refused even
+     * Reset to defaults (elevated - 0-value writes are refused even
      * elevated, so cleanup runs ctlOverclockResetToDefault).
      * @param {number} deviceId
      */

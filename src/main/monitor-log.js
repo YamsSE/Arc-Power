@@ -1,9 +1,9 @@
-// Arc Power — M4-D2 Monitoring log-to-file writer (electron-free).
+// Arc Power - M4-D2 Monitoring log-to-file writer (electron-free).
 //
 // Appends one CSV line per telemetry sample to
 //   <Documents>\Arc Power\monitor-YYYYMMDD.csv
 // The header row is written on the first open of each file. IO errors are
-// reported as { ok: false, error } — the app NEVER crashes on a log write.
+// reported as { ok: false, error } - the app NEVER crashes on a log write.
 // The env knob RID_MOCK_LOG_DIR redirects the directory (ui-verify writes
 // to a temp dir instead of the real Documents).
 
@@ -38,7 +38,7 @@ export function formatLogLine(sample) {
 
 /**
  * The writer: one line per append, the header on the first open of the
- * day's file. Never throws — every IO failure degrades to { ok: false }.
+ * day's file. Never throws - every IO failure degrades to { ok: false }.
  * @param {{
  *   dir?: string,          // default: RID_MOCK_LOG_DIR ?? <Documents>\Arc Power
  *   getDocumentsDir?: () => string,  // injectable (tests/electron)
@@ -62,7 +62,7 @@ export function createMonitorLog(deps = {}) {
 
   return {
     /**
-     * Append one sample line. { ok: false, error } on IO failure — never
+     * Append one sample line. { ok: false, error } on IO failure - never
      * throws.
      * @param {object} sample
      * @returns {Promise<{ ok: boolean, error?: string, file?: string }>}

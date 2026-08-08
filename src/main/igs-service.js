@@ -1,18 +1,18 @@
-// Arc Power — IntelGraphicsSoftwareService probe + control (M2a extension).
+// Arc Power - IntelGraphicsSoftwareService probe + control (M2a extension).
 //
 // The IGS service blocks OC writes (power/freq/temp) from other apps while it
 // runs (docs/igcl-integration.md §8a, verified both directions on the A770).
-// Verified rule (M2a.5): OC writes are refused in the IGS half-states — the
+// Verified rule (M2a.5): OC writes are refused in the IGS half-states - the
 // service running without the app, or the app running without the service;
 // fully-on (app + service) and fully-off both work. This module detects the
-// combined state (service via sc.exe, app process via tasklist — both
+// combined state (service via sc.exe, app process via tasklist - both
 // read-only, safe to run at boot) and exposes the disable/enable actions,
-// which spawn an ELEVATED helper via Start-Process -Verb RunAs — those run
+// which spawn an ELEVATED helper via Start-Process -Verb RunAs - those run
 // ONLY on an explicit user click from the renderer, never at boot and never
 // in mock mode.
 //
 // The parser is pure (no process calls) and unit-tested; the probes degrade
-// to "not detected" instead of throwing — the app must not go red because a
+// to "not detected" instead of throwing - the app must not go red because a
 // probe failed.
 
 import { execFile as nodeExecFile } from 'node:child_process';
@@ -26,12 +26,12 @@ const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershe
 const SERVICE_NAME = 'IntelGraphicsSoftwareService';
 // The IGS front-end app process (the WPF "Intel Graphics Software" app). The
 // verified rule (docs/igcl-integration.md §8a): OC writes are refused in the
-// half-states — service running without the app, or app running without the
+// half-states - service running without the app, or app running without the
 // service; fully-on (app + service) and fully-off both work.
 const APP_PROCESS_NAME = 'IntelGraphicsSoftware.exe';
 // sc.exe exit code for "The specified service does not exist".
 const ERROR_SERVICE_DOES_NOT_EXIST = 1060;
-// Win32 ERROR_CANCELLED — the locale-independent marker of a declined UAC
+// Win32 ERROR_CANCELLED - the locale-independent marker of a declined UAC
 // prompt (Start-Process -Verb RunAs failure / sc failure surface it).
 const ERROR_CANCELLED_CODE = 1223;
 // Every sc.exe probe gets a hard timeout: a hung sc would otherwise stall
@@ -70,7 +70,7 @@ const START_TYPE_MAP = {
  * Parse `sc query` / `sc qc` output into a service state. Robust against
  * whitespace, CRLF and stderr noise; never throws.
  * @param {string} stdout output of `sc query` + `sc qc` (either may be absent)
- * @param {string} [stderr] ignored — kept for signature symmetry
+ * @param {string} [stderr] ignored - kept for signature symmetry
  * @param {number} [exitCode] sc.exe exit code; 1060 => service does not exist
  * @returns {{ found: boolean, running: boolean, startType: 'auto'|'manual'|'disabled'|'unknown' }}
  */
@@ -99,7 +99,7 @@ function matchFieldLine(text, field) {
 
 /**
  * A state value is "running" when it is RUNNING or one of the pending states
- * (START_PENDING/STOP_PENDING — the process is still enforcing while pending).
+ * (START_PENDING/STOP_PENDING - the process is still enforcing while pending).
  * @param {string} line e.g. "4  RUNNING" / "1 STOPPED" / "2 START_PENDING"
  */
 function parseRunning(line) {
@@ -159,7 +159,7 @@ export function parseTasklistCsvLine(line) {
 /**
  * Parse `tasklist /FO CSV /NH` output: true when a row's image-name field is
  * the IGS app process. Rows look like `"IntelGraphicsSoftware.exe","12345",
- * "Console","1","10,432 K"`. Empty output (no matching tasks — tasklist
+ * "Console","1","10,432 K"`. Empty output (no matching tasks - tasklist
  * prints only an INFO line, or nothing at all) is NOT running; garbage input
  * never throws. Case-insensitive on the image name (tasklist reports the
  * name as typed, but the comparison must not depend on that).
@@ -185,7 +185,7 @@ export function parseTasklistCsv(output) {
 
 /**
  * Run one sc.exe invocation; never throws. Returns the exit code (null when
- * the process could not be spawned at all, and for timeouts — both treated
+ * the process could not be spawned at all, and for timeouts - both treated
  * as a degraded probe). A hung sc.exe is killed after `timeoutMs` instead of
  * stalling the boot probe forever.
  */
@@ -206,7 +206,7 @@ async function runSc(args, exec = execFile, timeoutMs = SC_PROBE_TIMEOUT_MS) {
 
 /**
  * Probe whether the IGS app process is running via tasklist (read-only, no
- * elevation). Never throws — a spawn failure, non-zero exit or timeout all
+ * elevation). Never throws - a spawn failure, non-zero exit or timeout all
  * degrade to `false` (not running) so the probe can never stall boot.
  * `execFile` and `timeoutMs` are injectable for unit tests only.
  * @param {typeof execFile} [exec]
@@ -230,13 +230,13 @@ async function probeTasklist(exec = execFile, timeoutMs = SC_PROBE_TIMEOUT_MS) {
 }
 
 /**
- * Current IGS state — service part (from `sc query`/`sc qc`) plus whether
- * the IGS app process is running (from tasklist). Never throws — network/
+ * Current IGS state - service part (from `sc query`/`sc qc`) plus whether
+ * the IGS app process is running (from tasklist). Never throws - network/
  * parse/spawn/timeout failures degrade to
  * `{ service: { found: false, running: false, startType: 'unknown' },
  *   appRunning: false }`. The tasklist failure degrades the app part only
  * (appRunning: false), never the service part.
- * The three probes are independent and read-only — they run CONCURRENTLY
+ * The three probes are independent and read-only - they run CONCURRENTLY
  * (Promise.all) so the worst-case stall is ONE probe timeout (10 s), not
  * three sequential ones (30 s).
  * `execFile` and `probeTimeoutMs` are injectable for unit tests only.
@@ -250,7 +250,7 @@ export async function getIgsServiceState({ execFile: exec = execFile, probeTimeo
       runSc(['qc', SERVICE_NAME], exec, probeTimeoutMs),
       probeTasklist(exec, probeTimeoutMs),
     ]);
-    // A degraded sc probe degrades the WHOLE state to default — the
+    // A degraded sc probe degrades the WHOLE state to default - the
     // tasklist result is ignored so the fallback stays identical to the
     // sequential probe behavior.
     if (query.degraded || qc.degraded) return { service: { ...DEGRADED_STATE.service }, appRunning: false };
@@ -267,7 +267,7 @@ export async function getIgsServiceState({ execFile: exec = execFile, probeTimeo
 }
 
 // ---------------------------------------------------------------------------
-// Elevation (disable/enable — explicit user action ONLY)
+// Elevation (disable/enable - explicit user action ONLY)
 // ---------------------------------------------------------------------------
 
 /**
@@ -296,7 +296,7 @@ export function buildElevatedScript(configValue, withStart) {
  * the user's machine), propagating the elevated script's exit code. A UAC
  * decline makes Start-Process fail with -ErrorAction Stop -> exit 1.
  * The launcher uses the module's absolute POWERSHELL_EXE constant (never
- * PATH-resolved 'powershell.exe') — PATH is not a trust boundary to rely on
+ * PATH-resolved 'powershell.exe') - PATH is not a trust boundary to rely on
  * at the elevation boundary.
  * Exported for unit-testing the argument quoting without executing it.
  */
@@ -310,7 +310,7 @@ export function buildElevatedLaunch(script) {
 /**
  * Pure classification of an elevated-helper failure. Returns the spec string
  * `elevation declined or timed out` when the failure is a UAC decline or a
- * timeout — decline signatures: process killed by the timeout, the
+ * timeout - decline signatures: process killed by the timeout, the
  * locale-independent ERROR_CANCELLED exit code (1223), the English and
  * localized "canceled by the user" messages, and the RunAs "requires
  * elevation" failure (no desktop session can show a prompt). A spawn failure
@@ -332,13 +332,13 @@ export function classifyElevationError(err) {
 /**
  * Run an elevated action. Returns `{ ok: true }` on success; UAC
  * decline/timeout surface as `{ ok: false, error: 'elevation declined or
- * timed out' }` — never a crash. Other non-zero exits (e.g. the service does
+ * timed out' }` - never a crash. Other non-zero exits (e.g. the service does
  * not exist) report the exit code so the UI can still toast an error.
  * @returns {Promise<{ ok: boolean, error?: string }>}
  */
 export async function runElevatedCommand(script, { execFile: exec = execFile, timeoutMs = 120000 } = {}) {
   try {
-    // promisified execFile resolves ONLY on exit 0 — any non-zero exit
+    // promisified execFile resolves ONLY on exit 0 - any non-zero exit
     // rejects into the catch below. Success must not depend on a resolved
     // `code` field (promisify(execFile) resolves `{ stdout, stderr }`).
     await exec(POWERSHELL_EXE, ['-NoProfile', '-Command', buildElevatedLaunch(script)], {
@@ -372,7 +372,7 @@ export async function enableIgsService() {
 // ---------------------------------------------------------------------------
 
 /**
- * Real service adapter — injected into the IPC handlers in the product path.
+ * Real service adapter - injected into the IPC handlers in the product path.
  */
 export function createIgs() {
   return {
@@ -383,12 +383,12 @@ export function createIgs() {
 }
 
 /**
- * Mock adapter — used whenever the app runs in mock mode (tests, --ui-verify,
+ * Mock adapter - used whenever the app runs in mock mode (tests, --ui-verify,
  * RID_BACKEND=mock). Reads RID_MOCK_IGS_RUNNING and RID_MOCK_IGS_APP at
  * construction: anything other than "0" reports the service running
  * (startType 'auto', matching this machine) / the app process running.
  * Default mock = fully on (service + app). disable/enable flip ONLY the
- * service part — no elevation, no service, no spawned process.
+ * service part - no elevation, no service, no spawned process.
  */
 export function createMockIgs(initialRunning = process.env.RID_MOCK_IGS_RUNNING, initialApp = process.env.RID_MOCK_IGS_APP) {
   let running = initialRunning !== '0';

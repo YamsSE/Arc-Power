@@ -1,4 +1,4 @@
-// Arc Power — M2C-C per-control runtime routing (the shared apply core).
+// Arc Power - M2C-C per-control runtime routing (the shared apply core).
 //
 // One apply can need BOTH runtimes: values within the DriverStore range
 // (PL <= 252 W, TL <= 90 C) go through the DriverStore runtime (the regular
@@ -12,7 +12,7 @@
 // re-read ONCE after ~400 ms; a match on the delayed read is a real
 // persisted write, anything else is an honest per-control failure.
 //
-// Electron-free — shared by the UI apply path, the tray/boot applies and
+// Electron-free - shared by the UI apply path, the tray/boot applies and
 // the elevated apply-worker.
 
 import { applyOnce } from './apply-once.js';
@@ -23,26 +23,26 @@ export const STD_PL_MAX_W = 252;
 export const STD_TL_MAX_C = 90;
 
 // ---------------------------------------------------------------------------
-// M3-C-E — the OC-mode gate (STOCK | ADVANCED), ONE shared pure function.
+// M3-C-E - the OC-mode gate (STOCK | ADVANCED), ONE shared pure function.
 //
 // The gate is an explicit PRE-CLAMP REFUSAL, never a clamp, and it is
 // independent of the caps cache (the worker's own backend always reports
-// extendedRanges — a caps-keyed gate there would silently clamp, exactly
+// extendedRanges - a caps-keyed gate there would silently clamp, exactly
 // the forbidden behavior). It is keyed on the persisted ocMode + the STD
 // limits (unit-aware since M4-E: percent-unit ranges are never extended
-// values — see ocModeRefusal) and is called BEFORE every clamp in:
+// values - see ocModeRefusal) and is called BEFORE every clamp in:
 //   - ipc-core 'apply-settings'
 //   - applyProfile / apply-on-boot (boot + tray)
 //   - apply-worker (the request file carries ocMode)
 //
-// M3-C step-5 F1: a SECOND refusal gate sits after it — the capability
+// M3-C step-5 F1: a SECOND refusal gate sits after it - the capability
 // refusal (extendedUnavailableRefusal). The mode gate ALLOWS PL > 252 /
 // TL > 90 in advanced mode, but the value is only writable through the
 // bundled 2023 runtime; when that runtime cannot load on the current
 // driver (the future-driver degradation EXTENDED_UNAVAILABLE_MSG exists
 // for), the clamp layer would silently cap to 252 W / 90 C and report
-// ok:true — a false success claim. The capability refusal keys on
-// caps.extendedRanges (NOT on the mode — a mode-keyed version would be
+// ok:true - a false success claim. The capability refusal keys on
+// caps.extendedRanges (NOT on the mode - a mode-keyed version would be
 // exactly the forbidden caps-keyed gate): the capability probe is
 // identical on both sides of the worker boundary (the worker's backend
 // derives caps from the same isCapable probe), so it is honest in every
@@ -51,7 +51,7 @@ export const STD_TL_MAX_C = 90;
 //   - ipc-core 'apply-settings'
 //   - apply-worker
 //   - applyProfile / apply-on-boot (boot + tray)
-//   - executeApply (apply-routing — the safety net for direct callers)
+//   - executeApply (apply-routing - the safety net for direct callers)
 // ---------------------------------------------------------------------------
 
 export const OC_MODE_STOCK = 'stock';
@@ -70,11 +70,11 @@ export const OC_CEILING_REFUSAL_MSG =
  * current mode, else the refusal descriptor { mode, controls, message }.
  * - stock:    any PL > STD_PL_MAX_W (252) or TL > STD_TL_MAX_C (90) refuses
  *             with the mode message;
- * - advanced: PL/TL up to the EXTENDED ceiling (315 W / 115 C — the live-verified KMD ceiling) are allowed;
- *             values above it refuse with the ceiling message — NEVER
+ * - advanced: PL/TL up to the EXTENDED ceiling (315 W / 115 C - the live-verified KMD ceiling) are allowed;
+ *             values above it refuse with the ceiling message - NEVER
  *             clamped (an above-ceiling write would be silently capped by
- *             the clamp layer, voiding the user's 400 W probe — live 2026-08-06: 315 W is the ceiling).
- * M4-E: unit-aware like splitByRuntime / extendedUnavailableRefusal — when
+ *             the clamp layer, voiding the user's 400 W probe - live 2026-08-06: 315 W is the ceiling).
+ * M4-E: unit-aware like splitByRuntime / extendedUnavailableRefusal - when
  * the capability ranges are known and a control's units are NOT W/C
  * (percent-unit Battlemage mock: volt/PL/TL as %), the W/C thresholds do
  * not apply at all: percent units have no extended concept (their range max
@@ -82,7 +82,7 @@ export const OC_CEILING_REFUSAL_MSG =
  * e.g. a 100% temp limit is never "beyond the standard Intel limit" and a
  * stock-mode percent apply is never refused. The units probe is a device
  * property identical on both sides of the worker boundary (never the
- * extendedRanges flag — the caps-keyed mode gate the plan forbids stays
+ * extendedRanges flag - the caps-keyed mode gate the plan forbids stays
  * forbidden). Unknown ranges keep the historical threshold behavior.
  * @param {string} ocMode 'stock' | 'advanced'
  * @param {Record<string, unknown>} settings
@@ -125,20 +125,20 @@ export function refusalPerControl(refusal) {
 }
 
 // The per-control failure message when the old runtime cannot load on the
-// current driver (future-driver degradation — honest, never a silent cap).
+// current driver (future-driver degradation - honest, never a silent cap).
 export const EXTENDED_UNAVAILABLE_MSG =
   'extended power/temp limit requires the bundled 2023 IGCL runtime - it failed to load on this driver';
 
 /**
- * M3-C step-5 F1: advanced-mode CAPABILITY refusal — PL > 252 / TL > 90
+ * M3-C step-5 F1: advanced-mode CAPABILITY refusal - PL > 252 / TL > 90
  * requested while the bundled 2023 runtime is NOT capable on this driver
  * (caps.extendedRanges false). The OC-mode gate allows those values in
  * advanced mode; without this refusal the clamp layer would silently cap
- * them to 252 W / 90 C and report ok:true — a false success claim (and
+ * them to 252 W / 90 C and report ok:true - a false success claim (and
  * splitByRuntime never sees the value, so EXTENDED_UNAVAILABLE_MSG is
  * unreachable). The check is unit-aware (M2D): percent-unit ranges
  * (Battlemage mock) are never extended values. Keyed on the CAPABILITY,
- * never the mode — the capability probe is identical on both sides of the
+ * never the mode - the capability probe is identical on both sides of the
  * worker boundary, so this is a capability refusal, not the caps-keyed
  * mode gate the plan forbids.
  * @param {Record<string, unknown>} settings
@@ -162,7 +162,7 @@ export function extendedUnavailableRefusal(settings, caps) {
 }
 
 /**
- * Per-control failure entries for the extended-unavailable refusal — the
+ * Per-control failure entries for the extended-unavailable refusal - the
  * same 'unsupported' shape the old runtime reports itself (honest, no
  * read-back claim).
  * @param {string[]} controls
@@ -185,7 +185,7 @@ const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Split one Settings payload into the DriverStore-runtime part and the
  * extended (2023-runtime) part, per control. Null/absent values are dropped.
  *
- * M2D: the split is unit-aware — the 2023 runtime speaks W/C only. When the
+ * M2D: the split is unit-aware - the 2023 runtime speaks W/C only. When the
  * capability ranges are known and a control's units are NOT W/C (percent-unit
  * Battlemage mock: volt/PL/TL as %), a numerically large value (e.g. a 100%
  * temp limit) can never be an extended-range request: it goes to the
@@ -217,7 +217,7 @@ export function splitByRuntime(settings, ranges = null) {
  * the settings contain an extended-range value (PL > 252 W or TL > 90 C)
  * that needs the confirm dialog before applying. When `ranges` is given,
  * the check is unit-aware (M2D): percent-unit ranges (Battlemage mock) are
- * never extended — the real hardware path always passes W/C ranges.
+ * never extended - the real hardware path always passes W/C ranges.
  * @param {Record<string, unknown>} settings
  * @param {Record<string, { units?: string }>} [ranges]
  * @returns {boolean}
@@ -251,7 +251,7 @@ export function isMomentaryLieCandidate(per) {
  *
  * - driverstore controls: one instant attempt via applyOnce (the F3
  *   instant-apply core); any momentary-lie candidate is re-read once after
- *   `delayedVerifyMs` — a match upgrades the control to ok.
+ *   `delayedVerifyMs` - a match upgrades the control to ok.
  * - extended controls: routed to the bundled 2023 runtime (oldIgcl), which
  *   performs its own delayed verification. If the old runtime is not
  *   capable, the control fails honestly with EXTENDED_UNAVAILABLE_MSG.
@@ -299,7 +299,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
           const wanted = driverstore[key];
           const got = state[key];
           if (typeof wanted === 'number' && typeof got === 'number' && nearlyEqual(got, wanted)) {
-            log(`[apply] delayed re-read MATCHED ${key} (${got}) — write persisted`);
+            log(`[apply] delayed re-read MATCHED ${key} (${got}) - write persisted`);
             perControl[key] = { ok: true, readBackEqual: true };
           }
         }
@@ -350,7 +350,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
   // never touched) and no defaults-restore fallback runs downstream.
   const unavailable = extendedUnavailableRefusal(settings, caps);
   if (unavailable) {
-    log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) — nothing applied`);
+    log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
     let state = null;
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
     return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state };

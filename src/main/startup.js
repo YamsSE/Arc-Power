@@ -1,15 +1,15 @@
-// Arc Power — M4-D2 startup registration: the HKCU Run value ONLY.
+// Arc Power - M4-D2 startup registration: the HKCU Run value ONLY.
 //
 // M2b/M2C-C used scheduled tasks (onlogon /rl highest) for start-with-
-// Windows + apply-on-boot — every enable/disable UAC'd, and the user
+// Windows + apply-on-boot - every enable/disable UAC'd, and the user
 // declined, so "none of them work" (M4-D2 §12 root cause b). Tasks are
 // GONE. The ONLY registration is the HKCU Run value:
 //   HKCU\Software\Microsoft\Windows\CurrentVersion\Run\ArcPower = "<exe>"
-// via reg.exe — zero UAC, unelevated, HKCU-only.
+// via reg.exe - zero UAC, unelevated, HKCU-only.
 //
 // "Active" = the value exists. ONE value serves both toggles: the
 // Settings "Start with Windows" toggle and the Profiles "start at boot"
-// toggle both write it (the in-app boot apply handles the apply — the
+// toggle both write it (the in-app boot apply handles the apply - the
 // bare "<exe>" launch runs the UI, which applies the active profile at
 // boot when ocOnBoot is set). The startup adapter stays DUMB (raw
 // { valueExists, value }); ipc-core's startup-get composes the
@@ -31,7 +31,7 @@ export const REG_NOT_FOUND = 1;
 
 /**
  * The exact command-line value stored in the Run key: the bare quoted
- * executable — no --apply-profile (the app boots into the UI, which owns
+ * executable - no --apply-profile (the app boots into the UI, which owns
  * the boot apply).
  * @param {string} execPath absolute path of the executable (quoted)
  */
@@ -41,7 +41,7 @@ export function buildRunValue(execPath) {
 
 /**
  * Parse a stored Run value back into its parts (null when it is not an
- * Arc Power entry — i.e. not exactly the bare quoted executable).
+ * Arc Power entry - i.e. not exactly the bare quoted executable).
  * @param {string} value
  * @returns {{ execPath: string } | null}
  */
@@ -69,7 +69,7 @@ export function parseRegQuery(stdout, exitCode = 0) {
 /**
  * M4-D2 (packaged story): the Run value must survive a reboot. The
  * electron-builder PORTABLE exe extracts the app to a temp dir and spawns
- * it — `process.execPath` is that temp extraction, which is gone after a
+ * it - `process.execPath` is that temp extraction, which is gone after a
  * reboot. The stable logon target is the OUTER portable exe (the app's
  * parent process). When the parent's exe basename matches the portable
  * artifact naming (Arc-Power-*.exe), use the parent's path; otherwise
@@ -102,14 +102,14 @@ export async function resolveLogonExecPath(deps = {}) {
       return parent;
     }
   } catch {
-    // parent query failed — fall back to process.execPath
+    // parent query failed - fall back to process.execPath
   }
   return execPath;
 }
 
 /**
  * Real adapter (reg.exe via injectable execFile for tests). The Run value
- * is written/removed unelevated — NEVER any elevated helper, NEVER a UAC
+ * is written/removed unelevated - NEVER any elevated helper, NEVER a UAC
  * (M4-D2 hard constraint). The value points at the LOGON-STABLE executable
  * (M4-D2: the portable wrapper exe when packaged, else process.execPath).
  * @param {{
@@ -125,7 +125,7 @@ export function createStartup(deps = {}) {
     /**
      * The raw registry truth: whether our Run value exists and its value.
      * A query failure (absent value -> exit 1, or any other error)
-     * degrades to valueExists:false — the read is never a boot blocker.
+     * degrades to valueExists:false - the read is never a boot blocker.
      * @returns {Promise<{ valueExists: boolean, value: string | null }>}
      */
     async get() {
@@ -138,7 +138,7 @@ export function createStartup(deps = {}) {
       } catch (err) {
         if (err?.code === REG_NOT_FOUND) return { valueExists: false, value: null };
         // Any other query failure (reg.exe missing, key unreadable):
-        // degrade to absent — never fail the read.
+        // degrade to absent - never fail the read.
         return { valueExists: false, value: null };
       }
     },
@@ -168,7 +168,7 @@ export function createStartup(deps = {}) {
 }
 
 /**
- * In-memory fake — the default for tests, --ui-verify and mock mode;
+ * In-memory fake - the default for tests, --ui-verify and mock mode;
  * never touches the registry, never spawns anything.
  * @param {{ valueExists?: boolean }} [initial]
  */

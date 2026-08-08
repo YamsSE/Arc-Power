@@ -1,4 +1,4 @@
-// Arc Power — M1 backend interface (JSDoc contract).
+// Arc Power - M1 backend interface (JSDoc contract).
 //
 // The IOCBackend contract is the seam every backend implementation (IGCL
 // koffi, .NET sidecar later, mock) must satisfy. The .NET sidecar fallback
@@ -8,9 +8,9 @@
 //
 // Field/unit conventions (pinned for M1, see plan §6 + docs/igcl-integration.md §4):
 //   Settings/DeviceState/Capabilities carry CANONICAL units:
-//     W, V, MHz, C, GTS, % — never raw IGCL units.
+//     W, V, MHz, C, GTS, % - never raw IGCL units.
 //   The IgclBackend converts canonical <-> IGCL using the per-control
-//   capability units (V2 API contract) — never assumes mV/mW.
+//   capability units (V2 API contract) - never assumes mV/mW.
 
 /**
  * Apply intent for one device. A null/absent field = "leave the current
@@ -96,14 +96,14 @@
  *   driverVersion: string,
  *   graphicsClockMHz: number,
  *   numXeCores: number,
- *   vramBytes: number|null,  // M4-B: VRAM in bytes (null when unknown) — the
+ *   vramBytes: number|null,  // M4-B: VRAM in bytes (null when unknown) - the
  *                            // name already carries the formatted suffix
  * }} DeviceInfo
  */
 
 /**
  * One raw telemetry sample, mapped 1:1 from IGCL (nullable per field).
- * Power is NOT here — it is derived by TelemetryService from energy deltas.
+ * Power is NOT here - it is derived by TelemetryService from energy deltas.
  * @typedef {{
  *   t: number,
  *   gpuClockMhz?: number, memClockMhz?: number, tempC?: number,
@@ -146,11 +146,11 @@
  */
 
 /**
- * IOCBackend — the interface every backend implements.
+ * IOCBackend - the interface every backend implements.
  * All methods are async; deviceId is the stable index returned by
  * listDevices(). Implementations must never assume the caller's settings
  * are in range: clamp to capability ranges before applying, and verify by
- * read-back. Fan setters must only be invoked when canControl === true —
+ * read-back. Fan setters must only be invoked when canControl === true -
  * the EFFECTIVE value (properties.canControl || the M3-D reversible probe
  * result on canControl=false devices).
  *
@@ -162,12 +162,12 @@
  *   getCurrentSettings(deviceId: number): Promise<DeviceState>,
  *   applySettings(deviceId: number, s: Settings, opts?: { snapToStep?: boolean }): Promise<ApplyResult>,
  *   //   opts.snapToStep defaults to true (product applies snap to the
- *   //   capability step); false writes the value back exactly — reserved for
+ *   //   capability step); false writes the value back exactly - reserved for
  *   //   the smoke no-op round trip so an off-grid current value (e.g. the
  *   //   A770's 48.3 MHz offset) is written back unchanged.
  *   resetToDefaults(deviceId: number): Promise<void>,
  *   setWaiverAccepted(deviceId: number): Promise<void>,
- *   // Restore a persisted waiver acceptance into the IN-MEMORY flag ONLY —
+ *   // Restore a persisted waiver acceptance into the IN-MEMORY flag ONLY -
  *   // NEVER calls the driver (the contract distinction from
  *   // setWaiverAccepted, which is the only path that runs the driver-side
  *   // waiver set). Used for boot-time seeding (seedWaiverState) and for
@@ -216,7 +216,7 @@ export function igclErrorCode(code) {
     case 0x44000007: return 'reset-required';
     case 0x4400000e: return 'out-of-range'; // invalid custom VF curve
     case 0x4000000a: return 'unsupported';
-    // Invalid argument is a caller/driver contract violation — deterministic,
+    // Invalid argument is a caller/driver contract violation - deterministic,
     // never transient: classify as a HARD error (instant fail) in the F3 core.
     case 0x4000000b: return 'invalid-argument';
     default: return null;

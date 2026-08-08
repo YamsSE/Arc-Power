@@ -1,4 +1,4 @@
-// Arc Power — M1 headless smoke sequence.
+// Arc Power - M1 headless smoke sequence.
 //
 // Exercises the M1 acceptance path against the real A770 without a UI:
 // init -> discover runtime -> listDevices -> getCapabilities ->
@@ -10,12 +10,12 @@
 // Safety (hard rules):
 //   - never sets a value different from the current read-back;
 //   - reset only when a change was detected;
-//   - fan setters only when the EFFECTIVE canControl === true — M3-D: the
+//   - fan setters only when the EFFECTIVE canControl === true - M3-D: the
 //     A770's canControl=false property is a lie; the first caps read now
 //     triggers ONE reversible fan probe (write sample table + read-back +
 //     SetDefaultMode restore), so the packaged --headless smoke performs a
 //     single write+restore pair on the real card;
-//   - gpuLock is never written when the device reports dynamic (0,0) —
+//   - gpuLock is never written when the device reports dynamic (0,0) -
 //     writing 0,0 would switch lock modes (probe rule);
 //   - the waiver is accepted only under allowAutoWaiver (constructor flag
 //     set by the smoke entry point, never by product code).
@@ -32,10 +32,10 @@ export class SmokeFailure extends Error {}
 
 /**
  * @param {IOCBackend} backend
- * @param {{ log?: (s: string) => void, isElevated?: () => boolean }} opts —
+ * @param {{ log?: (s: string) => void, isElevated?: () => boolean }} opts -
  *   M4-D2: `isElevated` (default the real koffi probe) gates the no-op
  *   write round trips: unelevated on the real A770 the writes are refused
- *   (PL) or silently ignored (freq/fan) — the round trips would fail the
+ *   (PL) or silently ignored (freq/fan) - the round trips would fail the
  *   gate. When unelevated they are SKIPPED and reported as
  *   "skipped (unelevated)" lines; every other health line + the
  *   koffi/asar packaging checks stay intact; the exit-0 contract holds.
@@ -99,12 +99,12 @@ export async function runSmoke(backend, opts = {}) {
     let changedKeys = [];
 
     // M4-D2 (§13): unelevated no-op writes are refused (PL) or silently
-    // ignored (freq/fan) on the real A770 — a round trip would FAIL the
+    // ignored (freq/fan) on the real A770 - a round trip would FAIL the
     // gate. When unelevated, the write round trips are SKIPPED and
     // reported honestly (the read-back + telemetry + packaging checks
     // still run); the packaged gate stays exit 0.
     if (!isElevated()) {
-      step('noop', `no-op write round trips SKIPPED (unelevated — igcl writes refused/lie unelevated; see the M4-D2 report)`);
+      step('noop', `no-op write round trips SKIPPED (unelevated - igcl writes refused/lie unelevated; see the M4-D2 report)`);
       step('verify', 'write verification SKIPPED with the no-op round trips (unelevated)');
     } else {
       const noop = {};
@@ -112,22 +112,22 @@ export async function runSmoke(backend, opts = {}) {
         if (value === null || value === undefined) continue;
         // Safety: never write fan controls on a read-only fan (M3-D: the
         // probe already ran its single reversible write+restore inside the
-        // first getCapabilities — no further fan writes here), never write a
+        // first getCapabilities - no further fan writes here), never write a
         // vfCurve (write switches curve type), never write a dynamic (0,0)
         // gpuLock (would switch lock modes).
         if (['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].includes(key)) continue;
         if (key === 'gpuLock' && value.voltageV === 0 && value.freqMhz === 0) continue;
         // M2C-C: zero-valued OC scalars are refused by the driver by design
-        // (0x40000007 — verified; "0-value no-ops most refused"). A no-op round
+        // (0x40000007 - verified; "0-value no-ops most refused"). A no-op round
         // trip of the CURRENT state must not fail on values the driver refuses
         // to write at all, so zero-valued scalars are skipped (their absence
         // from the set is exactly what the honest refusal would report anyway).
         if (typeof value === 'number' && value === 0) continue;
-        // M3-D: a CURRENT state holding extended values (>252 W / >90 C — e.g.
+        // M3-D: a CURRENT state holding extended values (>252 W / >90 C - e.g.
         // the card is running a 300 W profile) cannot no-op round-trip through
         // the DriverStore runtime: it refuses them client-side (0x44000004).
         // Extended values are the old-2023-runtime domain, verified by the
-        // dedicated probes (M2C-C/M3-C) — the no-op covers the in-range set.
+        // dedicated probes (M2C-C/M3-C) - the no-op covers the in-range set.
         if (key === 'powerLimitW' && typeof value === 'number' && value > 252) continue;
         if (key === 'tempLimitC' && typeof value === 'number' && value > 90) continue;
         noop[key] = value;
@@ -157,7 +157,7 @@ export async function runSmoke(backend, opts = {}) {
         if (!equal) changedKeys.push(key);
       }
       step('verify', changedKeys.length === 0
-        ? 'no value changes detected — state untouched'
+        ? 'no value changes detected - state untouched'
         : `CHANGE DETECTED on [${changedKeys.join(', ')}]`);
     }
 
@@ -182,7 +182,7 @@ export async function runSmoke(backend, opts = {}) {
         fail('reset', err.message);
       }
     } else {
-      step('reset', 'no changes detected — reset NOT called (state untouched)');
+      step('reset', 'no changes detected - reset NOT called (state untouched)');
     }
   }
 

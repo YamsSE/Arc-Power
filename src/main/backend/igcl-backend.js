@@ -1,4 +1,4 @@
-// Arc Power — M1 IgclBackend: the primary IOCBackend implementation,
+// Arc Power - M1 IgclBackend: the primary IOCBackend implementation,
 // driving the native IGCL runtime (IntelControlLib.dll) through koffi.
 //
 // Loading/init policy (docs/igcl-integration.md §1–§2):
@@ -7,18 +7,18 @@
 //   - ctlInit uses the all-zeros application UID + CTL_INIT_FLAG_USE_LEVEL_ZERO
 //     (invented UIDs are rejected on the current driver);
 //   - V2 OC APIs + capability-unit conversion (canonical Settings fields in
-//     W/V/MHz/C/GTS; never assume mV/mW) — pinned per-API unit contract
+//     W/V/MHz/C/GTS; never assume mV/mW) - pinned per-API unit contract
 //     (docs/igcl-integration.md §4).
 //
 // Safety contract:
 //   - every apply clamps to the capability range and verifies by read-back;
 //   - fan setters are invoked ONLY when the EFFECTIVE fan canControl === true
-//     (properties.canControl || the live reversible probe result — M3-D: the
+//     (properties.canControl || the live reversible probe result - M3-D: the
 //     A770's canControl=false property is a lie, the driver honors table
 //     writes with the FAN enum's PERCENT encoding);
 //   - ctlOverclockWaiverSet is called only when constructed with
 //     allowAutoWaiver: true (smoke/tests) or via setWaiverAccepted()
-//     (explicit user acceptance — M2a product path).
+//     (explicit user acceptance - M2a product path).
 
 import koffi from 'koffi';
 import {
@@ -26,7 +26,7 @@ import {
   describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem, decodePciProperties,
 } from './igcl-bindings.js';
 import { igclErrorCode } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName } from './units.js';
 import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
@@ -35,7 +35,7 @@ const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0]
 const FAN_MODE_CANONICAL = { 0: 'auto', 1: 'fixed', 2: 'curve' };
 
 // CTL_FAN_SPEED_UNITS maps numeric codes -> names ({1: 'PERCENT'}), so the
-// ctl_fan_speed_t.units field needs the numeric code — look it up by name.
+// ctl_fan_speed_t.units field needs the numeric code - look it up by name.
 const FAN_UNITS_PERCENT = Number(Object.entries(CTL_FAN_SPEED_UNITS).find(([, n]) => n === 'PERCENT')[0]);
 
 const OC_UNIT_FIELDS = {
@@ -51,12 +51,12 @@ export class IgclBackend {
   /**
    * @param {{
    *   dllPath?: string|null,          // override discovery (tests / explicit path)
-   *   allowAutoWaiver?: boolean,      // smoke/tests only — never in product paths
+   *   allowAutoWaiver?: boolean,      // smoke/tests only - never in product paths
    *   lib?: object|null,              // injected bound lib (tests); loaded at init() otherwise
    *   findDll?: () => string|null,    // injectable discovery (tests)
    *   extended?: { isCapable: () => Promise<boolean> },  // M2C-C bundled-2023-runtime probe
    *   ocMode?: 'stock'|'advanced',    // M3-C-E: which range set getCapabilities
-   *                                   // exposes (default 'stock' — the real
+   *                                   // exposes (default 'stock' - the real
    *                                   // product default; mock passes advanced)
    *   fanProbe?: boolean,             // M3-D: run the reversible fan-capability
    *                                   // probe on canControl=false devices
@@ -74,7 +74,7 @@ export class IgclBackend {
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
     this._extended = opts.extended ?? null;
-    // M4-D: the VRAM provider for formatDeviceName (constructor opt — main.js
+    // M4-D: the VRAM provider for formatDeviceName (constructor opt - main.js
     // runs the sysinfo cache BEFORE constructing the backend, so the lookup
     // is available at enumeration time; setVramBytesOf re-formats an already
     // enumerated device list).
@@ -90,11 +90,11 @@ export class IgclBackend {
     this._waiverAccepted = new Map(); // deviceId -> bool
     this._telemetryCbs = new Map(); // deviceId -> Set<cb>
     this._activity = new Map(); // M3-C-L: deviceId -> { t, counter } for the utilPct delta method
-    // M3-D: the fan-capability probe cache — deviceId -> Promise<{probeOk,
+    // M3-D: the fan-capability probe cache - deviceId -> Promise<{probeOk,
     // writeAccepted, fixedOk}>. DEDICATED: the caps cache is invalidated by
     // ocMode flips (setOcMode), the probe result must NOT be (the card's write
     // acceptance does not change with the app's OC mode). Promise-keyed so
-    // concurrent first caps reads share ONE probe — never a double probe.
+    // concurrent first caps reads share ONE probe - never a double probe.
     // M4-C: the fixed-write sub-probe (reversible 50% write) runs INSIDE the
     // same probe, so the whole shape is one promise per device per session.
     this._fanProbeCache = new Map();
@@ -102,7 +102,7 @@ export class IgclBackend {
   }
 
   /**
-   * M3-C-E: switch the OC mode and INVALIDATE the per-device caps cache —
+   * M3-C-E: switch the OC mode and INVALIDATE the per-device caps cache -
    * the next getCapabilities re-derives the ranges from the new mode
    * (extended ranges exposed only in advanced). Returns the effective mode.
    * @param {'stock'|'advanced'} mode
@@ -118,10 +118,10 @@ export class IgclBackend {
   }
 
   /**
-   * 1.0.1 no-Intel round: the init-class failure — null when init()
+   * 1.0.1 no-Intel round: the init-class failure - null when init()
    * succeeded (or never ran). The list-devices IPC handler degrades to an
    * EMPTY list ONLY when this is set (an AMD machine: the IGCL runtime DLL
-   * is missing, ctlInit fails, or device enumeration fails) — any other
+   * is missing, ctlInit fails, or device enumeration fails) - any other
    * list-devices throw stays a hard IPC failure.
    * @returns {Error | null}
    */
@@ -157,7 +157,7 @@ export class IgclBackend {
       }
       const lib = this._lib;
       if (this._isUnavailable(lib.ctlInit)) {
-        throw new Error('ctlInit symbol unavailable in the IGCL runtime — driver too old or wrong DLL loaded.');
+        throw new Error('ctlInit symbol unavailable in the IGCL runtime - driver too old or wrong DLL loaded.');
       }
       const initArgs = koffi.alloc('ctl_init_args_t', 1);
       koffi.encode(initArgs, 'ctl_init_args_t', {
@@ -202,7 +202,7 @@ export class IgclBackend {
 
   /**
    * 1.0.1 no-Intel round: record an ENUMERATION failure as an init-CLASS
-   * failure (initError) before rethrowing — ctlEnumerateDevices /
+   * failure (initError) before rethrowing - ctlEnumerateDevices /
    * ctlGetDeviceProperties failing means the backend cannot enumerate any
    * usable GPU, which is the same no-Intel degrade the list-devices IPC
    * maps to [] (health then reports igclLoaded false). Never overwrites a
@@ -246,7 +246,7 @@ export class IgclBackend {
         this._enumFail(new Error(`ctlGetDeviceProperties(${i}) failed: ${describeResult(result)}`));
       }
       const p = koffi.decode(propsBuf, 'ctl_device_adapter_properties_t');
-      // M4-B/M4-D: VRAM source — the bundled bindings expose NO memory-size
+      // M4-B/M4-D: VRAM source - the bundled bindings expose NO memory-size
       // field (verified against igcl-bindings.js + docs/igcl-integration.md:
       // no MEMORY_BYTES surface exists in the bound structs), so the REAL
       // backend gets its vramBytes from the M4-D sysinfo cache
@@ -254,7 +254,7 @@ export class IgclBackend {
       // provider: formatDeviceName appends the "16 GB" suffix when the
       // lookup matches the IGCL device name (GPU-family token match, else
       // the primary non-basic adapter) and the AdapterRAM value is
-      // trustworthy. Honest null when unmatched — the plain IGCL name. A
+      // trustworthy. Honest null when unmatched - the plain IGCL name. A
       // future ctlGetMemoryInfo binding would land here as a better source.
       const plainName = (p.name || '').replace(/\0+$/, '');
       const dev = {
@@ -270,9 +270,14 @@ export class IgclBackend {
         graphicsClockMHz: p.Frequency,
         numXeCores: p.num_xe_cores,
         vramBytes: null,
+        // M4-I (S1): the memory type is derived ONCE from the token table
+        // (vramMemTypeOfName - A-series + B-series = GDDR6, unknown ->
+        // null) and CARRIED on the device payload (DeviceInfo + caps); the
+        // renderer's VRAM row never re-derives it.
+        memType: vramMemTypeOfName(plainName),
       };
       // Internal-only: the pre-suffix name (setVramBytesOf re-formats from
-      // it) — never surfaced by listDevices (it destructures explicit fields).
+      // it) - never surfaced by listDevices (it destructures explicit fields).
       dev._plainName = plainName;
       const vramBytes = this._vramBytesOf ? this._vramBytesOf(dev) : null;
       dev.vramBytes = Number.isInteger(vramBytes) && vramBytes > 0 ? vramBytes : null;
@@ -302,8 +307,8 @@ export class IgclBackend {
 
   async listDevices() {
     const devices = await this._ensureDevices();
-    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes }) => ({
-      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes,
+    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType }) => ({
+      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType,
     }));
   }
 
@@ -316,10 +321,10 @@ export class IgclBackend {
 
   /**
    * M4-D2 (user: "read the driver's BAR state"): the driver's PCI
-   * properties via ctlPciGetProperties — resizable_bar_supported /
+   * properties via ctlPciGetProperties - resizable_bar_supported /
    * resizable_bar_enabled (the same driver state IGS + GPU-Z report).
    * Read-only, unelevated. Degrades to null on any failure (unbound
-   * symbol, ctl error, garbage) — the sysinfo layer falls back to the OS
+   * symbol, ctl error, garbage) - the sysinfo layer falls back to the OS
    * resource check then.
    * @param {number} deviceId
    * @returns {Promise<{
@@ -334,7 +339,7 @@ export class IgclBackend {
       if (this._isUnavailable(lib.ctlPciGetProperties)) return null;
       const dev = await this._device(deviceId);
       const buf = koffi.alloc('uint8', 64);
-      // Size MUST be the DRIVER's real struct size (64) — koffi's own
+      // Size MUST be the DRIVER's real struct size (64) - koffi's own
       // sizeof is 72 (8-align tail padding that the driver build lacks);
       // a 72 would answer ERROR_INVALID_SIZE (live-verified).
       koffi.encode(buf, 0, 'uint32', 64);
@@ -371,15 +376,15 @@ export class IgclBackend {
   }
 
   /**
-   * M3-D: the fan-capability probe cache accessor — deviceId ->
+   * M3-D: the fan-capability probe cache accessor - deviceId ->
    * Promise<{probeOk: boolean, writeAccepted: boolean, fixedOk: boolean}>
-   * (M4-C: the fixed-write sub-probe extends the shape — one probe per
+   * (M4-C: the fixed-write sub-probe extends the shape - one probe per
    * device per session for the table AND the fixed path). The DEDICATED
    * promise-keyed cache lives OUTSIDE the caps cache: concurrent first
    * calls share ONE probe promise (never a double probe) and ocMode flips
    * never re-probe (the card's write acceptance does not change with the
    * app's OC mode). A throwing probe degrades to probeOk=false +
-   * writeAccepted=false + fixedOk=false — the fan stays read-only, never a
+   * writeAccepted=false + fixedOk=false - the fan stays read-only, never a
    * hard crash of getCapabilities. `maxPoints` (fan properties) sizes the
    * sample table (F3); the same device always reports the same value, so it
    * is safe under the deviceId-keyed cache.
@@ -390,7 +395,7 @@ export class IgclBackend {
   _probeFanCapability(deviceId, maxPoints) {
     if (this._fanProbeCache.has(deviceId)) return this._fanProbeCache.get(deviceId);
     const p = this._runFanProbe(deviceId, maxPoints).catch((err) => {
-      console.error(`[igcl-backend] fan capability probe threw for device ${deviceId}: ${err.message} — fan stays read-only`);
+      console.error(`[igcl-backend] fan capability probe threw for device ${deviceId}: ${err.message} - fan stays read-only`);
       return { probeOk: false, writeAccepted: false, fixedOk: false };
     });
     this._fanProbeCache.set(deviceId, p);
@@ -401,15 +406,15 @@ export class IgclBackend {
    * M3-D: the reversible fan-capability probe (the Alchemist unlock,
    * live-verified on the A770 2026-08-06). The driver reports
    * canControl=false but honors table/default writes when the table uses
-   * the FAN enum's PERCENT units (1 — NOT the general CTL_UNITS.PERCENT 11;
+   * the FAN enum's PERCENT units (1 - NOT the general CTL_UNITS.PERCENT 11;
    * that was why earlier probes failed) and Intel's sample encoding
    * (Size/Version filled, points ascending). Probe = write a safe 0-90%
    * sample table of min(10, maxPoints) points (F3: a maxPoints<10 card
    * would otherwise stay read-only despite accepting tables), read back +
    * verify exact point match, restore default mode, verify. The restore is
-   * retried on failure — a failed probe must NEVER leave the card in table
+   * retried on failure - a failed probe must NEVER leave the card in table
    * mode (a stuck table mode is itself treated as probe failure with an
-   * honest retry/report). The write outcome decides honesty — the probe is
+   * honest retry/report). The write outcome decides honesty - the probe is
    * NOT gated on elevation (non-elevated writes fail -> read-only), and
    * writeAccepted (the table write succeeded, F2) is reported separately
    * from probeOk (full verify passed) so the caller can keep the real
@@ -417,14 +422,14 @@ export class IgclBackend {
    * step failed (stuck restore, IGS reapply race).
    *
    * M4-C: the fixed-write sub-probe extends the shape with `fixedOk`. It
-   * runs INSIDE this probe (same promise-keyed cache — one per device per
+   * runs INSIDE this probe (same promise-keyed cache - one per device per
    * session, never a re-probe per caps read) and ONLY when the table path
    * is available: after the table restore succeeded. A refused table write
    * tells us nothing about fixed writes and a stuck table mode must never
-   * be left behind — so the fixed sub-probe never runs independently.
+   * be left behind - so the fixed sub-probe never runs independently.
    * `fixedOk` = one reversible 50% write via ctlFanSetFixedSpeedMode +
    * read-back verify + restore to default mode (the SAME restore-retry
-   * semantics: a failed restore is a probe failure — the fan must NEVER be
+   * semantics: a failed restore is a probe failure - the fan must NEVER be
    * left at 50% fixed). Only a fully verified fixed probe adds 'fixed' to
    * the learned modes.
    * @param {number} deviceId
@@ -459,10 +464,10 @@ export class IgclBackend {
     const writeAccepted = setResult === CTL_RESULT.SUCCESS;
     if (!writeAccepted) {
       // The write itself failed: the card was never put in table mode, so
-      // no restore is needed — the refusal IS the honest answer. The fixed
+      // no restore is needed - the refusal IS the honest answer. The fixed
       // sub-probe never runs here (a refused table write tells us nothing
       // about fixed writes).
-      console.error(`[igcl-backend] fan probe: ctlFanSetSpeedTableMode refused (${describeResult(setResult)}) — fan stays read-only`);
+      console.error(`[igcl-backend] fan probe: ctlFanSetSpeedTableMode refused (${describeResult(setResult)}) - fan stays read-only`);
       return { probeOk: false, writeAccepted, fixedOk: false };
     }
 
@@ -483,7 +488,7 @@ export class IgclBackend {
         });
     }
     if (!readOk) {
-      console.error('[igcl-backend] fan probe: table read-back did not match the sample — probe fails');
+      console.error('[igcl-backend] fan probe: table read-back did not match the sample - probe fails');
     }
 
     // Restore default mode, retried: a failed probe must NEVER leave the
@@ -491,20 +496,20 @@ export class IgclBackend {
     const restoreOk = await this._restoreFanDefault(fan, deviceId);
 
     const probeOk = readOk && restoreOk;
-    console.log(`[igcl-backend] fan probe device ${deviceId}: table write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} — effective canControl=${probeOk}`);
+    console.log(`[igcl-backend] fan probe device ${deviceId}: table write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - effective canControl=${probeOk}`);
 
-    // M4-C: the fixed-write sub-probe — ONLY when the table path is
+    // M4-C: the fixed-write sub-probe - ONLY when the table path is
     // available (the table restore succeeded): a stuck table mode must
     // never be left behind, and the fixed path is independent evidence.
     //
     // M4-C (round-1 review, confirmed interpretation): a failed FIXED
     // restore (the driver wedged at 50% fixed) does NOT downgrade whole-fan
-    // canControl — probeOk stays true (the TABLE probe fully verified) and
+    // canControl - probeOk stays true (the TABLE probe fully verified) and
     // the editor stays open: the table editor is the ONLY recovery path
     // (a curve apply issues ctlFanSetSpeedTableMode, which exits fixed
     // mode), so making the whole fan read-only would strand the user at 50%
     // fixed with no recourse. fixedOk=false is reported honestly in the
-    // probe shape ('fixed' is never offered) — the plan's "honest read-only"
+    // probe shape ('fixed' is never offered) - the plan's "honest read-only"
     // intent for the fixed path. Reversibility is intact: the restore is
     // always attempted after a successful fixed write, retried twice, and
     // verified DEFAULT-mode.
@@ -516,11 +521,11 @@ export class IgclBackend {
   }
 
   /**
-   * M4-C: the fixed-write sub-probe — one reversible 50% write via
+   * M4-C: the fixed-write sub-probe - one reversible 50% write via
    * ctlFanSetFixedSpeedMode + read-back verify (FIXED mode, PERCENT units,
    * 50%) + restore to default mode via ctlFanSetDefaultMode with the SAME
    * restore-retry semantics as the table probe (`_restoreFanDefault`: a
-   * failed restore is a probe failure — the fan must NEVER be left at 50%
+   * failed restore is a probe failure - the fan must NEVER be left at 50%
    * fixed). Runs once per device per session inside the SAME promise-keyed
    * probe cache as the table probe (never a re-probe per caps read; ocMode
    * flips never re-probe). `fixedOk` = write + read-back + restore all
@@ -538,8 +543,8 @@ export class IgclBackend {
     const writeAccepted = setResult === CTL_RESULT.SUCCESS;
     if (!writeAccepted) {
       // The write itself failed: the card was never put in fixed mode, so
-      // no restore is needed — the refusal IS the honest answer.
-      console.error(`[igcl-backend] fixed fan probe: ctlFanSetFixedSpeedMode refused (${describeResult(setResult)}) — 'fixed' stays out of the learned modes`);
+      // no restore is needed - the refusal IS the honest answer.
+      console.error(`[igcl-backend] fixed fan probe: ctlFanSetFixedSpeedMode refused (${describeResult(setResult)}) - 'fixed' stays out of the learned modes`);
       return false;
     }
 
@@ -555,7 +560,7 @@ export class IgclBackend {
         && nearlyEqual(cfg.speedFixed.speed, FIXED_PCT, 1);
     }
     if (!readOk) {
-      console.error('[igcl-backend] fixed fan probe: read-back did not match the 50% fixed sample — probe fails');
+      console.error('[igcl-backend] fixed fan probe: read-back did not match the 50% fixed sample - probe fails');
     }
 
     // Restore default mode, retried: a failed fixed probe must NEVER leave
@@ -563,14 +568,14 @@ export class IgclBackend {
     const restoreOk = await this._restoreFanDefault(fan, deviceId);
 
     const fixedOk = readOk && restoreOk;
-    console.log(`[igcl-backend] fixed fan probe device ${deviceId}: 50% write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} — fixedOk=${fixedOk}`);
+    console.log(`[igcl-backend] fixed fan probe device ${deviceId}: 50% write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - fixedOk=${fixedOk}`);
     return fixedOk;
   }
 
   /**
    * M3-D: ctlFanSetDefaultMode + read-back verify, retried once. True only
    * when the card reads back in DEFAULT (auto) mode. A stuck table mode is
-   * reported loudly — the caller treats it as probe failure.
+   * reported loudly - the caller treats it as probe failure.
    * @param {object} fan
    * @param {number} deviceId
    * @returns {Promise<boolean>}
@@ -581,7 +586,7 @@ export class IgclBackend {
     for (let attempt = 1; attempt <= 2; attempt++) {
       const setResult = lib.ctlFanSetDefaultMode(fan);
       if (setResult !== CTL_RESULT.SUCCESS) {
-        console.error(`[igcl-backend] fan probe: restore-to-default attempt ${attempt} failed (${describeResult(setResult)}) — retrying`);
+        console.error(`[igcl-backend] fan probe: restore-to-default attempt ${attempt} failed (${describeResult(setResult)}) - retrying`);
         continue;
       }
       const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
@@ -589,7 +594,7 @@ export class IgclBackend {
       const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
       if (getResult === CTL_RESULT.SUCCESS && koffi.decode(cfgBuf, 'ctl_fan_config_t').mode === 0 /* DEFAULT */) return true;
     }
-    console.error(`[igcl-backend] fan probe: restore-to-default FAILED after retries for device ${deviceId} — the card may be left in table mode`);
+    console.error(`[igcl-backend] fan probe: restore-to-default FAILED after retries for device ${deviceId} - the card may be left in table mode`);
     return false;
   }
 
@@ -638,7 +643,7 @@ export class IgclBackend {
     await this._device(deviceId);
     if (this._caps.has(deviceId)) {
       const cached = this._caps.get(deviceId);
-      // waiverAccepted is live state, not a static capability — refresh it
+      // waiverAccepted is live state, not a static capability - refresh it
       // so a later setWaiverAccepted() is reflected without re-reading IGCL.
       // Return a copy: callers must never be able to poison the cache.
       const out = structuredClone(cached);
@@ -651,6 +656,10 @@ export class IgclBackend {
     const caps = {
       oemName: 'Intel',
       deviceName: dev.name,
+      // M4-I (S1): the memory type rides the caps payload (the waiver
+      // dialogs + the VRAM row's type source - same token-table value the
+      // device payload carries).
+      memType: dev.memType ?? null,
       waiverAccepted: this._waiverAccepted.get(deviceId) ?? false,
       controls: {
         gpuFreqOffset: false, gpuVoltOffset: false, gpuLock: false,
@@ -693,12 +702,12 @@ export class IgclBackend {
           }
         }
         // F3 PT range fix (M2C-A): the driver setter refuses temp limits
-        // above 90 C with 0x44000005 even if the props ever drift above it —
+        // above 90 C with 0x44000005 even if the props ever drift above it -
         // pin the EXPOSED max to TEMP_LIMIT_MAX_C so the UI/presets/validation
         // can never offer an un-appliable value (plan.md M2C-A F3). M2C-C:
         // the pin yields to the extended range when the bundled 2023 runtime
         // is capable (values above 90 C then route to that runtime).
-        // M4-E: the pin is a C-UNIT rule — percent-unit ranges (Battlemage:
+        // M4-E: the pin is a C-UNIT rule - percent-unit ranges (Battlemage:
         // temp limit as %, max 100) are not DriverStore °C limits and must
         // pass through untouched (their max IS the honest ceiling).
         if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C' && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
@@ -706,18 +715,18 @@ export class IgclBackend {
         }
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
         // this driver AND the OC mode is advanced (M3-C-E), report the FULL
-        // range (PL max 315 W — live-verified ceiling, TL max 115 C — min/default stay
+        // range (PL max 315 W - live-verified ceiling, TL max 115 C - min/default stay
         // the DriverStore values) + the extendedRanges flag. The UI exposes
         // those maxes; applies above the DriverStore clamp route to the
         // 2023 runtime (apply-routing.js). In stock mode the extended maxes
-        // are NEVER exposed — the mode gate refuses them before any clamp.
+        // are NEVER exposed - the mode gate refuses them before any clamp.
         const extendedCapable = this._extended
           ? await this._extended.isCapable()
           : false;
         // M4-E: the extended concept is W/C-only (the bundled 2023 runtime
         // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
         // must never be overwritten with the 315 W / 115 C maxes nor flip
-        // the flag — their range max is the ceiling. Each override is
+        // the flag - their range max is the ceiling. Each override is
         // guarded by its own units; the flag is set only when a genuine
         // W/C extended range was exposed.
         const wcExtended = extendedCapable && this._ocMode === 'advanced'
@@ -737,7 +746,7 @@ export class IgclBackend {
         caps.controls.gpuLock = !this._isUnavailable(lib.ctlOverclockGpuLockGet)
           && !this._isUnavailable(lib.ctlOverclockGpuLockSet);
         // vfCurve: supported only when the read path answers (on Alchemist it
-        // errors with DATA_READ — report unsupported so the UI hides it).
+        // errors with DATA_READ - report unsupported so the UI hides it).
         caps.controls.vfCurve = this._vfCurveReadable(dev.handle);
       }
     }
@@ -750,28 +759,28 @@ export class IgclBackend {
       const result = lib.ctlFanGetProperties(fanHandles[0], propBuf);
       if (result === CTL_RESULT.SUCCESS) {
         const fp = koffi.decode(propBuf, 'ctl_fan_properties_t');
-        // M3-D: canControl=false is a LIE on this A770 — the driver honors
+        // M3-D: canControl=false is a LIE on this A770 - the driver honors
         // table/default writes anyway (live-verified 2026-08-06). The probe
         // is the unlock AND the mode-truth: the 1<<mode derivation from
-        // supportedModes=0x2 yields ['fixed'] — the ONE mode this card
-        // genuinely refuses — so the probe runs whenever properties refuse
+        // supportedModes=0x2 yields ['fixed'] - the ONE mode this card
+        // genuinely refuses - so the probe runs whenever properties refuse
         // control OR the derived modes claim 'fixed' (F1: with the IGS
         // app/service running canControl=TRUE and the derivation would
         // still gate the Fan page to fixed-only in the primary usage;
         // never gate the probe on !canControl). Reversible: write the
         // sample table (min(10, maxPoints) points, FAN-enum PERCENT
-        // units), read back, restore default — restore retried, never left
+        // units), read back, restore default - restore retried, never left
         // in table mode. The result is cached OUTSIDE the caps cache and
         // shared across concurrent first calls; effective canControl =
         // properties.canControl || probeOk. Probe-learned modes follow the
         // WRITE-ACCEPTED rule (F2): when the table WRITE was accepted the
         // real modes are ['auto','curve'] (the card demonstrably accepts
-        // tables — even when a later step failed, e.g. a stuck restore or
+        // tables - even when a later step failed, e.g. a stuck restore or
         // an IGS reapply race); a write-REFUSED probe keeps the derived
         // modes (claiming auto/curve on a genuinely fixed-only card would
         // lie). The derivation stays only for cards that never probe
         // (probe disabled, or probe symbols missing). M4-C: the fixed-write
-        // sub-probe (reversible 50% write) extends the same cached shape —
+        // sub-probe (reversible 50% write) extends the same cached shape -
         // only a fully verified fixed probe (fixedOk) adds 'fixed' to the
         // learned modes (a refused fixed write keeps ['auto','curve']).
         let modes = Object.entries(CTL_FAN_SPEED_MODE)
@@ -786,7 +795,7 @@ export class IgclBackend {
         if (probeRuns) {
           const probe = await this._probeFanCapability(deviceId, fp.maxPoints);
           canControl = fp.canControl || probe.probeOk;
-          // M4-C: the fixed sub-probe extends the write-accepted rule —
+          // M4-C: the fixed sub-probe extends the write-accepted rule -
           // only a FULLY verified fixed probe (write + read-back + restore
           // all succeeded, fixedOk) adds 'fixed' to the learned modes; a
           // refused/partial fixed probe keeps ['auto','curve'] (claiming
@@ -799,7 +808,7 @@ export class IgclBackend {
           canControl,
           // Map through the same table as fan-mode read-back so
           // caps.fan.modes and DeviceState.fanMode share one vocabulary
-          // (auto|curve|fixed) — never raw IGCL names.
+          // (auto|curve|fixed) - never raw IGCL names.
           modes,
           maxRpm: fp.maxRPM,
           maxCurvePoints: fp.maxPoints,
@@ -821,7 +830,7 @@ export class IgclBackend {
       case 5: return 'C';
       case 10: return 'mW';
       case 13: return 'mV';
-      // M4-E: percent-unit controls (Battlemage — volt/PL/TL as % per the
+      // M4-E: percent-unit controls (Battlemage - volt/PL/TL as % per the
       // IGCL sample) must surface the canonical '%' like the mock featureset
       // (a 'UNITS_11' string would render "120 UNITS_11" in the UI and drift
       // from the mock's '%').
@@ -910,7 +919,7 @@ export class IgclBackend {
     }
 
     // Fan read-back (read-only here even when the EFFECTIVE canControl is
-    // false — the A770 still reports config/state; setters stay gated).
+    // false - the A770 still reports config/state; setters stay gated).
     const fanHandles = await this._fanHandlesOf(deviceId);
     if (fanHandles.length > 0 && !this._isUnavailable(lib.ctlFanGetConfig)) {
       const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
@@ -926,7 +935,7 @@ export class IgclBackend {
             state.fanCurve.push({
               t: tp.temperature,
               // RPM tables cannot be normalized to % (maxRPM is unknown on
-              // Alchemist) — only PERCENT units become canonical % values.
+              // Alchemist) - only PERCENT units become canonical % values.
               speedPct: tp.speed.units === FAN_UNITS_PERCENT ? tp.speed.speed : null,
             });
           }
@@ -952,7 +961,7 @@ export class IgclBackend {
    * Apply settings. `opts.snapToStep` (default true) controls step-snapping:
    * product applies snap to the capability step; the smoke no-op round trip
    * passes snapToStep:false so an off-grid current value (e.g. the A770's
-   * 48.3 MHz offset) is written back EXACTLY as read — never changed.
+   * 48.3 MHz offset) is written back EXACTLY as read - never changed.
    */
   async applySettings(deviceId, settings = {}, opts = {}) {
     await this._device(deviceId);
@@ -1017,7 +1026,7 @@ export class IgclBackend {
         message,
         readBackEqual,
         // F3 silent no-op (plan M2C-A): the setter returned SUCCESS but the
-        // read-back did not change — the driver accepted nothing. This is a
+        // read-back did not change - the driver accepted nothing. This is a
         // refusal, NEVER "applied"; the apply core keys off silentNoop to
         // classify it before the generic io-failed class (M2C-B instant
         // apply: the silent no-op fails instantly with the refusal message).
@@ -1074,7 +1083,7 @@ export class IgclBackend {
       if (requested.length === 0) return;
 
       // Hard safety rule: fan setters only when the EFFECTIVE canControl is
-      // true (properties.canControl || probeOk — M3-D: the A770's property
+      // true (properties.canControl || probeOk - M3-D: the A770's property
       // lies, the probe is the unlock). Never gated on elevation: the write
       // outcome decides honesty.
       if (!caps.fan.canControl) {
@@ -1094,7 +1103,7 @@ export class IgclBackend {
         if (settings.fanCurve) mode = 'curve';
         else if (settings.fixedFanPct !== undefined && settings.fixedFanPct !== null) mode = 'fixed';
       }
-      // Mode gate (F5, mock parity): refuse modes outside caps.fan.modes —
+      // Mode gate (F5, mock parity): refuse modes outside caps.fan.modes -
       // the driver genuinely refuses them (e.g. fixed writes are
       // UNSUPPORTED_FEATURE on this card) and the mock answers the same
       // way ('unsupported', no driver write attempted).
@@ -1118,7 +1127,7 @@ export class IgclBackend {
       // { t, speedPct } of the ROUNDED points that were sent; `expected.fixedPct`
       // is the rounded fixed speed. The mode must match the requested canonical
       // mode; table points / fixed speed are compared (within tolerance) when
-      // the read-back reports PERCENT units — RPM values cannot be normalized
+      // the read-back reports PERCENT units - RPM values cannot be normalized
       // without maxRPM, so mode match suffices there.
       const verifyFanConfig = (fan, expectedMode, expected = {}) => {
         if (this._isUnavailable(lib.ctlFanGetConfig)) {
@@ -1146,7 +1155,7 @@ export class IgclBackend {
             got.push({ t: tp.temperature, speedPct: tp.speed.units === FAN_UNITS_PERCENT ? tp.speed.speed : null });
           }
           if (got.some((p) => p.speedPct === null)) {
-            return { ok: false, message: 'fan curve read-back is not in PERCENT units — cannot verify' };
+            return { ok: false, message: 'fan curve read-back is not in PERCENT units - cannot verify' };
           }
           if (got.length !== expected.curve.length) {
             return { ok: false, message: `fan curve read-back ${got.length} points != requested ${expected.curve.length}` };
@@ -1172,7 +1181,7 @@ export class IgclBackend {
         } else {
           // Normalize before the driver write (plan §5 item 3): clamp % to
           // 0..100, sort by temp, enforce strictly ascending temps (IGCL
-          // requires an ascending table) — shared with MockBackend so both
+          // requires an ascending table) - shared with MockBackend so both
           // backends accept identical payloads.
           const table = normalizeFanCurve(settings.fanCurve, caps.fan.maxCurvePoints).map((p) => ({
             Size: koffi.sizeof('ctl_fan_temp_speed_t'),
@@ -1311,7 +1320,7 @@ export class IgclBackend {
 
     // Reconciliation for a driver-level waiver loss (G2): the driver can
     // lose the waiver (reinstall, IGS reset) while settings.json still says
-    // accepted — every setter then answers waiver-not-set. Clear the stale
+    // accepted - every setter then answers waiver-not-set. Clear the stale
     // in-memory flag so getCapabilities reports unaccepted and the next
     // apply re-shows the waiver dialog. This NEVER accepts anything;
     // re-acceptance still requires the explicit waiver-accept path.
@@ -1351,7 +1360,7 @@ export class IgclBackend {
 
   /**
    * Boot-time seeding of a persisted waiver acceptance (F1): sets ONLY the
-   * in-memory flag — NEVER calls ctlOverclockWaiverSet, which must run only
+   * in-memory flag - NEVER calls ctlOverclockWaiverSet, which must run only
    * on explicit user acceptance (waiver-accept -> setWaiverAccepted). Called
    * from main at boot with the ProfileStore's persisted settings.
    * @param {number} deviceId
@@ -1422,13 +1431,13 @@ export class IgclBackend {
     }
 
     // M3-C-L: utilization from the IGCL activity counters over timestamp
-    // deltas — the DOCUMENTED sample-delta method (igcl_api.h
+    // deltas - the DOCUMENTED sample-delta method (igcl_api.h
     // §ctl_power_telemetry_t): globalActivityCounter / renderComputeActivity-
     // Counter measure busy TIME IN SECONDS (accurate to 1 ms) that any GPU
     // engine / the 3D-compute engines are busy; dividing the delta by the
     // timestamp delta (also seconds, timeStamp = seconds since epoch) yields
     // the average percentage utilization. The GLOBAL counter is preferred;
-    // renderCompute is the fallback — which is populated on this card is
+    // renderCompute is the fallback - which is populated on this card is
     // validated by the live probe (tools/validate/m3c-util-probe.js).
     const globalActivity = item('globalActivityCounter');
     const renderCompute = item('renderComputeActivityCounter');
@@ -1446,7 +1455,7 @@ export class IgclBackend {
    * M3-C-L: utilization = activityCounterDelta / timestampDelta * 100.
    * Undefined on the first sample (no delta), on missing/non-finite inputs,
    * on a counter reset (negative delta) and on non-positive time deltas.
-   * Clamped to [0, 100] — a counter that runs slightly ahead of the
+   * Clamped to [0, 100] - a counter that runs slightly ahead of the
    * timestamp never reports >100%.
    * @param {number} deviceId
    * @param {number} t telemetry timestamp (seconds)

@@ -1,4 +1,4 @@
-// Arc Power — hash router + app-wide state store.
+// Arc Power - hash router + app-wide state store.
 
 import type {
   Capabilities,
@@ -19,7 +19,7 @@ export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'monitoring', 'profile
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
   // M4-D2 (§7): the Overclocking page was RENAMED to Tuning (the fan editor
-  // moved into it as a sub-view — §8).
+  // moved into it as a sub-view - §8).
   tuning: 'Tuning',
   monitoring: 'Monitoring',
   profiles: 'Profiles',
@@ -31,7 +31,7 @@ export const NAV_LABELS: Record<PageId, string> = {
 // M4-D2 (§8): the old #/overclocking and #/fan hashes redirect to #/tuning
 // (old bookmarks + old pins). The fan-view signal is a module flag: when
 // the navigation arrived via #/fan, the Tuning page starts with the fan
-// sub-view active (the hash itself is left in place — replaceState would
+// sub-view active (the hash itself is left in place - replaceState would
 // destroy the signal before the page renders).
 let fanViewRequested = false;
 
@@ -43,7 +43,7 @@ export function pageFromHash(hash: string): PageId {
   return PAGE_IDS.includes(id as PageId) ? (id as PageId) : 'dashboard';
 }
 
-/** M4-D2: whether the current navigation arrived via the old #/fan alias —
+/** M4-D2: whether the current navigation arrived via the old #/fan alias -
  *  the Tuning page consumes this once at render to start with the fan
  *  sub-view active. */
 export function consumeFanViewRequest(): boolean {
@@ -95,15 +95,15 @@ export interface AppState {
   driverDate: string | null;
   /** M2C-B B3: app version for the header line (app:version IPC). */
   appVersion: string;
-  /** M4-E: distribution kind (app:build-info IPC) — 'installed' | 'portable'
+  /** M4-E: distribution kind (app:build-info IPC) - 'installed' | 'portable'
    *  | 'dev'; drives the Settings start-with-Windows hint text. */
   buildKind: 'installed' | 'portable' | 'dev';
   /** M3-C: this process runs as administrator (app-elevated IPC). */
   elevated: boolean;
-  /** M3-C: applies go through the elevated self-worker (UAC prompt) —
+  /** M3-C: applies go through the elevated self-worker (UAC prompt) -
    *  the elevation toast fires before the apply when true. */
   workerApply: boolean;
-  /** M3-C-E: the OC mode (stock|advanced) — which ranges getCapabilities
+  /** M3-C-E: the OC mode (stock|advanced) - which ranges getCapabilities
    *  exposes and the apply gate's mode. Fetched at boot via oc-mode-get. */
   ocMode: 'stock' | 'advanced';
   bootError: string | null;
@@ -119,11 +119,11 @@ export interface AppState {
    *  the boot fetch lands (the card then re-renders via the sig). */
   sysinfo: SysInfo | null;
   /** 1.0.1 no-Intel round: TRUE when the boot enumerated NO Intel GPU (the
-   *  devices list was empty) — the app runs in the no-device mode (no
+   *  devices list was empty) - the app runs in the no-device mode (no
    *  caps/state, null-mode telemetry, honest no-Intel UI). */
   noIntel: boolean;
   /** 1.0.1 no-Intel round: the OS GPU (the sysinfo primary non-basic video
-   *  controller — { name, vramBytes } | null). The header, the dashboard
+   *  controller - { name, vramBytes } | null). The header, the dashboard
    *  GPU card and the health rows read it; null while sysinfo has nothing. */
   osGpu: { name: string; vramBytes: number | null } | null;
 }

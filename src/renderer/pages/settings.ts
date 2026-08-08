@@ -1,30 +1,30 @@
-// Arc Power — Settings tab (M4-D + M4-D2): Start with Windows (the HKCU Run
-// value — ONE registration, zero UAC), Start minimized (persisted
-// startMinimized — the window minimizes to the taskbar at boot, the tray
-// click restores), Close to tray (persisted closeToTray — closing the
+// Arc Power - Settings tab (M4-D + M4-D2): Start with Windows (the HKCU Run
+// value - ONE registration, zero UAC), Start minimized (persisted
+// startMinimized - the window minimizes to the taskbar at boot, the tray
+// click restores), Close to tray (persisted closeToTray - closing the
 // window hides it to the icon list instead of quitting; the tray menu's
-// Quit still exits), Log to file (persisted monitorLogToFile — the actual
+// Quit still exits), Log to file (persisted monitorLogToFile - the actual
 // CSV writes happen in the BOOT-LEVEL telemetry subscription in app.ts),
 // and the app version row.
 //
 // M4-D2 (r2 F4/F6): the Run value is SHARED with the Profiles page's
-// "start at boot" (ocOnBoot) — one value serves both toggles. Honesty
+// "start at boot" (ocOnBoot) - one value serves both toggles. Honesty
 // rules:
 //   - the checkbox reflects the STARTUP-GET derivation (checked whenever
-//     the value exists — either toggle can own it), never the persisted
+//     the value exists - either toggle can own it), never the persisted
 //     intent alone;
 //   - the mismatch hint compares the startup truth against the persisted
 //     intent `(settings.startWithWindows || (settings.ocOnBoot &&
-//     !!settings.activeProfileId))` — NEVER a false mismatch when ocOnBoot
+//     !!settings.activeProfileId))` - NEVER a false mismatch when ocOnBoot
 //     owns the value (plan-review r2 F6);
 //   - disabling Start with Windows must NOT remove the Run value while the
-//     profile's start-at-boot owns it (the value is shared) — the toggle
+//     profile's start-at-boot owns it (the value is shared) - the toggle
 //     RE-QUERIES startup-get FRESH before that ownership decision (never
 //     the mount-captured bootState); main's profiles-settings-save is the
 //     single writer of the value and re-derives it from the persisted
 //     intent on every save.
 //
-// The old elevated scheduled-task wording (ArcPowerAppOnBoot) is GONE —
+// The old elevated scheduled-task wording (ArcPowerAppOnBoot) is GONE -
 // tasks are dead (M4-D2 §12 root cause b); the HKCU Run value is the only
 // registration and it never UACs.
 
@@ -54,7 +54,7 @@ export const settingsPage: Page = {
       el('h1', { class: 'page-title', text: 'Settings' }),
       el('p', {
         class: 'page-subtitle',
-        text: 'Startup behavior and app information. Start with Windows registers Arc Power in the HKCU Run key (no elevation, no prompt); Start minimized hides the window to the taskbar — restore it from the tray icon.',
+        text: 'Startup behavior and app information. Start with Windows registers Arc Power in the HKCU Run key (no elevation, no prompt); Start minimized hides the window to the taskbar - restore it from the tray icon.',
       }),
       el('div', { id: 'settings-root', class: 'settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
     );
@@ -65,13 +65,13 @@ export const settingsPage: Page = {
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const root = container.querySelector('#settings-root') as HTMLElement;
   const s = ctx.store.get();
-  const displayVersion = s.appVersion && s.appVersion !== '0.0.0' ? `${versionLine(s.appVersion)} Alpha` : '—';
+  const displayVersion = s.appVersion && s.appVersion !== '0.0.0' ? `${versionLine(s.appVersion)} Alpha` : '-';
 
   let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
   let bootState: StartupGetState | null = null;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
-    // (settings.json via ProfileStore — the same read the Profiles page uses).
+    // (settings.json via ProfileStore - the same read the Profiles page uses).
     const envelope = await api.profilesList();
     persisted = {
       startWithWindows: envelope.settings.startWithWindows === true,
@@ -79,12 +79,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       closeToTray: envelope.settings.closeToTray === true,
       monitorLogToFile: envelope.settings.monitorLogToFile === true,
       // M4-D2 (r2 F6): the mismatch formula also reads the profile's
-      // start-at-boot intent (ocOnBoot + activeProfileId) — the Run value
+      // start-at-boot intent (ocOnBoot + activeProfileId) - the Run value
       // is shared, so the Settings checkbox can legitimately be ON because
       // the profile owns it.
       ocOnBoot: envelope.settings.ocOnBoot === true,
       activeProfileId: envelope.settings.activeProfileId,
-      // 1.0.1: the persisted theme (the store normalizes — an unexpected
+      // 1.0.1: the persisted theme (the store normalizes - an unexpected
       // value degrades to the dark default defensively).
       theme: isValidTheme(envelope.settings.theme) ? envelope.settings.theme : 'dark',
     };
@@ -106,7 +106,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const render = (): void => {
     // M4-D2 (r2 F6): the Settings checkbox shows ON whenever the Run value
-    // exists — either the Settings toggle OR the profile's start-at-boot
+    // exists - either the Settings toggle OR the profile's start-at-boot
     // owns it. The mismatch hint compares the startup truth against the
     // persisted INTENT (never a false mismatch when ocOnBoot owns the
     // value).
@@ -133,27 +133,27 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // Honest current-state line: the HKCU Run value is the ONLY
       // registration (no tasks, no elevation).
       valueExists
-        ? el('p', { class: 'card-note settings-state', text: 'Active — Arc Power starts at logon.' })
-        : el('p', { class: 'card-note settings-state', text: 'Not active — the app starts manually.' }),
+        ? el('p', { class: 'card-note settings-state', text: 'Active - Arc Power starts at logon.' })
+        : el('p', { class: 'card-note settings-state', text: 'Not active - the app starts manually.' }),
       // M4-D2 (r2 F6 reword): when the profile's start-at-boot owns the
       // value, the Settings checkbox is ON because Arc Power starts at
-      // logon to run the boot apply — the hint explains the ownership
+      // logon to run the boot apply - the hint explains the ownership
       // (never a false mismatch).
       applyOnBoot
-        ? el('p', { class: 'card-note boot-hint', text: 'Apply active profile at boot is enabled — Arc Power starts at logon to apply it.' })
+        ? el('p', { class: 'card-note boot-hint', text: 'Apply active profile at boot is enabled - Arc Power starts at logon to apply it.' })
         : null,
-      // M4-E (plan §3): the installed-build line — the INSTALLED app's
+      // M4-E (plan §3): the installed-build line - the INSTALLED app's
       // logon applies run ELEVATED through the first-run-installed
       // ArcPowerBootApply task; the portable app applies when it can
       // (unelevated, honest balloon on refusal). Short + honest, keyed on
       // app:build-info.
       s.buildKind === 'installed' || s.buildKind === 'portable'
         ? el('p', { class: 'card-note boot-hint', text: s.buildKind === 'installed'
-            ? 'The installed app applies at logon elevated (installed at first run) — the portable app applies when it can.'
+            ? 'The installed app applies at logon elevated (installed at first run) - the portable app applies when it can.'
             : 'The portable app applies at logon when it can.' })
         : null,
       startWithMismatch
-        ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree — the toggle reflects the registration.' })
+        ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree - the toggle reflects the registration.' })
         : null,
     ]);
 
@@ -174,7 +174,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('p', {
         class: 'card-note settings-state',
         text: persisted.startMinimized
-          ? 'The window minimizes to the taskbar after boot — restore it from the tray icon.'
+          ? 'The window minimizes to the taskbar after boot - restore it from the tray icon.'
           : 'The window opens normally.',
       }),
     ]);
@@ -196,7 +196,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('p', {
         class: 'card-note settings-state',
         text: persisted.closeToTray
-          ? 'The close button hides the app to the tray — use the tray menu\'s Quit to exit fully.'
+          ? 'The close button hides the app to the tray - use the tray menu\'s Quit to exit fully.'
           : 'The close button quits the app.',
       }),
     ]);
@@ -228,14 +228,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
-    // 1.0.1 Themes: the Theme card — one swatch per theme
+    // 1.0.1 Themes: the Theme card - one swatch per theme
     // (button[data-theme-option="dark|midnight|light"]). The color chips
-    // are CSS-class driven (.swatch-*) — CSP style-src 'self' blocks inline
+    // are CSS-class driven (.swatch-*) - CSP style-src 'self' blocks inline
     // style attributes (plan-review N10). The current theme's swatch is
     // marked .active.
     const themeCard = el('section', { class: 'card settings-card theme-card' }, [
       el('h2', { class: 'card-title', text: 'Theme' }),
-      el('p', { class: 'card-note', text: 'Appearance — Dark Steel (the default black/gray), Midnight (deep indigo) or Arctic Light. The change applies immediately and is saved.' }),
+      el('p', { class: 'card-note', text: 'Appearance - Dark Steel (the default black/gray), Midnight (deep indigo) or Arctic Light. The change applies immediately and is saved.' }),
       el('div', { class: 'theme-options' }, THEMES.map((t) =>
         el('button', {
           type: 'button',
@@ -263,19 +263,19 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
     try {
       // M4-D2: the HKCU Run value is shared with the Profiles page's
-      // start-at-boot — disabling must NOT remove it while the profile's
+      // start-at-boot - disabling must NOT remove it while the profile's
       // boot apply owns it (the in-app boot apply then still runs). The
-      // ownership decision ALWAYS re-queries startup-get FRESH — never the
+      // ownership decision ALWAYS re-queries startup-get FRESH - never the
       // mount-captured bootState (a stale capture could remove the value
       // the other toggle owns after a mid-session change). A failed
-      // re-query degrades to "owned" — never remove the shared value
+      // re-query degrades to "owned" - never remove the shared value
       // directly on unknown state (main's profiles-settings-save
       // re-derives the value from the persisted intent anyway).
       let ownedByBoot = true;
       try {
         const fresh = await api.startupGet();
         ownedByBoot = fresh?.applyOnBoot === true;
-      } catch { /* unknown ownership — keep the shared value */ }
+      } catch { /* unknown ownership - keep the shared value */ }
       if (checked || !ownedByBoot) {
         await api.startupSet(checked);
       }
@@ -287,7 +287,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('error', 'Start with Windows could not be changed', err instanceof Error ? err.message : String(err));
       // M4-D review F4: a PARTIAL failure (the value write landed but the
       // settings save threw) must not leave the card contradicting the
-      // startup truth — re-query startup-get so the card re-renders from
+      // startup truth - re-query startup-get so the card re-renders from
       // the derived state (the checkbox follows the derivation, the state
       // line reads the truth and the mismatch hint explains the
       // disagreement). A blind checkbox revert would lie when the value
@@ -332,7 +332,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       await api.profilesSettingsSave({ monitorLogToFile: checked });
       persisted.monitorLogToFile = checked;
       // M4-D2: the boot-level telemetry subscription reads the shared
-      // module state — the toggle takes effect on the next tick, no
+      // module state - the toggle takes effect on the next tick, no
       // navigation needed.
       setMonitorLogToFile(checked);
       toast(checked ? 'success' : 'info', checked ? 'Log to file enabled' : 'Log to file disabled', '');
@@ -344,7 +344,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     await refresh();
   };
 
-  // 1.0.1 Themes: one swatch selected — apply IMMEDIATELY (the <html>
+  // 1.0.1 Themes: one swatch selected - apply IMMEDIATELY (the <html>
   // attribute + the canvas recolor via app.ts) and persist through
   // profiles-settings-save. A failed save REVERTS to the last persisted
   // theme + surfaces the honest error toast (like the other toggles).
@@ -356,7 +356,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       });
     };
     const previous = persisted.theme;
-    // Apply first — the UI never waits on the save to show the new theme.
+    // Apply first - the UI never waits on the save to show the new theme.
     applyTheme(theme);
     persisted.theme = theme;
     syncSwatches(theme);
