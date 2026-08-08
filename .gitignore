@@ -3,8 +3,15 @@ dist/
 out/
 *.log
 
-# Dev-only artifacts (kept locally for the pipeline; never committed)
-pipeline/
-tools/validate/
-.opencode/
+# Testing (kept locally — npm test / smoke:mock / ui-verify need them on disk)
+test/
+mock/
 
+# Noting / pipeline docs (kept locally; not part of the software or website)
+plan.md
+AGENTS.md
+docs/igcl-integration.md
+docs/sysman.md
+tools/
+pipeline/
+.opencode/
