@@ -64,11 +64,19 @@
     ${If} $ocClauseDialog == error
       Abort
     ${EndIf}
-    ${NSD_CreateLabel} 0 0 100% 150u "Arc Power changes GPU power limits, temperatures, core/VRAM clocks, voltages and fan curves beyond the Intel-standard envelope. Overclocking or overvolting may:$\r$\n  - void your warranty;$\r$\n  - reduce the lifetime of your GPU, PSU or other components;$\r$\n  - cause instability, crashes, data loss or display corruption;$\r$\n  - overheat or damage hardware when used carelessly.$\r$\n$\r$\nYou use Arc Power at your own risk. The developer provides no warranty and accepts no liability for any damage resulting from its use.$\r$\n$\r$\nThis notice is shown once per install; the settings you apply with the tool are always your own responsibility."
-    Pop $0
-    ${NSD_CreateCheckbox} 0 160u 100% 16u "I understand and accept the overclocking risk"
+    ; M4L fix round: the ${NSD_CreateCheckbox} macro in the bundled
+    ; nsDialogs produced a NON-functioning checkbox on the user's machine
+    ; (live-verified: a real mouse click did not toggle it - the installer
+    ; was stuck on this page). The manual CreateControl with the explicit
+    ; BS_AUTOCHECKBOX style (verified via GetWindowLong) + the checkbox
+    ; placed ABOVE the clause label (nothing can cover it) is the fix.
+    ; The accept also works via the keyboard (the checkbox is a tab-stop;
+    ; SPACE toggles it - the page never blocks without a way out).
+    nsDialogs::CreateControl "Button" "0x50010003" "0" 0 8u 100% 16u "I understand and accept the overclocking risk"
     Pop $ocAcknowledgedCheckbox
     ${NSD_SetState} $ocAcknowledgedCheckbox 0
+    ${NSD_CreateLabel} 0 32u 100% 220u "Arc Power changes GPU power limits, temperatures, core/VRAM clocks, voltages and fan curves beyond the Intel-standard envelope. Overclocking or overvolting may:$\r$\n  - void your warranty;$\r$\n  - reduce the lifetime of your GPU, PSU or other components;$\r$\n  - cause instability, crashes, data loss or display corruption;$\r$\n  - overheat or damage hardware when used carelessly.$\r$\n$\r$\nYou use Arc Power at your own risk. The developer provides no warranty and accepts no liability for any damage resulting from its use.$\r$\n$\r$\nThis notice is shown once per install; the settings you apply with the tool are always your own responsibility."
+    Pop $0
     nsDialogs::Show
   FunctionEnd
 
@@ -105,13 +113,16 @@
     ${EndIf}
     ${NSD_CreateLabel} 0 0 100% 40u "Arc Power is installed. Choose the finishing actions below."
     Pop $0
-    ${NSD_CreateCheckbox} 0 60u 100% 16u "Create .exe on Desktop"
+    ; M4L fix round: the same manual-style checkbox creation as the OC
+    ; page (the bundled ${NSD_CreateCheckbox} macro's buttons did not
+    ; respond to clicks on the user's machine).
+    nsDialogs::CreateControl "Button" "0x50010003" "0" 0 60u 100% 16u "Create .exe on Desktop"
     Pop $0
     ${NSD_SetState} $0 1
     ; keep a handle to the desktop-shortcut checkbox (the leave handler reads it)
     StrCpy $desktopShortcutChecked 1
     ${NSD_OnClick} $0 finishPageDesktopCheckboxChanged
-    ${NSD_CreateCheckbox} 0 84u 100% 16u "Launch now"
+    nsDialogs::CreateControl "Button" "0x50010003" "0" 0 84u 100% 16u "Launch now"
     Pop $0
     ${NSD_SetState} $0 1
     StrCpy $launchNowChecked 1
