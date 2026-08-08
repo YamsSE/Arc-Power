@@ -17,6 +17,8 @@ import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
 import { setMonitorLogToFile, setCurrentLogFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
+import { createDeviceSwitcher } from './device.ts';
+import { resolveBootDevice } from './pure/device.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -32,13 +34,22 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
   // M2D: the mock featureset swap re-reads caps + state + device + health in
   // main (one mock:set-featureset round trip) and re-renders the whole page
   // so ranges/units/controls/monitoring all update live. Mock mode only.
+  // M4-F (F1): the swap response carries a SINGLE caps/state pair (device 0
+  // of the rebuilt list) — with a non-zero device selected (the 2-device
+  // mock session) the CURRENT device's pair is re-read so the current
+  // deviceId is NEVER paired with device-0's ranges (device 1 stays the
+  // arc-igpu line across a swap — pairing it with b580's percent ranges
+  // would render the wrong surface).
   onFeaturesetSwap: async (id: string) => {
     try {
       const out = await api.mockSetFeatureset(id);
+      const curId = store.get().deviceId;
+      const caps = curId !== null && curId !== 0 ? await api.getCapabilities(curId) : out.caps;
+      const state = curId !== null && curId !== 0 ? await api.getCurrentSettings(curId) : out.state;
       store.set({
         devices: out.devices,
-        caps: out.caps,
-        state: out.state,
+        caps,
+        state,
         health: out.health,
         featuresetId: out.featureset.id,
         // M2D: the swap replaces the boot registry date with the featureset's
@@ -51,6 +62,19 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
       toast('error', 'Featureset swap failed', err instanceof Error ? err.message : String(err));
     }
   },
+});
+
+// M4-F: the GPU switch — one instance wired to the app's store, page
+// re-render and toast sink; exported so the Dashboard GPU card + Tuning
+// page selectors drive it. The full flow + the unit-tested core live in
+// device.ts (createDeviceSwitcher).
+export const selectDevice = createDeviceSwitcher({
+  api,
+  store,
+  onSwitched: () => {
+    renderPage(currentPage());
+  },
+  warn: (title, message) => toast('warn', title, message),
 });
 let current: Page | null = null;
 
@@ -149,7 +173,21 @@ async function boot() {
     return;
   }
 
-  const deviceId = devices[0].id;
+  // M4-F: boot selection — the persisted deviceId wins when it matches an
+  // enumerated id (device-get; the MAIN-side boot resolution is the
+  // authority and has already self-healed the persisted id before this
+  // round trip), else devices[0]. The main-side resolution applies the
+  // same rule to the boot-apply target, so the renderer and the boot
+  // apply can never disagree.
+  let persistedDeviceId: number | null = null;
+  try {
+    persistedDeviceId = (await api.deviceGet()).deviceId;
+  } catch {
+    persistedDeviceId = null; // degraded: devices[0]
+  }
+  // (devices.length > 0 is guaranteed here — the empty enumeration returned
+  // above — so the resolution is always a concrete id).
+  const deviceId = resolveBootDevice(devices, persistedDeviceId) ?? devices[0].id;
   store.set({ deviceId });
 
   // App version for the header line (M2C-B B3). Failure degrades to the
@@ -263,28 +301,32 @@ async function boot() {
     setMonitorLogToFile(false);
   }
 
+  // M4-F (M5): the boot-level telemetry subscription is registered OUTSIDE
+  // the telemetryStart try — a later switch's telemetryStart must ALWAYS
+  // push (the handler is session-global, never tied to one device's start
+  // success).
+  // M4-D2 (§10): the log send lives in this BOOT-LEVEL subscription —
+  // logging continues across page navigation. On EVERY pushed sample, when
+  // the Log-to-file toggle is on, append the sample + the best-effort fps
+  // (the module-level latest FPS the Monitoring page's poll updates; the
+  // sample's own fields make up the rest). Same tick cadence as the
+  // telemetry push — NO extra timers. The append result carries the CSV
+  // path — surfaced to the Monitoring page's "current log path" line.
+  api.onTelemetrySample((sample) => {
+    store.set({ latestSample: sample });
+    if (getMonitorLogToFile()) {
+      void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
+        .then((res) => {
+          if (res && typeof (res as { file?: unknown }).file === 'string') {
+            setCurrentLogFile((res as { file: string }).file);
+          }
+        })
+        .catch(() => { /* a failed append never breaks the UI */ });
+    }
+  });
+
   try {
     await api.telemetryStart(deviceId);
-    // M4-D2 (§10): the log send lives in the BOOT-LEVEL telemetry
-    // subscription (plan-review M5) — logging continues across page
-    // navigation. On EVERY pushed sample, when the Log-to-file toggle is
-    // on, append the sample + the best-effort fps (the module-level latest
-    // FPS the Monitoring page's poll updates; the sample's own fields make
-    // up the rest). Same tick cadence as the telemetry push — NO extra
-    // timers. The append result carries the CSV path — surfaced to the
-    // Monitoring page's "current log path" line.
-    api.onTelemetrySample((sample) => {
-      store.set({ latestSample: sample });
-      if (getMonitorLogToFile()) {
-        void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
-          .then((res) => {
-            if (res && typeof (res as { file?: unknown }).file === 'string') {
-              setCurrentLogFile((res as { file: string }).file);
-            }
-          })
-          .catch(() => { /* a failed append never breaks the UI */ });
-      }
-    });
   } catch (err) {
     toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
   }

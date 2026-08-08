@@ -18,6 +18,8 @@ import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { driverLine } from '../components/header.ts';
+import { buildDeviceSelect } from '../components/device-select.ts';
+import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState } from '../pure/sysinfo.ts';
 import type { TelemetrySample } from '../types.ts';
@@ -155,8 +157,15 @@ export const dashboardPage: Page = {
         ]),
 
         // --- device card ---
-        el('section', { class: 'card' }, [
-          el('h2', { class: 'card-title', text: device?.name ?? 'No GPU detected' }),
+        // M4-F: the card header row carries the compact GPU selector (hidden
+        // with <= 1 device — the honest single-device degradation). Both the
+        // header name and the card title track the selected device via the
+        // store; the switch re-renders this page (selectDevice).
+        el('section', { class: 'card device-card' }, [
+          el('div', { class: 'device-card-head' }, [
+            el('h2', { class: 'card-title', text: device?.name ?? 'No GPU detected' }),
+            buildDeviceSelect(ctx.store, (id) => void selectDevice(id)),
+          ]),
           device
             ? el('div', { class: 'card-body kv-grid' }, [
                 el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: driverLine(device, s.driverDate) ?? device.driverVersion })]),

@@ -31,10 +31,41 @@ const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
   .some((p) => p?.errorCode === 'waiver-not-set');
 
 /**
+ * M4-F (S2): resolve the apply's target device. Priority:
+ *   1. an explicit `deviceId` that matches an enumerated device;
+ *   2. the persisted settings' deviceId (when it matches an enumerated id);
+ *   3. devices[0] (the historical behavior — a 1-device machine is
+ *      unaffected; the persisted/selected device is honored on 2-GPU
+ *      machines so a logon apply never silently targets the iGPU).
+ * Returns null when no devices are enumerated (callers degrade).
+ * @param {import('./backend/backend.interface.js').IOCBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ * @param {number|null|undefined} explicitDeviceId
+ * @returns {Promise<number|null>}
+ */
+export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null) {
+  const devices = await backend.listDevices();
+  if (devices.length === 0) return null;
+  const ids = new Set(devices.map((d) => d.id));
+  if (Number.isInteger(explicitDeviceId) && ids.has(explicitDeviceId)) return explicitDeviceId;
+  let settings = null;
+  try {
+    settings = await store.loadSettings();
+  } catch {
+    // degraded: never fall back on an unreadable store beyond devices[0]
+  }
+  const persisted = settings?.deviceId;
+  if (Number.isInteger(persisted) && ids.has(persisted)) return persisted;
+  return devices[0].id;
+}
+
+/**
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   profileId: string,
+ *   deviceId?: number | null,    // M4-F: explicit target device (default:
+ *                                // persisted settings' deviceId ?? devices[0].id)
  *   log?: (s: string) => void,
  *   requireOcOnBoot?: boolean,   // boot path only; explicit actions skip it
  *   oldIgcl?: object,            // M2C-C: bundled-2023-runtime adapter (null in tests that never extend)
@@ -53,7 +84,7 @@ const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false }) {
+export async function applyProfile({ backend, store, profileId, deviceId = null, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
@@ -62,20 +93,20 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
     return { applied: false, reason: 'Waiver not accepted' };
   }
 
-  let devices;
+  let targetDeviceId;
   try {
-    devices = await backend.listDevices();
+    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId);
   } catch (err) {
     return { applied: false, reason: `device enumeration failed: ${err.message}` };
   }
-  if (devices.length === 0) {
+  if (targetDeviceId === null) {
     return { applied: false, reason: 'no devices enumerated' };
   }
-  const deviceId = devices[0].id;
+  const deviceId_ = targetDeviceId;
 
   let caps;
   try {
-    caps = await backend.getCapabilities(deviceId);
+    caps = await backend.getCapabilities(deviceId_);
   } catch (err) {
     return { applied: false, reason: `capability query failed: ${err.message}` };
   }
@@ -120,7 +151,7 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
     return { applied: false, reason: unavailable.message, extendedUnavailable: true };
   }
 
-  log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId}`);
+  log(`[apply-on-boot] applying profile '${profile.name}' (${profileId}) to device ${deviceId_}`);
   // F3 instant apply (M2C-B) + M2C-C routing/elevation: ONE attempt, shared
   // with the UI apply path. A non-elevated parent delegates to the elevated
   // self-worker; the boot task runs elevated and applies in-process.
@@ -136,14 +167,14 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
       // carries the persisted ocMode so the worker's gate keys on the real
       // mode (its own caps always report extendedRanges).
       return applyRunner.apply({
-        deviceId,
+        deviceId: deviceId_,
         settings: profile.settings,
         profileName: profile.name,
         waiverAccepted,
         ocMode: settings.ocMode,
       });
     }
-    return executeApply({ backend, oldIgcl, deviceId, settings: profile.settings, log });
+    return executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log });
   };
   let result;
   let state = null;
@@ -162,10 +193,10 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
       log('[apply-on-boot] apply answered waiver-not-set with a persisted acceptance — silently re-setting the driver waiver and retrying ONCE');
       try {
         if (applyRunner?.needsWorker?.()) {
-          await applyRunner.waiverAccept(deviceId);
-          await backend.restoreWaiverState(deviceId, true);
+          await applyRunner.waiverAccept(deviceId_);
+          await backend.restoreWaiverState(deviceId_, true);
         } else {
-          await backend.setWaiverAccepted(deviceId);
+          await backend.setWaiverAccepted(deviceId_);
         }
         out = await attempt(true);
         result = out.result;
@@ -180,7 +211,7 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   }
   if (!state) {
     try {
-      state = await backend.getCurrentSettings(deviceId);
+      state = await backend.getCurrentSettings(deviceId_);
     } catch {
       // Read-back failure (M2b step-5 NIT 5): degrade to a null state — the
       // outcome is still reported from `result`; never crash the flow.
@@ -220,10 +251,10 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   let fallbackApplied = true;
   try {
     if (applyRunner?.needsWorker?.()) {
-      const out = await applyRunner.reset(deviceId);
+      const out = await applyRunner.reset(deviceId_);
       if (!out.ok) throw new Error('reset via elevated worker failed');
     } else {
-      await backend.resetToDefaults(deviceId);
+      await backend.resetToDefaults(deviceId_);
     }
   } catch (err) {
     fallbackApplied = false;
@@ -231,7 +262,7 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   }
   let afterFallback = null;
   try {
-    afterFallback = await backend.getCurrentSettings(deviceId);
+    afterFallback = await backend.getCurrentSettings(deviceId_);
   } catch {
     // Read-back failure (M2b step-5 NIT 5): degrade to a null state — the
     // fallback flag + reason still report the outcome.
@@ -251,6 +282,7 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   profileId: string,
+ *   deviceId?: number | null,   // M4-F: explicit target (default: persisted ?? devices[0])
  *   log?: (s: string) => void,
  *   oldIgcl?: object,
  *   applyRunner?: object | null,
@@ -263,8 +295,8 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileOnBoot({ backend, store, profileId, log = () => {}, oldIgcl = null, applyRunner = null }) {
-  return applyProfile({ backend, store, profileId, log, requireOcOnBoot: true, oldIgcl, applyRunner });
+export async function applyProfileOnBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null, applyRunner = null }) {
+  return applyProfile({ backend, store, profileId, deviceId, log, requireOcOnBoot: true, oldIgcl, applyRunner });
 }
 
 /**
@@ -277,6 +309,7 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   profileId: string,
+ *   deviceId?: number | null,   // M4-F: explicit target (default: persisted ?? devices[0])
  *   log?: (s: string) => void,
  *   oldIgcl?: object,
  * }} ctx
@@ -288,9 +321,9 @@ export async function applyProfileOnBoot({ backend, store, profileId, log = () =
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileBoot({ backend, store, profileId, log = () => {}, oldIgcl = null }) {
+export async function applyProfileBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null }) {
   return applyProfile({
-    backend, store, profileId, log,
+    backend, store, profileId, deviceId, log,
     requireOcOnBoot: true,
     oldIgcl,
     applyRunner: null,
@@ -310,6 +343,7 @@ export async function applyProfileBoot({ backend, store, profileId, log = () => 
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   profileId: string,
+ *   deviceId?: number | null,   // M4-F: explicit target (default: persisted ?? devices[0])
  *   setupTray: () => Promise<{ displayBalloon: (o: { title: string, content: string }) => void }>,
  *   log?: (s: string) => void,
  *   oldIgcl?: object,
@@ -322,10 +356,10 @@ export async function applyProfileBoot({ backend, store, profileId, log = () => 
  *   state?: unknown,
  * }>}
  */
-export async function runApplyOnStartup({ backend, store, profileId, setupTray, log = () => {}, oldIgcl = null }) {
+export async function runApplyOnStartup({ backend, store, profileId, deviceId = null, setupTray, log = () => {}, oldIgcl = null }) {
   let out;
   try {
-    out = await applyProfileOnBoot({ backend, store, profileId, log, oldIgcl });
+    out = await applyProfileOnBoot({ backend, store, profileId, deviceId, log, oldIgcl });
   } catch (err) {
     out = { applied: false, reason: err.message };
   }

@@ -71,6 +71,8 @@ import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirty
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
+import { buildDeviceSelect } from '../components/device-select.ts';
+import { selectDevice } from '../app.ts';
 import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
 import type { RangeInfo, Capabilities, DeviceState, OcMode } from '../types.ts';
 
@@ -610,6 +612,12 @@ export const tuningPage: Page = {
     // (unchanged), RIGHT the "Tuning | Fan Curve" view pill at the SAME
     // height (both columns are identical label-over-toggle stacks; the
     // ui-verify pin asserts the pills' getBoundingClientRect tops are equal).
+    // M4-F: the compact GPU selector rides the oc-mode ROW (a third
+    // label-over-select column, same height pattern as the pills). Hidden
+    // with <= 1 device (the honest single-device degradation). The switch
+    // re-renders this page (selectDevice) — the sliders then derive from
+    // the new device's caps/state.
+    const deviceSelect = buildDeviceSelect(ctx.store, (id) => void selectDevice(id));
     const modeRow = el('div', { class: 'oc-mode-row' }, [
       el('div', { class: 'oc-mode-col' }, [
         el('span', { class: 'oc-mode-label', text: 'OC mode' }),
@@ -643,6 +651,10 @@ export const tuningPage: Page = {
           }),
         ]),
       ]),
+      ...(deviceSelect ? [el('div', { class: 'oc-mode-col device-select-col' }, [
+        el('span', { class: 'oc-mode-label', text: 'GPU' }),
+        deviceSelect,
+      ])] : []),
     ]);
 
     // M4-D2 (§8): the view switch re-renders ONLY the sub-view container —

@@ -7,6 +7,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('arcPower', {
   health: () => ipcRenderer.invoke('health'),
   listDevices: () => ipcRenderer.invoke('list-devices'),
+  // M4-F: the persisted GPU selection (device-get reads it at boot;
+  // device-set is the ONLY writer — like oc-mode-set).
+  deviceGet: () => ipcRenderer.invoke('device-get'),
+  deviceSet: (deviceId) => ipcRenderer.invoke('device-set', deviceId),
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
   getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
   applySettings: (deviceId, settings) => ipcRenderer.invoke('apply-settings', deviceId, settings),

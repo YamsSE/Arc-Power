@@ -730,3 +730,142 @@ test('M4-D2: applyProfileBoot gates on ocOnBoot like the boot flow (Start-at-boo
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// M4-F (S2) — the profile apply targets the PERSISTED/SELECTED device:
+//   - an explicit deviceId applies to THAT device (never devices[0]);
+//   - the default resolves the persisted settings' deviceId;
+//   - a stale/absent persisted id falls back to devices[0].
+// Device 1 (the arc-igpu line) supports NO OC controls — a full profile
+// fails on it HONESTLY (per-control unsupported) — which is exactly the
+// targeting proof: device 0 would have accepted the same profile, and the
+// per-control result + log line expose which device the apply ran against.
+// ---------------------------------------------------------------------------
+
+// A profile whose settings device 1 (the control-less arc-igpu) can apply:
+// nothing to write -> the flow completes on THAT device.
+const EMPTY_PROFILE = {
+  id: 'pe',
+  name: 'No-op',
+  createdAt: '2026-08-05T00:00:00Z',
+  schemaVersion: 1,
+  settings: {},
+  ocOnBoot: false,
+};
+
+test('M4-F (S2): applyProfile with an EXPLICIT deviceId targets THAT device (its caps gate the result)', async () => {
+  const dir = testDir('s2-explicit');
+  try {
+    const backend = new MockBackend({ multiDevice: true });
+    await backend.restoreWaiverState(0, true);
+    await backend.restoreWaiverState(1, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'p1', ocMode: 'advanced' },
+      profiles: [PROFILE, EMPTY_PROFILE],
+    });
+    const logs = [];
+    // The full profile CANNOT apply to device 1 (no controls) — the failure
+    // proves the apply ran against DEVICE 1's caps, not device 0's.
+    const out = await applyProfile({ backend, store, profileId: 'p1', deviceId: 1, log: (s) => logs.push(s) });
+    assert.equal(out.applied, false);
+    assert.equal(out.result.perControl.powerLimitW.errorCode, 'unsupported', 'device-1 caps refused the control');
+    assert.ok(logs.some((l) => l.includes('to device 1')), 'the log names the target device');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'device 0 is UNTOUCHED');
+    // An empty profile completes on device 1 (nothing to write) — applied:true.
+    const ok = await applyProfile({ backend, store, profileId: 'pe', deviceId: 1, log: (s) => logs.push(s) });
+    assert.equal(ok.applied, true, `the empty profile must land on device 1: ${ok.reason}`);
+    assert.ok(logs.some((l) => l.includes('to device 1')));
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'device 0 stays untouched');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-F (S2): the DEFAULT deviceId resolves the PERSISTED selection (device 1)', async () => {
+  const dir = testDir('s2-persisted');
+  try {
+    const backend = new MockBackend({ multiDevice: true });
+    await backend.restoreWaiverState(0, true);
+    await backend.restoreWaiverState(1, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'pe', ocMode: 'advanced', deviceId: 1 },
+      profiles: [EMPTY_PROFILE],
+    });
+    const logs = [];
+    const out = await applyProfile({ backend, store, profileId: 'pe', log: (s) => logs.push(s) });
+    assert.equal(out.applied, true, `the persisted selection is honored: ${out.reason}`);
+    assert.ok(logs.some((l) => l.includes('to device 1')), 'the apply targeted the persisted device');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'device 0 untouched — the 2-GPU iGPU trap is closed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-F (S2): a stale persisted deviceId falls back to devices[0]', async () => {
+  const dir = testDir('s2-stale');
+  try {
+    const backend = new MockBackend({ multiDevice: true });
+    await backend.restoreWaiverState(0, true);
+    await backend.restoreWaiverState(1, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'p1', ocMode: 'advanced', deviceId: 7 },
+      profiles: [PROFILE],
+    });
+    const out = await applyProfile({ backend, store, profileId: 'p1' });
+    assert.equal(out.applied, true);
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 240, 'devices[0] is the honest fallback');
+    assert.equal((await backend.getCurrentSettings(1)).powerLimitW, null, 'device 1 untouched');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-F (S2): an explicit deviceId that does not enumerate falls back to the persisted -> devices[0]', async () => {
+  const dir = testDir('s2-explicit-stale');
+  try {
+    const backend = new MockBackend({ multiDevice: true });
+    await backend.restoreWaiverState(0, true);
+    await backend.restoreWaiverState(1, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: false, activeProfileId: 'pe', ocMode: 'advanced', deviceId: 1 },
+      profiles: [EMPTY_PROFILE],
+    });
+    const logs = [];
+    const out = await applyProfile({ backend, store, profileId: 'pe', deviceId: 42, log: (s) => logs.push(s) });
+    assert.equal(out.applied, true);
+    assert.ok(logs.some((l) => l.includes('to device 1')), 'a stale explicit id degrades to the PERSISTED device');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'device 0 untouched');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M4-F (S2): applyProfileBoot + runApplyOnStartup thread the deviceId through', async () => {
+  const dir = testDir('s2-boot-variants');
+  try {
+    const backend = new MockBackend({ multiDevice: true });
+    await backend.restoreWaiverState(0, true);
+    await backend.restoreWaiverState(1, true);
+    const store = makeStore(dir, {
+      settings: { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'pe', ocMode: 'advanced', deviceId: 1 },
+      profiles: [EMPTY_PROFILE],
+    });
+    const bootLogs = [];
+    const bootOut = await applyProfileBoot({ backend, store, profileId: 'pe', deviceId: 1, log: (s) => bootLogs.push(s) });
+    assert.equal(bootOut.applied, true);
+    assert.ok(bootLogs.some((l) => l.includes('to device 1')), 'the boot variant targets the explicit device');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'device 0 untouched');
+    // runApplyOnStartup defaults to the persisted selection.
+    const { setupTray, calls } = countingTray();
+    const startupLogs = [];
+    const startupOut = await runApplyOnStartup({ backend, store, profileId: 'pe', setupTray, log: (s) => startupLogs.push(s) });
+    assert.equal(startupOut.applied, true, `the startup flow must honor the persisted selection: ${startupOut.reason}`);
+    assert.equal(calls.setup, 1);
+    assert.ok(startupLogs.some((l) => l.includes('to device 1')), 'the startup flow targets the persisted device');
+    assert.equal((await backend.getCurrentSettings(0)).powerLimitW, 210, 'device 0 untouched');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

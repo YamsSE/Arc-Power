@@ -138,7 +138,12 @@ export class ProfileStore {
   }
 
   /**
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean }>}
+   * M4-F: `deviceId` — the persisted GPU selection (number | null). Absent
+   * on old files -> null (the devices[0] default resolves at boot); stored
+   * via the device-set channel, NEVER through profiles-settings-save (which
+   * carries it read-modify-write so a Settings/Profiles save can never
+   * clobber it).
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -175,6 +180,8 @@ export class ProfileStore {
         startWithWindows: false, startMinimized: false, closeToTray: false,
         // M4-D2: absent -> false (the Monitoring log-to-file toggle).
         monitorLogToFile: false,
+        // M4-F: absent -> null (the devices[0] fallback resolves at boot).
+        deviceId: null,
       };
     }
     return {
@@ -194,11 +201,15 @@ export class ProfileStore {
       closeToTray: data.closeToTray === true,
       // M4-D2: the Monitoring "Log to file" toggle (same mechanism).
       monitorLogToFile: data.monitorLogToFile === true,
+      // M4-F: the persisted GPU selection. Absent on old files -> null
+      // (devices[0] resolves at boot — same absent-field mechanism as
+      // ocMode; a garbage value never crashes, it degrades to null).
+      deviceId: Number.isInteger(data.deviceId) && data.deviceId >= 0 ? data.deviceId : null,
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -212,6 +223,10 @@ export class ProfileStore {
       startMinimized: settings.startMinimized === true,
       closeToTray: settings.closeToTray === true,
       monitorLogToFile: settings.monitorLogToFile === true,
+      // M4-F: non-negative integers only; anything else (absent, null,
+      // garbage) persists as null — the boot resolution + self-heal then
+      // repersists devices[0].
+      deviceId: Number.isInteger(settings.deviceId) && settings.deviceId >= 0 ? settings.deviceId : null,
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write — the
     // close handler must see the very toggle it just persisted.

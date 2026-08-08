@@ -340,6 +340,9 @@ export interface ProfileSettingsState {
   closeToTray: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
+  /** M4-F: the persisted GPU selection (absent on old files -> null — the
+   *  devices[0] fallback resolves at boot; device-set is the ONLY writer). */
+  deviceId: number | null;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

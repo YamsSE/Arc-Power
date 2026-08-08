@@ -54,6 +54,9 @@ export class MockBackend {
    *                                      // featureset powerW: powerW * intervalS)
    *   extendedRanges?: boolean,          // overlay on the featureset extendedRanges flag
    *   extendedFail?: boolean,            // extended applies fail with the honest unavailable message
+   *   multiDevice?: boolean,             // M4-F: emit device ids 0 AND 1 (device 1 =
+   *                                      // the arc-igpu line) — the RID_MOCK_MULTI_DEVICE=1
+   *                                      // ui-verify knob; tests pass the flag directly
    * }} opts
    */
   constructor(opts = {}) {
@@ -85,14 +88,19 @@ export class MockBackend {
     // recomputes the step from the ACTIVE featureset's powerW (M2D: after a
     // swap the monitoring power readout must derive from the new device).
     this._energyStepOverride = opts.energyStepJ !== undefined ? opts.energyStepJ : null;
+    // M4-F: the multi-device session — device ids 0 AND 1 under the
+    // RID_MOCK_MULTI_DEVICE=1 knob (or the constructor flag for tests);
+    // device 1 is the arc-igpu line with DISTINCT caps/state/telemetry.
+    this._multiDevice = opts.multiDevice === true || process.env.RID_MOCK_MULTI_DEVICE === '1';
+    // Devices > 0 live here; device 0 is the legacy single-device fields
+    // (_device/_caps/_state/_tick/_energyStepJ/_waiverAccepted/
+    // _telemetryCbs — the pre-M4-F mock, pinned directly by tests).
+    this._extraDevices = new Map();
     this._applyFeatureset(this._featureset);
     // Constructor-injected failures land AFTER _applyFeatureset (which resets
     // the fail maps — a featureset swap clears dev-injected failures).
     this._failOn = opts.failOn ?? {};
     if (opts.offGridFreqMhz !== undefined) this._state.gpuFreqOffsetMhz = opts.offGridFreqMhz;
-    this._waiverAccepted = false;
-    this._tick = 0;
-    this._telemetryCbs = new Set();
   }
 
   /** M2D: the active featureset id (the swap dropdown selection). */
@@ -105,7 +113,48 @@ export class MockBackend {
     return this._extended;
   }
 
-  /** Apply one featureset: rebuild caps, device fixture and state. */
+  /**
+   * M4-F: resolve the per-device state for one device id. Device 0 is the
+   * legacy single-device fields (the pre-M4-F mock — tests pin them
+   * directly); devices > 0 live in _extraDevices. An unknown id throws
+   * (honest — the caller asked for a device that does not exist).
+   * @param {number|undefined|null} deviceId
+   */
+  _entry(deviceId) {
+    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
+    if (id === 0) {
+      return {
+        device: this._device,
+        caps: this._caps,
+        state: this._state,
+        featureset: this._featureset,
+        energyStepJ: this._energyStepJ,
+        waiverAccepted: this._waiverAccepted,
+        telemetryCbs: this._telemetryCbs,
+      };
+    }
+    const e = this._extraDevices.get(id);
+    if (!e) throw new Error(`mock-backend: unknown device id ${id}`);
+    return e;
+  }
+
+  /** M4-F: the second device's featureset (the arc-igpu line — fixed). */
+  _secondFeatureset() {
+    const { featureset, warning } = loadFeaturesetOrFallback('arc-igpu');
+    if (warning) {
+      this._featuresetWarning = warning;
+      console.error(`[mock-backend] ${warning}`);
+    }
+    return featureset;
+  }
+
+  /**
+   * Apply one featureset to device 0 (and rebuild device 1 in the
+   * multi-device session — the swap re-renders BOTH devices): rebuild caps,
+   * device fixture and state. The in-memory waiver acceptance + the
+   * telemetry subscriptions survive per device (they are app/session
+   * consent, not driver state — the swap rebuilds caps/state/timeline only).
+   */
   _applyFeatureset(fs) {
     this._featureset = fs;
     // M2D: the energy step derives from the ACTIVE featureset (powerW *
@@ -120,18 +169,39 @@ export class MockBackend {
     this._fanCanControl = fs.hasFan && (this._fanOverlay !== undefined
       ? this._fanOverlay
       : fs.fanCanControl === true);
-    this._caps = this._buildCaps(fs);
-    this._device = this._buildDevice(fs);
+    // Carry the per-device consent + subscriptions across the rebuild (the
+    // swap is caps/state/timeline only — never a silent waiver reset).
+    const prevWaiver = this._waiverAccepted;
+    const prevCbs = this._telemetryCbs;
+    const prevExtraWaivers = new Map([...this._extraDevices].map(([id, e]) => [id, e.waiverAccepted]));
+    const prevExtraCbs = new Map([...this._extraDevices].map(([id, e]) => [id, e.telemetryCbs]));
+    this._caps = this._buildCaps(fs, this._extended, this._fanCanControl);
+    this._device = this._buildDevice(fs, 0);
     this._state = this._buildState(fs);
-    this._failOn = {};
-    this._failOnce = {};
     // A swap is a fresh device: the telemetry timeline restarts (one
     // no-power sample while the energy counter resets, then the new
     // featureset's wattage — never a blended value).
     this._tick = 0;
+    this._waiverAccepted = prevWaiver === undefined ? false : prevWaiver;
+    this._telemetryCbs = prevCbs === undefined ? new Set() : prevCbs;
+    if (this._multiDevice) {
+      const fs2 = this._secondFeatureset();
+      this._extraDevices.set(1, {
+        device: this._buildDevice(fs2, 1),
+        caps: this._buildCaps(fs2, fs2.extendedRanges === true, fs2.hasFan && fs2.fanCanControl === true),
+        state: this._buildState(fs2),
+        featureset: fs2,
+        energyStepJ: fs2.telemetry.powerW * this._intervalS,
+        tick: 0,
+        waiverAccepted: prevExtraWaivers.get(1) ?? false,
+        telemetryCbs: prevExtraCbs.get(1) ?? new Set(),
+      });
+    }
+    this._failOn = {};
+    this._failOnce = {};
   }
 
-  _buildCaps(fs) {
+  _buildCaps(fs, extended, fanCanControl = this._fanCanControl) {
     // Parity with IgclBackend: every control key is emitted explicitly
     // (supported -> true, otherwise false) so consumers never see undefined.
     const controls = {
@@ -142,11 +212,13 @@ export class MockBackend {
     for (const c of fs.supportedControls) controls[c] = true;
     const ranges = JSON.parse(JSON.stringify(fs.ranges));
     // M3-C-E: the extended maxes are exposed ONLY in advanced mode — stock
-    // mode reports the standard ranges (mirrors IgclBackend).
-    if (this._extended && this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax) {
+    // mode reports the standard ranges (mirrors IgclBackend). M4-F: the
+    // per-device flag (device 0: the session overlay; device 1: its own
+    // featureset — the arc-igpu is never extended-capable).
+    if (extended && this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax) {
       ranges.powerLimitW.max = fs.extended.plMax;
     }
-    if (this._extended && this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax) {
+    if (extended && this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax) {
       ranges.tempLimitC.max = fs.extended.tlMax;
     }
     const caps = {
@@ -159,11 +231,11 @@ export class MockBackend {
       waiverAccepted: false,
       controls,
       ranges,
-      fan: this._buildFanCaps(fs),
+      fan: this._buildFanCaps(fs, fanCanControl),
     };
     // M2C-C: the bundled-2023-runtime flag — the UI exposes the extended
     // maxes only when it is set AND the OC mode is advanced (M3-C-E).
-    if (this._extended && this._ocMode === 'advanced') caps.extendedRanges = true;
+    if (extended && this._ocMode === 'advanced') caps.extendedRanges = true;
     return caps;
   }
 
@@ -178,16 +250,22 @@ export class MockBackend {
     const next = mode === 'stock' ? 'stock' : 'advanced';
     if (next !== this._ocMode) {
       this._ocMode = next;
-      this._caps = this._buildCaps(this._featureset);
+      // M4-F: the mode is global (not per-device) — the caps cache of BOTH
+      // devices is invalidated (the arc-igpu has no extended ranges either
+      // way; rebuilding it keeps its caps honest under the stock flip).
+      this._caps = this._buildCaps(this._featureset, this._extended, this._fanCanControl);
+      for (const e of this._extraDevices.values()) {
+        e.caps = this._buildCaps(e.featureset, e.featureset.extendedRanges === true, e.featureset.hasFan && e.featureset.fanCanControl === true);
+      }
     }
     return next;
   }
 
-  _buildFanCaps(fs) {
+  _buildFanCaps(fs, fanCanControl = this._fanCanControl) {
     if (!fs.hasFan) {
       return { canControl: false, modes: [], maxRpm: -1, maxCurvePoints: 0 };
     }
-    if (this._fanCanControl) {
+    if (fanCanControl) {
       return { ...FAN_EDITABLE, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
     }
     // Read-only overlay (M3-D round-2 F1): the modes stay the card's TRUE
@@ -197,9 +275,9 @@ export class MockBackend {
     return { canControl: false, modes: ['auto', 'curve'], maxRpm: -1, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
   }
 
-  _buildDevice(fs) {
+  _buildDevice(fs, id = 0) {
     return {
-      id: 0,
+      id,
       // M4-B: the VRAM suffix is formatted ONCE here (listDevices time) —
       // the header, device card and dialogs all read device.name, so the
       // suffix reaches every consumer by construction, never per-render.
@@ -208,7 +286,9 @@ export class MockBackend {
       pciVendorId: '0x00008086',
       pciDeviceId: fs.pciDeviceId ?? '0x000056a0',
       revId: 8,
-      bdf: { bus: 3, device: 0, function: 0 },
+      // M4-F: the second device sits at its own bus/device slot (an iGPU
+      // fixture — distinct from the primary card's bdf).
+      bdf: id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 },
       driverVersion: fs.driverVersion,
       graphicsClockMHz: fs.graphicsClockMHz,
       numXeCores: fs.numXeCores,
@@ -240,6 +320,9 @@ export class MockBackend {
    * M2C-C mock of the bundled 2023 runtime's extended setters: applies the
    * value to the mock state when extended ranges are enabled; otherwise (or
    * with extendedFail) answers with the honest unavailable message.
+   * M4-F: device-0 scoped by construction — the OldIgcl duck type carries no
+   * deviceId (extended values only exist on the primary device; the
+   * arc-igpu line has no PL/TL controls at all).
    * @param {'powerLimitW'|'tempLimitC'} control
    * @param {number} value
    * @returns {Promise<{ ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean }>}
@@ -326,41 +409,62 @@ export class MockBackend {
 
   async close() {
     this._telemetryCbs.clear();
+    for (const e of this._extraDevices.values()) e.telemetryCbs.clear();
   }
 
   async listDevices() {
-    return [{ ...this._device }];
+    const out = [{ ...this._device }];
+    for (const e of this._extraDevices.values()) out.push({ ...e.device });
+    return out;
   }
 
   /**
    * M4-D2 (user: driver ReBAR state): the mock reports the fixture's driver
-   * PCI properties — resizableBarEnabled defaults TRUE (the pinned green
-   * pill), overridable via the knob for the off-state pin.
+   * PCI properties — the PRIMARY device's resizableBarEnabled defaults TRUE
+   * (the pinned green pill), overridable via the knob for the off-state pin.
+   * M4-F: per device — the second device (iGPU) has no ReBAR capability
+   * (honest: resizableBarSupported false, no BAR window).
    * @returns {Promise<object>}
    */
-  async pciProperties() {
-    const enabled = process.env.RID_MOCK_REBAR_ENABLED !== '0';
+  async pciProperties(deviceId = 0) {
+    if (deviceId === 0) {
+      const enabled = process.env.RID_MOCK_REBAR_ENABLED !== '0';
+      return {
+        domain: 0,
+        bus: 3,
+        device: 0,
+        function: 0,
+        gen: 4,
+        width: 16,
+        maxBandwidth: 31547565840,
+        resizableBarSupported: true,
+        resizableBarEnabled: enabled,
+      };
+    }
+    const e = this._extraDevices.get(deviceId);
+    if (!e) throw new Error(`mock-backend: unknown device id ${deviceId}`);
     return {
       domain: 0,
-      bus: 3,
-      device: 0,
+      bus: 0,
+      device: 2,
       function: 0,
       gen: 4,
-      width: 16,
-      maxBandwidth: 31547565840,
-      resizableBarSupported: true,
-      resizableBarEnabled: enabled,
+      width: 0,
+      maxBandwidth: 0,
+      resizableBarSupported: false,
+      resizableBarEnabled: false,
     };
   }
 
-  async getCapabilities() {
-    const caps = JSON.parse(JSON.stringify(this._caps));
-    caps.waiverAccepted = this._waiverAccepted;
+  async getCapabilities(deviceId = 0) {
+    const e = this._entry(deviceId);
+    const caps = JSON.parse(JSON.stringify(e.caps));
+    caps.waiverAccepted = e.waiverAccepted;
     return caps;
   }
 
-  async getCurrentSettings() {
-    const s = this._state;
+  async getCurrentSettings(deviceId = 0) {
+    const s = this._entry(deviceId).state;
     return {
       powerLimitW: s.powerLimitW,
       gpuVoltOffsetV: s.gpuVoltOffsetV,
@@ -376,9 +480,13 @@ export class MockBackend {
     };
   }
 
-  async applySettings(_deviceId, settings = {}, opts = {}) {
+  async applySettings(deviceId, settings = {}, opts = {}) {
+    // M4-F: operate on the TARGET device's caps + state (device 0 keeps the
+    // legacy fields; devices > 0 hit their map entry).
+    const e = this._entry(deviceId);
+    const caps = e.caps;
+    const state = e.state;
     const result = { ok: true, perControl: {} };
-    const caps = this._caps;
 
     const applyScalar = (control, canonicalName, value) => {
       if (value === null || value === undefined) return;
@@ -397,7 +505,7 @@ export class MockBackend {
       const clamped = opts.snapToStep === false
         ? Math.min(range.max, Math.max(range.min, Number.isFinite(value) ? value : range.min))
         : clampAndSnap(value, range);
-      this._state[canonicalName] = clamped;
+      state[canonicalName] = clamped;
       result.perControl[canonicalName] = { ok: true, readBackEqual: true };
     };
 
@@ -414,7 +522,7 @@ export class MockBackend {
         result.ok = false;
       } else {
         // Mirror IgclBackend.applyLock: clamp to the documented lock bounds.
-        this._state.gpuLock = clampGpuLock(settings.gpuLock);
+        state.gpuLock = clampGpuLock(settings.gpuLock);
         result.perControl.gpuLock = { ok: true, readBackEqual: true };
       }
     }
@@ -426,7 +534,7 @@ export class MockBackend {
       } else {
         // M2D (b580 featureset): vfCurve R/W — store a sanitized copy (the
         // driver curve table cap), mirroring the driver accepting the write.
-        this._state.vfCurve = settings.vfCurve
+        state.vfCurve = settings.vfCurve
           .slice(0, MAX_VF_POINTS)
           .map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
         result.perControl.vfCurve = { ok: true, readBackEqual: true };
@@ -436,14 +544,15 @@ export class MockBackend {
     // Fan: read-only overlay (RID_MOCK_FAN_READONLY — the M3-D read-only
     // surface: the card's true modes, control withheld) — any fan
     // request is answered with unsupported, mirroring the real-card gate.
-    if (!this._fanCanControl) {
+    // M4-F: keyed on the DEVICE's caps (the iGPU has no fan at all).
+    if (!caps.fan.canControl) {
       for (const c of ['fanMode', 'fanCurve', 'fixedFanPct']) {
         if (settings[c] !== null && settings[c] !== undefined) {
           result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'fan control is read-only on this device (canControl=false)' };
           result.ok = false;
         }
       }
-      this._reconcileWaiver(result);
+      this._reconcileWaiver(result, deviceId);
       return result;
     }
 
@@ -462,7 +571,7 @@ export class MockBackend {
           result.perControl[c] = { ok: false, errorCode: 'unsupported', message: `fan mode ${mode} not supported on this device` };
           result.ok = false;
         }
-        this._reconcileWaiver(result);
+        this._reconcileWaiver(result, deviceId);
         return result;
       }
 
@@ -472,8 +581,8 @@ export class MockBackend {
           result.ok = false;
           this._consumeFailOnce('fanCurve');
         } else {
-          this._state.fanCurve = normalizeFanCurve(settings.fanCurve, caps.fan.maxCurvePoints);
-          this._state.fanMode = 'curve';
+          state.fanCurve = normalizeFanCurve(settings.fanCurve, caps.fan.maxCurvePoints);
+          state.fanMode = 'curve';
           result.perControl.fanCurve = { ok: true, readBackEqual: true };
           result.perControl.fanMode = { ok: true, readBackEqual: true };
         }
@@ -485,8 +594,8 @@ export class MockBackend {
           result.ok = false;
           this._consumeFailOnce('fixedFanPct');
         } else {
-          this._state.fixedFanPct = clampFanPct(settings.fixedFanPct);
-          this._state.fanMode = 'fixed';
+          state.fixedFanPct = clampFanPct(settings.fixedFanPct);
+          state.fanMode = 'fixed';
           result.perControl.fixedFanPct = { ok: true, readBackEqual: true };
           result.perControl.fanMode = { ok: true, readBackEqual: true };
         }
@@ -498,13 +607,13 @@ export class MockBackend {
           result.ok = false;
           this._consumeFailOnce('fanMode');
         } else {
-          this._state.fanMode = 'auto';
+          state.fanMode = 'auto';
           result.perControl.fanMode = { ok: true, readBackEqual: true };
         }
       }
     }
 
-    this._reconcileWaiver(result);
+    this._reconcileWaiver(result, deviceId);
     return result;
   }
 
@@ -513,49 +622,81 @@ export class MockBackend {
    * (any per-control waiver-not-set), clear the stale in-memory flag so
    * getCapabilities reports unaccepted and the next apply re-shows the
    * dialog. Never accepts anything — re-acceptance still requires the
-   * explicit waiver-accept path.
+   * explicit waiver-accept path. M4-F: the flag is PER-DEVICE (mirror the
+   * real backend's per-device Map).
    * @param {{ perControl: Record<string, { errorCode?: string }> }} result
+   * @param {number} deviceId
    */
-  _reconcileWaiver(result) {
-    if (Object.values(result.perControl).some((p) => p.errorCode === 'waiver-not-set')) {
+  _reconcileWaiver(result, deviceId) {
+    if (!Object.values(result.perControl).some((p) => p.errorCode === 'waiver-not-set')) return;
+    if (deviceId === undefined || deviceId === null || deviceId === 0) {
       this._waiverAccepted = false;
+    } else {
+      const e = this._extraDevices.get(deviceId);
+      if (e) e.waiverAccepted = false;
     }
   }
 
-  async resetToDefaults() {
-    this._state = this._buildState(this._featureset);
+  async resetToDefaults(deviceId = 0) {
+    const e = this._entry(deviceId);
+    if (deviceId === undefined || deviceId === null || deviceId === 0) {
+      this._state = this._buildState(this._featureset);
+    } else {
+      e.state = this._buildState(e.featureset);
+    }
   }
 
-  async setWaiverAccepted() {
-    this._waiverAccepted = true;
+  async setWaiverAccepted(deviceId = 0) {
+    if (deviceId === undefined || deviceId === null || deviceId === 0) {
+      this._waiverAccepted = true;
+      return;
+    }
+    const e = this._extraDevices.get(deviceId);
+    if (!e) throw new Error(`mock-backend: unknown device id ${deviceId}`);
+    e.waiverAccepted = true;
   }
 
   /**
    * Boot-time seeding of a persisted waiver acceptance (F1): sets ONLY the
    * in-memory flag — never accepts on the driver. Mirrors
    * IgclBackend.restoreWaiverState; the driver-side acceptance runs only on
-   * explicit user acceptance (waiver-accept -> setWaiverAccepted).
-   * @param {number} _deviceId
+   * explicit user acceptance (waiver-accept -> setWaiverAccepted). M4-F: the
+   * flag is PER-DEVICE (mirror the real backend's per-device Map).
+   * @param {number} deviceId
    * @param {boolean} accepted
    */
-  async restoreWaiverState(_deviceId, accepted) {
-    this._waiverAccepted = accepted === true;
+  async restoreWaiverState(deviceId, accepted) {
+    if (deviceId === undefined || deviceId === null || deviceId === 0) {
+      this._waiverAccepted = accepted === true;
+      return;
+    }
+    const e = this._extraDevices.get(deviceId);
+    if (!e) throw new Error(`mock-backend: unknown device id ${deviceId}`);
+    e.waiverAccepted = accepted === true;
   }
 
-  async sampleRawTelemetry() {
-    const tick = this._tick++;
-    const tel = this._featureset.telemetry;
+  async sampleRawTelemetry(deviceId) {
+    // M4-F: PER-DEVICE ramps — each device owns its featureset-derived
+    // bases + energy step + timeline (device 1 = the arc-igpu line ramps
+    // differently: a smaller energy step, its own clock/temp bases, its own
+    // t timeline so the two devices' samples never collide).
+    const isPrimary = deviceId === undefined || deviceId === null || deviceId === 0;
+    const e = this._entry(deviceId);
+    const tick = isPrimary ? this._tick++ : e.tick++;
+    const tel = e.featureset.telemetry;
+    const energyStepJ = isPrimary ? this._energyStepJ : e.energyStepJ;
+    const tBase = isPrimary ? 9662.768701 : 109662.768701;
     // Deterministic ramp: energy +intervalS-interval per tick; clock/temp
     // climb; throttle flag fires on every 10th tick (temp limited). Bases
     // come from the featureset.
     const sample = {
-      t: 9662.768701 + tick * this._intervalS,
+      t: tBase + tick * this._intervalS,
       gpuClockMhz: tel.gpuClockBaseMhz + tick * 100,
       memClockMhz: tel.memClockMhz,
       tempC: tel.tempCBase + (tick % 30),
       vramTempC: tel.tempCBase + 8 + (tick % 10),
       gpuVoltageV: 0.652,
-      gpuEnergyJ: 395809.938172 + tick * this._energyStepJ,
+      gpuEnergyJ: 395809.938172 + tick * energyStepJ,
       fanRpm: tel.fanRpm,
       throttle: {
         power: false,
@@ -565,13 +706,15 @@ export class MockBackend {
         util: false,
       },
     };
-    for (const cb of this._telemetryCbs) { try { cb(sample); } catch { /* ignore */ } }
+    for (const cb of e.telemetryCbs) { try { cb(sample); } catch { /* ignore */ } }
     return sample;
   }
 
-  onRawTelemetry(_deviceId, cb) {
-    this._telemetryCbs.add(cb);
-    return () => this._telemetryCbs.delete(cb);
+  onRawTelemetry(deviceId, cb) {
+    // M4-F: subscriptions are PER-DEVICE (device 0 keeps the legacy set).
+    const e = this._entry(deviceId);
+    e.telemetryCbs.add(cb);
+    return () => e.telemetryCbs.delete(cb);
   }
 
   async health() {

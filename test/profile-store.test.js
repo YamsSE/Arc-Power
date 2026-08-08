@@ -35,6 +35,7 @@ test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWi
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
+    deviceId: null,
   });
   await store.saveSettings({
     waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
@@ -43,7 +44,7 @@ test('settings: defaults when missing; round trip (M3-C-E: ocMode, M4-D: startWi
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced',
     advancedModeAccepted: false, startWithWindows: true, startMinimized: true, closeToTray: false,
-    monitorLogToFile: false,
+    monitorLogToFile: false, deviceId: null,
   });
 });
 
@@ -90,6 +91,7 @@ test('F4: stores on separate dirs are fully isolated — a mock-mode write never
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
+    deviceId: null,
   });
   assert.equal(fs.existsSync(path.join(realDir, 'settings.json')), false, 'the mock session never wrote the real dir');
   // A stock mock variant flips only the mock dir — the real store still
@@ -202,6 +204,7 @@ test('load: settings file at current schema passes through (M3-C-E: v2, M4-D abs
     waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
     ocMode: 'advanced', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
+    deviceId: null,
   });
 });
 
@@ -243,6 +246,7 @@ test('M3-C-E: a v1 settings file migrates on load; the absent ocMode follows the
     waiverAccepted: true, ocOnBoot: false, activeProfileId: null,
     ocMode: 'stock', advancedModeAccepted: false,
     startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false,
+    deviceId: null,
   });
   // The migrated file is persisted back at the CURRENT schema (v2).
   const raw = JSON.parse(fs.readFileSync(real.settingsPath, 'utf8'));
@@ -283,4 +287,45 @@ test('M4-D2: monitorLogToFile persists (absent on old files -> false)', async (t
   const oldDir = tempDir(t);
   fs.writeFileSync(path.join(oldDir, 'settings.json'), JSON.stringify({ schemaVersion: 2, waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' }));
   assert.equal((await new ProfileStore({ dir: oldDir }).loadSettings()).monitorLogToFile, false);
+});
+
+// M4-F — the persisted GPU selection (absent -> null default, no schema bump).
+test('M4-F: deviceId — absent on old files and missing stores reads null (the devices[0] default)', async (t) => {
+  const store = new ProfileStore({ dir: tempDir(t) });
+  assert.equal((await store.loadSettings()).deviceId, null, 'missing settings file -> null');
+  // An old v2 settings file without the field reads null (same absent-field
+  // mechanism as ocMode — NO schema bump).
+  const oldDir = tempDir(t);
+  fs.writeFileSync(path.join(oldDir, 'settings.json'), JSON.stringify({ schemaVersion: 2, waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' }));
+  assert.equal((await new ProfileStore({ dir: oldDir }).loadSettings()).deviceId, null);
+  // A garbage persisted value degrades to null, never a crash.
+  const badDir = tempDir(t);
+  fs.writeFileSync(path.join(badDir, 'settings.json'), JSON.stringify({ schemaVersion: 2, deviceId: 'one', waiverAccepted: false }));
+  assert.equal((await new ProfileStore({ dir: badDir }).loadSettings()).deviceId, null);
+});
+
+test('M4-F: deviceId round trips through saveSettings/loadSettings', async (t) => {
+  const store = new ProfileStore({ dir: tempDir(t) });
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: 1 });
+  assert.equal((await store.loadSettings()).deviceId, 1);
+  // 0 is a legal device id (the first enumerated device) — persisted as-is.
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: 0 });
+  assert.equal((await store.loadSettings()).deviceId, 0);
+  // Absent / null / garbage persist as null (the boot self-heal re-persists).
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: null });
+  assert.equal((await store.loadSettings()).deviceId, null);
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: -2 });
+  assert.equal((await store.loadSettings()).deviceId, null, 'negative ids never persist');
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: 1.5 });
+  assert.equal((await store.loadSettings()).deviceId, null, 'fractional ids never persist');
+  // The sync cache carries it too (loadSettingsSync round trip).
+  assert.equal(store.loadSettingsSync().deviceId, null);
+});
+
+test('M4-F: deviceId survives a save that does not mention it (read-modify-write callers)', async (t) => {
+  const store = new ProfileStore({ dir: tempDir(t) });
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: 1 });
+  const loaded = await store.loadSettings();
+  await store.saveSettings({ ...loaded, ocOnBoot: true });
+  assert.equal((await store.loadSettings()).deviceId, 1, 'a spread-save keeps the selection');
 });

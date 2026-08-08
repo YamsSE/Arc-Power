@@ -137,3 +137,100 @@ test('M4-E F4: the setup gate check is started WITHOUT await and awaited only at
     `the check must be AWAITED at the boot-apply decision only (main.js:${awaitLine}), between the window (${winLine}) and the gate use (${gateUseLine})`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// M4-F — the single-instance lock + the boot deviceId resolution wiring.
+// The ORDER pin: the acquire sits BEFORE the window path (createWindow) and
+// AFTER every helper early return — plus the gate excludes the helpers by
+// construction (single-instance.js). ui-verify reaches the window path but
+// the gate skips it by construction.
+// ---------------------------------------------------------------------------
+
+test('M4-F: the instance lock acquire precedes createWindow (the second instance quits before a window exists)', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const lockLine = findLineNumber(src, 'requestSingleInstanceLock: () => app.requestSingleInstanceLock()');
+  const winLine = findLineNumber(src, 'const win = createWindow()');
+  assert.ok(
+    lockLine < winLine,
+    `ordering: the lock acquire (main.js:${lockLine}) must precede createWindow (main.js:${winLine}) — a second instance must quit before any window/backend work`,
+  );
+});
+
+test('M4-F: every helper early return precedes the instance lock (helpers never reach it)', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const lockLine = findLineNumber(src, 'requestSingleInstanceLock: () => app.requestSingleInstanceLock()');
+  for (const [needle, label] of [
+    ['if (workerReqFile) {', '--apply-worker'],
+    ['if (bootApply) {', '--boot-apply'],
+    ['if (headless) {', '--headless'],
+    ['if (applyProfileId && !uiVerify) {', '--apply-profile'],
+  ]) {
+    const helperLine = findLineNumber(src, needle);
+    assert.ok(
+      helperLine > 0,
+      `the ${label} early return must exist (needle '${needle}')`,
+    );
+  }
+  // M4-F (host, placement fix): the lock sits RIGHT AFTER whenReady so the
+  // second UI instance quits FAST (~1 s) instead of booting the backend
+  // first (~20 s). The helpers' early returns no longer precede it — the
+  // GATE is the enforcement point (unit-pinned: every helper + mock-UI
+  // skips by construction, and a helper flag wins over the UI mode). The
+  // source must feed the gate the FULL mode set.
+  const modeDeclLine = findLineNumber(src, 'const instanceLockMode = { headless, uiVerify, bootApply, applyProfileId, workerReqFile, mock }');
+  const gateCallLine = findLineNumber(src, 'shouldUseInstanceLock(instanceLockMode)');
+  assert.ok(
+    modeDeclLine < gateCallLine && gateCallLine < lockLine,
+    `the gate decision (main.js:${gateCallLine}) must run before the acquire (main.js:${lockLine}) and after the mode set (${modeDeclLine})`,
+  );
+});
+
+test('M4-F: the second-instance handler restores the EXISTING window ref set after createWindow', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const handlerLine = findLineNumber(src, "app.on('second-instance'");
+  const assignLine = findLineNumber(src, 'windowForInstance = win;');
+  const winLine = findLineNumber(src, 'const win = createWindow()');
+  assert.ok(
+    handlerLine < winLine && winLine < assignLine,
+    `ordering: the second-instance handler (main.js:${handlerLine}) is registered before createWindow (${winLine}) and the window ref is assigned after (${assignLine}) — the handler must operate on the live window, never a stale null`,
+  );
+  const src2 = fs.readFileSync(mainSrcPath, 'utf8');
+  assert.match(src2.slice(assignLine), /focusExistingWindow\(windowForInstance\)/, 'the handler uses the tray-restore pattern helper on the window ref');
+});
+
+test('M4-F: the boot deviceId resolution runs after the window path boot seeding and before the boot apply', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const bootBackendLine = findLineNumber(src, 'await bootBackend();');
+  const resolveLine = findLineNumber(src, 'resolveBootDeviceId(backend, store)');
+  const applyLine = findLineNumber(src, 'profileId: bootSettings.activeProfileId,');
+  const healthLine = findLineNumber(src, 'const health = await collectHealth(backend);');
+  assert.ok(
+    bootBackendLine < resolveLine && resolveLine < healthLine,
+    `ordering: the resolution (main.js:${resolveLine}) must run after the boot seeding (${bootBackendLine}) and before the health read (${healthLine})`,
+  );
+  assert.ok(
+    resolveLine < applyLine,
+    `the resolved deviceId (main.js:${resolveLine}) must feed the window-path boot apply (${applyLine})`,
+  );
+  const deviceIdUses = [...src.matchAll(/deviceId: bootDeviceId,/g)].map((m) => m.index);
+  const lastUse = deviceIdUses.length > 0 ? src.slice(0, deviceIdUses[deviceIdUses.length - 1]).split('\n').length : -1;
+  assert.ok(
+    applyLine < lastUse,
+    `the window-path boot apply passes the resolved deviceId (main.js:${lastUse})`,
+  );
+});
+
+test('M4-F: the boot-apply mode resolves the persisted deviceId into its apply closure', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const resolveLine = findLineNumber(src, 'bootDeviceId = await resolveApplyDeviceId(bootBackend, bootStore, null)');
+  const applyClosureLine = findLineNumber(src, 'apply: (profileId) => applyProfileBoot({');
+  assert.ok(
+    resolveLine < applyClosureLine,
+    `ordering: the boot-apply deviceId resolution (main.js:${resolveLine}) must precede the apply closure (${applyClosureLine}) that consumes it`,
+  );
+  const passLine = findLineNumber(src, 'deviceId: bootDeviceId,');
+  assert.ok(
+    applyClosureLine < passLine,
+    `the closure must pass the resolved id (main.js:${passLine})`,
+  );
+});

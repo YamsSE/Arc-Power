@@ -145,7 +145,7 @@ function fakeStore(initial = {}) {
   const defaults = {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
     advancedModeAccepted: false, startWithWindows: false, startMinimized: false,
-    closeToTray: false, monitorLogToFile: false,
+    closeToTray: false, monitorLogToFile: false, deviceId: null,
   };
   return {
     saved,
@@ -817,7 +817,7 @@ test('M4-D2: startup-app-set is REMOVED (tasks are gone — the renderer must dr
 
 function fakeProfileStore(initialProfiles = []) {
   const profiles = [...initialProfiles];
-  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false };
+  let settings = { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null };
   return {
     profiles,
     async loadProfiles() { return [...profiles]; },
@@ -858,7 +858,7 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '0.9.14', 'package.json version');
+  assert.equal(version, '1.0.0', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {
@@ -913,7 +913,7 @@ test('profiles channels: list -> save (create) -> rename -> delete round trip wi
   const store = fakeProfileStore();
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
 
-  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false } });
+  assert.deepEqual(await handlers['profiles-list'](), { profiles: [], settings: { waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null } });
   await assert.rejects(() => handlers['profiles-list']({}), /takes no payload/);
 
   const afterSave = await handlers['profiles-save']({ id: 'p1', name: '  My Profile  ', settings: { powerLimitW: 220 }, ocOnBoot: false });
@@ -980,9 +980,9 @@ test('profiles-settings-save: read-modify-write never clobbers waiverAccepted (n
   await store.saveSettings({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false });
 
   const out = await handlers['profiles-settings-save']({ activeProfileId: 'p1', ocOnBoot: true });
-  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false });
+  assert.deepEqual(out, { waiverAccepted: true, ocOnBoot: true, activeProfileId: 'p1', ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null });
   const clear = await handlers['profiles-settings-save']({ ocOnBoot: false, activeProfileId: null });
-  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false });
+  assert.deepEqual(clear, { waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'advanced', advancedModeAccepted: false, startWithWindows: false, startMinimized: false, closeToTray: false, monitorLogToFile: false, deviceId: null });
 
   for (const bad of [null, 5, 'x', []]) {
     await assert.rejects(() => handlers['profiles-settings-save'](bad), /patch must be an object/);
@@ -1028,7 +1028,7 @@ test('M4-D: profiles-settings-save persists the Settings-tab fields (startWithWi
   assert.deepEqual(await store.loadSettings(), {
     waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock',
     advancedModeAccepted: false, startWithWindows: true, startMinimized: true, closeToTray: false,
-    monitorLogToFile: false,
+    monitorLogToFile: false, deviceId: null,
   });
   // Turning one back off keeps the other.
   const back = await handlers['profiles-settings-save']({ startMinimized: false });
@@ -1245,6 +1245,91 @@ test('M4-D: window channels — the DEFAULT ops are no-ops (tests never touch a 
   await handlers['window-maximize-toggle']();
   await handlers['window-close']();
   assert.ok(true, 'no throw — no window exists in tests');
+});
+
+// ---------------------------------------------------------------------------
+// M4-F — the persisted GPU selection: device-get/device-set channels + the
+// S3 carry-through (a Settings/Profiles save must never clobber deviceId)
+// ---------------------------------------------------------------------------
+
+test('M4-F: device-get — no payload; the persisted id (null when absent)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['device-get'], 'function');
+  await assert.rejects(() => handlers['device-get']({}), /takes no payload/);
+  assert.deepEqual(await handlers['device-get'](), { deviceId: null }, 'absent -> null (the devices[0] default resolves at boot)');
+});
+
+test('M4-F: device-set — validates a non-negative integer and persists (like oc-mode-set)', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+  for (const bad of [-1, 1.5, '1', NaN, null, undefined, {}, []]) {
+    await assert.rejects(() => handlers['device-set'](bad), /invalid device id/, String(bad));
+  }
+  assert.deepEqual(await handlers['device-set'](1), { deviceId: 1 });
+  assert.equal((await store.loadSettings()).deviceId, 1, 'persisted through saveSettings');
+  assert.deepEqual(await handlers['device-get'](), { deviceId: 1 }, 'the fresh read agrees');
+  assert.deepEqual(await handlers['device-set'](0), { deviceId: 0 }, '0 is a legal device id');
+  assert.equal((await store.loadSettings()).deviceId, 0);
+});
+
+test('M4-F: device-set round trips on a REAL store (settings.json round trip)', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rid-ap-devset-'));
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+  const store = new ProfileStore({ dir });
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+  await handlers['device-set'](1);
+  assert.equal((await new ProfileStore({ dir }).loadSettings()).deviceId, 1, 'a fresh store instance reads the persisted selection');
+});
+
+test('M4-F (S3): profiles-settings-save carries deviceId read-modify-write — a toggle save never clobbers it', async () => {
+  const store = fakeProfileStore();
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store, emit: () => {} });
+  // Seed the selection via device-set, then toggle a Settings field through
+  // the profiles channel: deviceId must survive.
+  await handlers['device-set'](1);
+  const out = await handlers['profiles-settings-save']({ monitorLogToFile: true });
+  assert.equal(out.monitorLogToFile, true, 'the toggle landed');
+  assert.equal(out.deviceId, 1, 'the persisted selection survives the profiles save');
+  assert.equal((await store.loadSettings()).deviceId, 1);
+  // A patch that never mentions deviceId keeps it (the envelope is EXPLICIT).
+  const other = await handlers['profiles-settings-save']({ ocOnBoot: true });
+  assert.equal(other.deviceId, 1);
+  // And the channel never CHOOSES it: an absent persisted field stays null.
+  const fresh = fakeProfileStore();
+  const { handlers: h2 } = createIpcHandlers({ backend: new MockBackend(), store: fresh, emit: () => {} });
+  const out2 = await h2['profiles-settings-save']({ monitorLogToFile: true });
+  assert.equal(out2.deviceId, null);
+});
+
+test('M4-F: the deviceId boot resolution — persisted wins when enumerated, else devices[0] + re-persist (self-healing)', async () => {
+  const store = fakeProfileStore();
+  const { resolveBootDeviceId } = await import('../src/main/ipc-core.js');
+  const backend = new MockBackend({ multiDevice: true });
+
+  // Persisted id matches an enumerated device -> it wins, nothing re-persisted.
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: 1 });
+  assert.equal(await resolveBootDeviceId(backend, store), 1);
+  assert.equal((await store.loadSettings()).deviceId, 1, 'no write on a match');
+
+  // Persisted id does NOT match (stale/absent) -> devices[0] + re-persist.
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: 7 });
+  assert.equal(await resolveBootDeviceId(backend, store), 0);
+  assert.equal((await store.loadSettings()).deviceId, 0, 'the fallback is re-persisted (self-heal)');
+
+  // Absent -> devices[0] + re-persist.
+  await store.saveSettings({ waiverAccepted: false, ocOnBoot: false, activeProfileId: null, ocMode: 'stock', deviceId: null });
+  assert.equal(await resolveBootDeviceId(backend, store), 0);
+  assert.equal((await store.loadSettings()).deviceId, 0);
+});
+
+test('M4-F: the deviceId boot resolution degrades on a broken store / empty enumeration (never a crash)', async () => {
+  const { resolveBootDeviceId } = await import('../src/main/ipc-core.js');
+  const backend = new MockBackend({ multiDevice: true });
+  const brokenStore = { loadSettings: async () => { throw new Error('cannot load settings.json: invalid JSON'); }, saveSettings: async () => { throw new Error('must not be called'); } };
+  assert.equal(await resolveBootDeviceId(backend, brokenStore), 0, 'a broken store degrades to devices[0] without re-persisting');
+  const emptyBackend = { listDevices: async () => [] };
+  const store = fakeProfileStore();
+  assert.equal(await resolveBootDeviceId(emptyBackend, store), null, 'no devices -> null (caller degrades)');
 });
 
 // ---------------------------------------------------------------------------

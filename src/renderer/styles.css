@@ -555,6 +555,34 @@ html, body {
 .featureset-select:hover { border-color: var(--accent); }
 .featureset-select option { background: var(--bg-panel); color: var(--text); }
 
+/* M4-F: the compact GPU selector — styled exactly like the featureset
+   dropdown (the Dashboard GPU card header + the Tuning oc-mode row). */
+.device-select {
+  appearance: none;
+  background: rgba(76, 194, 255, 0.08);
+  color: var(--accent);
+  border: 1px solid rgba(76, 194, 255, 0.35);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11.5px;
+  max-width: 220px;
+  cursor: pointer;
+}
+.device-select:hover { border-color: var(--accent); }
+.device-select option { background: var(--bg-panel); color: var(--text); }
+
+/* M4-F: the Dashboard GPU card header row — the card title LEFT, the
+   device selector RIGHT (hidden entirely with <= 1 device). */
+.device-card-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.device-card-head .card-title { margin: 0; }
+
 /* ------------------------------------------------------------------ buttons */
 
 .btn {

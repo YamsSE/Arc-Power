@@ -23,7 +23,7 @@ import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, probeWaiverState, seedOcMode } from './ipc-core.js';
+import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId } from './ipc-core.js';
 import { ProfileStore } from './store/profile-store.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
@@ -33,8 +33,9 @@ import { createDxgiFpsAdapter } from './fps-dxgi.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
 import { createMonitorLog } from './monitor-log.js';
 import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar } from './sysinfo.js';
-import { applyProfile, runApplyOnStartup, applyProfileBoot } from './apply-on-boot.js';
+import { applyProfile, runApplyOnStartup, applyProfileBoot, resolveApplyDeviceId } from './apply-on-boot.js';
 import { runBootApplyMode } from './boot-apply-mode.js';
+import { shouldUseInstanceLock, acquireInstanceLock, focusExistingWindow } from './single-instance.js';
 import { createBootSetup, taskActionMatches } from './setup-boot.js';
 import { deriveBuildKind } from './build-kind.js';
 import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
@@ -167,7 +168,10 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner }) {
           // only claims "defaults restored" when a restore actually ran
           // (M2b review F1) — gate refusals (incl. the oc-mode refusal)
           // get a reason-specific message.
-          const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, oldIgcl, applyRunner });
+          // M4-F (S2): the tray apply targets the PERSISTED/SELECTED device
+          // (resolved like every other apply — explicit id ?? persisted ?? devices[0]).
+          const deviceId = await resolveApplyDeviceId(backend, store, null);
+          const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, deviceId, oldIgcl, applyRunner });
           if (!out.applied && trayRef && !trayRef.isDestroyed()) {
             let name = 'unknown';
             try {
@@ -270,6 +274,15 @@ async function main() {
     } catch (err) {
       console.log(`[boot-apply] oc-mode seeding skipped: ${err.message}`);
     }
+    // M4-F (S2): resolve the persisted/selected device the SAME way the
+    // window path does (persisted ?? devices[0]) — the logon apply must
+    // target the selected GPU, never silently devices[0] (the 2-GPU iGPU trap).
+    let bootDeviceId = null;
+    try {
+      bootDeviceId = await resolveApplyDeviceId(bootBackend, bootStore, null);
+    } catch (err) {
+      console.log(`[boot-apply] deviceId resolution skipped: ${err.message}`);
+    }
     try {
       const out = await runBootApplyMode({
         store: bootStore,
@@ -277,6 +290,7 @@ async function main() {
           backend: bootBackend,
           store: bootStore,
           profileId,
+          deviceId: bootDeviceId,
           oldIgcl: mock ? createMockOldIgcl(bootBackend) : bootOldIgcl,
           log: (s) => console.log(`[boot-apply] ${s}`),
         }),
@@ -337,6 +351,39 @@ async function main() {
   }
 
   await app.whenReady();
+
+  // --- M4-F single-instance lock (UI WINDOW mode ONLY) ---------------------
+  // Helpers (--headless / --ui-verify / --boot-apply / --apply-profile /
+  // --apply-worker) + mock-UI skip the lock BY CONSTRUCTION
+  // (shouldUseInstanceLock) — the gate decides per mode, so this block sits
+  // EARLY (right after ready) and the second UI instance quits FAST instead
+  // of booting the backend first (~20 s). --apply-worker is the hard case
+  // (M2C-C S1): the elevated-apply worker is a SECOND instance spawned
+  // WHILE the UI runs — if it failed the lock it would quit without writing
+  // the out file and every elevated apply would hang. When the lock is NOT
+  // acquired, another instance holds it: quit immediately (the holder's
+  // second-instance event restores its window). The lock is userData-based:
+  // portable + installed builds share %APPDATA%\ArcPower -> mutually
+  // exclusive; the dev tree + the packaged app also share the userData
+  // (expected — close one before launching the other).
+  const instanceLockMode = { headless, uiVerify, bootApply, applyProfileId, workerReqFile, mock };
+  let windowForInstance = null;
+  if (shouldUseInstanceLock(instanceLockMode)) {
+    const { acquired } = acquireInstanceLock({
+      requestSingleInstanceLock: () => app.requestSingleInstanceLock(),
+      mode: instanceLockMode,
+    });
+    if (!acquired) {
+      console.log('[boot] another Arc Power instance is running — quitting');
+      app.quit();
+      return;
+    }
+    app.on('second-instance', () => {
+      // Focus/restore the existing window (the tray-restore pattern: a
+      // MINIMIZED window reports isVisible() === true — restore first).
+      focusExistingWindow(windowForInstance);
+    });
+  }
   // --ui-verify runs against MockBackend; the env knobs act as OVERLAYS on
   // the featureset base (mock/featuresets/*.json, RID_MOCK_FEATURESET):
   //   - the a770 featureset base is the real card's TRUE editable fan fixture
@@ -762,10 +809,19 @@ async function main() {
     // in-process here (applyRunner stays null — a manual non-elevated run
     // fails honestly per control instead of prompting).
     const bootOldIgcl = mock ? createMockOldIgcl(backend) : new OldIgcl();
+    // M4-F (S2): the logon apply targets the persisted/selected device —
+    // never silently devices[0] (the 2-GPU iGPU trap).
+    let applyDeviceId = null;
+    try {
+      applyDeviceId = await resolveApplyDeviceId(backend, store, null);
+    } catch (err) {
+      console.log(`[apply-profile] deviceId resolution skipped: ${err.message}`);
+    }
     await runApplyOnStartup({
       backend,
       store,
       profileId: applyProfileId,
+      deviceId: applyDeviceId,
       oldIgcl: bootOldIgcl,
       setupTray: () => setupTray({ getWindow: () => null, backend, store, oldIgcl: bootOldIgcl, applyRunner: null }),
       log: (s) => console.log(s),
@@ -827,6 +883,7 @@ async function main() {
   }
 
   const win = createWindow();
+  windowForInstance = win;
   // M4-D2 (§1 close-to-tray FIX): the close handler reads the SYNC settings
   // cache (loadSettingsSync) and calls event.preventDefault() IN THE SAME
   // TICK — the old async loadSettings().then(...) ran preventDefault too
@@ -902,10 +959,20 @@ async function main() {
     }
     // The REAL boot-apply code path: boot-gated, applyRunner-less
     // (in-process only), defaults-restore skipped regardless of errorCode.
+    // M4-F (S2): targets the persisted/selected device (the run-2 pin
+    // "boot apply targets the selected device" asserts the OTHER device is
+    // untouched through this resolution).
+    let mockBootDeviceId = null;
+    try {
+      mockBootDeviceId = await resolveApplyDeviceId(backend, store, null);
+    } catch (err) {
+      console.log(`[mock-boot-apply] deviceId resolution skipped: ${err.message}`);
+    }
     const out = await applyProfileBoot({
       backend,
       store,
       profileId: settings.activeProfileId,
+      deviceId: mockBootDeviceId,
       oldIgcl,
       log: (s) => console.log(`[mock-boot-apply] ${s}`),
     });
@@ -1009,6 +1076,17 @@ async function main() {
   }
 
   await bootBackend();
+  // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
+  // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
+  // (self-healing, M7 — a stale selection or an absent field must never
+  // wedge the app on a dead id). The renderer's boot read (device-get) and
+  // the window-path boot apply both consume this resolution.
+  let bootDeviceId = null;
+  try {
+    bootDeviceId = await resolveBootDeviceId(backend, store);
+  } catch (err) {
+    console.log(`[boot] deviceId resolution skipped: ${err.message}`);
+  }
   const health = await collectHealth(backend);
   console.log(`[health] ${JSON.stringify(health)}`);
 
@@ -1049,6 +1127,7 @@ async function main() {
           backend,
           store,
           profileId: bootSettings.activeProfileId,
+          deviceId: bootDeviceId,
           oldIgcl,
           log: (s) => console.log(s),
         });
@@ -1067,6 +1146,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`FATAL: ${err.message}`);
+  console.error(`FATAL: ${err.message}\n${err.stack}`);
   app.exit(1);
 });

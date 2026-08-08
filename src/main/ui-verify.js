@@ -6,7 +6,7 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant — no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       0.9.14 Alpha" (app:version IPC + the display Alpha suffix — the IPC
+//       1.0.0 Alpha" (app:version IPC + the display Alpha suffix — the IPC
 //       keeps the bare semver) — the driver version + date live in the
 //       dashboard device card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); no PCI ID anywhere;
@@ -525,8 +525,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
   // the driver line moved to the dashboard device card.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.14 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.14 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -695,6 +695,199 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-A: the waiver row flipped after a Cancel (must stay Not Accepted)');
     }
     step('waiver-row-cancel', 'dashboard waiver row click -> dialog -> Cancel -> row stays Not Accepted (the first apply below still gates)');
+  }
+
+  // --- M4-F: multi-device block (RID_MOCK_MULTI_DEVICE=1) ------------------
+  // The mock enumerates devices 0 AND 1 (device 1 = the arc-igpu line) —
+  // every pin here runs ONLY in the multi-device session and RESTORES the
+  // device-0 session state before the flow continues:
+  //   1. the selector renders BOTH names on the Dashboard GPU card + the
+  //      Tuning tab (and is ABSENT in the single-device default — the
+  //      selector-absent pin below);
+  //   2. switching via the dashboard selector changes the header name +
+  //      caps + state (device 1 is telemetry-only: no ranges, no controls —
+  //      the Tuning page degrades to the no-OC note, never device-0's
+  //      ranges);
+  //   3. F1: a featureset SWAP while device 1 is selected re-reads the
+  //      CURRENT device's pair — the swap never pairs device 1 with
+  //      device-0's (b580) ranges;
+  //   4. the telemetry switches (per-device ramps — the readout reflects
+  //      device 1's values: 1067 MHz memory clock vs the a770's 2187 MHz);
+  //   5. the persisted deviceId survives a profiles-settings-save round
+  //      trip (S3: toggling monitorLogToFile must not clobber device-set's
+  //      write);
+  //   6. the boot apply targets the selected device (mock:run-boot-apply
+  //      with an active profile + ocOnBoot seeded via profiles-settings-
+  //      save — the OTHER device's state unchanged);
+  //   7. switching BACK via the Tuning selector restores the a770 surface
+  //      (both selectors drive the same selectDevice flow).
+  if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+    const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16 GB';
+    const IGPU_NAME = 'Mock Arc iGPU (fixture)';
+    const driveSelector = (value) => js(`(() => {
+      const s = document.querySelector('.device-select');
+      if (!s) return 'no-select';
+      s.value = '${value}';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    })()`);
+    const selectorOptions = () => js(`JSON.stringify(Array.from(document.querySelectorAll('.device-select option')).map((o) => [o.value, o.textContent]))`);
+
+    // (1) the dashboard GPU card selector renders BOTH device names, the
+    // current selection is device 0.
+    if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-select')`, 5000))) {
+      fail('M4-F: the device selector is missing on the Dashboard GPU card (multi-device session)');
+    }
+    const dashOpts = JSON.parse(await selectorOptions());
+    const dashNames = dashOpts.map(([, t]) => t);
+    if (dashOpts.length !== 2 || !dashNames.includes(A770_NAME) || !dashNames.includes(IGPU_NAME)) {
+      fail(`M4-F: the dashboard selector options are ${JSON.stringify(dashOpts)} (expected both '${A770_NAME}' and '${IGPU_NAME}')`);
+    }
+    if (dashOpts.find(([v]) => v === '0')?.[1] !== A770_NAME) fail(`M4-F: the dashboard selector mislabels device 0: ${JSON.stringify(dashOpts)}`);
+    const dashSelValue = await js(`document.querySelector('.card-grid .device-select').value`);
+    if (dashSelValue !== '0') fail(`M4-F: the dashboard selector does not show device 0 selected at boot: '${dashSelValue}'`);
+    step('m4f-selector-dashboard', `M4-F: dashboard GPU-card selector renders both devices (${dashOpts.map(([v, t]) => v + '=' + t).join(', ')}), current '${dashSelValue}'`);
+
+    // (2) switch to device 1 via the DASHBOARD selector: the header name,
+    // caps + state change; the Tuning page degrades to the no-OC note.
+    if ((await driveSelector('1')) !== 'ok') fail('M4-F: the dashboard selector change did not dispatch');
+    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${IGPU_NAME}'`, 8000))) {
+      fail(`M4-F: the header did not switch to device 1: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' (expected '${IGPU_NAME}')`);
+    }
+    const igpuCaps = await js(`window.arcPower.getCapabilities(1)`);
+    if (Object.keys(igpuCaps.ranges ?? {}).length !== 0 || Object.values(igpuCaps.controls ?? {}).some(Boolean)) {
+      fail(`M4-F: device-1 caps are not the telemetry-only surface: ${JSON.stringify({ ranges: igpuCaps.ranges, controls: igpuCaps.controls })}`);
+    }
+    if (!(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 1)`, 8000))) {
+      fail(`M4-F: the switch did not persist deviceId=1 (deviceGet=${JSON.stringify(await js(`window.arcPower.deviceGet()`))})`);
+    }
+    await gotoOverclocking();
+    if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length === 0 && document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
+      fail(`M4-F: the Tuning page did not degrade to the no-OC note on device 1 (cards=${await js(`document.querySelectorAll('.oc-card').length`)}; page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+    }
+    // the Tuning tab renders the selector too, with BOTH names.
+    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 5000))) {
+      fail('M4-F: the device selector is missing on the Tuning page (multi-device session)');
+    }
+    const tuneOpts = JSON.parse(await selectorOptions());
+    if (tuneOpts.length !== 2 || !tuneOpts.some(([v, t]) => v === '1' && t === IGPU_NAME)) {
+      fail(`M4-F: the Tuning selector options are ${JSON.stringify(tuneOpts)} (expected both devices, incl. '${IGPU_NAME}')`);
+    }
+    step('m4f-switch', `M4-F: dashboard selector -> device 1: header '${IGPU_NAME}', caps telemetry-only (no ranges/controls), deviceGet=1 persisted, Tuning no-OC note, Tuning selector renders both names`);
+
+    // (3) F1: a featureset swap while device 1 is selected must re-read the
+    // CURRENT device's pair — the Tuning page keeps the no-OC note, never
+    // b580's percent ranges (the swap response carries device-0's pair).
+    const swapFsTo = (id) => js(`(() => {
+      const s = document.querySelector('.featureset-select');
+      s.value = '${id}';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await swapFsTo('b580');
+    if (!(await waitFor(win, `document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
+      fail(`M4-F (F1): after a swap to b580 the Tuning page paired device 1 with device-0's ranges (page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+    }
+    if (await js(`document.querySelectorAll('.oc-card').length !== 0`)) {
+      fail('M4-F (F1): b580 control cards rendered for device 1 (the swap must re-read the CURRENT device)');
+    }
+    await swapFsTo('a770');
+    if (!(await waitFor(win, `(document.querySelector('.featureset-select').value) === 'a770' && document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
+      fail('M4-F (F1): the swap back to a770 did not restore the session (device 1 must stay the no-OC surface)');
+    }
+    step('m4f-f1-swap', 'M4-F (F1): swap b580 -> a770 while device 1 is selected — the Tuning page stays the no-OC note (the current device is re-read, never paired with device-0 ranges)');
+
+    // (4) the telemetry switched: the readout reflects device 1's ramp
+    // (memClock 1067 vs the a770's 2187; core base 2000 MHz on the card).
+    await js(`location.hash = '#/dashboard'`);
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '1067')`, 10000))) {
+      fail(`M4-F: the readout does not reflect device 1's telemetry (memory clock = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} — expected 1067, the device-1 ramp)`);
+    }
+    if (!(await waitFor(win, `(() => {
+      const row = Array.from(document.querySelectorAll('.card-grid .kv')).find((k) => (k.getAttribute('data-label') ?? '') === 'Clocks');
+      return (row?.textContent ?? '').includes('2000 MHz Core') && (row?.textContent ?? '').includes('1067');
+    })()`, 5000))) {
+      fail(`M4-F: the Clocks kv does not reflect device 1 (got '${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}' — expected '2000 MHz Core / 1067 MHz Memory')`);
+    }
+    step('m4f-telemetry', 'M4-F: telemetry switched with the device — readout shows the device-1 ramp (Memory clock 1067 MHz, Clocks kv 2000 MHz Core / 1067 MHz Memory)');
+
+    // (5) S3: the persisted deviceId survives a profiles-settings-save
+    // round trip (toggle monitorLogToFile — a Settings/Profiles save must
+    // never clobber device-set's write).
+    await js(`window.arcPower.profilesSettingsSave({ monitorLogToFile: true })`);
+    await js(`window.arcPower.profilesSettingsSave({ monitorLogToFile: false })`);
+    const s3Device = await js(`window.arcPower.deviceGet()`);
+    if (s3Device.deviceId !== 1) {
+      fail(`M4-F (S3): profiles-settings-save clobbered the persisted deviceId (deviceGet=${JSON.stringify(s3Device)} after a monitorLogToFile round trip — expected 1)`);
+    }
+    step('m4f-s3-save', 'M4-F (S3): the persisted deviceId survives a profiles-settings-save round trip (monitorLogToFile toggled, deviceGet still 1)');
+
+    // (6) the boot apply targets the SELECTED device: seed the precondition
+    // (active profile + ocOnBoot via profiles-settings-save), temporarily
+    // accept device 1's waiver (the default session is unaccepted), run the
+    // REAL boot-apply flow via mock:run-boot-apply. A device-1 target hits
+    // the telemetry-only surface: the PL profile control is unsupported ->
+    // the honest fallback-skipped refusal (applied false, reason 'defaults
+    // restore skipped') — while a device-0 target (the S2 bug) would have
+    // APPLIED the 250 W profile. The OTHER device's state stays unchanged.
+    await js(`window.arcPower.profilesSave({ id: 'boot-probe-multi', name: 'boot-probe-multi', settings: { powerLimitW: 250 }, ocOnBoot: false })`);
+    await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: true, activeProfileId: 'boot-probe-multi' })`);
+    const waiverStoreBefore = (await store.loadSettings()).waiverAccepted;
+    const device1WaiverBefore = (await backend.getCapabilities(1)).waiverAccepted;
+    await backend.setWaiverAccepted(1);
+    await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: true });
+    const otherBefore = await js(`window.arcPower.getCurrentSettings(0)`);
+    const multiBootOut = await js(`window.arcPower.mockRunBootApply()`);
+    if (Math.abs(otherBefore.powerLimitW - 210) > 1e-6) {
+      fail(`M4-F: the boot-apply precondition baseline is wrong (device 0 PL = ${otherBefore.powerLimitW}, expected 210)`);
+    }
+    if (multiBootOut.applied === true) {
+      fail(`M4-F: the boot apply APPLIED to device 0 (applied=true) — the S2 bug: the selected device 1 was ignored; device 0 is now ${(await js(`window.arcPower.getCurrentSettings(0)`)).powerLimitW} W`);
+    }
+    if (!(multiBootOut.reason ?? '').includes('defaults restore skipped')) {
+      fail(`M4-F: the boot apply did not target device 1 (reason '${multiBootOut.reason}' — the unsupported-control refusal only occurs when the apply ran against the telemetry-only device 1 with its waiver accepted; a device-0 target would apply the profile or refuse on device 0's waiver)`);
+    }
+    const otherAfter = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(otherAfter.powerLimitW - 210) > 1e-6) {
+      fail(`M4-F: the boot apply CHANGED the other device's state (device 0 PL = ${otherAfter.powerLimitW}, expected unchanged 210)`);
+    }
+    const multiLog = await js(`window.arcPower.mockBootApplyLog()`);
+    const multiLast = Array.isArray(multiLog) ? multiLog[multiLog.length - 1] : null;
+    if (!multiLast || multiLast.profileId !== 'boot-probe-multi' || multiLast.applied !== false || !(multiLast.reason ?? '').includes('defaults restore skipped')) {
+      fail(`M4-F: the mock boot-apply log does not record the device-1 apply: ${JSON.stringify(multiLog)}`);
+    }
+    // Restore the session waiver states + the boot-apply precondition.
+    await backend.restoreWaiverState(1, device1WaiverBefore);
+    await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: waiverStoreBefore });
+    await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null })`);
+    await js(`window.arcPower.profilesDelete('boot-probe-multi')`).catch(() => {});
+    step('m4f-boot-apply', `M4-F: mock:run-boot-apply targeted the SELECTED device 1 (${multiBootOut.reason}; log records { profileId 'boot-probe-multi', applied: false }) — device 0 state unchanged (${otherAfter.powerLimitW} W), waiver states restored`);
+
+    // (7) switch BACK via the TUNING selector: the a770 surface returns
+    // (header name, control cards, 210 W readout) and the persisted
+    // selection follows.
+    await gotoOverclocking();
+    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 5000))) {
+      fail('M4-F: the Tuning selector is missing for the switch back');
+    }
+    if ((await driveSelector('0')) !== 'ok') fail('M4-F: the Tuning selector change did not dispatch');
+    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
+      fail(`M4-F: the switch back to device 0 failed (header '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' — expected '${A770_NAME}')`);
+    }
+    if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length >= 4 && (document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 8000))) {
+      fail(`M4-F: the Tuning page did not restore the a770 surface after the switch back (cards=${await js(`document.querySelectorAll('.oc-card').length`)}; PL='${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}')`);
+    }
+    if (!(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 0)`, 5000))) {
+      fail(`M4-F: the switch back did not persist deviceId=0 (deviceGet=${JSON.stringify(await js(`window.arcPower.deviceGet()`))})`);
+    }
+    step('m4f-switch-back', `M4-F: Tuning selector -> device 0: header '${A770_NAME}', 4+ control cards, PL '210 W', deviceGet=0 persisted — both selectors drive the same switch`);
+  } else {
+    // M4-F: single-device degradation — the live 1-GPU machine shows NO
+    // selector anywhere (the default variant pins the absent state).
+    await sleep(300);
+    if (await js(`!!document.querySelector('.device-select')`)) {
+      fail('M4-F: the device selector renders with a single device (must be hidden — the honest single-device degradation)');
+    }
+    step('m4f-selector-absent', 'M4-F: no device selector with 1 device (single-device degradation)');
   }
 
   // --- 2. Tuning page control cards (M4-D2: #/overclocking -> #/tuning) ----
@@ -2089,6 +2282,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // persistence the column is bare (the polyline crosses it at ONE point
   // only — excluded by the band around y; the horizontal grid lines add a
   // handful at most).
+  // M4-F (run 2): the wait is now a POLL instead of one fixed 2.6 s sleep —
+  // the fixed sleep flaked under machine load (the pin then raced the
+  // redraw timing). The poll waits for the FIRST tick to have landed (a
+  // pre-tick pass would prove nothing), then retries up to 8 s: the
+  // crosshair persists across ticks, so any post-tick check catches it —
+  // while a lost crosshair (the bug) stays gone after the first tick and
+  // the poll times out honestly.
   const crosshairOk = await js(`(async () => {
     const canvas = document.querySelector('.seg-card .seg-canvas');
     if (!canvas) return 'no-canvas';
@@ -2112,9 +2312,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     };
     const before = columnLits();
     if (before < 10) return 'no-crosshair-at-hover:' + before;
-    await new Promise((r) => setTimeout(r, 2600)); // several telemetry ticks
-    const after = columnLits();
-    return after >= 10 ? 'ok' : 'crosshair-lost-after-tick:' + after + ' (before ' + before + ')';
+    // Let at least one telemetry tick land (0.5 s cadence) BEFORE the
+    // first post-tick check — a pre-tick pass would prove nothing.
+    await new Promise((r) => setTimeout(r, 750));
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000) {
+      const now = columnLits();
+      if (now >= 10) return 'ok';
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return 'crosshair-lost-after-tick:' + columnLits() + ' (before ' + before + ')';
   })()`);
   if (crosshairOk !== 'ok') fail(`M4-C: monitor crosshair persistence: ${crosshairOk}`);
   step('mon-m4c-crosshair', 'M4-C: the hover crosshair survives telemetry ticks (redrawAll passes the persisted hover through)');
@@ -2466,8 +2673,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 0.9.14 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 0.9.14 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -2513,7 +2720,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' : '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 0.9.14`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.0`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists — the profile's

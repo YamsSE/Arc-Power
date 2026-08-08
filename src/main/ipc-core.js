@@ -248,6 +248,42 @@ export function assertNoPayload(args, channel) {
 }
 
 /**
+ * M4-F: resolve the boot device selection + self-heal. The persisted
+ * deviceId wins when it matches an enumerated device id; otherwise
+ * devices[0] AND the fallback is re-persisted (self-healing — a stale
+ * selection (device removed, ordering changed) or an absent field must
+ * never wedge the app on a dead id). A store read failure degrades to
+ * devices[0] WITHOUT re-persisting (never a false write). Returns null when
+ * no devices are enumerated (the caller degrades — never a crash).
+ * @param {import('./backend/backend.interface.js').IOCBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ * @returns {Promise<number|null>}
+ */
+export async function resolveBootDeviceId(backend, store) {
+  const devices = await backend.listDevices();
+  if (devices.length === 0) return null;
+  const ids = new Set(devices.map((d) => d.id));
+  let settings = null;
+  try {
+    settings = await store.loadSettings();
+  } catch {
+    // degraded: never re-persist over an unreadable store
+  }
+  const persisted = settings?.deviceId;
+  const resolved = Number.isInteger(persisted) && ids.has(persisted) ? persisted : devices[0].id;
+  if (settings && resolved !== persisted) {
+    try {
+      await store.saveSettings({ ...settings, deviceId: resolved });
+    } catch (err) {
+      // a re-persist failure must never break boot — the session still
+      // uses the resolved device; the next boot re-attempts the self-heal
+      console.log(`[boot] deviceId self-heal persist skipped: ${err.message}`);
+    }
+  }
+  return resolved;
+}
+
+/**
  * Build the handler map for every whitelisted channel.
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
@@ -452,6 +488,25 @@ export function createIpcHandlers({
     'health': async () => collectHealth(backend),
 
       'list-devices': async () => backend.listDevices(),
+
+      // M4-F: the persisted GPU selection. device-get is the boot read (the
+      // persisted id may be null — absent field -> the devices[0] fallback
+      // resolves at boot); device-set is the ONLY writer (like oc-mode-set —
+      // profiles-settings-save carries it read-modify-write but never
+      // chooses it). The id is validated as a non-negative integer; the
+      // enumerated-set check is the boot resolution's job (self-heal).
+      'device-get': async (...args) => {
+        assertNoPayload(args, 'device-get');
+        const s = await store.loadSettings();
+        return { deviceId: s.deviceId };
+      },
+
+      'device-set': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        const cur = await store.loadSettings();
+        await store.saveSettings({ ...cur, deviceId });
+        return { deviceId };
+      },
 
       'get-capabilities': async (deviceId) => {
         assertValidDeviceId(deviceId);
@@ -858,6 +913,11 @@ export function createIpcHandlers({
           monitorLogToFile: patch.monitorLogToFile === undefined
             ? cur.monitorLogToFile
             : patch.monitorLogToFile === true,
+          // M4-F (S3): the persisted GPU selection is NEVER chosen by the
+          // profiles patch — the envelope carries it read-modify-write so
+          // a Settings/Profiles save can never clobber device-set's write
+          // (normalized like the store: non-negative integers or null).
+          deviceId: Number.isInteger(cur.deviceId) && cur.deviceId >= 0 ? cur.deviceId : null,
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when

@@ -408,3 +408,163 @@ test('M2C-C: extendedFail -> the old-runtime mock answers with the honest failur
   assert.equal(per.message, EXTENDED_UNAVAILABLE_MSG);
   assert.equal(b._state.powerLimitW, 210, 'device untouched');
 });
+
+// ---------------------------------------------------------------------------
+// M4-F — the 2-device mock (RID_MOCK_MULTI_DEVICE=1 / opts.multiDevice):
+// device ids 0 AND 1; device 1 = the arc-igpu line with DISTINCT
+// caps/state/waiver/telemetry; the swap rebuilds BOTH devices.
+// ---------------------------------------------------------------------------
+
+test('M4-F: single-device mock stays BYTE-IDENTICAL when the multi-device knob is off', async () => {
+  const b = new MockBackend();
+  const devices = await b.listDevices();
+  assert.equal(devices.length, 1, 'the default session enumerates ONE device');
+  assert.equal(devices[0].id, 0);
+  await assert.rejects(() => b.getCapabilities(1), /unknown device id 1/, 'no second device exists');
+});
+
+test('M4-F: listDevices emits ids 0 AND 1; device 1 is the arc-igpu line with distinct names/pci/bdf', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  const devices = await b.listDevices();
+  assert.equal(devices.length, 2);
+  assert.deepEqual(devices.map((d) => d.id), [0, 1]);
+  assert.match(devices[0].name, /Arc A770/);
+  assert.match(devices[1].name, /Arc iGPU/);
+  assert.equal(devices[1].pciDeviceId, '0x00007d1d', 'the arc-igpu fixture pci id');
+  assert.deepEqual(devices[1].bdf, { bus: 0, device: 2, function: 0 }, 'distinct bus slot');
+  assert.equal(devices[1].vramBytes, null, 'an iGPU has no VRAM');
+});
+
+test('M4-F: per-device caps — device 0 has the full A770 matrix, device 1 is telemetry-only', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  const caps0 = await b.getCapabilities(0);
+  const caps1 = await b.getCapabilities(1);
+  assert.equal(caps0.controls.powerLimit, true);
+  assert.equal(caps0.ranges.powerLimitW.max, 315, 'device 0 keeps the extended ceiling (advanced mock default)');
+  assert.equal(caps0.fan.canControl, true);
+  assert.equal(caps1.controls.powerLimit, false, 'the iGPU exposes no OC controls');
+  assert.deepEqual(caps1.ranges, {}, 'no ranges');
+  assert.equal(caps1.fan.canControl, false);
+  assert.equal(caps1.extendedRanges, undefined, 'the arc-igpu is never extended-capable');
+  assert.notEqual(caps0.deviceName, caps1.deviceName);
+});
+
+test('M4-F: per-device state — an apply to ONE device never leaks into the other', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  const res = await b.applySettings(0, { powerLimitW: 240 });
+  assert.equal(res.ok, true);
+  assert.equal((await b.getCurrentSettings(0)).powerLimitW, 240, 'device 0 applied');
+  const s1 = await b.getCurrentSettings(1);
+  assert.equal(s1.powerLimitW, null, 'device 1 has no powerLimit control');
+  // Unsupported-control failures are per device too.
+  const fail = await b.applySettings(1, { powerLimitW: 240 });
+  assert.equal(fail.ok, false);
+  assert.equal(fail.perControl.powerLimitW.errorCode, 'unsupported');
+  assert.equal((await b.getCurrentSettings(0)).powerLimitW, 240, 'device 0 untouched by the device-1 refusal');
+});
+
+test('M4-F: the waiver flag is PER-DEVICE (mirror the real backend per-device Map)', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  assert.equal((await b.getCapabilities(0)).waiverAccepted, false);
+  assert.equal((await b.getCapabilities(1)).waiverAccepted, false);
+  await b.setWaiverAccepted(1);
+  assert.equal((await b.getCapabilities(1)).waiverAccepted, true, 'device 1 accepted');
+  assert.equal((await b.getCapabilities(0)).waiverAccepted, false, 'device 0 untouched');
+  await b.restoreWaiverState(0, true);
+  assert.equal((await b.getCapabilities(0)).waiverAccepted, true);
+  assert.equal((await b.getCapabilities(1)).waiverAccepted, true, 'both accepted independently');
+  await b.restoreWaiverState(1, false);
+  assert.equal((await b.getCapabilities(1)).waiverAccepted, false);
+  assert.equal((await b.getCapabilities(0)).waiverAccepted, true);
+});
+
+test('M4-F: per-device telemetry ramps — device 1 steps energy differently and has its own timeline', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  const a0 = await b.sampleRawTelemetry(0);
+  const a1 = await b.sampleRawTelemetry(0);
+  const i0 = await b.sampleRawTelemetry(1);
+  const i1 = await b.sampleRawTelemetry(1);
+  // Energy step: a770 = 38.8 W * 0.5 s = 19.4 J; arc-igpu = 8 W * 0.5 = 4 J.
+  assert.ok(Math.abs(a1.gpuEnergyJ - a0.gpuEnergyJ - 19.4) < 1e-6, 'device 0 ramps at the a770 step');
+  assert.ok(Math.abs(i1.gpuEnergyJ - i0.gpuEnergyJ - 4) < 1e-6, 'device 1 ramps at the arc-igpu step');
+  assert.notEqual(a0.t, i0.t, 'distinct timelines (the samples never collide)');
+  assert.equal(a1.gpuClockMhz - a0.gpuClockMhz, 100);
+  assert.equal(i1.gpuClockMhz - i0.gpuClockMhz, 100);
+  assert.equal(a0.gpuClockMhz, 600, 'a770 clock base');
+  assert.equal(i0.gpuClockMhz, 350, 'arc-igpu clock base');
+  assert.equal(a0.tempC, 36, 'a770 temp base');
+  assert.equal(i0.tempC, 45, 'arc-igpu temp base');
+  assert.deepEqual(a0.fanRpm, [1030], 'the a770 has a fan');
+  assert.equal(i0.fanRpm, null, 'the iGPU has no fan');
+});
+
+test('M4-F: onRawTelemetry dispatches PER-DEVICE (a device-0 subscriber never sees device-1 samples)', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  const seen0 = [];
+  const seen1 = [];
+  const unsub0 = b.onRawTelemetry(0, (s) => seen0.push(s));
+  const unsub1 = b.onRawTelemetry(1, (s) => seen1.push(s));
+  await b.sampleRawTelemetry(0);
+  await b.sampleRawTelemetry(1);
+  assert.equal(seen0.length, 1);
+  assert.equal(seen1.length, 1);
+  assert.equal(seen0[0].gpuClockMhz, 600);
+  assert.equal(seen1[0].gpuClockMhz, 350);
+  unsub0();
+  await b.sampleRawTelemetry(0);
+  assert.equal(seen0.length, 1, 'unsubscribed device-0 cb stays quiet');
+  assert.equal(seen1.length, 1);
+  // close() clears both device channels.
+  await b.close();
+  await b.sampleRawTelemetry(1);
+  assert.equal(seen1.length, 1);
+});
+
+test('M4-F: resetToDefaults is per device', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  await b.applySettings(0, { powerLimitW: 240 });
+  await b.resetToDefaults(0);
+  assert.equal((await b.getCurrentSettings(0)).powerLimitW, 210, 'device 0 reset');
+  const s1 = await b.getCurrentSettings(1);
+  assert.equal(s1.gpuFreqOffsetMhz, null, 'device 1 untouched by the device-0 reset');
+});
+
+test('M4-F: pciProperties is per device — the iGPU has no ReBAR capability', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  const p0 = await b.pciProperties(0);
+  assert.equal(p0.resizableBarSupported, true);
+  assert.equal(p0.resizableBarEnabled, true);
+  const p1 = await b.pciProperties(1);
+  assert.equal(p1.resizableBarSupported, false, 'no ReBAR on the iGPU');
+  assert.equal(p1.resizableBarEnabled, false);
+  assert.deepEqual([p1.bus, p1.device, p1.function], [0, 2, 0]);
+});
+
+test('M4-F: setOcMode rebuilds the caps of BOTH devices', async () => {
+  const b = new MockBackend({ multiDevice: true, extendedRanges: true });
+  assert.equal((await b.getCapabilities(0)).ranges.powerLimitW.max, 315);
+  assert.equal((await b.getCapabilities(1)).extendedRanges, undefined);
+  b.setOcMode('stock');
+  assert.equal((await b.getCapabilities(0)).ranges.powerLimitW.max, 252, 'device 0 caps rebuilt to stock');
+  assert.equal((await b.getCapabilities(1)).extendedRanges, undefined, 'device 1 stays non-extended');
+  b.setOcMode('advanced');
+  assert.equal((await b.getCapabilities(0)).ranges.powerLimitW.max, 315);
+});
+
+test('M4-F: setFeatureset (the M2D swap) rebuilds BOTH devices; device 1 stays the arc-igpu line', async () => {
+  const b = new MockBackend({ multiDevice: true });
+  await b.setFeatureset('b580');
+  const devices = await b.listDevices();
+  assert.equal(devices.length, 2, 'the multi-device session keeps both devices after a swap');
+  const caps0 = await b.getCapabilities(0);
+  assert.match(caps0.deviceName, /B580/, 'device 0 carries the swapped featureset');
+  const caps1 = await b.getCapabilities(1);
+  assert.match(caps1.deviceName, /iGPU/, 'device 1 stays the arc-igpu line');
+  assert.equal(await b.getCurrentSettings(1).then((s) => s.fanMode), null, 'device 1 rebuilt fresh (no fan)');
+  // The swap resets device 0's timeline but preserves its waiver (consent).
+  await b.setWaiverAccepted(0);
+  await b.setFeatureset('a770');
+  assert.equal((await b.getCapabilities(0)).waiverAccepted, true, 'the waiver survives a swap');
+  const devices2 = await b.listDevices();
+  assert.equal(devices2.length, 2);
+});

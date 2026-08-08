@@ -28,6 +28,11 @@ import type {
 export interface ArcPowerApi {
   health(): Promise<HealthReport>;
   listDevices(): Promise<DeviceInfo[]>;
+  /** M4-F: the persisted GPU selection (null when absent — devices[0] resolves at boot). */
+  deviceGet(): Promise<{ deviceId: number | null }>;
+  /** M4-F: persist the selected GPU (non-negative integer; the ONLY writer,
+   *  like oc-mode-set — a Settings/Profiles save never clobbers it). */
+  deviceSet(deviceId: number): Promise<{ deviceId: number | null }>;
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
   applySettings(deviceId: number, settings: Settings): Promise<ApplyResponse>;
