@@ -147,7 +147,7 @@ test('resolveLogonExecPath: packaged portable parent (Arc-Power-*.exe) wins over
   const calls = [];
   const fakeExec = async (cmd, args) => {
     calls.push([cmd, ...args].join(' '));
-    return { stdout: 'C:\\Users\\yams\\Downloads\\Arc-Power-0.9.13.exe' };
+    return { stdout: 'C:\\Users\\yams\\Downloads\\Arc-Power-0.9.14.exe' };
   };
   const path = await resolveLogonExecPath({
     execFile: fakeExec,
@@ -155,7 +155,7 @@ test('resolveLogonExecPath: packaged portable parent (Arc-Power-*.exe) wins over
     ppid: 4242,
     execPath: 'C:\\Users\\yams\\AppData\\Local\\Temp\\asdf\\Arc Power.exe',
   });
-  assert.equal(path, 'C:\\Users\\yams\\Downloads\\Arc-Power-0.9.13.exe');
+  assert.equal(path, 'C:\\Users\\yams\\Downloads\\Arc-Power-0.9.14.exe');
   assert.ok(calls[0].includes('4242'), 'the parent query targets the ppid');
 });
 
@@ -185,8 +185,8 @@ test('createStartup: the logonExecPath override drives the Run value (portable s
     if (args[0] === 'query') { const err = new Error('not found'); err.code = 1; throw err; }
     return { stdout: '' };
   };
-  const startup = createStartup({ execFile: fakeExec, logonExecPath: 'C:\\Users\\yams\\Downloads\\Arc-Power-0.9.13.exe' });
+  const startup = createStartup({ execFile: fakeExec, logonExecPath: 'C:\\Users\\yams\\Downloads\\Arc-Power-0.9.14.exe' });
   await startup.set(true);
   const add = calls.find((c) => c.includes(' add '));
-  assert.ok(add && add.includes('"C:\\Users\\yams\\Downloads\\Arc-Power-0.9.13.exe"'), `add used the logon path: ${add}`);
+  assert.ok(add && add.includes('"C:\\Users\\yams\\Downloads\\Arc-Power-0.9.14.exe"'), `add used the logon path: ${add}`);
 });

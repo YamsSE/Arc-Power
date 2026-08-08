@@ -57,6 +57,9 @@ export interface ArcPowerApi {
   driverInfo(): Promise<{ driverDate: string | null }>;
   /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
   appVersion(): Promise<{ version: string }>;
+  /** M4-E: the distribution kind — 'installed' (elevated logon task story),
+   *  'portable' (unelevated in-app applies), 'dev' (dev tree). */
+  appBuildInfo(): Promise<{ kind: 'installed' | 'portable' | 'dev' }>;
   /** M2C-C: elevation state (cached koffi probe, no spawn). */
   appElevated(): Promise<ElevationState>;
   /** M3-C-E: the persisted OC mode ('stock'|'advanced'). */

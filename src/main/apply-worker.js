@@ -152,7 +152,11 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // the mode message only and never touches the GPU (no defaults restore
     // downstream — the parent's applyProfile path gates BEFORE delegating,
     // and a direct worker request refuses here the same way).
-    const refusal = ocModeRefusal(req.ocMode, settings);
+    // M4-E: the gate is unit-aware — it receives the capability RANGES
+    // (a device property from the same probe as the parent), so percent-unit
+    // devices are never mode-refused. NOT the extendedRanges flag.
+    const caps = await backend.getCapabilities(deviceId);
+    const refusal = ocModeRefusal(req.ocMode, settings, caps.ranges);
     if (refusal) {
       log(`[apply-worker] oc-mode refusal: ${refusal.message} (${refusal.controls.join(', ')})`);
       // M3-C review F2: the refusal carries the FRESH device state, never
@@ -166,7 +170,6 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       await finish({ ok: false, perControl: refusalPerControl(refusal), state, ocModeRefused: true });
       return 0;
     }
-    const caps = await backend.getCapabilities(deviceId);
     // M3-C step-5 F1: advanced mode + a NOT-capable bundled 2023 runtime on
     // THIS driver -> refuse extended values BEFORE the clamp, never a silent
     // 252 W / 90 C cap reported as ok:true. Safe here: the worker's backend

@@ -95,6 +95,9 @@ export interface AppState {
   driverDate: string | null;
   /** M2C-B B3: app version for the header line (app:version IPC). */
   appVersion: string;
+  /** M4-E: distribution kind (app:build-info IPC) — 'installed' | 'portable'
+   *  | 'dev'; drives the Settings start-with-Windows hint text. */
+  buildKind: 'installed' | 'portable' | 'dev';
   /** M3-C: this process runs as administrator (app-elevated IPC). */
   elevated: boolean;
   /** M3-C: applies go through the elevated self-worker (UAC prompt) —
@@ -127,6 +130,7 @@ const INITIAL: AppState = {
   lastApply: null,
   driverDate: null,
   appVersion: '0.0.0',
+  buildKind: 'dev',
   elevated: false,
   workerApply: false,
   ocMode: 'stock',

@@ -672,7 +672,10 @@ export class IgclBackend {
         // can never offer an un-appliable value (plan.md M2C-A F3). M2C-C:
         // the pin yields to the extended range when the bundled 2023 runtime
         // is capable (values above 90 C then route to that runtime).
-        if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
+        // M4-E: the pin is a C-UNIT rule — percent-unit ranges (Battlemage:
+        // temp limit as %, max 100) are not DriverStore °C limits and must
+        // pass through untouched (their max IS the honest ceiling).
+        if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C' && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
           caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
         }
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
@@ -685,11 +688,20 @@ export class IgclBackend {
         const extendedCapable = this._extended
           ? await this._extended.isCapable()
           : false;
-        if (extendedCapable && this._ocMode === 'advanced') {
-          if (caps.ranges.powerLimitW) {
+        // M4-E: the extended concept is W/C-only (the bundled 2023 runtime
+        // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
+        // must never be overwritten with the 315 W / 115 C maxes nor flip
+        // the flag — their range max is the ceiling. Each override is
+        // guarded by its own units; the flag is set only when a genuine
+        // W/C extended range was exposed.
+        const wcExtended = extendedCapable && this._ocMode === 'advanced'
+          && ((caps.ranges.powerLimitW && caps.ranges.powerLimitW.units === 'W')
+            || (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C'));
+        if (wcExtended) {
+          if (caps.ranges.powerLimitW && caps.ranges.powerLimitW.units === 'W') {
             caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: EXTENDED_PL_MAX_W };
           }
-          if (caps.ranges.tempLimitC) {
+          if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C') {
             caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
           }
           caps.extendedRanges = true;
@@ -783,6 +795,11 @@ export class IgclBackend {
       case 5: return 'C';
       case 10: return 'mW';
       case 13: return 'mV';
+      // M4-E: percent-unit controls (Battlemage — volt/PL/TL as % per the
+      // IGCL sample) must surface the canonical '%' like the mock featureset
+      // (a 'UNITS_11' string would render "120 UNITS_11" in the UI and drift
+      // from the mock's '%').
+      case 11: return '%';
       default: return `UNITS_${units}`;
     }
   }

@@ -62,6 +62,13 @@ function makeFakeLib(opts = {}) {
   const calls = { waiver: 0, reset: 0, fanSetters: 0, sets: [] };
   // unit overrides for the conversion tests (default: A770 W/V)
   const units = opts.units ?? { powerLimit: 4, gpuVoltageOffset: 3 };
+  // M4-E: percent-unit device (Battlemage mock: volt/PL/TL as %, units 11).
+  const percentUnits = opts.percentUnits === true;
+  if (percentUnits) {
+    units.powerLimit = 11;
+    units.gpuVoltageOffset = 11;
+    units.temperatureLimit = 11;
+  }
   const devHandle = koffi.alloc('uint8', 1);
   const fanHandle = koffi.alloc('uint8', 1);
 
@@ -85,15 +92,22 @@ function makeFakeLib(opts = {}) {
     if (opts.tempLimitMax !== undefined) matrix.temperatureLimit = { ...matrix.temperatureLimit, max: opts.tempLimitMax };
     if (units.powerLimit !== 4) matrix.powerLimit = { ...matrix.powerLimit, units: units.powerLimit, min: 105000, max: 252000, step: 1000, Default: 210000 };
     if (units.gpuVoltageOffset !== 3) matrix.gpuVoltageOffset = { ...matrix.gpuVoltageOffset, units: units.gpuVoltageOffset, min: 0, max: 234, step: 5, Default: 0 };
+    // M4-E: the Battlemage percent-unit matrix (volt/PL/TL as %, per the
+    // b580 mock featureset).
+    if (percentUnits) {
+      matrix.powerLimit = { ...matrix.powerLimit, units: 11, min: 0, max: 150, step: 1, Default: 100 };
+      matrix.gpuVoltageOffset = { ...matrix.gpuVoltageOffset, units: 11, min: -100, max: 100, step: 1, Default: 0 };
+      matrix.temperatureLimit = { ...matrix.temperatureLimit, units: 11, min: 0, max: 100, step: 1, Default: 100 };
+    }
     for (const [k, v] of Object.entries(matrix)) obj[k] = v;
     koffi.encode(buf, 'ctl_oc_properties_t', obj);
   };
 
   const getters = {
-    ctlOverclockPowerLimitGetV2: (h, buf) => { koffi.encode(buf, 'double', units.powerLimit === 4 ? state.powerLimitW : state.powerLimitW * 1000); return 0; },
-    ctlOverclockPowerLimitSetV2: (h, v) => { calls.sets.push(['powerLimit', v]); if (!opts.silentNoop) state.powerLimitW = units.powerLimit === 4 ? v : v / 1000; return 0; },
-    ctlOverclockGpuMaxVoltageOffsetGetV2: (h, buf) => { koffi.encode(buf, 'double', units.gpuVoltageOffset === 3 ? state.gpuVoltOffsetV : state.gpuVoltOffsetV * 1000); return 0; },
-    ctlOverclockGpuMaxVoltageOffsetSetV2: (h, v) => { calls.sets.push(['gpuVoltOffset', v]); if (!opts.silentNoop) state.gpuVoltOffsetV = units.gpuVoltageOffset === 3 ? v : v / 1000; return 0; },
+    ctlOverclockPowerLimitGetV2: (h, buf) => { koffi.encode(buf, 'double', units.powerLimit === 4 || units.powerLimit === 11 ? state.powerLimitW : state.powerLimitW * 1000); return 0; },
+    ctlOverclockPowerLimitSetV2: (h, v) => { calls.sets.push(['powerLimit', v]); if (!opts.silentNoop) state.powerLimitW = units.powerLimit === 4 || units.powerLimit === 11 ? v : v / 1000; return 0; },
+    ctlOverclockGpuMaxVoltageOffsetGetV2: (h, buf) => { koffi.encode(buf, 'double', units.gpuVoltageOffset === 3 || units.gpuVoltageOffset === 11 ? state.gpuVoltOffsetV : state.gpuVoltOffsetV * 1000); return 0; },
+    ctlOverclockGpuMaxVoltageOffsetSetV2: (h, v) => { calls.sets.push(['gpuVoltOffset', v]); if (!opts.silentNoop) state.gpuVoltOffsetV = units.gpuVoltageOffset === 3 || units.gpuVoltageOffset === 11 ? v : v / 1000; return 0; },
     ctlOverclockGpuFrequencyOffsetGetV2: (h, buf) => { koffi.encode(buf, 'double', state.gpuFreqOffsetMhz); return 0; },
     ctlOverclockGpuFrequencyOffsetSetV2: (h, v) => { calls.sets.push(['gpuFreqOffset', v]); if (!opts.silentNoop) state.gpuFreqOffsetMhz = v; return 0; },
     ctlOverclockTemperatureLimitGetV2: (h, buf) => { koffi.encode(buf, 'double', state.tempLimitC); return 0; },
@@ -1033,6 +1047,62 @@ test('F3 PT clamp: applying temp-limit 92 is clamped to 90 before the driver wri
   assert.deepEqual(lib.__calls.sets.at(-1), ['tempLimit', 90]);
   const s = await b.getCurrentSettings(0);
   assert.equal(s.tempLimitC, 90);
+});
+
+// ---------------------------------------------------------------------------
+// M4-E — percent-unit device (Battlemage): the W/C pins must not apply
+// ---------------------------------------------------------------------------
+
+test('M4-E: percent-unit caps surface canonical % units and are NOT F3-pinned (temp max stays 100)', async () => {
+  const b = makeBackend(makeFakeLib({ percentUnits: true, powerLimitW: 100, tempLimitC: 100 }));
+  const caps = await b.getCapabilities(0);
+  assert.deepEqual(caps.ranges.powerLimitW, { min: 0, max: 150, step: 1, default: 100, units: '%' });
+  assert.deepEqual(caps.ranges.tempLimitC, { min: 0, max: 100, step: 1, default: 100, units: '%' });
+  assert.deepEqual(caps.ranges.gpuVoltOffsetV, { min: -100, max: 100, step: 1, default: 0, units: '%' });
+  assert.equal(caps.extendedRanges, undefined);
+});
+
+test('M4-E: percent-unit apply writes the raw % values — tempLimitC 100 % is never clamped to 90', async () => {
+  const lib = makeFakeLib({ percentUnits: true, powerLimitW: 100, tempLimitC: 100 });
+  const b = makeBackend(lib);
+  const res = await b.applySettings(0, { powerLimitW: 120, tempLimitC: 100, gpuVoltOffsetV: 12 });
+  assert.equal(res.ok, true);
+  for (const k of ['powerLimitW', 'tempLimitC', 'gpuVoltOffsetV']) assert.equal(res.perControl[k].ok, true, k);
+  const tempSet = lib.__calls.sets.find(([c]) => c === 'tempLimit');
+  assert.deepEqual(tempSet, ['tempLimit', 100], 'the driver saw 100 (percent), not 90 (the C pin)');
+  const powerSet = lib.__calls.sets.find(([c]) => c === 'powerLimit');
+  assert.deepEqual(powerSet, ['powerLimit', 120]);
+  const s = await b.getCurrentSettings(0);
+  assert.equal(s.tempLimitC, 100);
+  assert.equal(s.powerLimitW, 120);
+});
+
+test('M4-E: percent-unit ranges are never overwritten by the extended maxes — no extendedRanges flag even when the 2023 runtime is capable', async () => {
+  const b = new IgclBackend({
+    lib: makeFakeLib({ percentUnits: true, powerLimitW: 100, tempLimitC: 100 }),
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => true },
+    ocMode: 'advanced',
+  });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, undefined, 'the W/C extended concept does not exist on a percent-unit device');
+  assert.equal(caps.ranges.powerLimitW.max, 150, 'percent PL max untouched (a 315 would be a bogus "315 %" slider)');
+  assert.equal(caps.ranges.tempLimitC.max, 100, 'percent TL max untouched');
+});
+
+test('M4-E: W/C extended maxes still apply on a W-unit device (regression — the guard is per-units, not a blanket)', async () => {
+  const b = new IgclBackend({
+    lib: makeFakeLib(),
+    findDll: () => 'C:\\fake\\IntelControlLib.dll',
+    dllPath: 'C:\\fake\\IntelControlLib.dll',
+    extended: { isCapable: async () => true },
+    ocMode: 'advanced',
+  });
+  const caps = await b.getCapabilities(0);
+  assert.equal(caps.extendedRanges, true);
+  assert.equal(caps.ranges.powerLimitW.max, 315);
+  assert.equal(caps.ranges.tempLimitC.max, 115);
 });
 
 // ---------------------------------------------------------------------------

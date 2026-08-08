@@ -97,7 +97,10 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   // cleanly, never wipe the live OC state and never balloon "defaults
   // restored" (fallbackApplied stays undefined -> the tray shows the
   // reason-specific refused balloon). Same for the tray path (shared flow).
-  const refusal = ocModeRefusal(settings.ocMode, profile.settings);
+  // M4-E: unit-aware via the capability ranges (percent-unit devices are
+  // never mode-refused — their range max is the ceiling, not the W/C
+  // extended thresholds).
+  const refusal = ocModeRefusal(settings.ocMode, profile.settings, caps.ranges);
   if (refusal) {
     log(`[apply-on-boot] oc-mode refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) — nothing applied, NO defaults restore`);
     return { applied: false, reason: refusal.message, ocModeRefused: true };
@@ -200,13 +203,14 @@ export async function applyProfile({ backend, store, profileId, log = () => {}, 
   // for the PL refusal) — so the fallback-skip is keyed on the SESSION
   // (skipDefaultsFallback), REGARDLESS of errorCode: logon must NEVER
   // wipe the live OC state over an elevation refusal. The honest balloon
-  // ("needs administrator approval — deferred to the next milestone") is
-  // the caller's job.
+  // ("needs administrator approval — the elevated logon apply is not set
+  // up") is the caller's job; the ELEVATED logon applies come from the
+  // ArcPowerBootApply task (--boot-apply mode, M4-E).
   if (skipDefaultsFallback) {
-    log('[apply-on-boot] boot variant (applyRunner-less, unelevated): apply failed — defaults-restore fallback SKIPPED (real-HW apply needs administrator approval, deferred to M4-E)');
+    log('[apply-on-boot] boot variant (applyRunner-less, unelevated): apply failed — defaults-restore fallback SKIPPED (logon applies need an elevated session — the installed app applies elevated at logon via the ArcPowerBootApply task)');
     return {
       applied: false,
-      reason: 'apply failed; defaults restore skipped (boot apply needs administrator approval — deferred to the next milestone)',
+      reason: 'apply failed; defaults restore skipped (logon applies need an elevated session)',
       result,
       state,
       fallbackSkipped: true,

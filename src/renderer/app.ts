@@ -161,6 +161,15 @@ async function boot() {
     store.set({ appVersion: '0.0.0' });
   }
 
+  // M4-E: the distribution kind (app:build-info IPC) — the Settings
+  // start-with-Windows hint differentiates by it. Failure degrades to 'dev'.
+  try {
+    const b = await api.appBuildInfo();
+    store.set({ buildKind: b?.kind ?? 'dev' });
+  } catch {
+    store.set({ buildKind: 'dev' });
+  }
+
   // Display-driver registry date (M2b-B, read-only): a lookup failure
   // degrades to null and the dashboard card shows the driver version alone.
   try {

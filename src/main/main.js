@@ -34,6 +34,9 @@ import { createSysStats, createMockSysStats } from './sys-stats.js';
 import { createMonitorLog } from './monitor-log.js';
 import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar } from './sysinfo.js';
 import { applyProfile, runApplyOnStartup, applyProfileBoot } from './apply-on-boot.js';
+import { runBootApplyMode } from './boot-apply-mode.js';
+import { createBootSetup, taskActionMatches } from './setup-boot.js';
+import { deriveBuildKind } from './build-kind.js';
 import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
@@ -46,6 +49,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const headless = process.argv.includes('--headless');
 const uiVerify = process.argv.includes('--ui-verify');
+// M4-E: the ArcPowerBootApply logon task's action (`"<exe>" --boot-apply`).
+// No id argument — reads the ACTIVE profile from the store like the
+// window-path boot apply; exits silently when the boot setting is off and
+// NEVER lingers (no long-lived tray process). The task runs ELEVATED so the
+// in-process apply persists.
+const bootApply = process.argv.includes('--boot-apply');
 // --ui-verify is dev tooling: it ALWAYS uses the mock backend (never touches
 // hardware), so treat it as mock for backend selection.
 const mock = process.argv.includes('--mock') || process.env.RID_BACKEND === 'mock' || uiVerify;
@@ -223,6 +232,70 @@ async function main() {
       log: (s) => console.log(`[apply-worker] ${s}`),
     });
     app.exit(code);
+    return;
+  }
+
+  // --- M4-E --boot-apply mode (the ArcPowerBootApply logon task's action): --
+  // no id arg — reads the ACTIVE profile from the store. ocOnBoot off / no
+  // active profile -> exit 0 SILENTLY (no window, no tray — the task's logon
+  // spawn is invisible when off). On -> the boot-gated IN-PROCESS apply
+  // (applyProfileBoot: applyRunner-less, defaults-restore fallback skipped
+  // regardless of errorCode — the task runs ELEVATED so the apply persists).
+  // BOTH outcomes exit: success -> right after the apply; failure -> tray
+  // balloon + ~10 s dwell so it is visible, then app.exit(0). An invisible
+  // elevated process + tray icon must NEVER linger after a logon apply.
+  if (bootApply) {
+    await app.whenReady();
+    const bootStore = new ProfileStore({
+      dir: mock ? path.join(os.tmpdir(), 'arcpower-mock') : undefined,
+      ocModeDefault: mock ? 'advanced' : 'stock',
+    });
+    const bootOldIgcl = mock ? null : new OldIgcl();
+    const bootBackend = createBackend({
+      kind: mock ? 'mock' : 'igcl',
+      igcl: bootOldIgcl ? { extended: { isCapable: () => bootOldIgcl.isCapable() } } : {},
+      mock: {},
+    });
+    // Mirror the window/apply-profile boot seeding (bootBackend): the
+    // persisted waiver acceptance + OC mode must ride into the in-process
+    // apply — the ELEVATED task's apply gates on them exactly like the
+    // window path's (never calls the driver, never auto-accepts).
+    try { await bootBackend.init(); } catch { /* health-level degrade */ }
+    try { await seedWaiverState(bootBackend, bootStore); } catch (err) {
+      console.log(`[boot-apply] waiver seeding skipped: ${err.message}`);
+    }
+    try {
+      const s = await bootStore.loadSettings();
+      if (typeof bootBackend.setOcMode === 'function') bootBackend.setOcMode(s.ocMode);
+    } catch (err) {
+      console.log(`[boot-apply] oc-mode seeding skipped: ${err.message}`);
+    }
+    try {
+      const out = await runBootApplyMode({
+        store: bootStore,
+        apply: (profileId) => applyProfileBoot({
+          backend: bootBackend,
+          store: bootStore,
+          profileId,
+          oldIgcl: mock ? createMockOldIgcl(bootBackend) : bootOldIgcl,
+          log: (s) => console.log(`[boot-apply] ${s}`),
+        }),
+        setupTray: () => setupTray({
+          getWindow: () => null,
+          backend: bootBackend,
+          store: bootStore,
+          oldIgcl: mock ? createMockOldIgcl(bootBackend) : bootOldIgcl,
+          applyRunner: null,
+        }),
+        log: (s) => console.log(`[boot-apply] ${s}`),
+      });
+      console.log(`[boot-apply] ${out.action}${out.reason ? ` — ${out.reason}` : ''} — exiting 0`);
+    } catch (err) {
+      console.log(`[boot-apply] mode failed (${err.message}) — exiting 0`);
+    } finally {
+      await bootBackend.close().catch(() => {});
+    }
+    app.exit(0);
     return;
   }
 
@@ -700,6 +773,59 @@ async function main() {
     return;
   }
 
+  // M4-E (setup gate — UI window path ONLY): placed IMMEDIATELY before
+  // createWindow and AFTER the --apply-profile early return above — the gate
+  // feeds ONLY the window-path boot-apply decision at the bottom, so it must
+  // NEVER run on the --apply-profile path (the tray-only, latency-optimized
+  // logon apply: no gate queries, no UAC prompt) nor in --headless /
+  // --boot-apply / --ui-verify (all return earlier); the dev tree and the
+  // PORTABLE build never run it either (installedBuild — that env var is set
+  // ONLY by the portable wrapper). Gate GREEN = the ArcPowerBootApply task
+  // exists AND its action's exe path equals the CURRENT installed exe AND
+  // the task is enabled (unelevated reads; a reinstall to a different dir
+  // must never leave a dead-action task silently — the stale-action hole; a
+  // DISABLED task reads NOT green so the elevated setup re-runs with /f and
+  // self-heals). Gate NOT green -> the elevated setup spawns ONCE per launch
+  // (create/overwrite with /f; a declined UAC is non-fatal — the gate
+  // re-triggers next launch) and the window-path boot apply below STAYS
+  // (never a silent-dead logon apply on installed builds until the setup
+  // lands). The schtasks reads are unelevated + quick; a check failure
+  // degrades to "gate unknown" (the in-app apply stays — the safe side).
+  // The check is started WITHOUT awaiting (a hung schtasks must never stall
+  // the first window) and awaited at the boot-apply decision below with the
+  // same degraded-to-null catch.
+  const installedBuild = app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR;
+  let bootGate = null; // { green: boolean } | null — null = not applicable/unknown
+  let bootGateCheck = null; // the in-flight check promise — awaited at the boot-apply decision
+  if (installedBuild && !mock) {
+    const bootSetup = createBootSetup();
+    // NOT awaited: the first window must never wait on schtasks (two
+    // queries, 10 s timeout each). The promise never rejects — the catch
+    // degrades to null ("gate unknown" -> the in-app apply stays).
+    bootGateCheck = bootSetup.check()
+      .then((task) => {
+        bootGate = { green: taskActionMatches(task, process.execPath) };
+        console.log(`[boot] setup gate: ${bootGate.green ? 'GREEN' : 'NOT GREEN'} (task ${task.exists ? 'exists' : 'missing'}, action exe ${task.command ? `'${task.command}'` : 'unknown'})`);
+        if (!bootGate.green) {
+          // Fire-and-forget: the UAC prompt must not block the window boot.
+          // createBootSetup latches — exactly ONE elevated spawn per launch.
+          bootSetup.setup({ execPath: process.execPath })
+            .then((r) => {
+              if (r.ok) console.log('[boot] elevated setup OK — ArcPowerBootApply task created/overwritten');
+              else if (r.alreadyStarted) console.log('[boot] elevated setup already started this launch');
+              else console.log('[boot] elevated setup declined or failed — the gate re-triggers next launch');
+            })
+            .catch((err) => console.log(`[boot] elevated setup spawn failed: ${err.message}`));
+        }
+        return bootGate;
+      })
+      .catch((err) => {
+        console.log(`[boot] setup gate check failed: ${err.message}`);
+        bootGate = null; // unknown -> keep the in-app apply (never a silent-dead logon apply)
+        return null;
+      });
+  }
+
   const win = createWindow();
   // M4-D2 (§1 close-to-tray FIX): the close handler reads the SYNC settings
   // cache (loadSettingsSync) and calls event.preventDefault() IN THE SAME
@@ -834,6 +960,12 @@ async function main() {
     oldIgcl,
     applyRunner,
     isElevated,
+    // M4-E: the distribution kind for app:build-info (the Settings
+    // start-with-Windows hint differentiates by it). Mock/ui-verify reports
+    // 'portable' (the mock applies in-process like the portable build); the
+    // packaged PORTABLE build (PORTABLE_EXECUTABLE_DIR set) reports
+    // 'portable' too — never 'dev' (deriveBuildKind pin).
+    buildKind: deriveBuildKind({ mock, installedBuild, isPackaged: app.isPackaged }),
     mock: mockCtl,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
@@ -882,33 +1014,51 @@ async function main() {
 
   await setupTray({ getWindow: () => win, backend, store, oldIgcl, applyRunner });
 
-  // M4-D2 (boot apply — pinned F3/F4): the app launched from the HKCU Run
-  // value boots into the UI; when the profile's start-at-boot is on AND an
-  // active profile exists, run the boot-gated IN-APP apply. It runs AFTER
-  // setupTray (a failure balloon must never hit a null trayRef — pinned
-  // F3). The boot variant is applyRunner: null — in-process ONLY, NEVER
-  // the elevated worker, NEVER a UAC at logon (hard constraint); when it
-  // fails in this unelevated boot variant, the defaults-restore fallback
-  // is SKIPPED regardless of errorCode (applyProfileBoot) and the balloon
-  // says the honest deferred-to-next-milestone line (pinned F3/r2 F2).
-  // Mock mode records the attempt in the mock boot-apply log. Never
-  // crashes — every failure is a logged balloon or a console line.
+  // M4-D2 (boot apply — pinned F3/F4) + M4-E (S1 branching): the app
+  // launched from the HKCU Run value boots into the UI; when the profile's
+  // start-at-boot is on AND an active profile exists, the boot-gated IN-APP
+  // apply runs — UNLESS the M4-E setup gate is GREEN on the installed build
+  // (task exists + action matches the current exe): the ELEVATED logon task
+  // owns logon applies then, and the in-app apply is SKIPPED (the /xml
+  // result from the gate check above is in hand on the same launch — no
+  // extra query). Gate NOT green (first-run UAC declined, transient
+  // failure) or portable/dev: the in-app apply + honest balloon stay — a
+  // silent-dead logon apply with no signal must never happen until the
+  // setup lands. It runs AFTER setupTray (a failure balloon must never hit
+  // a null trayRef — pinned F3). The boot variant is applyRunner: null —
+  // in-process ONLY, NEVER the elevated worker, NEVER a UAC at logon (hard
+  // constraint); when it fails in this unelevated boot variant, the
+  // defaults-restore fallback is SKIPPED regardless of errorCode
+  // (applyProfileBoot) and the balloon says the honest line. Mock mode
+  // records the attempt in the mock boot-apply log. Never crashes — every
+  // failure is a logged balloon or a console line.
   try {
     const bootSettings = await store.loadSettings();
     if (bootSettings.ocOnBoot === true && bootSettings.activeProfileId) {
-      const out = await applyProfileBoot({
-        backend,
-        store,
-        profileId: bootSettings.activeProfileId,
-        oldIgcl,
-        log: (s) => console.log(s),
-      });
-      if (mock) recordBootApply(bootSettings.activeProfileId, out);
-      if (!out.applied && trayRef && !trayRef.isDestroyed()) {
-        trayRef.displayBalloon({
-          title: 'Arc Power',
-          content: 'Profile apply needs administrator approval — deferred to the next milestone.',
+      // M4-E S1: the gate verdict is awaited HERE (the only consumer) — the
+      // check was started before createWindow WITHOUT awaiting, so a hung
+      // schtasks never stalls the first window; by this point (after the
+      // window, health, tray) the promise is normally already resolved.
+      // bootGateCheck never rejects (degraded-to-null catch above) — a null
+      // verdict keeps the in-app apply (never a silent-dead logon apply).
+      if (bootGateCheck) await bootGateCheck;
+      if (bootGate?.green === true) {
+        console.log('[boot] setup gate GREEN — the elevated logon task owns logon applies; in-app boot apply SKIPPED');
+      } else {
+        const out = await applyProfileBoot({
+          backend,
+          store,
+          profileId: bootSettings.activeProfileId,
+          oldIgcl,
+          log: (s) => console.log(s),
         });
+        if (mock) recordBootApply(bootSettings.activeProfileId, out);
+        if (!out.applied && trayRef && !trayRef.isDestroyed()) {
+          trayRef.displayBalloon({
+            title: 'Arc Power',
+            content: 'Profile apply needs administrator approval — the elevated logon apply is not set up.',
+          });
+        }
       }
     }
   } catch (err) {

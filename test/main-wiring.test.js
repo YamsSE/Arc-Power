@@ -75,14 +75,65 @@ test('F3: the oc-mode pre-seed (seedOcMode) runs BEFORE createWindow and registe
 
 test('F4: the ProfileStore construction uses an ISOLATED mock data dir and precedes createWindow', () => {
   const src = fs.readFileSync(mainSrcPath, 'utf8');
-  const storeLine = findLineNumber(src, 'new ProfileStore({');
-  const winLine = findLineNumber(src, 'const win = createWindow()');
-  assert.ok(storeLine < winLine, `the store must be constructed before the window (store at main.js:${storeLine}, window at main.js:${winLine})`);
+  const winIdx = src.indexOf('const win = createWindow()');
+  assert.notEqual(winIdx, -1);
+  // M4-E: --boot-apply mode constructs its OWN store in an early-return mode
+  // (never reaches the window). The WINDOW-PATH store is the LAST
+  // ProfileStore construction before createWindow — pin THAT one.
+  const markers = [...src.matchAll(/new ProfileStore\(\{/g)];
+  const beforeWin = markers.filter((m) => m.index < winIdx);
+  assert.ok(beforeWin.length >= 1, 'a store construction must precede the window');
+  const mainStore = beforeWin[beforeWin.length - 1];
   // The isolated dir is derived from the mock flag.
-  const segment = src.slice(src.indexOf('new ProfileStore({') - 200, src.indexOf('new ProfileStore({') + 120);
+  const segment = src.slice(mainStore.index - 200, mainStore.index + 120);
   assert.match(segment, /arcpower-mock/, 'the mock data dir must be an isolated temp dir');
   assert.match(segment, /dir:\s*mockDataDir/, 'the store must receive the isolated dir in mock mode');
   // The variant-to-variant session seed must still exist AFTER the store.
-  const seedIdx = src.indexOf("oc-mode session seed");
-  assert.ok(seedIdx > src.indexOf('new ProfileStore({'), 'the mock session seed must still run after the store construction');
+  const seedIdx = src.indexOf('oc-mode session seed');
+  assert.ok(seedIdx > mainStore.index, 'the mock session seed must still run after the store construction');
+});
+
+// M4-E step-4 F1 (STRUCTURAL) — the setup gate must NEVER run on the
+// --apply-profile path. The bug: the gate block sat BEFORE the --apply-profile
+// early return, so an INSTALLED build's tray-only apply awaited two schtasks
+// queries (10 s each) and could fire a UAC prompt. The gate feeds ONLY the
+// window-path boot-apply decision, so it must be positioned AFTER the early
+// return (and before createWindow). The packaged smoke's exit-0/no-prompt
+// contract for --apply-profile / --headless / --boot-apply / --ui-verify
+// depends on this order.
+
+test('M4-E F1: the setup gate block runs AFTER the --apply-profile early return (never on the tray-only apply path)', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  const earlyReturnLine = findLineNumber(src, 'if (applyProfileId && !uiVerify)');
+  const gateLine = findLineNumber(src, 'const installedBuild = app.isPackaged');
+  const winLine = findLineNumber(src, 'const win = createWindow()');
+  assert.ok(
+    earlyReturnLine < gateLine && gateLine < winLine,
+    `ordering: the --apply-profile early return (main.js:${earlyReturnLine}) must precede the setup gate (main.js:${gateLine}) which must precede createWindow (main.js:${winLine}) — a tray-only apply must never run the gate (no schtasks waits, no UAC prompt)`,
+  );
+});
+
+// M4-E step-4 F4 — the gate check must never be AWAITED before window
+// creation (a hung schtasks would stall the first window up to 20 s). The
+// check is started fire-and-forget before createWindow and awaited at the
+// boot-apply decision (the only consumer), with the degraded-to-null catch.
+
+test('M4-E F4: the setup gate check is started WITHOUT await and awaited only at the boot-apply decision', () => {
+  const src = fs.readFileSync(mainSrcPath, 'utf8');
+  assert.ok(
+    !src.includes('await bootSetup.check()'),
+    'the gate check must never be awaited where it is started — a hung schtasks must not stall the first window',
+  );
+  const checkStartLine = findLineNumber(src, 'bootGateCheck = bootSetup.check()');
+  const winLine = findLineNumber(src, 'const win = createWindow()');
+  assert.ok(
+    checkStartLine < winLine,
+    `the gate check must START before createWindow (main.js:${checkStartLine} < ${winLine}) so its verdict is typically in hand by the boot-apply decision`,
+  );
+  const awaitLine = findLineNumber(src, 'if (bootGateCheck) await bootGateCheck');
+  const gateUseLine = findLineNumber(src, 'if (bootGate?.green === true)');
+  assert.ok(
+    awaitLine > winLine && awaitLine < gateUseLine,
+    `the check must be AWAITED at the boot-apply decision only (main.js:${awaitLine}), between the window (${winLine}) and the gate use (${gateUseLine})`,
+  );
 });

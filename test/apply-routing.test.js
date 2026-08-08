@@ -62,6 +62,33 @@ test('ocModeRefusal: null/garbage settings never refuse', () => {
   assert.equal(ocModeRefusal('advanced', []), null);
 });
 
+test('M4-E: ocModeRefusal is unit-aware — percent-unit values (B580) are NEVER mode-refused', () => {
+  const percentRanges = {
+    powerLimitW: { units: '%' },
+    tempLimitC: { units: '%' },
+    gpuVoltOffsetV: { units: '%' },
+  };
+  // The b580 percent apply rides tempLimitC at its 100 % default — stock
+  // mode must NOT treat 100 % as "100 C beyond the standard limit": the
+  // whole apply would be refused on a device with no extended concept.
+  assert.equal(ocModeRefusal('stock', { powerLimitW: 150, tempLimitC: 100, gpuVoltOffsetV: 12 }, percentRanges), null, '100 % is not 100 C');
+  // Advanced ceiling too: percent values have no W/C ceiling — the range
+  // clamp is the guard, never the mode gate.
+  assert.equal(ocModeRefusal('advanced', { powerLimitW: 400, tempLimitC: 100 }, percentRanges), null);
+  // W/C units keep the gate exactly as before (A770).
+  const wcRanges = { powerLimitW: { units: 'W' }, tempLimitC: { units: 'C' } };
+  assert.deepEqual(ocModeRefusal('stock', { powerLimitW: 300, tempLimitC: 100 }, wcRanges), {
+    mode: 'stock', controls: ['powerLimitW', 'tempLimitC'], message: OC_MODE_REFUSAL_MSG,
+  });
+  assert.deepEqual(ocModeRefusal('advanced', { powerLimitW: 400 }, wcRanges), {
+    mode: 'advanced', controls: ['powerLimitW'], message: OC_CEILING_REFUSAL_MSG,
+  });
+  // Unknown ranges keep the historical threshold behavior (backward compat).
+  assert.deepEqual(ocModeRefusal('stock', { powerLimitW: 300 }), {
+    mode: 'stock', controls: ['powerLimitW'], message: OC_MODE_REFUSAL_MSG,
+  });
+});
+
 test('refusalPerControl: per-control failures carry the mode message only', () => {
   const per = refusalPerControl(ocModeRefusal('stock', { powerLimitW: 300, tempLimitC: 95 }));
   assert.deepEqual(Object.keys(per).sort(), ['powerLimitW', 'tempLimitC']);

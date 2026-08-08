@@ -26,6 +26,7 @@ import { MockBackend, createMockOldIgcl } from '../src/main/backend/mock-backend
 import { IgclBackend } from '../src/main/backend/igcl-backend.js';
 import { CTL_RESULT } from '../src/main/backend/igcl-bindings.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../src/main/apply-routing.js';
+import { loadFeatureset } from '../src/main/backend/featuresets.js';
 import { createMockStartup } from '../src/main/startup.js';
 import { ProfileStore } from '../src/main/store/profile-store.js';
 
@@ -857,12 +858,24 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '0.9.13', 'package.json version');
+  assert.equal(version, '0.9.14', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {
   const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, appVersion: '2.3.4' });
   assert.deepEqual(await handlers['app-version'](), { version: '2.3.4' });
+});
+
+test('app:build-info channel: no payload; the DEFAULT reports dev (tests)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  assert.equal(typeof handlers['app:build-info'], 'function');
+  await assert.rejects(() => handlers['app:build-info']({}), /takes no payload/);
+  assert.deepEqual(await handlers['app:build-info'](), { kind: 'dev' });
+});
+
+test('app:build-info channel: an injected kind is returned (product path injects installed/portable/dev)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {}, buildKind: 'installed' });
+  assert.deepEqual(await handlers['app:build-info'](), { kind: 'installed' });
 });
 
 test('fps-poll channel: the DEFAULT adapter reports unavailable (never loads DXGI)', async () => {
@@ -1356,6 +1369,30 @@ test('M3-C-D: apply-settings REFUSES above-ceiling values in advanced mode — n
   assert.equal(out.result.perControl.powerLimitW.errorCode, 'out-of-range');
   assert.ok(!/clamp/.test(out.result.perControl.powerLimitW.message), 'never a silent clamp');
   assert.equal(backend._state.powerLimitW, 210);
+});
+
+test('M4-E: apply-settings NEVER mode-refuses a percent-unit (b580) apply in STOCK mode — the 100 % tempLimitC rides along', async () => {
+  const backend = new MockBackend({ featureset: loadFeatureset('b580') });
+  const store = fakeStore({ waiverAccepted: true, ocOnBoot: false, activeProfileId: null, ocMode: 'stock' });
+  const { handlers } = createIpcHandlers({ backend, store, emit: () => {} });
+  const out = await handlers['apply-settings'](0, { powerLimitW: 120, tempLimitC: 100 });
+  // The b580 temp limit rides at its 100 % DEFAULT — on a real Battlemage in
+  // stock mode this used to refuse the whole apply as "beyond the standard
+  // Intel limit" (100 > 90 numerically, but 100 % is not 100 C).
+  assert.equal(out.ocModeRefused, undefined, 'a percent tempLimitC is not "beyond the standard limit"');
+  assert.equal(out.extendedUnavailable, undefined, 'a percent tempLimitC is not an extended-range request');
+  assert.equal(out.result.ok, true);
+  assert.equal(out.state.powerLimitW, 120, 'the percent apply landed via the DriverStore path');
+  assert.equal(out.state.tempLimitC, 100);
+  assert.equal(out.result.perControl.tempLimitC.message, undefined);
+  // The W/C regression guard: the same stock-mode gate on W-unit caps must
+  // still refuse 300 W BEFORE any clamp/delegation.
+  const a770 = new MockBackend({ extendedRanges: true });
+  const { handlers: h2 } = createIpcHandlers({ backend: a770, store, emit: () => {} });
+  const refused = await h2['apply-settings'](0, { powerLimitW: 300 });
+  assert.equal(refused.ocModeRefused, true);
+  assert.equal(refused.result.perControl.powerLimitW.message.includes('Advanced OC Mode'), true);
+  assert.equal(a770._state.powerLimitW, 210, 'the W-unit gate still refuses before any clamp');
 });
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,8 @@ export const STD_TL_MAX_C = 90;
 // independent of the caps cache (the worker's own backend always reports
 // extendedRanges — a caps-keyed gate there would silently clamp, exactly
 // the forbidden behavior). It is keyed on the persisted ocMode + the STD
-// limits and is called BEFORE every clamp in:
+// limits (unit-aware since M4-E: percent-unit ranges are never extended
+// values — see ocModeRefusal) and is called BEFORE every clamp in:
 //   - ipc-core 'apply-settings'
 //   - applyProfile / apply-on-boot (boot + tray)
 //   - apply-worker (the request file carries ocMode)
@@ -73,18 +74,34 @@ export const OC_CEILING_REFUSAL_MSG =
  *             values above it refuse with the ceiling message — NEVER
  *             clamped (an above-ceiling write would be silently capped by
  *             the clamp layer, voiding the user's 400 W probe — live 2026-08-06: 315 W is the ceiling).
+ * M4-E: unit-aware like splitByRuntime / extendedUnavailableRefusal — when
+ * the capability ranges are known and a control's units are NOT W/C
+ * (percent-unit Battlemage mock: volt/PL/TL as %), the W/C thresholds do
+ * not apply at all: percent units have no extended concept (their range max
+ * IS the ceiling, and the clamp layer handles out-of-range values), so
+ * e.g. a 100% temp limit is never "beyond the standard Intel limit" and a
+ * stock-mode percent apply is never refused. The units probe is a device
+ * property identical on both sides of the worker boundary (never the
+ * extendedRanges flag — the caps-keyed mode gate the plan forbids stays
+ * forbidden). Unknown ranges keep the historical threshold behavior.
  * @param {string} ocMode 'stock' | 'advanced'
  * @param {Record<string, unknown>} settings
+ * @param {Record<string, { units?: string }>} [ranges]
  * @returns {{ mode: string, controls: string[], message: string } | null}
  */
-export function ocModeRefusal(ocMode, settings) {
+export function ocModeRefusal(ocMode, settings, ranges = null) {
   if (!settings || typeof settings !== 'object') return null;
   const mode = ocMode === OC_MODE_ADVANCED ? OC_MODE_ADVANCED : OC_MODE_STOCK;
   const plMax = mode === OC_MODE_ADVANCED ? EXTENDED_PL_MAX_W : STD_PL_MAX_W;
   const tlMax = mode === OC_MODE_ADVANCED ? EXTENDED_TL_MAX_C : STD_TL_MAX_C;
+  const isWcUnits = (key) => {
+    const units = ranges?.[key]?.units ?? null;
+    if (units === null || units === undefined) return true; // unknown -> historical behavior
+    return key === 'powerLimitW' ? units === 'W' : units === 'C';
+  };
   const over = [];
-  if (typeof settings.powerLimitW === 'number' && settings.powerLimitW > plMax) over.push('powerLimitW');
-  if (typeof settings.tempLimitC === 'number' && settings.tempLimitC > tlMax) over.push('tempLimitC');
+  if (typeof settings.powerLimitW === 'number' && settings.powerLimitW > plMax && isWcUnits('powerLimitW')) over.push('powerLimitW');
+  if (typeof settings.tempLimitC === 'number' && settings.tempLimitC > tlMax && isWcUnits('tempLimitC')) over.push('tempLimitC');
   if (over.length === 0) return null;
   return {
     mode,

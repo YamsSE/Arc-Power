@@ -268,6 +268,7 @@ export function assertNoPayload(args, channel) {
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: CSV log-to-file writer
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
+ *   buildKind?: 'installed' | 'portable' | 'dev',  // M4-E: app:build-info
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
  *   applyRunner?: object|null,   // elevation-aware apply runner (elevated-apply)
  *   isElevated?: () => boolean,  // elevation probe for the app-elevated channel
@@ -331,6 +332,9 @@ export function createIpcHandlers({
   fpsAdapter = { poll: async () => null },
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
+  // M4-E: the distribution kind for the app:build-info channel ('dev' in
+  // tests; main.js injects 'installed' | 'portable' | 'dev').
+  buildKind = 'dev',
   // M2C-C: the 2023-runtime adapter + the elevation-aware apply runner.
   // Defaults: a no-op old runtime (never loads the DLL) and no runner
   // (applies run in-process) — safe for tests and mock mode.
@@ -469,8 +473,15 @@ export function createIpcHandlers({
         // 115 C — never clamps, so a >315 W request is reported honestly).
         // A config-refusal is NOT a hardware failure: it must never trigger
         // the reset-to-defaults fallback anywhere downstream.
+        // M4-E: the gate is unit-aware — it receives the capability RANGES
+        // so percent-unit devices (Battlemage) are never mode-refused (the
+        // units probe is a device property, identical on both sides of the
+        // worker boundary — never the extendedRanges flag). The caps read
+        // is a capability probe, not a write; the gate still refuses before
+        // any clamp.
         const ocMode = (await store.loadSettings()).ocMode;
-        const refusal = ocModeRefusal(ocMode, settings);
+        const caps = await backend.getCapabilities(deviceId);
+        const refusal = ocModeRefusal(ocMode, settings, caps.ranges);
         if (refusal) {
           // M3-C review F2: the refusal envelope carries the FRESH device
           // state (getCurrentSettings is cheap — the refusal never touched
@@ -483,7 +494,6 @@ export function createIpcHandlers({
           try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
           return { result: { ok: false, perControl: refusalPerControl(refusal) }, state, ocModeRefused: true };
         }
-        const caps = await backend.getCapabilities(deviceId);
         // M3-C step-5 F1: advanced mode + a NOT-capable bundled 2023 runtime
         // (the future-driver degradation EXTENDED_UNAVAILABLE_MSG exists
         // for) must refuse extended values BEFORE any clamp — clamping
@@ -693,6 +703,18 @@ export function createIpcHandlers({
       'app-version': async (...args) => {
         assertNoPayload(args, 'app-version');
         return { version: appVersion };
+      },
+
+      // M4-E (build kind, read-only): which distribution this process is —
+      // 'installed' (packaged, no PORTABLE_EXECUTABLE_DIR — the elevated
+      // ArcPowerBootApply task story), 'portable' (the portable wrapper set
+      // PORTABLE_EXECUTABLE_DIR — unelevated in-app applies), or 'dev' (the
+      // dev tree / tests). The Settings card's start-with-Windows hint text
+      // differentiates by it. The default is 'dev' (tests); main.js injects
+      // the real kind.
+      'app:build-info': async (...args) => {
+        assertNoPayload(args, 'app:build-info');
+        return { kind: buildKind };
       },
 
       // M2C-C elevation state (read-only, cached koffi probe — no spawn):

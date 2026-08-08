@@ -27,6 +27,9 @@ contextBridge.exposeInMainWorld('arcPower', {
   windowClose: () => ipcRenderer.invoke('window-close'),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
+  // M4-E: distribution kind — 'installed' | 'portable' | 'dev'
+  // (the Settings start-with-Windows hint differentiates by it).
+  appBuildInfo: () => ipcRenderer.invoke('app:build-info'),
   appElevated: () => ipcRenderer.invoke('app-elevated'),
   ocModeGet: () => ipcRenderer.invoke('oc-mode-get'),
   ocModeSet: (ocMode) => ipcRenderer.invoke('oc-mode-set', ocMode),
