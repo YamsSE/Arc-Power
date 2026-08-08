@@ -202,24 +202,86 @@ test('rpmMarkerY: 0 RPM at the bottom (y=100), maxRpm at the top', () => {
   assert.equal(rpmMarkerY(1030, -1), 100); // unknown maxRpm -> bottom
 });
 
-test('fanCurvePresets: point count honors the device max, temps ascending', () => {
-  const d = { minT: 20, maxT: 90 };
-  for (const p of fanCurvePresets(d, 10)) {
+test('M4-H fanCurvePresets: presets derive from the BASE (driver curve), point count honors the device max, temps ascending', () => {
+  const d = { minT: 0, maxT: 100 };
+  const base: CP[] = [
+    { t: 20, speedPct: 20 },
+    { t: 55, speedPct: 23 },
+    { t: 70, speedPct: 28 },
+    { t: 90, speedPct: 100 },
+  ];
+  for (const p of fanCurvePresets(base, d, 10)) {
     assert.ok(p.points.length >= MIN_CURVE_POINTS && p.points.length <= 10);
     const ts = p.points.map((q) => q.t);
     assert.ok(ts.every((t, i) => i === 0 || t > ts[i - 1]), `${p.id} must be ascending`);
     assert.ok(p.points.every((q) => q.speedPct >= 0 && q.speedPct <= 100));
   }
   // clamped to a 2-point minimum on tiny devices
-  assert.equal(fanCurvePresets(d, 1)[0].points.length, MIN_CURVE_POINTS);
+  assert.equal(fanCurvePresets(base, d, 1)[0].points.length, MIN_CURVE_POINTS);
+  // the point count is clamped to the device max
+  const many = Array.from({ length: 40 }, (_, i) => ({ t: i, speedPct: 20 + (i % 60) }));
+  assert.equal(fanCurvePresets(many, d, 10)[0].points.length, 10);
 });
 
-test('fanCurvePresets: stock ends at 100% and quiet stays under', () => {
-  const d = { minT: 20, maxT: 90 };
-  const stock = fanCurvePresets(d, 10).find((p) => p.id === 'stock');
-  const quiet = fanCurvePresets(d, 10).find((p) => p.id === 'quiet');
-  assert.equal(stock?.points.at(-1)?.speedPct, 100);
-  assert.ok((quiet?.points.at(-1)?.speedPct ?? 0) < 100);
+test('M4-H fanCurvePresets: the three presets are Driver Curve / Quiet / Max with the exact scaled math', () => {
+  const d = { minT: 0, maxT: 100 };
+  const base: CP[] = [
+    { t: 20, speedPct: 20 },
+    { t: 55, speedPct: 50 },
+    { t: 90, speedPct: 100 },
+  ];
+  const [driver, quiet, max] = fanCurvePresets(base, d, 10);
+  // Driver Curve = the base itself (the driver's curve — the chip replaces
+  // the reset button).
+  assert.equal(driver.id, 'driver');
+  assert.equal(driver.name, 'Driver Curve');
+  assert.deepEqual(driver.points, base);
+  // Quiet = speeds ×0.5, same temps, clamped 0..100.
+  assert.equal(quiet.id, 'quiet');
+  assert.equal(quiet.name, 'Quiet');
+  assert.deepEqual(quiet.points, [
+    { t: 20, speedPct: 10 },
+    { t: 55, speedPct: 25 },
+    { t: 90, speedPct: 50 },
+  ]);
+  // Max = speeds ×1.35, same temps, clamped 0..100 (20×1.35=27, 50×1.35=
+  // 67.5 -> 68 rounded, 100×1.35 -> 100 capped).
+  assert.equal(max.id, 'max');
+  assert.equal(max.name, 'Max');
+  assert.deepEqual(max.points, [
+    { t: 20, speedPct: 27 },
+    { t: 55, speedPct: 68 },
+    { t: 90, speedPct: 100 },
+  ]);
+});
+
+test('M4-H fanCurvePresets: an empty/degenerate base degrades to the 20->100 ramp across the domain', () => {
+  const d = { minT: 0, maxT: 100 };
+  const [driver, quiet, max] = fanCurvePresets([], d, 10);
+  assert.deepEqual(driver.points, [{ t: 0, speedPct: 20 }, { t: 100, speedPct: 100 }]);
+  // Quiet ×0.5: 20 -> 10, 100 -> 50.
+  assert.deepEqual(quiet.points, [{ t: 0, speedPct: 10 }, { t: 100, speedPct: 50 }]);
+  // Max ×1.35: 20 -> 27, 100 -> 100 (capped).
+  assert.deepEqual(max.points, [{ t: 0, speedPct: 27 }, { t: 100, speedPct: 100 }]);
+  // A single reported point is degenerate too (the seed is the ramp).
+  const one: CP[] = [{ t: 50, speedPct: 40 }];
+  assert.deepEqual(fanCurvePresets(one, d, 10)[0].points, [{ t: 0, speedPct: 20 }, { t: 100, speedPct: 100 }]);
+  // The temps stay put on a NON-degenerate base even off-domain (the base
+  // is the driver's curve — temps are never re-ramped).
+  const narrow: CP[] = [{ t: 60, speedPct: 40 }, { t: 70, speedPct: 60 }];
+  assert.deepEqual(fanCurvePresets(narrow, d, 10).map((p) => p.points.map((q) => q.t)), [
+    [60, 70], [60, 70], [60, 70],
+  ]);
+});
+
+test('M4-H fanCurvePresets: negative/over-range base speeds survive the scale clamps honestly', () => {
+  const d = { minT: 0, maxT: 100 };
+  const base: CP[] = [{ t: 10, speedPct: 80 }, { t: 90, speedPct: 100 }];
+  // 80×1.35 = 108 -> 100; 100×1.35 = 135 -> 100.
+  assert.deepEqual(fanCurvePresets(base, d, 10)[2].points, [
+    { t: 10, speedPct: 100 },
+    { t: 90, speedPct: 100 },
+  ]);
 });
 
 // M2C-B B1 — the right-side 0-100% axis ticks (mirror of the bottom temp

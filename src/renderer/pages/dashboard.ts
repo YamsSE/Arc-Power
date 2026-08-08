@@ -1,14 +1,16 @@
-// Arc Power — Dashboard page (M2b-B redesign + M3-A + M3-C-I): device card
-// (dotted driver version + registry date, Xe cores + shader units, max core
-// clock + memory clock rows, no PCI ID, no capsSummary chips footer —
-// M2C-B B2), the general GPU HEALTH card (five honest rows: driver
-// installed, device detected, OC working, OC waiver — the ONLY persistent
-// waiver display (M4-A user correction), Arc Power working — M3-C-I removed
-// the "Clocks normal" row per the user's dashboard picture), and a compact
-// live readout (core clock, memory clock, temp, power, fan).
+// Arc Power — Dashboard page (M2b-B redesign + M3-A + M3-C-I): GPU card
+// (M4-H: title 'GPU' + a 'GPU' name kv row — the Driver version row moved
+// OUT (the health card keeps it); Xe cores + shader units, bundled clocks
+// row, standalone ReBAR pill — M2C-B B2), the general GPU HEALTH card (five
+// honest rows: driver installed, device detected, OC working, OC waiver —
+// the ONLY persistent waiver display (M4-A user correction), Arc Power
+// working), the CPU & Memory card (M4-D2 — M4-H: DDR5 memory type + the
+// blue .kv-static-freq speed span + the L1/L2/L3/L4 Caches row), and a
+// compact live readout (M4-H: TWO labeled groups — CPU above GPU, both
+// refreshing in place on ticks).
 //
 // The page re-renders fully only when a status slot changes (boot probe,
-// boot errors); telemetry ticks refresh the readout grid in place — no
+// boot errors); telemetry ticks refresh the readout grids in place — no
 // per-tick DOM churn (the decision lives in pure/status.ts::
 // dashboardNeedsFullRender, unit-tested).
 
@@ -17,7 +19,6 @@ import type { Page, PageContext } from '../router.ts';
 import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
-import { driverLine } from '../components/header.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
@@ -34,18 +35,41 @@ function liveFreqText(sample: TelemetrySample | null): string {
   return ` / @ ${(mhz / 1000).toFixed(1)} GHz`;
 }
 
-function statTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
-  const clock = sample?.gpuClockMhz;
-  const memClock = sample?.memClockMhz;
-  const temp = sample?.tempC;
-  const power = sample?.powerW;
-  const rpm = sample?.fanRpm?.[0];
+function statTileNode(t: { label: string; value: string; unit: string }): HTMLElement {
+  return el('div', { class: 'stat-tile' }, [
+    el('div', { class: 'stat-value', text: t.value }),
+    el('div', { class: 'stat-unit', text: t.unit }),
+    el('div', { class: 'stat-label', text: t.label }),
+  ]);
+}
+
+function statValue(v: number | null | undefined, decimals = 0): string {
+  return v === undefined || v === null || !Number.isFinite(v) ? '—' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
+}
+
+/** M4-H (C3): the CPU group of the live readout — Core Frequency, Util,
+ *  Temperature and the NEW Wattage tile (cpuPowerW from the PowerMeter
+ *  counter; the class is often absent on desktops -> honest '—'). */
+function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   return [
-    { label: 'Core clock', value: clock !== undefined ? String(Math.round(clock)) : '—', unit: 'MHz' },
-    { label: 'Memory clock', value: memClock !== undefined ? String(Math.round(memClock)) : '—', unit: 'MHz' },
-    { label: 'Temperature', value: temp !== undefined ? String(Math.round(temp)) : '—', unit: '°C' },
-    { label: 'Power draw', value: power !== undefined ? power.toFixed(1) : '—', unit: 'W' },
-    { label: 'Fan speed', value: rpm !== undefined ? String(Math.round(rpm)) : '—', unit: 'RPM' },
+    { label: 'Core Frequency', value: statValue(sample?.cpuFreqMhz), unit: 'MHz' },
+    { label: 'Util', value: statValue(sample?.cpuUtilPct), unit: '%' },
+    { label: 'Temperature', value: statValue(sample?.cpuTempC), unit: '°C' },
+    { label: 'Wattage', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
+  ];
+}
+
+/** M4-H (C3): the GPU group of the live readout — the classic five tiles
+ *  plus the NEW Util tile (sample.utilPct — the real backend emits it; the
+ *  mock now does too, N1). */
+function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
+  return [
+    { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
+    { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
+    { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
+    { label: 'Power draw', value: statValue(sample?.powerW, 1), unit: 'W' },
+    { label: 'Fan speed', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
+    { label: 'Util', value: statValue(sample?.utilPct), unit: '%' },
   ];
 }
 
@@ -164,28 +188,40 @@ export const dashboardPage: Page = {
                 el('span', { class: 'kv-live-freq', text: liveFreqText(s.latestSample) }),
               ]),
             ]),
-            el('div', { class: 'kv', 'data-label': 'Memory' }, [el('span', { text: sysRows.memory })]),
+            // M4-H (C2): the Memory row gains the RAM TYPE (DDR5 from
+            // Win32_PhysicalMemory.SMBIOSMemoryType via the pure mapping)
+            // and the speed half renders in its OWN .kv-static-freq span
+            // (sharing the kv-live-freq rule — never that class itself,
+            // the onUpdate first-match hazard — N3).
+            el('div', { class: 'kv', 'data-label': 'Memory' }, [
+              el('span', { text: sysRows.memoryFreq ? `${sysRows.memory} ` : sysRows.memory }),
+              ...(sysRows.memoryFreq ? [el('span', { class: 'kv-static-freq', text: sysRows.memoryFreq })] : []),
+            ]),
+            // M4-H (C2): the Caches row below Memory — L1/L2/L3/L4 amounts
+            // (KB -> "L1 1.4 MB"), only the levels the payload carries (L4
+            // renders only from the mock fixture — CIM has no L4).
+            el('div', { class: 'kv', 'data-label': 'Caches' }, [el('span', { text: sysRows.caches })]),
           ]),
         ]),
 
         // --- device card ---
         // M4-F: the card header row carries the compact GPU selector (hidden
-        // with <= 1 device — the honest single-device degradation). Both the
-        // header name and the card title track the selected device via the
-        // store; the switch re-renders this page (selectDevice).
-        // 1.0.1 no-Intel round: on the no-device path the card shows the OS
-        // GPU name (sysinfo primary controller) + the honest 'Non supported
-        // GPU' note; the caps/state rows (driver/compute/clocks/ReBAR)
-        // degrade to '—' — there is no IGCL device to read.
+        // with <= 1 device — the honest single-device degradation).
+        // M4-H (C1): the card title is "GPU" and the device name moved to a
+        // kv row under it (the CPU card's layout mirrored: title, then the
+        // 'CPU' kv row — the GPU card is title 'GPU' + a 'GPU' kv row). The
+        // Driver version row is REMOVED from this card (the health card
+        // keeps it — N7: the no-Intel branch gets the SAME restructure).
+        // ReBAR pill, Compute, Clocks rows stay.
         el('section', { class: 'card device-card' }, [
           el('div', { class: 'device-card-head' }, [
-            el('h2', { class: 'card-title', text: s.noIntel ? (s.osGpu?.name ?? 'No GPU detected') : (device?.name ?? 'No GPU detected') }),
+            el('h2', { class: 'card-title', text: 'GPU' }),
             buildDeviceSelect(ctx.store, (id) => void selectDevice(id)),
           ]),
           ...(s.noIntel
             ? [
                 el('div', { class: 'card-body kv-grid' }, [
-                  el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: '—' })]),
+                  el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: s.osGpu?.name ?? '—' })]),
                   el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: '—' })]),
                   el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { text: '— MHz Core / — MHz Memory' })]),
                   el('div', { class: 'kv kv-rebar' }, [
@@ -196,7 +232,7 @@ export const dashboardPage: Page = {
               ]
             : device
               ? [el('div', { class: 'card-body kv-grid' }, [
-                el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: driverLine(device, s.driverDate) ?? device.driverVersion })]),
+                el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: device.name })]),
                 // M2b-B: no PCI ID, no persistent waiver status.
                 device.numXeCores > 0
                   ? el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}` })])
@@ -224,15 +260,18 @@ export const dashboardPage: Page = {
       ]),
 
       // --- live readout (compact, M2b-B) ---
+      // M4-H (C3): TWO labeled groups — CPU ABOVE GPU — each with its own
+      // grid. Both refresh IN PLACE on ticks (the onUpdate pattern).
       el('section', { class: 'card readout-card' }, [
         el('h2', { class: 'card-title', text: 'Live readout' }),
-        el('div', { class: 'readout-grid', id: 'dash-readout' }, statTiles(s.latestSample).map((t) =>
-          el('div', { class: 'stat-tile' }, [
-            el('div', { class: 'stat-value', text: t.value }),
-            el('div', { class: 'stat-unit', text: t.unit }),
-            el('div', { class: 'stat-label', text: t.label }),
-          ]),
-        )),
+        el('div', { class: 'readout-group' }, [
+          el('div', { class: 'readout-group-label', text: 'CPU' }),
+          el('div', { class: 'readout-grid', id: 'dash-readout-cpu' }, cpuStatTiles(s.latestSample).map(statTileNode)),
+        ]),
+        el('div', { class: 'readout-group' }, [
+          el('div', { class: 'readout-group-label', text: 'GPU' }),
+          el('div', { class: 'readout-grid', id: 'dash-readout-gpu' }, gpuStatTiles(s.latestSample).map(statTileNode)),
+        ]),
       ]),
     );
   },
@@ -240,7 +279,7 @@ export const dashboardPage: Page = {
   onUpdate(container: HTMLElement, ctx: PageContext) {
     // Full re-render only when a status slot changed (boot probe, boot
     // errors) — NOT on telemetry ticks. A tick (or any other non-status
-    // change) refreshes only the live readout grid in place (M3-C-I: the
+    // change) refreshes only the live readout grids in place (M3-C-I: the
     // clocks health row is gone, so no in-place health-row refresh).
     const sig = currentSig(ctx);
     if (dashboardNeedsFullRender(lastSig, sig)) {
@@ -248,18 +287,15 @@ export const dashboardPage: Page = {
       dashboardPage.render(container, ctx);
       return;
     }
-    const grid = container.querySelector<HTMLElement>('#dash-readout');
-    if (grid) {
-      clear(grid);
-      grid.append(
-        ...statTiles(ctx.store.get().latestSample).map((t) =>
-          el('div', { class: 'stat-tile' }, [
-            el('div', { class: 'stat-value', text: t.value }),
-            el('div', { class: 'stat-unit', text: t.unit }),
-            el('div', { class: 'stat-label', text: t.label }),
-          ]),
-        ),
-      );
+    // M4-H (C3): both group grids refresh in place (the tile lookups are
+    // scoped to the group containers — both groups carry Temperature/Util-
+    // like labels, N8).
+    for (const [id, tiles] of [['dash-readout-cpu', cpuStatTiles(ctx.store.get().latestSample)], ['dash-readout-gpu', gpuStatTiles(ctx.store.get().latestSample)]] as Array<[string, Array<{ label: string; value: string; unit: string }>]>) {
+      const grid = container.querySelector<HTMLElement>(`#${id}`);
+      if (grid) {
+        clear(grid);
+        grid.append(...tiles.map(statTileNode));
+      }
     }
     // M2C-B B8 (M4-D user update): the device-card COMBINED clocks row
     // tracks the latest sample in place (the card itself only re-renders

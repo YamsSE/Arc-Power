@@ -131,6 +131,26 @@ function renderSidebar() {
         el('span', { class: 'sidebar-link-label', text: NAV_LABELS[id] }),
       ]),
     )),
+    // M4-H (D1): the sidebar FOOTER — the GitHub link (icon + 'GitHub') at
+    // the bottom-left; click -> api.openExternal (a NEW validated IPC
+    // channel — ipc-core.js strict-checks https://github.com/YamsSE/Arc-Power
+    // before shell.openExternal runs). The <a> has no href — the click is
+    // the only path (a real navigation would reload the app shell).
+    el('div', { class: 'sidebar-footer' }, [
+      el('a', {
+        class: 'sidebar-footer-link',
+        title: 'Open the Arc Power repository',
+        onClick: (e: Event) => {
+          e.preventDefault();
+          void api.openExternal('https://github.com/YamsSE/Arc-Power').catch(() => {
+            toast('error', 'Could not open GitHub', 'The repository link could not be opened.');
+          });
+        },
+      }, [
+        el('span', { class: 'sidebar-icon-github' }),
+        el('span', { class: 'sidebar-footer-label', text: 'GitHub' }),
+      ]),
+    ]),
   );
 }
 

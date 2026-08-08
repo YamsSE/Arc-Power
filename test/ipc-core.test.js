@@ -942,7 +942,7 @@ test('app-version channel: no payload; the DEFAULT reads the package.json versio
   assert.equal(typeof handlers['app-version'], 'function');
   await assert.rejects(() => handlers['app-version']({}), /takes no payload/);
   const { version } = await handlers['app-version']();
-  assert.equal(version, '1.0.1', 'package.json version');
+  assert.equal(version, '1.0.2', 'package.json version');
 });
 
 test('app-version channel: an injected version is returned (product path = app.getVersion())', async () => {
@@ -1329,6 +1329,73 @@ test('M4-D: window channels — the DEFAULT ops are no-ops (tests never touch a 
   await handlers['window-maximize-toggle']();
   await handlers['window-close']();
   assert.ok(true, 'no throw — no window exists in tests');
+});
+
+// ---------------------------------------------------------------------------
+// M4-H (D1): the open-external channel — the sidebar GitHub link. STRICT
+// validation (S3): new URL() + https: + github.com + the '/YamsSE/Arc-Power'
+// path (exact or a '/YamsSE/Arc-Power/' prefix) — NEVER a string-prefix
+// check (host-boundary tricks must fail). The op is INJECTED (the windowOps
+// pattern — ipc-core.js stays electron-free; main.js wires shell.openExternal).
+// ---------------------------------------------------------------------------
+
+test('M4-H: open-external — the canonical repo URL opens via the injected op; the exact payload is forwarded', async () => {
+  const opened = [];
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(),
+    store: fakeStore(),
+    emit: () => {},
+    openExternal: async (url) => { opened.push(url); },
+  });
+  assert.equal(typeof handlers['open-external'], 'function');
+  await handlers['open-external']('https://github.com/YamsSE/Arc-Power');
+  assert.deepEqual(opened, ['https://github.com/YamsSE/Arc-Power']);
+  // The '/YamsSE/Arc-Power/' PREFIX (sub-pages) is allowed too.
+  await handlers['open-external']('https://github.com/YamsSE/Arc-Power/issues/1');
+  assert.deepEqual(opened, ['https://github.com/YamsSE/Arc-Power', 'https://github.com/YamsSE/Arc-Power/issues/1']);
+});
+
+test('M4-H: open-external — STRICT validation rejects every non-repo / non-https / host-trick URL (never opens)', async () => {
+  let opened = 0;
+  const { handlers } = createIpcHandlers({
+    backend: new MockBackend(),
+    store: fakeStore(),
+    emit: () => {},
+    openExternal: async () => { opened += 1; },
+  });
+  const bad = [
+    // wrong host / scheme / path
+    'https://evil.example/YamsSE/Arc-Power',
+    'https://github.com.evil.example/YamsSE/Arc-Power',
+    'https://github.com@evil.example/YamsSE/Arc-Power',
+    'https://github.com/OtherOrg/Arc-Power',
+    'https://github.com/OtherOrg/Arc-Power/issues',
+    'http://github.com/YamsSE/Arc-Power',
+    'https://github.com/YamsSE/',
+    'https://github.com/YamsSE',
+    'https://github.com/YamsSE/Arc-PowerX',
+    'https://github.com/YamsSE/Arc-Power.evil',
+    'not a url',
+    '',
+    'github.com/YamsSE/Arc-Power',
+    // host-boundary tricks that a string-prefix check would accept
+    'https://github.com/YamsSE/Arc-Power@evil.example',
+    'https://github.com/YamsSE/Arc-Power.evil.example',
+  ];
+  for (const u of bad) {
+    await assert.rejects(() => handlers['open-external'](u), /open-external/, `must reject '${u}'`);
+  }
+  // Non-string payloads reject too.
+  await assert.rejects(() => handlers['open-external'](42), /non-empty string/);
+  await assert.rejects(() => handlers['open-external'](null), /non-empty string/);
+  await assert.rejects(() => handlers['open-external']({}), /non-empty string/);
+  assert.equal(opened, 0, 'nothing was opened');
+});
+
+test('M4-H: open-external — the DEFAULT op is a no-op (tests never open a browser)', async () => {
+  const { handlers } = createIpcHandlers({ backend: new MockBackend(), store: fakeStore(), emit: () => {} });
+  await handlers['open-external']('https://github.com/YamsSE/Arc-Power');
+  assert.ok(true, 'no throw — the default op never spawns a browser');
 });
 
 // ---------------------------------------------------------------------------

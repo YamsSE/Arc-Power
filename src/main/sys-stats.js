@@ -32,6 +32,12 @@
 //                      resolved through the DXGI display enumeration link
 //                      (fps-dxgi.js GetDesc1: DeviceId 0x56A0 → LUID
 //                      0xADFB); null when unmatched.
+//   cpuPowerW         — M4-H: the CPU package wattage from
+//                      Win32_PerfFormattedData_PowerMeter_PowerMeter, the
+//                      FORMATTED counter property 'Power' (already watts —
+//                      no conversion). The class is often ABSENT on
+//                      desktops (no power-metering hardware), so it
+//                      honestly degrades to null ('—' in the UI).
 //
 // ONE PowerShell query per sample() reads every source at once (all
 // single-sample formatted values — no cross-tick state, no deltas). A
@@ -65,7 +71,11 @@ export function buildSysStatsScript() {
     '$proc = Get-CimInstance Win32_Processor | Select-Object -First 1 MaxClockSpeed',
     '$tz = @(Get-CimInstance Win32_PerfFormattedData_Counters_ThermalZoneInformation | Select-Object Name,Temperature)',
     '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage)',
-    '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; gpuMem = $gpu } | ConvertTo-Json -Depth 3 -Compress',
+    // M4-H: the PowerMeter perf counter — the FORMATTED 'Power' property is
+    // already in watts (N9). The class is often absent (no metering
+    // hardware) -> null, the honest '—' degrade.
+    '$pm = @(Get-CimInstance Win32_PerfFormattedData_PowerMeter_PowerMeter | Select-Object -First 1 Power)',
+    '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; gpuMem = $gpu; powerMeter = $pm } | ConvertTo-Json -Depth 3 -Compress',
   ].join('; ');
 }
 
@@ -79,6 +89,7 @@ export function buildSysStatsScript() {
  *   fmtUtil: number | null, fmtPerf: number | null,
  *   maxClockMhz: number | null, tempK10Max: number | null,
  *   gpuMemRows: Array<{ name: string | null, dedicatedUsage: number | null }>,
+ *   powerW: number | null,
  * }}
  */
 export function parseSysStatsOutput(stdout) {
@@ -86,7 +97,7 @@ export function parseSysStatsOutput(stdout) {
   try {
     raw = JSON.parse(String(stdout ?? ''));
   } catch {
-    return { fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, gpuMemRows: [] };
+    return { fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, gpuMemRows: [], powerW: null };
   }
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const cpu = raw?.cpu ?? {};
@@ -104,6 +115,9 @@ export function parseSysStatsOutput(stdout) {
     maxClockMhz: num(raw?.maxClockMhz),
     tempK10Max: temps.length > 0 ? Math.max(...temps) : null,
     gpuMemRows,
+    // M4-H: the PowerMeter's formatted 'Power' (watts); an absent class /
+    // 0 reading degrades to null (the honest '—' — never a fake 0 W).
+    powerW: num(raw?.powerMeter?.Power) > 0 ? num(raw?.powerMeter?.Power) : null,
   };
 }
 
@@ -158,7 +172,7 @@ export function createSysStats(deps = {}) {
   const deviceIdHex = deps.deviceIdHex ?? null;
   let maxClockMhz = null; // cached Win32_Processor MaxClockSpeed
   let inflight = null;
-  let last = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null };
+  let last = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null };
 
   return {
     /**
@@ -168,7 +182,7 @@ export function createSysStats(deps = {}) {
      * Never throws: every failure degrades to null per-field (and the
      * previous result is served while a query is in flight — at most one
      * PowerShell at a time).
-     * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>}
+     * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null, cpuPowerW: number | null }>}
      */
     async sample() {
       if (inflight) return last;
@@ -204,6 +218,9 @@ export function createSysStats(deps = {}) {
           cpuFreqMhz: freqMhz,
           cpuTempC: raw.tempK10Max !== null ? raw.tempK10Max / 10 : null,
           gpuMemUsedBytes: gpuBytes,
+          // M4-H: the PowerMeter's formatted 'Power' — watts, single
+          // sample; null when the class is absent (honest '—').
+          cpuPowerW: raw.powerW,
         };
         return last;
       } catch {
@@ -219,7 +236,9 @@ export function createSysStats(deps = {}) {
 /**
  * The in-memory fixture — the default sysStats adapter for tests and
  * --ui-verify (fixed deterministic values, never spawns PowerShell).
- * @param {{ cpuUtilPct?: number, cpuTempC?: number, cpuFreqMhz?: number, gpuMemUsedBytes?: number }} [overrides]
+ * M4-H: the fixture carries a fixed cpuPowerW (the PowerMeter pin — the
+ * real adapter's sample shape includes it; the absent class degrades).
+ * @param {{ cpuUtilPct?: number, cpuTempC?: number, cpuFreqMhz?: number, gpuMemUsedBytes?: number, cpuPowerW?: number }} [overrides]
  */
 export function createMockSysStats(overrides = {}) {
   const fixed = {
@@ -227,6 +246,7 @@ export function createMockSysStats(overrides = {}) {
     cpuTempC: 61,
     cpuFreqMhz: 4300,
     gpuMemUsedBytes: 2971324416, // ~2.77 GiB (the A770's live-ish dedicated usage)
+    cpuPowerW: 125.5, // M4-H: the fixed PowerMeter fixture (watts)
     ...overrides,
   };
   return {

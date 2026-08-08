@@ -43,6 +43,10 @@ function newProfileId(): string {
   return `profile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// M4-H (B): exported for the Tuning page's "Save as Profile" card (the
+// profiles page's own create/save flows stay untouched).
+export { newProfileId };
+
 /**
  * Build a Settings payload from the driver's current read-back (only
  * controls the UI understands; expert controls gpuLock/vfCurve are excluded —
@@ -119,6 +123,10 @@ function promptModal(title: string, initial: string): Promise<string | null> {
     input.select();
   });
 }
+
+// M4-H (B): the prompt modal is exported for the Tuning page's "Save as
+// Profile" card (prefilled with the applied profile's name on override).
+export { promptModal };
 
 function confirmModal(title: string, text: string): Promise<boolean> {
   return new Promise((resolve) => {

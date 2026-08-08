@@ -281,8 +281,20 @@ export interface SysInfo {
     cores: number | null;
     threads: number | null;
     maxClockMhz: number | null;
+    /** M4-H: Win32_Processor L1CacheSize/L2CacheSize/L3CacheSize (KB).
+     *  null when the payload carries none (os.cpus() fallback). */
+    l1CacheKb: number | null;
+    l2CacheKb: number | null;
+    l3CacheKb: number | null;
+    /** M4-H: L4 cache — NO OS source (CIM has no L4 field); the mock
+     *  fixture carries it so the row renders in verify; real hardware
+     *  leaves it absent. Optional, rendered only when present. */
+    l4CacheKb?: number | null;
   };
-  ram: { totalBytes: number; speedMhz: number | null; manufacturer: string | null };
+  ram: { totalBytes: number; speedMhz: number | null; manufacturer: string | null;
+    /** M4-H: Win32_PhysicalMemory.SMBIOSMemoryType (SMBIOS Type-17 code;
+     *  null when the payload carries none). */
+    memoryType: number | null };
   videoControllers: VideoControllerInfo[];
 }
 
@@ -317,6 +329,11 @@ export interface TelemetrySample {
   cpuTempC?: number | null;
   cpuFreqMhz?: number | null;
   gpuMemUsedBytes?: number | null;
+  /** M4-H: CPU package wattage from the PowerMeter perf counter
+   *  (Win32_PerfFormattedData_PowerMeter_PowerMeter — property 'Power' in
+   *  watts). The class is often ABSENT on desktops, so it honestly
+   *  degrades to null ('—'). */
+  cpuPowerW?: number | null;
 }
 
 /** A saved profile (mirrors the main-process Profile typedef). */

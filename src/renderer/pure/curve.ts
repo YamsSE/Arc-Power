@@ -196,25 +196,35 @@ export interface CurvePreset {
 }
 
 /**
- * Fan curve presets: straight-line ramps across the current domain,
- * `numPoints` points each (point count clamped to the device maximum).
+ * M4-H: the ADAPTIVE fan curve presets — every preset derives from the
+ * DRIVER's own curve (the base), scaled in SPEED only (same temps):
+ *   - 'Driver Curve': the base itself (the driver's curve — stock IS the
+ *     driver's curve; the chip replaces the old "Reset to driver curve"
+ *     button, so the base is read LIVE at click time — the editor seeds it
+ *     with seedCurvePoints, see fan-editor.ts);
+ *   - 'Quiet': the base's speeds ×0.5 (clamped 0..100) — quieter by
+ *     spinning slower;
+ *   - 'Max': the base's speeds ×1.35 (clamped 0..100) — the ramp reaches
+ *     100 % sooner.
+ * The base's point count is clamped to the device max (`numPoints`), and
+ * every preset keeps the enforceAscending guarantee. A degenerate base
+ * (< MIN_CURVE_POINTS points — empty state) degrades to the existing
+ * 20 -> 100 ramp across the domain, exactly like seedCurvePoints.
  */
-export function fanCurvePresets(d: CurveDomain, numPoints: number): CurvePreset[] {
+export function fanCurvePresets(base: CurvePoint[], d: CurveDomain, numPoints: number): CurvePreset[] {
   const n = Math.max(MIN_CURVE_POINTS, Math.min(Math.floor(numPoints), MAX_CURVE_POINTS));
-  const line = (from: CurvePoint, to: CurvePoint): CurvePoint[] => {
-    const pts: CurvePoint[] = [];
-    for (let i = 0; i < n; i++) {
-      const f = n === 1 ? 0 : i / (n - 1);
-      pts.push({
-        t: Math.round(from.t + (to.t - from.t) * f),
-        speedPct: clampPct(from.speedPct + (to.speedPct - from.speedPct) * f),
-      });
-    }
-    return enforceAscending(pts);
-  };
+  const seeded = base.length >= MIN_CURVE_POINTS
+    ? base
+    : [{ t: d.minT, speedPct: 20 }, { t: d.maxT, speedPct: 100 }];
+  const scaled = (factor: number): CurvePoint[] => enforceAscending(
+    clampPointCount(
+      seeded.map((p) => ({ t: p.t, speedPct: clampPct(p.speedPct * factor) })),
+      n,
+    ),
+  );
   return [
-    { id: 'stock', name: 'Stock', points: line({ t: d.minT, speedPct: 20 }, { t: d.maxT, speedPct: 100 }) },
-    { id: 'quiet', name: 'Quiet', points: line({ t: d.minT, speedPct: 20 }, { t: d.maxT, speedPct: 55 }) },
-    { id: 'max', name: 'Max cooling', points: line({ t: d.minT, speedPct: 30 }, { t: d.maxT, speedPct: 100 }) },
+    { id: 'driver', name: 'Driver Curve', points: enforceAscending(clampPointCount(seeded.map((p) => ({ ...p })), n)) },
+    { id: 'quiet', name: 'Quiet', points: scaled(0.5) },
+    { id: 'max', name: 'Max', points: scaled(1.35) },
   ];
 }

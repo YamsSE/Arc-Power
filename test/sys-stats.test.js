@@ -35,6 +35,8 @@ test('buildSysStatsScript: one query reads all sources from the FORMATTED class'
   assert.match(script, /Win32_PerfFormattedData_Counters_ThermalZoneInformation/);
   assert.match(script, /Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory/);
   assert.match(script, /DedicatedUsage/);
+  // M4-H: the PowerMeter query — the FORMATTED 'Power' property (watts).
+  assert.match(script, /Win32_PerfFormattedData_PowerMeter_PowerMeter/);
   assert.match(script, /ConvertTo-Json/);
 });
 
@@ -57,6 +59,7 @@ const OUTPUT = JSON.stringify({
     { Name: 'luid_0x00000000_0x0000ADFB_phys_0', DedicatedUsage: 2243596288 },
     { Name: 'luid_0x00000000_0x0000B1BB_phys_0', DedicatedUsage: 57049088 },
   ],
+  powerMeter: { Power: 125.5 },
 });
 
 test('parseSysStatsOutput: maps the FORMATTED per-tick sample (no raw delta fields)', () => {
@@ -71,19 +74,25 @@ test('parseSysStatsOutput: maps the FORMATTED per-tick sample (no raw delta fiel
   assert.equal(raw.gpuMemRows.length, 2);
   assert.equal(raw.gpuMemRows[0].name, 'luid_0x00000000_0x0000ADFB_phys_0');
   assert.equal(raw.gpuMemRows[0].dedicatedUsage, 2243596288);
+  // M4-H: the PowerMeter 'Power' (watts, formatted — no conversion).
+  assert.equal(raw.powerW, 125.5);
 });
 
 test('parseSysStatsOutput: garbage / missing classes degrade per-field', () => {
   assert.deepEqual(parseSysStatsOutput('not json'), {
-    fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, gpuMemRows: [],
+    fmtUtil: null, fmtPerf: null, maxClockMhz: null, tempK10Max: null, gpuMemRows: [], powerW: null,
   });
-  const empty = parseSysStatsOutput(JSON.stringify({ cpu: null, thermal: null, gpuMem: null }));
+  const empty = parseSysStatsOutput(JSON.stringify({ cpu: null, thermal: null, gpuMem: null, powerMeter: null }));
   assert.equal(empty.fmtUtil, null);
   assert.equal(empty.fmtPerf, null);
   assert.equal(empty.tempK10Max, null, 'a 0/unavailable thermal zone degrades to null (never a fake 0 °C)');
   assert.deepEqual(empty.gpuMemRows, []);
-  const zeroTemp = parseSysStatsOutput(JSON.stringify({ cpu: {}, thermal: [{ Temperature: 0 }], gpuMem: [] }));
+  // M4-H: an absent PowerMeter class (the common desktop case) degrades to
+  // null — never a fake 0 W.
+  assert.equal(empty.powerW, null);
+  const zeroTemp = parseSysStatsOutput(JSON.stringify({ cpu: {}, thermal: [{ Temperature: 0 }], gpuMem: [], powerMeter: { Power: 0 } }));
   assert.equal(zeroTemp.tempK10Max, null, 'Temperature 0 -> null');
+  assert.equal(zeroTemp.powerW, null, 'Power 0 -> null (no metering -> honest em-dash)');
 });
 
 // ---------------------------------------------------------------------------
@@ -135,6 +144,7 @@ test('fix-round-2: ONE formatted sample yields real values — no baseline-null 
   assert.equal(first.cpuFreqMhz, 4291, 'freq = round(3301 × 130 / 100) — the live 4.3 GHz, first sample');
   assert.equal(first.cpuTempC, 30.3, 'K×10 -> °C (instant, not a delta)');
   assert.equal(first.gpuMemUsedBytes, 2243596288, 'gpuMem matched by LUID (instant, not a delta)');
+  assert.equal(first.cpuPowerW, 125.5, 'M4-H: the PowerMeter power rides the sample (watts)');
   // The SAME single sample served again (no rolling state to corrupt it).
   const second = await stats.sample();
   assert.deepEqual(second, first, 'identical formatted samples -> identical values (no delta drift)');
@@ -171,6 +181,7 @@ test("createSysStats: missing formatted fields degrade to null (honest em-dash)"
   assert.equal(out.cpuFreqMhz, null);
   assert.equal(out.cpuTempC, null);
   assert.equal(out.gpuMemUsedBytes, null);
+  assert.equal(out.cpuPowerW, null, 'M4-H: an absent PowerMeter class degrades to null');
 });
 
 test('createSysStats: an unmatched LUID degrades gpuMem to null; a failed query keeps the last values', async () => {
@@ -184,18 +195,20 @@ test('createSysStats: an unmatched LUID degrades gpuMem to null; a failed query 
         maxClockMhz: 3301,
         thermal: [{ Temperature: 303 }],
         gpuMem: [],
+        powerMeter: { Power: 125.5 },
       }) };
     },
     luidOf: async () => null, // unmatched -> null
     deviceIdHex: '0x56a0',
   });
   const first = await stats.sample();
-  assert.deepEqual(first, { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null }, 'a query failure degrades honestly, never throws');
+  assert.deepEqual(first, { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null }, 'a query failure degrades honestly, never throws');
   const second = await stats.sample();
   assert.equal(second.gpuMemUsedBytes, null, 'unmatched LUID -> null');
   assert.equal(second.cpuTempC, 30.3);
   assert.equal(second.cpuUtilPct, 19);
   assert.equal(second.cpuFreqMhz, 4291);
+  assert.equal(second.cpuPowerW, 125.5, 'M4-H: the PowerMeter power rides the second sample too');
 });
 
 test('createSysStats: no deviceIdHex -> gpuMem stays null (no LUID lookup attempted)', async () => {
@@ -220,8 +233,8 @@ test('createSysStats: no deviceIdHex -> gpuMem stays null (no LUID lookup attemp
 
 test('createMockSysStats: fixed deterministic values, never spawns anything', async () => {
   const mock = createMockSysStats();
-  assert.deepEqual(await mock.sample(), { cpuUtilPct: 42, cpuTempC: 61, cpuFreqMhz: 4300, gpuMemUsedBytes: 2971324416 });
-  assert.deepEqual(await mock.sample(), { cpuUtilPct: 42, cpuTempC: 61, cpuFreqMhz: 4300, gpuMemUsedBytes: 2971324416 }, 'stable across ticks');
+  assert.deepEqual(await mock.sample(), { cpuUtilPct: 42, cpuTempC: 61, cpuFreqMhz: 4300, gpuMemUsedBytes: 2971324416, cpuPowerW: 125.5 });
+  assert.deepEqual(await mock.sample(), { cpuUtilPct: 42, cpuTempC: 61, cpuFreqMhz: 4300, gpuMemUsedBytes: 2971324416, cpuPowerW: 125.5 }, 'stable across ticks');
   const overridden = createMockSysStats({ cpuUtilPct: 9 });
   assert.equal((await overridden.sample()).cpuUtilPct, 9);
 });

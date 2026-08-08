@@ -6,10 +6,13 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant — no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.1 Alpha" (app:version IPC + the display Alpha suffix — the IPC
+//       1.0.2 Alpha" (app:version IPC + the display Alpha suffix — the IPC
 //       keeps the bare semver) — the driver version + date live in the
-//       dashboard device card 'Driver version' kv ("32.0.101.8861 - Jul 05,
-//       2026" from the mock driver-info fixture); no PCI ID anywhere;
+//       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
+//       2026" from the mock driver-info fixture); M4-H: the GPU card title
+//       is 'GPU' with the name in a 'GPU' kv row — the Driver version row
+//       moved OUT of the card (the health card keeps it); no PCI ID
+//       anywhere;
 //       M2C-B B2: NO capsSummary chips footer on the device card; M2C-B B8:
 //       a 'Memory clock' kv row next to 'Graphics clock'; memory-clock
 //       readout next to core clock; M3-A: the header has NO status dot and
@@ -316,7 +319,7 @@ export class UiVerifyFailure extends Error {}
  *   instead of performing the real BrowserWindow ops) — run 2 pins the
  *   integrated title-bar buttons through this.
  */
-export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 })) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -474,12 +477,34 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // as two separate icons).
   const cornerIcon = await js(`document.querySelector('#titlebar .titlebar-corner-icon')?.getAttribute('src') ?? ''`);
   if (!cornerIcon.includes('icon.png')) fail(`M4-D: the title bar corner icon is '${cornerIcon}' (expected the app icon at the top-left)`);
-  const restoreFill = await js(`(() => {
-    const r = document.querySelector('#titlebar .icon-restore rect');
-    return r ? getComputedStyle(r).fill : '';
+  // M4-H (D2 — N10): the restore glyph is TWO rects selected EXPLICITLY
+  // (by class — the old single-rect selector would silently pass any
+  // layout). The corrected WINDOWS shape: the HOLLOW back square at the
+  // TOP-LEFT (1.5,1.5) and the FILLED front square at the BOTTOM-RIGHT
+  // (3.5,3.5), the front fill resolving from the .icon-restore-front class
+  // to the titlebar background color (--bg-elev).
+  const restoreGlyph = await js(`(() => {
+    const back = document.querySelector('#titlebar .icon-restore .icon-restore-back');
+    const front = document.querySelector('#titlebar .icon-restore .icon-restore-front');
+    if (!back || !front) return 'no-rects';
+    const fill = getComputedStyle(front).fill;
+    // The titlebar's background resolves var(--bg-elev) to the same rgb
+    // form the fill computes to.
+    const bg = getComputedStyle(document.querySelector('#titlebar')).backgroundColor;
+    return JSON.stringify({
+      back: [back.getAttribute('x'), back.getAttribute('y')],
+      front: [front.getAttribute('x'), front.getAttribute('y')],
+      fill,
+      bg,
+    });
   })()`);
+  const glyph = JSON.parse(restoreGlyph);
+  if (glyph === 'no-rects') fail(`M4-H: the restore glyph rects are missing: ${restoreGlyph}`);
+  if (glyph.back[0] !== '1.5' || glyph.back[1] !== '1.5') fail(`M4-H: the restore BACK square is at (${glyph.back}) (expected the hollow back at TOP-LEFT 1.5,1.5)`);
+  if (glyph.front[0] !== '3.5' || glyph.front[1] !== '3.5') fail(`M4-H: the restore FRONT square is at (${glyph.front}) (expected the filled front at BOTTOM-RIGHT 3.5,3.5)`);
+  if (glyph.fill !== glyph.bg) fail(`M4-H: the restore front fill is '${glyph.fill}' (expected the resolved --bg-elev '${glyph.bg}' via .icon-restore-front)`);
   const tbRect = await js(`(() => { const b = document.querySelector('#titlebar .icon-restore'); const r = b.getBoundingClientRect(); return JSON.stringify({ w: r.width, h: r.height }); })()`);
-  step('titlebar-extras', `top-left corner icon OK; restore glyph is ONE icon (front square filled: '${restoreFill}', ${JSON.parse(tbRect).w}x${JSON.parse(tbRect).h}px)`);
+  step('titlebar-extras', `top-left corner icon OK; restore glyph is ONE icon (M4-H: hollow back at 1.5,1.5 + filled front at 3.5,3.5 with the class fill '${glyph.fill}', ${JSON.parse(tbRect).w}x${JSON.parse(tbRect).h}px)`);
 
   // M4-D (user): the sidebar — per-tab icons left of the names, the brand
   // "Power" illuminated like the title bar, the brand BOLD.
@@ -497,6 +522,53 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const sidebarWeight = await js(`getComputedStyle(document.querySelector('.sidebar-brand')).fontWeight`);
   if (sidebarWeight !== '800') fail(`M4-D: the sidebar brand is not BOLD (weight '${sidebarWeight}', expected 800)`);
   step('sidebar-icons', `sidebar: ${sidebarIcons.length} links each with a fitting icon; 'Power' illuminated (gradient), brand weight ${sidebarWeight}`);
+
+  // --- M4-H (D1): the sidebar GitHub footer + the open-external channel ----
+  // The footer link (GitHub icon + 'GitHub') sits at the BOTTOM-LEFT of the
+  // sidebar (margin-top:auto below the nav); clicking it invokes the NEW
+  // 'open-external' IPC channel (an INJECTED op — the counting probe in
+  // ui-verify mode). The channel STRICTLY validates (S3): new URL() +
+  // protocol https: + hostname github.com + the '/YamsSE/Arc-Power' path
+  // (exact or a '/YamsSE/Arc-Power/' prefix) — anything else rejects and
+  // never opens.
+  if (!(await waitFor(win, `!!document.querySelector('.sidebar-footer-link')`, 5000))) {
+    fail('M4-H: the sidebar GitHub footer link is missing');
+  }
+  const ghLabel = await js(`document.querySelector('.sidebar-footer-link .sidebar-footer-label')?.textContent ?? ''`);
+  if (ghLabel.trim() !== 'GitHub') fail(`M4-H: the footer label is '${ghLabel}' (expected 'GitHub')`);
+  if (!(await js(`!!document.querySelector('.sidebar-footer-link .sidebar-icon-github')`))) fail('M4-H: the footer GitHub icon is missing');
+  const ghBelowNav = await js(`(() => {
+    const footer = document.querySelector('.sidebar-footer');
+    const nav = document.querySelector('.sidebar-nav');
+    if (!footer || !nav) return false;
+    return footer.getBoundingClientRect().top >= nav.getBoundingClientRect().bottom - 1;
+  })()`);
+  if (!ghBelowNav) fail('M4-H: the GitHub footer is not below the sidebar nav (bottom-left)');
+  const ghOpBefore = getOpenExternalCount();
+  await js(`document.querySelector('.sidebar-footer-link').click()`);
+  await sleep(300);
+  if (getOpenExternalCount() !== ghOpBefore + 1) {
+    fail('M4-H: clicking the GitHub link did not tick the open-external counter');
+  }
+  const openOk = await js(`(async () => { try { await window.arcPower.openExternal('https://github.com/YamsSE/Arc-Power'); return 'ok'; } catch (e) { return 'rejected:' + e.message; } })()`);
+  if (openOk !== 'ok') fail(`M4-H: the canonical repo URL was rejected: ${openOk}`);
+  const badUrls = [
+    'https://evil.example/YamsSE/Arc-Power',
+    'https://github.com.evil.example/YamsSE/Arc-Power',
+    'https://github.com@evil.example/YamsSE/Arc-Power',
+    'https://github.com/OtherOrg/Arc-Power',
+    'http://github.com/YamsSE/Arc-Power',
+    'https://github.com/YamsSE/',
+    'https://github.com/YamsSE/Arc-PowerX',
+    'not a url',
+    '',
+  ];
+  for (const bad of badUrls) {
+    const r = await js(`(async () => { try { await window.arcPower.openExternal(${JSON.stringify(bad)}); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
+    if (r !== 'rejected') fail(`M4-H: open-external ACCEPTED '${bad}' (must reject)`);
+  }
+  const ghOpAfter = getOpenExternalCount();
+  step('m4h-github-footer', `M4-H: sidebar GitHub footer (icon + 'GitHub', bottom-left) -> open-external counter ticked (${ghOpBefore} -> ${ghOpAfter}); channel validation: repo URL ok, ${badUrls.length} bad URLs rejected`);
 
   // M4-A/M4-B: the shared waiver boot-step — the boot prompt appears in
   // EVERY session: cancelled in the unaccepted sessions (Cancel here;
@@ -522,11 +594,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('waiver-seed', `boot waiver state: store=${persistedWaiver ? 'accepted' : 'not accepted'}, backend=${bootAccepted ? 'accepted' : 'not accepted'}`);
 
-  // --- 1b. M2C-B B3 header version line + B2/B8 dashboard device card ------
+  // --- 1b. M2C-B B3 header version line + B2/B8 dashboard GPU card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) —
-  // the driver line moved to the dashboard device card.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Alpha')`);
+  // the driver line lives in the dashboard GPU Health card (the GPU card's
+  // Driver version row is REMOVED — M4-H).
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.2 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.2 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -561,12 +634,24 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('themes-boot', `1.0.1: boot theme '${bootTheme}' on <html> + computed --bg ${bootBg} (applied from the persisted envelope, equal-specificity ordering safe)`);
 
-  // Device card: driver version kv (B3 move), compute line, the waiver
-  // status is a HEALTH-CARD ROW (M4-A user correction — never on the device
-  // card), NO capsSummary chips footer (B2).
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.getAttribute('data-label') ?? '') === 'Driver version' && (k.textContent ?? '').includes('32.0.101.8861 - Jul 05, 2026'))`))) {
-    fail(`device card driver version kv is '${await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`)}' (expected '32.0.101.8861 - Jul 05, 2026')`);
+  // M4-H (C1): the GPU card — title 'GPU', the device name in a 'GPU' kv
+  // row under it (the CPU-card layout mirrored: title, then the 'CPU' kv
+  // row — the GPU card mirrors that with a 'GPU' row), NO Driver version
+  // row anywhere in the card (the health card keeps it — pinned below),
+  // Compute + Clocks + the standalone ReBAR pill stay.
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.card-grid .device-card');
+    if (!card) return false;
+    const title = card.querySelector('.card-title')?.textContent ?? '';
+    const gpuKv = Array.from(card.querySelectorAll('.kv')).find((k) => (k.getAttribute('data-label') ?? '') === 'GPU');
+    return title.trim() === 'GPU' && !!gpuKv && (gpuKv.textContent ?? '').trim().length > 0;
+  })()`, 8000))) {
+    fail(`M4-H: the GPU card layout is wrong (title '${await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`)}', GPU kv '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`)}')`);
   }
+  if (await js(`!!document.querySelector('.card-grid .kv[data-label="Driver version"]')`)) {
+    fail('M4-H: the GPU card still renders the Driver version row (removed — the health card keeps it)');
+  }
+  const gpuNameKv = await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`);
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
     fail('Xe cores / shader units line missing');
   }
@@ -593,10 +678,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('clocks-kv', `device card combined clocks kv = ${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}`);
 
   // Memory clock readout next to core clock (a770 featureset: 2187 MHz).
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2187')`))) {
+  // M4-H (C3): the readout is TWO labeled groups — the GPU tiles live in
+  // the GPU group container (tile lookups SCOPED to the group — N8).
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2187')`))) {
     fail('memory-clock readout missing or not 2187 MHz');
   }
-  step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
+  step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
 
   // --- M4-D (user) + M4-D2 (§9): the CPU & memory card (sysinfo:get fixture)
   // The card sits BEFORE the GPU card in the card-grid and renders the mock
@@ -615,7 +702,31 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const sysinfoRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const sysRows = JSON.parse(sysinfoRows);
   if (sysRows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`M4-D: CPU row is '${sysRows['CPU']}' (expected the sysinfo fixture name)`);
-  if (sysRows['Memory'] !== 'G.Skill 32 GB @ 6000 MHz') fail(`M4-D: Memory row is '${sysRows['Memory']}' (expected the bundled 'G.Skill 32 GB @ 6000 MHz')`);
+  // M4-H (C2): the Memory row reads "G.Skill 32 GB DDR5 @ 6000 MHz" — the
+  // SMBIOS type (34 = DDR5) inserted between the size and the speed; the
+  // speed half renders in its OWN .kv-static-freq span (blue accent via
+  // the shared rule — never the kv-live-freq class itself, N3).
+  if (sysRows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`M4-H: Memory row is '${sysRows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz')`);
+  if (!(await waitFor(win, `(() => {
+    const span = document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq');
+    if (!span || span.textContent !== '@ 6000 MHz') return false;
+    const live = document.querySelector('.sysinfo-card .kv-live-freq');
+    if (!live) return false;
+    const cs = getComputedStyle(span);
+    const liveCs = getComputedStyle(live);
+    // The static span SHARES the kv-live-freq rule (same computed color +
+    // weight) — it must never BE the kv-live-freq class (the onUpdate
+    // first-match hazard — N3).
+    return cs.color === liveCs.color && cs.fontWeight === liveCs.fontWeight && !span.classList.contains('kv-live-freq');
+  })()`, 5000))) {
+    fail(`M4-H: the memory speed span is not the blue .kv-static-freq (text '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Memory"] .kv-static-freq')?.textContent ?? ''`)}')`);
+  }
+  // M4-H (C2): the Caches row below Memory — the mock fixture's L1/L2/L3/L4
+  // sizes render as "L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB"
+  // (L4 has NO OS source — the fixture carries it so the row renders).
+  if (sysRows['Caches'] !== 'L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB') {
+    fail(`M4-H: the Caches row is '${sysRows['Caches']}' (expected 'L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB')`);
+  }
   // M4-D2 (§6): the LIVE frequency half of the Cores/clock row — the mock
   // telemetry pushes cpuFreqMhz=4300 -> the row reads "20 Cores / 28
   // Threads / @ 4.3 GHz" (GHz ALWAYS, 1 decimal), updated IN PLACE on
@@ -625,7 +736,34 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   const liveFreqText = await js(`document.querySelector('.sysinfo-card .kv-live-freq')?.textContent ?? ''`);
   if (liveFreqText !== ' / @ 4.3 GHz') fail(`M4-D2: the live-freq span is '${liveFreqText}' (expected ' / @ 4.3 GHz')`);
-  step('m4d-cpu-card', `CPU & Memory card first in the card-grid: '${sysRows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz', '${sysRows['Memory']}'`);
+  step('m4d-cpu-card', `CPU & Memory card first in the card-grid: '${sysRows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz', '${sysRows['Memory']}', Caches '${sysRows['Caches']}'`);
+
+  // --- M4-H (C3): the TWO-GROUP live readout (CPU above GPU) --------------
+  // The tile lookups are SCOPED to the group containers (N8 — both groups
+  // carry Temperature/Util-like labels). CPU: 4 tiles incl. the NEW
+  // Wattage (cpuPowerW 125.5 from the mock PowerMeter fixture); GPU: 6
+  // tiles incl. the NEW Util (utilPct 42 — the mock emits it now, N1).
+  const groupLabels = await js(`JSON.stringify(Array.from(document.querySelectorAll('.readout-card .readout-group-label')).map((l) => l.textContent))`);
+  if (JSON.parse(groupLabels).join(',') !== 'CPU,GPU') fail(`M4-H: the readout groups are '${groupLabels}' (expected 'CPU','GPU' — CPU ABOVE GPU)`);
+  const cpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
+  const cpuParsed = JSON.parse(cpuTiles);
+  if (cpuParsed.length !== 4) fail(`M4-H: the CPU group has ${cpuParsed.length} tiles (expected 4): ${cpuTiles}`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Wattage' && (t.querySelector('.stat-value')?.textContent ?? '') === '125.5')`, 8000))) {
+    fail(`M4-H: the CPU Wattage tile is missing/not 125.5 W: ${cpuTiles}`);
+  }
+  for (const want of ['Core Frequency', 'Util', 'Temperature']) {
+    if (!cpuParsed.some(([l]) => l === want)) fail(`M4-H: the CPU group is missing the '${want}' tile: ${cpuTiles}`);
+  }
+  const gpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
+  const gpuParsed = JSON.parse(gpuTiles);
+  if (gpuParsed.length !== 6) fail(`M4-H: the GPU group has ${gpuParsed.length} tiles (expected 6): ${gpuTiles}`);
+  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power draw', 'Fan speed', 'Util']) {
+    if (!gpuParsed.some(([l]) => l === want)) fail(`M4-H: the GPU group is missing the '${want}' tile: ${gpuTiles}`);
+  }
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Util' && (t.querySelector('.stat-value')?.textContent ?? '') === '42')`, 8000))) {
+    fail(`M4-H: the GPU Util tile is not 42 (the mock utilPct): ${gpuTiles}`);
+  }
+  step('m4h-readout-groups', `M4-H: readout groups 'CPU,GPU'; CPU 4 tiles (incl. Wattage '${cpuParsed.find(([l]) => l === 'Wattage')?.[1]} W'), GPU 6 tiles (incl. Util '42')`);
 
   // --- M4-D2 (§3): the ReBAR pill is STANDALONE (no label kv row) --------
   // The mock fixture models a healthy setup: a multi-GiB BAR (rebarActive
@@ -816,8 +954,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // (4) the telemetry switched: the readout reflects device 1's ramp
     // (memClock 1067 vs the a770's 2187; core base 2000 MHz on the card).
     await js(`location.hash = '#/dashboard'`);
-    if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '1067')`, 10000))) {
-      fail(`M4-F: the readout does not reflect device 1's telemetry (memory clock = ${await js(`Array.from(document.querySelectorAll('#dash-readout .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} — expected 1067, the device-1 ramp)`);
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '1067')`, 10000))) {
+      fail(`M4-F: the readout does not reflect device 1's telemetry (memory clock = ${await js(`Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} — expected 1067, the device-1 ramp)`);
     }
     if (!(await waitFor(win, `(() => {
       const row = Array.from(document.querySelectorAll('.card-grid .kv')).find((k) => (k.getAttribute('data-label') ?? '') === 'Clocks');
@@ -930,6 +1068,28 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (pillBox.ocBottom !== pillBox.vBottom) fail(`M4-D2: the view pill top aligns but the bottoms differ (different heights): ${pillHeights}`);
   const viewToggleState = await js(`JSON.stringify(Array.from(document.querySelectorAll('.tuning-view-btn')).map((b) => [b.textContent.trim(), b.classList.contains('active')]))`);
   if (!/\["Tuning",true\]/.test(viewToggleState)) fail(`M4-D2: the view toggle does not show Tuning active on a '#/tuning' visit: ${viewToggleState}`);
+  // M4-H (A3): on the TUNING view the OC-mode column is PRESENT (the
+  // fan-hide class is off and the Stock/Advanced pills render).
+  const tuningRowState = await js(`(() => {
+    const row = document.querySelector('.oc-mode-row');
+    if (!row) return 'no-row';
+    const hasClass = row.classList.contains('fan-hides-oc-column');
+    const stockVisible = Array.from(row.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Stock' && b.offsetParent !== null);
+    const advancedVisible = Array.from(row.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Advanced' && b.offsetParent !== null);
+    return JSON.stringify({ hasClass, stockVisible, advancedVisible });
+  })()`);
+  const tuneRowState = JSON.parse(tuningRowState);
+  if (tuneRowState.hasClass || !tuneRowState.stockVisible || !tuneRowState.advancedVisible) {
+    fail(`M4-H: the OC-mode column must be PRESENT on the tuning view (class ${tuneRowState.hasClass}, Stock visible ${tuneRowState.stockVisible}, Advanced visible ${tuneRowState.advancedVisible})`);
+  }
+  // M4-H (B): the "Save as Profile" card (OC view only) — the button reads
+  // 'Save as Profile' when no profile is applied; the card must NOT render
+  // on the fan view.
+  if (!(await waitFor(win, `!!document.querySelector('.profile-save-card .profile-save-btn')`, 5000))) {
+    fail('M4-H: the Save as Profile card is missing on the tuning view');
+  }
+  const saveBtnText = await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`);
+  if (saveBtnText.trim() !== 'Save as Profile') fail(`M4-H: the save button reads '${saveBtnText}' (expected 'Save as Profile' — no profile applied yet)`);
   // M4-D2 (§7): the OLD '#/overclocking' hash (bookmarks + old pins) must
   // land on the Tuning page with the tuning controls — the router alias.
   await js(`location.hash = '#/overclocking'`);
@@ -1778,15 +1938,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported`);
 
-  // M2D: the swap payload replaces the boot driver date — the b580 card must
+  // M2D: the swap payload replaces the boot driver date — the HEALTH card's
+  // driver row (the GPU card's Driver version row is REMOVED — M4-H) must
   // NOT pair 32.0.140.4109 with the a770 boot registry date (7-5-2026).
+  const healthDriverRow = () => js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
   await js(`location.hash = '#/dashboard'`);
   await sleep(250);
-  const b580DriverRow = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
+  const b580DriverRow = await healthDriverRow();
   if (!b580DriverRow.includes('32.0.140.4109') || b580DriverRow.includes('Jul')) {
-    fail(`M2D swap: stale driver date on the b580 card: '${b580DriverRow}'`);
+    fail(`M2D swap: stale driver date on the b580 health row: '${b580DriverRow}'`);
   }
-  step('fs-swap-b580-date', `swap -> b580: driver card '${b580DriverRow.trim()}' (no stale date)`);
+  step('fs-swap-b580-date', `swap -> b580: health driver row '${b580DriverRow.trim()}' (no stale date)`);
   await gotoOverclocking();
 
   // Swap back: the A770 surface (W units, 210 W default) returns and the
@@ -1808,8 +1970,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // M2D: the a770 featureset's own registry date returns with the surface.
   await js(`location.hash = '#/dashboard'`);
   await sleep(250);
-  const a770DriverRow = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
-  if (!a770DriverRow.includes('Jul 05, 2026')) fail(`M2D swap-back: a770 driver date missing on the card: '${a770DriverRow}'`);
+  const a770DriverRow = await healthDriverRow();
+  if (!a770DriverRow.includes('Jul 05, 2026')) fail(`M2D swap-back: a770 driver date missing on the health row: '${a770DriverRow}'`);
   await gotoOverclocking();
   step('fs-swap-back', `swap back -> a770: PL readout '210 W', W units, waiver preserved, driver date 'Jul 05, 2026'`);
 
@@ -1827,7 +1989,27 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!fanViewActive) fail('M4-D2: the #/fan redirect did not activate the Fan Curve sub-view');
   const fanPageTitle = await js(`document.querySelector('.page-title')?.textContent ?? ''`);
   if (fanPageTitle.trim() !== 'Tuning') fail(`M4-D2: the #/fan redirect must land on the Tuning page (title is '${fanPageTitle}')`);
-  step('fan-redirect', `#/fan -> Tuning page with the Fan Curve sub-view active`);
+  // M4-H (A3): while the FAN view is active the OC-mode (Stock/Advanced)
+  // column of the shared mode row is HIDDEN (a class on the row + CSS —
+  // N6: applied on the INITIAL #/fan render too, not only in setView);
+  // the View pill + the GPU selector stay.
+  const fanModeRow = await js(`(() => {
+    const row = document.querySelector('.oc-mode-row');
+    if (!row) return 'no-row';
+    const hasClass = row.classList.contains('fan-hides-oc-column');
+    const stockVisible = Array.from(row.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Stock' && b.offsetParent !== null);
+    const viewVisible = Array.from(row.querySelectorAll('.tuning-view-btn')).some((b) => b.textContent.trim() === 'Fan Curve' && b.offsetParent !== null);
+    return JSON.stringify({ hasClass, stockVisible, viewVisible });
+  })()`);
+  const fanRowState = JSON.parse(fanModeRow);
+  if (!fanRowState.hasClass || fanRowState.stockVisible || !fanRowState.viewVisible) {
+    fail(`M4-H: the OC-mode column must be hidden on the fan view (class ${fanRowState.hasClass}, Stock visible ${fanRowState.stockVisible}, view pill visible ${fanRowState.viewVisible})`);
+  }
+  // M4-H (B): the Save-as-Profile card is OC-view only — never on the fan view.
+  if (await js(`!!document.querySelector('.profile-save-card')`)) {
+    fail('M4-H: the Save as Profile card renders on the fan view (OC view only)');
+  }
+  step('fan-redirect', `#/fan -> Tuning page with the Fan Curve sub-view active; M4-H: OC-mode column hidden on the fan view (View pill stays, no Save-as-Profile card)`);
   // M2C-B B1: the right-side 0-100% axis renders OUTSIDE the plot (one tick
   // per grid line, top-down: 100% first) and the old in-plot labels are gone.
   if (!(await waitFor(win, `document.querySelectorAll('.fan-yaxis .fan-yaxis-tick').length === 5`))) {
@@ -1923,20 +2105,28 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('fan-m4c-fixed', `M4-C: Fixed tab always renders — chip disabled (${toggleState}), note '${fixedNote.trim()}'`);
 
-  // --- M4-C: dot hover readout + live drag readout --------------------------
-  // Hover a dot: the floating readout shows "85% @ 72 °C · #N" style text.
-  // Round-1 strengthening: the LAST dot is the 88C/100% TOP-EDGE point —
-  // the readout must be FULLY VISIBLE (getBoundingClientRect inside the
-  // stage bounds; the old above-dot parking clipped under .fan-stage
-  // overflow:hidden and the previous pin only checked ro.hidden/text).
+  // --- M4-C + M4-H: dot hover readout + live drag readout ------------------
+  // Hover a dot: the popup shows the label ("85% @ 72 °C · #N"-style) and
+  // the two editable inputs (Fan % + Temp) synced to the point (M4-H: the
+  // label is a NODE — showReadout updates the label + the input values,
+  // never textContent). Round-1 strengthening: the LAST dot is the
+  // 88C/100% TOP-EDGE point — the readout must be FULLY VISIBLE (inside
+  // the stage bounds).
   const hoverOk = await js(`(() => {
     const dots = Array.from(document.querySelectorAll('.fan-dot'));
     const dot = dots[dots.length - 1];
     dot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
     const ro = document.querySelector('.fan-dot-readout');
     if (!ro || ro.hidden) return 'readout-hidden';
+    const label = ro.querySelector('.fan-dot-readout-label');
     const want = dot.dataset.speed + '% @ ' + dot.dataset.t + ' °C · #' + dot.dataset.idx;
-    if (ro.textContent !== want) return 'mismatch:' + ro.textContent + ' != ' + want;
+    if (label.textContent !== want) return 'mismatch:' + label.textContent + ' != ' + want;
+    const tInp = ro.querySelector('input[data-readout-field="t"]');
+    const sInp = ro.querySelector('input[data-readout-field="speed"]');
+    if (!tInp || !sInp) return 'no-inputs';
+    if (tInp.value !== dot.dataset.t || sInp.value !== dot.dataset.speed) {
+      return 'input-mismatch:' + tInp.value + '/' + sInp.value + ' != ' + dot.dataset.t + '/' + dot.dataset.speed;
+    }
     const stage = document.querySelector('.fan-stage');
     const sr = stage.getBoundingClientRect();
     const rr = ro.getBoundingClientRect();
@@ -1948,7 +2138,29 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     return 'ok';
   })()`);
-  if (hoverOk !== 'ok') fail(`M4-C: hover readout: ${hoverOk}`);
+  if (hoverOk !== 'ok') fail(`M4-C/M4-H: hover readout: ${hoverOk}`);
+  // M4-H (S2 — the vanish guard): a pointerout whose relatedTarget is
+  // INSIDE the popup must NOT hide it (the popup is a sibling of the dots —
+  // moving from a dot into the popup fires exactly this event; hiding there
+  // would kill the popup before a click can land). The popup must also
+  // STAY visible while the pointer is over it.
+  const vanishGuard = await js(`(() => {
+    const ro = document.querySelector('.fan-dot-readout');
+    const dot = Array.from(document.querySelectorAll('.fan-dot')).at(-1);
+    dot.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: ro }));
+    const keptByRelatedTarget = ro.hidden === false;
+    ro.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true }));
+    dot.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: null }));
+    const keptByPointerInside = ro.hidden === false;
+    ro.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+    dot.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: null }));
+    const hiddenAfterLeave = ro.hidden === true;
+    return keptByRelatedTarget && keptByPointerInside && hiddenAfterLeave
+      ? 'ok'
+      : JSON.stringify({ keptByRelatedTarget, keptByPointerInside, hiddenAfterLeave });
+  })()`);
+  if (vanishGuard !== 'ok') fail(`M4-H: the readout vanish guard failed: ${vanishGuard}`);
+  // A plain pointerout (relatedTarget null) hides the readout.
   await js(`document.querySelector('.fan-dot')?.dispatchEvent(new PointerEvent('pointerout', { bubbles: true }))`);
   if (!(await waitFor(win, `document.querySelector('.fan-dot-readout')?.hidden === true`, 5000))) {
     fail('M4-C: the hover readout did not hide on pointerout');
@@ -1964,15 +2176,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const ro = document.querySelector('.fan-dot-readout');
     const moved = document.querySelector('.fan-dot[data-idx="1"]');
     const movedOk = moved && Number(moved.dataset.t) === 30 && Number(moved.dataset.speed) === 60;
-    const roOk = !!ro && !ro.hidden && ro.textContent === '60% @ 30 °C · #1';
+    const roOk = !!ro && !ro.hidden && ro.querySelector('.fan-dot-readout-label')?.textContent === '60% @ 30 °C · #1';
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7 }));
     const hiddenAfter = document.querySelector('.fan-dot-readout')?.hidden === true;
     return movedOk && roOk && hiddenAfter
       ? 'ok'
-      : JSON.stringify({ moved: moved ? [moved.dataset.t, moved.dataset.speed] : null, ro: ro?.textContent, roHidden: ro?.hidden, hiddenAfter });
+      : JSON.stringify({ moved: moved ? [moved.dataset.t, moved.dataset.speed] : null, ro: ro?.querySelector('.fan-dot-readout-label')?.textContent, roHidden: ro?.hidden, hiddenAfter });
   })()`);
   if (dragOk !== 'ok') fail(`M4-C: drag readout: ${dragOk}`);
-  step('fan-m4c-hover', 'M4-C: dot hover readout ("60% @ 30 °C · #1"-style), live during drag, hidden on pointerout/up');
+  step('fan-m4c-hover', 'M4-C/M4-H: dot hover popup (label + editable inputs synced), vanish guard (pointerout with relatedTarget inside the popup / pointer over the popup keeps it; leaving hides), live during drag, hidden on pointerout/up');
 
   // M4-C round-1 fix: a stale hover readout must NOT survive a mode switch —
   // hover a dot, click Auto, click Curve: the readout must stay hidden
@@ -1993,99 +2205,166 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (modeSwitchOk !== 'ok') fail(`M4-C: stale readout after a mode switch: ${modeSwitchOk}`);
   step('fan-m4c-mode-switch', 'M4-C: the mode switch clears the hover readout (no stale readout on returning to Curve)');
 
-  // --- M4-C: manual per-point boxes -----------------------------------------
-  // Typing a colliding temp clamps between the neighbors (dot dataset.t +
-  // the input value must show the clamped temp).
-  const boxTemp = await js(`(() => {
-    const row = document.querySelector('.fan-point-row[data-idx="2"]');
-    const inp = row.querySelector('input[data-field="t"]');
+  // --- M4-H (A2): the POPUP EDIT path (the per-point boxes are DELETED) --
+  // The popup's two inputs replace the old .fan-points-editor row — the
+  // row must be GONE everywhere. The edit clamps: a typed temp clamps
+  // strictly between the neighbors (dot dataset.t + the input value must
+  // show the clamped temp), a typed speed clamps 0..100, the clamped value
+  // reflects back into the input, an EMPTIED input keeps the previous
+  // value.
+  if (await js(`!!document.querySelector('.fan-points-editor')`)) {
+    fail('M4-H: the per-point boxes row (.fan-points-editor) is still rendered (deleted — the popup inputs replace it)');
+  }
+  const showPopupFor = (idx) => js(`(() => {
+    const dot = Array.from(document.querySelectorAll('.fan-dot')).find((d) => Number(d.dataset.idx) === ${idx});
+    if (!dot) return false;
+    dot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    return document.querySelector('.fan-dot-readout')?.hidden === false;
+  })()`);
+  // Typing a colliding temp clamps between the neighbors.
+  await showPopupFor(2);
+  const popupTemp = await js(`(() => {
+    const inp = document.querySelector('.fan-dot-readout input[data-readout-field="t"]');
     inp.value = '80';
     inp.dispatchEvent(new Event('input', { bubbles: true }));
     const dot = document.querySelector('.fan-dot[data-idx="2"]');
     return dot.dataset.t + '/' + inp.value;
   })()`);
-  if (boxTemp !== '69/69') fail(`M4-C: manual temp box: got '${boxTemp}' (expected 69/69 — clamped strictly between the neighbors 30+1 and 70-1)`);
+  if (popupTemp !== '69/69') fail(`M4-H: popup temp edit: got '${popupTemp}' (expected 69/69 — clamped strictly between the neighbors)`);
   // Typing an over-range speed clamps to 100.
-  const boxSpeed = await js(`(() => {
-    const row = document.querySelector('.fan-point-row[data-idx="2"]');
-    const inp = row.querySelector('input[data-field="speed"]');
+  const popupSpeed = await js(`(() => {
+    const inp = document.querySelector('.fan-dot-readout input[data-readout-field="speed"]');
     inp.value = '150';
     inp.dispatchEvent(new Event('input', { bubbles: true }));
     const dot = document.querySelector('.fan-dot[data-idx="2"]');
     return dot.dataset.speed + '/' + inp.value;
   })()`);
-  if (boxSpeed !== '100/100') fail(`M4-C: manual speed box: got '${boxSpeed}' (expected 100/100 — clamped to 0..100)`);
-  // M4-C round-1 fix: TYPED temps are clamped to the static 0..100 domain
-  // like the drag path (xToTemp clamps) — clampTempBetween only clamps
-  // BETWEEN neighbors, so typing 150 / -5 into the OUTER points (no
-  // neighbor on that side) used to reach the driver table unclamped.
-  const boxOuter = await js(`(() => {
-    const rows = Array.from(document.querySelectorAll('.fan-point-row'));
-    const last = rows[rows.length - 1];
-    const lastInp = last.querySelector('input[data-field="t"]');
+  if (popupSpeed !== '100/100') fail(`M4-H: popup speed edit: got '${popupSpeed}' (expected 100/100 — clamped to 0..100)`);
+  // TYPED temps are clamped to the static 0..100 domain like the drag path
+  // (typing 150 / -5 into the OUTER points must clamp to 100 / 0). The
+  // popup holds ONE input pair — the last-dot values are captured BEFORE
+  // switching the popup to the first dot.
+  const popupOuter = await js(`(() => {
+    const dots = Array.from(document.querySelectorAll('.fan-dot'));
+    const lastDot = dots[dots.length - 1];
+    lastDot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    const lastInp = document.querySelector('.fan-dot-readout input[data-readout-field="t"]');
     lastInp.value = '150';
     lastInp.dispatchEvent(new Event('input', { bubbles: true }));
-    const lastDot = document.querySelector('.fan-dot[data-idx="' + (rows.length - 1) + '"]');
-    const first = rows[0];
-    const firstInp = first.querySelector('input[data-field="t"]');
+    const lastT = document.querySelector('.fan-dot[data-idx="' + (dots.length - 1) + '"]').dataset.t;
+    const lastVal = lastInp.value;
+    const firstDot = dots[0];
+    firstDot.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    const firstInp = document.querySelector('.fan-dot-readout input[data-readout-field="t"]');
     firstInp.value = '-5';
     firstInp.dispatchEvent(new Event('input', { bubbles: true }));
-    const firstDot = document.querySelector('.fan-dot[data-idx="0"]');
-    return (lastDot ? lastDot.dataset.t : 'no-dot') + '/' + lastInp.value + '/' + (firstDot ? firstDot.dataset.t : 'no-dot') + '/' + firstInp.value;
+    const firstT = document.querySelector('.fan-dot[data-idx="0"]').dataset.t;
+    return lastT + '/' + lastVal + '/' + firstT + '/' + firstInp.value;
   })()`);
-  if (boxOuter !== '100/100/0/0') fail(`M4-C: manual temp box domain clamp: got '${boxOuter}' (expected 100/100/0/0 — typing 150 / -5 clamps to the static 0..100 domain)`);
-  // M4-C round-2 fix: an EMPTIED box must NOT be treated as 0 — Number('')
-  // is 0 and finite, so clearing a box used to instantly move the point to
-  // 0 °C / 0 % and rewrite the box to '0' (the same bug class the gpuLock
-  // editor's parseGpuLockInput already rejects). Clearing the temp AND
-  // speed boxes of point 1 must leave the dot dataset unchanged and both
-  // boxes as the user left them ('').
-  const boxEmpty = await js(`(() => {
-    const row = document.querySelector('.fan-point-row[data-idx="1"]');
+  if (popupOuter !== '100/100/0/0') fail(`M4-H: popup temp domain clamp: got '${popupOuter}' (expected 100/100/0/0 — typing 150 / -5 clamps to the static 0..100 domain)`);
+  // An EMPTIED input must NOT be treated as 0 — clearing the temp AND
+  // speed inputs of point 1 must leave the dot dataset unchanged and both
+  // inputs as the user left them ('').
+  await showPopupFor(1);
+  const popupEmpty = await js(`(() => {
     const dot = document.querySelector('.fan-dot[data-idx="1"]');
     const before = dot.dataset.t + '/' + dot.dataset.speed;
     for (const field of ['t', 'speed']) {
-      const inp = row.querySelector('input[data-field="' + field + '"]');
+      const inp = document.querySelector('.fan-dot-readout input[data-readout-field="' + field + '"]');
       inp.value = '';
       inp.dispatchEvent(new Event('input', { bubbles: true }));
     }
     const after = dot.dataset.t + '/' + dot.dataset.speed;
-    const tVal = row.querySelector('input[data-field="t"]').value;
-    const sVal = row.querySelector('input[data-field="speed"]').value;
+    const tVal = document.querySelector('.fan-dot-readout input[data-readout-field="t"]').value;
+    const sVal = document.querySelector('.fan-dot-readout input[data-readout-field="speed"]').value;
     return before + '|' + after + '|' + tVal + '|' + sVal;
   })()`);
-  const [beBefore, beAfter, beT, beS] = boxEmpty.split('|');
-  if (beBefore !== beAfter) fail(`M4-C: clearing a manual box moved the point (${beBefore} -> ${beAfter}) — an empty input must keep the previous value (Number('') is 0)`);
-  if (beT !== '' || beS !== '') fail(`M4-C: cleared boxes were rewritten to '${beT}'/'${beS}' (expected both to stay '' — no point mutation on empty input)`);
-  // Per-point remove: one click removes the row's point; at the 2-point
-  // floor every remove button is disabled and clicking is a no-op.
-  await js(`document.querySelector('.fan-point-row .fan-point-remove').click()`);
+  const [peBefore, peAfter, peT, peS] = popupEmpty.split('|');
+  if (peBefore !== peAfter) fail(`M4-H: clearing a popup input moved the point (${peBefore} -> ${peAfter}) — an empty input must keep the previous value (Number('') is 0)`);
+  if (peT !== '' || peS !== '') fail(`M4-H: cleared popup inputs were rewritten to '${peT}'/'${peS}' (expected both to stay '' — no point mutation on empty input)`);
+  // M4-H (S2): the popup stays visible while an input is FOCUSED (focus
+  // leaves BOTH inputs + the pointer is away -> hides; the input focus
+  // alone never hides the popup).
+  const focusKeeps = await js(`(() => {
+    const ro = document.querySelector('.fan-dot-readout');
+    const tInp = ro.querySelector('input[data-readout-field="t"]');
+    tInp.focus();
+    tInp.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: ro.querySelector('input[data-readout-field="speed"]') }));
+    const keptOnInnerFocus = ro.hidden === false;
+    tInp.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }));
+    const hiddenAfterOuterFocus = ro.hidden === true;
+    return keptOnInnerFocus && hiddenAfterOuterFocus ? 'ok' : JSON.stringify({ keptOnInnerFocus, hiddenAfterOuterFocus });
+  })()`);
+  if (focusKeeps !== 'ok') fail(`M4-H: the popup blur rule failed: ${focusKeeps}`);
+  // The 'Remove point' ACTION-ROW button: one click removes the selected
+  // point; at the 2-point floor the button is disabled and clicking is a
+  // no-op (the per-point row remove is gone with the boxes).
+  await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Remove point'))?.click()`);
   if (!(await waitFor(win, `document.querySelectorAll('.fan-dot').length === ${pointsAfter - 1}`, 5000))) {
-    fail(`M4-C: per-point remove did not remove one dot (expected ${pointsAfter - 1})`);
+    fail(`M4-H: the action-row remove did not remove one dot (expected ${pointsAfter - 1})`);
   }
   const floorOk = await js(`(() => {
     let guard = 0;
     while (document.querySelectorAll('.fan-dot').length > 2 && guard++ < 20) {
-      document.querySelector('.fan-point-remove')?.click();
+      Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Remove point'))?.click();
     }
     const count = document.querySelectorAll('.fan-dot').length;
-    const allDisabled = Array.from(document.querySelectorAll('.fan-point-remove')).every((b) => b.disabled);
+    const removeBtn = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Remove point'));
+    const disabled = !!removeBtn && removeBtn.disabled;
     const before = count;
-    document.querySelector('.fan-point-remove')?.click();
-    return count === 2 && allDisabled && document.querySelectorAll('.fan-dot').length === before;
+    removeBtn?.click();
+    return count === 2 && disabled && document.querySelectorAll('.fan-dot').length === before;
   })()`);
-  if (!floorOk) fail('M4-C: the per-point remove did not floor at MIN_CURVE_POINTS (2) with disabled buttons');
+  if (!floorOk) fail('M4-H: the action-row remove did not floor at MIN_CURVE_POINTS (2) with the button disabled');
   // Re-seed a couple of points so the preset step below has a sane curve.
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Add point'))?.click()`);
-  step('fan-m4c-boxes', 'M4-C: manual per-point boxes — colliding temp clamped between (69), speed clamped to 100, per-point remove floors at 2 (buttons disabled)');
+  await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Add point'))?.click()`);
+  step('fan-m4h-popup-edit', 'M4-H: popup edit path — colliding temp clamped between (69), speed clamped to 100, outer domain clamp (150/-5 -> 100/0), empty input keeps the value, focus keeps the popup, action-row remove floors at 2 (disabled); no .fan-points-editor anywhere');
 
-  await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.trim() === 'Max cooling')?.click()`);
+  // --- M4-H (A1): the ADAPTIVE preset chips --------------------------------
+  // Exactly THREE chips: 'Driver Curve' (the base itself — read LIVE at
+  // click time from the store, the chip REPLACES the removed reset button),
+  // 'Quiet' (speeds ×0.5, clamp 0..100), 'Max' (speeds ×1.35, clamp 0..100,
+  // renamed from 'Max cooling'). No 'Max cooling' text anywhere.
+  if (await js(`document.body.textContent.includes('Max cooling')`)) {
+    fail('M4-H: "Max cooling" is still rendered somewhere (renamed to "Max")');
+  }
+  if (await js(`document.body.textContent.includes('Reset to driver curve')`)) {
+    fail('M4-H: the "Reset to driver curve" button is still rendered (the chip replaces it)');
+  }
+  const presetChips = await js(`JSON.stringify(Array.from(document.querySelectorAll('.fan-presets .chip')).map((c) => c.textContent.trim()))`);
+  if (JSON.parse(presetChips).join(',') !== 'Driver Curve,Quiet,Max') {
+    fail(`M4-H: the preset chips are '${presetChips}' (expected 'Driver Curve,Quiet,Max')`);
+  }
+  const presetDots = () => js(`JSON.stringify(Array.from(document.querySelectorAll('.fan-dot')).map((d) => ({ t: Number(d.dataset.t), s: Number(d.dataset.speed) })))`);
+  const clickPreset = (name) => js(`Array.from(document.querySelectorAll('.fan-presets .chip')).find((c) => c.textContent.trim() === '${name}')?.click()`);
+  // 'Driver Curve' restores the SEEDED BASE — the store's fanCurve (the
+  // fixture curve) through the same seedCurvePoints the editor starts from.
+  await clickPreset('Driver Curve');
   await sleep(250);
-  const presetLast = await js(`(() => {
-    const dots = Array.from(document.querySelectorAll('.fan-dot')).map((d) => ({ t: Number(d.dataset.t), s: Number(d.dataset.speed) }));
-    return JSON.stringify(dots.at(-1));
-  })()`);
-  step('fan-preset', `fan preset 'Max cooling' applied; last point ${presetLast}`);
+  const driverDots = JSON.parse(await presetDots());
+  const fixtureCurve = (await js(`window.arcPower.getCurrentSettings(0)`).then((s) => s.fanCurve))
+    .map((p) => ({ t: p.t, s: p.speedPct }));
+  if (JSON.stringify(driverDots) !== JSON.stringify(fixtureCurve)) {
+    fail(`M4-H: 'Driver Curve' did not restore the seeded base: ${JSON.stringify(driverDots)} != ${JSON.stringify(fixtureCurve)}`);
+  }
+  // 'Quiet' = the base's speeds ×0.5 (same temps).
+  await clickPreset('Quiet');
+  await sleep(250);
+  const quietDots = JSON.parse(await presetDots());
+  if (quietDots.length !== fixtureCurve.length) fail(`M4-H: 'Quiet' point count is ${quietDots.length} (expected ${fixtureCurve.length})`);
+  const quietOk = quietDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === Math.round(fixtureCurve[i].s * 0.5));
+  if (!quietOk) fail(`M4-H: 'Quiet' math is wrong (expected speeds ×0.5): ${JSON.stringify(quietDots)} vs base ${JSON.stringify(fixtureCurve)}`);
+  // 'Max' = the base's speeds ×1.35 (clamp 0..100 — the ramp reaches 100%
+  // sooner).
+  await clickPreset('Max');
+  await sleep(250);
+  const maxDots = JSON.parse(await presetDots());
+  if (maxDots.length !== fixtureCurve.length) fail(`M4-H: 'Max' point count is ${maxDots.length} (expected ${fixtureCurve.length})`);
+  const maxOk = maxDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === Math.min(100, Math.round(fixtureCurve[i].s * 1.35)));
+  if (!maxOk) fail(`M4-H: 'Max' math is wrong (expected speeds ×1.35 capped 100): ${JSON.stringify(maxDots)} vs base ${JSON.stringify(fixtureCurve)}`);
+  if (maxDots.at(-1).s !== 100) fail(`M4-H: the 'Max' preset must end at 100 % (got ${maxDots.at(-1).s})`);
+  step('fan-presets', `M4-H: preset chips '${presetChips}'; Driver Curve restores the seeded base; Quiet ×0.5 -> ${JSON.stringify(quietDots)}; Max ×1.35 capped 100 -> ${JSON.stringify(maxDots)}; no 'Max cooling' text`);
 
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings'))?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing');
@@ -2608,6 +2887,84 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (leftover !== 0) fail(`cleanup left ${leftover} ui-verify profiles`);
   step('profiles-cleanup', `ui-verify profile cleanup: ${leftover} leftovers`);
 
+  // --- M4-H (B): the Save-as-Profile card flow (OC view) --------------------
+  // Create flow: no profile applied -> the button reads 'Save as Profile';
+  // the click opens the shared promptModal (EMPTY on create); the save
+  // writes a NEW profile (ocOnBoot false) + a success toast + tray-rebuild.
+  // Override flow: with the profile loaded (active), the button reads
+  // 'Override Profile' and the click PRE-FILLS the modal with the applied
+  // profile's name; the save OVERWRITES the ACTIVE profile (same id) and
+  // carries its OWN ocOnBoot (never silently zeroed — N2). The reload
+  // check: a fresh reload keeps the button on 'Override Profile' (the
+  // activeProfileId persists).
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  if (!(await waitFor(win, `(document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? '').trim() === 'Save as Profile'`, 5000))) {
+    fail(`M4-H: the save button does not read 'Save as Profile' with no profile applied: '${await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`)}'`);
+  }
+  const m4hRowByName = (name) => `Array.from(document.querySelectorAll('.profile-row')).find((r) => (r.querySelector('.profile-name')?.textContent ?? '') === '${name}')`;
+  const m4hClickRowButton = (name, label) => js(`(() => { const r = ${m4hRowByName(name)}; if (!r) return false; const b = Array.from(r.querySelectorAll('button')).find((b) => b.textContent.trim() === '${label}'); if (!b) return false; b.click(); return true; })()`);
+  // Create: the modal opens EMPTY with the create title.
+  await js(`document.querySelector('.profile-save-btn').click()`);
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Save as Profile'`, 5000))) {
+    fail(`M4-H: the save-card modal title is '${await js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`)}' (expected 'Save as Profile' on create)`);
+  }
+  if ((await js(`document.querySelector('.modal-input')?.value ?? 'x'`) !== '')) fail('M4-H: the create modal must NOT be prefilled');
+  await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'M4H saved profile'; })()`);
+  await js(`document.querySelector('.modal button.btn-primary').click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-H: the save-card create did not toast success');
+  const createdM4h = await js(`window.arcPower.profilesList().then((e) => (e.profiles.find((p) => p.name === 'M4H saved profile') ?? null))`);
+  if (!createdM4h) fail('M4-H: the save-card create did not write the profile');
+  if (createdM4h.ocOnBoot !== false) fail(`M4-H: a created profile must have ocOnBoot false (got ${createdM4h.ocOnBoot})`);
+  if (!createdM4h.settings || Object.keys(createdM4h.settings).length === 0) fail('M4-H: the created profile has no settings');
+  const m4hCreatedId = createdM4h.id;
+  step('m4h-save-create', `M4-H: save-card create flow — modal (empty) -> 'M4H saved profile' written (id '${m4hCreatedId}', ocOnBoot false, ${Object.keys(createdM4h.settings).length} settings keys) + success toast`);
+  await clearToasts();
+  // Load the profile (the real Profiles-page Load flow marks it active).
+  await js(`location.hash = '#/profiles'`);
+  await sleep(250);
+  if (!(await m4hClickRowButton('M4H saved profile', 'Load'))) fail('M4-H: the profile Load button did not click');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.activeProfileId === '${m4hCreatedId}')`, 5000))) {
+    fail('M4-H: the load did not mark the profile active');
+  }
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  if (!(await waitFor(win, `(document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? '').trim() === 'Override Profile'`, 5000))) {
+    fail(`M4-H: the save button does not read 'Override Profile' with the profile applied: '${await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`)}'`);
+  }
+  // Override: the modal PRE-FILLS the applied profile's name; saving
+  // overwrites the ACTIVE id with the same ocOnBoot.
+  await js(`document.querySelector('.profile-save-btn').click()`);
+  if (!(await waitFor(win, `document.querySelector('.modal .modal-title')?.textContent === 'Override Profile'`, 5000))) {
+    fail(`M4-H: the override modal title is '${await js(`document.querySelector('.modal .modal-title')?.textContent ?? ''`)}' (expected 'Override Profile')`);
+  }
+  if ((await js(`document.querySelector('.modal-input')?.value ?? ''`)) !== 'M4H saved profile') {
+    fail(`M4-H: the override modal must be prefilled with the applied profile's name (got '${await js(`document.querySelector('.modal-input')?.value ?? ''`)}')`);
+  }
+  await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'M4H saved profile v2'; })()`);
+  await js(`document.querySelector('.modal button.btn-primary').click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-H: the save-card override did not toast success');
+  const overridden = await js(`window.arcPower.profilesList().then((e) => (e.profiles.find((p) => p.id === '${m4hCreatedId}') ?? null))`);
+  if (!overridden) fail(`M4-H: the override LOST the profile id '${m4hCreatedId}' (must overwrite the ACTIVE profile)`);
+  if (overridden.name !== 'M4H saved profile v2') fail(`M4-H: the override did not rename the profile (name '${overridden.name}')`);
+  await clearToasts();
+  step('m4h-save-override', `M4-H: override flow — button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
+  // Reload check: a FRESH reload keeps the active profile + the button.
+  await js(`location.reload()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`, 15000))) {
+    fail('M4-H: the reload did not boot the shell');
+  }
+  await js(`location.hash = '#/tuning'`);
+  await sleep(300);
+  if (!(await waitFor(win, `(document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? '').trim() === 'Override Profile'`, 8000))) {
+    fail(`M4-H: after a fresh reload the save button reads '${await js(`document.querySelector('.profile-save-card .profile-save-btn')?.textContent ?? ''`)}' (expected 'Override Profile' — the activeProfileId persists)`);
+  }
+  step('m4h-save-reload', 'M4-H: fresh reload keeps the active profile -> the save button still reads "Override Profile"');
+  // Cleanup the M4-H profile + clear the active slot.
+  await js(`window.arcPower.profilesDelete('${m4hCreatedId}')`).catch(() => {});
+  await js(`window.arcPower.profilesSettingsSave({ activeProfileId: null })`).catch(() => {});
+  await clearToasts();
+
   // --- 16. M3-A/M3-B Tweaks page: the catalog renders with the live (mock)
   // --- states; applyable entries get working Enable/Disable/Revert buttons
   // --- (mock apply — no elevation), fullscreen stays read-only ------------
@@ -2690,8 +3047,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.2 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.2 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -2737,7 +3094,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.1`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.2`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists — the profile's
@@ -3289,12 +3646,15 @@ export async function runFeaturesetVerify(win, fsId) {
     fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)}`);
   }
   step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W`);
-  // M2D: the swap payload carries the featureset driver date — the a770 card
-  // must show its own registry date even when the boot featureset had none.
+  // M2D: the swap payload carries the featureset driver date — the HEALTH
+  // card's driver row (the GPU card's Driver version row is REMOVED —
+  // M4-H) must show its own registry date even when the boot featureset
+  // had none.
+  const healthDriverRow = () => js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
   await js(`location.hash = '#/dashboard'`);
   await sleep(250);
-  const a770Row = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
-  if (!a770Row.includes('Jul 05, 2026')) fail(`swap to a770: driver date missing on the card: '${a770Row}'`);
+  const a770Row = await healthDriverRow();
+  if (!a770Row.includes('Jul 05, 2026')) fail(`swap to a770: driver date missing on the health row: '${a770Row}'`);
   await gotoOverclocking();
   await swapTo(fsId);
   const backOk = fsId === 'b580'
@@ -3306,8 +3666,8 @@ export async function runFeaturesetVerify(win, fsId) {
     // with the b580 driver version.
     await js(`location.hash = '#/dashboard'`);
     await sleep(250);
-    const backRow = await js(`document.querySelector('.card-grid .kv[data-label="Driver version"]')?.textContent ?? ''`);
-    if (backRow.includes('Jul')) fail(`swap back to b580: stale driver date on the card: '${backRow}'`);
+    const backRow = await healthDriverRow();
+    if (backRow.includes('Jul')) fail(`swap back to b580: stale driver date on the health row: '${backRow}'`);
     await gotoOverclocking();
   }
   step('swap-back', `swap back -> '${fsId}': original surface restored`);
@@ -3470,21 +3830,31 @@ export async function runNoIntelVerify(win) {
   const sysRows = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.sysinfo-card .kv')).map((k) => [k.getAttribute('data-label'), (k.textContent ?? '').trim()])))`);
   const rows = JSON.parse(sysRows);
   if (rows['CPU'] !== 'Intel(R) Core(TM) i7-14700K') fail(`1.0.1: the CPU row is '${rows['CPU']}'`);
-  if (rows['Memory'] !== 'G.Skill 32 GB @ 6000 MHz') fail(`1.0.1: the Memory row is '${rows['Memory']}'`);
+  // M4-H (C2): the no-Intel path shares the fixture — DDR5 in the memory
+  // line + the Caches row.
+  if (rows['Memory'] !== 'G.Skill 32 GB DDR5 @ 6000 MHz') fail(`1.0.1/M4-H: the Memory row is '${rows['Memory']}' (expected 'G.Skill 32 GB DDR5 @ 6000 MHz')`);
+  if (rows['Caches'] !== 'L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB') {
+    fail(`M4-H: the no-Intel Caches row is '${rows['Caches']}'`);
+  }
   // The LIVE freq half from the no-device telemetry push (cpuFreqMhz 4300).
   if (!(await waitFor(win, `(document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? '').trim() === '20 Cores / 28 Threads / @ 4.3 GHz'`, 8000))) {
     fail(`1.0.1: the Cores / clock row is '${await js(`document.querySelector('.sysinfo-card .kv[data-label="Cores / clock"]')?.textContent ?? ''`)}' (expected the static bundle + the LIVE '/ @ 4.3 GHz')`);
   }
-  step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}'`);
+  step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}', Caches '${rows['Caches']}'`);
 
-  // --- 5. the GPU card: the AMD name + 'Non supported GPU' note, rows '—' ---
+  // --- 5. the GPU card (M4-H): title 'GPU' + the OS GPU in the 'GPU' kv row,
+  // --- 'Non supported GPU' note, NO Driver version row (N7 — the no-Intel
+  // --- branch gets the SAME restructure as the Intel one) -------------------
   const gpuCardTitle = await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`);
-  if (gpuCardTitle.trim() !== 'AMD Radeon RX 7600') fail(`1.0.1: the GPU card title is '${gpuCardTitle}' (expected the OS GPU name)`);
+  if (gpuCardTitle.trim() !== 'GPU') fail(`M4-H: the GPU card title is '${gpuCardTitle}' (expected 'GPU' — the name lives in the kv row)`);
+  const gpuNameKv = await js(`document.querySelector('.device-card .kv[data-label="GPU"]')?.textContent ?? ''`);
+  if (gpuNameKv.trim() !== 'AMD Radeon RX 7600') fail(`M4-H: the GPU card name row is '${gpuNameKv}' (expected the OS GPU name 'AMD Radeon RX 7600')`);
+  if (await js(`!!document.querySelector('.device-card .kv[data-label="Driver version"]')`)) {
+    fail('M4-H: the no-Intel GPU card still renders the Driver version row (removed — N7)');
+  }
   const gpuCardText = await js(`document.querySelector('.device-card')?.textContent ?? ''`);
   if (!gpuCardText.includes('Non supported GPU')) fail('1.0.1: the GPU card is missing the "Non supported GPU" note');
-  const driverKv = await js(`document.querySelector('.device-card .kv[data-label="Driver version"]')?.textContent ?? ''`);
-  if (driverKv.trim() !== '—') fail(`1.0.1: the GPU card driver row is '${driverKv}' (expected '—' — caps/state degrade on no-Intel)`);
-  step('gpu-card', `GPU card: title 'AMD Radeon RX 7600', 'Non supported GPU' note, caps/state rows at '—'`);
+  step('gpu-card', `GPU card: title 'GPU', name row 'AMD Radeon RX 7600', 'Non supported GPU' note, NO Driver version row`);
 
   // --- 6. monitoring: the OS-level tiles get the mock sys-stats values ------
   await js(`location.hash = '#/monitoring'`);

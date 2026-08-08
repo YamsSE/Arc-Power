@@ -321,10 +321,16 @@ test('telemetry: deterministic ramp — energy rises by the configured step', as
   assert.ok(s1.t > s0.t);
   assert.equal(s1.gpuClockMhz - s0.gpuClockMhz, 100);
   assert.deepEqual(s1.fanRpm, [1030]);
+  // M4-H (N1): the sample emits a DETERMINISTIC utilPct (the real igcl
+  // backend emits it; the mock never did — the dashboard GPU-util tile
+  // would read '—' in verify without it).
+  assert.equal(s0.utilPct, 42);
+  assert.equal(s1.utilPct, 42, 'deterministic across ticks');
   // deterministic: a fresh backend produces identical first samples
   const b2 = new MockBackend();
   const t0 = await b2.sampleRawTelemetry(0);
   assert.equal(t0.gpuEnergyJ, s0.gpuEnergyJ);
+  assert.equal(t0.utilPct, 42);
 });
 
 test('telemetry: onRawTelemetry subscriber + unsubscribe', async () => {

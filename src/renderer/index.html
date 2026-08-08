@@ -34,9 +34,16 @@
           </button>
           <button class="window-btn window-btn-max" data-op="maximize-toggle" title="Maximize" aria-label="Maximize">
             <svg class="icon-maximize" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            <!-- M4-H (D2): the restore glyph follows the WINDOWS layout — the
+                 HOLLOW back square at the TOP-LEFT (1.5,1.5) with the FILLED
+                 front square at the BOTTOM-RIGHT (3.5,3.5) (the old markup had
+                 the two rects SWAPPED — the filled front sat bottom-left and
+                 the hollow back top-right, N5). The front fill moved to the
+                 .icon-restore-front CSS class (var() in the attribute was
+                 dropped). -->
             <svg class="icon-restore" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" hidden>
-              <rect x="3.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
-              <rect x="1.5" y="3.5" width="7" height="7" fill="var(--bg-elev)" stroke="currentColor" stroke-width="1.2"/>
+              <rect class="icon-restore-back" x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+              <rect class="icon-restore-front" x="3.5" y="3.5" width="7" height="7" stroke="currentColor" stroke-width="1.2"/>
             </svg>
           </button>
           <button class="window-btn window-btn-close" data-op="close" title="Close" aria-label="Close">

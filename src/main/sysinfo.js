@@ -41,11 +41,14 @@ let cached = null;
 
 /**
  * The PowerShell CIM query: Win32_Processor (Name/NumberOfCores/
- * NumberOfLogicalProcessors/MaxClockSpeed), Win32_ComputerSystem
+ * NumberOfLogicalProcessors/MaxClockSpeed + M4-H L1CacheSize/L2CacheSize/
+ * L3CacheSize — KB, the Caches row source), Win32_ComputerSystem
  * (TotalPhysicalMemory), Win32_PhysicalMemory (Manufacturer/
- * ConfiguredClockSpeed — the RAM brand for the bundled memory row; the
- * Manufacturer is the raw SPD JEDEC hex code, decoded by jedecBrand in the
- * parse), Win32_VideoController (Name/AdapterRAM/PNPDeviceID), the display
+ * ConfiguredClockSpeed/SMBIOSMemoryType — the RAM brand for the bundled
+ * memory row; the Manufacturer is the raw SPD JEDEC hex code, decoded by
+ * jedecBrand in the parse; SMBIOSMemoryType is the Type-17 code the
+ * dashboard's DDR5-style label derives from), Win32_VideoController
+ * (Name/AdapterRAM/PNPDeviceID), the display
  * class registry subkeys' HardwareInformation.qwMemorySize (UInt64 bytes,
  * keyed by MatchingDeviceId), and per video controller — the pnputil
  * resource ranges (the ReBAR check: a functioning Resizable BAR shows a
@@ -62,9 +65,11 @@ let cached = null;
 export function buildSysinfoScript() {
   return [
     '$ErrorActionPreference = \'SilentlyContinue\'',
-    '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed',
+    '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,L1CacheSize,L2CacheSize,L3CacheSize',
     '$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory',
-    '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed',
+    // M4-H: the memory row also reads SMBIOSMemoryType (the Type-17 code —
+    // 34 = DDR5 on the mock; the parse maps it, anything unknown is omitted).
+    '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed,SMBIOSMemoryType',
     '$vga = @(Get-CimInstance Win32_VideoController | Select-Object DeviceID,Name,AdapterRAM,PNPDeviceID)',
     '$regMem = @(Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; if ($p.\'HardwareInformation.qwMemorySize\' -and $p.MatchingDeviceId) { [pscustomobject]@{ PNPDeviceID = $p.MatchingDeviceId; MemoryBytes = $p.\'HardwareInformation.qwMemorySize\' } } })',
     // M4-D2: per-controller ReBAR sources. (a) pnputil memory resources —
@@ -305,6 +310,11 @@ export function parseCimOutput(stdout) {
     cores: num(cpuRaw?.NumberOfCores),
     threads: num(cpuRaw?.NumberOfLogicalProcessors),
     maxClockMhz: num(cpuRaw?.MaxClockSpeed),
+    // M4-H: the cache sizes (KB; the Caches row renders only the levels
+    // that exist). CIM has NO L4 field — l4CacheKb is never set here.
+    l1CacheKb: num(cpuRaw?.L1CacheSize),
+    l2CacheKb: num(cpuRaw?.L2CacheSize),
+    l3CacheKb: num(cpuRaw?.L3CacheSize),
   };
   const ram = {
     totalBytes: num(csRaw?.TotalPhysicalMemory) ?? 0,
@@ -312,6 +322,9 @@ export function parseCimOutput(stdout) {
     // M4-D2: the raw SPD JEDEC code ("0420") decodes to the brand
     // (G.Skill); a real name / unknown code passes through honestly.
     manufacturer: jedecBrand(memRaw?.Manufacturer),
+    // M4-H: the SMBIOS Type-17 memory-type code (24=DDR3, 34=DDR5, ... —
+    // the pure ramMemoryType mapping in the renderer derives the label).
+    memoryType: num(memRaw?.SMBIOSMemoryType),
   };
   const controllers = applyAllocatedBar(
     applyRegistryMemory(
@@ -346,11 +359,11 @@ export function parseCimOutput(stdout) {
 export function fallbackSysinfo() {
   const cpus = os.cpus();
   const cpu = cpus.length > 0
-    ? { name: cpus[0].model, cores: null, threads: cpus.length, maxClockMhz: cpus[0].speed }
-    : { name: null, cores: null, threads: null, maxClockMhz: null };
+    ? { name: cpus[0].model, cores: null, threads: cpus.length, maxClockMhz: cpus[0].speed, l1CacheKb: null, l2CacheKb: null, l3CacheKb: null }
+    : { name: null, cores: null, threads: null, maxClockMhz: null, l1CacheKb: null, l2CacheKb: null, l3CacheKb: null };
   return {
     cpu,
-    ram: { totalBytes: os.totalmem(), speedMhz: null, manufacturer: null },
+    ram: { totalBytes: os.totalmem(), speedMhz: null, manufacturer: null, memoryType: null },
     videoControllers: [],
   };
 }
@@ -388,11 +401,15 @@ export async function collectSysinfo(deps = {}) {
           cores: parsed.cpu.cores,
           threads: parsed.cpu.threads,
           maxClockMhz: parsed.cpu.maxClockMhz,
+          l1CacheKb: parsed.cpu.l1CacheKb ?? null,
+          l2CacheKb: parsed.cpu.l2CacheKb ?? null,
+          l3CacheKb: parsed.cpu.l3CacheKb ?? null,
         },
         ram: {
           totalBytes: parsed.ram?.totalBytes || os.totalmem(),
           speedMhz: parsed.ram?.speedMhz ?? null,
           manufacturer: parsed.ram?.manufacturer ?? null,
+          memoryType: parsed.ram?.memoryType ?? null,
         },
         videoControllers: parsed.videoControllers ?? [],
       };
@@ -507,6 +524,10 @@ export function vramBytesOfDevice(device, sysinfo) {
  * controller to an AMD part ('AMD Radeon RX 7600'-style with vramBytes + a
  * pnpDeviceId + rebarActive false) — the no-Intel machine shape the
  * renderer's osGpu / header / GPU card read.
+ * M4-H: the fixture gains SMBIOSMemoryType 34 (DDR5 — the Memory-row type
+ * label) + L1/L2/L3/L4 cache sizes (L4 has NO OS source — the fixture
+ * carries it so the Caches row renders in verify; real hardware shows what
+ * CIM reports).
  * @param {{ cpu?: object, ram?: object, videoControllers?: object[] }} [overrides]
  */
 export function createMockSysinfo(overrides = {}) {
@@ -518,12 +539,19 @@ export function createMockSysinfo(overrides = {}) {
         cores: 20,
         threads: 28,
         maxClockMhz: 5600,
+        // M4-H: the cache sizes (KB) — the Caches row renders them as
+        // "L1 1.4 MB / L2 36.0 MB / L3 672.0 MB / L4 384.0 MB".
+        l1CacheKb: 1470,
+        l2CacheKb: 36864,
+        l3CacheKb: 688128,
+        l4CacheKb: 393216,
         ...(overrides.cpu ?? {}),
       },
       ram: {
         totalBytes: 34359738368, // 32 GiB
         speedMhz: 6000,
         manufacturer: 'G.Skill',
+        memoryType: 34, // DDR5 (SMBIOS Type-17)
         ...(overrides.ram ?? {}),
       },
       videoControllers: noIntel ? [

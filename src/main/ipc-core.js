@@ -298,6 +298,7 @@ export async function resolveBootDeviceId(backend, store) {
  *     maximizeToggle: () => Promise<unknown>,
  *     close: () => Promise<unknown>,
  *   },
+ *   openExternal?: (url: string) => Promise<unknown>,  // M4-H: injected shell.openExternal (the sidebar GitHub link)
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null>, stop?: () => Promise<void> },
@@ -342,6 +343,11 @@ export function createIpcHandlers({
     maximizeToggle: async () => {},
     close: async () => {},
   },
+  // M4-H (D1): the injected shell.openExternal op (the sidebar GitHub
+  // link). The DEFAULT is a no-op (tests + mock mode never open a browser);
+  // main.js wires shell.openExternal in the product path (and a counting
+  // probe in --ui-verify mode).
+  openExternal = async () => {},
   // M3-A: the registry-catalog adapter. The DEFAULT is the MOCK (never runs
   // reg.exe); ipc.js injects the real adapter in the product path. The
   // catalog is read-side only — the M3-B apply channel is 'registry-apply'.
@@ -810,6 +816,31 @@ export function createIpcHandlers({
       'window-close': async (...args) => {
         assertNoPayload(args, 'window-close');
         await windowOps.close();
+      },
+
+      // M4-H (D1): the sidebar GitHub link — open a URL in the default
+      // browser via the injected shell.openExternal op. STRICT validation
+      // (S3): new URL() + protocol https: + hostname github.com + the
+      // pathname is exactly '/YamsSE/Arc-Power' or a '/YamsSE/Arc-Power/'
+      // prefix — NEVER a string-prefix check (host-boundary tricks like
+      // 'github.com.evil.example' or 'github.com@evil.example' must fail).
+      'open-external': async (url) => {
+        if (typeof url !== 'string' || url.length === 0) {
+          throw new Error('open-external: url must be a non-empty string');
+        }
+        let parsed;
+        try {
+          parsed = new URL(url);
+        } catch {
+          throw new Error('open-external: url is not a valid URL');
+        }
+        if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com') {
+          throw new Error('open-external: only https://github.com links are allowed');
+        }
+        if (parsed.pathname !== '/YamsSE/Arc-Power' && !parsed.pathname.startsWith('/YamsSE/Arc-Power/')) {
+          throw new Error('open-external: only the Arc-Power repository is allowed');
+        }
+        await openExternal(parsed.toString());
       },
 
       // Display-driver registry date (M2b-B, read-only): never touches the

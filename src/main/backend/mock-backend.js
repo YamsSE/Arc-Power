@@ -699,6 +699,10 @@ export class MockBackend {
     // Deterministic ramp: energy +intervalS-interval per tick; clock/temp
     // climb; throttle flag fires on every 10th tick (temp limited). Bases
     // come from the featureset.
+    // M4-H (N1): the sample ALSO emits a DETERMINISTIC utilPct — the real
+    // igcl backend emits it (activity-counter delta); the mock never did,
+    // so the dashboard GPU-util tile would read '—' in verify. Fixed value
+    // (same on every device — the pins pin the value, not a ramp).
     const sample = {
       t: tBase + tick * this._intervalS,
       gpuClockMhz: tel.gpuClockBaseMhz + tick * 100,
@@ -708,6 +712,7 @@ export class MockBackend {
       gpuVoltageV: 0.652,
       gpuEnergyJ: 395809.938172 + tick * energyStepJ,
       fanRpm: tel.fanRpm,
+      utilPct: 42,
       throttle: {
         power: false,
         temp: tick % 10 === 9,

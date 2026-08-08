@@ -14,7 +14,7 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -1041,6 +1041,14 @@ async function main() {
         },
         close: async () => { if (!win.isDestroyed()) win.close(); },
       };
+  // M4-H (D1): the open-external op — shell.openExternal in the product
+  // path; --ui-verify injects a COUNTING probe (opening a real browser
+  // mid-verify would disrupt the assertions) — the GitHub-link pin asserts
+  // the count ticked and the strict URL validation rejects bad hosts.
+  let openExternalCount = 0;
+  const openExternal = uiVerify
+    ? async () => { openExternalCount += 1; }
+    : async (url) => { await shell.openExternal(url); };
   teardown = registerIpc({
     backend,
     store,
@@ -1049,6 +1057,7 @@ async function main() {
     driverInfo,
     sysinfo,
     windowOps,
+    openExternal,
     registryCatalog,
     registryApply,
     fpsAdapter,
@@ -1104,8 +1113,9 @@ async function main() {
       await runFanGateVerify(win, backend);
     } else {
       // M4-D: the window-ops probe rides along — run 2 pins the title-bar
-      // buttons via getWindowOpCounts.
-      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts);
+      // buttons via getWindowOpCounts. M4-H: the open-external probe rides
+      // too (the GitHub-link pin asserts the counting op ticked).
+      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts, () => openExternalCount);
     }
     return;
   }

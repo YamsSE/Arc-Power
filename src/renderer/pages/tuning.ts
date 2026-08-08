@@ -74,7 +74,11 @@ import { toast } from '../components/toast.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
-import type { RangeInfo, Capabilities, DeviceState, OcMode } from '../types.ts';
+// M4-H (B): the profiles page's prompt modal + id generator + the
+// settingsFromState helper, reused by the "Save as Profile" card (the
+// profiles page's own create/save flows stay).
+import { newProfileId, promptModal, settingsFromState } from './profiles.ts';
+import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
 // there); this page re-exports them so the import surface stays local.
@@ -624,7 +628,7 @@ export const tuningPage: Page = {
     // the new device's caps/state.
     const deviceSelect = buildDeviceSelect(ctx.store, (id) => void selectDevice(id));
     const modeRow = el('div', { class: 'oc-mode-row' }, [
-      el('div', { class: 'oc-mode-col' }, [
+      el('div', { class: 'oc-mode-col oc-mode-col-mode' }, [
         el('span', { class: 'oc-mode-label', text: 'OC mode' }),
         el('div', { class: 'oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
           el('button', {
@@ -661,10 +665,79 @@ export const tuningPage: Page = {
         deviceSelect,
       ])] : []),
     ]);
+    // M4-H (A3): while the FAN view is active the OC-mode (Stock/Advanced)
+    // column of the shared mode row is HIDDEN — a class on the row + CSS
+    // (the View pill + the GPU selector stay). Applied on the INITIAL
+    // fan-view render (the #/fan redirect path — N6) AND inside setView.
+    const syncModeRowForView = (): void => {
+      modeRow.classList.toggle('fan-hides-oc-column', view === 'fan');
+    };
+    syncModeRowForView();
+
+    // M4-H (B): the "Save as Profile" card (OC view only — never the fan
+    // view). The button reads "Save as Profile" when no profile is applied,
+    // "Override Profile" when activeProfileId is set (api.profilesList()).
+    // Click -> the shared promptModal (prefilled with the applied profile's
+    // name on override) -> settingsFromState + validateSettingsPayload ->
+    // profilesSave({ id: newProfileId() | the ACTIVE id, name, settings,
+    // ocOnBoot: <the active profile's OWN ocOnBoot on override, false on
+    // create> }) — never silently zero an at-boot profile's flag (N2) ->
+    // success toast + trayRebuild.
+    const saveProfileCard = (): HTMLElement => {
+      const btn = el('button', { class: 'btn btn-ghost btn-sm profile-save-btn', text: 'Save as Profile' }) as HTMLButtonElement;
+      const refreshLabel = async (): Promise<void> => {
+        try {
+          const env = await api.profilesList();
+          const active = env.profiles.find((p) => p.id === env.settings.activeProfileId) ?? null;
+          btn.textContent = active ? 'Override Profile' : 'Save as Profile';
+        } catch {
+          // degraded: keep the current label (the click re-reads anyway)
+        }
+      };
+      void refreshLabel();
+      btn.addEventListener('click', () => {
+        void (async () => {
+          let active: Profile | null = null;
+          try {
+            const env = await api.profilesList();
+            active = env.profiles.find((p) => p.id === env.settings.activeProfileId) ?? null;
+          } catch {
+            // degraded: fall back to the create flow (never a wrong override)
+          }
+          const title = active ? 'Override Profile' : 'Save as Profile';
+          const name = await promptModal(title, active?.name ?? '');
+          if (!name) return;
+          const settings = settingsFromState(ctx.store.get().state as DeviceState);
+          if (!validateSettingsPayload(settings)) {
+            toast('error', 'Could not save profile', 'The settings payload failed validation — this is a bug.');
+            return;
+          }
+          try {
+            await api.profilesSave({
+              id: active?.id ?? newProfileId(),
+              name,
+              settings,
+              ocOnBoot: active?.ocOnBoot ?? false,
+            });
+            toast('success', active ? 'Profile overridden' : 'Profile saved', name);
+            void api.trayRebuild().catch(() => {});
+          } catch (err) {
+            toast('error', 'Profile save failed', err instanceof Error ? err.message : String(err));
+          }
+        })();
+      });
+      return el('div', { class: 'card profile-save-card' }, [
+        el('h2', { class: 'card-title', text: 'Save as Profile' }),
+        el('p', { class: 'card-note', text: 'Save the current driver settings as a profile — reusable from the Profiles page and start-at-boot.' }),
+        el('div', { class: 'card-footer' }, [btn]),
+      ]);
+    };
 
     // M4-D2 (§8): the view switch re-renders ONLY the sub-view container —
     // the OC slider state (values/applied — module-level) survives the
     // round trip and the fan editor's own module state survives too.
+    // M4-H (A3): the OC-mode column hide follows the view (N6 — the class
+    // is also applied on the INITIAL fan-view render above).
     const setView = (v: 'tuning' | 'fan'): void => {
       if (view === v) return;
       view = v;
@@ -672,6 +745,7 @@ export const tuningPage: Page = {
       modeRow.querySelectorAll<HTMLButtonElement>('.tuning-view-btn').forEach((b) => {
         b.classList.toggle('active', b.dataset.view === view);
       });
+      syncModeRowForView();
     };
     const renderView = (): void => {
       if (!viewContainer) return;
@@ -714,6 +788,10 @@ export const tuningPage: Page = {
             ...(caps.controls.gpuLock === true ? [buildLockEditor(ctx)] : []),
           ]),
         ]),
+
+        // M4-H (B): the Save-as-Profile card — OC view only (the fan view
+        // never renders it).
+        saveProfileCard(),
 
         applyBtn as Node,
       ];

@@ -31,10 +31,16 @@ test('buildSysinfoScript: queries the CIM classes + the registry qwMemorySize VR
   assert.match(script, /NumberOfCores/);
   assert.match(script, /NumberOfLogicalProcessors/);
   assert.match(script, /MaxClockSpeed/);
+  // M4-H: the Caches-row sources (KB).
+  assert.match(script, /L1CacheSize/);
+  assert.match(script, /L2CacheSize/);
+  assert.match(script, /L3CacheSize/);
   assert.match(script, /Get-CimInstance Win32_ComputerSystem/);
   assert.match(script, /TotalPhysicalMemory/);
   assert.match(script, /Get-CimInstance Win32_PhysicalMemory/);
   assert.match(script, /ConfiguredClockSpeed/);
+  // M4-H: the SMBIOS Type-17 memory-type code (DDR5 label source).
+  assert.match(script, /SMBIOSMemoryType/);
   assert.match(script, /Get-CimInstance Win32_VideoController/);
   assert.match(script, /AdapterRAM/);
   assert.match(script, /PNPDeviceID/);
@@ -76,9 +82,15 @@ const CIM_STDOUT = JSON.stringify({
     NumberOfCores: 16,
     NumberOfLogicalProcessors: 24,
     MaxClockSpeed: 5400,
+    // M4-H: the cache sizes (KB) — the Caches row source.
+    L1CacheSize: 1470,
+    L2CacheSize: 36864,
+    L3CacheSize: 688128,
   },
   computerSystem: { TotalPhysicalMemory: 34359738368 },
-  physicalMemory: { Manufacturer: '0420', ConfiguredClockSpeed: 6000 },
+  // M4-H: SMBIOSMemoryType 34 = DDR5 (the Type-17 code the Memory row
+  // label derives from).
+  physicalMemory: { Manufacturer: '0420', ConfiguredClockSpeed: 6000, SMBIOSMemoryType: 34 },
   videoControllers: [
     { DeviceID: 'VideoController1', Name: 'Intel(R) Arc(TM) A770 Graphics', AdapterRAM: 2147479552, PNPDeviceID: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08\\6&183F91F5&0&00080008', MaxBarBytes: 16777216 },
     { DeviceID: 'VideoController2', Name: 'Microsoft Basic Display Adapter', AdapterRAM: 0, PNPDeviceID: 'ROOT\\BASIC_DISPLAY\\0000', MaxBarBytes: 0 },
@@ -102,9 +114,14 @@ test('parseCimOutput: maps the CIM fields into the canonical shape', () => {
     cores: 16,
     threads: 24,
     maxClockMhz: 5400,
+    l1CacheKb: 1470,
+    l2CacheKb: 36864,
+    l3CacheKb: 688128,
   });
   // M4-D2: the raw SPD JEDEC code "0420" decodes to G.Skill.
-  assert.deepEqual(out.ram, { totalBytes: 34359738368, speedMhz: 6000, manufacturer: 'G.Skill' });
+  // M4-H: the SMBIOSMemoryType (34 = DDR5) rides along for the renderer's
+  // ramMemoryType mapping.
+  assert.deepEqual(out.ram, { totalBytes: 34359738368, speedMhz: 6000, manufacturer: 'G.Skill', memoryType: 34 });
   assert.equal(out.videoControllers.length, 2);
   assert.deepEqual(out.videoControllers[0], {
     name: 'Intel(R) Arc(TM) A770 Graphics',
@@ -210,9 +227,10 @@ test('parseCimOutput: garbage / empty output degrades to the empty shape (never 
 
 test('parseCimOutput: missing classes degrade per-field (cpu nulls, empty controllers)', () => {
   const out = parseCimOutput(JSON.stringify({ cpu: null, computerSystem: null, physicalMemory: null, videoControllers: null }));
-  assert.deepEqual(out.cpu, { name: null, cores: null, threads: null, maxClockMhz: null });
+  assert.deepEqual(out.cpu, { name: null, cores: null, threads: null, maxClockMhz: null, l1CacheKb: null, l2CacheKb: null, l3CacheKb: null });
   assert.equal(out.ram.totalBytes, 0);
   assert.equal(out.ram.speedMhz, null);
+  assert.equal(out.ram.memoryType, null, 'M4-H: an absent SMBIOSMemoryType degrades to null');
   assert.deepEqual(out.videoControllers, []);
 });
 
@@ -330,6 +348,9 @@ test('collectSysinfo: runs the query once per session and caches it (one query p
   assert.equal(second, first, 'the cached object is returned verbatim');
   assert.equal(first.ram.totalBytes, 34359738368);
   assert.equal(first.ram.speedMhz, 6000);
+  assert.equal(first.ram.memoryType, 34, 'M4-H: the SMBIOSMemoryType rides the cached shape');
+  assert.equal(first.cpu.l1CacheKb, 1470, 'M4-H: the cache sizes ride the cached shape');
+  assert.equal(first.cpu.l3CacheKb, 688128);
   assert.equal(first.videoControllers[0].vramBytes, 17179869184);
   resetSysinfoCache();
 });
@@ -405,8 +426,14 @@ test('createMockSysinfo: fixed deterministic fixture for mock/ui-verify', async 
   assert.equal(out.cpu.cores, 20);
   assert.equal(out.cpu.threads, 28);
   assert.equal(out.cpu.maxClockMhz, 5600);
+  // M4-H: the cache sizes (L4 included — the Caches row pin source).
+  assert.equal(out.cpu.l1CacheKb, 1470);
+  assert.equal(out.cpu.l2CacheKb, 36864);
+  assert.equal(out.cpu.l3CacheKb, 688128);
+  assert.equal(out.cpu.l4CacheKb, 393216);
   assert.equal(out.ram.totalBytes, 34359738368);
   assert.equal(out.ram.speedMhz, 6000);
+  assert.equal(out.ram.memoryType, 34, 'M4-H: DDR5 — the Memory-row type label');
   assert.equal(out.videoControllers.length, 1);
   assert.equal(out.videoControllers[0].name, 'Intel(R) Arc(TM) A770 Graphics');
   assert.equal(out.videoControllers[0].vramBytes, 17179869184);

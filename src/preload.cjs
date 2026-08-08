@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('arcPower', {
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),
   windowMaximizeToggle: () => ipcRenderer.invoke('window-maximize-toggle'),
   windowClose: () => ipcRenderer.invoke('window-close'),
+  // M4-H: the sidebar GitHub link — opens the URL in the default browser
+  // via shell.openExternal (STRICTLY validated in ipc-core.js: https: +
+  // github.com + the /YamsSE/Arc-Power path).
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   // M4-E: distribution kind — 'installed' | 'portable' | 'dev'

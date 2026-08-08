@@ -361,6 +361,37 @@ html, body {
 .sidebar-link:hover { background: var(--bg-inset); color: var(--text); }
 .sidebar-link.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
+/* M4-H (D1): the sidebar FOOTER — the GitHub link pinned to the BOTTOM-LEFT
+   (margin-top:auto pushes it below the nav; the sidebar is a flex column).
+   GitHub icon via the same mask-image pattern as the nav icons. */
+.sidebar-footer {
+  margin-top: auto;
+}
+
+.sidebar-footer-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  font-size: 13px;
+}
+
+.sidebar-footer-link:hover { background: var(--bg-inset); color: var(--text); }
+
+.sidebar-icon-github {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
 /* M4-D (user): the GPU-card ReBAR pill — green when a multi-GiB BAR is
    present (Resizable BAR working), red when only the small aperture BAR
    exists, grey when unknown. */
@@ -372,6 +403,18 @@ html, body {
    telemetry-tick half of the bundled Cores/clock row). */
 .kv-cores-clock { white-space: nowrap; }
 .kv-live-freq {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-weight: 650;
+}
+
+/* M4-H (C2 — N3): the Memory row's STATIC speed span ("@ 6000 MHz") gets
+   the SAME blue-accent styling via its OWN class sharing the kv-live-freq
+   rule — never the kv-live-freq class itself (the onUpdate
+   querySelector takes the FIRST match in the card, so reusing the live
+   class would let the dashboard's tick update hit the static span). */
+.kv-live-freq,
+.kv-static-freq {
   font-family: var(--mono);
   color: var(--accent);
   font-weight: 650;
@@ -404,6 +447,14 @@ html, body {
   color: var(--text-muted);
   border-color: var(--border);
   background: var(--bg-inset);
+}
+
+/* M4-H (D2): the restore glyph's FRONT square fill — the Windows restore
+   icon is a HOLLOW back square (top-left) with a FILLED front square
+   (bottom-right). The fill comes from this class (var() in the rect
+   attribute was dropped — N5; the swapped rects were the real bug). */
+.icon-restore-front {
+  fill: var(--bg-elev);
 }
 
 /* ------------------------------------------------------------------- shell */
@@ -782,6 +833,24 @@ html, body {
 .stat-unit { font-size: 10.5px; color: var(--accent); font-family: var(--mono); margin-top: 1px; }
 .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 
+/* M4-H (C3): the dashboard live readout is TWO labeled groups — CPU above
+   GPU — each with its own grid. The tile lookups in ui-verify are SCOPED
+   to the group containers (N8 — both groups carry Temperature/Util-like
+   labels). */
+.readout-group {
+  margin-bottom: 10px;
+}
+.readout-group:last-child { margin-bottom: 0; }
+
+.readout-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
 /* ------------------------------------------------------------ overclocking */
 
 .oc-card-head {
@@ -872,6 +941,14 @@ html, body {
   gap: 28px;
   margin: 2px 0 14px;
   width: fit-content;
+}
+
+/* M4-H (A3): while the FAN view is active the OC-mode (Stock/Advanced)
+   column of the Tuning page's shared mode row is HIDDEN — the View pill +
+   the GPU selector stay. The class is applied on the initial fan-view
+   render (#/fan redirect — N6) AND in setView. */
+.oc-mode-row.fan-hides-oc-column .oc-mode-col-mode {
+  display: none;
 }
 
 .oc-mode-col {
@@ -1108,12 +1185,15 @@ html, body {
 .fan-dot-selected { background: var(--accent); }
 
 /* M4-C: the floating point readout — above a hovered/dragged dot, in the
-   dots layer (inset 0) so the % left/top position matches the dot. */
+   dots layer (inset 0) so the % left/top position matches the dot.
+   M4-H (A2): the popup is now EDITABLE (Fan % + Temp inputs) — it needs
+   pointer-events: auto (the vanish guard relies on pointerenter/leave
+   firing for the popup, and the inputs must be clickable). */
 .fan-dot-readout {
   position: absolute;
   transform: translate(-50%, -100%);
   margin-top: -8px;
-  padding: 3px 9px;
+  padding: 5px 9px;
   border-radius: 6px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
@@ -1121,10 +1201,45 @@ html, body {
   font-size: 11.5px;
   font-family: var(--mono);
   white-space: nowrap;
-  pointer-events: none;
+  pointer-events: auto;
   z-index: 5;
   box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
 }
+
+.fan-dot-readout-label {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.fan-dot-readout-fields {
+  display: flex;
+  gap: 8px;
+}
+
+.fan-dot-readout-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.fan-readout-input {
+  width: 46px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.fan-readout-input:focus { outline: none; border-color: var(--accent); }
 
 /* M4-C (round-1 fix): top-edge dots flip the readout BELOW the dot — the
    above-dot default (translate(-50%,-100%) + margin-top:-8px) parks the box
@@ -1137,48 +1252,8 @@ html, body {
   margin-top: 10px;
 }
 
-/* M4-C: the manual per-point editor row under the SVG — one Temp/Speed
-   input pair + a per-point remove button. */
-.fan-points-editor {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-}
-.fan-point-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-inset);
-}
-.fan-point-idx {
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  min-width: 18px;
-}
-.fan-point-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-.fan-point-input {
-  width: 52px;
-  padding: 3px 6px;
-  border-radius: 5px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-panel);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-.fan-point-input:focus { outline: none; border-color: var(--accent); }
-.fan-point-unit { color: var(--text-dim); font-size: 11px; }
+/* M4-H (A2): the per-point boxes row (.fan-points-editor) is DELETED — the
+   popup's two editable inputs replace it. The Add/Remove action row stays. */
 
 .fan-marker {
   position: absolute;

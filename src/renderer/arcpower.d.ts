@@ -64,6 +64,10 @@ export interface ArcPowerApi {
   windowMinimize(): Promise<void>;
   windowMaximizeToggle(): Promise<void>;
   windowClose(): Promise<void>;
+  /** M4-H: the sidebar GitHub link — opens the URL in the default browser
+   *  (shell.openExternal in main). STRICTLY validated: https: + github.com
+   *  + the '/YamsSE/Arc-Power' path — anything else rejects. */
+  openExternal(url: string): Promise<void>;
   driverInfo(): Promise<{ driverDate: string | null }>;
   /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
   appVersion(): Promise<{ version: string }>;

@@ -38,6 +38,19 @@ import type { FanMode } from '../types.ts';
 
 const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Curve', fixed: 'Fixed' };
 
+// M4-H (A1): the ADAPTIVE preset chips. The chip NAMES are static; the
+// POINTS are derived from the DRIVER's curve read LIVE at click time (N4 —
+// a render-time base would go stale after an apply). The three presets:
+// 'Driver Curve' = the base itself (the chip REPLACES the old
+// "Reset to driver curve" button), 'Quiet' = speeds ×0.5 (clamp 0..100),
+// 'Max' = speeds ×1.35 (clamp 0..100). The math lives in pure/curve.ts
+// fanCurvePresets (unit-tested); this module only renders the chips.
+const PRESET_DEFS: Array<{ id: string; name: string }> = [
+  { id: 'driver', name: 'Driver Curve' },
+  { id: 'quiet', name: 'Quiet' },
+  { id: 'max', name: 'Max' },
+];
+
 // M4-B (user): the automatic waiver re-prompt + single retry counter — the
 // driver can lose the waiver while settings.json still says accepted; the
 // first fan apply then fails with waiver-not-set and re-prompts + retries
@@ -200,17 +213,35 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
   let hoverReadout: HTMLElement | null = null;
   let readoutVisible = false;
   let dragActive = false;
+  // M4-H (S2 — the vanish guard): whether the pointer is currently INSIDE
+  // the readout popup (pointerenter/pointerleave on the popup). The dot's
+  // pointerout must NOT hide while this is true (the popup is a SIBLING of
+  // the dots, so moving from a dot into the popup fires the dot's
+  // pointerout with relatedTarget inside the popup — the guard below).
+  let pointerInsideReadout = false;
   let domainRef = curveDomain([]);
+  const readoutContains = (node: EventTarget | null): boolean => {
+    if (!hoverReadout || !node || !(node instanceof Node)) return false;
+    return node === hoverReadout || hoverReadout.contains(node);
+  };
   const showReadout = (idx: number) => {
     const p = editor.points[idx];
     if (!hoverReadout || !p) return;
-    hoverReadout.textContent = `${p.speedPct}% @ ${p.t} °C · #${idx}`;
+    // M4-H: showReadout updates a LABEL node + the two input values (never
+    // textContent — the popup carries the editable inputs now).
+    const label = hoverReadout.querySelector<HTMLElement>('.fan-dot-readout-label');
+    const tempInput = hoverReadout.querySelector<HTMLInputElement>('input[data-readout-field="t"]');
+    const speedInput = hoverReadout.querySelector<HTMLInputElement>('input[data-readout-field="speed"]');
+    if (label) label.textContent = `${p.speedPct}% @ ${p.t} °C · #${idx}`;
+    if (tempInput) tempInput.value = String(p.t);
+    if (speedInput) speedInput.value = String(p.speedPct);
+    hoverReadout.dataset['idx'] = String(idx);
     const xPct = tempToX(p.t, domainRef);
     const yPct = 100 - p.speedPct;
     // M4-C (round-1 fix): the readout must stay FULLY inside the stage —
     // the old above-dot parking (translate(-50%,-100%) + margin-top:-8px)
     // clipped under .fan-stage overflow:hidden for top-edge dots (speed
-    // >= ~91%: the default curve's 100% points, the 'Max cooling' preset)
+    // >= ~91%: the default curve's 100% points, the 'Max' preset)
     // and the side edges cut half of it at temp 0/100. Position the box in
     // px against the measured dots layer: flip BELOW the dot when there is
     // no room above (the .fan-dot-readout-below class), and clamp
@@ -238,6 +269,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
   const hideReadout = () => {
     if (hoverReadout) hoverReadout.hidden = true;
     readoutVisible = false;
+    pointerInsideReadout = false;
   };
   // M4-C (round-1 fix): drop ALL hover/drag state + hide the box — used by
   // the non-drag redraw triggers (mode toggle, presets, reset, add/remove)
@@ -246,6 +278,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
     if (hoverReadout) hoverReadout.hidden = true;
     readoutVisible = false;
     dragActive = false;
+    pointerInsideReadout = false;
   };
 
   const redraw = () => {
@@ -337,7 +370,16 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
           dot.style.top = `${100 - p.speedPct}%`;
           // M4-C: hovering a dot shows the readout; the drag keeps it live.
           dot.addEventListener('pointerover', () => showReadout(idx));
-          dot.addEventListener('pointerout', () => { if (!dragActive) hideReadout(); });
+          // M4-H (S2 — the vanish guard): the popup is a SIBLING of the
+          // dots, so moving from a dot into the popup fires this pointerout
+          // with relatedTarget INSIDE the popup — hiding then would kill
+          // the popup before a click can land. Hide only when the pointer
+          // left for somewhere OUTSIDE the popup (and never mid-drag).
+          dot.addEventListener('pointerout', (ev: PointerEvent) => {
+            if (dragActive) return;
+            if (readoutContains(ev.relatedTarget) || pointerInsideReadout) return;
+            hideReadout();
+          });
           dot.addEventListener('pointerdown', (ev) => {
             ev.preventDefault();
             // Synthetic events (ui-verify) have no active pointer — the
@@ -369,20 +411,74 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
           });
           dotsLayer.append(dot);
         });
-        // M4-C: the readout sits on top of the dots (pointer-events none) and
-        // is restored on every layer rebuild — during a drag each redraw
-        // re-positions it at the moved point.
-        hoverReadout = el('div', { class: 'fan-dot-readout', hidden: true });
+        // M4-C: the readout sits on top of the dots and is restored on
+        // every layer rebuild — during a drag each redraw re-positions it
+        // at the moved point.
+        // M4-H: the popup is now EDITABLE — a label node + two inputs
+        // (Fan % + Temp) with the old box clamps (empty keeps the value;
+        // temp clamped to the domain AND between neighbors; speed clamped
+        // 0..100; the clamped value reflected back; the dot + readout sync
+        // IN PLACE so typing keeps focus). The inputs need
+        // pointer-events: auto (CSS) and the vanish guard above keeps the
+        // popup alive while the pointer is inside it.
+        hoverReadout = el('div', { class: 'fan-dot-readout', hidden: true, dataset: { idx: String(editor.selectedIdx) } }, [
+          el('span', { class: 'fan-dot-readout-label' }),
+          el('div', { class: 'fan-dot-readout-fields' }, [
+            el('label', { class: 'fan-dot-readout-field' }, [
+              el('span', { class: 'fan-dot-readout-field-label', text: 'Fan %' }),
+              el('input', {
+                type: 'number',
+                class: 'fan-readout-input',
+                dataset: { readoutField: 'speed' },
+                min: 0,
+                max: 100,
+                step: 1,
+                oninput: (e: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((e.target as HTMLInputElement).value), e.target as HTMLInputElement, 'speed'),
+              }),
+            ]),
+            el('label', { class: 'fan-dot-readout-field' }, [
+              el('span', { class: 'fan-dot-readout-field-label', text: 'Temp' }),
+              el('input', {
+                type: 'number',
+                class: 'fan-readout-input',
+                dataset: { readoutField: 't' },
+                min: domain.minT,
+                max: domain.maxT,
+                step: 1,
+                oninput: (e: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((e.target as HTMLInputElement).value), e.target as HTMLInputElement, 't'),
+              }),
+            ]),
+          ]),
+        ]);
+        // M4-H (S2): the popup's own pointer state feeds the vanish guard —
+        // the dot's pointerout keeps the popup alive while the pointer is
+        // over it; the blur rule below only hides when focus leaves BOTH
+        // inputs while the pointer is NOT over the popup.
+        hoverReadout.addEventListener('pointerenter', () => { pointerInsideReadout = true; });
+        hoverReadout.addEventListener('pointerleave', () => {
+          pointerInsideReadout = false;
+          // M4-H review nit 1: the pointer left the popup to empty stage
+          // space with nothing focused — hide (an edit keeps the box via
+          // the focus rule below; a move onto a dot re-shows it).
+          if (dragActive) return;
+          if (!hoverReadout || !hoverReadout.contains(document.activeElement)) hideReadout();
+        });
+        hoverReadout.addEventListener('focusout', (ev: FocusEvent) => {
+          if (readoutContains(ev.relatedTarget)) return; // focus moved between the inputs
+          if (pointerInsideReadout) return; // the pointer is over the popup — keep it
+          if (dragActive) return; // M4-H review nit 2: a dot drag hides the box via blur — keep it live for the drag
+          hideReadout();
+        });
         dotsLayer.append(hoverReadout);
         if (readoutVisible) showReadout(editor.selectedIdx);
       };
 
-      // M4-C: the manual per-point input path — one Temp/Speed pair per
-      // point + a per-point remove. All math stays in pure/curve.ts (movePoint
-      // for the temp clamp-between + speed 0..100 clamp, clampPointCount for
-      // the count clamp, removePoint for the remove — never below
-      // MIN_CURVE_POINTS). The dots + selected state + readout sync IN PLACE
-      // so typing keeps focus (a full redraw would drop the caret).
+      // M4-H (A2): the popup-edit path — the SAME clamp semantics the old
+      // per-point boxes had, applied to the popup's two inputs. All math
+      // stays in pure/curve.ts (movePoint for the temp clamp-between +
+      // speed 0..100 clamp, clampPointCount for the count clamp). The dot +
+      // readout sync IN PLACE so typing keeps focus (a full redraw would
+      // drop the caret).
 
       const onEditPoint = (idx: number, raw: number, input: HTMLInputElement, field: 't' | 'speed') => {
         // M4-C (round-2 fix): an EMPTIED box is not a typed value —
@@ -396,7 +492,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
         if (input.value.trim() === '') return;
         if (!Number.isFinite(raw)) return;
         const cur = editor.points[idx];
-        // M4-C (round-1 fix): the BOX-EDIT path must clamp to the static
+        // M4-C (round-1 fix): the EDIT path must clamp to the static
         // 0..100 domain exactly like the drag path does (xToTemp clamps).
         // clampTempBetween only clamps BETWEEN neighbors, so typing 150 / -5
         // into the OUTER points (no neighbor on that side) used to reach the
@@ -433,49 +529,9 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
           el('span', { class: 'fan-axis-mid', text: `${Math.round((domain.minT + domain.maxT) / 2)} °C` }),
           el('span', { text: `${domain.maxT} °C` }),
         ]),
-        // M4-C: the manual per-point boxes row under the SVG.
-        el('div', { class: 'fan-points-editor' }, editor.points.map((p, idx) =>
-          el('div', { class: 'fan-point-row', dataset: { idx: String(idx) } }, [
-            el('span', { class: 'fan-point-idx', text: `#${idx}` }),
-            el('label', { class: 'fan-point-field', text: 'Temp' }, [
-              el('input', {
-                type: 'number',
-                class: 'fan-point-input',
-                dataset: { field: 't', idx: String(idx) },
-                value: String(p.t),
-                min: domain.minT,
-                max: domain.maxT,
-                step: 1,
-                oninput: (e: Event) => onEditPoint(idx, Number((e.target as HTMLInputElement).value), e.target as HTMLInputElement, 't'),
-              }),
-              el('span', { class: 'fan-point-unit', text: '°C' }),
-            ]),
-            el('label', { class: 'fan-point-field', text: 'Speed' }, [
-              el('input', {
-                type: 'number',
-                class: 'fan-point-input',
-                dataset: { field: 'speed', idx: String(idx) },
-                value: String(p.speedPct),
-                min: 0,
-                max: 100,
-                step: 1,
-                oninput: (e: Event) => onEditPoint(idx, Number((e.target as HTMLInputElement).value), e.target as HTMLInputElement, 'speed'),
-              }),
-              el('span', { class: 'fan-point-unit', text: '%' }),
-            ]),
-            el('button', {
-              class: 'btn btn-ghost btn-sm fan-point-remove',
-              text: 'Remove',
-              disabled: editor.points.length <= MIN_CURVE_POINTS,
-              onClick: () => {
-                resetReadout();
-                editor.points = removePoint(editor.points, idx);
-                editor.selectedIdx = Math.max(0, Math.min(idx, editor.points.length - 1));
-                redraw();
-              },
-            }),
-          ]),
-        )),
+        // M4-H (A2): the per-point boxes row (.fan-points-editor) is
+        // DELETED — the popup's two inputs replace it. The Add/Remove
+        // point action row stays.
         el('div', { class: 'fan-actions' }, [
           el('button', {
             class: 'btn btn-ghost btn-sm',
@@ -506,13 +562,22 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
             },
           }),
         ]),
-        el('div', { class: 'chips fan-presets' }, fanCurvePresets(domain, maxPoints).map((p) =>
+        // M4-H (A1): the ADAPTIVE preset chips — the base (the driver's
+        // curve) is read LIVE at click time (seedCurvePoints, the same seed
+        // the editor starts from — N4: a render-time base would go stale
+        // after an apply). 'Driver Curve' = the base itself; the chip
+        // REPLACES the removed "Reset to driver curve" button.
+        el('div', { class: 'chips fan-presets' }, PRESET_DEFS.map((def) =>
           el('button', {
             class: 'chip chip-btn',
-            text: p.name,
+            text: def.name,
             onClick: () => {
               resetReadout();
-              editor.points = clampPointCount(p.points, maxPoints);
+              const cur = ctx.store.get().state?.fanCurve ?? [];
+              const presets = fanCurvePresets(seedCurvePoints(cur, maxPoints), domain, maxPoints);
+              const preset = presets.find((p) => p.id === def.id);
+              if (!preset) return;
+              editor.points = clampPointCount(preset.points, maxPoints);
               editor.selectedIdx = editor.points.length - 1;
               redraw();
             },
@@ -528,17 +593,6 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
           class: 'btn btn-primary',
           text: 'Apply fan settings',
           onClick: () => void applyFan(),
-        }),
-        el('button', {
-          class: 'btn btn-ghost',
-          text: 'Reset to driver curve',
-          onClick: () => {
-            resetReadout();
-            const cur = ctx.store.get().state?.fanCurve ?? [];
-            editor.points = seedCurvePoints(cur, maxPoints);
-            editor.selectedIdx = Math.max(0, editor.points.length - 1);
-            redraw();
-          },
         }),
       ]),
     );
