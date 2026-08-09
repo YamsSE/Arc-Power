@@ -6,8 +6,9 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.8 Alpha" (app:version IPC + the display Alpha suffix - the IPC
-//       keeps the bare semver) - the driver version + date live in the
+//       1.0.0 Beta" (app:version IPC + the display suffix - the IPC
+//       keeps the bare semver; M5: displayVersion renders ' Beta' for the
+//       -beta.x line) - the driver version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
 //       is 'GPU' with the name in a 'GPU' kv row - the Driver version row
@@ -143,7 +144,7 @@
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
 
-import { app } from 'electron';
+import { app, screen } from 'electron';
 
 // M4-D2 (§1): the close-to-tray REAL close probe DESTROYS the window as its
 // final step - without a 'window-all-closed' handler Electron would
@@ -654,8 +655,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
   // Driver version row is REMOVED - M4-H).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.8 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.8 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Beta'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Beta')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -3376,8 +3377,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.8 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.8 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Beta'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Beta')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3439,7 +3440,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.8`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.0 Beta`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -4887,5 +4888,242 @@ export async function runBootApplyExtVerify(win, backend, store) {
   await runCloseToTrayProbe(win);
 
   console.log('\nUI VERIFY OK (boot-apply-ext)\n' + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// M5 - the software-overlay variant (RID_MOCK_OVERLAY=1, two matrix configs:
+// 'overlay' alone and 'overlay+fps' with RID_MOCK_FPS=1).
+// ---------------------------------------------------------------------------
+//
+// The session seed (main.js) wrote overlayEnabled:true + the default
+// letter/position/scale into the ISOLATED mock store, so the overlay window
+// (REAL in this variant, like the main window) boots SHOWN. The hotkey is
+// the COUNTING probe (never a real globalShortcut registration). This
+// runner asserts:
+//   (a) 'overlay:get-state' -> exists + visible (the seeded session);
+//   (b) the overlay DOM lines - ONLY the STABLE fields pinned exactly
+//       ('CPU 42%', '4.3 GHz', '61°C'|'62°C', 'GPU 42%', '2187 MHz',
+//       '3.0 GB', '38.8 W', '1030 RPM'); the climbing clock/temp are
+//       pattern-matched (/GPU 42%  \d+ MHz  2187 MHz  3\.0 GB  \d+°C
+//       38\.8 W  1030 RPM/); 'FPS -' unless RID_MOCK_FPS=1 -> 'FPS 60';
+//   (c) the frametime canvas has DRAWN content under RID_MOCK_FPS=1 (the
+//       16.7 ms passthrough series);
+//   (d) 'overlay:toggle' flips visible -> hidden -> visible AND persists
+//       overlayEnabled in the store (the hotkey + the Settings toggle flip
+//       the same persisted field);
+//   (e) the hotkey probe registered 'Control+O' + the getState
+//       hotkeyRegistered flag reads true;
+//   (f) a position patch via profiles-settings-save repositions the window
+//       (the corner asserted via get-state bounds) + a scale patch resizes
+//       it (bounds width x the scale - the geometry application);
+//   (g) the mid-run register-failure honesty: the probe fakes a failure
+//       (settable mid-run, not a boot knob), a letter save via the Settings
+//       card re-registers through the probe, and the honest hotkey note
+//       appears after the card's every-render get-state re-query. Restored
+//       at the end (letter O, failRegister false) so the next overlay run
+//       boots deterministically.
+
+/**
+ * @param {import('electron').BrowserWindow} win the MAIN window
+ * @param {{ getWindow: () => import('electron').BrowserWindow | null, getState: () => object, toggle: () => Promise<void>, setHotkeyRegistered: (flag: boolean) => void }} overlayHandle
+ *   the overlay handle created by main.js under RID_MOCK_OVERLAY=1
+ * @param {import('./store/profile-store.js').ProfileStore} store the session store
+ * @param {{ registrations: string[], failRegister: boolean }} hotkeyProbe
+ *   the injected counting hotkey probe (never a real registration)
+ */
+export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const overlayWin = overlayHandle ? overlayHandle.getWindow() : null;
+  if (!overlayWin || overlayWin.isDestroyed()) {
+    fail('M5: the overlay window does not exist under RID_MOCK_OVERLAY=1 (main.js must create it under the knob)');
+  }
+  const ojs = (code) => overlayWin.webContents.executeJavaScript(code);
+  const mockFps = process.env.RID_MOCK_FPS === '1';
+
+  // (a) the seeded session: exists + visible.
+  const s0 = await js(`window.arcPower.overlayGetState()`);
+  if (!s0.exists) fail('M5: overlay:get-state reports exists:false in the overlay variant');
+  if (!s0.visible) fail('M5: the seeded overlayEnabled:true session must boot with the overlay SHOWN (get-state visible:false)');
+  if (s0.hotkeyRegistered !== true) fail(`M5: the boot hotkey registration did not land (hotkeyRegistered ${s0.hotkeyRegistered}, probe ${JSON.stringify(hotkeyProbe.registrations)})`);
+  step('m5-get-state', `overlay:get-state -> exists + visible (bounds ${JSON.stringify(s0.bounds)}, position '${s0.position}', scale ${s0.scale})`);
+
+  // (b) the overlay DOM lines. The mock telemetry: util 42, cpuFreq 4300
+  // ('4.3 GHz'), cpuTemp 61|62 alternating, memClock 2187, vram 2971324416
+  // ('3.0 GB'), power 38.8 ('38.8 W'), fan 1030 ('1030 RPM'); the clock
+  // climbs 600+tick*100 and the GPU temp climbs 36+tick%30 - those two are
+  // pattern-matched, never exact-pinned (M1).
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU 42%')`, 15000))) {
+    fail(`M5: the overlay CPU line lacks 'CPU 42%': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  }
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('4.3 GHz')`, 5000))) {
+    fail(`M5: the overlay CPU line lacks '4.3 GHz': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  }
+  if (!(await waitFor(overlayWin, `/61°C|62°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 5000))) {
+    fail(`M5: the overlay CPU line lacks the 61°C|62°C temp: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  }
+  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  2187 MHz  3\\.0 GB  \\d+°C  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
+    fail(`M5: the overlay GPU line does not match the pinned pattern: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  const fpsPin = mockFps ? 'FPS 60' : 'FPS -';
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 10000))) {
+    fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
+  }
+  step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'; gpu matches the pinned pattern (stable fields + climbing clock/temp); fps '${fpsPin}'`);
+
+  // (c) the frametime canvas has drawn content under RID_MOCK_FPS=1 (the
+  // 16.7 ms passthrough series fed the polyline - non-transparent pixels on
+  // the otherwise transparent canvas).
+  if (mockFps) {
+    const drawn = await waitFor(overlayWin, `(() => {
+      const c = document.getElementById('overlay-frametime');
+      if (!c || c.width === 0 || c.height === 0) return false;
+      const ctx = c.getContext('2d');
+      if (!ctx) return false;
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) { if (d[i] > 0) n++; }
+      return n > 20;
+    })()`, 10000);
+    if (!drawn) {
+      const diag = await ojs(`(() => {
+        const c = document.getElementById('overlay-frametime');
+        let pixels = null;
+        if (c && c.width > 0) {
+          try {
+            const ctx = c.getContext('2d');
+            const d = ctx.getImageData(0, 0, c.width, c.height).data;
+            let n = 0;
+            for (let i = 3; i < d.length; i += 4) { if (d[i] > 0) n++; }
+            pixels = n;
+          } catch (e) { pixels = 'ctx:' + String(e); }
+        }
+        return JSON.stringify({
+          canvas: c ? { w: c.width, h: c.height, cssW: c.getBoundingClientRect().width, cssH: c.getBoundingClientRect().height } : null,
+          htmlFs: document.documentElement.style.fontSize,
+          fps: document.getElementById('overlay-fps')?.textContent ?? null,
+          pixels,
+        });
+      })()`);
+      fail(`M5: the frametime canvas has no drawn content under RID_MOCK_FPS=1 (the passthrough 16.7 ms series must paint the polyline): ${diag}`);
+    }
+    step('m5-frametime-canvas', 'the frametime canvas drew the polyline (non-transparent pixels > 20)');
+  } else {
+    step('m5-frametime-canvas', 'frametime canvas pin SKIPPED (RID_MOCK_FPS not set - no series, nothing drawn)');
+  }
+
+  // (d) the toggle flips visible -> hidden -> visible AND persists the same
+  // field the Settings toggle writes (read-modify-write through the store).
+  const s1 = await js(`window.arcPower.overlayToggle()`);
+  if (s1.visible) fail('M5: overlay:toggle did not HIDE the visible overlay');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === false)`, 5000))) {
+    fail('M5: overlay:toggle did not persist overlayEnabled=false (the hotkey + the Settings toggle must flip the same persisted field)');
+  }
+  const s2 = await js(`window.arcPower.overlayToggle()`);
+  if (!s2.visible) fail('M5: overlay:toggle did not SHOW the overlay again');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
+    fail('M5: overlay:toggle did not persist overlayEnabled=true');
+  }
+  step('m5-toggle', 'overlay:toggle flipped visible -> hidden -> visible + persisted overlayEnabled true/false/true');
+
+  // (e) the hotkey probe registered 'Control+O' (the boot registration -
+  // never a real globalShortcut) + the live hotkeyRegistered flag reads
+  // true.
+  if (!hotkeyProbe.registrations.includes('Control+O')) {
+    fail(`M5: the hotkey probe never registered 'Control+O' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  }
+  const s3 = await js(`window.arcPower.overlayGetState()`);
+  if (s3.hotkeyRegistered !== true) fail(`M5: hotkeyRegistered reads ${s3.hotkeyRegistered} (expected true after a successful probe registration)`);
+  step('m5-hotkey', `hotkey probe registered ${JSON.stringify(hotkeyProbe.registrations)} (no real globalShortcut); hotkeyRegistered true`);
+
+  // (f) a position patch via profiles-settings-save repositions the window
+  // (the corner asserted via get-state bounds) + a scale patch resizes it
+  // (the geometry application; the push + the resize applied together).
+  const display = screen.getPrimaryDisplay().bounds;
+  await js(`window.arcPower.profilesSettingsSave({ overlayPosition: 'bottom-right' })`);
+  await sleep(500);
+  const ps = await js(`window.arcPower.overlayGetState()`);
+  const right = Math.abs((ps.bounds.x + ps.bounds.width) - (display.x + display.width - 8));
+  const bottom = Math.abs((ps.bounds.y + ps.bounds.height) - (display.y + display.height - 8));
+  if (right > 2 || bottom > 2) {
+    fail(`M5: the bottom-right patch did not reposition the overlay (bounds ${JSON.stringify(ps.bounds)}, display ${JSON.stringify(display)} - expected the bottom-right corner with the 8px margin)`);
+  }
+  await js(`window.arcPower.profilesSettingsSave({ overlayScale: 2 })`);
+  await sleep(500);
+  const scaled = await js(`window.arcPower.overlayGetState()`);
+  if (Math.abs(scaled.bounds.width - 460 * 2) > 2 || Math.abs(scaled.bounds.height - 150 * 2) > 2) {
+    fail(`M5: the scale 2 patch did not resize the overlay (bounds ${JSON.stringify(scaled.bounds)} - expected ~920x300)`);
+  }
+  step('m5-geometry', `position patch -> bottom-right corner (bounds ${JSON.stringify(ps.bounds)} vs display ${JSON.stringify(display)}); scale patch -> ${scaled.bounds.width}x${scaled.bounds.height}`);
+
+  // (g) the mid-run register-failure honesty: the probe fakes a failure
+  // (settable mid-run - not a boot-time knob), a letter save via the
+  // Settings card re-registers through the probe, and the honest note
+  // appears after the card's every-render get-state re-query (M1: a
+  // letter-save re-register failure mid-session must not leave the note
+  // stale).
+  hotkeyProbe.failRegister = true;
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  await js(`(() => {
+    const i = document.querySelector('.settings-hotkey-input');
+    if (!i) return;
+    i.value = 'P';
+    i.dispatchEvent(new Event('change'));
+  })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'P')`, 5000))) {
+    fail('M5: the Settings-card letter save did not persist overlayHotkeyLetter=P');
+  }
+  if (!hotkeyProbe.registrations.includes('Control+P')) {
+    fail(`M5: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  }
+  const s4 = await js(`window.arcPower.overlayGetState()`);
+  if (s4.hotkeyRegistered !== false) fail('M5: hotkeyRegistered must read false after the faked register failure');
+  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`, 5000))) {
+    fail('M5: the Settings Overlay card does not show the honest hotkey-register-failure note after the faked failure + letter save');
+  }
+  const inputValue = await js(`document.querySelector('.settings-hotkey-input')?.value ?? ''`);
+  if (inputValue !== 'P') fail(`M5: the Settings hotkey input reads '${inputValue}' (expected 'P' after the save)`);
+  step('m5-hotkey-failure-note', `mid-run faked register failure + letter save 'P' -> probe re-registered 'Control+P', hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
+
+  // Restore the deterministic session end (like the theme-dark-final step):
+  // letter O + a successful registration -> the note disappears, and the
+  // geometry back to the defaults (a crashed run must never bleed into the
+  // next overlay variant).
+  hotkeyProbe.failRegister = false;
+  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1 })`);
+  await sleep(500);
+  const s5 = await js(`window.arcPower.overlayGetState()`);
+  if (s5.hotkeyRegistered !== true) fail('M5: hotkeyRegistered did not recover after the failure fake was cleared');
+  if (!hotkeyProbe.registrations.includes('Control+O')) {
+    fail(`M5: the restore letter save did not re-register 'Control+O' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  }
+  await js(`location.hash = '#/dashboard'`);
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
+    fail('M5: the hotkey-failure note is still visible after the successful re-registration (the card must re-query get-state on every render)');
+  }
+  step('m5-hotkey-restore', `restore: letter O + failRegister cleared -> 'Control+O' re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
+
+  // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
+  // The main window's closed handler destroys the overlay + unregisters the
+  // hotkey (the lifecycle rule) - the app must still quit when the main
+  // window closes with closeToTray off.
+  await runCloseToTrayProbe(win);
+  if (!overlayWin.isDestroyed()) {
+    fail('M5: the overlay window survived the main window close (the closed handler must destroy it - the app must quit when the main window closes)');
+  }
+
+  console.log('\nUI VERIFY OK (overlay)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }

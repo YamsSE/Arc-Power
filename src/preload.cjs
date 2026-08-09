@@ -81,4 +81,17 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('window:maximized-changed', listener);
     return () => ipcRenderer.removeListener('window:maximized-changed', listener);
   },
+  // M5: the software overlay (the Overlay window's surface - the main
+  // window never calls these; the channels validate in ipc-core.js).
+  // onOverlaySettings receives the pushed 'overlay:settings' payload (the
+  // scale source of truth - sent by main on every apply, incl. the initial
+  // did-finish-load push); overlayGetState/overlayToggle drive the
+  // Settings Overlay card.
+  onOverlaySettings: (cb) => {
+    const listener = (_event, settings) => cb(settings);
+    ipcRenderer.on('overlay:settings', listener);
+    return () => ipcRenderer.removeListener('overlay:settings', listener);
+  },
+  overlayGetState: () => ipcRenderer.invoke('overlay:get-state'),
+  overlayToggle: () => ipcRenderer.invoke('overlay:toggle'),
 });

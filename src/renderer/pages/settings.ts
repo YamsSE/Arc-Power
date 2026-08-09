@@ -32,11 +32,20 @@ import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
-import { versionLine } from '../components/header.ts';
+// M5 (N3): displayVersion is imported ALIASED - the settings page used to
+// define its OWN `displayVersion` local (the version-row formatter); the
+// alias keeps the header's pure helper without a name collision.
+import { displayVersion as displayVersionLine } from '../components/header.ts';
 import { setMonitorLogToFile } from '../log-state.ts';
 import { applyTheme } from '../app.ts';
 import { isValidTheme, THEMES, type Theme } from '../pure/theme.ts';
-import type { StartupGetState } from '../types.ts';
+import {
+  OVERLAY_POSITIONS,
+  OVERLAY_POSITION_LABELS,
+  isValidOverlayPosition,
+  clampOverlayScale,
+} from '../pure/overlay.ts';
+import type { OverlayPosition, OverlayState, StartupGetState } from '../types.ts';
 
 /** 1.0.1 Themes: the display label per theme id (the swatch buttons). */
 const THEME_LABELS: Record<Theme, string> = {
@@ -65,10 +74,15 @@ export const settingsPage: Page = {
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const root = container.querySelector('#settings-root') as HTMLElement;
   const s = ctx.store.get();
-  const displayVersion = s.appVersion && s.appVersion !== '0.0.0' ? `${versionLine(s.appVersion)} Alpha` : '-';
+  const versionDisplay = s.appVersion && s.appVersion !== '0.0.0' ? displayVersionLine(s.appVersion) : '-';
 
-  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
+  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme; overlayEnabled: boolean; overlayHotkeyLetter: string; overlayPosition: OverlayPosition; overlayScale: number };
   let bootState: StartupGetState | null = null;
+  // M5: the overlay window's live state - the card re-queries it on EVERY
+  // render (the refresh() pattern) so the hotkey-register-failure note
+  // never goes stale (M1: a letter-save re-register failure mid-session
+  // must surface immediately).
+  let overlayState: OverlayState | null = null;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
     // (settings.json via ProfileStore - the same read the Profiles page uses).
@@ -87,6 +101,17 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // 1.0.1: the persisted theme (the store normalizes - an unexpected
       // value degrades to the dark default defensively).
       theme: isValidTheme(envelope.settings.theme) ? envelope.settings.theme : 'dark',
+      // M5: the overlay settings (the store normalizes - the defaults fill
+      // absent/garbage values defensively).
+      overlayEnabled: envelope.settings.overlayEnabled === true,
+      overlayHotkeyLetter: typeof envelope.settings.overlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(envelope.settings.overlayHotkeyLetter)
+        ? envelope.settings.overlayHotkeyLetter
+        : 'O',
+      overlayPosition: isValidOverlayPosition(envelope.settings.overlayPosition)
+        ? envelope.settings.overlayPosition
+        : 'top-left',
+      overlayScale: clampOverlayScale(envelope.settings.overlayScale),
     };
   } catch (err) {
     clear(root);
@@ -96,11 +121,19 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   try {
     bootState = await api.startupGet();
   } catch { /* the cards below degrade to the persisted state */ }
+  try {
+    overlayState = await api.overlayGetState();
+  } catch { /* the overlay card degrades to the persisted state */ }
 
   const refresh = async (): Promise<void> => {
     try {
       bootState = await api.startupGet();
     } catch { /* keep the last known startup state */ }
+    // M5: the overlay state is re-queried on EVERY render - the honest
+    // hotkey note + the persisted fields always agree with the live window.
+    try {
+      overlayState = await api.overlayGetState();
+    } catch { /* keep the last known overlay state */ }
     render();
   };
 
@@ -233,6 +266,97 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // are CSS-class driven (.swatch-*) - CSP style-src 'self' blocks inline
     // style attributes (plan-review N10). The current theme's swatch is
     // marked .active.
+    // M5: the Overlay card - the MSI Afterburner/RTSS-style HUD settings.
+    // The enable toggle, the hotkey letter (CTRL + FIXED - the user's rule:
+    // the letter is the ONLY changeable part), the 4 corner positions, the
+    // scale slider (0.5-2.0), and the honest notes (topmost window limits,
+    // the FPS/frametime data sources, the hotkey-register failure). The
+    // card re-queries overlay:get-state on EVERY render (refresh) so the
+    // hotkeyRegistered note never goes stale.
+    const hotkeyInput = el('input', {
+      type: 'text',
+      class: 'settings-hotkey-input',
+      maxlength: 1,
+      value: persisted.overlayHotkeyLetter.toUpperCase(),
+      title: 'The overlay hotkey letter (CTRL + <letter>)',
+      oninput: (ev: Event) => {
+        // Sanitize live: keep only the LAST letter, uppercase (the display
+        // normalizes; the save validates again).
+        const t = ev.target as HTMLInputElement;
+        const m = t.value.match(/[A-Za-z]/);
+        t.value = m ? m[m.length - 1].toUpperCase() : '';
+      },
+      onchange: (ev: Event) => void onHotkeyLetterChange((ev.target as HTMLInputElement).value),
+    });
+    const positionSelect = el('select', {
+      class: 'settings-position-select',
+      onchange: (ev: Event) => void onPositionChange((ev.target as HTMLSelectElement).value),
+    }, OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: OVERLAY_POSITION_LABELS[p] })));
+    positionSelect.value = persisted.overlayPosition;
+    const scaleValue = el('span', { class: 'settings-scale-value', text: `${persisted.overlayScale.toFixed(2)}x` });
+    const overlayCard = el('section', { class: 'card settings-card overlay-card' }, [
+      el('h2', { class: 'card-title', text: 'Overlay' }),
+      el('p', { class: 'card-note', text: 'The in-game style HUD - bold text floating over the screen (no boxes, no window). CTRL + <letter> toggles it anywhere.' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'overlayEnabled' },
+            checked: persisted.overlayEnabled,
+            onchange: (ev: Event) => void onOverlayEnabledToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Show the overlay' }),
+        ]),
+      ]),
+      el('div', { class: 'settings-row overlay-hotkey-row' }, [
+        el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
+        hotkeyInput,
+      ]),
+      el('div', { class: 'settings-row overlay-position-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Position' }),
+        positionSelect,
+      ]),
+      el('div', { class: 'settings-row overlay-scale-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Size' }),
+        el('input', {
+          type: 'range',
+          class: 'settings-scale-slider',
+          min: 0.5,
+          max: 2,
+          step: 0.05,
+          value: String(persisted.overlayScale),
+          oninput: (ev: Event) => {
+            const v = Number((ev.target as HTMLInputElement).value);
+            scaleValue.textContent = `${v.toFixed(2)}x`;
+          },
+          onchange: (ev: Event) => void onScaleChange(Number((ev.target as HTMLInputElement).value)),
+        }),
+        scaleValue,
+      ]),
+      el('p', { class: 'card-note settings-state', text: persisted.overlayEnabled
+        ? `The overlay is shown. Press CTRL + ${persisted.overlayHotkeyLetter.toUpperCase()} anywhere to toggle it.`
+        : `The overlay is hidden. Press CTRL + ${persisted.overlayHotkeyLetter.toUpperCase()} anywhere to toggle it.` }),
+      // The honest limitations: the overlay is a topmost WINDOW - it
+      // renders above windowed + borderless-fullscreen games; an
+      // EXCLUSIVE-fullscreen game can cover it (Arc Power cannot inject
+      // like RTSS).
+      el('p', { class: 'card-note overlay-note', text: 'The overlay is a topmost window - it stays above windowed and borderless-fullscreen games; an exclusive-fullscreen game may cover it.' }),
+      // The honest data-source note: the FPS comes from the DXGI
+      // frame-statistics adapter; the frametime line is derived from the
+      // frame rate when per-frame timing is unavailable (best effort -
+      // unavailable readings show "-").
+      el('p', { class: 'card-note overlay-note', text: 'FPS comes from the graphics-driver frame statistics (DXGI); the frametime line is derived from the frame rate when per-frame timing is unavailable. Unavailable readings show "-".' }),
+      // M6: the honest hotkey-register-failure note - globalShortcut
+      // register() returned false (CTRL + <letter> taken by another app).
+      // The card toggle still works; the hotkey does not. Gated on
+      // overlayState.exists - a session WITHOUT the overlay window (non-
+      // overlay ui-verify runs) must never show the note spuriously.
+      overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
+        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.overlayHotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it. The toggle above still works.` })
+        : null,
+    ]);
+
     const themeCard = el('section', { class: 'card settings-card theme-card' }, [
       el('h2', { class: 'card-title', text: 'Theme' }),
       el('p', { class: 'card-note', text: 'Appearance - Dark Steel (the default black/gray), Midnight (deep indigo) or Arctic Light. The change applies immediately and is saved.' }),
@@ -252,12 +376,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const aboutCard = el('section', { class: 'card settings-card' }, [
       el('h2', { class: 'card-title', text: 'About' }),
       el('div', { class: 'card-body kv-grid' }, [
-        el('div', { class: 'kv', 'data-label': 'Version' }, [el('span', { class: 'settings-version', text: displayVersion })]),
+        el('div', { class: 'kv', 'data-label': 'Version' }, [el('span', { class: 'settings-version', text: versionDisplay })]),
       ]),
     ]);
 
     clear(root);
-    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, themeCard, aboutCard);
+    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, overlayCard, themeCard, aboutCard);
   };
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
@@ -371,6 +495,76 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       persisted.theme = previous;
       syncSwatches(previous);
     }
+  };
+
+  // M5: the Overlay card handlers. Every save goes through
+  // profiles-settings-save (main's onOverlaySettings then applies the
+  // geometry/visibility/hotkey + pushes 'overlay:settings' to the overlay
+  // window); the card re-queries overlay:get-state via refresh() after each
+  // save so the honest notes follow the live state.
+  const onOverlayEnabledToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="overlayEnabled"]');
+    try {
+      await api.profilesSettingsSave({ overlayEnabled: checked });
+      persisted.overlayEnabled = checked;
+      toast(checked ? 'success' : 'info', checked ? 'Overlay enabled' : 'Overlay disabled', '');
+    } catch (err) {
+      toast('error', 'Overlay could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = !checked;
+      return;
+    }
+    await refresh();
+  };
+
+  const onHotkeyLetterChange = async (letter: string): Promise<void> => {
+    const input = root.querySelector<HTMLInputElement>('.settings-hotkey-input');
+    const v = letter.trim().toUpperCase();
+    if (!/^[A-Za-z]$/.test(v)) {
+      toast('error', 'Overlay hotkey', 'The hotkey must be a single letter (CTRL + <letter>).');
+      if (input) input.value = persisted.overlayHotkeyLetter.toUpperCase();
+      return;
+    }
+    try {
+      await api.profilesSettingsSave({ overlayHotkeyLetter: v });
+      persisted.overlayHotkeyLetter = v;
+      toast('success', 'Overlay hotkey changed', `The overlay toggles with CTRL + ${v}.`);
+    } catch (err) {
+      toast('error', 'Overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
+      if (input) input.value = persisted.overlayHotkeyLetter.toUpperCase();
+      return;
+    }
+    await refresh();
+  };
+
+  const onPositionChange = async (position: string): Promise<void> => {
+    if (!isValidOverlayPosition(position) || position === persisted.overlayPosition) return;
+    const select = root.querySelector<HTMLSelectElement>('.settings-position-select');
+    try {
+      await api.profilesSettingsSave({ overlayPosition: position });
+      persisted.overlayPosition = position;
+      toast('success', 'Overlay position changed', `${OVERLAY_POSITION_LABELS[position]} - the overlay moves immediately.`);
+    } catch (err) {
+      toast('error', 'Overlay position could not be changed', err instanceof Error ? err.message : String(err));
+      if (select) select.value = persisted.overlayPosition;
+      return;
+    }
+    await refresh();
+  };
+
+  const onScaleChange = async (scale: number): Promise<void> => {
+    const clamped = clampOverlayScale(scale);
+    if (clamped === persisted.overlayScale) return;
+    const slider = root.querySelector<HTMLInputElement>('.settings-scale-slider');
+    try {
+      await api.profilesSettingsSave({ overlayScale: clamped });
+      persisted.overlayScale = clamped;
+      toast('success', 'Overlay size changed', 'The overlay resizes immediately.');
+    } catch (err) {
+      toast('error', 'Overlay size could not be changed', err instanceof Error ? err.message : String(err));
+      if (slider) slider.value = String(persisted.overlayScale);
+      return;
+    }
+    await refresh();
   };
 
   render();

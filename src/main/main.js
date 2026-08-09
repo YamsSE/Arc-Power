@@ -14,17 +14,18 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId } from './ipc-core.js';
-import { ProfileStore } from './store/profile-store.js';
+import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
+import { ProfileStore, OVERLAY_POSITIONS } from './store/profile-store.js';
+import { createOverlayWindow } from './overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
@@ -637,6 +638,27 @@ async function main() {
     } catch (err) {
       console.log(`[boot] start-minimized session seed skipped: ${err.message}`);
     }
+    // M5: RID_MOCK_OVERLAY=1 seeds overlayEnabled:true into the isolated
+    // mock store - the overlay variant boots with the overlay SHOWN (the
+    // same deterministic session-seed pattern; a leaked 'false' from an
+    // interrupted run must never hide the overlay for the next variant).
+    // The OTHER overlay fields reset to their defaults under the knob too -
+    // a crashed run that left letter 'P' / bottom-right / scale 2 must
+    // never bleed into the next overlay run (the variant's pins are
+    // deterministic).
+    try {
+      const cur = await store.loadSettings();
+      const overlayOn = process.env.RID_MOCK_OVERLAY === '1';
+      await store.saveSettings({
+        ...cur,
+        overlayEnabled: overlayOn,
+        overlayHotkeyLetter: overlayOn ? 'O' : cur.overlayHotkeyLetter,
+        overlayPosition: overlayOn ? 'top-left' : cur.overlayPosition,
+        overlayScale: overlayOn ? 1 : cur.overlayScale,
+      });
+    } catch (err) {
+      console.log(`[boot] overlay session seed skipped: ${err.message}`);
+    }
     // M4-A/M4-B: deterministic waiver session seed - every mock session    // boots UNACCEPTED so the boot waiver prompt shows in the classic
     // Cancel/Accept state (ui-verify F4: the prompt would otherwise hit
     // every variant unpredictably, and a previous run's persisted
@@ -1196,6 +1218,138 @@ async function main() {
       // fall through: normal close
     }
   });
+  // M5 (S2): the overlay LIFECYCLE rule - the product path has NO
+  // window-all-closed handler (Electron's default quit fires only when
+  // EVERY window closes; with the overlay alive, closing the main window
+  // with closeToTray OFF would leave the app running headless forever).
+  // The main window's closed event destroys the overlay + unregisters the
+  // hotkey (the pre-M5 exit behavior is preserved); will-quit closes both
+  // (the tray-Quit path already works via app.quit).
+  win.on('closed', () => {
+    overlayHandle?.destroy();
+    unregisterOverlayHotkey();
+  });
+
+  // --- M5: the software overlay (the MSI Afterburner/RTSS-style HUD) ------
+  // Created UNCONDITIONALLY on the product window path (HIDDEN when
+  // overlayEnabled is false - toggle() from a disabled state + the hotkey
+  // must work before the user ever enables it; a lazy create would break
+  // the hotkey-enable path). NEVER in headless/boot-apply/apply-profile
+  // (they return earlier); ui-verify creates it only under
+  // RID_MOCK_OVERLAY=1 (the variant's real-window pins).
+  let overlayHandle = null;
+  let overlayHotkeyAccelerator = null;
+  // The hotkey seam (M6): product path - a REAL globalShortcut registration
+  // ('Control+<letter>' - CTRL fixed, only the letter is user-changeable),
+  // unregistered on will-quit + re-registered on a letter change. ui-verify
+  // injects a COUNTING probe that NEVER registers (a real system hotkey
+  // mid-verify would disrupt the session) + a mid-run settable failure fake
+  // (the register-failure honesty pin). register() returning false (the
+  // accelerator taken by another app) surfaces hotkeyRegistered:false -
+  // the Settings card then shows the honest note (the card toggle still
+  // works; the hotkey does not).
+  const overlayHotkeyProbe = { registrations: [], failRegister: false };
+  const registerOverlayHotkey = (letter) => {
+    if (!overlayHandle) return;
+    const normalized = typeof letter === 'string' && /^[A-Za-z]$/.test(letter) ? letter.toUpperCase() : 'O';
+    const accel = `Control+${normalized}`;
+    if (uiVerify) {
+      overlayHotkeyProbe.registrations.push(accel);
+      overlayHandle.setHotkeyRegistered(!overlayHotkeyProbe.failRegister);
+      return;
+    }
+    if (overlayHotkeyAccelerator) {
+      try { globalShortcut.unregister(overlayHotkeyAccelerator); } catch { /* best effort */ }
+      overlayHotkeyAccelerator = null;
+    }
+    let ok = false;
+    try {
+      ok = globalShortcut.register(accel, () => { void overlayHandle.toggle(); });
+    } catch {
+      ok = false;
+    }
+    overlayHotkeyAccelerator = ok ? accel : null;
+    overlayHandle.setHotkeyRegistered(ok);
+    if (!ok) {
+      console.log(`[overlay] hotkey ${accel} registration failed (taken by another application?)`);
+    }
+  };
+  const unregisterOverlayHotkey = () => {
+    if (overlayHotkeyAccelerator) {
+      try { globalShortcut.unregister(overlayHotkeyAccelerator); } catch { /* best effort */ }
+      overlayHotkeyAccelerator = null;
+    }
+    overlayHandle?.setHotkeyRegistered(false);
+  };
+  // The overlay settings reaction (the rebuildTray pattern): re-apply the
+  // geometry/visibility from the FRESH store + re-register the hotkey on a
+  // letter change. 'overlay:settings' is NOT an ipc-core push - the overlay
+  // module sends it DIRECTLY to the overlay window (webContents.send);
+  // ipc.js's emit stays telemetry-only (N1).
+  const onOverlaySettings = async (patch) => {
+    if (!overlayHandle) return;
+    applyOverlaySettings();
+    if (patch && typeof patch.overlayHotkeyLetter === 'string') {
+      registerOverlayHotkey(patch.overlayHotkeyLetter);
+    }
+  };
+  const applyOverlaySettings = () => {
+    if (!overlayHandle) return;
+    let settings = {};
+    try {
+      settings = store.loadSettingsSync() ?? {};
+    } catch {
+      settings = {};
+    }
+    overlayHandle.apply({
+      enabled: settings.overlayEnabled === true,
+      position: OVERLAY_POSITIONS.includes(settings.overlayPosition) ? settings.overlayPosition : 'top-left',
+      scale: clampOverlayScale(settings.overlayScale),
+      hotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(settings.overlayHotkeyLetter)
+        ? settings.overlayHotkeyLetter
+        : 'O',
+    });
+  };
+  if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {
+    overlayHandle = createOverlayWindow({
+      // The CURRENT persisted settings - the sync cache (the same cache the
+      // close handler reads; a read failure degrades to the defaults).
+      getOverlaySettings: () => {
+        try {
+          return store.loadSettingsSync() ?? {};
+        } catch {
+          return {};
+        }
+      },
+      // toggle()'s persist path - the read-modify-write shape (never
+      // clobber the non-overlay fields), then re-apply so the store and the
+      // window always agree.
+      onSettingsChange: async (patch) => {
+        try {
+          const cur = await store.loadSettings();
+          await store.saveSettings({ ...cur, ...patch });
+        } catch (err) {
+          console.log(`[overlay] settings persist failed: ${err.message}`);
+        }
+        applyOverlaySettings();
+      },
+    });
+    applyOverlaySettings();
+    // Boot the hotkey with the persisted letter (default 'O').
+    let bootLetter = 'O';
+    try {
+      const s = store.loadSettingsSync() ?? {};
+      if (typeof s.overlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)) {
+        bootLetter = s.overlayHotkeyLetter;
+      }
+    } catch { /* default O */ }
+    registerOverlayHotkey(bootLetter);
+  }
+  app.on('will-quit', () => {
+    overlayHandle?.destroy();
+    unregisterOverlayHotkey();
+  });
   // M4J (G): the OLD post-window start-minimized block (minimize-to-taskbar
   // after ready-to-show) is REMOVED - the window is created show:false when
   // the pre-create settings read says startMinimized (see createWindow
@@ -1285,6 +1439,23 @@ async function main() {
     backend,
     store,
     getWindow: () => win,
+    // M5: the overlay window (the telemetry emit forwards to BOTH windows;
+    // null when no overlay exists - the emit null-guards it).
+    getOverlayWindow: () => (overlayHandle ? overlayHandle.getWindow() : null),
+    // M5: the injected overlay ops - the REAL overlay handle in both the
+    // product path and the RID_MOCK_OVERLAY=1 ui-verify variant (the
+    // variant's overlay window is real, like the main window - the toggle
+    // really flips it). When no overlay exists (other ui-verify variants)
+    // the DEFAULT no-window ops keep the channels honest.
+    overlayOps: overlayHandle
+      ? {
+          getState: async () => overlayHandle.getState(),
+          toggle: async () => { await overlayHandle.toggle(); },
+        }
+      : undefined,
+    // M5: the overlay settings reaction (the rebuildTray pattern) - called
+    // by profiles-settings-save when an overlay field changed.
+    onOverlaySettings,
     startup,
     driverInfo,
     sysinfo,
@@ -1363,6 +1534,13 @@ async function main() {
       // the user report: stock mode + advanced profile values used to fail
       // at boot with the "Nothing was changed" mode message).
       await runBootApplyExtVerify(win, backend, store);
+    } else if (process.env.RID_MOCK_OVERLAY === '1') {
+      // M5: the overlay variant - the overlay window is REAL (created above
+      // under the knob, seeded overlayEnabled:true); the hotkey is the
+      // counting probe (never a real registration). Two matrix configs:
+      // 'overlay' alone (the 'FPS -' pin) and 'overlay+fps'
+      // (RID_MOCK_FPS=1 - 'FPS 60' + the canvas-drawn pin).
+      await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides

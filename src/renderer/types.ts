@@ -364,6 +364,30 @@ export interface Profile {
   ocOnBoot: boolean;
 }
 
+/** M5: the 4 overlay corners (mirrors profile-store.js + pure/overlay.ts). */
+export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+/** M5: the persisted overlay settings (absent on old files -> the defaults). */
+export interface OverlaySettings {
+  enabled: boolean;
+  hotkeyLetter: string;
+  position: OverlayPosition;
+  scale: number;
+}
+
+/** M5: the overlay:get-state envelope (the Settings card + the verify read it). */
+export interface OverlayState {
+  exists: boolean;
+  visible: boolean;
+  bounds: { x: number; y: number; width: number; height: number } | null;
+  position: OverlayPosition;
+  scale: number;
+  enabled: boolean;
+  /** LIVE-derived from the current globalShortcut registration (a failed
+   *  register - the accelerator taken by another app - reads false). */
+  hotkeyRegistered: boolean;
+}
+
 /** Persisted profile-settings envelope (ocOnBoot / activeProfileId / ocMode). */
 export interface ProfileSettingsState {
   waiverAccepted: boolean;
@@ -386,6 +410,13 @@ export interface ProfileSettingsState {
   /** 1.0.1: the persisted UI theme ('dark'|'midnight'|'light'; absent on
    *  old files -> 'dark' - the absent-field default, no schema bump). */
   theme: Theme;
+  /** M5: the software-overlay settings (absent on old files -> the defaults:
+   *  enabled false, letter 'O', position 'top-left', scale 1.0 - the same
+   *  absent-field mechanism, NO schema bump). */
+  overlayEnabled: boolean;
+  overlayHotkeyLetter: string;
+  overlayPosition: OverlayPosition;
+  overlayScale: number;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

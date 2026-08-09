@@ -6,9 +6,10 @@
 //   - the driver line moved OUT of the header (M2C-B B3): the line below the
 //     GPU name is now "Arc Power Ver. X.XX" (the app version via the
 //     `app:version` IPC; M4-A: the DISPLAY label carries the " Alpha"
-//     suffix - the IPC keeps the bare semver); the driver version + registry
-//     date stay in the dashboard device card ('Driver version' kv, driver-info
-//     IPC);
+//     suffix - the IPC keeps the bare semver; M5: displayVersion renders
+//     the line - ' Beta' for the -beta.x line, ' Alpha' for bare semvers);
+//     the driver version + registry date stay in the dashboard device card
+//     ('Driver version' kv, driver-info IPC);
 //   - PCI ID is gone;
 //   - M3-A: the top-right status dot + "Service Status" label are REMOVED
 //     (with the M2C-C elevation gate, IGS state is no longer relevant to
@@ -31,6 +32,21 @@ export type { HealthLevel as StatusLevel } from '../pure/status.ts';
 /** M2C-B B3: the header line below the GPU name. */
 export function versionLine(version: string | null | undefined): string {
   return `Arc Power Ver. ${version && version.length > 0 ? version : '0.0.0'}`;
+}
+
+/**
+ * M5: the DISPLAY version line - the semver WITHOUT the prerelease tag,
+ * plus ' Beta' for a -beta.x version / ' Alpha' for a bare version
+ * (1.0.0-beta.1 -> 'Arc Power Ver. 1.0.0 Beta'; 1.0.8 -> 'Arc Power Ver.
+ * 1.0.8 Alpha'). The app:version IPC keeps the BARE semver - the display
+ * suffix is a renderer concern. Degraded/missing version falls back to
+ * 0.0.0 (the ' Alpha' suffix - never an empty line).
+ */
+export function displayVersion(version: string | null | undefined): string {
+  const bare = version && version.length > 0 ? version : '0.0.0';
+  const isBeta = /-beta\.\d+$/i.test(bare);
+  const cleaned = isBeta ? bare.replace(/-beta\.\d+$/i, '') : bare;
+  return `Arc Power Ver. ${cleaned}${isBeta ? ' Beta' : ' Alpha'}`;
 }
 
 /**
@@ -90,14 +106,16 @@ export class GpuHeader {
       : device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power');
     const gpuMeta = s.noIntel
       ? 'Non supported GPU'
-      : s.bootError ?? `${versionLine(s.appVersion)} Alpha`;
+      : s.bootError ?? displayVersion(s.appVersion);
     clear(this.mount);
     this.mount.append(
       el('div', { class: 'gpu-header' }, [
         el('div', { class: 'gpu-identity' }, [
           el('div', { class: 'gpu-name', text: gpuName }),
-          // M4-A: the display label carries the " Alpha" suffix; the app:version
-          // IPC keeps the bare semver (test/ipc-core pins '1.0.8').
+          // M4-A/M5: the display label carries the release-stage suffix
+          // (' Alpha' for bare semvers, ' Beta' for the -beta.x line - the
+          // Beta release restarts at 1.0.0); the app:version IPC keeps the
+          // bare semver (test/ipc-core pins '1.0.0-beta.1').
           el('div', { class: 'gpu-meta', text: gpuMeta }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),

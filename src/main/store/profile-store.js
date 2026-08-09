@@ -17,10 +17,26 @@ import { migrateStoreData, SCHEMA_VERSION } from './migrations.js';
 // never a silent reset).
 const THEMES = ['dark', 'midnight', 'light'];
 
-export { THEMES };
+// M5: the canonical overlay corner ids - the persisted-truth owner of the
+// list (the THEMES pattern). The renderer mirror lives in
+// src/renderer/pure/overlay.ts and the envelope validation in
+// src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
+// files -> 'top-left'; a garbage value degrades to 'top-left' at the STORE.
+const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+// M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
+const OVERLAY_SCALE_MIN = 0.5;
+const OVERLAY_SCALE_MAX = 2.0;
+
+export { THEMES, OVERLAY_POSITIONS };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
+}
+
+/** M5: clamp a scale value to the slider's range (garbage degrades to 1.0). */
+function clampOverlayScale(v) {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
+  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
 }
 
 /**
@@ -153,7 +169,9 @@ export class ProfileStore {
    * via the device-set channel, NEVER through profiles-settings-save (which
    * carries it read-modify-write so a Settings/Profiles save can never
    * clobber it).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light' }>}
+   * M5: the software-overlay fields (overlayEnabled/overlayHotkeyLetter/
+   * overlayPosition/overlayScale) - absent on old files -> the defaults.
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -194,6 +212,13 @@ export class ProfileStore {
         deviceId: null,
         // 1.0.1 Themes: absent -> 'dark' (same absent-field mechanism).
         theme: 'dark',
+        // M5: the software-overlay settings. Absent on old files -> the
+        // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
+        // absent-field mechanism, NO schema bump).
+        overlayEnabled: false,
+        overlayHotkeyLetter: 'O',
+        overlayPosition: 'top-left',
+        overlayScale: 1.0,
       };
     }
     return {
@@ -221,11 +246,23 @@ export class ProfileStore {
       // (same absent-field mechanism); a garbage value degrades to 'dark'
       // - never a crash.
       theme: THEMES.includes(data.theme) ? data.theme : 'dark',
+      // M5: the software-overlay settings (same mechanism): enabled off
+      // when absent, the letter 'O', top-left, scale 1.0; a garbage value
+      // degrades to the default - never a crash.
+      overlayEnabled: data.overlayEnabled === true,
+      overlayHotkeyLetter: typeof data.overlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(data.overlayHotkeyLetter)
+        ? data.overlayHotkeyLetter
+        : 'O',
+      overlayPosition: OVERLAY_POSITIONS.includes(data.overlayPosition)
+        ? data.overlayPosition
+        : 'top-left',
+      overlayScale: clampOverlayScale(data.overlayScale),
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -247,6 +284,18 @@ export class ProfileStore {
       // as 'dark' (the channel already guards patch.theme, so the store
       // fallback only ever sees absent fields on direct callers).
       theme: THEMES.includes(settings.theme) ? settings.theme : 'dark',
+      // M5: the software-overlay settings - validated on save like the
+      // theme (the channel validates first; the store fallback covers
+      // direct callers).
+      overlayEnabled: settings.overlayEnabled === true,
+      overlayHotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(settings.overlayHotkeyLetter)
+        ? settings.overlayHotkeyLetter
+        : 'O',
+      overlayPosition: OVERLAY_POSITIONS.includes(settings.overlayPosition)
+        ? settings.overlayPosition
+        : 'top-left',
+      overlayScale: clampOverlayScale(settings.overlayScale),
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.

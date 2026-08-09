@@ -41,10 +41,13 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   buildKind?: 'installed' | 'portable' | 'dev',  // M4-E: app:build-info
  *   bootApplyOutcome?: () => ({ ok: boolean, detail: string, at: number } | null),  // M4N: the window-path boot apply's outcome record (main.js; null when no boot apply ran)
  *   mock?: { listFeaturesets: () => Promise<unknown>, setFeatureset: (id: string) => Promise<unknown>, runBootApply?: () => Promise<unknown>, bootApplyLog?: () => Promise<unknown> } | null,
+ *   getOverlayWindow?: () => import('electron').BrowserWindow | null,  // M5: the overlay window (null when absent - the emit null-guards it)
+ *   overlayOps?: { getState: () => Promise<unknown>, toggle: () => Promise<unknown> },  // M5: the overlay-window ops (main.js wires the real handle)
+ *   onOverlaySettings?: (patch: object) => Promise<unknown>,  // M5: the overlay settings reaction (profiles-settings-save)
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {} }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -66,12 +69,20 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     applyRunner,
     isElevated,
     mock,
+    overlayOps,
+    onOverlaySettings,
     emit: (channel, payload) => {
       // Only push-style channels cross the window boundary; request/response
       // channels return their payload via the invoke promise.
       if (channel !== 'telemetry:sample') return;
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+      // M5: the telemetry push forwards to the OVERLAY window too (its
+      // stat lines + frametime series live off the same sample stream).
+      // NULL-GUARDED: the overlay may not exist yet when the first sample
+      // arrives (and never exists in headless/apply modes).
+      const overlayWin = getOverlayWindow();
+      if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send(channel, payload);
     },
   });
   for (const [channel, fn] of Object.entries(handlers)) {

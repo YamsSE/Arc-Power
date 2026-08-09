@@ -35,7 +35,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS } from './store/profile-store.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -53,6 +53,51 @@ const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
 const RESET_VERIFY_EPS = 1e-6;
+// M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
+const OVERLAY_SCALE_MIN = 0.5;
+const OVERLAY_SCALE_MAX = 2.0;
+
+/**
+ * M5: the hotkey letter must be EXACTLY one letter (CTRL + <letter> - the
+ * user's rule: the letter is the only changeable part). Rejects with an
+ * honest error - a multi-char or non-letter hotkey must never reach the
+ * registration.
+ * @param {unknown} v
+ * @returns {string}
+ */
+export function validateOverlayHotkeyLetter(v) {
+  if (typeof v !== 'string' || !/^[A-Za-z]$/.test(v)) {
+    throw new Error('overlayHotkeyLetter must be a single letter (A-Z or a-z)');
+  }
+  // Normalize to UPPERCASE at persist time - every consumer (the
+  // globalShortcut accelerator, the Settings card text) uses the uppercase
+  // form; a stored lowercase letter must never slip through.
+  return v.toUpperCase();
+}
+
+/**
+ * M5: the overlay corner must be one of the four positions (reject +
+ * honest error - a garbage position must never reach the geometry code).
+ * @param {unknown} v
+ * @returns {string}
+ */
+export function validateOverlayPosition(v) {
+  if (typeof v !== 'string' || !OVERLAY_POSITIONS.includes(v)) {
+    throw new Error(`overlayPosition must be one of: ${OVERLAY_POSITIONS.join(', ')}`);
+  }
+  return v;
+}
+
+/**
+ * M5: clamp the overlay scale to the slider's range 0.5..2.0 (garbage
+ * degrades to the 1.0 default - the store normalizes the same way).
+ * @param {unknown} v
+ * @returns {number}
+ */
+export function clampOverlayScale(v) {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
+  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+}
 
 /**
  * @param {unknown} v
@@ -323,6 +368,20 @@ export async function resolveBootDeviceId(backend, store) {
  *     runBootApply: () => Promise<{ applied: boolean, reason: string, log: object[] }>,
  *     bootApplyLog: () => Promise<object[]>,
  *   } | null,
+ *   overlayOps?: {                 // M5: the injected overlay-window ops (the
+ *                                  // windowOps pattern). main.js wires the
+ *                                  // real overlay handle; the DEFAULT is the
+ *                                  // honest "no overlay window" state (tests
+ *                                  // and non-overlay ui-verify variants).
+ *     getState: () => Promise<{ exists: boolean, visible: boolean, bounds: object|null, position: string, scale: number, enabled: boolean, hotkeyRegistered: boolean }>,
+ *     toggle: () => Promise<unknown>,
+ *   },
+ *   onOverlaySettings?: (patch: object) => Promise<unknown>,  // M5: the overlay
+ *                                  // settings reaction (the rebuildTray
+ *                                  // pattern) - called when profiles-settings-
+ *                                  // save changed any overlay field; main.js
+ *                                  // applies geometry/visibility/hotkey + sends
+ *                                  // 'overlay:settings' to the overlay window.
  * }} ctx
  */
 export function createIpcHandlers({
@@ -390,6 +449,19 @@ export function createIpcHandlers({
   applyRunner = null,
   isElevated = detectElevated,
   mock = null,
+  // M5: the injected overlay-window ops. The DEFAULT is the honest
+  // "no overlay window" state (tests + non-overlay variants never have one);
+  // main.js wires the real overlay handle in the product path + the
+  // RID_MOCK_OVERLAY=1 ui-verify variant.
+  overlayOps = {
+    getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }),
+    toggle: async () => {},
+  },
+  // M5: the overlay settings reaction (the rebuildTray pattern) - called
+  // when profiles-settings-save changed any overlay field. The DEFAULT is
+  // a no-op; main.js applies the geometry/visibility/hotkey + sends
+  // 'overlay:settings' DIRECTLY to the overlay window.
+  onOverlaySettings = async () => {},
 }) {
   // M3-A/M3-B mock defaults: the read + apply mock adapters share ONE mock
   // registry state (in-memory; never touches the real registry), so a mock
@@ -854,6 +926,24 @@ export function createIpcHandlers({
         await windowOps.close();
       },
 
+      // M5: the software-overlay ops (the windowOps pattern). 'overlay:
+      // get-state' is the Settings card's every-render read (the
+      // hotkeyRegistered flag + the geometry); 'overlay:toggle' flips the
+      // window AND persists overlayEnabled (the hotkey + the Settings
+      // toggle flip the same persisted field). No payload; the ops are
+      // injected (the DEFAULT is the honest "no overlay window" state;
+      // main.js wires the real overlay handle).
+      'overlay:get-state': async (...args) => {
+        assertNoPayload(args, 'overlay:get-state');
+        return overlayOps.getState();
+      },
+
+      'overlay:toggle': async (...args) => {
+        assertNoPayload(args, 'overlay:toggle');
+        await overlayOps.toggle();
+        return overlayOps.getState();
+      },
+
       // M4-H (D1): the sidebar GitHub link - open a URL in the default
       // browser via the injected shell.openExternal op. STRICT validation
       // (S3): new URL() + protocol https: + hostname github.com + the
@@ -1071,6 +1161,25 @@ export function createIpcHandlers({
           theme: patch.theme === undefined
             ? cur.theme
             : (THEMES.includes(patch.theme) ? patch.theme : cur.theme),
+          // M5: the software-overlay fields (the Settings Overlay card
+          // persists them through this channel). The letter REJECTS with an
+          // honest error when it is not exactly one letter (the user's rule:
+          // CTRL + <letter> - the letter is the only changeable part); the
+          // position REJECTS outside the four corners; the scale is CLAMPED
+          // to the slider's 0.5..2.0 range (never rejected - the slider
+          // cannot produce an out-of-range value).
+          overlayEnabled: patch.overlayEnabled === undefined
+            ? cur.overlayEnabled
+            : patch.overlayEnabled === true,
+          overlayHotkeyLetter: patch.overlayHotkeyLetter === undefined
+            ? cur.overlayHotkeyLetter
+            : validateOverlayHotkeyLetter(patch.overlayHotkeyLetter),
+          overlayPosition: patch.overlayPosition === undefined
+            ? cur.overlayPosition
+            : validateOverlayPosition(patch.overlayPosition),
+          overlayScale: patch.overlayScale === undefined
+            ? cur.overlayScale
+            : clampOverlayScale(patch.overlayScale),
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
@@ -1086,6 +1195,23 @@ export function createIpcHandlers({
           // mismatch hint (startup truth vs intent) surfaces the reg failure
         }
         await store.saveSettings(next);
+        // M5: the overlay reaction (the rebuildTray pattern) - when any
+        // overlay field the PATCH touched actually changed, the injected
+        // callback gets the CHANGED fields so main.js applies the new
+        // geometry/visibility/hotkey letter + sends 'overlay:settings' to
+        // the overlay window. Best effort: a callback failure must never
+        // fail the save.
+        const overlayChanged = {};
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale']) {
+          if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
+        }
+        if (Object.keys(overlayChanged).length > 0) {
+          try {
+            await onOverlaySettings(overlayChanged);
+          } catch (err) {
+            console.log(`[overlay] settings reaction failed: ${err.message}`);
+          }
+        }
         return next;
       },
 

@@ -1591,6 +1591,53 @@ html, body {
 
 .boot-hint { color: var(--warn); }
 
+/* M5: the Settings Overlay card. */
+.overlay-hotkey-row { margin-top: 10px; }
+.overlay-hotkey-fixed {
+  font-family: Consolas, 'Courier New', monospace;
+  font-weight: 700;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+}
+.settings-hotkey-input {
+  width: 44px;
+  text-align: center;
+  text-transform: uppercase;
+  font-family: Consolas, 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset);
+  color: var(--text);
+}
+.settings-hotkey-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.overlay-position-row { margin-top: 10px; }
+.overlay-scale-row { margin-top: 10px; }
+.settings-row-label { font-size: 13px; color: var(--text-dim); min-width: 52px; }
+.settings-position-select {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+}
+.settings-scale-slider { flex: 1; max-width: 220px; accent-color: var(--accent-strong); }
+.settings-scale-value {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 38px;
+}
+.overlay-note { font-size: 12px; }
+.overlay-hotkey-fail { font-weight: 600; }
+
 .profile-list { display: flex; flex-direction: column; gap: 8px; }
 
 .profile-row {

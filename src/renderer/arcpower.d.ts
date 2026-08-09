@@ -13,6 +13,8 @@ import type {
   HealthReport,
   MockFeaturesetsResponse,
   MockSwapResponse,
+  OverlaySettings,
+  OverlayState,
   Profile,
   ProfilesEnvelope,
   ProfileSettingsState,
@@ -126,6 +128,17 @@ export interface ArcPowerApi {
   /** M4-D: pushed window-maximize state ({ maximized: boolean } on
    *  maximize/unmaximize - the title-bar max button follows it). */
   onWindowMaximizedChanged(cb: (state: { maximized: boolean }) => void): () => void;
+  /** M5: pushed overlay settings (the Overlay window surface) - the scale
+   *  source of truth, sent by main on every apply (incl. the initial
+   *  did-finish-load push; the renderer registers this SYNCHRONOUSLY at
+   *  script top so the initial push is never missed). */
+  onOverlaySettings(cb: (settings: OverlaySettings) => void): () => void;
+  /** M5: the overlay window's live state (the Settings Overlay card
+   *  re-queries it on every render - hotkeyRegistered is live-derived). */
+  overlayGetState(): Promise<OverlayState>;
+  /** M5: flip the overlay's visibility (the Settings toggle + the hotkey
+   *  flip the same persisted field). Returns the fresh state. */
+  overlayToggle(): Promise<OverlayState>;
 }
 
 declare global {

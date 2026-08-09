@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- M5: the overlay window's CSP - like index.html (style-src 'self'
+       only; the renderer's CSSOM font-size scaling is NOT blocked by it). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Arc Power Overlay</title>
+  <link rel="stylesheet" href="./overlay.css">
+</head>
+<body>
+  <!-- M5: the RTSS-style HUD - BOLD TEXT ONLY, no boxes, no background.
+       The three stat lines + the frametime polyline strip. -->
+  <div id="overlay-root">
+    <div class="overlay-line" id="overlay-fps"></div>
+    <div class="overlay-line" id="overlay-cpu"></div>
+    <div class="overlay-line" id="overlay-gpu"></div>
+    <canvas id="overlay-frametime" class="overlay-frametime"></canvas>
+  </div>
+  <script src="./out/overlay.js"></script>
+</body>
+</html>

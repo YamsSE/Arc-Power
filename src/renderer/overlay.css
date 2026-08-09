@@ -1,0 +1,48 @@
+/* M5 - the software overlay styles (classes only - the CSP style-src
+   'self' blocks inline styles; the renderer's CSSOM font-size scaling is
+   NOT blocked). The RTSS look: BOLD monospace text with a dark outline
+   shadow, transparent background, no boxes. Everything is sized in rem so
+   the single html font-size (14px x the persisted overlayScale, applied
+   via CSSOM by overlay.ts) scales the whole HUD - the SAME overlayScale the
+   main-side window geometry uses (the single source of truth, M7). */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  /* The base size - overlay.ts scales this via CSSOM (14px * scale). */
+  font-size: 14px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#overlay-root {
+  padding: 0.25rem 0.4rem;
+}
+
+.overlay-line {
+  font-family: Consolas, 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1.3;
+  color: #ffffff;
+  white-space: pre;
+  /* The readability outline over any scene (the RTSS look - a dark
+     shadow around the bright text). */
+  text-shadow:
+    0 0 2px #000,
+    0 0 2px #000,
+    1px 1px 2px #000,
+    -1px -1px 2px #000;
+}
+
+/* The frametime polyline strip - a transparent canvas drawing ONLY the
+   1.5px line (no grid, no background rect - "no squares"). */
+.overlay-frametime {
+  display: block;
+  width: 31rem;
+  height: 1.6rem;
+  margin-top: 0.2rem;
+}
