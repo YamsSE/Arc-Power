@@ -44,6 +44,10 @@ const FRAMETIME_DRAW_POINTS = 120;
 let scale = 1;
 let latestSample: TelemetrySample | null = null;
 let latestFps: number | null = null;
+// M7a: the latest percentile stats from the fps poll (null until the
+// sampler reports them - the honest '-' fields on the FPS row).
+let latestLow1Pct: number | null = null;
+let latestP99: number | null = null;
 let series: SeriesPoint[] = [];
 // M6: the pushed color + stats (undefined until the first push -> the
 // stock white + the full stat set - the overlayLines defaults).
@@ -92,7 +96,9 @@ function sizeCanvas(): void {
 }
 
 function render(): void {
-  const lines = overlayLines(latestSample, latestFps, stats);
+  // M7a: the latest percentile stats ride the same fps poll into the FPS
+  // row (null -> the honest '-' fields).
+  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99);
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
   gpuEl.textContent = lines.gpuLine;
@@ -169,6 +175,10 @@ async function bootFpsLoop(): Promise<void> {
       if (!sample) return;
       const fps = typeof sample.fps === 'number' ? sample.fps : null;
       latestFps = fps;
+      // M7a: the 1% Low / 99% FPS stats ride the same poll (null when the
+      // sample lacks them - the honest '-' on the FPS row).
+      latestLow1Pct = typeof sample.low1Pct === 'number' ? sample.low1Pct : null;
+      latestP99 = typeof sample.p99 === 'number' ? sample.p99 : null;
       // S1/M2: the frametime series - the real DXGI adapter returns
       // frameTimeMs: null on every path, so deriveFrameTimeMs derives
       // 1000/fps (TWO decimals - M6-amd2: the value line shows max 2

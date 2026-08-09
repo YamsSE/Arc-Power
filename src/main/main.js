@@ -872,13 +872,14 @@ async function main() {
   // no service. Mock mode reports unavailable (never loads dxgi.dll/koffi),
   // counts polls so --ui-verify can assert the Monitoring page stops
   // polling on navigation away (M2b review F4), and returns a FIXED sample
-  // ONLY under RID_MOCK_FPS=1 (the new pin).
+  // ONLY under RID_MOCK_FPS=1 (the new pin). M7a: the fixed sample carries
+  // the percentile stats (52 / 58 - the ui-verify FPS-row pins).
   let fpsPolls = 0;
   const fpsAdapter = mock
     ? {
         poll: async () => {
           fpsPolls += 1;
-          if (process.env.RID_MOCK_FPS === '1') return { fps: 60, frameTimeMs: 16.7, gpuBusy: 0.6 };
+          if (process.env.RID_MOCK_FPS === '1') return { fps: 60, frameTimeMs: 16.7, gpuBusy: 0.6, low1Pct: 52, p99: 58 };
           return null;
         },
       }
@@ -1552,8 +1553,8 @@ async function main() {
       // M5: the overlay variant - the overlay window is REAL (created above
       // under the knob, seeded overlayEnabled:true); the hotkey is the
       // counting probe (never a real registration). Two matrix configs:
-      // 'overlay' alone (the 'FPS -' pin) and 'overlay+fps'
-      // (RID_MOCK_FPS=1 - 'FPS 60' + the canvas-drawn pin).
+      // 'overlay' alone (the 'FPS -  1% Low -  99% FPS -' pin) and
+      // 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS 60  1% Low 52  99% FPS 58').
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar

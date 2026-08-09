@@ -43,13 +43,15 @@ export const OVERLAY_SCALE_MIN = 0.5;
 export const OVERLAY_SCALE_MAX = 2.0;
 
 /**
- * M6: the canonical overlay stat ids (the persisted-truth owner is
+ * M6/M7a: the canonical overlay stat ids (the persisted-truth owner is
  * profile-store.js; this is the renderer mirror - keep both in lockstep
  * like the positions). A stat off -> its field/line vanishes; the
  * frametime id is NOT a line - it drives the canvas strip visibility.
+ * M7a: 'fps-1pct-low' + 'fps-99pct' ride the FPS row (in this order, right
+ * after 'fps') - the 1% Low / 99% FPS percentile stats.
  */
 export const OVERLAY_STAT_IDS: readonly string[] = [
-  'fps', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-1pct-low', 'fps-99pct', 'cpu-util', 'cpu-clock', 'cpu-temp',
   'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];
@@ -57,6 +59,8 @@ export const OVERLAY_STAT_IDS: readonly string[] = [
 /** M6: the Overlay Settings page's tickbox labels (one per stat id). */
 export const OVERLAY_STAT_LABELS: Record<string, string> = {
   fps: 'FPS',
+  'fps-1pct-low': '1% Low',
+  'fps-99pct': '99% FPS',
   'cpu-util': 'CPU Util',
   'cpu-clock': 'CPU Clock',
   'cpu-temp': 'CPU Temp',
@@ -166,19 +170,27 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
 /**
  * Build the three overlay lines from one telemetry sample + the latest FPS
  * (the 1 s fps-poll result) + the ENABLED stats (M6 - an absent stats value
- * means the FULL set, the stock overlay). Every enabled field degrades
- * honestly to '-':
- *   fpsLine: 'FPS 60' (rounded like the Monitoring tile) / 'FPS -' for
- *     null, non-finite or <= 0 fps (0 is the DXGI no-signal shape - not a
- *     real frame rate); '' when the fps stat is off;
+ * means the FULL set, the stock overlay) + the latest percentile stats
+ * (M7a - the low1Pct / p99 numbers from the same fps poll, null until the
+ * sampler's 60-frame floor). Every enabled field degrades honestly to '-':
+ *   fpsLine: 'FPS 60  1% Low 52  99% FPS 58' - the FPS field rounds like
+ *     the Monitoring tile and renders 'FPS -' for null, non-finite or
+ *     <= 0 fps (0 is the DXGI no-signal shape - not a real frame rate);
+ *     the percentile fields render '-' when their numbers are null (the
+ *     honest degrade - never a stale value); each field vanishes with its
+ *     stat; '' when all three are off;
  *   cpuLine: 'CPU 42%  4.3 GHz  61°C' (Util / Clock via ghzFreq / Temp -
  *     each field vanishes with its stat; '' when all three are off);
  *   gpuLine: 'GPU 42%  2500 MHz  2187 MHz  8.5 GB  65°C  122 W  1030 RPM'
  *     (Util / Core clock / Memory clock / VRAM via gbValue / Temp / Power
  *     with ONE decimal (toFixed(1) - 38.8) / Fan (first RPM of the array) -
  *     each field vanishes with its stat; '' when all seven are off).
+ * M7a (fix 3): the 'CPU '/'GPU ' row label is NOT baked into any field -
+ * it is prefixed ONCE to the first field when the row is non-empty
+ * ('CPU 61°C' for a temp-only row - never a bare '61°C'; the stock rows
+ * keep their exact strings).
  */
-export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown): OverlayLines {
+export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null): OverlayLines {
   const s = sample ?? {};
   // M6: the percentage formatter ROUNDS to whole percents (the user's
   // decimals complaint - the real OS GPUEngine counter is a float
@@ -198,25 +210,38 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const power = numOrNull(s.powerW);
   const fan = Array.isArray(s.fanRpm) ? numOrNull(s.fanRpm[0]) : null;
   const fpsNum = numOrNull(fps);
-  const fpsLine = !enabled.has('fps') ? ''
-    : (fpsNum !== null && fpsNum > 0 ? `FPS ${Math.round(fpsNum)}` : 'FPS -');
+  const low1 = numOrNull(low1Pct);
+  const p99num = numOrNull(p99);
+  // M7a: the FPS row builds from its THREE enabled stats in fixed order -
+  // 'FPS <round>' + ' 1% Low <round>' + ' 99% FPS <round>' (each field
+  // carries its leading two-space separator, exactly like the plan pins).
+  // The percentile fields round to whole numbers and render '-' when null
+  // (the sampler's honest degrade before the 60-frame floor). All three
+  // off -> ''.
+  let fpsLine = '';
+  if (enabled.has('fps')) fpsLine += fpsNum !== null && fpsNum > 0 ? `FPS ${Math.round(fpsNum)}` : 'FPS -';
+  if (enabled.has('fps-1pct-low')) fpsLine += `  1% Low ${low1 === null ? '-' : Math.round(low1)}`;
+  if (enabled.has('fps-99pct')) fpsLine += `  99% FPS ${p99num === null ? '-' : Math.round(p99num)}`;
   // M6: each line builds from its ENABLED stats only - a stat off -> its
   // field vanishes; ALL of a line's stats off -> the line writes '' (the
   // renderer KEEPS the fixed div and only empties it - never removed).
+  // M7a (fix 3): the fields carry NO baked 'CPU '/'GPU ' prefix - the row
+  // label prefixes the FIRST field once when the row is non-empty (the
+  // label can never ride away with the util stat again).
   const cpuFields: string[] = [];
-  if (enabled.has('cpu-util')) cpuFields.push(`CPU ${pct(cpuUtil)}`);
+  if (enabled.has('cpu-util')) cpuFields.push(pct(cpuUtil));
   if (enabled.has('cpu-clock')) cpuFields.push(unit(cpuFreqMhz, (n) => ghzFreq(n), ' GHz'));
   if (enabled.has('cpu-temp')) cpuFields.push(unit(cpuTemp, (n) => String(n), '°C'));
-  const cpuLine = cpuFields.join('  ');
+  const cpuLine = cpuFields.length === 0 ? '' : `CPU ${cpuFields.join('  ')}`;
   const gpuFields: string[] = [];
-  if (enabled.has('gpu-util')) gpuFields.push(`GPU ${pct(gpuUtil)}`);
+  if (enabled.has('gpu-util')) gpuFields.push(pct(gpuUtil));
   if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), ' MHz'));
   if (enabled.has('gpu-mem-clock')) gpuFields.push(unit(memClock, (n) => String(n), ' MHz'));
   if (enabled.has('gpu-vram')) gpuFields.push(unit(vram, (n) => gbValue(n), ' GB'));
   if (enabled.has('gpu-temp')) gpuFields.push(unit(gpuTemp, (n) => String(n), '°C'));
   if (enabled.has('gpu-power')) gpuFields.push(unit(power, (n) => n.toFixed(1), ' W'));
   if (enabled.has('gpu-fan')) gpuFields.push(unit(fan, (n) => String(n), ' RPM'));
-  const gpuLine = gpuFields.join('  ');
+  const gpuLine = gpuFields.length === 0 ? '' : `GPU ${gpuFields.join('  ')}`;
   return { fpsLine, cpuLine, gpuLine, frametimeEnabled: enabled.has('frametime') };
 }
 

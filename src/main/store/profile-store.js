@@ -33,8 +33,11 @@ const OVERLAY_SCALE_MAX = 2.0;
 // src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
 // files -> the FULL set (the stock overlay shows everything); a garbage
 // value degrades to the full set at the STORE.
+// M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
+// the list in THIS order, right after 'fps' (ipc-core imports this list -
+// the ids propagate automatically).
 const OVERLAY_STAT_IDS = [
-  'fps', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-1pct-low', 'fps-99pct', 'cpu-util', 'cpu-clock', 'cpu-temp',
   'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];

@@ -53,8 +53,10 @@ const OVERLAY_SCALE_MAX = 2.0;
 // M6: the canonical overlay stat ids (the persisted-truth owner is
 // profile-store.js; the renderer mirror is pure/overlay.ts - keep the
 // three in lockstep like the positions).
+// M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
+// the list in THIS order, right after 'fps'.
 const OVERLAY_STAT_IDS = [
-  'fps', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-1pct-low', 'fps-99pct', 'cpu-util', 'cpu-clock', 'cpu-temp',
   'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];

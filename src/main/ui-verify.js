@@ -4910,7 +4910,9 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //       ('CPU 42%', '4.3 GHz', '61°C'|'62°C', 'GPU 42%', '2187 MHz',
 //       '3.0 GB', '38.8 W', '1030 RPM'); the climbing clock/temp are
 //       pattern-matched (/GPU 42%  \d+ MHz  2187 MHz  3\.0 GB  \d+°C
-//       38\.8 W  1030 RPM/); 'FPS -' unless RID_MOCK_FPS=1 -> 'FPS 60';
+//       38\.8 W  1030 RPM/); the FPS row pins the FULL line - 'FPS -  1%
+//       Low -  99% FPS -' unless RID_MOCK_FPS=1 -> 'FPS 60  1% Low 52
+//       99% FPS 58' (M7a: the percentile stats ride the FPS row);
 //   (c) the frametime canvas has DRAWN content under RID_MOCK_FPS=1 (the
 //       16.7 ms passthrough series);
 //   (d) 'overlay:toggle' flips visible -> hidden -> visible AND persists
@@ -4978,7 +4980,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  2187 MHz  3\\.0 GB  \\d+°C  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
     fail(`M5: the overlay GPU line does not match the pinned pattern: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
-  const fpsPin = mockFps ? 'FPS 60' : 'FPS -';
+  // M7a: the FPS row carries the percentile stats - the full pinned line:
+  // 'FPS 60  1% Low 52  99% FPS 58' under RID_MOCK_FPS=1 (the mock fixture
+  // 52/58 at main.js) / 'FPS -  1% Low -  99% FPS -' without it.
+  const fpsPin = mockFps ? 'FPS 60  1% Low 52  99% FPS 58' : 'FPS -  1% Low -  99% FPS -';
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 10000))) {
     fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
@@ -5149,6 +5154,26 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     fail('M6: the overlay gpuLine did not regain the fan after re-checking gpu-fan');
   }
   step('m6-stats-tickbox', 'gpu-fan tickbox round trip via profiles-settings-save: uncheck -> persisted overlayStats trimmed + the gpuLine loses RPM; re-check -> restored');
+
+  // (f3b) M7a: the two new FPS-row stats - the 1% Low / 99% FPS tickboxes
+  // round-trip like gpu-fan: unchecking BOTH reverts the fps line to the
+  // plain frame-rate field ('FPS 60' under RID_MOCK_FPS=1 - the fields
+  // vanish with their stats), re-checking restores the full pinned line.
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
+  const plainFpsPin = mockFps ? 'FPS 60' : 'FPS -';
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-1pct-low') === false && e.settings.overlayStats.includes('fps-99pct') === false)`, 5000))) {
+    fail('M7a: unchecking the 1% Low / 99% FPS tickboxes did not persist overlayStats without them');
+  }
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${plainFpsPin}'`, 5000))) {
+    fail(`M7a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${plainFpsPin}' after unchecking both new stats)`);
+  }
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 5000))) {
+    fail(`M7a: the overlay FPS line did not regain the percentile fields after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
+  }
+  step('m7a-fps-stats-tickbox', `the 1% Low / 99% FPS tickbox round trip: uncheck both -> the fps line reverts to '${plainFpsPin}'; re-check -> '${fpsPin}' again`);
 
   // (f4) M6: the frametime stat is NOT a line - unchecking it HIDES the
   // canvas strip AND the value line below it (M6-amd2: the stat controls

@@ -443,6 +443,10 @@ export interface FpsSample {
   fps: number | null;
   frameTimeMs: number | null;
   gpuBusy: number | null;
+  /** M7a: the 1% Low / 99% FPS percentile stats (null until the sampler's
+   *  60-frame floor is reached - the honest '-' on the overlay FPS row). */
+  low1Pct: number | null;
+  p99: number | null;
 }
 
 // ---------------------------------------------------------------------------

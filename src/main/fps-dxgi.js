@@ -8,6 +8,27 @@
 // adapter is summed and divided by the wall-clock delta - the system-wide
 // presented-frame count (covers the hybrid iGPU-present case).
 //
+// M7a (the 1% Low / 99% FPS stats): the adapter is reworked into a
+// SINGLE-READER SAMPLER. A 200 ms internal interval (started lazily on the
+// FIRST poll() call, cleared in stop()) owns EVERY counter read - the
+// per-output GetFrameStatistics with its own baseline map, or - when no
+// GFS output answers (the live windowed-desktop case) - the
+// IDXGIOutputDuplication drain (its own baseline; the sampler is the ONLY
+// duplication drainer, so the queue is never double-drained). Each tick
+// with frames > 0 and dt > 0 pushes { tMs, ftMs: dtMs / frames, frames }
+// into a ring (~150 entries / 30 s window; the pure fps-percentiles module
+// owns the math). poll() never reads the counters itself anymore - it
+// derives the sample from the ring:
+//   - fps = the frames summed over the ring entries within the last 1 s
+//     window (the same presentSum/dt semantics as the old 1 s cadence;
+//     rounded to 1 decimal; an empty ring honestly reads 0 - the
+//     static-desktop shape, never '-');
+//   - low1Pct / p99 from percentileStats (null until the 60-frame floor -
+//     the honest degrade; a static desktop pushes nothing, so after the
+//     window elapses the ring is empty and the percentiles return null,
+//     never stale values).
+//   Return shape: { fps, frameTimeMs: null, gpuBusy: null, low1Pct, p99 }.
+//
 // Pinned vtable slots (verified against the Windows SDK dxgi.idl layout /
 // Microsoft's interface docs + Wine's dxgi implementation, 2026-08-07):
 //   IDXGIFactory (0-6 IDXGIObject): 7 EnumAdapters, 8 MakeWindowAssociation,
@@ -25,36 +46,35 @@
 // The live "PresentCount sanity" checkpoint is the backstop: a wrong slot
 // = garbage/crash - the probe MUST assert a plausible PresentCount.
 //
-// Semantics pinned (M4-D2 §11):
-//   - the FIRST poll() takes the baseline (PresentCount deltas start at 0);
+// Semantics pinned (M4-D2 §11, carried into the sampler):
+//   - the FIRST tick takes the baseline (PresentCount deltas start at 0);
 //   - DXGI_ERROR_FRAME_STATISTICS_DISCONTINUOUS (0x887A000B) re-baselines
 //     that output - never '-', never a garbage jump;
-//   - a zero PresentCount delta → honest 0 FPS (a static desktop - DWM
-//     stops presenting; bitblt-presented windows never increment
-//     PresentCount - documented in the report);
+//   - a zero PresentCount delta → a tick with frames 0 pushes nothing (a
+//     static desktop - DWM stops presenting; bitblt-presented windows
+//     never increment PresentCount - documented in the report) and the
+//     poll reads 0 fps + null percentiles;
 //   - LIVE FINDING (2026-08-07, this A770): IDXGIOutput::GetFrameStatistics
 //     is "only supported while in full-screen mode" (Microsoft docs) - on
 //     the windowed desktop it answers DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
-//     (0x887A0001) and the counters never move. When NO output maintains
-//     usable statistics, poll() returns null (honest '-', exactly like the
-//     old PresentMon state) - NEVER a fake 0;
-//   - DXGI unavailable (load/factory failure) → poll() returns null;
-//   - poll() returns { fps, frameTimeMs: null, gpuBusy: null } - the same
-//     shape as the old PresentMon adapter.
+//     (0x887A0001) and the counters never move. The sampler falls back to
+//     the duplication drain (below) per tick;
+//   - DXGI unavailable (load/factory failure) → poll() returns null.
 //
 // The adapter also exposes adapterLuidOf(deviceIdHex): GetDesc1 carries the
 // adapter LUID + DeviceId - the display-enumeration link that sys-stats.js
 // uses to match the GPU-perf-counter instance names (the IGCL bindings
 // expose no adapter LUID).
 //
-// FALLBACK (M4-D2 r2 amendment, implemented as run 1b): on a windowed
-// desktop no output maintains GetFrameStatistics (every output answers
-// DXGI_ERROR_NOT_CURRENTLY_AVAILABLE 0x887A0001 - the counters are only
-// maintained in fullscreen mode). A pure-GFS path would honestly show '-'
-// forever. When a poll finds NO output with usable GFS statistics, the poll
-// falls back to IDXGIOutputDuplication frame counting (the OBS-style
-// measure - counts DWM-presented frames per output, works windowed +
-// borderless, unelevated, per-process duplication):
+// FALLBACK (M4-D2 r2 amendment, implemented as run 1b; folded into the
+// sampler by M7a): on a windowed desktop no output maintains
+// GetFrameStatistics (every output answers DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
+// 0x887A0001 - the counters are only maintained in fullscreen mode). A
+// pure-GFS path would honestly show '-' forever. When a tick finds NO
+// output with usable GFS statistics, the tick falls back to
+// IDXGIOutputDuplication frame counting (the OBS-style measure - counts
+// DWM-presented frames per output, works windowed + borderless, unelevated,
+// per-process duplication):
 //   - IDXGIOutput1::DuplicateOutput - vtable slot 22 (CORRECTED live in
 //     run 1b: the Windows SDK IDXGIOutput has 12 methods - GetDesc 7 …
 //     GetFrameStatistics 18 - and NO GetDevice, so IDXGIOutput1 adds
@@ -83,7 +103,7 @@
 //     ends the drain; on success → ReleaseFrame IMMEDIATELY (the next
 //     AcquireNextFrame fails if the previous frame is not released).
 //     DXGI_ERROR_ACCESS_LOST (0x887A0026) → drop the duplication object,
-//     recreate it on the NEXT poll.
+//     recreate it on the NEXT tick.
 //   - COUNTING (corrected live in run 1b): the duplication COALESCES - the
 //     operating system accumulates ALL desktop updates since the last
 //     acquire into a SINGLE frame ("the operating system accumulates all
@@ -101,18 +121,22 @@
 //     AccumulatedFrames@16 field are read); the resource out-ptr is a
 //     'void*' buffer.
 //   - Persistent per-output duplication objects, created lazily on the
-//     FIRST poll that needs the fallback (multiple processes may duplicate
-//     the same output); creation failures are retried on later polls.
-//   - Each poll drains the frames since the last drain and divides by the
+//     FIRST tick that needs the fallback (multiple processes may duplicate
+//     the same output); creation failures are retried on later ticks.
+//   - Each tick drains the frames since the last drain and divides by the
 //     wall-clock Δt (the same baselineAt discipline as the GFS path - the
-//     first fallback poll takes the baseline). The drain window always
+//     first fallback tick takes the baseline). The drain window always
 //     matches the Δt window (the duplication queue accumulates exactly what
 //     was presented since the last drain, including across GFS-active
-//     polls), so mode flip-flops stay honest.
+//     ticks), so mode flip-flops stay honest.
 //   - GFS first; duplication ONLY when no GFS output answered. Both
-//     unavailable → poll() returns null (honest '-'). Never throws.
+//     unavailable → the tick pushes nothing and the poll honestly reads
+//     fps 0 + null percentiles (the ring cannot distinguish a dead path
+//     from a static desktop; the overlay renders '-' for both anyway).
+//     Never throws.
 
 import koffi from 'koffi';
+import { pushRing, rollingFps, percentileStats, RING_MAX, PERCENTILE_WINDOW_MS } from './fps-percentiles.js';
 
 // DXGI error codes (HRESULTs are compared unsigned).
 export const DXGI_ERROR_NOT_FOUND = 0x887A0002;
@@ -151,6 +175,11 @@ export const DXGI_ADAPTER_DESC1_SIZE = 312;
 export const DESC1_DEVICE_ID_OFF = 260;
 export const DESC1_LUID_LOW_OFF = 296;
 export const DESC1_LUID_HIGH_OFF = 300;
+
+// M7a: the sampler cadence (the ring's 200 ms entries) + the poll's fps
+// rolling window (the same 1 s cadence as the old poll-driven reads).
+const SAMPLER_INTERVAL_MS = 200;
+const FPS_WINDOW_MS = 1000;
 
 // Function-pointer prototypes for the vtable slots (COM 'this' is the
 // first explicit argument - x64 unifies the calling conventions).
@@ -211,6 +240,11 @@ export function presentCountOf(statsBuf) {
 /**
  * uint32 wrap-aware delta: the counters wrap at 2^32 (a >4e9 present
  * count would otherwise render a huge negative delta).
+ * COUNTER-RESET EDGE: a PresentCount RESET without the DISCONTINUOUS flag
+ * violates the DXGI contract (DISCONTINUOUS is the documented reset
+ * signal) and yields a delta near 2^32 for one tick - the percentile
+ * expansion clamp (MAX_FRAMES_PER_ENTRY in fps-percentiles.js) bounds the
+ * blast radius; an honest stream never sees this.
  * @param {number} curr
  * @param {number} base
  * @returns {number}
@@ -223,12 +257,17 @@ export function wrappedDelta(curr, base) {
  * The DXGI FPS adapter + the adapter-LUID link. Interface (mirrors the old
  * PresentMon adapter): poll(deviceId) → sample|null, stop(), and the
  * M4-D2 addition adapterLuidOf(deviceIdHex) for sys-stats.
+ * M7a: poll() no longer reads the counters itself - the internal 200 ms
+ * sampler does (started lazily on the FIRST poll, cleared in stop()); the
+ * poll derives { fps, low1Pct, p99 } from the ring the sampler maintains.
  * Graceful degradation: a load/factory/enumeration failure leaves
  * available=false and poll() returns null forever - never throws.
  * @param {{
  *   load?: (name: string) => object,   // injectable koffi load (tests)
  *   now?: () => number,                // injectable wall clock (ms)
  *   callSlot?: Function,               // injectable vtable-slot caller (tests/probe)
+ *   setInterval?: (fn: () => void, ms: number) => unknown,  // injectable sampler timer (tests)
+ *   clearInterval?: (id: unknown) => void,                  // injectable sampler timer (tests)
  * }} [deps]
  */
 export function createDxgiFpsAdapter(deps = {}) {
@@ -239,6 +278,10 @@ export function createDxgiFpsAdapter(deps = {}) {
   // a fake pointer would crash). The live probe wraps the real one to log
   // the DuplicateOutput creation results.
   const slotFn = deps.callSlot ?? defaultCallSlot;
+  // M7a: the sampler timer seam - the tests inject a fake interval and tick
+  // the sampler deterministically (no real 200 ms wall-clock dependency).
+  const setSamplerTimer = deps.setInterval ?? ((fn, ms) => setInterval(fn, ms));
+  const clearSamplerTimer = deps.clearInterval ?? ((id) => clearInterval(id));
 
   let available = false;
   let availableReason = null;
@@ -246,12 +289,17 @@ export function createDxgiFpsAdapter(deps = {}) {
   let outputs = []; // [{ ptr, vtbl }]
   let adapters = []; // [{ ptr, vtbl, deviceId }]
   let luidCache = new Map(); // deviceIdHex -> { high, low } | null
-  let baselineAt = null;
+  let baselineAt = null; // the GFS path's own baseline (ms)
   let baselinePresent = new Map(); // output ptr -> PresentCount baseline
   let dupDevice = null; // the session D3D11 device (DuplicateOutput's pDevice)
   let dupDeviceFailed = false;
   let dupObjects = new Map(); // output ptr -> IDXGIOutputDuplication ptr
   let dupBaselineAt = null; // the fallback path's own baseline (ms)
+  // M7a: the sampler state - the ring of { tMs, ftMs, frames } entries
+  // (max ~150 / 30 s, the pure fps-percentiles constants) + the interval
+  // id (null until the first poll starts the sampler).
+  let ring = [];
+  let samplerTimer = null;
 
   const init = () => {
     if (factory !== null) return true;
@@ -345,11 +393,11 @@ export function createDxgiFpsAdapter(deps = {}) {
   };
 
   // Lazily create the per-output IDXGIOutputDuplication objects on the
-  // FIRST poll that needs the fallback. Creation is per-process allowed
+  // FIRST tick that needs the fallback. Creation is per-process allowed
   // (multiple processes may duplicate the same output; Windows caps
   // concurrent duplications at 4 processes per session); failures are
-  // retried on later polls. Returns whether any object was created this
-  // call (a creation poll is always a baseline poll - fresh objects have
+  // retried on later ticks. Returns whether any object was created this
+  // call (a creation tick is always a baseline tick - fresh objects have
   // empty queues).
   const ensureDuplications = (device) => {
     let createdAny = false;
@@ -362,7 +410,7 @@ export function createDxgiFpsAdapter(deps = {}) {
           dupObjects.set(output, koffi.decode(dupBuf, 0, 'void*'));
           createdAny = true;
         }
-      } catch { /* creation failed - retried on the next poll */ }
+      } catch { /* creation failed - retried on the next tick */ }
     }
     return createdAny;
   };
@@ -375,21 +423,62 @@ export function createDxgiFpsAdapter(deps = {}) {
     }
   };
 
-  // Drain the duplication queues and divide by the wall-clock Δt. Called
-  // ONLY when no output answered GetFrameStatistics. The queue accumulates
-  // exactly what was presented since the last drain (including across
-  // GFS-active polls), so the count window always matches the Δt window.
-  // Returns null when no duplication exists at all (both paths
-  // unavailable - honest '-'); never throws.
-  const pollViaDuplication = (at) => {
+  // M7a: ONE GFS read pass - the per-output PresentCount deltas since the
+  // last tick. The DISCONTINUOUS re-baseline (M4-D2 §11) survives: a
+  // DISCONTINUOUS answer re-baselines that output - never '-', never a
+  // garbage jump. Returns null when NO output answered (the duplication
+  // fallback takes over); { frames, dtMs } otherwise (a baseline tick
+  // reads frames 0 / dtMs 0 - nothing gets pushed).
+  const readGfsTick = (at) => {
+    let presentSum = 0;
+    let anyOk = false;
+    for (const output of outputs) {
+      const stats = koffi.alloc('uint8', DXGI_FRAME_STATISTICS_SIZE);
+      const hr = slotFn(output, SLOT_GET_FRAME_STATISTICS, HR1, output, stats);
+      if ((hr >>> 0) === DXGI_ERROR_FRAME_STATISTICS_DISCONTINUOUS) {
+        // re-baseline this output - never a garbage jump, never '-'
+        anyOk = true;
+        baselinePresent.set(output, presentCountOf(stats));
+        continue;
+      }
+      if (hr < 0) continue; // NOT_CURRENTLY_AVAILABLE / other - no stats
+      anyOk = true;
+      const count = presentCountOf(stats);
+      const base = baselinePresent.has(output) ? baselinePresent.get(output) : null;
+      if (base === null) {
+        baselinePresent.set(output, count);
+        continue;
+      }
+      baselinePresent.set(output, count);
+      presentSum += wrappedDelta(count, base);
+    }
+    if (!anyOk) return null;
+    if (baselineAt === null) {
+      // the first GFS tick: baseline only - the delta starts at 0
+      baselineAt = at;
+      return { frames: 0, dtMs: 0 };
+    }
+    const dtMs = at - baselineAt;
+    baselineAt = at;
+    if (dtMs <= 0) return { frames: 0, dtMs: 0 };
+    return { frames: presentSum, dtMs };
+  };
+
+  // M7a: the duplication drain folded into the sampler (the sampler is the
+  // ONLY drainer now - the queue is never double-drained by a poll). The
+  // queue accumulates exactly what was presented since the last drain
+  // (including across GFS-active ticks), so the count window always
+  // matches the Δt window. Returns null when no duplication exists at all;
+  // { frames, dtMs } otherwise (a baseline tick reads frames 0 / dtMs 0).
+  const readDuplicationTick = (at) => {
     const device = ensureDupDevice();
     if (!device) return null; // d3d11 unavailable → duplication impossible
     const createdAny = ensureDuplications(device);
     if (dupObjects.size === 0) return null; // GFS + duplication both unavailable
     if (createdAny || dupBaselineAt === null) {
-      // baseline poll: fresh objects have empty queues - nothing to drain
+      // baseline tick: fresh objects have empty queues - nothing to drain
       dupBaselineAt = at;
-      return { fps: 0, frameTimeMs: null, gpuBusy: null };
+      return { frames: 0, dtMs: 0 };
     }
     let frameCount = 0;
     const frameInfo = koffi.alloc('uint8', DXGI_OUTDUPL_FRAME_INFO_SIZE);
@@ -399,7 +488,7 @@ export function createDxgiFpsAdapter(deps = {}) {
         let hr;
         try {
           hr = slotFn(dup, SLOT_ACQUIRE_NEXT_FRAME, HR_ACQ, dup, 0, frameInfo, resource);
-        } catch { break; } // defensive - never throw out of poll()
+        } catch { break; } // defensive - never throw out of the tick
         const hrU = hr >>> 0;
         if (hrU === 0) {
           // The duplication COALESCES: each acquired frame carries the
@@ -418,18 +507,50 @@ export function createDxgiFpsAdapter(deps = {}) {
         }
         if (hrU === DXGI_ERROR_WAIT_TIMEOUT) break; // queue drained
         if (hrU === DXGI_ERROR_ACCESS_LOST) {
-          dropDuplication(output); // recreate on the NEXT poll
+          dropDuplication(output); // recreate on the NEXT tick
           break;
         }
         break; // any other error ends this output's drain
       }
     }
-    const dtSec = (at - dupBaselineAt) / 1000;
+    const dtMs = at - dupBaselineAt;
     dupBaselineAt = at;
-    if (dtSec <= 0) return { fps: 0, frameTimeMs: null, gpuBusy: null };
-    const fps = frameCount / dtSec;
-    // Honest 0 for a static desktop (DWM stops presenting) - never '-'.
-    return { fps: Math.round(fps * 10) / 10, frameTimeMs: null, gpuBusy: null };
+    if (dtMs <= 0) return { frames: 0, dtMs: 0 };
+    return { frames: frameCount, dtMs };
+  };
+
+  // M7a: ONE sampler tick - the ONLY counter read in the adapter. The
+  // 200 ms interval owns every GetFrameStatistics + duplication drain;
+  // poll() only reads the ring. A tick NEVER throws (defensive - a failed
+  // tick pushes nothing). A tick with frames > 0 and dt > 0 pushes one
+  // ring entry; zero frames (a static desktop) pushes nothing so the ring
+  // decays and the percentiles honestly return null.
+  const sampleTick = () => {
+    try {
+      const at = now();
+      // Age-evict the ring first (the SAME recency window the percentile
+      // math uses - stale entries never linger in the ring).
+      ring = ring.filter((e) => e.tMs >= at - PERCENTILE_WINDOW_MS);
+      const read = readGfsTick(at);
+      const tick = read !== null ? read : readDuplicationTick(at);
+      if (tick === null) return; // both paths unavailable - push nothing
+      if (!(tick.frames > 0) || !(tick.dtMs > 0)) return;
+      pushRing(ring, { tMs: at, ftMs: tick.dtMs / tick.frames, frames: tick.frames }, RING_MAX);
+    } catch { /* defensive - a tick never throws */ }
+  };
+
+  // M7a: the sampler lifecycle - started LAZILY on the first poll() call
+  // (no counter reads before anything asks for FPS), cleared in stop().
+  const ensureSampler = () => {
+    if (samplerTimer !== null) return;
+    samplerTimer = setSamplerTimer(sampleTick, SAMPLER_INTERVAL_MS);
+  };
+
+  const stopSampler = () => {
+    if (samplerTimer !== null) {
+      try { clearSamplerTimer(samplerTimer); } catch { /* best effort */ }
+      samplerTimer = null;
+    }
   };
 
   return {
@@ -475,68 +596,40 @@ export function createDxgiFpsAdapter(deps = {}) {
     },
 
     /**
-     * System-wide FPS via GetFrameStatistics. The FIRST call takes the
-     * baseline (PresentCount deltas start at 0 - an honest 0 FPS sample,
-     * never '-'). Later calls: sum the wrap-aware PresentCount deltas of
-     * every output / wall-clock Δt; a DISCONTINUOUS answer re-baselines
-     * that output. DXGI unavailable → null.
+     * System-wide FPS + the 1% Low / 99% FPS stats (M7a). The FIRST call
+     * starts the 200 ms sampler (the baseline reads happen on its ticks);
+     * the poll NEVER reads the counters itself - the sample derives from
+     * the ring: fps = the frames presented within the last 1 s window
+     * (rounded to 1 decimal; an empty ring honestly reads 0 - the
+     * static-desktop shape, never '-'), low1Pct/p99 from the percentile
+     * math (null until the 60-frame floor - the honest degrade). DXGI
+     * unavailable → null.
      * @param {number} _deviceId (ignored - system-wide)
-     * @returns {Promise<{ fps: number | null, frameTimeMs: null, gpuBusy: null } | null>}
+     * @returns {Promise<{ fps: number, frameTimeMs: null, gpuBusy: null, low1Pct: number | null, p99: number | null } | null>}
      */
     async poll(_deviceId) {
       if (!init()) return null;
+      ensureSampler();
       const at = now();
       try {
-        let presentSum = 0;
-        let anyOk = false;
-        for (const output of outputs) {
-          const stats = koffi.alloc('uint8', DXGI_FRAME_STATISTICS_SIZE);
-          const hr = slotFn(output, SLOT_GET_FRAME_STATISTICS, HR1, output, stats);
-          if ((hr >>> 0) === DXGI_ERROR_FRAME_STATISTICS_DISCONTINUOUS) {
-            // re-baseline this output - never a garbage jump, never '-'
-            anyOk = true;
-            baselinePresent.set(output, presentCountOf(stats));
-            continue;
-          }
-          if (hr < 0) continue; // NOT_CURRENTLY_AVAILABLE / other - no stats
-          anyOk = true;
-          const count = presentCountOf(stats);
-          const base = baselinePresent.has(output) ? baselinePresent.get(output) : null;
-          if (base === null) {
-            baselinePresent.set(output, count);
-            continue;
-          }
-          baselinePresent.set(output, count);
-          presentSum += wrappedDelta(count, base);
-        }
-        if (!anyOk) {
-          // No output maintains usable frame statistics (live on this
-          // machine: the windowed desktop answers NOT_CURRENTLY_AVAILABLE -
-          // GetFrameStatistics is only supported in fullscreen mode).
-          // FALLBACK (r2 amendment): count DWM-presented frames via
-          // IDXGIOutputDuplication - the OBS-style measure that works
-          // windowed + borderless, unelevated. GFS first; duplication ONLY
-          // when no GFS output answered. Both unavailable → null (honest
-          // '-', never a fake 0).
-          return pollViaDuplication(at);
-        }
-        if (baselineAt === null) {
-          // first poll: baseline only - the delta starts at 0
-          baselineAt = at;
-          return { fps: 0, frameTimeMs: null, gpuBusy: null };
-        }
-        const dtSec = (at - baselineAt) / 1000;
-        baselineAt = at;
-        if (dtSec <= 0) return { fps: 0, frameTimeMs: null, gpuBusy: null };
-        const fps = presentSum / dtSec;
-        // Honest 0 for a static desktop (DWM stops presenting) - never '-'.
-        return { fps: Math.round(fps * 10) / 10, frameTimeMs: null, gpuBusy: null };
+        const frames = rollingFps(ring, at, FPS_WINDOW_MS);
+        const stats = percentileStats(ring, at, PERCENTILE_WINDOW_MS);
+        return {
+          fps: Math.round(frames * 10) / 10,
+          frameTimeMs: null,
+          gpuBusy: null,
+          low1Pct: stats === null ? null : stats.low1Pct,
+          p99: stats === null ? null : stats.p99,
+        };
       } catch {
         return null;
       }
     },
 
     async stop() {
+      // M7a: the sampler interval dies with the adapter - a stopped
+      // adapter never reads counters again.
+      stopSampler();
       try {
         for (const [output, dup] of dupObjects) {
           try { slotFn(dup, SLOT_RELEASE, REL, dup); } catch { /* best effort */ }
@@ -563,6 +656,7 @@ export function createDxgiFpsAdapter(deps = {}) {
       } catch { /* best effort */ }
       baselineAt = null;
       baselinePresent = new Map();
+      ring = [];
     },
   };
 }
