@@ -10,6 +10,9 @@ import type {
   DeviceState,
   ElevationState,
   FpsSample,
+  GraphicsApplyResponse,
+  GraphicsSettings,
+  GraphicsState,
   HealthReport,
   MockFeaturesetsResponse,
   MockSwapResponse,
@@ -37,6 +40,15 @@ export interface ArcPowerApi {
   deviceSet(deviceId: number): Promise<{ deviceId: number | null }>;
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
+  /** M8 (the Graphics tab): the 3D-feature read (never throws - the
+   *  all-false/null state is the honest "not supported on this GPU" degrade).
+   *  NEVER called with a null deviceId - the no-Intel page guard renders
+   *  'No GPU available.' first. */
+  graphicsGet(deviceId: number): Promise<GraphicsState>;
+  /** M8: apply graphics settings - the DEDICATED apply path (NO OC waiver,
+   *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
+   *  with the FRESH read-back for the per-control refresh. */
+  graphicsApply(deviceId: number, settings: GraphicsSettings): Promise<GraphicsApplyResponse>;
   /** M4O: `opts.profileApply: true` marks a PROFILE apply (the Profiles-page
    *  Apply button) - main skips the OC-mode gate for it (the mode is the
    *  interactive slider gate ONLY; the ceiling + capability refusals stay). */

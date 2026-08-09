@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { sanitizeSettings, clampSettings } from './ipc-core.js';
+import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
 import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /**
@@ -89,7 +89,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     await finish({ ok: false, error: 'invalid request: deviceId must be a non-negative integer' });
     return 1;
   }
-  if (!['apply', 'waiver-accept', 'reset'].includes(op)) {
+  if (!['apply', 'waiver-accept', 'reset', 'graphics-apply'].includes(op)) {
     await finish({ ok: false, error: `invalid request: unknown op '${op}'` });
     return 1;
   }
@@ -134,6 +134,33 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       let state = null;
       try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: true, state });
+      return 0;
+    }
+
+    // M8 (the Graphics tab): the DEDICATED graphics apply op - 3D features
+    // have NO OC waiver and NO OC-mode gate, so this branch never touches
+    // the OC machinery (no sanitizeSettings, no ocModeRefusal, no
+    // extended-unavailable refusal). The worker's own sanitizer validates
+    // the payload (the FPS clamp uses the device's FRESH frame-limit range,
+    // 30-300-1-60 fallback); the response envelope is { ok, perControl,
+    // graphicsState } with the FRESH getGraphicsSettings read-back for the
+    // page's per-control refresh.
+    if (op === 'graphics-apply') {
+      if (typeof req.settings !== 'object' || req.settings === null || Array.isArray(req.settings)) {
+        await finish({ ok: false, error: 'invalid request: settings must be an object' });
+        return 1;
+      }
+      let range = null;
+      try {
+        range = (await backend.getGraphicsSettings(deviceId)).frameLimitRange;
+      } catch {
+        // degraded - the sanitizer's fallback applies
+      }
+      const settings = sanitizeGraphicsSettings(req.settings, range);
+      const out = await backend.setGraphicsSettings(deviceId, settings);
+      let graphicsState = null;
+      try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
+      await finish({ ok: out.ok, perControl: out.perControl, graphicsState });
       return 0;
     }
 

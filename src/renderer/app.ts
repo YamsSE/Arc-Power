@@ -12,6 +12,7 @@ import { initTitlebar } from './components/titlebar.ts';
 import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { tuningPage } from './pages/tuning.ts';
+import { graphicsPage } from './pages/graphics.ts';
 import { monitoringPage, redrawMonitoringGraphs } from './pages/monitoring.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
@@ -26,6 +27,9 @@ import { primaryVideoController } from './pure/sysinfo.ts';
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
   tuning: tuningPage,
+  // M8: the #/graphics page (the Graphics tab - below Tuning in the
+  // sidebar). An unregistered id falls back to the dashboard (S3).
+  graphics: graphicsPage,
   monitoring: monitoringPage,
   profiles: profilesPage,
   tweaks: tweaksPage,

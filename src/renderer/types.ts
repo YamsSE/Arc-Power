@@ -490,3 +490,48 @@ export interface MockSwapResponse {
   /** The featureset's display-driver registry date (null when unverified). */
   driverDate: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// M8 - the Graphics tab (the IGCL 3D-feature surface)
+// ---------------------------------------------------------------------------
+
+/** M8: the XeSS frame-generation override options (the IGCL enum values). */
+export type FrameGenOverride = 'app-choice' | '2x' | '3x' | '4x';
+
+/** M8: the frame-synchronization (flip-mode) options (the IGCL flag values). */
+export type FlipMode = 'application-default' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame';
+
+/** M8: the low-latency mode options (the IGCL enum values). */
+export type LowLatency = 'off' | 'on' | 'on-boost';
+
+/** M8 apply intent; an absent field = leave the driver value untouched. */
+export interface GraphicsSettings {
+  frameGenOverride?: FrameGenOverride;
+  flipMode?: FlipMode;
+  frameLimit?: { enabled: boolean; value: number };
+  lowLatency?: LowLatency;
+}
+
+/** M8: the driver read-back (getGraphicsSettings) - never throws; the
+ *  all-false/null shape is the honest "not supported on this GPU" degrade. */
+export interface GraphicsState {
+  supported: { frameGen: boolean; flipModes: boolean; frameLimit: boolean; lowLatency: boolean };
+  /** M8: the driver's SupportedTypes-gated option lists (Speed Sync etc.) -
+   *  the page's dropdown gating source. */
+  supportedOptions: { frameGen: FrameGenOverride[]; flipModes: FlipMode[]; lowLatency: LowLatency[] };
+  frameLimitRange: { min: number; max: number; step: number; default: number } | null;
+  values: {
+    frameGenOverride: FrameGenOverride | null;
+    flipMode: FlipMode | null;
+    frameLimit: { enabled: boolean; value: number } | null;
+    lowLatency: LowLatency | null;
+  };
+}
+
+/** M8: the graphics:apply envelope - the FRESH read-back (graphicsState)
+ *  for the page's per-control refresh after every apply. */
+export interface GraphicsApplyResponse {
+  ok: boolean;
+  perControl: Record<string, PerControlResult>;
+  graphicsState: GraphicsState | null;
+}

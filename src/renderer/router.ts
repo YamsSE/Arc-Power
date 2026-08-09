@@ -16,18 +16,25 @@ import type {
 // "Overlay settings" button destination; the overlay enable TOGGLE lives
 // on this page's General card - the user's amendment moved it out of
 // Settings).
-export type PageId = 'dashboard' | 'tuning' | 'monitoring' | 'profiles' | 'tweaks' | 'settings' | 'overlay';
+// M8: the #/graphics page (the Graphics tab - the user's order: the tab
+// sits BELOW Tuning).
+export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'monitoring' | 'profiles' | 'tweaks' | 'settings' | 'overlay';
 
 // M6-amd1: the Overlay tab sits DIRECTLY BELOW the Monitoring tab (the
 // user's amendment - the sidebar order; the count-only ui-verify pins are
 // unaffected).
-export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'monitoring', 'overlay', 'profiles', 'tweaks', 'settings'];
+// M8: the Graphics tab sits DIRECTLY BELOW Tuning (the user's order:
+// dashboard / tuning / graphics / monitoring / overlay / profiles / tweaks /
+// settings).
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'monitoring', 'overlay', 'profiles', 'tweaks', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
   // M4-D2 (§7): the Overclocking page was RENAMED to Tuning (the fan editor
   // moved into it as a sub-view - §8).
   tuning: 'Tuning',
+  // M8: the Graphics tab (the IGS-mirror 3D-feature settings page).
+  graphics: 'Graphics',
   monitoring: 'Monitoring',
   profiles: 'Profiles',
   tweaks: 'Tweaks',

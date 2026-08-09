@@ -25,7 +25,7 @@
 import { createRequire } from 'node:module';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
-import { CONTROLS } from './backend/backend.interface.js';
+import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
@@ -56,6 +56,56 @@ const RESET_VERIFY_EPS = 1e-6;
 // M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
+// M8: the frame-limit clamp fallback (30-300-1-60 - the probe-recorded
+// driver range; the fallback only applies when the device reports no range,
+// so the clamp can never offer an un-appliable value).
+const GRAPHICS_FRAME_LIMIT_FALLBACK = { min: 30, max: 300, step: 1, default: 60 };
+
+/**
+ * M8: validate a graphics-settings payload and return a clean copy - the
+ * DEDICATED graphics validator (plan-review S1: the OC sanitizeSettings
+ * keeps rejecting graphics keys - 3D features have no OC waiver and no
+ * OC-mode gate, so they never ride the OC machinery). Throws on anything
+ * illegal (unknown keys, bad options, malformed frameLimit). The frame-limit
+ * value is CLAMPED to the driver-reported range (30-300-1-60 fallback) -
+ * the FPS clamp: the renderer can never send an un-appliable value.
+ * @param {unknown} payload
+ * @param {{ min: number, max: number, step: number, default: number } | null} [range]
+ * @returns {import('./backend/backend.interface.js').GraphicsSettings}
+ */
+export function sanitizeGraphicsSettings(payload, range = null) {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error('graphics-settings payload must be a plain object');
+  }
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === 'frameGenOverride') {
+      if (!GRAPHICS_FRAME_GEN_OPTIONS.includes(value)) throw new Error(`frameGenOverride must be one of: ${GRAPHICS_FRAME_GEN_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else if (key === 'flipMode') {
+      if (!GRAPHICS_FLIP_MODE_OPTIONS.includes(value)) throw new Error(`flipMode must be one of: ${GRAPHICS_FLIP_MODE_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else if (key === 'lowLatency') {
+      if (!GRAPHICS_LOW_LATENCY_OPTIONS.includes(value)) throw new Error(`lowLatency must be one of: ${GRAPHICS_LOW_LATENCY_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else if (key === 'frameLimit') {
+      if (typeof value !== 'object' || value === null
+        || typeof value.enabled !== 'boolean'
+        || typeof value.value !== 'number' || !Number.isFinite(value.value)) {
+        throw new Error('frameLimit must be { enabled: boolean, value: number }');
+      }
+      const r = range && Number.isFinite(range.min) && Number.isFinite(range.max) && range.max > range.min
+        ? range
+        : GRAPHICS_FRAME_LIMIT_FALLBACK;
+      const snapped = r.step > 0 ? Math.round(value.value / r.step) * r.step : value.value;
+      out[key] = { enabled: value.enabled, value: Math.min(r.max, Math.max(r.min, snapped)) };
+    } else {
+      throw new Error(`unknown graphics setting: ${key}`);
+    }
+  }
+  return out;
+}
 
 /**
  * M5: the hotkey letter must be EXACTLY one letter (CTRL + <letter> - the
@@ -721,6 +771,48 @@ export function createIpcHandlers({
       'get-current-settings': async (deviceId) => {
         assertValidDeviceId(deviceId);
         return backend.getCurrentSettings(deviceId);
+      },
+
+      // M8 (the Graphics tab): the 3D-feature surface. 'graphics:get' is the
+      // page's load read (assertValidDeviceId-guarded - the renderer NEVER
+      // calls it with a null deviceId: the no-Intel page guard renders
+      // 'No GPU available.' first, plan-review S3). The backend never
+      // throws - the all-false/null state is the honest degrade.
+      'graphics:get': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        return backend.getGraphicsSettings(deviceId);
+      },
+
+      // M8: the DEDICATED graphics apply path (plan-review S1 - the OC
+      // machinery cannot carry a graphics payload: sanitizeSettings throws
+      // on unknown controls, the worker op whitelist was OC-only, the
+      // waiver semantics do not transfer). No ocModeRefusal, no
+      // extendedUnavailableRefusal, no OC waiver retry - 3D features have
+      // no OC waiver. The elevation-aware runner mirrors apply(): the
+      // in-process branch + the elevated 'graphics-apply' worker branch
+      // (the elevation toast pattern stays on the page). The response
+      // envelope is { ok, perControl, graphicsState } with the FRESH
+      // getGraphicsSettings read-back for the page's per-control refresh.
+      'graphics:apply': async (deviceId, payload) => {
+        assertValidDeviceId(deviceId);
+        // The FPS clamp range: the device's FRESH graphics state (the
+        // driver-reported range; the 30-300-1-60 fallback inside the
+        // validator when the read degrades).
+        let range = null;
+        try {
+          range = (await backend.getGraphicsSettings(deviceId)).frameLimitRange;
+        } catch {
+          // degraded - the validator's fallback applies
+        }
+        const settings = sanitizeGraphicsSettings(payload, range);
+        if (applyRunner?.needsWorker?.()) {
+          const out = await applyRunner.graphicsApply({ deviceId, settings });
+          return { ok: out.ok === true, perControl: out.perControl ?? {}, graphicsState: out.graphicsState ?? null };
+        }
+        const out = await backend.setGraphicsSettings(deviceId, settings);
+        let graphicsState = null;
+        try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
+        return { ok: out.ok, perControl: out.perControl, graphicsState };
       },
 
       'apply-settings': async (deviceId, payload, opts) => {

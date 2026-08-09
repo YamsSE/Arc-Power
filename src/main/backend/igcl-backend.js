@@ -24,8 +24,11 @@ import koffi from 'koffi';
 import {
   CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, CTL_FAN_SPEED_MODE, CTL_FAN_SPEED_UNITS,
   describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem, decodePciProperties,
+  CTL_3D_FEATURE, CTL_PROPERTY_VALUE_TYPE, CTL_GAMING_FLIP_MODE_FLAG,
+  CTL_3D_LOW_LATENCY, CTL_3D_FRAME_GENERATION_OVERRIDE,
+  encode3dFeatureGetset, decode3dFeatureGetsetValue, decode3dFeatureDetails,
 } from './igcl-bindings.js';
-import { igclErrorCode } from './backend.interface.js';
+import { igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName } from './units.js';
 import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
 
@@ -46,6 +49,24 @@ const OC_UNIT_FIELDS = {
   vramFreqOffset: 'vramMemSpeedLimit',
   vramVoltOffset: 'vramVoltageOffset',
 };
+
+// M8 (the Graphics tab): the canonical <-> IGCL value tables for the three
+// enum features (the numeric side is the v290 enum; the canonical strings
+// are the shared contract - backend.interface.js option lists).
+const GRAPHICS_FG_TO_IGCL = { 'app-choice': 0, '2x': 1, '3x': 2, '4x': 3 };
+const GRAPHICS_FG_FROM_IGCL = { 0: 'app-choice', 1: '2x', 2: '3x', 3: '4x' };
+const GRAPHICS_FLIP_TO_IGCL = {
+  'application-default': CTL_GAMING_FLIP_MODE_FLAG.APPLICATION_DEFAULT,
+  'vsync-off': CTL_GAMING_FLIP_MODE_FLAG.VSYNC_OFF,
+  'vsync-on': CTL_GAMING_FLIP_MODE_FLAG.VSYNC_ON,
+  'smooth-sync': CTL_GAMING_FLIP_MODE_FLAG.SMOOTH_SYNC,
+  'speed-frame': CTL_GAMING_FLIP_MODE_FLAG.SPEED_FRAME,
+};
+const GRAPHICS_FLIP_FROM_IGCL = Object.fromEntries(
+  Object.entries(GRAPHICS_FLIP_TO_IGCL).map(([k, v]) => [v, k]),
+);
+const GRAPHICS_LL_TO_IGCL = { off: 0, on: 1, 'on-boost': 2 };
+const GRAPHICS_LL_FROM_IGCL = { 0: 'off', 1: 'on', 2: 'on-boost' };
 
 export class IgclBackend {
   /**
@@ -99,6 +120,10 @@ export class IgclBackend {
     // same probe, so the whole shape is one promise per device per session.
     this._fanProbeCache = new Map();
     this._fanProbeEnabled = opts.fanProbe !== false;
+    // M8 (the Graphics tab): the per-device 3D-feature caps cache (the
+    // supported-feature table from ctlGetSupported3DCapabilities - stable
+    // per driver/device; the VALUES are never cached, every read is fresh).
+    this._graphicsCapsCache = new Map();
   }
 
   /**
@@ -992,6 +1017,301 @@ export class IgclBackend {
     }
 
     return state;
+  }
+
+  // -------------------------------------------------------------------------
+  // M8 - Graphics (the IGCL 3D-feature surface)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The NEVER-THROW degraded GraphicsState - the honest "not supported on
+   * this GPU" surface the page caps-gates on. Mirrored by the mock's
+   * per-device degrade (the RID_MOCK_MULTI_DEVICE iGPU + the
+   * RID_MOCK_GRAPHICS_UNSUPPORTED knob).
+   * @returns {import('./backend.interface.js').GraphicsState}
+   */
+  _graphicsDegraded() {
+    return {
+      supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false },
+      supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] },
+      frameLimitRange: null,
+      values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null },
+    };
+  }
+
+  /**
+   * M8: the per-device cached 3D-feature caps (the supported feature table
+   * from ctlGetSupported3DCapabilities). The caps are stable per driver/
+   * device - cached like the OC caps; the VALUES are never cached (every
+   * read-back is fresh). Null on any failure (the caller degrades).
+   * @param {number} deviceId
+   * @param {object} handle the device handle
+   * @returns {Promise<Map<number, object> | null>} featureType -> details
+   */
+  async _graphicsCapsOf(deviceId, handle) {
+    if (this._graphicsCapsCache.has(deviceId)) return this._graphicsCapsCache.get(deviceId);
+    const lib = this._libOrThrow();
+    const capsBuf = koffi.alloc('uint8', 24);
+    koffi.encode(capsBuf, 0, 'uint32', 24);
+    koffi.encode(capsBuf, 4, 'uint8', 0);
+    koffi.encode(capsBuf, 8, 'uint32', 0);
+    koffi.encode(capsBuf, 16, 'void*', 0n);
+    let result = lib.ctlGetSupported3DCapabilities(handle, capsBuf);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+    const num = Number(koffi.decode(capsBuf, 8, 'uint32'));
+    if (!Number.isInteger(num) || num <= 0 || num > 256) return null;
+    const detailsBuf = koffi.alloc('uint8', num * koffi.sizeof('ctl_3d_feature_details_t'));
+    koffi.encode(capsBuf, 8, 'uint32', num);
+    koffi.encode(capsBuf, 16, 'void*', koffi.address(detailsBuf));
+    result = lib.ctlGetSupported3DCapabilities(handle, capsBuf);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+    const features = new Map();
+    for (let i = 0; i < num; i++) {
+      const d = decode3dFeatureDetails(detailsBuf, i);
+      features.set(d.featureType, d);
+    }
+    this._graphicsCapsCache.set(deviceId, features);
+    return features;
+  }
+
+  /**
+   * M8: read the Graphics tab's driver state. NEVER throws - every failure
+   * (missing symbols, ctl errors, the ArcticControl read-crash) degrades to
+   * the all-false/null GraphicsState. The per-feature reads are defensive
+   * (try/catch per feature - a crash artifact must never take the surface
+   * down). The `supportedOptions` lists gate the page's dropdown options on
+   * the driver's SupportedTypes bitmask (Speed Sync etc.).
+   * @param {number} deviceId
+   * @returns {Promise<import('./backend.interface.js').GraphicsState>}
+   */
+  async getGraphicsSettings(deviceId) {
+    try {
+      const lib = this._libOrThrow();
+      if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
+        return this._graphicsDegraded();
+      }
+      const dev = await this._device(deviceId);
+      const features = await this._graphicsCapsOf(deviceId, dev.handle);
+      if (!features) return this._graphicsDegraded();
+
+      const supported = {
+        frameGen: features.has(CTL_3D_FEATURE.FRAME_GENERATION),
+        flipModes: features.has(CTL_3D_FEATURE.GAMING_FLIP_MODES),
+        frameLimit: features.has(CTL_3D_FEATURE.FRAME_LIMIT),
+        lowLatency: features.has(CTL_3D_FEATURE.LOW_LATENCY),
+      };
+      const flipDetail = features.get(CTL_3D_FEATURE.GAMING_FLIP_MODES);
+      const llDetail = features.get(CTL_3D_FEATURE.LOW_LATENCY);
+      const supportedOptions = {
+        // M8 probe: the driver exposes NO flag restrictions on the XeSS FG
+        // override (SupportedTypes 0x0) - all four options are offered while
+        // the feature is supported.
+        frameGen: supported.frameGen ? [...GRAPHICS_FRAME_GEN_OPTIONS] : [],
+        flipModes: supported.flipModes && flipDetail?.enumSupportedTypes != null
+          ? GRAPHICS_FLIP_MODE_OPTIONS.filter((m) => (flipDetail.enumSupportedTypes & BigInt(GRAPHICS_FLIP_TO_IGCL[m])) !== 0n)
+          : [],
+        lowLatency: supported.lowLatency && llDetail?.enumSupportedTypes != null
+          ? GRAPHICS_LOW_LATENCY_OPTIONS.filter((m) => (llDetail.enumSupportedTypes & (1n << BigInt(GRAPHICS_LL_TO_IGCL[m]))) !== 0n)
+          : [],
+      };
+      const flDetail = features.get(CTL_3D_FEATURE.FRAME_LIMIT);
+      const frameLimitRange = flDetail?.intRange ? { ...flDetail.intRange } : null;
+
+      // Defensive per-feature reads (the ArcticControl read-crash caveat):
+      // one try/catch per feature, a throwing/refused read degrades to null.
+      const readEnum = (featureType, fromIgcl) => {
+        try {
+          const gs = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
+          const r = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          if (r !== CTL_RESULT.SUCCESS) return null;
+          const { enableType } = decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.ENUM);
+          return fromIgcl[enableType] ?? null;
+        } catch {
+          return null;
+        }
+      };
+      const values = {
+        frameGenOverride: supported.frameGen ? readEnum(CTL_3D_FEATURE.FRAME_GENERATION, GRAPHICS_FG_FROM_IGCL) : null,
+        flipMode: supported.flipModes ? readEnum(CTL_3D_FEATURE.GAMING_FLIP_MODES, GRAPHICS_FLIP_FROM_IGCL) : null,
+        frameLimit: null,
+        lowLatency: supported.lowLatency ? readEnum(CTL_3D_FEATURE.LOW_LATENCY, GRAPHICS_LL_FROM_IGCL) : null,
+      };
+      if (supported.frameLimit) {
+        try {
+          const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.FRAME_LIMIT, valueType: CTL_PROPERTY_VALUE_TYPE.INT32, bSet: false });
+          const r = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          if (r === CTL_RESULT.SUCCESS) {
+            const v = decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.INT32);
+            values.frameLimit = { enabled: v.enable === true, value: v.value };
+          }
+        } catch {
+          values.frameLimit = null;
+        }
+      }
+
+      return { supported, supportedOptions, frameLimitRange, values };
+    } catch {
+      return this._graphicsDegraded();
+    }
+  }
+
+  /**
+   * M8: apply the Graphics tab's settings (the DEDICATED graphics apply
+   * path - NOT the OC apply-routing machinery: 3D features have no OC
+   * waiver and no OC-mode gate). Returns the ApplyResult shape with one
+   * per-control entry per requested feature. Every set is followed by a
+   * read-back verification (the plan's every-apply-verified rule). The
+   * error mapping reuses the generic branch of igclErrorCode; the
+   * 0x60000000-range 3D codes fall through to the honest 'io-failed'
+   * fallback (never raw hex in the UI).
+   * @param {number} deviceId
+   * @param {import('./backend.interface.js').GraphicsSettings} settings
+   * @returns {Promise<import('./backend.interface.js').ApplyResult>}
+   */
+  async setGraphicsSettings(deviceId, settings = {}) {
+    const lib = this._libOrThrow();
+    const dev = await this._device(deviceId);
+    const result = { ok: true, perControl: {} };
+    const fail = (control, errorCode, message) => {
+      result.perControl[control] = { ok: false, errorCode, message };
+      result.ok = false;
+    };
+    const features = await this._graphicsCapsOf(deviceId, dev.handle);
+    const surfaceUp = features !== null
+      && !this._isUnavailable(lib.ctlGetSupported3DCapabilities)
+      && !this._isUnavailable(lib.ctlGetSet3DFeature);
+    const controls = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+      .filter((c) => settings[c] !== null && settings[c] !== undefined);
+    if (!surfaceUp) {
+      for (const c of controls) {
+        fail(c, 'unavailable-symbol', 'the 3D-feature API is missing in the IGCL runtime');
+      }
+      return result;
+    }
+
+    const setEnum = (control, featureType, canonical, toIgcl, optionOk) => {
+      const igclValue = toIgcl[canonical];
+      if (igclValue === undefined) {
+        fail(control, 'out-of-range', `unknown ${control} value '${canonical}'`);
+        return;
+      }
+      if (optionOk && !optionOk(igclValue)) {
+        fail(control, 'unsupported', `the '${canonical}' option is not supported by this driver`);
+        return;
+      }
+      const gs = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue });
+      const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+      if (setResult !== CTL_RESULT.SUCCESS) {
+        fail(control, igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+        return;
+      }
+      // Read-back verification (the plan's every-apply-verified rule).
+      const rb = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
+      const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+      let readBackEqual = false;
+      let message;
+      if (getResult !== CTL_RESULT.SUCCESS) {
+        message = `set succeeded but read-back failed (${describeResult(getResult)})`;
+      } else {
+        const got = decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType;
+        readBackEqual = got === igclValue;
+        message = readBackEqual ? undefined : `read-back ${got} != requested ${igclValue}`;
+      }
+      result.perControl[control] = {
+        ok: readBackEqual,
+        errorCode: readBackEqual ? undefined : 'io-failed',
+        message,
+        readBackEqual,
+        // F3 silent no-op: SUCCESS from the setter with an unchanged value.
+        silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+      };
+      if (!readBackEqual) result.ok = false;
+    };
+
+    if (settings.frameGenOverride !== null && settings.frameGenOverride !== undefined) {
+      if (!features.has(CTL_3D_FEATURE.FRAME_GENERATION)) {
+        fail('frameGenOverride', 'unsupported', 'XeSS frame generation is not supported on this device');
+      } else {
+        setEnum('frameGenOverride', CTL_3D_FEATURE.FRAME_GENERATION, settings.frameGenOverride, GRAPHICS_FG_TO_IGCL, null);
+      }
+    }
+
+    if (settings.flipMode !== null && settings.flipMode !== undefined) {
+      if (!features.has(CTL_3D_FEATURE.GAMING_FLIP_MODES)) {
+        fail('flipMode', 'unsupported', 'frame synchronization is not supported on this device');
+      } else {
+        const detail = features.get(CTL_3D_FEATURE.GAMING_FLIP_MODES);
+        const optionOk = detail?.enumSupportedTypes != null
+          ? (v) => (detail.enumSupportedTypes & BigInt(v)) !== 0n
+          : null;
+        setEnum('flipMode', CTL_3D_FEATURE.GAMING_FLIP_MODES, settings.flipMode, GRAPHICS_FLIP_TO_IGCL, optionOk);
+      }
+    }
+
+    if (settings.lowLatency !== null && settings.lowLatency !== undefined) {
+      if (!features.has(CTL_3D_FEATURE.LOW_LATENCY)) {
+        fail('lowLatency', 'unsupported', 'low latency mode is not supported on this device');
+      } else {
+        const detail = features.get(CTL_3D_FEATURE.LOW_LATENCY);
+        const optionOk = detail?.enumSupportedTypes != null
+          ? (v) => (detail.enumSupportedTypes & (1n << BigInt(v))) !== 0n
+          : null;
+        setEnum('lowLatency', CTL_3D_FEATURE.LOW_LATENCY, settings.lowLatency, GRAPHICS_LL_TO_IGCL, optionOk);
+      }
+    }
+
+    if (settings.frameLimit !== null && settings.frameLimit !== undefined) {
+      if (!features.has(CTL_3D_FEATURE.FRAME_LIMIT)) {
+        fail('frameLimit', 'unsupported', 'the frame limit is not supported on this device');
+      } else {
+        const detail = features.get(CTL_3D_FEATURE.FRAME_LIMIT);
+        const range = detail?.intRange;
+        if (!range) {
+          // M8 finding-5: no early `return result` here - the block closes
+          // via the fall-through like the other controls (frameLimit being
+          // the last control made the return behavior-equivalent, but it
+          // was fragile: a control appended after it would be skipped).
+          fail('frameLimit', 'unsupported', 'no capability range reported for the frame limit');
+        } else {
+          // Never assume the caller's value is in range (backend contract):
+          // clamp to the driver-reported range, snap to the step.
+          const clamped = clampAndSnap(settings.frameLimit.value, range);
+          const gs = encode3dFeatureGetset({
+            featureType: CTL_3D_FEATURE.FRAME_LIMIT,
+            valueType: CTL_PROPERTY_VALUE_TYPE.INT32,
+            bSet: true,
+            intEnable: settings.frameLimit.enabled === true,
+            intValue: clamped,
+          });
+          const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('frameLimit', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.FRAME_LIMIT, valueType: CTL_PROPERTY_VALUE_TYPE.INT32, bSet: false });
+            const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+            let readBackEqual = false;
+            let message;
+            if (getResult !== CTL_RESULT.SUCCESS) {
+              message = `set succeeded but read-back failed (${describeResult(getResult)})`;
+            } else {
+              const got = decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.INT32);
+              readBackEqual = got.enable === (settings.frameLimit.enabled === true) && got.value === clamped;
+              message = readBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested { enable: ${settings.frameLimit.enabled}, value: ${clamped} }`;
+            }
+            result.perControl.frameLimit = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message,
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+            };
+            if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
+    return result;
   }
 
   // -------------------------------------------------------------------------

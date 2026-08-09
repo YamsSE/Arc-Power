@@ -17,6 +17,12 @@ export const CONTROL_LABELS: Record<string, string> = {
   fanMode: 'Fan mode',
   fanCurve: 'Fan curve',
   fixedFanPct: 'Fixed fan speed',
+  // M8 (the Graphics tab): the 3D-feature controls (the dedicated graphics
+  // apply path's per-control toasts).
+  frameGenOverride: 'XeSS FG override',
+  flipMode: 'Frame sync',
+  frameLimit: 'FPS limit',
+  lowLatency: 'Low latency',
 };
 
 const ERROR_MESSAGES: Record<OcErrorCode, string> = {

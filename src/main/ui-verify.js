@@ -387,9 +387,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 1. shell renders -----------------------------------------------------
   // M4-D2 (§7): 6 nav links - the Overclocking + Fan pages merged into one
   // Tuning page. M6: 7 nav links - the Overlay Settings page (#/overlay)
-  // joined the sidebar.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, Overlay Settings added in M6)');
+  // joined the sidebar. M8: 8 nav links - the Graphics tab (#/graphics)
+  // joined below Tuning.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - Overclocking + Fan merged into Tuning, Overlay Settings added in M6, the Graphics tab added in M8)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -560,7 +561,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
-  if (sidebarIcons.length !== 7) fail(`M4-D/M6: expected 7 sidebar links with icons (the Overlay Settings page joined in M6), got ${sidebarIcons.length}`);
+  if (sidebarIcons.length !== 8) fail(`M4-D/M6/M8: expected 8 sidebar links with icons (the Overlay Settings page joined in M6, the Graphics tab in M8), got ${sidebarIcons.length}`);
+  // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
+  // user's order: dashboard / tuning / graphics / monitoring / ...).
+  const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
+  const navLabels = JSON.parse(navOrder);
+  const graphicsIdx = navLabels.indexOf('Graphics');
+  const tuningIdx = navLabels.indexOf('Tuning');
+  if (graphicsIdx < 0 || graphicsIdx !== tuningIdx + 1) {
+    fail(`M8: the Graphics tab must sit DIRECTLY BELOW Tuning in the sidebar (nav order '${navOrder}')`);
+  }
+  step('m8-nav-position', `M8: the sidebar nav order is ${navOrder} - the Graphics tab sits directly below Tuning`);
   const sidebarPower = await js(`(() => {
     const el = document.querySelector('.sidebar-brand-power');
     if (!el) return 'no-el';
@@ -702,9 +713,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard GPU card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
-  // Driver version row is REMOVED - M4-H).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Beta'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Beta')`);
+  // Driver version row is REMOVED - M4-H). M8: the 1.1.0 base bump changed
+  // the display form (displayVersion strips the -beta.x tag of a prerelease
+  // version and appends ' Alpha' to a bare semver).
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.0 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.0 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -1268,6 +1281,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     step('m4f-selector-absent', 'M4-F: no device selector with 1 device (single-device degradation)');
   }
+
+  // M8 (the Graphics tab): the dedicated verify block (the mock backend -
+  // the page reads the mock fixture). Runs in the default variant AND under
+  // the RID_MOCK_OVERLAY=1 / RID_MOCK_MULTI_DEVICE=1 variants.
+  await runGraphicsVerify(win, backend);
 
   // --- 2. Tuning page control cards (M4-D2: #/overclocking -> #/tuning) ----
   await gotoOverclocking();
@@ -3295,8 +3313,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`, 15000))) {
-    fail('M4-H: the reload did not boot the shell');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`, 15000))) {
+    fail('M4-H: the reload did not boot the shell (8 sidebar links expected - the Graphics tab joined in M8)');
   }
   await js(`location.hash = '#/tuning'`);
   await sleep(300);
@@ -3424,9 +3442,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   await js(`location.hash = '#/settings'`);
   await sleep(250);
-  // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0 Beta'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0 Beta')`);
+  // Version row (app:version via the header line's display format). M8: the
+  // 1.1.0 base bump changed the display form ('Arc Power Ver. 1.1.0 Alpha').
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.0 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.0 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3488,7 +3507,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.0 Beta`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.1.0 Alpha`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -3807,6 +3826,263 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 }
 
 // ---------------------------------------------------------------------------
+// M8 - the Graphics tab verify block (the MOCK backend: the page reads the
+// mock fixture - never hardware)
+// ---------------------------------------------------------------------------
+//
+// Pins the four cards (the user's order) + the fixture values, the
+// driver-gated dropdown options (no Speed Sync / no On + Boost - the live
+// caps), the FPS toggle OFF->no slider / ON->the range-driven slider, the
+// dirty Apply + the mock round trip + the "Applied" chip, the Reset-to-
+// default lifecycle (change -> dirty, reset -> clean, apply -> Applied,
+// reset after apply -> Unapplied), the honest unsupported state
+// (RID_MOCK_GRAPHICS_UNSUPPORTED=1), and the multi-device device-switch
+// degrade (the iGPU serves the supported-all-false state - a device switch
+// must never crash). The no-Intel guard pin lives in runNoIntelVerify (the
+// renderer NEVER calls graphics:get with a null deviceId - assertValidDeviceId
+// throws).
+//
+// @param {import('electron').BrowserWindow} win
+// @param {object} backend the active (mock) backend
+export async function runGraphicsVerify(win, backend) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+
+  // CSS-SELECTOR helper (NEVER an expression): the class names contain
+  // dashes, so `document.querySelector(...) .card-note` would parse as a
+  // subtraction (`card - note`) - every descendant lookup goes through a
+  // real selector string.
+  const cardSel = (control) => `.graphics-card[data-control="${control}"]`;
+  const cardNote = (control) => `document.querySelector('${cardSel(control)} .card-note')?.textContent ?? ''`;
+
+  // --- 1. the tab sits directly below Tuning + the page renders -------------
+  // The boot sequence (health -> devices -> deviceId) is async - wait for
+  // the device resolution to land before navigating (the page's deviceId
+  // guard would otherwise show the honest 'No GPU available.' race state;
+  // the initial 'Arc Power' placeholder must NOT satisfy the wait).
+  if (!(await waitFor(win, `(() => { const n = (document.querySelector('.gpu-name')?.textContent ?? '').trim(); return n.includes('Arc A770') || n === 'Non supported GPU' || n.includes('AMD Radeon'); })()`, 10000))) {
+    fail(`M8: the boot device resolution never landed (header '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}')`);
+  }
+  const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
+  const navLabels = JSON.parse(navOrder);
+  if (navLabels.indexOf('Graphics') !== navLabels.indexOf('Tuning') + 1) {
+    fail(`M8: the Graphics tab must sit DIRECTLY BELOW Tuning (nav order '${navOrder}')`);
+  }
+  await js(`location.hash = '#/graphics'`);
+  await sleep(250);
+
+  // --- 1a. the unsupported variant (RID_MOCK_GRAPHICS_UNSUPPORTED=1) ---------
+  // The knob runs the WHOLE session degraded (the RID_MOCK_FAN_READONLY
+  // pattern - main.js passes it to the mock at construction): all four
+  // cards show the honest 'Not supported on this GPU.' state with NO
+  // controls. The supported-flow pins below cannot run in this session.
+  if (process.env.RID_MOCK_GRAPHICS_UNSUPPORTED === '1') {
+    if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4 && Array.from(document.querySelectorAll('.graphics-card')).every((c) => (c.textContent ?? '').includes('Not supported on this GPU.'))`, 8000))) {
+      fail(`M8: the RID_MOCK_GRAPHICS_UNSUPPORTED variant must show the honest 'Not supported on this GPU.' state on all four cards (page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+    }
+    if (await js(`!!document.querySelector('.graphics-select')`)) {
+      fail('M8: the unsupported variant must render NO controls');
+    }
+    if (await js(`!!document.querySelector('.floating-apply') && !document.querySelector('.floating-apply').hidden`)) {
+      fail('M8: the unsupported variant must not show the floating Apply (nothing to apply)');
+    }
+    step('m8-unsupported', 'M8 (RID_MOCK_GRAPHICS_UNSUPPORTED=1): all four cards show the honest "Not supported on this GPU." state, no controls, no Apply');
+    return;
+  }
+
+  if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4`, 8000))) {
+    fail(`M8: the Graphics page did not render four cards (got ${await js(`document.querySelectorAll('.graphics-card').length`)} - page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
+  }
+  const titles = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-card .card-title')).map((t) => (t.textContent ?? '').trim()))`);
+  const wantTitles = ['XeSS Frame Generation Override', 'Frame Synchronization', 'FPS Limit', 'Low Latency Mode'];
+  if (JSON.stringify(JSON.parse(titles)) !== JSON.stringify(wantTitles)) {
+    fail(`M8: the card order is ${titles} (expected ${JSON.stringify(wantTitles)} - the user's order)`);
+  }
+  // The honest notes render (the Smart-VSync-out note on the Frame Sync card).
+  const flipNote = await js(cardNote('flipMode'));
+  if (!flipNote.includes('Smart VSync is not exposed')) {
+    fail(`M8: the Frame Sync note must carry the Smart-VSync-out honesty: '${flipNote}'`);
+  }
+  if (!(await js(`document.body.textContent.includes('Per-game profiles stay in Intel Graphics Software')`))) {
+    fail('M8: the page-level honest note (per-game profiles stay in IGS) is missing');
+  }
+  step('m8-cards', `M8: #/graphics renders the four cards in the user's order ${JSON.stringify(wantTitles)}; the Frame Sync note carries the Smart-VSync-out honesty; the page-level IGS note is present`);
+
+  // --- 2. the fixture values + the driver-gated options ----------------------
+  const fixtureValues = await js(`JSON.stringify({
+    fg: document.querySelector('.graphics-select[data-graphics-select="frameGenOverride"]')?.value,
+    flip: document.querySelector('.graphics-select[data-graphics-select="flipMode"]')?.value,
+    ll: document.querySelector('.graphics-select[data-graphics-select="lowLatency"]')?.value,
+  })`);
+  const fv = JSON.parse(fixtureValues);
+  if (fv.fg !== 'app-choice' || fv.flip !== 'application-default' || fv.ll !== 'off') {
+    fail(`M8: the dropdowns do not show the mock fixture values: ${fixtureValues}`);
+  }
+  // The dropdown options mirror the LIVE caps (the probe record): no
+  // Speed Sync (the flip caps 0x6f lack the bit), no On + Boost (the
+  // low-latency caps 0x3 lack the boost bit), all four FG options.
+  const flipOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="flipMode"] option')).map((o) => o.value))`);
+  const llOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="lowLatency"] option')).map((o) => o.value))`);
+  if (JSON.parse(flipOptions).includes('speed-frame')) {
+    fail(`M8: the Frame Sync dropdown offers Speed Sync, but the mock caps (the live 0x6f) do not expose the bit: ${flipOptions}`);
+  }
+  if (JSON.parse(llOptions).includes('on-boost')) {
+    fail(`M8: the Low Latency dropdown offers On + Boost, but the mock caps (the live 0x3) do not expose the bit: ${llOptions}`);
+  }
+  if (JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="frameGenOverride"] option')).map((o) => o.value))`)).length !== 4) {
+    fail('M8: the FG dropdown must offer all four override options');
+  }
+  // The draft equals the driver state -> the floating Apply is HIDDEN.
+  if (!(await js(`!!document.querySelector('.floating-apply') && document.querySelector('.floating-apply').hidden`))) {
+    fail('M8: the floating Apply must be HIDDEN while the draft equals the driver state');
+  }
+  step('m8-fixture', `M8: dropdowns show the fixture (fg '${fv.fg}', flip '${fv.flip}', ll '${fv.ll}'); options are driver-gated (no speed-frame in ${flipOptions}, no on-boost in ${llOptions}); the Apply stays hidden while clean`);
+
+  // --- 3. the FPS toggle: OFF -> no slider; ON -> the range-driven slider ---
+  const fpsToggle = `${cardSel('frameLimit')} .graphics-toggle`;
+  const fpsSlider = `${cardSel('frameLimit')} .graphics-slider`;
+  if (!(await js(`!!document.querySelector('${fpsToggle}') && !document.querySelector('${fpsToggle}').checked`))) {
+    fail('M8: the FPS toggle must start OFF (the fixture frameLimit.enabled=false)');
+  }
+  if (!(await js(`!!document.querySelector('${fpsSlider}') && document.querySelector('${fpsSlider}').hidden`))) {
+    fail('M8: the FPS slider must be HIDDEN while the toggle is OFF');
+  }
+  await js(`(() => { const t = document.querySelector('${fpsToggle}'); t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  if (!(await waitFor(win, `(() => { const s = document.querySelector('${fpsSlider}'); return !!s && !s.hidden && s.min === '30' && s.max === '300' && s.step === '1'; })()`, 5000))) {
+    fail(`M8: the FPS toggle ON did not reveal the range-driven slider (min/max/step ${await js(`(() => { const s = document.querySelector('${fpsSlider}'); return s ? s.min + '/' + s.max + '/' + s.step : 'no-slider'; })()`)} - expected 30/300/1 from the mock range)`);
+  }
+  // The toggle change dirtied the draft -> the floating Apply appears.
+  if (!(await waitFor(win, `!!document.querySelector('.floating-apply') && !document.querySelector('.floating-apply').hidden`, 5000))) {
+    fail('M8: the FPS toggle ON must dirty the draft (the floating Apply appears)');
+  }
+  step('m8-fps-toggle', 'M8: FPS toggle OFF -> no slider; ON -> the range-driven slider (30/300/1) appears + the draft is dirty (Apply shows)');
+
+  // --- 4. a change -> the dirty Apply appears; Apply -> the round trip ------
+  await js(`(() => {
+    const s = document.querySelector('.graphics-select[data-graphics-select="flipMode"]');
+    s.value = 'vsync-on';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  // The chip stays hidden until the first apply.
+  if (!(await js(`(() => { const c = document.querySelector('${cardSel('flipMode')} .oc-chip-status'); return !!c && c.hidden; })()`))) {
+    fail('M8: the chip must stay hidden until the first apply');
+  }
+  await clearToasts();
+  await js(`document.querySelector('.floating-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('flipMode')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied' && c.className.includes('chip-ok'); })()`, 8000))) {
+    fail(`M8: the mock round trip did not flip the Frame Sync chip to 'Applied' (chip='${await js(`document.querySelector('${cardSel('flipMode')} .oc-chip-status')?.textContent ?? ''`)}', driver flip='${(await js(`window.arcPower.graphicsGet(0)`)).values.flipMode}')`);
+  }
+  if (!(await waitFor(win, `document.querySelector('.floating-apply').hidden`, 8000))) {
+    fail('M8: the floating Apply must hide after a successful apply (the applied reference cleared the dirty state)');
+  }
+  const appliedDriver = await js(`window.arcPower.graphicsGet(0)`);
+  if (appliedDriver.values.flipMode !== 'vsync-on') {
+    fail(`M8: the mock driver state did not reflect the apply (flip='${appliedDriver.values.flipMode}')`);
+  }
+  step('m8-round-trip', 'M8: change -> dirty Apply appears; Apply -> the mock round trip -> the Frame Sync chip reads "Applied" (chip-ok), the Apply hides, graphicsGet reflects flipMode=vsync-on');
+
+  // --- 5. the FPS apply + the Reset-to-default lifecycle ---------------------
+  await js(`(() => {
+    const s = document.querySelector('${fpsSlider}');
+    s.value = '144';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await js(`document.querySelector('.floating-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('frameLimit')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 8000))) {
+    fail(`M8: the FPS apply did not flip its chip to 'Applied' (driver frameLimit='${JSON.stringify((await js(`window.arcPower.graphicsGet(0)`)).values.frameLimit)}')`);
+  }
+  if ((await js(`window.arcPower.graphicsGet(0)`)).values.frameLimit.value !== 144) {
+    fail(`M8: the FPS round trip failed (driver frameLimit='${JSON.stringify((await js(`window.arcPower.graphicsGet(0)`)).values.frameLimit)}')`);
+  }
+  // The Reset-to-default lifecycle on the FG card: change -> dirty; reset ->
+  // back to the driver default -> CLEAN (the Apply hides); change + apply ->
+  // 'Applied' chip; reset AFTER an apply -> 'Unapplied' chip (the warn
+  // state) + dirty; apply -> 'Applied' again + the driver returns to the
+  // fixture default.
+  const fgReset = `(() => {
+    const btns = Array.from(document.querySelectorAll('${cardSel('frameGenOverride')} .btn'));
+    const reset = btns.find((b) => (b.textContent ?? '').includes('Reset'));
+    reset.click();
+  })()`;
+  const fgSelect = `document.querySelector('.graphics-select[data-graphics-select="frameGenOverride"]')`;
+  await js(`(() => { const s = ${fgSelect}; s.value = '3x'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  if (!(await waitFor(win, `!!document.querySelector('.floating-apply') && !document.querySelector('.floating-apply').hidden`, 5000))) {
+    fail('M8: changing the FG dropdown did not dirty the draft');
+  }
+  await js(fgReset);
+  if (!(await waitFor(win, `document.querySelector('.floating-apply').hidden`, 5000))) {
+    fail('M8: Reset to default on the FG card must restore the driver-default state (the Apply hides)');
+  }
+  await js(`(() => { const s = ${fgSelect}; s.value = '3x'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await clearToasts();
+  await js(`document.querySelector('.floating-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('frameGenOverride')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied' && c.className.includes('chip-ok'); })()`, 8000))) {
+    fail(`M8: the FG apply did not flip its chip to 'Applied' (driver fg='${(await js(`window.arcPower.graphicsGet(0)`)).values.frameGenOverride}')`);
+  }
+  await js(fgReset);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('frameGenOverride')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Unapplied' && c.className.includes('chip-warn'); })()`, 5000))) {
+    fail('M8: Reset after an apply must flip the FG chip to the warn "Unapplied" state');
+  }
+  await clearToasts();
+  await js(`document.querySelector('.floating-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('frameGenOverride')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 8000))) {
+    fail('M8: the FG reset apply did not flip its chip back to Applied');
+  }
+  if ((await js(`window.arcPower.graphicsGet(0)`)).values.frameGenOverride !== 'app-choice') {
+    fail(`M8: the FG reset apply did not return the driver to the fixture default (fg='${(await js(`window.arcPower.graphicsGet(0)`)).values.frameGenOverride}')`);
+  }
+  step('m8-fps-reset', 'M8: FPS slider apply round trip (144 FPS); the FG Reset lifecycle: change -> dirty, reset -> clean, apply -> "Applied" chip, reset after apply -> "Unapplied" (warn) chip, apply -> driver back to the fixture default');
+
+  // --- 6. the multi-device degrade (RID_MOCK_MULTI_DEVICE=1) -----------------
+  if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+    const IGPU_NAME = 'Mock Arc iGPU (fixture)';
+    const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
+    const driveSelector = (value) => js(`(() => {
+      const s = document.querySelector('.card-grid .device-select');
+      if (!s) return 'no-select';
+      s.value = '${value}';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    })()`);
+    // The graphics page leaves the device switch to the shared selector -
+    // switch to the iGPU via the DASHBOARD selector, then visit #/graphics.
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(200);
+    if ((await driveSelector('1')) !== 'ok') fail('M8: the dashboard selector change did not dispatch (multi-device)');
+    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${IGPU_NAME}'`, 8000))) {
+      fail('M8: the switch to device 1 did not land');
+    }
+    await js(`location.hash = '#/graphics'`);
+    await sleep(250);
+    if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4 && Array.from(document.querySelectorAll('.graphics-card')).every((c) => (c.textContent ?? '').includes('Not supported on this GPU.'))`, 8000))) {
+      fail(`M8: the iGPU must show the supported-all-false state on all four cards (a device switch must never crash - page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+    }
+    // Switch back to the A770 -> the fixture returns.
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(200);
+    if ((await driveSelector('0')) !== 'ok') fail('M8: the switch back to device 0 did not dispatch');
+    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
+      fail('M8: the switch back to device 0 did not land');
+    }
+    await js(`location.hash = '#/graphics'`);
+    await sleep(250);
+    if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4 && !document.querySelectorAll('.graphics-card')[0].textContent.includes('Not supported')`, 8000))) {
+      fail('M8: the A770 graphics surface must return after switching back (the fixture)');
+    }
+    step('m8-multi-device', 'M8 (RID_MOCK_MULTI_DEVICE=1): the iGPU serves the supported-all-false state (no crash); switching back to the A770 restores the fixture');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // M2D - featureset variants (RID_MOCK_FEATURESET=b580|pro-b50|arc-igpu)
 // ---------------------------------------------------------------------------
 //
@@ -3851,9 +4127,10 @@ export async function runFeaturesetVerify(win, fsId) {
 
   // --- boot: shell + dropdown -----------------------------------------------
   // M4-D2 (§7): 6 nav links (Overclocking + Fan merged into Tuning). M6: 7
-  // nav links (the Overlay Settings page joined the sidebar).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
+  // nav links (the Overlay Settings page joined the sidebar). M8: 8 (the
+  // Graphics tab joined below Tuning).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
   // the IGS indicator is gone everywhere.
@@ -4224,8 +4501,8 @@ export async function runNoIntelVerify(win) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders ----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -4390,6 +4667,24 @@ export async function runNoIntelVerify(win) {
   }
   step('tuning', `Tuning page: 'No GPU available.' (deviceId null - never 'Loading device capabilities…')`);
 
+  // --- 7b. M8: the Graphics tab on the no-Intel path -------------------------
+  // The same deviceId-null guard (plan-review S3): the page says 'No GPU
+  // available.' and NEVER calls graphics:get with a null deviceId
+  // (assertValidDeviceId throws - the renderer guard renders first).
+  await js(`location.hash = '#/graphics'`);
+  await sleep(250);
+  if (!(await waitFor(win, `(document.querySelector('.page-subtitle')?.textContent ?? '').trim() === 'No GPU available.'`, 5000))) {
+    fail(`M8: the Graphics page reads '${await js(`document.querySelector('.page-subtitle')?.textContent ?? ''`)}' on the no-Intel path (expected 'No GPU available.' - the deviceId-null guard must win)`);
+  }
+  if ((await js(`document.body.textContent`)).includes('Loading graphics capabilities')) {
+    fail('M8: the Graphics page shows the loading text on no-Intel (no graphics:get fetch can ever land - the guard renders first)');
+  }
+  // The renderer must never even TRY: graphics:get with a null deviceId is
+  // rejected in main (assertValidDeviceId) - the honest channel contract.
+  const gNull = await js(`(async () => { try { await window.arcPower.graphicsGet(null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
+  if (gNull !== 'rejected') fail(`M8: graphics:get(null) must be rejected in main (assertValidDeviceId), got '${gNull}'`);
+  step('m8-no-intel', `M8: the Graphics tab on no-Intel shows 'No GPU available.' (never 'Loading graphics capabilities…'); graphics:get(null) rejects in main (assertValidDeviceId)`);
+
   // --- 8. NO waiver modal and NO toast anywhere -----------------------------
   await js(`location.hash = '#/dashboard'`);
   await sleep(400);
@@ -4450,9 +4745,10 @@ export async function runTweaksApplyVerify(win) {
   const failKnob = process.env.RID_MOCK_REGAPPLY_FAIL; // '<entryId>:<action>'
   const cancelKnob = process.env.RID_MOCK_REGAPPLY_CANCEL === '1';
 
-  // M6: 7 nav links (the Overlay Settings page joined the sidebar).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
+  // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
+  // (the Graphics tab joined below Tuning).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
   }
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
@@ -4631,9 +4927,10 @@ export async function runFanGateVerify(win, backend) {
   const js = (code) => win.webContents.executeJavaScript(code);
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
-  // M6: 7 nav links (the Overlay Settings page joined the sidebar).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
+  // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
+  // (the Graphics tab joined below Tuning).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
   }
   // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then

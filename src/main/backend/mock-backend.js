@@ -21,6 +21,41 @@ import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
 
+// M8 (the Graphics tab): the mock's graphics fixture - mirrors the
+// M8 checkpoint-1 probe record (pipeline/live-3d-feature.md, the A770
+// driver): all four 3D features supported; the flip-mode caps 0x6f expose
+// application-default/vsync-on/vsync-off/smooth-sync but NOT speed-frame
+// (the Speed Sync dropdown option is gated off, exactly like the live
+// driver); the low-latency caps 0x3 expose off/on but NOT on-boost; the
+// XeSS FG caps expose no restrictions (all four options); the frame-limit
+// range is the probe-recorded 30-300-1-60 (the plan's fallback is the
+// same values). The apply records the payload - the read-back reflects it
+// (the mock round trip the ui-verify pins).
+const GRAPHICS_FIXTURE = Object.freeze({
+  supported: { frameGen: true, flipModes: true, frameLimit: true, lowLatency: true },
+  supportedOptions: {
+    frameGen: ['app-choice', '2x', '3x', '4x'],
+    flipModes: ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync'],
+    lowLatency: ['off', 'on'],
+  },
+  frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },
+  values: {
+    frameGenOverride: 'app-choice',
+    flipMode: 'application-default',
+    frameLimit: { enabled: false, value: 60 },
+    lowLatency: 'off',
+  },
+});
+
+// The honest all-false degrade (device 1 in the multi-device session + the
+// RID_MOCK_GRAPHICS_UNSUPPORTED knob + the no-Intel session).
+const GRAPHICS_DEGRADED = Object.freeze({
+  supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false },
+  supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] },
+  frameLimitRange: null,
+  values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null },
+});
+
 // The mock's default driver fan curve (10 points) - reported by every
 // fan-bearing featureset and restored by resetToDefaults. MUST equal
 // pure/curve.ts STOCK_FAN_CURVE (the canonical stock Intel table - the
@@ -61,6 +96,12 @@ export class MockBackend {
  *   multiDevice?: boolean,             // M4-F: emit device ids 0 AND 1 (device 1 =
    *                                      // the arc-igpu line) - the RID_MOCK_MULTI_DEVICE=1
    *                                      // ui-verify knob; tests pass the flag directly
+ *   graphicsUnsupported?: boolean,    // M8: overlay - the WHOLE graphics surface
+   *                                      // degrades to the supported-all-false state
+   *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1, the
+   *                                      // RID_MOCK_FAN_READONLY pattern); the
+   *                                      // multi-device iGPU (device 1) degrades
+   *                                      // regardless
    * }} opts
    */
   constructor(opts = {}) {
@@ -102,6 +143,11 @@ export class MockBackend {
     // (the IGCL init failure degrades to an empty list in main). The
     // renderer then boots in the no-device mode.
     this._noIntel = opts.noIntel === true || process.env.RID_MOCK_NO_INTEL === '1';
+    // M8: the unsupported-graphics session knob (the RID_MOCK_FAN_READONLY
+    // pattern) - the WHOLE graphics surface degrades to the
+    // supported-all-false state. The multi-device iGPU (device 1) degrades
+    // regardless (honest - an iGPU exposes no 3D-feature overrides).
+    this._graphicsUnsupported = opts.graphicsUnsupported === true || process.env.RID_MOCK_GRAPHICS_UNSUPPORTED === '1';
     // Devices > 0 live here; device 0 is the legacy single-device fields
     // (_device/_caps/_state/_tick/_energyStepJ/_waiverAccepted/
     // _telemetryCbs - the pre-M4-F mock, pinned directly by tests).
@@ -141,6 +187,8 @@ export class MockBackend {
         energyStepJ: this._energyStepJ,
         waiverAccepted: this._waiverAccepted,
         telemetryCbs: this._telemetryCbs,
+        // M8: the graphics state (the fixture values the apply mutates).
+        graphics: this._graphics,
       };
     }
     const e = this._extraDevices.get(id);
@@ -188,6 +236,10 @@ export class MockBackend {
     this._caps = this._buildCaps(fs, this._extended, this._fanCanControl);
     this._device = this._buildDevice(fs, 0);
     this._state = this._buildState(fs);
+    // M8: the graphics state - the fixture values deep-copied per device (the
+    // apply mutates the device's own copy; a swap resets it like the OC
+    // state - a fresh device).
+    this._graphics = JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values));
     // A swap is a fresh device: the telemetry timeline restarts (one
     // no-power sample while the energy counter resets, then the new
     // featureset's wattage - never a blended value).
@@ -205,6 +257,9 @@ export class MockBackend {
         tick: 0,
         waiverAccepted: prevExtraWaivers.get(1) ?? false,
         telemetryCbs: prevExtraCbs.get(1) ?? new Set(),
+        // M8: the iGPU's graphics state (unused - the iGPU always serves
+        // the degraded surface; kept for shape symmetry).
+        graphics: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
       });
     }
     this._failOn = {};
@@ -513,6 +568,77 @@ export class MockBackend {
       fanCurve: s.fanCurve ? s.fanCurve.map((p) => ({ ...p })) : null,
       fixedFanPct: s.fixedFanPct,
     };
+  }
+
+  /**
+   * M8: the Graphics tab's mock state. Device 0 serves the fixture (all
+   * four features supported, the probe-recorded frame-limit range, the
+   * option lists mirroring the live caps - no speed-frame, no on-boost);
+   * the apply mutates the device's own copy so the next read reflects it
+   * (the mock round trip). Device 1 (the multi-device iGPU) and the
+   * RID_MOCK_GRAPHICS_UNSUPPORTED knob serve the honest supported-all-false
+   * degrade - a device switch must never crash the page. Never throws.
+   * @param {number} [deviceId]
+   * @returns {Promise<object>} the GraphicsState shape
+   */
+  async getGraphicsSettings(deviceId = 0) {
+    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
+    const degraded = id !== 0 || this._graphicsUnsupported || this._noIntel;
+    if (degraded) {
+      return JSON.parse(JSON.stringify(GRAPHICS_DEGRADED));
+    }
+    const e = this._entry(id);
+    return {
+      supported: { ...GRAPHICS_FIXTURE.supported },
+      supportedOptions: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.supportedOptions)),
+      frameLimitRange: { ...GRAPHICS_FIXTURE.frameLimitRange },
+      values: JSON.parse(JSON.stringify(e.graphics)),
+    };
+  }
+
+  /**
+   * M8: apply the Graphics tab's settings (the mock round trip): the
+   * payload lands in the device's graphics state (frame-limit value clamped
+   * to the fixture range - mirror the real backend's clamp); the next
+   * getGraphicsSettings read-back reflects it. The degraded surfaces refuse
+   * every control with the honest 'unsupported' (a device switch must never
+   * crash). Returns the ApplyResult shape.
+   * @param {number} [deviceId]
+   * @param {object} settings
+   * @returns {Promise<{ ok: boolean, perControl: object }>}
+   */
+  async setGraphicsSettings(deviceId = 0, settings = {}) {
+    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
+    const result = { ok: true, perControl: {} };
+    const controls = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+      .filter((c) => settings[c] !== null && settings[c] !== undefined);
+    const degraded = id !== 0 || this._graphicsUnsupported || this._noIntel;
+    if (degraded) {
+      for (const c of controls) {
+        result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'graphics features are not supported on this device' };
+      }
+      result.ok = controls.length === 0;
+      return result;
+    }
+    const e = this._entry(id);
+    if (settings.frameGenOverride !== undefined && settings.frameGenOverride !== null) {
+      e.graphics.frameGenOverride = settings.frameGenOverride;
+      result.perControl.frameGenOverride = { ok: true, readBackEqual: true };
+    }
+    if (settings.flipMode !== undefined && settings.flipMode !== null) {
+      e.graphics.flipMode = settings.flipMode;
+      result.perControl.flipMode = { ok: true, readBackEqual: true };
+    }
+    if (settings.lowLatency !== undefined && settings.lowLatency !== null) {
+      e.graphics.lowLatency = settings.lowLatency;
+      result.perControl.lowLatency = { ok: true, readBackEqual: true };
+    }
+    if (settings.frameLimit !== undefined && settings.frameLimit !== null) {
+      const clamped = clampAndSnap(settings.frameLimit.value, GRAPHICS_FIXTURE.frameLimitRange);
+      e.graphics.frameLimit = { enabled: settings.frameLimit.enabled === true, value: clamped };
+      result.perControl.frameLimit = { ok: true, readBackEqual: true };
+    }
+    return result;
   }
 
   async applySettings(deviceId, settings = {}, opts = {}) {

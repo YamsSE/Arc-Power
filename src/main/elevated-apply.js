@@ -204,6 +204,7 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
  *     apply: (req: { deviceId: number, settings: object, profileApply?: boolean }) => Promise<{ result: object, state: object | null }>,
  *     waiverAccept: (deviceId: number) => Promise<void>,
  *     reset: (deviceId: number) => Promise<{ state: object | null }>,
+ *     graphicsApply: (req: { deviceId: number, settings: object }) => Promise<{ ok: boolean, perControl: object, graphicsState: object | null }>,
  *   },
  *   log?: (s: string) => void,
  * }} deps
@@ -374,6 +375,28 @@ export function createApplyRunner({
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok !== true) throw new Error(result.error ?? 'reset failed');
       return { ok: true, state: result.state ?? null };
+    },
+    /**
+     * M8 (the Graphics tab): run one graphics apply - the DEDICATED path
+     * mirroring apply() (the in-process branch + the elevated worker branch
+     * carrying op: 'graphics-apply'). 3D features have NO OC waiver and NO
+     * OC-mode gate, so the request carries no waiverAccepted/ocMode and the
+     * worker's graphics-apply op never touches the OC machinery. Returns
+     * the { ok, perControl, graphicsState } envelope the renderer expects
+     * (graphicsState = the FRESH read-back), or throws APPLY_CANCELED_ERROR
+     * when the UAC prompt was canceled/denied.
+     * @param {{ deviceId: number, settings: object }} req
+     */
+    async graphicsApply({ deviceId, settings }) {
+      if (!this.needsWorker()) {
+        if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
+        const out = await inProcess.graphicsApply({ deviceId, settings });
+        return { worker: false, ok: out.ok === true, perControl: out.perControl ?? {}, graphicsState: out.graphicsState ?? null };
+      }
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'graphics-apply', deviceId, settings });
+      if (!result) throw new Error(APPLY_CANCELED_ERROR);
+      if (result.ok === false && result.error) throw new Error(result.error);
+      return { worker: true, ok: result.ok === true, perControl: result.perControl ?? {}, graphicsState: result.graphicsState ?? null };
     },
   };
 }

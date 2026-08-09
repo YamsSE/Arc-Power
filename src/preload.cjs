@@ -13,6 +13,11 @@ contextBridge.exposeInMainWorld('arcPower', {
   deviceSet: (deviceId) => ipcRenderer.invoke('device-set', deviceId),
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
   getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
+  // M8 (the Graphics tab): the 3D-feature surface - the page's ONLY IPC
+  // surface (the dedicated graphics apply path - NOT the OC apply-routing
+  // machinery: 3D features have no OC waiver).
+  graphicsGet: (deviceId) => ipcRenderer.invoke('graphics:get', deviceId),
+  graphicsApply: (deviceId, settings) => ipcRenderer.invoke('graphics:apply', deviceId, settings),
   // M4O: the third arg carries apply options - { profileApply: true } marks
   // a PROFILE apply (the Profiles-page Apply button), which skips the
   // OC-mode gate (the mode is the interactive slider gate ONLY).

@@ -59,6 +59,38 @@
  */
 
 /**
+ * M8 (the Graphics tab): the 3D-feature canonical settings. An absent field
+ * = "leave the current driver value untouched". The canonical strings are
+ * shared by the page / IPC / backends; the IGCL numeric enum side stays
+ * inside the igcl backend.
+ * @typedef {{
+ *   frameGenOverride?: 'app-choice' | '2x' | '3x' | '4x',
+ *   flipMode?: 'application-default' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame',
+ *   frameLimit?: { enabled: boolean, value: number },
+ *   lowLatency?: 'off' | 'on' | 'on-boost',
+ * }} GraphicsSettings
+ */
+
+/**
+ * M8: the Graphics tab's read-back (getGraphicsSettings). NEVER throws - all
+ * fields degrade to false/null/[] on any failure (the honest "not supported
+ * on this GPU" surface the page caps-gates on). `supportedOptions` carries
+ * the driver's SupportedTypes-gated option lists (Speed Sync etc.) - the
+ * page's dropdown gating source.
+ * @typedef {{
+ *   supported: { frameGen: boolean, flipModes: boolean, frameLimit: boolean, lowLatency: boolean },
+ *   supportedOptions: { frameGen: string[], flipModes: string[], lowLatency: string[] },
+ *   frameLimitRange: { min: number, max: number, step: number, default: number } | null,
+ *   values: {
+ *     frameGenOverride: string | null,
+ *     flipMode: string | null,
+ *     frameLimit: { enabled: boolean, value: number } | null,
+ *     lowLatency: string | null,
+ *   },
+ * }} GraphicsState
+ */
+
+/**
  * @typedef {{
  *   ok: boolean,
  *   perControl: Record<string, { ok: boolean, errorCode?: OcErrorCode, message?: string }>,
@@ -175,6 +207,14 @@
  *   restoreWaiverState(deviceId: number, accepted: boolean): Promise<void>,
  *   sampleRawTelemetry(deviceId: number): Promise<RawTelemetrySample>,
  *   onRawTelemetry(deviceId: number, cb: (s: RawTelemetrySample) => void): Unsub,
+ *   // M8 (the Graphics tab): the 3D-feature surface (ctlGetSupported3D-
+ *   // Capabilities / ctlGetSet3DFeature). getGraphicsSettings NEVER throws
+ *   // (degrades to the all-false/null GraphicsState - the honest
+ *   // not-supported surface); setGraphicsSettings returns the ApplyResult
+ *   // shape with per-feature results (success / igcl error code / refusal).
+ *   // NO OC waiver applies to 3D features.
+ *   getGraphicsSettings(deviceId: number): Promise<GraphicsState>,
+ *   setGraphicsSettings(deviceId: number, s: GraphicsSettings): Promise<ApplyResult>,
  *   health(): Promise<HealthReport>,
  *   close(): Promise<void>,
  * }} IOCBackend
@@ -197,6 +237,16 @@ export const CONTROLS = [
   'fanCurve',
   'fixedFanPct',
 ];
+
+// M8 (the Graphics tab): the canonical option lists of the four 3D-feature
+// controls - the vocabulary shared by the page, the IPC validator, the
+// backends and the mock (the numeric IGCL enum side stays inside the igcl
+// backend). NOTE: the graphics controls are deliberately NOT in CONTROLS -
+// sanitizeSettings (the OC payload validator) must keep rejecting them; the
+// graphics apply path has its OWN validator.
+export const GRAPHICS_FRAME_GEN_OPTIONS = ['app-choice', '2x', '3x', '4x'];
+export const GRAPHICS_FLIP_MODE_OPTIONS = ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame'];
+export const GRAPHICS_LOW_LATENCY_OPTIONS = ['off', 'on', 'on-boost'];
 
 /**
  * Map an IGCL ctl_result_t code to a canonical OcErrorCode (or null when

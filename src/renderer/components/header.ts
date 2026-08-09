@@ -114,8 +114,9 @@ export class GpuHeader {
           el('div', { class: 'gpu-name', text: gpuName }),
           // M4-A/M5: the display label carries the release-stage suffix
           // (' Alpha' for bare semvers, ' Beta' for the -beta.x line - the
-          // Beta release restarts at 1.0.0); the app:version IPC keeps the
-          // bare semver (test/ipc-core pins '1.0.0-beta.3').
+          // Beta release restarted at 1.0.0); the app:version IPC keeps the
+          // bare semver (test/ipc-core pins the package.json version). M8:
+          // the 1.1.0 base bump displays 'Arc Power Ver. 1.1.0 Alpha'.
           el('div', { class: 'gpu-meta', text: gpuMeta }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),

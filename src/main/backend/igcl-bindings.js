@@ -97,6 +97,71 @@ export const CTL_FAN_SPEED_UNITS = { 0: 'RPM', 1: 'PERCENT' };
 export const CTL_VF_CURVE_TYPE = { 0: 'STOCK', 1: 'LIVE' };
 export const CTL_VF_CURVE_DETAILS = { 0: 'SIMPLIFIED', 1: 'MEDIUM', 2: 'ELABORATE' };
 
+// M8 (the Graphics tab) - the 3D-feature enums (igcl_api.h v290):
+// ctl_3d_feature_t feature ids, ctl_property_value_type_t value types and
+// the per-feature value tables (flip-mode flags are a BITMASK; low-latency
+// and frame-generation are plain enums). The numeric values are pinned by
+// the M8 checkpoint-1 live probe (the same values the driver accepted in
+// set->read-back->restore round trips).
+export const CTL_3D_FEATURE = {
+  FRAME_PACING: 0,
+  ENDURANCE_GAMING: 1,
+  FRAME_LIMIT: 2,
+  ANISOTROPIC: 3,
+  CMAA: 4,
+  TEXTURE_FILTERING_QUALITY: 5,
+  ADAPTIVE_TESSELLATION: 6,
+  SHARPENING_FILTER: 7,
+  MSAA: 8,
+  GAMING_FLIP_MODES: 9,
+  ADAPTIVE_SYNC_PLUS: 10,
+  APP_PROFILES: 11,
+  APP_PROFILE_DETAILS: 12,
+  EMULATED_TYPED_64BIT_ATOMICS: 13,
+  VRR_WINDOWED_BLT: 14,
+  GLOBAL_OR_PER_APP: 15,
+  LOW_LATENCY: 16,
+  FRAME_GENERATION: 17,
+  PREBUILT_SHADER_DOWNLOAD: 18,
+  LIVE_STATE: 19,
+};
+
+export const CTL_PROPERTY_VALUE_TYPE = {
+  BOOL: 0,
+  FLOAT: 1,
+  INT32: 2,
+  UINT32: 3,
+  ENUM: 4,
+  CUSTOM: 5,
+};
+
+// ctl_gaming_flip_mode_flag_t - a bitmask (one bit per mode). The
+// supported bits come from the caps' SupportedTypes.
+export const CTL_GAMING_FLIP_MODE_FLAG = {
+  APPLICATION_DEFAULT: 1,
+  VSYNC_OFF: 2,
+  VSYNC_ON: 4,
+  SMOOTH_SYNC: 8,
+  SPEED_FRAME: 16,
+  CAPPED_FPS: 32,
+  VSYNC_OFF_IGNORE_ALLOW_LIST: 64,
+};
+
+// ctl_3d_low_latency_types_t / ctl_3d_frame_generation_override_t - plain
+// enum values.
+export const CTL_3D_LOW_LATENCY = {
+  TURN_OFF: 0,
+  TURN_ON: 1,
+  TURN_ON_BOOST_MODE_ON: 2,
+};
+
+export const CTL_3D_FRAME_GENERATION_OVERRIDE = {
+  APP_CHOICE: 0,
+  X2: 1,
+  X3: 2,
+  X4: 3,
+};
+
 // ---------------------------------------------------------------------------
 // Structs (C -> koffi)
 // ---------------------------------------------------------------------------
@@ -331,6 +396,56 @@ const ctl_pci_properties_t = koffi.struct('ctl_pci_properties_t', {
 }); // 64 bytes, align 8
 
 // ---------------------------------------------------------------------------
+// M8 (the Graphics tab) - the IGCL 3D-feature surface (igcl_api.h v290):
+// ctlGetSupported3DCapabilities + ctlGetSet3DFeature. The layouts below are
+// transcribed from the v290 header and LIVE-VERIFIED by the M8 checkpoint-1
+// probe (pipeline/live-3d-feature.md, 2026-08-09, A770 driver 32.0.101.8861):
+// every field offset was exercised by driver reads AND set->read-back->
+// restore round trips for all four features (XeSS FG override, flip modes,
+// frame limit, low latency). The driver's Size validation is an UPPER bound
+// (getset <= 56, caps <= 24; larger values refuse with ERROR_INVALID_SIZE),
+// so the v290 header sizes are the pinned ceiling. ApplicationName is a
+// POINTER (char*) - the backend passes a zeroed 1-byte buffer ("" = the
+// GLOBAL settings scope; per-app overrides are out of scope for M8).
+// ---------------------------------------------------------------------------
+
+const ctl_3d_feature_caps_t = koffi.struct('ctl_3d_feature_caps_t', {
+  Size: 'uint32',                 // @0
+  Version: 'uint8',               // @4
+  NumSupportedFeatures: 'uint32', // @8
+  pFeatureDetails: 'void*',       // @16 (ctl_3d_feature_details_t* array)
+}); // 24 bytes, align 8
+
+const ctl_3d_feature_details_t = koffi.struct('ctl_3d_feature_details_t', {
+  FeatureType: 'int32',           // @0  (ctl_3d_feature_t; MSVC enum = 4 bytes)
+  ValueType: 'int32',             // @4  (ctl_property_value_type_t)
+  Value: 'uint8[24]',             // @8  (ctl_property_info_t union: 20 bytes
+                                  //     of members padded to 24 for 8-align)
+  CustomValueSize: 'int32',       // @32
+  pCustomValue: 'void*',          // @40
+  PerAppSupport: 'bool',          // @48
+  ConflictingFeatures: 'int64',   // @56
+  FeatureMiscSupport: 'int16',    // @64
+  Reserved: 'int16',              // @66
+  Reserved1: 'int16',             // @68
+  Reserved2: 'int16',             // @70
+}); // 72 bytes, align 8
+
+const ctl_3d_feature_getset_t = koffi.struct('ctl_3d_feature_getset_t', {
+  Size: 'uint32',                 // @0
+  Version: 'uint8',               // @4
+  FeatureType: 'int32',           // @8  (ctl_3d_feature_t)
+  ApplicationName: 'void*',       // @16 (char* - empty string = global)
+  ApplicationNameLength: 'int8',  // @24
+  bSet: 'bool',                   // @25
+  ValueType: 'int32',             // @28 (ctl_property_value_type_t)
+  Value: 'uint8[8]',              // @32 (ctl_property_t union:
+                                  //     Enable/EnableType@32, scalar@36)
+  CustomValueSize: 'int32',       // @40
+  pCustomValue: 'void*',          // @48
+}); // 56 bytes, align 8
+
+// ---------------------------------------------------------------------------
 // Layout assertions (sizes computed by hand from the C headers; any mismatch
 // means koffi laid out a struct differently than MSVC did)
 // ---------------------------------------------------------------------------
@@ -353,11 +468,18 @@ const EXPECTED_SIZES = {
   ctl_power_telemetry_t: 1024,
   ctl_voltage_frequency_point_t: 8,
   // M4-D2 (driver ReBAR state): ctl_pci_address_t 24, ctl_pci_speed_t 20
-  // (koffi/MSVC 8-aligns the tail � the DRIVER's real layout is 20 bytes\n  // without the tail pad, which is why the flags sit at 52/53), properties 64.
+  // (koffi/MSVC 8-aligns the tail � the DRIVER's real layout is 20 bytes
+  // without the tail pad, which is why the flags sit at 52/53), properties 64.
   ctl_pci_address_t: 24,
   ctl_pci_speed_t: 24,
   ctl_pci_properties_t: 64,
-
+  // M8 (the Graphics tab): the 3D-feature structs - sizes live-verified by
+  // the M8 checkpoint-1 probe (pipeline/live-3d-feature.md): the driver's
+  // Size validation is an upper bound (getset <=56, caps <=24 - 60+/28+
+  // refuse ERROR_INVALID_SIZE), so the v290 header sizes are the ceiling.
+  ctl_3d_feature_caps_t: 24,
+  ctl_3d_feature_details_t: 72,
+  ctl_3d_feature_getset_t: 56,
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -577,6 +699,15 @@ export function loadIgcl(dllPath) {
   // padded layout, so the caller allocates raw bytes + Size 64).
   bind('ctlPciGetProperties', 'ctl_result_t', ['void*', 'void*']);
 
+  // M8 (the Graphics tab): the 3D-feature surface. Raw 'void*' params for
+  // the same reason as ctlPciGetProperties - the callers pass raw buffers
+  // (the probe-verified v290 layout; a typed struct arg would make koffi
+  // reject the raw buffer). The bind() try/catch records an absent export
+  // in fn.unavailable - the graphics surface then degrades honestly while
+  // the OC surface stays untouched.
+  bind('ctlGetSupported3DCapabilities', 'ctl_result_t', ['void*', 'void*']);
+  bind('ctlGetSet3DFeature', 'ctl_result_t', ['void*', 'void*']);
+
   return fn;
 }
 
@@ -657,5 +788,117 @@ export function decodePciProperties(buf) {
     maxBandwidth: u64(48),
     resizableBarSupported: arr[56] === 1,
     resizableBarEnabled: arr[57] === 1,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M8 (the Graphics tab) - 3D-feature helpers. The raw-buffer layouts are
+// the probe-verified v290 offsets (pipeline/live-3d-feature.md); the koffi
+// structs above exist to pin the sizes at module load, the CALLS go through
+// raw buffers (the ctlPciGetProperties precedent - koffi typed args would
+// reject them).
+// ---------------------------------------------------------------------------
+
+/**
+ * Decode ONE ctl_3d_feature_details_t entry from the raw details array the
+ * driver filled (ctlGetSupported3DCapabilities phase 2). The Value union
+ * (offset 8, 24 bytes) is interpreted per the entry's ValueType: enum ->
+ * SupportedTypes bitmask + DefaultType; int/uint -> DefaultEnable + the
+ * RangeInfo (min/max/step/default).
+ * @param {unknown} buf raw details-array buffer
+ * @param {number} index entry index (stride = sizeof(ctl_3d_feature_details_t))
+ * @returns {{ featureType: number, valueType: number, enumSupportedTypes: bigint|null, enumDefaultType: number|null, intRange: { min: number, max: number, step: number, default: number }|null, perAppSupport: boolean }}
+ */
+export function decode3dFeatureDetails(buf, index) {
+  const off = index * koffi.sizeof('ctl_3d_feature_details_t');
+  const valueOff = koffi.offsetof('ctl_3d_feature_details_t', 'Value');
+  const featureType = koffi.decode(buf, off + koffi.offsetof('ctl_3d_feature_details_t', 'FeatureType'), 'int32') | 0;
+  const valueType = koffi.decode(buf, off + koffi.offsetof('ctl_3d_feature_details_t', 'ValueType'), 'int32') | 0;
+  const perAppSupport = koffi.decode(buf, off + koffi.offsetof('ctl_3d_feature_details_t', 'PerAppSupport'), 'bool');
+  const u = off + valueOff;
+  if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
+    return {
+      featureType,
+      valueType,
+      // uint64 decode may yield a Number when the value fits - normalize to
+      // BigInt so bit tests are uniform.
+      enumSupportedTypes: BigInt(koffi.decode(buf, u, 'uint64')),
+      // M8 finding-2: the v290 ctl_property_info_enum_t is
+      // { uint64_t SupportedTypes @0; uint32_t DefaultType @8 } - the field
+      // sits at u+8, NOT u+16 (u+16 is the union's trailing padding - the
+      // old read returned padding, and the probe record's "DefaultType=0"
+      // was a padding read, not the driver value).
+      enumDefaultType: koffi.decode(buf, u + 8, 'uint32') | 0,
+      intRange: null,
+      perAppSupport,
+    };
+  }
+  if (valueType === CTL_PROPERTY_VALUE_TYPE.INT32 || valueType === CTL_PROPERTY_VALUE_TYPE.UINT32) {
+    return {
+      featureType,
+      valueType,
+      enumSupportedTypes: null,
+      enumDefaultType: null,
+      intRange: {
+        min: koffi.decode(buf, u + 4, 'int32') | 0,
+        max: koffi.decode(buf, u + 8, 'int32') | 0,
+        step: koffi.decode(buf, u + 12, 'int32') | 0,
+        default: koffi.decode(buf, u + 16, 'int32') | 0,
+      },
+      perAppSupport,
+    };
+  }
+  return { featureType, valueType, enumSupportedTypes: null, enumDefaultType: null, intRange: null, perAppSupport };
+}
+
+/**
+ * Build a raw ctl_3d_feature_getset_t buffer (v290, probe-verified).
+ * ApplicationName = a zeroed 1-byte buffer ("" - the GLOBAL settings scope);
+ * the returned object holds it so it stays alive across the driver call.
+ * @param {{
+ *   featureType: number, valueType: number, bSet: boolean,
+ *   enumValue?: number,   // ENUM: Value.EnableType (union offset 32)
+ *   intEnable?: boolean,  // INT32/UINT32: Value.Enable (offset 32)
+ *   intValue?: number,    // INT32/UINT32: Value.Value (offset 36)
+ * }} o
+ * @returns {{ buf: unknown, appName: unknown }}
+ */
+export function encode3dFeatureGetset({ featureType, valueType, bSet, enumValue, intEnable, intValue }) {
+  const appName = koffi.alloc('uint8', 1);
+  koffi.encode(appName, 0, 'uint8', 0);
+  const buf = koffi.alloc('uint8', koffi.sizeof('ctl_3d_feature_getset_t'));
+  const valueOff = koffi.offsetof('ctl_3d_feature_getset_t', 'Value');
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'Size'), 'uint32', koffi.sizeof('ctl_3d_feature_getset_t'));
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'Version'), 'uint8', 0);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'FeatureType'), 'int32', featureType);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'ApplicationName'), 'void*', koffi.address(appName));
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'ApplicationNameLength'), 'int8', 0);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'bSet'), 'bool', bSet === true);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'ValueType'), 'int32', valueType);
+  if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
+    koffi.encode(buf, valueOff, 'uint32', enumValue ?? 0);
+  } else {
+    koffi.encode(buf, valueOff, 'bool', intEnable === true);
+    koffi.encode(buf, valueOff + 4, 'int32', Number.isInteger(intValue) ? intValue : 0);
+  }
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'CustomValueSize'), 'int32', 0);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'pCustomValue'), 'void*', 0n);
+  return { buf, appName };
+}
+
+/**
+ * Decode the Value union of a filled ctl_3d_feature_getset_t raw buffer.
+ * @param {unknown} buf raw getset buffer
+ * @param {number} valueType the buffer's ValueType
+ * @returns {{ enableType?: number, enable?: boolean, value?: number }}
+ */
+export function decode3dFeatureGetsetValue(buf, valueType) {
+  const valueOff = koffi.offsetof('ctl_3d_feature_getset_t', 'Value');
+  if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
+    return { enableType: koffi.decode(buf, valueOff, 'uint32') | 0 };
+  }
+  return {
+    enable: koffi.decode(buf, valueOff, 'bool'),
+    value: koffi.decode(buf, valueOff + 4, 'int32') | 0,
   };
 }

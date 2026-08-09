@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
@@ -429,6 +429,14 @@ async function main() {
   if (uiVerify) {
     mockOpts.fanCanControl = process.env.RID_MOCK_FAN_READONLY !== '1';
   }
+  // M8 (the Graphics tab): RID_MOCK_GRAPHICS_UNSUPPORTED=1 runs the mock in
+  // the unsupported-graphics session - the WHOLE graphics surface degrades
+  // to the supported-all-false state (the honest note on all four cards);
+  // the ui-verify graphics block asserts the no-controls state under the
+  // knob (the RID_MOCK_FAN_READONLY pattern).
+  if (uiVerify && process.env.RID_MOCK_GRAPHICS_UNSUPPORTED === '1') {
+    mockOpts.graphicsUnsupported = true;
+  }
   if (uiVerify && process.env.RID_MOCK_OFFGRID_FREQ_MHZ !== undefined) {
     mockOpts.offGridFreqMhz = Number(process.env.RID_MOCK_OFFGRID_FREQ_MHZ);
   }
@@ -568,6 +576,15 @@ async function main() {
           const state = await backend.getCurrentSettings(deviceId);
           return { state };
         },
+        // M8 (the Graphics tab): the in-process graphics executor - the
+        // DEDICATED apply path (no OC waiver, no OC-mode gate). Returns the
+        // { ok, perControl, graphicsState } envelope with the FRESH read-back.
+        graphicsApply: async ({ deviceId, settings }) => {
+          const out = await backend.setGraphicsSettings(deviceId, settings);
+          let graphicsState = null;
+          try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
+          return { ok: out.ok, perControl: out.perControl, graphicsState };
+        },
       },
       log: (s) => console.log(s),
     });
@@ -584,6 +601,13 @@ async function main() {
       reset: async (deviceId) => {
         await backend.resetToDefaults(deviceId);
         return { ok: true, state: await backend.getCurrentSettings(deviceId) };
+      },
+      // M8: the fake runner's graphics path (in-process - never spawns).
+      graphicsApply: async ({ deviceId, settings }) => {
+        const out = await backend.setGraphicsSettings(deviceId, settings);
+        let graphicsState = null;
+        try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
+        return { ok: out.ok, perControl: out.perControl, graphicsState };
       },
     };
   }
@@ -1565,6 +1589,8 @@ async function main() {
       // counting probe (never a real registration). Two matrix configs:
       // 'overlay' alone (the 'FPS -  1% Low -  99% FPS -' pin) and
       // 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS 60  1% Low 52  99% FPS 58').
+      // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
+      await runGraphicsVerify(win, backend);
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
