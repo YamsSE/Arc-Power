@@ -40,6 +40,7 @@ import {
   isValidOverlayPosition,
   isValidOverlayColor,
   clampOverlayScale,
+  clampOverlayBgOpacity,
 } from '../pure/overlay.ts';
 import type { OverlayPosition, OverlayState } from '../types.ts';
 
@@ -67,6 +68,11 @@ interface PersistedOverlay {
   scale: number;
   color: string;
   stats: string[];
+  // M7b (fix 4): the background box (the Appearance card's Background
+  // section) - off / black / 0.5 opacity when absent.
+  bgEnabled: boolean;
+  bgColor: string;
+  bgOpacity: number;
 }
 
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
@@ -91,6 +97,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       scale: clampOverlayScale(s.overlayScale),
       color: isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff',
       stats: Array.isArray(s.overlayStats) ? s.overlayStats : [...OVERLAY_STAT_IDS],
+      // M7b (fix 4): the background box defaults (off / black / 0.5).
+      bgEnabled: s.overlayBgEnabled === true,
+      bgColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : '#000000',
+      bgOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
     };
   } catch (err) {
     clear(root);
@@ -175,6 +185,32 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       onchange: (ev: Event) => void onColorSelect((ev.target as HTMLInputElement).value),
     });
     const scaleValue = el('span', { class: 'settings-scale-value', text: `${persisted.scale.toFixed(2)}x` });
+    // M7b (fix 4): the Background section - the box toggle, the color
+    // swatches + custom hex (the overlay-color-option pattern, but
+    // data-bg-color-option) + the 0-100 opacity slider (the scale-slider
+    // pattern with a live value label). Every control saves through
+    // profiles-settings-save; main's onOverlaySettings then applies +
+    // pushes 'overlay:settings' so the box re-renders immediately.
+    const bgColorOptions = OVERLAY_COLOR_PRESETS.map((hex) =>
+      el('button', {
+        type: 'button',
+        class: `theme-option overlay-bg-color-option${persisted.bgColor.toLowerCase() === hex ? ' active' : ''}`,
+        dataset: { bgColorOption: hex },
+        title: OVERLAY_COLOR_LABELS[hex],
+        onclick: () => void onBgColorSelect(hex),
+      }, [
+        el('span', { class: `swatch-chip overlay-swatch-${hex.replace('#', '')}` }),
+        el('span', { class: 'theme-option-name', text: OVERLAY_COLOR_LABELS[hex] }),
+      ]),
+    );
+    const customBgColor = el('input', {
+      type: 'color',
+      class: 'settings-color-input settings-bg-color-input',
+      value: persisted.bgColor,
+      title: 'Custom background color',
+      onchange: (ev: Event) => void onBgColorSelect((ev.target as HTMLInputElement).value),
+    });
+    const bgOpacityValue = el('span', { class: 'settings-bg-opacity-value', text: `${Math.round(persisted.bgOpacity * 100)}%` });
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('h2', { class: 'card-title', text: 'Appearance' }),
       el('div', { class: 'overlay-color-options' }, [
@@ -200,6 +236,44 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           onchange: (ev: Event) => void onScaleChange(Number((ev.target as HTMLInputElement).value)),
         }),
         scaleValue,
+      ]),
+      // M7b (fix 4): the Background section - a translucent box behind the
+      // HUD (the user's Appearance-card addition).
+      el('div', { class: 'settings-row overlay-bg-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'overlayBgEnabled' },
+            checked: persisted.bgEnabled,
+            onchange: (ev: Event) => void onBgEnabledToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Show a background box' }),
+        ]),
+      ]),
+      el('div', { class: 'overlay-bg-options' }, [
+        ...bgColorOptions,
+        el('label', { class: 'overlay-custom-color' }, [
+          el('span', { class: 'settings-row-label', text: 'Custom' }),
+          customBgColor,
+        ]),
+      ]),
+      el('div', { class: 'settings-row overlay-bg-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Opacity' }),
+        el('input', {
+          type: 'range',
+          class: 'settings-bg-opacity-slider',
+          min: 0,
+          max: 100,
+          step: 1,
+          value: String(Math.round(persisted.bgOpacity * 100)),
+          oninput: (ev: Event) => {
+            const v = Number((ev.target as HTMLInputElement).value);
+            bgOpacityValue.textContent = `${v}%`;
+          },
+          onchange: (ev: Event) => void onBgOpacityChange(Number((ev.target as HTMLInputElement).value)),
+        }),
+        bgOpacityValue,
       ]),
     ]);
 
@@ -337,6 +411,68 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     } catch (err) {
       toast('error', 'Overlay size could not be changed', err instanceof Error ? err.message : String(err));
       if (slider) slider.value = String(persisted.scale);
+      return;
+    }
+  };
+
+  // M7b (fix 4): the Background section handlers - the same
+  // profiles-settings-save pattern as the color/scale handlers (toast +
+  // revert on error); main's onOverlaySettings re-applies + pushes so the
+  // box re-renders immediately.
+  const onBgEnabledToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="overlayBgEnabled"]');
+    try {
+      await api.profilesSettingsSave({ overlayBgEnabled: checked });
+      persisted.bgEnabled = checked;
+      toast(checked ? 'success' : 'info', checked ? 'Background box shown' : 'Background box hidden', '');
+    } catch (err) {
+      toast('error', 'Background box could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = persisted.bgEnabled;
+      return;
+    }
+  };
+
+  const syncBgColorSwatches = (hex: string): void => {
+    root.querySelectorAll<HTMLElement>('.overlay-bg-color-option').forEach((b) => {
+      b.classList.toggle('active', (b.dataset.bgColorOption ?? '').toLowerCase() === hex.toLowerCase());
+    });
+    const custom = root.querySelector<HTMLInputElement>('.settings-bg-color-input');
+    if (custom && custom.value.toLowerCase() !== hex.toLowerCase()) custom.value = hex;
+  };
+
+  const onBgColorSelect = async (hex: string): Promise<void> => {
+    if (!isValidOverlayColor(hex)) {
+      toast('error', 'Background color', 'The color must be a 6-digit hex value (like #000000).');
+      return;
+    }
+    const normalized = hex.toLowerCase();
+    if (normalized === persisted.bgColor.toLowerCase()) return;
+    const previous = persisted.bgColor;
+    syncBgColorSwatches(normalized);
+    persisted.bgColor = normalized;
+    try {
+      await api.profilesSettingsSave({ overlayBgColor: normalized });
+      toast('success', 'Background color changed', `${OVERLAY_COLOR_LABELS[normalized] ?? 'Custom'} - the box updates immediately.`);
+    } catch (err) {
+      toast('error', 'Background color could not be changed', err instanceof Error ? err.message : String(err));
+      persisted.bgColor = previous;
+      syncBgColorSwatches(previous);
+    }
+  };
+
+  const onBgOpacityChange = async (pct: number): Promise<void> => {
+    const clamped = clampOverlayBgOpacity(pct / 100);
+    if (clamped === persisted.bgOpacity) return;
+    const slider = root.querySelector<HTMLInputElement>('.settings-bg-opacity-slider');
+    const label = root.querySelector<HTMLElement>('.settings-bg-opacity-value');
+    try {
+      await api.profilesSettingsSave({ overlayBgOpacity: clamped });
+      persisted.bgOpacity = clamped;
+      toast('success', 'Background opacity changed', `${Math.round(clamped * 100)}% - the box updates immediately.`);
+    } catch (err) {
+      toast('error', 'Background opacity could not be changed', err instanceof Error ? err.message : String(err));
+      if (slider) slider.value = String(Math.round(persisted.bgOpacity * 100));
+      if (label) label.textContent = `${Math.round(persisted.bgOpacity * 100)}%`;
       return;
     }
   };

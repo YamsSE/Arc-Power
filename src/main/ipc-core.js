@@ -115,6 +115,33 @@ export function validateOverlayColor(v) {
 }
 
 /**
+ * M7b: the overlay background box color must be a 6-digit hex string (the
+ * same shape as overlayColor - the swatch presets + the type=color input;
+ * the stock default is '#000000'). REJECTS with an honest error - a
+ * garbage color must never reach the overlay renderer.
+ * @param {unknown} v
+ * @returns {string}
+ */
+export function validateOverlayBgColor(v) {
+  if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) {
+    throw new Error('overlayBgColor must be a hex color like #000000');
+  }
+  return v;
+}
+
+/**
+ * M7b: clamp the background box opacity to 0..1 (garbage degrades to the
+ * 0.5 default - the same clamp semantics as the overlay scale; the slider
+ * cannot produce an out-of-range value).
+ * @param {unknown} v
+ * @returns {number}
+ */
+export function clampOverlayBgOpacity(v) {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : 0.5;
+  return Math.min(1, Math.max(0, n));
+}
+
+/**
  * M6: normalize a raw overlayStats patch value - an array of KNOWN stat
  * ids, deduped (order preserved); unknown ids are DROPPED, absent/garbage
  * degrades to the FULL set (the stock overlay). Never rejects - the
@@ -965,11 +992,15 @@ export function createIpcHandlers({
 
       // M5/M6: the software-overlay ops (the windowOps pattern). 'overlay:
       // get-state' is the Overlay page's every-render read (the
-      // hotkeyRegistered flag + the geometry); 'overlay:toggle' flips the
-      // window AND persists overlayEnabled (the hotkey + the Overlay-page
-      // toggle flip the same persisted field). No payload; the ops are
-      // injected (the DEFAULT is the honest "no overlay window" state;
-      // main.js wires the real overlay handle).
+      // hotkeyRegistered flag + the geometry); 'overlay:toggle' is the
+      // SHORTCUT flip (M7b fix 5): gated on the persisted master
+      // overlayEnabled - while the master is OFF it does NOTHING (no
+      // window change, no persist), and when ON it flips the SESSION
+      // visibility only, NEVER writing overlayEnabled (the Overlay-page
+      // toggle is its only writer - the hotkey and the toggle work
+      // independently). No payload; the ops are injected (the DEFAULT is
+      // the honest "no overlay window" state; main.js wires the real
+      // overlay handle).
       'overlay:get-state': async (...args) => {
         assertNoPayload(args, 'overlay:get-state');
         return overlayOps.getState();
@@ -1228,6 +1259,20 @@ export function createIpcHandlers({
           overlayStats: patch.overlayStats === undefined
             ? cur.overlayStats
             : normalizeOverlayStats(patch.overlayStats),
+          // M7b: the background box - enabled coerced like overlayEnabled,
+          // the color REJECTS outside /^#[0-9a-fA-F]{6}$/ (the swatches +
+          // the type=color input can only produce that shape), the opacity
+          // CLAMPS to 0..1 (the slider cannot produce an out-of-range
+          // value).
+          overlayBgEnabled: patch.overlayBgEnabled === undefined
+            ? cur.overlayBgEnabled
+            : patch.overlayBgEnabled === true,
+          overlayBgColor: patch.overlayBgColor === undefined
+            ? cur.overlayBgColor
+            : validateOverlayBgColor(patch.overlayBgColor),
+          overlayBgOpacity: patch.overlayBgOpacity === undefined
+            ? cur.overlayBgOpacity
+            : clampOverlayBgOpacity(patch.overlayBgOpacity),
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
@@ -1252,8 +1297,12 @@ export function createIpcHandlers({
         // M6: the color + the stats ride the same keys - without them a
         // color/stats change would persist but the overlay would never
         // re-render.
+        // M7b: the three background keys ride the loop too - without them
+        // a bg change persists but onOverlaySettings never fires and the
+        // overlay never re-renders (the box would only appear on the next
+        // boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats']) {
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

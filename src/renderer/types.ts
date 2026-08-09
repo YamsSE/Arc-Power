@@ -380,6 +380,13 @@ export interface OverlaySettings {
   /** M6: the ENABLED overlay stat ids (the canonical OVERLAY_STAT_IDS; the
    *  full set the stock default - a stat off -> its field/line vanishes). */
   stats: string[];
+  /** M7b (fix 4): the background box behind the HUD - the box is shown
+   *  from overlayBgEnabled, the color/opacity become the
+   *  --overlay-bg-color / --overlay-bg-opacity CSS vars (black at 0.5 the
+   *  defaults). */
+  overlayBgEnabled: boolean;
+  overlayBgColor: string;
+  overlayBgOpacity: number;
 }
 
 /** M5: the overlay:get-state envelope (the Settings card + the verify read it). */
@@ -430,6 +437,13 @@ export interface ProfileSettingsState {
   /** M6: the enabled overlay stat ids (absent on old files -> the FULL set -
    *  the stock overlay; same absent-field mechanism, NO schema bump). */
   overlayStats: string[];
+  /** M7b (fix 4): the overlay background box (absent on old files -> off /
+   *  black / 0.5 opacity - the same absent-field mechanism, NO schema
+   *  bump). The Appearance card's Background section persists these; the
+   *  overlay renderer applies them via CSSOM on every settings push. */
+  overlayBgEnabled: boolean;
+  overlayBgColor: string;
+  overlayBgOpacity: number;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

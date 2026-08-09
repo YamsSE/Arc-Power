@@ -80,6 +80,22 @@ export const OVERLAY_COLOR_PRESETS: readonly string[] = [
   '#ffffff', '#ffe600', '#00ff88', '#00d5ff', '#ff9500', '#ff3b30', '#ff2dd4',
 ];
 
+/**
+ * M7b (fix 4): the overlay BACKGROUND box defaults (the Appearance card's
+ * Background section - the persisted-truth owner is profile-store.js; the
+ * main-side mirror is overlay.js). The box is black at 0.5 opacity - a
+ * translucent box behind the HUD, hidden until overlayBgEnabled.
+ */
+export const OVERLAY_BG_COLOR_DEFAULT = '#000000';
+export const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
+
+/** M7b: clamp the background opacity to 0..1 (garbage degrades to the 0.5
+ *  default - the renderer mirror of the store's clamp). */
+export function clampOverlayBgOpacity(v: unknown): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_BG_OPACITY_DEFAULT;
+  return Math.min(1, Math.max(0, n));
+}
+
 /** M6: the preset swatch labels (one per preset hex). */
 export const OVERLAY_COLOR_LABELS: Record<string, string> = {
   '#ffffff': 'White',

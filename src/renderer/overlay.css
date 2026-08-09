@@ -19,7 +19,38 @@ body {
 }
 
 #overlay-root {
+  position: relative;
   padding: 0.25rem 0.4rem;
+}
+
+/* M7b (fix 4): the OPTIONAL background box behind the HUD (the Appearance
+   card's Background section). Hidden by default; overlay.ts toggles the
+   .visible class from the persisted overlayBgEnabled and drives the two
+   CSS vars via CSSOM (CSP-safe - the --overlay-color pattern). The box is
+   a translucent rounded rectangle spanning the whole HUD area. */
+#overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  border-radius: 0.4rem;
+  display: none;
+  background: var(--overlay-bg-color, #000000);
+  opacity: var(--overlay-bg-opacity, 0.5);
+}
+
+#overlay-backdrop.visible {
+  display: block;
+}
+
+/* M7b: the HUD content paints ABOVE the backdrop - an absolutely-positioned
+   sibling paints above in-flow content otherwise, which would bury the
+   text under the box. */
+#overlay-fps,
+#overlay-cpu,
+#overlay-gpu,
+#overlay-frametime,
+#overlay-frametime-value {
+  position: relative;
+  z-index: 1;
 }
 
 .overlay-line {

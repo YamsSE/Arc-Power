@@ -117,6 +117,15 @@ function renderSidebar() {
   const nav = document.getElementById('sidebar') as HTMLElement;
   const active = currentPage();
   clear(nav);
+  // M7b (user amendment): the Settings tab MOVED to the sidebar FOOTER -
+  // the nav renders PAGE_IDS minus 'settings' (6 links); the footer holds
+  // GitHub (bottom-LEFT) + Settings (bottom-RIGHT - the GitHub-page
+  // mirror: GitHub pins its settings link at the sidebar bottom, this app
+  // mirrors it to the RIGHT side of its bottom row). The footer Settings
+  // link KEEPS the .sidebar-link class (the styling + the active state +
+  // the icon + the label) + the existing href '#/settings' - PAGE_IDS /
+  // the router / the hash routing are untouched.
+  const navIds = PAGE_IDS.filter((id) => id !== 'settings');
   nav.append(
     // M4-D (user): the sidebar brand - "Arc Power" with "Power" ILLUMINATED
     // like the title bar (the blue gradient + glow) and a BOLD weight; the
@@ -125,7 +134,7 @@ function renderSidebar() {
       el('span', { class: 'sidebar-brand-arc', text: 'Arc ' }),
       el('span', { class: 'sidebar-brand-power', text: 'Power' }),
     ]),
-    el('nav', { class: 'sidebar-nav' }, PAGE_IDS.map((id) =>
+    el('nav', { class: 'sidebar-nav' }, navIds.map((id) =>
       el('a', {
         class: `sidebar-link${id === active ? ' active' : ''}`,
         href: `#/${id}`,
@@ -140,6 +149,10 @@ function renderSidebar() {
     // channel - ipc-core.js strict-checks https://github.com/YamsSE/Arc-Power
     // before shell.openExternal runs). The <a> has no href - the click is
     // the only path (a real navigation would reload the app shell).
+    // M7b (user amendment): the footer is a flex ROW - the Settings tab
+    // joins it at the bottom-RIGHT (the window's bottom-right corner; the
+    // GitHub-page mirror). The Settings link keeps the .sidebar-link class
+    // + the icon + the label + the active state + href '#/settings'.
     el('div', { class: 'sidebar-footer' }, [
       el('a', {
         class: 'sidebar-footer-link',
@@ -153,6 +166,14 @@ function renderSidebar() {
       }, [
         el('span', { class: 'sidebar-icon-github' }),
         el('span', { class: 'sidebar-footer-label', text: 'GitHub' }),
+      ]),
+      el('a', {
+        class: `sidebar-link sidebar-footer-settings${active === 'settings' ? ' active' : ''}`,
+        href: '#/settings',
+        title: 'Settings',
+      }, [
+        el('span', { class: 'sidebar-icon sidebar-icon-settings' }),
+        el('span', { class: 'sidebar-link-label', text: NAV_LABELS.settings }),
       ]),
     ]),
   );

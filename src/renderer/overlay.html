@@ -15,8 +15,16 @@
        retracted "below the FPS" part - the graph stays at the bottom) -
        the latest derived frame time, max 2 decimals ('16.67 ms'), '-'
        when no data. The 'frametime' stat controls BOTH the strip and the
-       number (stat off -> both hidden). -->
+       number (stat off -> both hidden).
+       M7b (fix 4): the OPTIONAL background box - a translucent rounded
+       box behind the HUD (the Appearance card's Background section). The
+       #overlay-backdrop div is the FIRST child of #overlay-root (behind
+       the in-flow HUD); hidden by default, shown via the .visible class
+       + the --overlay-bg-color / --overlay-bg-opacity CSS vars (both
+       CSSOM-driven by overlay.ts from the persisted settings - the
+       --overlay-color pattern). -->
   <div id="overlay-root">
+    <div id="overlay-backdrop"></div>
     <div class="overlay-line" id="overlay-fps"></div>
     <div class="overlay-line" id="overlay-cpu"></div>
     <div class="overlay-line" id="overlay-gpu"></div>

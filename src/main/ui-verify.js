@@ -620,6 +620,53 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const ghOpAfter = getOpenExternalCount();
   step('m4h-github-footer', `M4-H: sidebar GitHub footer (icon + 'GitHub', bottom-left) -> open-external counter ticked (${ghOpBefore} -> ${ghOpAfter}); channel validation: repo URL ok, ${badUrls.length} bad URLs rejected`);
 
+  // M7b (user amendment): the Settings tab sits in the sidebar FOOTER -
+  // bottom-RIGHT (the GitHub-page mirror: GitHub bottom-left, Settings
+  // bottom-right = the window's bottom-right corner). The link KEEPS the
+  // .sidebar-link class (the icon + the label + the active state + the
+  // href) but lives INSIDE .sidebar-footer, NOT .sidebar-nav; the footer
+  // row is a flex row with justify-content: space-between; clicking the
+  // link lands on #/settings. The count pins above (7 .sidebar-link
+  // GLOBALLY - 6 nav + 1 footer) stay green by design.
+  const settingsFooter = await js(`(() => {
+    const footer = document.querySelector('.sidebar-footer');
+    const link = footer ? footer.querySelector('.sidebar-link[href="#/settings"]') : null;
+    return JSON.stringify({
+      inFooter: !!link,
+      inNav: !!document.querySelector('.sidebar-nav .sidebar-link[href="#/settings"]'),
+      href: link?.getAttribute('href') ?? null,
+      hasIcon: !!link?.querySelector('.sidebar-icon'),
+      hasLabel: !!link?.querySelector('.sidebar-link-label'),
+      label: link?.querySelector('.sidebar-link-label')?.textContent ?? null,
+      justify: footer ? getComputedStyle(footer).justifyContent : null,
+    });
+  })()`);
+  const sfl = JSON.parse(settingsFooter);
+  if (!sfl.inFooter || sfl.inNav) {
+    fail(`M7b: the Settings link must live in .sidebar-footer (NOT .sidebar-nav): ${settingsFooter}`);
+  }
+  if (sfl.href !== '#/settings') fail(`M7b: the footer Settings link href is '${sfl.href}' (expected '#/settings')`);
+  if (!sfl.hasIcon || !sfl.hasLabel || sfl.label !== 'Settings') {
+    fail(`M7b: the footer Settings link must keep the .sidebar-link icon + label (got ${settingsFooter})`);
+  }
+  if (sfl.justify !== 'space-between') {
+    fail(`M7b: the footer row's computed justify-content is '${sfl.justify}' (expected 'space-between' - GitHub left, Settings right)`);
+  }
+  await js(`document.querySelector('.sidebar-footer .sidebar-link[href="#/settings"]').click()`);
+  if (!(await waitFor(win, `location.hash === '#/settings'`, 5000))) {
+    fail(`M7b: clicking the footer Settings link did not land on '#/settings' (hash '${await js(`location.hash`)}')`);
+  }
+  // The active state follows the link (the .sidebar-link active styling).
+  if (!(await waitFor(win, `document.querySelector('.sidebar-footer .sidebar-link[href="#/settings"]')?.classList.contains('active')`, 5000))) {
+    fail('M7b: the footer Settings link is not active on #/settings');
+  }
+  // Restore the dashboard - the flow below pins the dashboard cards.
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card')`, 8000))) {
+    fail('M7b: the dashboard did not re-render after the settings-footer placement pin');
+  }
+  step('m7b-settings-footer', `M7b: the Settings link lives in .sidebar-footer (not .sidebar-nav), keeps the icon + 'Settings' label + href '#/settings' + the active state, the footer row is 'space-between' (GitHub bottom-left / Settings bottom-right); clicking it landed on #/settings and back`);
+
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session: cancelled in the unaccepted sessions (Cancel here;
   // Accept under RID_MOCK_WAIVER_BOOT_ACCEPT=1), or shown in its ACCEPTED
@@ -4287,6 +4334,20 @@ export async function runNoIntelVerify(win) {
   if (!gpuCardText.includes('Non supported GPU')) fail('1.0.1: the GPU card is missing the "Non supported GPU" note');
   step('gpu-card', `GPU card: title 'GPU', name row 'AMD Radeon RX 7600', Driver version row '${driverRowKv.trim()}' (M4-I - the M4-H absence pin is REVERSED), VRAM '${vramRowKv.trim()}', ReBAR 'ReBAR off' (real), 'Non supported GPU' note`);
 
+  // M7b (fix 1): the no-Intel sysinfo FIXTURE carries a 'Microsoft Basic
+  // Display Adapter' FIRST + a DisplayLink dock (the fixture path bypasses
+  // the parse - createMockSysinfo applies isRealGpuController itself). The
+  // header / health device row / GPU card pins above already show the real
+  // AMD part; THIS pin proves the PAYLOAD never carries the non-GPU
+  // devices - a first-controller Basic Display Adapter must never win the
+  // GPU card / health row / header name.
+  const sysinfoPayload = await js(`window.arcPower.sysinfo()`);
+  const payloadControllers = Array.isArray(sysinfoPayload?.videoControllers) ? sysinfoPayload.videoControllers : [];
+  if (payloadControllers.length !== 1 || payloadControllers[0].name !== 'AMD Radeon RX 7600') {
+    fail(`M7b: the no-Intel sysinfo payload must carry ONLY the real AMD part (got ${JSON.stringify(payloadControllers.map((c) => c.name))} - the Basic Display Adapter + DisplayLink must be filtered)`);
+  }
+  step('m7b-gpu-filter', `M7b: the no-Intel sysinfo payload carries ONLY 'AMD Radeon RX 7600' (the Basic Display Adapter FIRST + DisplayLink were filtered by isRealGpuController - they never win the GPU card / health row / header name)`);
+
   // --- 6. monitoring: the OS-level tiles get the mock sys-stats values ------
   // M4M (B): the two groups are SCOPED lookups (both carry Temperature-like
   // labels); the CPU group's 'Util' replaces the old 'CPU utilization'
@@ -4901,10 +4962,10 @@ export async function runBootApplyExtVerify(win, backend, store) {
 // ---------------------------------------------------------------------------
 //
 // The session seed (main.js) wrote overlayEnabled:true + the default
-// letter/position/scale into the ISOLATED mock store, so the overlay window
-// (REAL in this variant, like the main window) boots SHOWN. The hotkey is
-// the COUNTING probe (never a real globalShortcut registration). This
-// runner asserts:
+// letter/position/scale (+ the M7b background box off/black/0.5) into the
+// ISOLATED mock store, so the overlay window (REAL in this variant, like
+// the main window) boots SHOWN. The hotkey is the COUNTING probe (never a
+// real globalShortcut registration). This runner asserts:
 //   (a) 'overlay:get-state' -> exists + visible (the seeded session);
 //   (b) the overlay DOM lines - ONLY the STABLE fields pinned exactly
 //       ('CPU 42%', '4.3 GHz', '61°C'|'62°C', 'GPU 42%', '2187 MHz',
@@ -4915,20 +4976,33 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //       99% FPS 58' (M7a: the percentile stats ride the FPS row);
 //   (c) the frametime canvas has DRAWN content under RID_MOCK_FPS=1 (the
 //       16.7 ms passthrough series);
-//   (d) 'overlay:toggle' flips visible -> hidden -> visible AND persists
-//       overlayEnabled in the store (the hotkey + the Overlay-page toggle
-//       flip the same persisted field);
+//   (d) M7b (fix 5): the SHORTCUT semantics - 'overlay:toggle' (the
+//       hotkey's channel) flips the SESSION visibility only while the
+//       master overlayEnabled is ON; the persisted master NEVER flips
+//       from the hotkey;
 //   (e) the hotkey probe registered 'Control+O' + the getState
 //       hotkeyRegistered flag reads true;
 //   (f) a position patch via profiles-settings-save repositions the window
 //       (the corner asserted via get-state bounds) + a scale patch resizes
 //       it (bounds width x the scale - the geometry application);
+//   (f2b) M7b (fix 5): the General toggle is the MASTER's only writer -
+//       off -> persisted false + hidden (the shortcut does NOTHING while
+//       off), on -> persisted true + shown (the shortcut flips the
+//       visibility only, never the persisted value);
+//   (f3/f3b/f4) the stat tickbox round trips (gpu-fan, the M7a 1% Low /
+//       99% FPS pair, the frametime strip);
+//   (f5) the color swatch round trip (overlayColor + the CSSOM var + the
+//       canvas stroke);
+//   (f6) M7b (fix 4): the background box round trip - the toggle, the
+//       color swatch + the opacity slider through profiles-settings-save,
+//       the backdrop .visible class + the --overlay-bg-color /
+//       --overlay-bg-opacity CSS vars re-rendering on every push;
 //   (g) the mid-run register-failure honesty: the probe fakes a failure
 //       (settable mid-run, not a boot knob), a letter save via the Settings
 //       card re-registers through the probe, and the honest hotkey note
 //       appears after the card's every-render get-state re-query. Restored
-//       at the end (letter O, failRegister false) so the next overlay run
-//       boots deterministically.
+//       at the end (letter O, failRegister false, geometry + bg defaults)
+//       so the next overlay run boots deterministically.
 
 /**
  * @param {import('electron').BrowserWindow} win the MAIN window
@@ -5048,20 +5122,23 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     step('m6-frametime-value', "the frametime value line honestly reads '-' (no fps poll data)");
   }
 
-  // (d) the toggle flips visible -> hidden -> visible AND persists the same
-  // field the Overlay page's General toggle writes (read-modify-write
-  // through the store; M6-amd3 the toggle lives on #/overlay now).
+  // (d) M7b (fix 5): the toggle and the shortcut are INDEPENDENT now.
+  // 'overlay:toggle' (the hotkey's channel) is the SHORTCUT: with the
+  // master overlayEnabled ON (the seeded session), pressing it flips the
+  // SESSION visibility only - the persisted overlayEnabled NEVER flips
+  // (the Overlay-page General toggle is its only writer; a reboot shows
+  // the overlay again when it is enabled).
   const s1 = await js(`window.arcPower.overlayToggle()`);
   if (s1.visible) fail('M5: overlay:toggle did not HIDE the visible overlay');
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === false)`, 5000))) {
-    fail('M5: overlay:toggle did not persist overlayEnabled=false (the hotkey + the General toggle must flip the same persisted field)');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
+    fail('M7b: the shortcut press must NOT write overlayEnabled (still true - the hotkey never persists)');
   }
   const s2 = await js(`window.arcPower.overlayToggle()`);
   if (!s2.visible) fail('M5: overlay:toggle did not SHOW the overlay again');
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
-    fail('M5: overlay:toggle did not persist overlayEnabled=true');
+    fail('M7b: the second shortcut press must NOT write overlayEnabled either (still true)');
   }
-  step('m5-toggle', 'overlay:toggle flipped visible -> hidden -> visible + persisted overlayEnabled true/false/true');
+  step('m5-toggle', 'M7b: the shortcut (overlay:toggle) flipped visible -> hidden -> visible while the persisted overlayEnabled stayed true - the hotkey NEVER writes the master');
 
   // (e) the hotkey probe registered 'Control+O' (the boot registration -
   // never a real globalShortcut) + the live hotkeyRegistered flag reads
@@ -5116,6 +5193,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // (f2b) M6-amd3: the enable toggle MOVED to the General card at the top
   // of #/overlay - clicking it flips the persisted overlayEnabled AND the
   // overlay window (the same read-modify-write the Settings toggle used).
+  // M7b (fix 5): this toggle is the MASTER's only writer - the shortcut
+  // gate pin below proves the independence both ways.
   if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]')`, 5000))) {
     fail('M6-amd3: the #/overlay General card has no overlayEnabled toggle');
   }
@@ -5126,6 +5205,17 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === false)`, 5000))) {
     fail('M6-amd3: the General-card toggle off did not HIDE the overlay window');
   }
+  // M7b (fix 5, pin a): with the master OFF the shortcut does NOTHING -
+  // the window stays hidden AND overlayEnabled stays false in the store
+  // (the pre-fix behavior showed the overlay + flipped the persisted
+  // state - the reported "toggle does not work" bug).
+  const sOff = await js(`window.arcPower.overlayToggle()`);
+  if (sOff.visible) {
+    fail('M7b: the shortcut must NOT show the overlay while the master overlayEnabled is OFF');
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === false)`, 5000))) {
+    fail('M7b: the shortcut press while the master is OFF must NOT write overlayEnabled (still false)');
+  }
   await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]'); b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
     fail('M6-amd3: the General-card toggle did not persist overlayEnabled=true');
@@ -5133,7 +5223,20 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === true)`, 5000))) {
     fail('M6-amd3: the General-card toggle on did not SHOW the overlay window');
   }
-  step('m6-general-toggle', 'the #/overlay General toggle round trip: off -> persisted false + overlay hidden; on -> persisted true + overlay shown');
+  // M7b (fix 5, pin b): the master is ON again - the shortcut flips the
+  // visibility (hidden -> shown) while the persisted overlayEnabled never
+  // flips (the master stays true).
+  const sOnHide = await js(`window.arcPower.overlayToggle()`);
+  if (sOnHide.visible) fail('M7b: the shortcut did not HIDE the overlay with the master ON');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
+    fail('M7b: the shortcut must NOT write overlayEnabled with the master ON (still true)');
+  }
+  const sOnShow = await js(`window.arcPower.overlayToggle()`);
+  if (!sOnShow.visible) fail('M7b: the shortcut did not SHOW the overlay again with the master ON');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
+    fail('M7b: the second shortcut press with the master ON must NOT write overlayEnabled either');
+  }
+  step('m6-general-toggle', 'the #/overlay General toggle round trip: off -> persisted false + overlay hidden (the shortcut does NOTHING while the master is off); on -> persisted true + overlay shown (the shortcut flips the visibility only - the master never flips from the hotkey)');
 
   // (f3) M6: the stat tickboxes round-trip through profiles-settings-save.
   // Unchecking gpu-fan trims the persisted overlayStats AND the overlay
@@ -5225,6 +5328,75 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   step('m6-color-swatch', 'yellow swatch -> overlayColor #ffe600 persisted + the overlay re-rendered (css var + computed line color + canvas stroke); restored to the stock white');
 
+  // (f6) M7b (fix 4): the background box - the Appearance card's
+  // Background section. (a) the toggle persists overlayBgEnabled + the
+  // overlay's backdrop gains the .visible class; (b) a swatch round trip
+  // persists overlayBgColor + re-renders the --overlay-bg-color CSS var;
+  // (c) the opacity slider (0-100) persists overlayBgOpacity + re-renders
+  // the --overlay-bg-opacity CSS var; (d) off -> the backdrop hides again.
+  // The page is #/overlay here (the color-swatch block above ran on it).
+  if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]')`, 5000))) {
+    fail('M7b: the #/overlay Appearance card has no overlayBgEnabled toggle');
+  }
+  // The boot defaults: box off, black, 0.5 - the backdrop is hidden + the
+  // CSS vars carry the defaults (the seeded session).
+  if (await ojs(`document.getElementById('overlay-backdrop')?.classList.contains('visible')`)) {
+    fail('M7b: the backdrop must boot HIDDEN (overlayBgEnabled defaults to false)');
+  }
+  const bootBgVars = await ojs(`JSON.stringify({ color: document.documentElement.style.getPropertyValue('--overlay-bg-color'), opacity: document.documentElement.style.getPropertyValue('--overlay-bg-opacity') })`);
+  const bootBg = JSON.parse(bootBgVars);
+  if (bootBg.color !== '#000000' || bootBg.opacity !== '0.5') {
+    fail(`M7b: the boot background vars read ${bootBgVars} (expected color '#000000' + opacity '0.5' - the seeded defaults)`);
+  }
+  // (a) the toggle on: the backdrop appears + the overlay re-renders (the
+  // overlayChanged loop must carry the bg keys or the box never appears).
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgEnabled === true)`, 5000))) {
+    fail('M7b: the bg toggle did not persist overlayBgEnabled=true');
+  }
+  if (!(await waitFor(overlayWin, `document.getElementById('overlay-backdrop')?.classList.contains('visible')`, 5000))) {
+    fail('M7b: the backdrop did not gain .visible after the bg toggle (the push must re-render the box)');
+  }
+  if (!(await waitFor(overlayWin, `getComputedStyle(document.getElementById('overlay-backdrop')).display === 'block'`, 5000))) {
+    fail('M7b: the visible backdrop computes display:block');
+  }
+  // (b) the yellow swatch round trip: overlayBgColor '#ffe600' persists +
+  // the --overlay-bg-color var re-renders.
+  await js(`(() => { const b = document.querySelector('.overlay-bg-color-option[data-bg-color-option="#ffe600"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgColor === '#ffe600')`, 5000))) {
+    fail('M7b: the yellow bg swatch did not persist overlayBgColor #ffe600');
+  }
+  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--overlay-bg-color') === '#ffe600'`, 5000))) {
+    fail(`M7b: the --overlay-bg-color var reads '${await ojs(`document.documentElement.style.getPropertyValue('--overlay-bg-color')`)}' (expected '#ffe600' after the swatch)`);
+  }
+  // (c) the opacity slider: 30 -> overlayBgOpacity 0.3 persists + the var
+  // re-renders (the live value label follows the oninput pattern).
+  await js(`(() => {
+    const s = document.querySelector('.settings-bg-opacity-slider');
+    if (!s) return;
+    s.value = '30';
+    s.dispatchEvent(new Event('change'));
+  })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgOpacity === 0.3)`, 5000))) {
+    fail('M7b: the opacity slider did not persist overlayBgOpacity 0.3');
+  }
+  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--overlay-bg-opacity') === '0.3'`, 5000))) {
+    fail(`M7b: the --overlay-bg-opacity var reads '${await ojs(`document.documentElement.style.getPropertyValue('--overlay-bg-opacity')`)}' (expected '0.3' after the slider)`);
+  }
+  if (!(await waitFor(overlayWin, `getComputedStyle(document.getElementById('overlay-backdrop')).opacity === '0.3'`, 5000))) {
+    fail('M7b: the backdrop computed opacity did not follow the slider (expected 0.3)');
+  }
+  // (d) off again: the backdrop hides (the .visible class drops) + the
+  // persisted value flips back.
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgEnabled === false)`, 5000))) {
+    fail('M7b: the bg toggle off did not persist overlayBgEnabled=false');
+  }
+  if (!(await waitFor(overlayWin, `document.getElementById('overlay-backdrop')?.classList.contains('visible') === false`, 5000))) {
+    fail('M7b: the backdrop is still visible after the bg toggle off');
+  }
+  step('m7b-background', 'M7b background: toggle on -> backdrop .visible + display:block; yellow swatch -> overlayBgColor #ffe600 + the CSS var; opacity slider 30 -> overlayBgOpacity 0.3 + the computed opacity; toggle off -> hidden again');
+
   // (g) the mid-run register-failure honesty: the probe fakes a failure
   // (settable mid-run - not a boot-time knob), a letter save via the
   // Overlay Settings page (#/overlay - the hotkey input MOVED here with
@@ -5261,9 +5433,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // letter O + a successful registration -> the note disappears, and the
   // geometry back to the defaults (a crashed run must never bleed into the
   // next overlay variant; the M6 color/stats pins already restored the
-  // stock white + the full stat set above).
+  // stock white + the full stat set above, and the M7b bg pins restore the
+  // box off/black/0.5 here).
   hotkeyProbe.failRegister = false;
-  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1 })`);
+  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1, overlayBgEnabled: false, overlayBgColor: '#000000', overlayBgOpacity: 0.5 })`);
   await sleep(500);
   const s5 = await js(`window.arcPower.overlayGetState()`);
   if (s5.hotkeyRegistered !== true) fail('M5: hotkeyRegistered did not recover after the failure fake was cleared');

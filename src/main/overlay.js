@@ -1,18 +1,18 @@
 // Arc Power - M5 software overlay (the MSI Afterburner / RTSS-style HUD).
 //
 // The overlay is a TRANSPARENT, frameless, always-on-top BrowserWindow that
-// shows bold TEXT ONLY (no boxes, no window chrome, no background) - the
-// text floats directly over the screen/game. This module owns:
+// shows bold text over the screen/game. This module owns:
 //   - the GEOMETRY: anchored to the PRIMARY display bounds; the position
 //     setting (top-left STOCK / top-right / bottom-left / bottom-right)
 //     with an 8px margin; the size = the base overlay size (~460x150 CSS px
 //     at scale 1.0 - the stock RTSS-ish footprint) x the overlayScale;
-//   - the VISIBILITY: shown when overlayEnabled; toggle() flips the window
-//     AND persists overlayEnabled through the injected onSettingsChange
-//     (main.js writes it with the read-modify-write saveSettings
-//     ({ ...loadSettings(), overlayEnabled }) shape like every other store
-//     write - the hotkey + the Overlay-page toggle flip the SAME persisted
-//     field);
+//   - the VISIBILITY: shown when overlayEnabled (apply() drives it - the
+//     enabled-driven show/hide); toggle() is the SHORTCUT flip - M7b (fix
+//     5): gated on the enabled master (pressing it while the master is OFF
+//     does NOTHING - no window change, no persist) and when the master is
+//     ON it flips the SESSION visibility ONLY - overlayEnabled (persisted)
+//     is written by NOTHING here: the Overlay-page toggle is its only
+//     writer (profilesSettingsSave -> onOverlaySettings -> apply());
 //   - getState() -> { exists, visible, bounds, position, scale, enabled,
 //     hotkeyRegistered } - hotkeyRegistered is DERIVED LIVE from the
 //     registration state the hotkey seam reports (main.js product path:
@@ -26,10 +26,10 @@
 //     closes both.
 //
 // The window is created UNCONDITIONALLY on the product window path (HIDDEN
-// when overlayEnabled is false - toggle() from a disabled state + the
-// hotkey must work before the user ever enables it; a lazy create would
-// break the hotkey-enable path). NEVER in headless/boot-apply/apply-profile
-// modes; ui-verify creates it only under RID_MOCK_OVERLAY=1.
+// when overlayEnabled is false - apply() shows it when the user enables it
+// through the Overlay page; a lazy create would break the enable path).
+// NEVER in headless/boot-apply/apply-profile modes; ui-verify creates it
+// only under RID_MOCK_OVERLAY=1.
 
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
@@ -62,6 +62,10 @@ const OVERLAY_STAT_IDS = [
 ];
 // M6: the stock overlay text color (white - the M5 pre-color default).
 const OVERLAY_COLOR_DEFAULT = '#ffffff';
+// M7b: the overlay background box - black at 0.5 opacity (the defaults
+// when absent/garbage; the renderer mirror lives in pure/overlay.ts).
+const OVERLAY_BG_COLOR_DEFAULT = '#000000';
+const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 
 /**
  * Normalize a raw settings object into the overlay's applied shape (the
@@ -85,6 +89,14 @@ function normalizeSettings(raw = {}) {
   const color = typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color)
     ? raw.color
     : OVERLAY_COLOR_DEFAULT;
+  // M7b: the background box - enabled off / black / 0.5 opacity when
+  // absent or garbage (the same absent-field mechanism).
+  const bgColor = typeof raw.overlayBgColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.overlayBgColor)
+    ? raw.overlayBgColor
+    : OVERLAY_BG_COLOR_DEFAULT;
+  const bgOpacity = typeof raw.overlayBgOpacity === 'number' && Number.isFinite(raw.overlayBgOpacity)
+    ? Math.min(1, Math.max(0, raw.overlayBgOpacity))
+    : OVERLAY_BG_OPACITY_DEFAULT;
   let stats = OVERLAY_STAT_IDS;
   if (Array.isArray(raw.stats)) {
     const seen = new Set();
@@ -103,6 +115,9 @@ function normalizeSettings(raw = {}) {
     hotkeyLetter,
     color,
     stats,
+    overlayBgEnabled: raw.overlayBgEnabled === true,
+    overlayBgColor: bgColor,
+    overlayBgOpacity: bgOpacity,
   };
 }
 
@@ -111,21 +126,19 @@ function normalizeSettings(raw = {}) {
  * @param {{
  *   getOverlaySettings: () => object,   // the CURRENT persisted settings
  *                                       // (main.js: store.loadSettingsSync)
- *   onSettingsChange: (patch: object) => Promise<unknown>,  // the persist
- *                                       // path for toggle()'s flip (main.js
- *                                       // writes read-modify-write)
  * }} deps
  * @returns {{
  *   getWindow: () => import('electron').BrowserWindow | null,
  *   getState: () => { exists: boolean, visible: boolean, bounds: object | null, position: string, scale: number, enabled: boolean, hotkeyRegistered: boolean },
  *   apply: (settings: object) => void,   // idempotent geometry + visibility
  *                                        // application (boot + every change)
- *   toggle: () => Promise<void>,         // flip the window + persist
+ *   toggle: () => Promise<void>,         // the SHORTCUT flip - gated on the
+ *                                        // enabled master; never persists
  *   setHotkeyRegistered: (flag: boolean) => void,  // the hotkey seam's live flag
  *   destroy: () => void,
  * }}
  */
-export function createOverlayWindow({ getOverlaySettings, onSettingsChange }) {
+export function createOverlayWindow({ getOverlaySettings }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
@@ -216,6 +229,13 @@ export function createOverlayWindow({ getOverlaySettings, onSettingsChange }) {
     // re-render the HUD immediately, not on the next telemetry tick).
     color: applied.color,
     stats: applied.stats,
+    // M7b: the background box rides the same push - without the three
+    // fields the renderer would always apply the defaults and the box
+    // would never appear (the main.js applyOverlaySettings MUST forward
+    // them - plan-review F2).
+    overlayBgEnabled: applied.overlayBgEnabled,
+    overlayBgColor: applied.overlayBgColor,
+    overlayBgOpacity: applied.overlayBgOpacity,
   });
 
   return {
@@ -267,13 +287,18 @@ export function createOverlayWindow({ getOverlaySettings, onSettingsChange }) {
     },
 
     /**
-     * Flip the overlay (the hotkey + the 'overlay:toggle' channel both end
-     * here) and persist the flip through the read-modify-write shape
-     * (onSettingsChange - main.js writes saveSettings({ ...loadSettings(),
-     * overlayEnabled })). The flip lands even when the persist fails (the
-     * session keeps the flipped state; the next boot reads the old value).
+     * M7b (fix 5): the SHORTCUT toggle - the hotkey + the 'overlay:toggle'
+     * channel both end here. overlayEnabled (persisted) is the MASTER
+     * switch, set ONLY by the Overlay-page toggle (profilesSettingsSave ->
+     * onOverlaySettings -> apply()). When the master is OFF the shortcut
+     * does NOTHING (no window change, no persist - the pre-fix behavior
+     * showed the overlay + flipped the persisted state); when ON it flips
+     * the SESSION visibility only - it NEVER writes overlayEnabled (the
+     * persisted master stays; a reboot shows the overlay again when it is
+     * enabled). apply() is the only path that shows/hides on the master.
      */
     async toggle() {
+      if (!applied.enabled) return;
       const next = !visible;
       const alive = win && !win.isDestroyed();
       if (alive) {
@@ -281,11 +306,6 @@ export function createOverlayWindow({ getOverlaySettings, onSettingsChange }) {
         else win.hide();
       }
       visible = next;
-      try {
-        await onSettingsChange({ overlayEnabled: next });
-      } catch (err) {
-        console.log(`[overlay] toggle persist failed: ${err.message}`);
-      }
     },
 
     /** The hotkey seam's live flag (main.js product: register's return;

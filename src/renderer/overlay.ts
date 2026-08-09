@@ -28,7 +28,7 @@
 // and the number - a stat off hides them together.
 
 import { api } from './ipc.ts';
-import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor } from './pure/overlay.ts';
+import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, OVERLAY_BG_COLOR_DEFAULT } from './pure/overlay.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, TelemetrySample } from './types.ts';
@@ -78,6 +78,22 @@ api.onOverlaySettings((settings) => {
   // color change). Garbage degrades to the stock white.
   color = isValidOverlayColor(s.color) ? s.color : '#ffffff';
   document.documentElement.style.setProperty('--overlay-color', color);
+  // M7b (fix 4): the background box - the two CSS vars via CSSOM (the
+  // same CSP-safe pattern) + the .visible class from overlayBgEnabled.
+  // The backdrop exists in the fixed overlay.html markup; a bg change
+  // re-renders on THIS push (main's applyOverlaySettings forwards the
+  // three fields - without them the defaults would always push and the
+  // box would never appear).
+  document.documentElement.style.setProperty(
+    '--overlay-bg-color',
+    isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT,
+  );
+  document.documentElement.style.setProperty(
+    '--overlay-bg-opacity',
+    String(clampOverlayBgOpacity(s.overlayBgOpacity)),
+  );
+  const backdrop = document.getElementById('overlay-backdrop');
+  if (backdrop) backdrop.classList.toggle('visible', s.overlayBgEnabled === true);
   // M6: the enabled stats - an absent value means the FULL set (the stock
   // overlay; overlayLines normalizes).
   stats = s.stats;

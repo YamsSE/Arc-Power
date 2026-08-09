@@ -43,6 +43,11 @@ const OVERLAY_STAT_IDS = [
 ];
 // M6: the stock overlay text color (white - the M5 pre-color default).
 const OVERLAY_COLOR_DEFAULT = '#ffffff';
+// M7b: the overlay background box (the Appearance card's Background
+// section) - the box color defaults to black and the opacity to 0.5 (a
+// translucent box behind the HUD); garbage degrades to these at the STORE.
+const OVERLAY_BG_COLOR_DEFAULT = '#000000';
+const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 
 export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_COLOR_DEFAULT };
 
@@ -54,6 +59,13 @@ function defaultDataDir() {
 function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
   return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+}
+
+/** M7b: clamp the background opacity to 0..1 (garbage degrades to the 0.5
+ *  default - the same clamp semantics as the scale slider). */
+function clampOverlayBgOpacity(v) {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_BG_OPACITY_DEFAULT;
+  return Math.min(1, Math.max(0, n));
 }
 
 /** M6: normalize a raw overlayStats value - an array of KNOWN ids, deduped
@@ -206,7 +218,9 @@ export class ProfileStore {
    * overlayPosition/overlayScale) - absent on old files -> the defaults.
    * M6: overlayColor + overlayStats ride the same mechanism (stock white +
    * the full stat set when absent).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[] }>}
+   * M7b: overlayBgEnabled/overlayBgColor/overlayBgOpacity (the background
+   * box) ride it too (off / #000000 / 0.5 when absent).
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -259,6 +273,11 @@ export class ProfileStore {
         overlayScale: 1.0,
         overlayColor: OVERLAY_COLOR_DEFAULT,
         overlayStats: [...OVERLAY_STAT_IDS],
+        // M7b: the background box - absent -> off, black, 0.5 opacity (the
+        // same absent-field mechanism, NO schema bump).
+        overlayBgEnabled: false,
+        overlayBgColor: OVERLAY_BG_COLOR_DEFAULT,
+        overlayBgOpacity: OVERLAY_BG_OPACITY_DEFAULT,
       };
     }
     return {
@@ -308,11 +327,19 @@ export class ProfileStore {
       // M6: the enabled stat ids - known ids only, deduped; absent/garbage
       // degrades to the FULL set (the stock overlay).
       overlayStats: normalizeOverlayStats(data.overlayStats),
+      // M7b: the background box - enabled off / black / 0.5 opacity when
+      // absent; a garbage value degrades to the default - never a crash.
+      overlayBgEnabled: data.overlayBgEnabled === true,
+      overlayBgColor: typeof data.overlayBgColor === 'string'
+        && /^#[0-9a-fA-F]{6}$/.test(data.overlayBgColor)
+        ? data.overlayBgColor
+        : OVERLAY_BG_COLOR_DEFAULT,
+      overlayBgOpacity: clampOverlayBgOpacity(data.overlayBgOpacity),
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[] }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -353,6 +380,14 @@ export class ProfileStore {
         ? settings.overlayColor
         : OVERLAY_COLOR_DEFAULT,
       overlayStats: normalizeOverlayStats(settings.overlayStats),
+      // M7b: the background box - validated on save like the rest (the
+      // channel validates first; the store fallback covers direct callers).
+      overlayBgEnabled: settings.overlayBgEnabled === true,
+      overlayBgColor: typeof settings.overlayBgColor === 'string'
+        && /^#[0-9a-fA-F]{6}$/.test(settings.overlayBgColor)
+        ? settings.overlayBgColor
+        : OVERLAY_BG_COLOR_DEFAULT,
+      overlayBgOpacity: clampOverlayBgOpacity(settings.overlayBgOpacity),
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.

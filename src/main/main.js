@@ -649,6 +649,9 @@ async function main() {
     // M6: the color + the stats reset the same way (the new pins change
     // them mid-run - a crashed run must never bleed a non-white color or a
     // trimmed stat set into the next overlay variant).
+    // M7b: the background box resets the same way (the new pins toggle it
+    // mid-run - a crashed run must never bleed a visible box / non-black
+    // color / non-0.5 opacity into the next overlay variant).
     try {
       const cur = await store.loadSettings();
       const overlayOn = process.env.RID_MOCK_OVERLAY === '1';
@@ -660,6 +663,9 @@ async function main() {
         overlayScale: overlayOn ? 1 : cur.overlayScale,
         overlayColor: overlayOn ? '#ffffff' : cur.overlayColor,
         overlayStats: overlayOn ? OVERLAY_STAT_IDS : cur.overlayStats,
+        overlayBgEnabled: overlayOn ? false : cur.overlayBgEnabled,
+        overlayBgColor: overlayOn ? '#000000' : cur.overlayBgColor,
+        overlayBgOpacity: overlayOn ? 0.5 : cur.overlayBgOpacity,
       });
     } catch (err) {
       console.log(`[boot] overlay session seed skipped: ${err.message}`);
@@ -1238,11 +1244,13 @@ async function main() {
 
   // --- M5: the software overlay (the MSI Afterburner/RTSS-style HUD) ------
   // Created UNCONDITIONALLY on the product window path (HIDDEN when
-  // overlayEnabled is false - toggle() from a disabled state + the hotkey
-  // must work before the user ever enables it; a lazy create would break
-  // the hotkey-enable path). NEVER in headless/boot-apply/apply-profile
-  // (they return earlier); ui-verify creates it only under
-  // RID_MOCK_OVERLAY=1 (the variant's real-window pins).
+  // overlayEnabled is false - apply() shows it when the user enables it
+  // through the Overlay page; a lazy create would break the enable path).
+  // NEVER in headless/boot-apply/apply-profile (they return earlier);
+  // ui-verify creates it only under RID_MOCK_OVERLAY=1 (the variant's
+  // real-window pins). M7b (fix 5): the hotkey/shortcut NEVER shows the
+  // overlay while the master overlayEnabled is OFF - the gate lives in
+  // overlay.js toggle().
   let overlayHandle = null;
   let overlayHotkeyAccelerator = null;
   // The hotkey seam (M6): product path - a REAL globalShortcut registration
@@ -1324,6 +1332,20 @@ async function main() {
         ? settings.overlayColor
         : '#ffffff',
       stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : undefined,
+      // M7b (fix 4, plan-review F2): the background box - the three fields
+      // MUST be forwarded here or payload() always pushes the defaults and
+      // the box never appears (a required-but-insufficient owner set would
+      // silently ship a dead feature). The overlay.js normalize is the
+      // final gate for garbage.
+      overlayBgEnabled: settings.overlayBgEnabled === true,
+      overlayBgColor: typeof settings.overlayBgColor === 'string'
+        && /^#[0-9a-fA-F]{6}$/.test(settings.overlayBgColor)
+        ? settings.overlayBgColor
+        : '#000000',
+      overlayBgOpacity: typeof settings.overlayBgOpacity === 'number'
+        && Number.isFinite(settings.overlayBgOpacity)
+        ? Math.min(1, Math.max(0, settings.overlayBgOpacity))
+        : 0.5,
     });
   };
   if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {
@@ -1336,18 +1358,6 @@ async function main() {
         } catch {
           return {};
         }
-      },
-      // toggle()'s persist path - the read-modify-write shape (never
-      // clobber the non-overlay fields), then re-apply so the store and the
-      // window always agree.
-      onSettingsChange: async (patch) => {
-        try {
-          const cur = await store.loadSettings();
-          await store.saveSettings({ ...cur, ...patch });
-        } catch (err) {
-          console.log(`[overlay] settings persist failed: ${err.message}`);
-        }
-        applyOverlaySettings();
       },
     });
     applyOverlaySettings();

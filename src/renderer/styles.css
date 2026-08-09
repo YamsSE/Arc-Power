@@ -366,9 +366,19 @@ html, body {
 
 /* M4-H (D1): the sidebar FOOTER - the GitHub link pinned to the BOTTOM-LEFT
    (margin-top:auto pushes it below the nav; the sidebar is a flex column).
-   GitHub icon via the same mask-image pattern as the nav icons. */
+   GitHub icon via the same mask-image pattern as the nav icons.
+   M7b (user amendment): the footer is a flex ROW now - GitHub stays at the
+   bottom-LEFT and the Settings tab joins it at the bottom-RIGHT (the
+   window's bottom-right corner; the GitHub-page mirror: GitHub pins its
+   settings link at the sidebar bottom, this app mirrors it to the RIGHT
+   side of its bottom row). The Settings link keeps the .sidebar-link base
+   styles (icon + label + active state). */
 .sidebar-footer {
   margin-top: auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .sidebar-footer-link {
@@ -1717,6 +1727,26 @@ html, body {
 }
 .settings-color-input::-webkit-color-swatch-wrapper { padding: 2px; }
 .settings-color-input::-webkit-color-swatch { border-radius: 4px; border: 1px solid var(--border-strong); }
+
+/* M7b (fix 4): the Appearance card's Background section - the box toggle
+   row, the color swatches (the overlay-color-option pattern) + the 0-100
+   opacity slider (the scale-slider pattern with a live value label). */
+.overlay-bg-row { margin-top: 10px; }
+.overlay-bg-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.overlay-bg-color-option .swatch-chip::after { display: none; }
+.settings-bg-opacity-slider { flex: 1; max-width: 220px; accent-color: var(--accent-strong); }
+.settings-bg-opacity-value {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 38px;
+}
 
 .profile-list { display: flex; flex-direction: column; gap: 8px; }
 

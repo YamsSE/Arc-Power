@@ -213,18 +213,38 @@ export function rebarState(controller: VideoControllerInfo | null | undefined): 
 }
 
 /**
- * 1.0.1 no-Intel round: the OS GPU - the PRIMARY NON-BASIC video controller
- * of the sysinfo payload (the first controller that is not a
- * basic-display/Microsoft fallback adapter - the same pick
- * matchVideoController uses for a model-less device name). Null when the
- * payload has no usable controller (degraded sysinfo / nothing but basic
- * adapters). Pure, DOM-free, node-testable.
+ * M7b (fix 1): the REAL-GPU vendor predicate - the renderer mirror of the
+ * main-side isRealGpuController (src/main/sysinfo.js - the same regexes,
+ * defense in depth: the mock fixtures feed primaryVideoController too).
+ * Keeps a controller only when its pnpDeviceId matches
+ * /VEN_(8086|1002|10DE)/i (Intel / AMD / NVIDIA) OR its name matches
+ * /intel|nvidia|radeon|geforce|arc|ati/i, and the name is NEVER
+ * basic|microsoft (a "Microsoft Remote Display Adapter" must not pass on a
+ * vendor-matching pnpDeviceId). Pure, DOM-free, node-testable.
+ * @param {{ name?: string | null, pnpDeviceId?: string | null } | null | undefined} c
+ */
+export function isRealGpuController(c: { name?: string | null; pnpDeviceId?: string | null } | null | undefined): boolean {
+  if (!c || typeof c !== 'object') return false;
+  const name = typeof c.name === 'string' ? c.name : '';
+  // NEVER basic|microsoft by name - the belt-and-braces exclusion.
+  if (/basic|microsoft/i.test(name)) return false;
+  const pnp = typeof c.pnpDeviceId === 'string' ? c.pnpDeviceId : '';
+  return /VEN_(8086|1002|10DE)/i.test(pnp) || /intel|nvidia|radeon|geforce|arc|ati/i.test(name);
+}
+
+/**
+ * 1.0.1 no-Intel round: the OS GPU - the PRIMARY REAL-GPU video controller
+ * of the sysinfo payload (the first controller that passes the M7b
+ * isRealGpuController predicate - the same pick matchVideoController uses
+ * for a model-less device name). Null when the payload has no usable
+ * controller (degraded sysinfo / nothing but basic adapters / DisplayLink
+ * docks). Pure, DOM-free, node-testable.
  * @param {SysInfo | null} sysinfo
  * @returns {{ name: string, vramBytes: number | null } | null}
  */
 export function primaryVideoController(sysinfo: SysInfo | null): { name: string; vramBytes: number | null } | null {
   const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
-  const primary = controllers.find((c) => c.name && !/basic|microsoft/i.test(c.name));
+  const primary = controllers.find((c) => c.name && isRealGpuController(c));
   if (!primary?.name) return null;
   return {
     name: primary.name,

@@ -101,6 +101,36 @@ export function buildSysinfoScript() {
 }
 
 /**
+ * M7b (fix 1): the REAL-GPU vendor predicate - keeps a controller only when
+ * it is an AMD / Intel / NVIDIA part. Win32_VideoController can list
+ * non-GPU devices ("Microsoft Basic Display Adapter", DisplayLink docks,
+ * virtual/remote adapters); a non-GPU at index 0 would win the dashboard /
+ * health fallbacks (videoControllers[0]) and show as the GPU. The predicate:
+ *   - pnpDeviceId matches /VEN_(8086|1002|10DE)/i (Intel / AMD / NVIDIA PCI
+ *     vendor ids), OR
+ *   - the name matches /intel|nvidia|radeon|geforce|arc|ati/i
+ *     (case-insensitive - "Intel(R) Arc(TM) A770 Graphics" etc.),
+ * AND the name is NEVER basic|microsoft (the belt-and-braces exclusion - a
+ * "Microsoft Remote Display Adapter" must not pass on its VEN_8086 pnp id).
+ * NO CIM Manufacturer change: the predicate keys on pnpDeviceId + name, and
+ * a generically-named controller with a null pnpDeviceId is never a real
+ * GPU. Applied at the SOURCE (the parse + the mock fixture - the fixture
+ * path bypasses the parse) so the payload only ever carries real GPUs.
+ * @param {object | null | undefined} c
+ * @returns {boolean}
+ */
+export function isRealGpuController(c) {
+  if (!c || typeof c !== 'object') return false;
+  const name = typeof c.name === 'string' ? c.name : '';
+  // NEVER basic|microsoft by name - the belt-and-braces exclusion (a
+  // vendor-matching pnpDeviceId on a Microsoft fallback adapter must not
+  // slip a non-GPU through).
+  if (/basic|microsoft/i.test(name)) return false;
+  const pnp = typeof c.pnpDeviceId === 'string' ? c.pnpDeviceId : '';
+  return /VEN_(8086|1002|10DE)/i.test(pnp) || /intel|nvidia|radeon|geforce|arc|ati/i.test(name);
+}
+
+/**
  * M4-D: AdapterRAM -> vramBytes (the FALLBACK source). AdapterRAM is a
  * 32-bit field whose saturation sentinels carry no byte count: 0xFFFFFFFF
  * (>4 GB cards saturate to it), 0x7FFFFFFF and 0x80000000 (common
@@ -357,8 +387,13 @@ export function parseCimOutput(stdout) {
     raw?.allocatedBar,
   );
   // M4-D2: the internal pnputil byte count never surfaces (only the merged
-  // verdict does).
-  const videoControllers = controllers.map(({ _pnputilBarBytes, ...rest }) => rest);
+  // verdict does). M7b (fix 1): the payload then filters through
+  // isRealGpuController - only AMD/Intel/NVIDIA parts survive (a
+  // "Microsoft Basic Display Adapter" / DisplayLink controller must never
+  // win the dashboard/health videoControllers[0] fallbacks).
+  const videoControllers = controllers
+    .map(({ _pnputilBarBytes, ...rest }) => rest)
+    .filter(isRealGpuController);
   return { cpu, ram, baseboard, videoControllers };
 }
 
@@ -540,6 +575,12 @@ export function vramBytesOfDevice(device, sysinfo) {
  * controller to an AMD part ('AMD Radeon RX 7600'-style with vramBytes + a
  * pnpDeviceId + rebarActive false) - the no-Intel machine shape the
  * renderer's osGpu / header / GPU card read.
+ * M7b (fix 1): the no-Intel fixture ALSO carries a 'Microsoft Basic Display
+ * Adapter' FIRST + a DisplayLink dock (the non-GPU devices that leak into
+ * Win32_VideoController) - the fixture path bypasses the parse, so the
+ * controller list is filtered through isRealGpuController HERE; only the
+ * AMD part survives, proving a non-GPU first controller never wins the GPU
+ * card / health row / header name.
  * M4-H: the fixture gains SMBIOSMemoryType 34 (DDR5 - the Memory-row type
  * label). M4J (B): the fixture drops the l1-l4 cache fields (the Cache row
  * is REMOVED) and gains the baseboard (the Mainboard row - the ASUSTeK-style
@@ -548,6 +589,51 @@ export function vramBytesOfDevice(device, sysinfo) {
  */
 export function createMockSysinfo(overrides = {}) {
   const noIntel = process.env.RID_MOCK_NO_INTEL === '1';
+  // M7b (fix 1): the fixture's controller list is filtered through
+  // isRealGpuController like the parse filters the CIM payload - the mock
+  // path bypasses the parse, so the filter must run HERE (the default +
+  // no-Intel fixtures stay green; a Basic Display Adapter first controller
+  // is genuinely filtered).
+  const fixtureControllers = noIntel ? [
+    {
+      // M7b: the FIRST controller is a non-GPU (the "Microsoft Basic
+      // Display Adapter" every Windows box can list) - the predicate must
+      // filter it so it never wins the dashboard/health fallbacks.
+      name: 'Microsoft Basic Display Adapter',
+      vramBytes: null,
+      pnpDeviceId: 'ROOT\\BASIC_DISPLAY\\0000',
+      driverVersion: '10.0.19041.1',
+      rebarActive: null,
+    },
+    {
+      // M7b: a DisplayLink dock - a non-GPU device (VID_17E9) that must
+      // never win either.
+      name: 'DisplayLink USB Graphics',
+      vramBytes: null,
+      pnpDeviceId: 'USB\\VID_17E9&PID_0236\\MOCK0001',
+      driverVersion: '10.0.19041.1',
+      rebarActive: null,
+    },
+    {
+      name: 'AMD Radeon RX 7600',
+      vramBytes: 8589934592, // 8 GiB
+      pnpDeviceId: 'PCI\\VEN_1002&DEV_7480&SUBSYS_24011462&REV_C7',
+      // M4-I: the controller's display-driver version (the no-Intel
+      // device card's Driver version row - works on ANY GPU).
+      driverVersion: '31.0.12027.9001',
+      rebarActive: false,
+    },
+    ...(overrides.videoControllers ?? []),
+  ] : [
+    {
+      name: 'Intel(R) Arc(TM) A770 Graphics',
+      vramBytes: 17179869184, // 16 GiB (the 16 GB config)
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08',
+      driverVersion: '32.0.101.8861',
+      rebarActive: true,
+    },
+    ...(overrides.videoControllers ?? []),
+  ];
   return {
     get: async () => ({
       cpu: {
@@ -571,27 +657,7 @@ export function createMockSysinfo(overrides = {}) {
         product: 'MAXIMUS VII RANGER',
         ...(overrides.baseboard ?? {}),
       },
-      videoControllers: noIntel ? [
-        {
-          name: 'AMD Radeon RX 7600',
-          vramBytes: 8589934592, // 8 GiB
-          pnpDeviceId: 'PCI\\VEN_1002&DEV_7480&SUBSYS_24011462&REV_C7',
-          // M4-I: the controller's display-driver version (the no-Intel
-          // device card's Driver version row - works on ANY GPU).
-          driverVersion: '31.0.12027.9001',
-          rebarActive: false,
-        },
-        ...(overrides.videoControllers ?? []),
-      ] : [
-        {
-          name: 'Intel(R) Arc(TM) A770 Graphics',
-          vramBytes: 17179869184, // 16 GiB (the 16 GB config)
-          pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000&REV_08',
-          driverVersion: '32.0.101.8861',
-          rebarActive: true,
-        },
-        ...(overrides.videoControllers ?? []),
-      ],
+      videoControllers: fixtureControllers.filter(isRealGpuController),
     }),
   };
 }
