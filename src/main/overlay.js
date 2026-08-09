@@ -11,14 +11,14 @@
 //     AND persists overlayEnabled through the injected onSettingsChange
 //     (main.js writes it with the read-modify-write saveSettings
 //     ({ ...loadSettings(), overlayEnabled }) shape like every other store
-//     write - the hotkey + the Settings toggle flip the SAME persisted
+//     write - the hotkey + the Overlay-page toggle flip the SAME persisted
 //     field);
 //   - getState() -> { exists, visible, bounds, position, scale, enabled,
 //     hotkeyRegistered } - hotkeyRegistered is DERIVED LIVE from the
 //     registration state the hotkey seam reports (main.js product path:
 //     globalShortcut.register's return; ui-verify: the counting probe). A
 //     failed register (CTRL+<letter> taken by another app) reads false and
-//     the Settings card shows the honest note;
+//     the Overlay page shows the honest note;
 //   - the LIFECYCLE rule (S2): the overlay NEVER keeps the app alive by
 //     itself - the main window's closed event destroys it + unregisters the
 //     hotkey (the pre-M5 exit behavior is preserved: closing the main
@@ -50,6 +50,17 @@ const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
 
+// M6: the canonical overlay stat ids (the persisted-truth owner is
+// profile-store.js; the renderer mirror is pure/overlay.ts - keep the
+// three in lockstep like the positions).
+const OVERLAY_STAT_IDS = [
+  'fps', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
+  'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
+];
+// M6: the stock overlay text color (white - the M5 pre-color default).
+const OVERLAY_COLOR_DEFAULT = '#ffffff';
+
 /**
  * Normalize a raw settings object into the overlay's applied shape (the
  * defaults fill absent/garbage fields - the same absent-field mechanism as
@@ -66,11 +77,30 @@ function normalizeSettings(raw = {}) {
   const hotkeyLetter = typeof raw.hotkeyLetter === 'string' && /^[A-Za-z]$/.test(raw.hotkeyLetter)
     ? raw.hotkeyLetter.toUpperCase()
     : 'O';
+  // M6: the text color (a /^#[0-9a-fA-F]{6}$/ hex - the stock white
+  // default) + the enabled stats (known ids, deduped; absent/garbage ->
+  // the FULL set - the stock overlay).
+  const color = typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color)
+    ? raw.color
+    : OVERLAY_COLOR_DEFAULT;
+  let stats = OVERLAY_STAT_IDS;
+  if (Array.isArray(raw.stats)) {
+    const seen = new Set();
+    stats = [];
+    for (const id of raw.stats) {
+      if (typeof id === 'string' && OVERLAY_STAT_IDS.includes(id) && !seen.has(id)) {
+        seen.add(id);
+        stats.push(id);
+      }
+    }
+  }
   return {
     enabled: raw.enabled === true,
     position,
     scale,
     hotkeyLetter,
+    color,
+    stats,
   };
 }
 
@@ -179,6 +209,11 @@ export function createOverlayWindow({ getOverlaySettings, onSettingsChange }) {
     position: applied.position,
     scale: applied.scale,
     hotkeyLetter: applied.hotkeyLetter,
+    // M6: the color + the stats ride the same push - the renderer applies
+    // them via CSSOM on every settings push (a color/stats change must
+    // re-render the HUD immediately, not on the next telemetry tick).
+    color: applied.color,
+    stats: applied.stats,
   });
 
   return {
@@ -195,7 +230,7 @@ export function createOverlayWindow({ getOverlaySettings, onSettingsChange }) {
         enabled: applied.enabled,
         // M1: derived LIVE from the hotkey seam's current flag - a
         // mid-session re-register failure must surface immediately (the
-        // Settings card re-queries get-state on every render).
+        // Overlay page re-queries get-state on every render).
         hotkeyRegistered,
       };
     },

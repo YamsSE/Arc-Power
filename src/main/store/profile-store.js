@@ -27,16 +27,46 @@ const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
 
-export { THEMES, OVERLAY_POSITIONS };
+// M6: the canonical overlay stat ids - the persisted-truth owner of the
+// list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
+// src/renderer/pure/overlay.ts and the envelope validation in
+// src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
+// files -> the FULL set (the stock overlay shows everything); a garbage
+// value degrades to the full set at the STORE.
+const OVERLAY_STAT_IDS = [
+  'fps', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
+  'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
+];
+// M6: the stock overlay text color (white - the M5 pre-color default).
+const OVERLAY_COLOR_DEFAULT = '#ffffff';
+
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_COLOR_DEFAULT };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
 }
 
-/** M5: clamp a scale value to the slider's range (garbage degrades to 1.0). */
+/** M6: clamp a scale value to the slider's range (garbage degrades to 1.0). */
 function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
   return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+}
+
+/** M6: normalize a raw overlayStats value - an array of KNOWN ids, deduped
+ *  (order preserved); absent/garbage -> the FULL set (the stock default).
+ *  The store mirror of the renderer's normalizeOverlayStats. */
+function normalizeOverlayStats(v) {
+  if (!Array.isArray(v)) return [...OVERLAY_STAT_IDS];
+  const seen = new Set();
+  const out = [];
+  for (const id of v) {
+    if (typeof id === 'string' && OVERLAY_STAT_IDS.includes(id) && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
 }
 
 /**
@@ -171,7 +201,9 @@ export class ProfileStore {
    * clobber it).
    * M5: the software-overlay fields (overlayEnabled/overlayHotkeyLetter/
    * overlayPosition/overlayScale) - absent on old files -> the defaults.
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number }>}
+   * M6: overlayColor + overlayStats ride the same mechanism (stock white +
+   * the full stat set when absent).
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[] }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -215,10 +247,15 @@ export class ProfileStore {
         // M5: the software-overlay settings. Absent on old files -> the
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
         // absent-field mechanism, NO schema bump).
+        // M6: the color defaults to the stock white '#ffffff' and the stats
+        // to the FULL set (the stock overlay shows everything) - same
+        // absent-field mechanism.
         overlayEnabled: false,
         overlayHotkeyLetter: 'O',
         overlayPosition: 'top-left',
         overlayScale: 1.0,
+        overlayColor: OVERLAY_COLOR_DEFAULT,
+        overlayStats: [...OVERLAY_STAT_IDS],
       };
     }
     return {
@@ -258,11 +295,21 @@ export class ProfileStore {
         ? data.overlayPosition
         : 'top-left',
       overlayScale: clampOverlayScale(data.overlayScale),
+      // M6: the overlay text color - a /^#[0-9a-fA-F]{6}$/ hex or the stock
+      // white default (same absent-field mechanism; a garbage value never
+      // crashes).
+      overlayColor: typeof data.overlayColor === 'string'
+        && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor)
+        ? data.overlayColor
+        : OVERLAY_COLOR_DEFAULT,
+      // M6: the enabled stat ids - known ids only, deduped; absent/garbage
+      // degrades to the FULL set (the stock overlay).
+      overlayStats: normalizeOverlayStats(data.overlayStats),
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[] }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -296,6 +343,13 @@ export class ProfileStore {
         ? settings.overlayPosition
         : 'top-left',
       overlayScale: clampOverlayScale(settings.overlayScale),
+      // M6: the overlay text color - validated on save like the rest (the
+      // channel validates first; the store fallback covers direct callers).
+      overlayColor: typeof settings.overlayColor === 'string'
+        && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor)
+        ? settings.overlayColor
+        : OVERLAY_COLOR_DEFAULT,
+      overlayStats: normalizeOverlayStats(settings.overlayStats),
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.

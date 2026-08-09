@@ -386,9 +386,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- 1. shell renders -----------------------------------------------------
   // M4-D2 (§7): 6 nav links - the Overclocking + Fan pages merged into one
-  // Tuning page.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected - Overclocking + Fan merged into Tuning)');
+  // Tuning page. M6: 7 nav links - the Overlay Settings page (#/overlay)
+  // joined the sidebar.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, Overlay Settings added in M6)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -559,7 +560,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
-  if (sidebarIcons.length !== 6) fail(`M4-D: expected 6 sidebar links with icons, got ${sidebarIcons.length}`);
+  if (sidebarIcons.length !== 7) fail(`M4-D/M6: expected 7 sidebar links with icons (the Overlay Settings page joined in M6), got ${sidebarIcons.length}`);
   const sidebarPower = await js(`(() => {
     const el = document.querySelector('.sidebar-brand-power');
     if (!el) return 'no-el';
@@ -3247,7 +3248,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`, 15000))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`, 15000))) {
     fail('M4-H: the reload did not boot the shell');
   }
   await js(`location.hash = '#/tuning'`);
@@ -3802,9 +3803,10 @@ export async function runFeaturesetVerify(win, fsId) {
   };
 
   // --- boot: shell + dropdown -----------------------------------------------
-  // M4-D2 (§7): 6 nav links (Overclocking + Fan merged into Tuning).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  // M4-D2 (§7): 6 nav links (Overclocking + Fan merged into Tuning). M6: 7
+  // nav links (the Overlay Settings page joined the sidebar).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
   // the IGS indicator is gone everywhere.
@@ -4175,8 +4177,8 @@ export async function runNoIntelVerify(win) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders ----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -4387,8 +4389,9 @@ export async function runTweaksApplyVerify(win) {
   const failKnob = process.env.RID_MOCK_REGAPPLY_FAIL; // '<entryId>:<action>'
   const cancelKnob = process.env.RID_MOCK_REGAPPLY_CANCEL === '1';
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  // M6: 7 nav links (the Overlay Settings page joined the sidebar).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
   }
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
@@ -4567,8 +4570,9 @@ export async function runFanGateVerify(win, backend) {
   const js = (code) => win.webContents.executeJavaScript(code);
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 6`))) {
-    fail('sidebar did not render (6 nav links expected)');
+  // M6: 7 nav links (the Overlay Settings page joined the sidebar).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - M6 added the Overlay Settings page)');
   }
   // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then
@@ -4910,8 +4914,8 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //   (c) the frametime canvas has DRAWN content under RID_MOCK_FPS=1 (the
 //       16.7 ms passthrough series);
 //   (d) 'overlay:toggle' flips visible -> hidden -> visible AND persists
-//       overlayEnabled in the store (the hotkey + the Settings toggle flip
-//       the same persisted field);
+//       overlayEnabled in the store (the hotkey + the Overlay-page toggle
+//       flip the same persisted field);
 //   (e) the hotkey probe registered 'Control+O' + the getState
 //       hotkeyRegistered flag reads true;
 //   (f) a position patch via profiles-settings-save repositions the window
@@ -4979,6 +4983,12 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
   step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'; gpu matches the pinned pattern (stable fields + climbing clock/temp); fps '${fpsPin}'`);
+  // M6: the stock color applies at boot (the seeded white) - the
+  // --overlay-color CSS var drives the line color (the renderer applies
+  // the pushed hex via CSSOM; the var fallback is the stock white).
+  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--overlay-color') === '#ffffff'`, 5000))) {
+    fail(`M6: the boot overlay color var is not the stock white: '${await ojs(`document.documentElement.style.getPropertyValue('--overlay-color')`)}'`);
+  }
 
   // (c) the frametime canvas has drawn content under RID_MOCK_FPS=1 (the
   // 16.7 ms passthrough series fed the polyline - non-transparent pixels on
@@ -5017,16 +5027,29 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
       fail(`M5: the frametime canvas has no drawn content under RID_MOCK_FPS=1 (the passthrough 16.7 ms series must paint the polyline): ${diag}`);
     }
     step('m5-frametime-canvas', 'the frametime canvas drew the polyline (non-transparent pixels > 20)');
+    // M6-amd2: the frametime VALUE line below the strip reads the
+    // passthrough (max 2 decimals, never padded - the 16.7 ms shape).
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-frametime-value')?.textContent ?? '').trim() === '16.7 ms'`, 5000))) {
+      fail(`M6-amd2: the frametime value line reads '${await ojs(`document.getElementById('overlay-frametime-value')?.textContent ?? ''`)}' (expected '16.7 ms' - the passthrough)`);
+    }
+    step('m6-frametime-value', `the frametime value line reads '16.7 ms' (the passthrough, never padded)`);
   } else {
     step('m5-frametime-canvas', 'frametime canvas pin SKIPPED (RID_MOCK_FPS not set - no series, nothing drawn)');
+    // M6-amd2: with no fps poll data the value line honestly shows '-'
+    // (the element exists; nothing to derive from).
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-frametime-value')?.textContent ?? '').trim() === '-'`, 5000))) {
+      fail(`M6-amd2: the frametime value line reads '${await ojs(`document.getElementById('overlay-frametime-value')?.textContent ?? ''`)}' (expected the honest '-')`);
+    }
+    step('m6-frametime-value', "the frametime value line honestly reads '-' (no fps poll data)");
   }
 
   // (d) the toggle flips visible -> hidden -> visible AND persists the same
-  // field the Settings toggle writes (read-modify-write through the store).
+  // field the Overlay page's General toggle writes (read-modify-write
+  // through the store; M6-amd3 the toggle lives on #/overlay now).
   const s1 = await js(`window.arcPower.overlayToggle()`);
   if (s1.visible) fail('M5: overlay:toggle did not HIDE the visible overlay');
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === false)`, 5000))) {
-    fail('M5: overlay:toggle did not persist overlayEnabled=false (the hotkey + the Settings toggle must flip the same persisted field)');
+    fail('M5: overlay:toggle did not persist overlayEnabled=false (the hotkey + the General toggle must flip the same persisted field)');
   }
   const s2 = await js(`window.arcPower.overlayToggle()`);
   if (!s2.visible) fail('M5: overlay:toggle did not SHOW the overlay again');
@@ -5065,14 +5088,128 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   step('m5-geometry', `position patch -> bottom-right corner (bounds ${JSON.stringify(ps.bounds)} vs display ${JSON.stringify(display)}); scale patch -> ${scaled.bounds.width}x${scaled.bounds.height}`);
 
+  // (f2) M6: the shrunk Settings card's "Overlay settings" button navigates
+  // to #/overlay. M6-amd3: the card is BUTTON-ONLY now - the enable toggle
+  // moved to the Overlay page's General card (the .settings-checkbox
+  // [data-setting="overlayEnabled"] class + dataset moved with it).
+  await js(`location.hash = '#/settings'`);
+  if (!(await waitFor(win, `!!document.querySelector('.overlay-settings-button')`, 5000))) {
+    fail('M6: the Settings page has no "Overlay settings" button');
+  }
+  if (await js(`!!document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]')`)) {
+    fail('M6-amd3: the Settings Overlay card still has the enable toggle (it moved to the #/overlay General card)');
+  }
+  await js(`(() => { const b = document.querySelector('.overlay-settings-button'); b.click(); })()`);
+  if (!(await waitFor(win, `location.hash === '#/overlay'`, 5000))) {
+    fail('M6: the Settings "Overlay settings" button did not navigate to #/overlay');
+  }
+  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Overlay Settings')`, 5000))) {
+    fail('M6: the #/overlay page did not render (no "Overlay Settings" title)');
+  }
+  step('m6-settings-button', 'Settings "Overlay settings" button navigated to #/overlay (the Overlay Settings page rendered; the Settings card is button-only)');
+
+  // (f2b) M6-amd3: the enable toggle MOVED to the General card at the top
+  // of #/overlay - clicking it flips the persisted overlayEnabled AND the
+  // overlay window (the same read-modify-write the Settings toggle used).
+  if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]')`, 5000))) {
+    fail('M6-amd3: the #/overlay General card has no overlayEnabled toggle');
+  }
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === false)`, 5000))) {
+    fail('M6-amd3: the General-card toggle did not persist overlayEnabled=false');
+  }
+  if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === false)`, 5000))) {
+    fail('M6-amd3: the General-card toggle off did not HIDE the overlay window');
+  }
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
+    fail('M6-amd3: the General-card toggle did not persist overlayEnabled=true');
+  }
+  if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === true)`, 5000))) {
+    fail('M6-amd3: the General-card toggle on did not SHOW the overlay window');
+  }
+  step('m6-general-toggle', 'the #/overlay General toggle round trip: off -> persisted false + overlay hidden; on -> persisted true + overlay shown');
+
+  // (f3) M6: the stat tickboxes round-trip through profiles-settings-save.
+  // Unchecking gpu-fan trims the persisted overlayStats AND the overlay
+  // gpuLine loses the RPM field (a stat off -> its field vanishes); the
+  // re-check restores both.
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-fan"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-fan') === false)`, 5000))) {
+    fail('M6: unchecking the gpu-fan tickbox did not persist overlayStats without gpu-fan');
+  }
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('RPM') === false`, 5000))) {
+    fail(`M6: the overlay gpuLine still shows the fan after unchecking gpu-fan: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-fan"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-fan'))`, 5000))) {
+    fail('M6: re-checking the gpu-fan tickbox did not restore overlayStats');
+  }
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('RPM')`, 5000))) {
+    fail('M6: the overlay gpuLine did not regain the fan after re-checking gpu-fan');
+  }
+  step('m6-stats-tickbox', 'gpu-fan tickbox round trip via profiles-settings-save: uncheck -> persisted overlayStats trimmed + the gpuLine loses RPM; re-check -> restored');
+
+  // (f4) M6: the frametime stat is NOT a line - unchecking it HIDES the
+  // canvas strip AND the value line below it (M6-amd2: the stat controls
+  // both; the fixed divs stay, the strip + the number go display:none).
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="frametime"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(overlayWin, `document.getElementById('overlay-frametime')?.style.display === 'none'`, 5000))) {
+    fail('M6: the frametime canvas is still visible after unchecking the frametime stat');
+  }
+  if (!(await waitFor(overlayWin, `document.getElementById('overlay-frametime-value')?.style.display === 'none'`, 5000))) {
+    fail('M6-amd2: the frametime value line is still visible after unchecking the frametime stat');
+  }
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="frametime"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(overlayWin, `document.getElementById('overlay-frametime')?.style.display !== 'none'`, 5000))) {
+    fail('M6: the frametime canvas did not come back after re-checking the frametime stat');
+  }
+  if (!(await waitFor(overlayWin, `document.getElementById('overlay-frametime-value')?.style.display !== 'none'`, 5000))) {
+    fail('M6-amd2: the frametime value line did not come back after re-checking the frametime stat');
+  }
+  step('m6-frametime-toggle', 'frametime tickbox round trip: uncheck -> canvas + value line hidden; re-check -> both visible again');
+
+  // (f5) M6: the color swatches - clicking the yellow swatch persists
+  // overlayColor '#ffe600' AND the overlay re-renders with the color: the
+  // --overlay-color CSS var on <html>, the computed line color, and (under
+  // RID_MOCK_FPS=1, where the canvas has drawn content) the canvas
+  // strokeStyle all take the SAME hex - never the old hardcoded white.
+  await js(`(() => { const b = document.querySelector('.overlay-color-option[data-color-option="#ffe600"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayColor === '#ffe600')`, 5000))) {
+    fail('M6: the yellow swatch did not persist overlayColor #ffe600');
+  }
+  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--overlay-color') === '#ffe600'`, 5000))) {
+    fail(`M6: the overlay --overlay-color CSS var reads '${await ojs(`document.documentElement.style.getPropertyValue('--overlay-color')`)}' (expected '#ffe600')`);
+  }
+  if (!(await waitFor(overlayWin, `getComputedStyle(document.getElementById('overlay-cpu')).color === 'rgb(255, 230, 0)'`, 5000))) {
+    fail(`M6: the overlay line computed color reads '${await ojs(`getComputedStyle(document.getElementById('overlay-cpu')).color`)}' (expected rgb(255, 230, 0))`);
+  }
+  if (mockFps) {
+    const stroke = await ojs(`(() => { const c = document.getElementById('overlay-frametime'); if (!c || c.width === 0) return null; const ctx = c.getContext('2d'); return ctx ? ctx.strokeStyle : null; })()`);
+    if (stroke !== '#ffe600') {
+      fail(`M6: the frametime canvas strokeStyle reads '${stroke}' (expected '#ffe600' - the canvas must take the same hex as the lines)`);
+    }
+    step('m6-color-canvas-stroke', `the frametime canvas strokeStyle took the SAME hex ('${stroke}') - never the old hardcoded white`);
+  } else {
+    step('m6-color-canvas-stroke', 'canvas stroke color pin SKIPPED (RID_MOCK_FPS not set - no series, nothing drawn)');
+  }
+  // Restore the stock white (the deterministic session end).
+  await js(`window.arcPower.profilesSettingsSave({ overlayColor: '#ffffff' })`);
+  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--overlay-color') === '#ffffff'`, 5000))) {
+    fail('M6: the white restore did not re-render the overlay (--overlay-color still non-white)');
+  }
+  step('m6-color-swatch', 'yellow swatch -> overlayColor #ffe600 persisted + the overlay re-rendered (css var + computed line color + canvas stroke); restored to the stock white');
+
   // (g) the mid-run register-failure honesty: the probe fakes a failure
   // (settable mid-run - not a boot-time knob), a letter save via the
-  // Settings card re-registers through the probe, and the honest note
-  // appears after the card's every-render get-state re-query (M1: a
+  // Overlay Settings page (#/overlay - the hotkey input MOVED here with
+  // the card, M6; the page KEEPS the .settings-hotkey-input class so the
+  // selector survived) re-registers through the probe, and the honest note
+  // appears after the page's every-render get-state re-query (M1: a
   // letter-save re-register failure mid-session must not leave the note
   // stale).
   hotkeyProbe.failRegister = true;
-  await js(`location.hash = '#/settings'`);
+  await js(`location.hash = '#/overlay'`);
   await sleep(250);
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input');
@@ -5081,7 +5218,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     i.dispatchEvent(new Event('change'));
   })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'P')`, 5000))) {
-    fail('M5: the Settings-card letter save did not persist overlayHotkeyLetter=P');
+    fail('M5: the Overlay Settings page letter save did not persist overlayHotkeyLetter=P');
   }
   if (!hotkeyProbe.registrations.includes('Control+P')) {
     fail(`M5: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
@@ -5089,16 +5226,17 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   const s4 = await js(`window.arcPower.overlayGetState()`);
   if (s4.hotkeyRegistered !== false) fail('M5: hotkeyRegistered must read false after the faked register failure');
   if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`, 5000))) {
-    fail('M5: the Settings Overlay card does not show the honest hotkey-register-failure note after the faked failure + letter save');
+    fail('M5: the Overlay Settings page does not show the honest hotkey-register-failure note after the faked failure + letter save');
   }
   const inputValue = await js(`document.querySelector('.settings-hotkey-input')?.value ?? ''`);
-  if (inputValue !== 'P') fail(`M5: the Settings hotkey input reads '${inputValue}' (expected 'P' after the save)`);
+  if (inputValue !== 'P') fail(`M5: the Overlay Settings hotkey input reads '${inputValue}' (expected 'P' after the save)`);
   step('m5-hotkey-failure-note', `mid-run faked register failure + letter save 'P' -> probe re-registered 'Control+P', hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
 
   // Restore the deterministic session end (like the theme-dark-final step):
   // letter O + a successful registration -> the note disappears, and the
   // geometry back to the defaults (a crashed run must never bleed into the
-  // next overlay variant).
+  // next overlay variant; the M6 color/stats pins already restored the
+  // stock white + the full stat set above).
   hotkeyProbe.failRegister = false;
   await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1 })`);
   await sleep(500);
@@ -5108,10 +5246,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     fail(`M5: the restore letter save did not re-register 'Control+O' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   await js(`location.hash = '#/dashboard'`);
-  await js(`location.hash = '#/settings'`);
+  await js(`location.hash = '#/overlay'`);
   await sleep(250);
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
-    fail('M5: the hotkey-failure note is still visible after the successful re-registration (the card must re-query get-state on every render)');
+    fail('M5: the hotkey-failure note is still visible after the successful re-registration (the page must re-query get-state on every render)');
   }
   step('m5-hotkey-restore', `restore: letter O + failRegister cleared -> 'Control+O' re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
 

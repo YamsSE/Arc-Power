@@ -12,9 +12,16 @@ import type {
   TelemetrySample,
 } from './types.ts';
 
-export type PageId = 'dashboard' | 'tuning' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
+// M6: the #/overlay page (the Overlay Settings page - the Settings card's
+// "Overlay settings" button destination; the overlay enable TOGGLE lives
+// on this page's General card - the user's amendment moved it out of
+// Settings).
+export type PageId = 'dashboard' | 'tuning' | 'monitoring' | 'profiles' | 'tweaks' | 'settings' | 'overlay';
 
-export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'monitoring', 'profiles', 'tweaks', 'settings'];
+// M6-amd1: the Overlay tab sits DIRECTLY BELOW the Monitoring tab (the
+// user's amendment - the sidebar order; the count-only ui-verify pins are
+// unaffected).
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'monitoring', 'overlay', 'profiles', 'tweaks', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
@@ -26,6 +33,9 @@ export const NAV_LABELS: Record<PageId, string> = {
   tweaks: 'Tweaks',
   // M4-D: the Settings tab (Start with Windows / Start minimized / About).
   settings: 'Settings',
+  // M6: the Overlay Settings page (the stat tickboxes, the colors, the
+  // size, the position, the hotkey letter).
+  overlay: 'Overlay',
 };
 
 // M4-D2 (§8): the old #/overclocking and #/fan hashes redirect to #/tuning

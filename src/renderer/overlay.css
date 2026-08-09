@@ -27,7 +27,10 @@ body {
   font-weight: 700;
   font-size: 1rem;
   line-height: 1.3;
-  color: #ffffff;
+  /* M6: the color is a CSSOM-driven CSS var (--overlay-color on <html>,
+     set by overlay.ts from the persisted overlayColor; white = the stock
+     color - the var fallback keeps the M5 look before the first push). */
+  color: var(--overlay-color, #ffffff);
   white-space: pre;
   /* The readability outline over any scene (the RTSS look - a dark
      shadow around the bright text). */
@@ -45,4 +48,14 @@ body {
   width: 31rem;
   height: 1.6rem;
   margin-top: 0.2rem;
+}
+
+/* M6-amd2: the frametime VALUE line directly below the strip (the latest
+   derived frame time - max 2 decimals, '-'; hidden with the strip when
+   the frametime stat is off). The number sits CENTERED under the graph
+   (the same 31rem width as the strip - the middle of the graph below it). */
+.overlay-frametime-value {
+  width: 31rem;
+  text-align: center;
+  margin-top: 0.15rem;
 }

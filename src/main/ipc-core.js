@@ -35,7 +35,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES, OVERLAY_POSITIONS } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS } from './store/profile-store.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -97,6 +97,43 @@ export function validateOverlayPosition(v) {
 export function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
   return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+}
+
+/**
+ * M6: the overlay text color must be a 6-digit hex string (the
+ * type=color input + the swatch presets always yield this shape; the
+ * stock default is '#ffffff'). REJECTS with an honest error - a garbage
+ * color must never reach the overlay renderer.
+ * @param {unknown} v
+ * @returns {string}
+ */
+export function validateOverlayColor(v) {
+  if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) {
+    throw new Error('overlayColor must be a hex color like #ffffff');
+  }
+  return v;
+}
+
+/**
+ * M6: normalize a raw overlayStats patch value - an array of KNOWN stat
+ * ids, deduped (order preserved); unknown ids are DROPPED, absent/garbage
+ * degrades to the FULL set (the stock overlay). Never rejects - the
+ * tickboxes can only produce known ids, and a partial garbage value must
+ * not fail the whole save.
+ * @param {unknown} v
+ * @returns {string[]}
+ */
+export function normalizeOverlayStats(v) {
+  if (!Array.isArray(v)) return [...OVERLAY_STAT_IDS];
+  const seen = new Set();
+  const out = [];
+  for (const id of v) {
+    if (typeof id === 'string' && OVERLAY_STAT_IDS.includes(id) && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
 }
 
 /**
@@ -926,10 +963,10 @@ export function createIpcHandlers({
         await windowOps.close();
       },
 
-      // M5: the software-overlay ops (the windowOps pattern). 'overlay:
-      // get-state' is the Settings card's every-render read (the
+      // M5/M6: the software-overlay ops (the windowOps pattern). 'overlay:
+      // get-state' is the Overlay page's every-render read (the
       // hotkeyRegistered flag + the geometry); 'overlay:toggle' flips the
-      // window AND persists overlayEnabled (the hotkey + the Settings
+      // window AND persists overlayEnabled (the hotkey + the Overlay-page
       // toggle flip the same persisted field). No payload; the ops are
       // injected (the DEFAULT is the honest "no overlay window" state;
       // main.js wires the real overlay handle).
@@ -1161,7 +1198,7 @@ export function createIpcHandlers({
           theme: patch.theme === undefined
             ? cur.theme
             : (THEMES.includes(patch.theme) ? patch.theme : cur.theme),
-          // M5: the software-overlay fields (the Settings Overlay card
+          // M5/M6: the software-overlay fields (the Overlay Settings page
           // persists them through this channel). The letter REJECTS with an
           // honest error when it is not exactly one letter (the user's rule:
           // CTRL + <letter> - the letter is the only changeable part); the
@@ -1180,6 +1217,17 @@ export function createIpcHandlers({
           overlayScale: patch.overlayScale === undefined
             ? cur.overlayScale
             : clampOverlayScale(patch.overlayScale),
+          // M6: the overlay text color - REJECTS outside /^#[0-9a-fA-F]{6}$/
+          // (the swatches + the type=color input can only produce that
+          // shape; a garbage patch must never reach the renderer). The
+          // stats NORMALIZE (known ids, deduped - never rejected: the
+          // tickboxes can only produce known ids).
+          overlayColor: patch.overlayColor === undefined
+            ? cur.overlayColor
+            : validateOverlayColor(patch.overlayColor),
+          overlayStats: patch.overlayStats === undefined
+            ? cur.overlayStats
+            : normalizeOverlayStats(patch.overlayStats),
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
@@ -1201,8 +1249,11 @@ export function createIpcHandlers({
         // geometry/visibility/hotkey letter + sends 'overlay:settings' to
         // the overlay window. Best effort: a callback failure must never
         // fail the save.
+        // M6: the color + the stats ride the same keys - without them a
+        // color/stats change would persist but the overlay would never
+        // re-render.
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale']) {
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

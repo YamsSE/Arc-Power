@@ -10,9 +10,25 @@
 // carries the SAME persisted overlayScale the main-side geometry used for
 // the window resize (the push + the resize are applied together in main) -
 // this renderer re-renders against the pushed value, never its own copy.
+//
+// M6: the SAME push carries the persisted overlayColor + overlayStats. The
+// color applies via CSSOM (a --overlay-color CSS var on <html> - CSP-safe:
+// style-src 'self' blocks inline style ATTRIBUTES, not stylesheet/CSSOM
+// writes; the frametime canvas strokeStyle takes the SAME hex - never the
+// old hardcoded white) and the stats drive which fields/lines render (a
+// stat off -> its field vanishes; a line fully off -> the div writes '' -
+// the fixed divs are never removed). The frametime stat is NOT a line - it
+// toggles the canvas strip's visibility.
+//
+// M6-amd2 (the user's amendment - the "below the FPS" part retracted, the
+// graph stays at the bottom): a frametime VALUE line sits directly BELOW
+// the canvas (#overlay-frametime-value) showing the latest derived frame
+// time with MAXIMUM 2 decimals ('16.67 ms' / '16.7 ms' - never padded;
+// honest '-' when no data). The frametime stat controls BOTH the strip
+// and the number - a stat off hides them together.
 
 import { api } from './ipc.ts';
-import { overlayLines, deriveFrameTimeMs, clampOverlayScale } from './pure/overlay.ts';
+import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor } from './pure/overlay.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, TelemetrySample } from './types.ts';
@@ -29,11 +45,19 @@ let scale = 1;
 let latestSample: TelemetrySample | null = null;
 let latestFps: number | null = null;
 let series: SeriesPoint[] = [];
+// M6: the pushed color + stats (undefined until the first push -> the
+// stock white + the full stat set - the overlayLines defaults).
+let color: string = '#ffffff';
+let stats: unknown = undefined;
+// M6-amd2: the latest derived frame time (the value line below the strip;
+// null -> the honest '-').
+let latestFrameTime: number | null = null;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
 const gpuEl = document.getElementById('overlay-gpu') as HTMLElement;
 const canvas = document.getElementById('overlay-frametime') as HTMLCanvasElement;
+const valueEl = document.getElementById('overlay-frametime-value') as HTMLElement;
 
 // M3: registered SYNCHRONOUSLY at script top - BEFORE any await - so the
 // initial 'overlay:settings' push (main sends it right after
@@ -44,6 +68,15 @@ api.onOverlaySettings((settings) => {
   // The CSSOM font-size scaling (CSP-safe): one change scales every rem
   // size in the HUD - the same persisted scale the window was resized with.
   document.documentElement.style.fontSize = `${BASE_FONT_PX * scale}px`;
+  // M6: the text color - ONE CSS var on <html>, read by overlay.css for
+  // the line color + by draw() for the canvas stroke (a non-white color
+  // must recolor BOTH - the old hardcoded '#ffffff' stroke would betray a
+  // color change). Garbage degrades to the stock white.
+  color = isValidOverlayColor(s.color) ? s.color : '#ffffff';
+  document.documentElement.style.setProperty('--overlay-color', color);
+  // M6: the enabled stats - an absent value means the FULL set (the stock
+  // overlay; overlayLines normalizes).
+  stats = s.stats;
   sizeCanvas();
   render();
 });
@@ -59,10 +92,19 @@ function sizeCanvas(): void {
 }
 
 function render(): void {
-  const lines = overlayLines(latestSample, latestFps);
+  const lines = overlayLines(latestSample, latestFps, stats);
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
   gpuEl.textContent = lines.gpuLine;
+  // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
+  // strip's AND the value line's visibility together (a fully-off line
+  // writes '' into its KEPT div, but the strip + the number are HIDDEN -
+  // an empty 31rem strip / a stale number would still occupy space).
+  canvas.style.display = lines.frametimeEnabled ? '' : 'none';
+  valueEl.style.display = lines.frametimeEnabled ? '' : 'none';
+  // The value line: the latest derived frame time (max 2 decimals; the
+  // honest '-' when the last poll had nothing to derive from).
+  valueEl.textContent = lines.frametimeEnabled ? formatFrametime(latestFrameTime) : '';
   draw();
 }
 
@@ -80,7 +122,9 @@ function draw(): void {
   const drawn = downsample(series, FRAMETIME_DRAW_POINTS);
   const x = (i: number): number => (i / (drawn.length - 1)) * canvas.width;
   const y = (v: number): number => canvas.height - ((v - range.min) / span) * canvas.height;
-  ctx.strokeStyle = '#ffffff';
+  // M6: the stroke takes the SAME hex as the text lines (the pushed
+  // overlayColor - never the old hardcoded '#ffffff').
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -127,12 +171,16 @@ async function bootFpsLoop(): Promise<void> {
       latestFps = fps;
       // S1/M2: the frametime series - the real DXGI adapter returns
       // frameTimeMs: null on every path, so deriveFrameTimeMs derives
-      // 1000/fps (ONE decimal; the fps-0 guard keeps Infinity out). The
-      // series is trimmed to the ~120-sample window. The series t is in
-      // SECONDS (Date.now() / 1000) - the SAME time unit the pure/graph
-      // helpers use (their windowS is seconds too; a millisecond t with a
-      // 120 s window would trim every point but the newest).
+      // 1000/fps (TWO decimals - M6-amd2: the value line shows max 2
+      // decimals; the fps-0 guard keeps Infinity out). The series is
+      // trimmed to the ~120-sample window. The series t is in SECONDS
+      // (Date.now() / 1000) - the SAME time unit the pure/graph helpers
+      // use (their windowS is seconds too; a millisecond t with a 120 s
+      // window would trim every point but the newest).
       const ft = deriveFrameTimeMs(fps, sample.frameTimeMs);
+      // M6-amd2: the value line tracks the SAME latest derived frame time
+      // (null when the poll had nothing -> the honest '-').
+      latestFrameTime = ft;
       if (ft !== null) {
         const now = Date.now() / 1000;
         series = trimSeriesWindow(pushSeries(series, now, ft, FRAMETIME_DRAW_POINTS), now, FRAMETIME_WINDOW_S);

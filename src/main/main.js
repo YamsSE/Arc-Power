@@ -24,7 +24,7 @@ import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerif
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
-import { ProfileStore, OVERLAY_POSITIONS } from './store/profile-store.js';
+import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS } from './store/profile-store.js';
 import { createOverlayWindow } from './overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
@@ -646,6 +646,9 @@ async function main() {
     // a crashed run that left letter 'P' / bottom-right / scale 2 must
     // never bleed into the next overlay run (the variant's pins are
     // deterministic).
+    // M6: the color + the stats reset the same way (the new pins change
+    // them mid-run - a crashed run must never bleed a non-white color or a
+    // trimmed stat set into the next overlay variant).
     try {
       const cur = await store.loadSettings();
       const overlayOn = process.env.RID_MOCK_OVERLAY === '1';
@@ -655,6 +658,8 @@ async function main() {
         overlayHotkeyLetter: overlayOn ? 'O' : cur.overlayHotkeyLetter,
         overlayPosition: overlayOn ? 'top-left' : cur.overlayPosition,
         overlayScale: overlayOn ? 1 : cur.overlayScale,
+        overlayColor: overlayOn ? '#ffffff' : cur.overlayColor,
+        overlayStats: overlayOn ? OVERLAY_STAT_IDS : cur.overlayStats,
       });
     } catch (err) {
       console.log(`[boot] overlay session seed skipped: ${err.message}`);
@@ -1246,8 +1251,8 @@ async function main() {
   // mid-verify would disrupt the session) + a mid-run settable failure fake
   // (the register-failure honesty pin). register() returning false (the
   // accelerator taken by another app) surfaces hotkeyRegistered:false -
-  // the Settings card then shows the honest note (the card toggle still
-  // works; the hotkey does not).
+  // the Overlay page then shows the honest note (the Show-the-overlay
+  // toggle still works; the hotkey does not).
   const overlayHotkeyProbe = { registrations: [], failRegister: false };
   const registerOverlayHotkey = (letter) => {
     if (!overlayHandle) return;
@@ -1309,6 +1314,15 @@ async function main() {
         && /^[A-Za-z]$/.test(settings.overlayHotkeyLetter)
         ? settings.overlayHotkeyLetter
         : 'O',
+      // M6: the text color + the enabled stats ride the same envelope -
+      // the renderer applies them via CSSOM on the push (a color/stats
+      // change must re-render the HUD immediately). Garbage degrades to
+      // the stock white + the full set - the overlay.js normalize is the
+      // final gate.
+      color: typeof settings.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor)
+        ? settings.overlayColor
+        : '#ffffff',
+      stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : undefined,
     });
   };
   if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {

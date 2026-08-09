@@ -373,6 +373,13 @@ export interface OverlaySettings {
   hotkeyLetter: string;
   position: OverlayPosition;
   scale: number;
+  /** M6: the overlay text color (a /^#[0-9a-fA-F]{6}$/ hex - '#ffffff' the
+   *  stock white). Applied via CSSOM to the lines + the frametime canvas
+   *  stroke by the overlay renderer. */
+  color: string;
+  /** M6: the ENABLED overlay stat ids (the canonical OVERLAY_STAT_IDS; the
+   *  full set the stock default - a stat off -> its field/line vanishes). */
+  stats: string[];
 }
 
 /** M5: the overlay:get-state envelope (the Settings card + the verify read it). */
@@ -417,6 +424,12 @@ export interface ProfileSettingsState {
   overlayHotkeyLetter: string;
   overlayPosition: OverlayPosition;
   overlayScale: number;
+  /** M6: the overlay text color (absent on old files -> '#ffffff' - the
+   *  stock white; same absent-field mechanism, NO schema bump). */
+  overlayColor: string;
+  /** M6: the enabled overlay stat ids (absent on old files -> the FULL set -
+   *  the stock overlay; same absent-field mechanism, NO schema bump). */
+  overlayStats: string[];
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

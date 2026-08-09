@@ -10,12 +10,18 @@
 </head>
 <body>
   <!-- M5: the RTSS-style HUD - BOLD TEXT ONLY, no boxes, no background.
-       The three stat lines + the frametime polyline strip. -->
+       The three stat lines + the frametime polyline strip. M6-amd2: a
+       frametime VALUE line sits DIRECTLY BELOW the canvas (the user's
+       retracted "below the FPS" part - the graph stays at the bottom) -
+       the latest derived frame time, max 2 decimals ('16.67 ms'), '-'
+       when no data. The 'frametime' stat controls BOTH the strip and the
+       number (stat off -> both hidden). -->
   <div id="overlay-root">
     <div class="overlay-line" id="overlay-fps"></div>
     <div class="overlay-line" id="overlay-cpu"></div>
     <div class="overlay-line" id="overlay-gpu"></div>
     <canvas id="overlay-frametime" class="overlay-frametime"></canvas>
+    <div class="overlay-line overlay-frametime-value" id="overlay-frametime-value"></div>
   </div>
   <script src="./out/overlay.js"></script>
 </body>

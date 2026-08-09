@@ -115,7 +115,7 @@ export class GpuHeader {
           // M4-A/M5: the display label carries the release-stage suffix
           // (' Alpha' for bare semvers, ' Beta' for the -beta.x line - the
           // Beta release restarts at 1.0.0); the app:version IPC keeps the
-          // bare semver (test/ipc-core pins '1.0.0-beta.1').
+          // bare semver (test/ipc-core pins '1.0.0-beta.2').
           el('div', { class: 'gpu-meta', text: gpuMeta }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),
