@@ -349,7 +349,20 @@ export class MockBackend {
     if (!this._extended || this._extendedFail) {
       return { ok: false, errorCode: 'unsupported', readBackEqual: false, message: EXTENDED_UNAVAILABLE_MSG };
     }
-    const range = this._caps.ranges[control];
+    // M4O: clamp against the FEATURE's EXTENDED range (fs.extended.plMax/
+    // tlMax - featureset-faithful: 315/115 for a770; keeps b580/pro-b50
+    // honest if their maxes differ), NEVER this._caps.ranges - that range
+    // set is MODE-GATED (252 in a stock session) while the real bundled
+    // 2023 runtime clamps mode-independently (old-igcl.js EXTENDED_PL_RANGE/
+    // EXTENDED_TL_RANGE). The mock must mirror the real runtime: a stock
+    // session's extendedApply accepts the same values the driver does.
+    const fs = this._featureset;
+    const extendedMax = control === 'powerLimitW' ? fs.extended?.plMax : fs.extended?.tlMax;
+    const base = this._caps.ranges[control];
+    const range = {
+      ...base,
+      max: typeof extendedMax === 'number' ? extendedMax : base?.max,
+    };
     const clamped = clampAndSnap(value, range);
     this._state[control] = clamped;
     return { ok: true, readBackEqual: true };

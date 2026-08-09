@@ -201,7 +201,7 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
  *   workerTimeoutMs?: number,
  *   tokenTtlMs?: number,         // parent-owned token lifetime (default TOKEN_TTL_MS)
  *   inProcess?: {
- *     apply: (req: { deviceId: number, settings: object }) => Promise<{ result: object, state: object | null }>,
+ *     apply: (req: { deviceId: number, settings: object, profileApply?: boolean }) => Promise<{ result: object, state: object | null }>,
  *     waiverAccept: (deviceId: number) => Promise<void>,
  *     reset: (deviceId: number) => Promise<{ state: object | null }>,
  *   },
@@ -304,12 +304,21 @@ export function createApplyRunner({
      * Run one apply. Returns the {result, state} envelope the renderer
      * expects, or throws APPLY_CANCELED_ERROR when the UAC prompt was
      * canceled/denied.
-     * @param {{ deviceId: number, settings: object, profileName?: string, waiverAccepted?: boolean, ocMode?: 'stock'|'advanced' }} req
+     * @param {{ deviceId: number, settings: object, profileName?: string, waiverAccepted?: boolean, ocMode?: 'stock'|'advanced', profileApply?: boolean }} req
      */
-    async apply({ deviceId, settings, profileName, waiverAccepted, ocMode }) {
+    async apply({ deviceId, settings, profileName, waiverAccepted, ocMode, profileApply }) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
-        const out = await inProcess.apply({ deviceId, settings });
+        // M4O (NEW): the IN-PROCESS branch forwards profileApply too - the
+        // always-elevated packaged app's TRAY apply of a 315 W profile in
+        // stock mode would otherwise refuse via executeApply's safety net
+        // (caps.extendedRanges is false in stock mode). Only present when
+        // true (no undefined own-keys in the executor request).
+        const out = await inProcess.apply({
+          deviceId,
+          settings,
+          ...(profileApply === true ? { profileApply: true } : {}),
+        });
         return { worker: false, ...out };
       }
       // S2: the parent-side waiver flag rides in the request so the worker
@@ -317,6 +326,9 @@ export function createApplyRunner({
       // M3-C-E: the parent-side ocMode rides too - the worker's own backend
       // always reports extendedRanges, so ITS refusal gate is keyed on the
       // request's ocMode (a caps-keyed gate there would silently clamp).
+      // M4O: the parent-side profileApply rides too - the worker skips the
+      // STOCK gate for profile applies (the ceiling refusal stays). Only
+      // present when true (no undefined own-keys in the request file).
       const { result } = await runWorker({
         requestId: randomUUID(),
         op: 'apply',
@@ -325,6 +337,7 @@ export function createApplyRunner({
         profileName,
         waiverAccepted,
         ocMode,
+        ...(profileApply === true ? { profileApply: true } : {}),
       });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);

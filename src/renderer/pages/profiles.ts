@@ -410,9 +410,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     }
     // M3-C-D (double-dialog decision): NO per-apply extended-range confirm
     // on the Profiles page - in Advanced mode the mode-enable confirm
-    // already warned; in Stock mode the shared oc-mode gate refuses
-    // extended values with the per-control mode-message toasts below
-    // (never a dead-end confirm).
+    // already warned; M4O: in Stock mode the profile apply is NOT gated by
+    // the OC mode either (the profile applies as saved against the
+    // driver's true limits - the flagless slider gate does not apply here;
+    // the >315 W ceiling + the runtime-capability refusals still surface
+    // as per-control error toasts below, never a dead-end confirm).
     // M2C-C: a non-elevated product app delegates to the elevated worker -
     // explain before the UAC prompt. M4-D2: the packaged EXE is asInvoker
     // now - the workerApply toast applies (the worker still spawns elevated
@@ -422,7 +424,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     }
     try {
       const before = ctx.store.get().state as DeviceState;
-      const { result, state: fresh } = await api.applySettings(deviceId, p.settings);
+      // M4O: the profile apply carries { profileApply: true } - the OC-mode
+      // gate (the interactive slider gate) must NOT block a saved profile
+      // (uniform with the boot/tray/--apply-profile paths: the profile
+      // applies as saved against the driver's true limits; the >315 W
+      // ceiling + the runtime-capability refusals still apply in main).
+      const { result, state: fresh } = await api.applySettings(deviceId, p.settings, { profileApply: true });
       // M3-C review F2: only store a NON-NULL fresh state - a refusal
       // envelope's null state must never null out the store's device state
       // (that renders the OC page 'Loading device capabilities…' forever

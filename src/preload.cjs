@@ -13,7 +13,10 @@ contextBridge.exposeInMainWorld('arcPower', {
   deviceSet: (deviceId) => ipcRenderer.invoke('device-set', deviceId),
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
   getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
-  applySettings: (deviceId, settings) => ipcRenderer.invoke('apply-settings', deviceId, settings),
+  // M4O: the third arg carries apply options - { profileApply: true } marks
+  // a PROFILE apply (the Profiles-page Apply button), which skips the
+  // OC-mode gate (the mode is the interactive slider gate ONLY).
+  applySettings: (deviceId, settings, opts) => ipcRenderer.invoke('apply-settings', deviceId, settings, opts),
   resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),

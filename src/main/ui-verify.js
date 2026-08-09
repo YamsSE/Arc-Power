@@ -6,7 +6,7 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.7 Alpha" (app:version IPC + the display Alpha suffix - the IPC
+//       1.0.8 Alpha" (app:version IPC + the display Alpha suffix - the IPC
 //       keeps the bare semver) - the driver version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
@@ -654,8 +654,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
   // Driver version row is REMOVED - M4-H).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.7 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.7 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.8 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.8 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -3376,8 +3376,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.7 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.7 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.8 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.8 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3439,7 +3439,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.7`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.8`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -4788,5 +4788,104 @@ export async function runBootApplyVerify(win, backend, store) {
   await runCloseToTrayProbe(win);
 
   console.log('\nUI VERIFY OK (boot-apply)\n' + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// M4O - boot-apply-EXT variant (RID_MOCK_BOOT_APPLY_EXT=1, run WITH
+// RID_MOCK_STOCK_MODE=1 - the two BOOT knobs are NEVER combined)
+// ---------------------------------------------------------------------------
+//
+// The session seed wrote ocOnBoot:true + activeProfileId 'boot-apply-probe'
+// with the EXTENDED 315 W profile into the ISOLATED mock store, so the
+// WINDOW-PATH automatic apply (which runs BEFORE createWindow) executed at
+// boot against a STOCK-mode session - the exact user report shape (stock
+// mode selected + a profile using advanced values fails at boot apply with
+// the "This value is beyond the standard Intel limit..." message). The M4O
+// fix makes the profileApply path ignore the OC-mode gate (the mode gates
+// ONLY the interactive flagless slider applies) - the profile applies
+// against the driver's TRUE limits. This runner asserts:
+//   (a) mock:boot-apply-log has EXACTLY ONE entry with applied:true (the
+//       AUTOMATIC window-path apply recorded it - the seed is what makes
+//       it run; hide/show never re-applies, so the exactly-one assert is
+//       safe before the close probe);
+//   (b) getCurrentSettings(0).powerLimitW === 315 - the post-apply DEVICE
+//       state (the tuning slider would display the stock-snapped 252, so
+//       the assertion is the device state, NOT the slider);
+//   (c) the OC Status health row is GREEN with the applied profile name
+//       (the M4N window-path bootApplyOutcome pattern).
+// THE regression pin: the old code refused this exact seed with the mode
+// message and the boot-apply log recorded applied:false.
+
+/**
+ * @param {import('electron').BrowserWindow} win
+ * @param {import('./backend/mock-backend.js').MockBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ */
+export async function runBootApplyExtVerify(win, backend, store) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+
+  // The seed wrote waiverAccepted:true - the boot prompt is SKIPPED
+  // entirely (the M4-D permanent-acceptance shape), exactly like the plain
+  // boot-apply variant.
+  if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 15000))) {
+    fail(`M4O: the boot-apply-EXT session did not land the dashboard health card: page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+  }
+  await sleep(600);
+  if (await js(`!!document.querySelector('.modal')`)) {
+    fail('M4O: the boot waiver prompt appeared in the boot-apply-EXT session (the seed wrote waiverAccepted:true - the boot prompt must be skipped)');
+  }
+  step('boot-apply-ext-waiver', 'boot-apply-EXT session: the seeded acceptance skips the boot prompt entirely');
+
+  // (a) the automatic window-path apply recorded EXACTLY ONE entry.
+  const bootLog = await js(`window.arcPower.mockBootApplyLog()`);
+  if (!Array.isArray(bootLog) || bootLog.length !== 1) {
+    fail(`M4O: the mock boot-apply log has ${Array.isArray(bootLog) ? bootLog.length : 'no'} entry (expected exactly ONE - the automatic window-path apply): ${JSON.stringify(bootLog)}`);
+  }
+  const entry = bootLog[0];
+  if (entry.applied !== true || entry.profileId !== 'boot-apply-probe') {
+    fail(`M4O: the boot-apply log entry is ${JSON.stringify(entry)} (expected { profileId: 'boot-apply-probe', applied: true } - the automatic apply of the EXTENDED probe profile; the old code recorded a mode refusal here)`);
+  }
+  step('boot-apply-ext-log', `mock:boot-apply-log records the automatic apply: ${JSON.stringify(entry)}`);
+
+  // (b) the DEVICE state read-back: 315 W landed. The tuning slider would
+  // snap to the stock max 252 - the device state is the assertion (the
+  // profile's value applied against the driver's true limits).
+  const state = await backend.getCurrentSettings(0);
+  if (Math.abs(state.powerLimitW - 315) > 1e-6) {
+    fail(`M4O: the boot-applied DEVICE state is ${state.powerLimitW} W (expected 315 W - the profile must apply against the driver's true limits, NOT the stock cap 252)`);
+  }
+  step('boot-apply-ext-device-state', `M4O: the post-apply DEVICE state is ${state.powerLimitW} W (315 - the stock-mode gate did not block the profile apply)`);
+
+  // (c) the boot-apply OUTCOME reached the renderer - the dashboard OC
+  // Status row is GREEN and its detail carries the applied profile's name
+  // (the M4N pattern: the record reads "Profile 'Boot Apply Probe'
+  // applied"; the status-ok class sits on the inner .status-dot, not the
+  // row element).
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.health-row[data-row="oc"] .status-dot.status-ok')`, 8000))) {
+    fail(`M4O: the OC Status row is not green after the boot apply: '${await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`)}'`);
+  }
+  const ocRowText = await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`);
+  if (!ocRowText.includes('Boot Apply Probe')) {
+    fail(`M4O: the OC Status row detail does not carry the applied profile name ('Profile Boot Apply Probe applied'): '${ocRowText}'`);
+  }
+  step('boot-apply-ext-outcome-row', `M4O: the OC Status health row is GREEN after the boot apply (detail '${ocRowText.trim()}')`);
+
+  // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step
+  // (the exactly-one log assert above ran BEFORE it - hide/show never
+  // re-applies).
+  await runCloseToTrayProbe(win);
+
+  console.log('\nUI VERIFY OK (boot-apply-ext)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }

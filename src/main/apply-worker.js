@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sanitizeSettings, clampSettings } from './ipc-core.js';
-import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl } from './apply-routing.js';
+import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -155,8 +155,17 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // M4-E: the gate is unit-aware - it receives the capability RANGES
     // (a device property from the same probe as the parent), so percent-unit
     // devices are never mode-refused. NOT the extendedRanges flag.
+    // M4O: a profileApply request (the profile paths pass profileApply:true)
+    // SKIPS the STOCK gate - the mode is the interactive slider gate ONLY,
+    // a saved profile applies as saved (the parent's applyProfile already
+    // gated on the runtime capability). The CEILING refusal STAYS - a
+    // hand-edited >315 W profileApply reaching the worker directly must
+    // never silently clamp to 315 (the worker's caps max IS 315, so the
+    // flagless skip would clamp silently - the forbidden class).
     const caps = await backend.getCapabilities(deviceId);
-    const refusal = ocModeRefusal(req.ocMode, settings, caps.ranges);
+    const refusal = req.profileApply === true
+      ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges)
+      : ocModeRefusal(req.ocMode, settings, caps.ranges);
     if (refusal) {
       log(`[apply-worker] oc-mode refusal: ${refusal.message} (${refusal.controls.join(', ')})`);
       // M3-C review F2: the refusal carries the FRESH device state, never

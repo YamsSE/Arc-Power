@@ -35,7 +35,10 @@ export interface ArcPowerApi {
   deviceSet(deviceId: number): Promise<{ deviceId: number | null }>;
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
-  applySettings(deviceId: number, settings: Settings): Promise<ApplyResponse>;
+  /** M4O: `opts.profileApply: true` marks a PROFILE apply (the Profiles-page
+   *  Apply button) - main skips the OC-mode gate for it (the mode is the
+   *  interactive slider gate ONLY; the ceiling + capability refusals stay). */
+  applySettings(deviceId: number, settings: Settings, opts?: { profileApply?: boolean }): Promise<ApplyResponse>;
   resetToDefaults(deviceId: number): Promise<ResetResponse>;
   waiverGet(deviceId: number): Promise<{ accepted: boolean }>;
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;

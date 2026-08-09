@@ -33,7 +33,7 @@ import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
-import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODES } from './apply-routing.js';
+import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES } from './store/profile-store.js';
 
@@ -486,12 +486,15 @@ export function createIpcHandlers({
    * current behavior (no auto re-set - the renderer's dialog flow handles
    * it). persistWaiverLost is REMOVED: the store never flips to false on a
    * driver refusal.
-   * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced' }} req
+   * M4O: a profileApply carries the flag through BOTH branches - the
+   * worker request gains it (the worker skips the stock gate) and the
+   * in-process executeApply clamps against the driver's TRUE limits.
+   * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
    */
-  const runApply = async ({ deviceId, settings, caps, ocMode }) => {
+  const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
     const attempt = async (waiverAccepted) => {
       if (applyRunner?.needsWorker?.()) {
-        const out = await applyRunner.apply({ deviceId, settings, waiverAccepted, ocMode });
+        const out = await applyRunner.apply({ deviceId, settings, waiverAccepted, ocMode, profileApply });
         // S2 G2 mirror: when the driver lost the waiver, the worker's
         // per-control results carry waiver-not-set. Clear the parent-side
         // in-memory flag so getCapabilities reports unaccepted and the
@@ -500,7 +503,7 @@ export function createIpcHandlers({
         if (hasWaiverNotSet(out.result)) await backend.restoreWaiverState(deviceId, false);
         return out;
       }
-      return executeApply({ backend, oldIgcl, deviceId, settings });
+      return executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } });
     };
     const first = await attempt(caps.waiverAccepted === true);
     if (!hasWaiverNotSet(first.result)) {
@@ -584,7 +587,7 @@ export function createIpcHandlers({
         return backend.getCurrentSettings(deviceId);
       },
 
-      'apply-settings': async (deviceId, payload) => {
+      'apply-settings': async (deviceId, payload, opts) => {
         assertValidDeviceId(deviceId);
         const settings = sanitizeSettings(payload);
         // M3-C-E: the OC-mode gate runs BEFORE every clamp - an explicit
@@ -600,9 +603,18 @@ export function createIpcHandlers({
         // worker boundary - never the extendedRanges flag). The caps read
         // is a capability probe, not a write; the gate still refuses before
         // any clamp.
+        // M4O: a profileApply (the Profiles-page Apply button) SKIPS the
+        // STOCK gate - the mode is the interactive slider gate ONLY, a
+        // saved profile applies as saved (uniform with the boot/tray/
+        // --apply-profile paths). The CEILING refusal STAYS: a hand-edited
+        // >315 W profile must refuse with OC_CEILING_REFUSAL_MSG, never a
+        // silent clamp. The flagless interactive path is UNCHANGED - the
+        // mode still gates the slider applies.
         const ocMode = (await store.loadSettings()).ocMode;
         const caps = await backend.getCapabilities(deviceId);
-        const refusal = ocModeRefusal(ocMode, settings, caps.ranges);
+        const refusal = opts?.profileApply === true
+          ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges)
+          : ocModeRefusal(ocMode, settings, caps.ranges);
         if (refusal) {
           // M3-C review F2: the refusal envelope carries the FRESH device
           // state (getCurrentSettings is cheap - the refusal never touched
@@ -623,13 +635,27 @@ export function createIpcHandlers({
         // identical on both sides of the worker boundary), never on the
         // mode. Same refusal envelope as the mode gate: fresh state, never
         // a defaults-restore downstream.
-        const unavailable = extendedUnavailableRefusal(settings, caps);
+        // M4O: a profileApply keys the probe on the RUNTIME capability
+        // (oldIgcl.isCapable) instead of the mode-gated caps flag - the
+        // ipc-core ctx has oldIgcl; a genuinely not-capable driver (the
+        // default createNullOldIgcl) still refuses honestly.
+        let unavailableCaps = caps;
+        if (opts?.profileApply === true && oldIgcl?.isCapable) {
+          unavailableCaps = { ...caps, extendedRanges: await oldIgcl.isCapable() };
+        }
+        const unavailable = extendedUnavailableRefusal(settings, unavailableCaps);
         if (unavailable) {
           let state = null;
           try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
           return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state, extendedUnavailable: true };
         }
-        const clamped = clampSettings(settings, caps.ranges);
+        // M4O (NEW-1): the pre-clamp must NOT silently clamp a profileApply
+        // - a profile applies against the driver's TRUE limits
+        // (extendedRangesFor), never the mode-gated caps.ranges (stock max
+        // 252 would silently reduce a saved 300 W profile).
+        const clamped = opts?.profileApply === true
+          ? clampSettings(settings, extendedRangesFor(caps))
+          : clampSettings(settings, caps.ranges);
         // M2C-C elevation gate: a non-elevated app delegates the apply to
         // the elevated self-worker (one UAC prompt); the elevated app (and
         // mock mode, where applyRunner is null) applies in-process through
@@ -641,7 +667,7 @@ export function createIpcHandlers({
         // driver waiver + retries ONCE when the driver answers waiver-not-set
         // while the persisted acceptance is true (the consent stands - never
         // a dialog, never a dead-end, never a persisted false).
-        return runApply({ deviceId, settings: clamped, caps, ocMode });
+        return runApply({ deviceId, settings: clamped, caps, ocMode, profileApply: opts?.profileApply === true });
       },
 
       'reset-to-defaults': async (deviceId) => {

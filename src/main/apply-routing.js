@@ -176,6 +176,33 @@ export function extendedUnavailablePerControl(controls) {
   return perControl;
 }
 
+/**
+ * M4O: the clamp ranges for PROFILE applies - the driver's TRUE limits
+ * (the extended W/C maxes EXTENDED_PL_MAX_W / EXTENDED_TL_MAX_C), NOT the
+ * mode-gated caps.ranges (stock mode caps max at 252 W / 90 C - clamping a
+ * profile there would silently reduce a saved 300 W profile to 252 W, the
+ * "silent reduction reported as applied" class the codebase forbids).
+ *
+ * Overrides ONLY when the range key exists with the matching unit: a
+ * W-unit device without a tempLimitC key yields undefined for it (no own
+ * keys are added - the conditional spread never invents a key); percent-
+ * unit devices (Battlemage) keep their own ranges (their max IS the
+ * ceiling and splitByRuntime never routes them to the 2023 runtime).
+ * Null-guarded - the helper is exported and standalone-tested.
+ * @param {{ ranges?: Record<string, { units?: string }> } | null | undefined} caps
+ * @returns {Record<string, unknown>}
+ */
+export function extendedRangesFor(caps) {
+  const ranges = caps?.ranges ?? null;
+  if (!ranges) return {};
+  const out = { ...ranges };
+  const pl = ranges.powerLimitW;
+  if (pl && pl.units === 'W') out.powerLimitW = { ...pl, max: EXTENDED_PL_MAX_W };
+  const tl = ranges.tempLimitC;
+  if (tl && tl.units === 'C') out.tempLimitC = { ...tl, max: EXTENDED_TL_MAX_C };
+  return out;
+}
+
 // The momentary-lie re-read delay (default 400 ms, injectable in tests).
 export const DELAYED_VERIFY_MS = 400;
 
@@ -348,17 +375,30 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
   // check is honest on both sides of the worker boundary. The refusal is a
   // config/capability refusal: the fresh state is read back (the device was
   // never touched) and no defaults-restore fallback runs downstream.
-  const unavailable = extendedUnavailableRefusal(settings, caps);
+  // M4O: a profileApply keys this safety net on the RUNTIME capability
+  // (oldIgcl.isCapable) instead of the mode-gated caps.extendedRanges - the
+  // callers (applyProfile / the ipc-core profileApply path) gate first;
+  // this is belt-and-suspenders for direct callers. Without it the
+  // always-elevated packaged app's TRAY apply of a 315 W profile in stock
+  // mode would refuse here (caps.extendedRanges is false in stock mode).
+  const extendedCapable = opts.profileApply === true && oldIgcl
+    ? await oldIgcl.isCapable()
+    : caps.extendedRanges === true;
+  const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: extendedCapable });
   if (unavailable) {
     log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
     let state = null;
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
     return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state };
   }
+  // M4O: the profileApply clamp uses the driver's TRUE limits
+  // (extendedRangesFor) - the mode-gated caps.ranges would silently reduce
+  // a saved 300 W profile to 252 W in a stock session.
+  const clampRanges = opts.profileApply === true ? extendedRangesFor(caps) : caps.ranges;
   const clamped = {};
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
-    const range = caps.ranges[key];
+    const range = clampRanges[key];
     clamped[key] = range && typeof value === 'number'
       ? clampAndSnap(value, range)
       : value;

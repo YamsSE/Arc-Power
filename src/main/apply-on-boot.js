@@ -11,6 +11,11 @@
 // on failure applies defaults (resetToDefaults) and reports the fallback -
 // never a silent partial apply. The "defaults restored" claim is only ever
 // made when a restore actually ran (fallbackApplied !== undefined).
+// M4O (user decision): the OC-MODE gate NEVER blocks a profile apply - the
+// stock/advanced mode is the interactive SLIDER gate only; a saved profile
+// applies as saved against the driver's TRUE limits (the extended W/C
+// maxes), with the >315 W ceiling refusal + the runtime-capability refusal
+// still in place (see applyProfile below).
 // M4-D (PERMANENT acceptance): when the apply answers waiver-not-set with a
 // PERSISTED acceptance (settings.waiverAccepted), the flow silently re-sets
 // the driver waiver and retries the apply ONCE (mirror runApply) before any
@@ -24,7 +29,7 @@
 // non-elevated instance fails honestly per control.
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-import { executeApply, ocModeRefusal, extendedUnavailableRefusal } from './apply-routing.js';
+import { executeApply, ocModeRefusal, extendedUnavailableRefusal, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /** Any per-control result carrying the waiver-not-set driver answer. */
 const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
@@ -123,19 +128,24 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     return { applied: false, reason: `profile '${profileId}' not found` };
   }
 
-  // M3-C-E: the OC-mode gate runs BEFORE any apply (and before the clamp).
-  // A mode refusal is a CONFIG refusal, not a hardware failure: it reports
-  // the mode message ONLY and NEVER runs the reset-to-defaults fallback -
-  // a saved 300 W profile applied at every logon in stock mode must refuse
-  // cleanly, never wipe the live OC state and never balloon "defaults
-  // restored" (fallbackApplied stays undefined -> the tray shows the
-  // reason-specific refused balloon). Same for the tray path (shared flow).
-  // M4-E: unit-aware via the capability ranges (percent-unit devices are
-  // never mode-refused - their range max is the ceiling, not the W/C
-  // extended thresholds).
-  const refusal = ocModeRefusal(settings.ocMode, profile.settings, caps.ranges);
+  // M4O (user decision): the OC-mode gate is the INTERACTIVE slider gate
+  // ONLY - a profile apply (window boot apply, logon task, --apply-profile,
+  // tray "Apply active profile", the Profiles-page Apply button) honors the
+  // saved values as the user configured them ("it doesn't matter if the
+  // Profile uses Advanced Settings or not"). The stock/advanced mode is an
+  // app-side UI safety gate (settings.json; seedOcMode; the backend's caps
+  // ranges); the driver's REAL limits ARE the extended ones (the live-
+  // verified 315 W KMD ceiling), so the mode must not refuse a saved
+  // profile. The CEILING refusal STAYS - a profile ABOVE the extended
+  // ceiling (>315 W / >115 C - hand-edited settings, profiles-save never
+  // clamps) must still refuse with OC_CEILING_REFUSAL_MSG, NEVER silently
+  // clamp to 315 and report ok:true (the "silent clamp reported as applied"
+  // class the codebase forbids). The refusal classification is unchanged: a
+  // config refusal reports the reason ONLY and never runs the reset-to-
+  // defaults fallback (fallbackApplied stays undefined).
+  const refusal = ocModeRefusal(OC_MODE_ADVANCED, profile.settings, caps.ranges);
   if (refusal) {
-    log(`[apply-on-boot] oc-mode refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) - nothing applied, NO defaults restore`);
+    log(`[apply-on-boot] ceiling refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) - nothing applied, NO defaults restore`);
     return { applied: false, reason: refusal.message, ocModeRefused: true };
   }
 
@@ -144,10 +154,16 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // BEFORE any apply, never a silent 252 W / 90 C clamp reported as applied.
   // Same refusal classification as the mode gate: no defaults-restore
   // fallback, the live OC state survives, and the tray balloon is the
-  // reason-specific refusal (fallbackApplied stays undefined). Keyed on the
-  // capability (caps.extendedRanges), never the mode - identical probe on
-  // both sides of the worker boundary.
-  const unavailable = extendedUnavailableRefusal(profile.settings, caps);
+  // reason-specific refusal (fallbackApplied stays undefined).
+  // M4O: the gate keys on the RUNTIME capability, NOT the mode-gated
+  // caps.extendedRanges flag - the backends only set that flag in advanced
+  // mode, so in stock mode it is false even when the bundled 2023 runtime
+  // IS capable (the second blocker in the user report). The true probe is
+  // oldIgcl.isCapable() (mock: createMockOldIgcl -> backend.extendedCapable
+  // - the RAW featureset flag, mode-independent). A genuinely not-capable
+  // driver still refuses honestly with EXTENDED_UNAVAILABLE_MSG.
+  const extendedCapable = oldIgcl ? await oldIgcl.isCapable() : caps.extendedRanges === true;
+  const unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable });
   if (unavailable) {
     log(`[apply-on-boot] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied, NO defaults restore`);
     return { applied: false, reason: unavailable.message, extendedUnavailable: true };
@@ -167,16 +183,25 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // S2: the runner request carries the device-side waiver state so the
       // worker's in-memory flag matches what the user accepted. M3-C-E: it
       // carries the persisted ocMode so the worker's gate keys on the real
-      // mode (its own caps always report extendedRanges).
+      // mode (its own caps always report extendedRanges). M4O: it carries
+      // profileApply:true so the worker skips the STOCK gate (the profile
+      // is the user's own deliberate state) while keeping the ceiling
+      // refusal (>315 W never silently clamps).
       return applyRunner.apply({
         deviceId: deviceId_,
         settings: profile.settings,
         profileName: profile.name,
         waiverAccepted,
         ocMode: settings.ocMode,
+        profileApply: true,
       });
     }
-    return executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log });
+    // M4O: opts.profileApply:true - executeApply clamps against the
+    // driver's TRUE limits (extendedRangesFor) instead of the mode-gated
+    // caps.ranges (stock max 252 would silently reduce a saved 300 W
+    // profile) and keys its safety-net capability refusal on the runtime
+    // probe (oldIgcl.isCapable) instead of caps.extendedRanges.
+    return executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true } });
   };
   let result;
   let state = null;

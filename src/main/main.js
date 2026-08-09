@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runNoIntelVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId } from './ipc-core.js';
@@ -557,7 +557,10 @@ async function main() {
       // worker spawn must pass the app path along. Packaged EXEs ignore it.
       appPath: process.defaultApp ? app.getAppPath() : null,
       inProcess: {
-        apply: async ({ deviceId, settings }) => executeApply({ backend, oldIgcl, deviceId, settings }),
+        // M4O: forward the profileApply flag into executeApply's opts - the
+        // clamp then uses the driver's TRUE limits (extendedRangesFor) and
+        // the safety-net capability refusal keys on the runtime probe.
+        apply: async ({ deviceId, settings, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } }),
         waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
         reset: async (deviceId) => {
           await backend.resetToDefaults(deviceId);
@@ -570,9 +573,12 @@ async function main() {
   } else if (uiVerify && process.env.RID_MOCK_WORKER_APPLY === '1') {
     // Dev-only: report the worker-apply path (elevation toast UX) while
     // still applying in-process - never spawns a worker in mock mode.
+    // M4O: forward the profileApply flag like the real runner - a
+    // RID_MOCK_WORKER_APPLY + stock combo must behave like the real worker
+    // (which is pinned advanced).
     applyRunner = {
       needsWorker: () => true,
-      apply: async ({ deviceId, settings }) => executeApply({ backend, oldIgcl, deviceId, settings }),
+      apply: async ({ deviceId, settings, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } }),
       waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
       reset: async (deviceId) => {
         await backend.resetToDefaults(deviceId);
@@ -657,26 +663,44 @@ async function main() {
     // seedWaiverState (the device-side in-memory flag lands too -
     // applyProfileBoot refuses on a false store flag). The variant ALSO
     // seeds waiverAccepted: true + the probe profile itself.
+    // M4O: the seed keys on RID_MOCK_BOOT_APPLY_EXT too (NEVER combined -
+    // it branches the PROFILE seed, not piggybacks) - the EXT variant seeds
+    // the SAME probe profile id with the EXTENDED 315 W values so the
+    // window-path boot apply exercises the profileApply path against a
+    // stock-mode session (the user report shape).
     try {
       const cur = await store.loadSettings();
       const bootApplyOn = process.env.RID_MOCK_BOOT_APPLY === '1';
+      const bootApplyExtOn = process.env.RID_MOCK_BOOT_APPLY_EXT === '1';
+      const seedOn = bootApplyOn || bootApplyExtOn;
       await store.saveSettings({
         ...cur,
-        ocOnBoot: bootApplyOn,
-        activeProfileId: bootApplyOn ? 'boot-apply-probe' : null,
-        waiverAccepted: bootApplyOn ? true : cur.waiverAccepted,
+        ocOnBoot: seedOn,
+        activeProfileId: seedOn ? 'boot-apply-probe' : null,
+        waiverAccepted: seedOn ? true : cur.waiverAccepted,
       });
-      if (bootApplyOn) {
+      if (seedOn) {
         await store.saveProfile({
           id: 'boot-apply-probe',
           name: 'Boot Apply Probe',
-          settings: {
-            powerLimitW: 230,
-            gpuFreqOffsetMhz: 100,
-            tempLimitC: 90,
-            gpuVoltOffsetV: 0.05,
-            fanMode: 'auto',
-          },
+          settings: bootApplyExtOn
+            ? {
+                // M4O: the EXT variant's profile carries ADVANCED values
+                // (315 W - beyond the stock ceiling); the plain BOOT
+                // variant keeps the in-range 230 W seed.
+                powerLimitW: 315,
+                gpuFreqOffsetMhz: 100,
+                tempLimitC: 90,
+                gpuVoltOffsetV: 0.05,
+                fanMode: 'auto',
+              }
+            : {
+                powerLimitW: 230,
+                gpuFreqOffsetMhz: 100,
+                tempLimitC: 90,
+                gpuVoltOffsetV: 0.05,
+                fanMode: 'auto',
+              },
           ocOnBoot: false,
         });
       }
@@ -1331,6 +1355,14 @@ async function main() {
       // AND the tuning page reflects the POST-apply state (the regression
       // assertion for the ordering fix).
       await runBootApplyVerify(win, backend, store);
+    } else if (process.env.RID_MOCK_BOOT_APPLY_EXT === '1') {
+      // M4O: the boot-apply-EXT variant (run WITH RID_MOCK_STOCK_MODE=1) -
+      // the seed wrote the EXTENDED 315 W probe profile, so the automatic
+      // window-path apply must land it against a STOCK-mode session (the
+      // profileApply path ignores the OC-mode gate - the regression pin for
+      // the user report: stock mode + advanced profile values used to fail
+      // at boot with the "Nothing was changed" mode message).
+      await runBootApplyExtVerify(win, backend, store);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides
