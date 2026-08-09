@@ -23,14 +23,15 @@ import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } f
 
 // The mock's default driver fan curve (10 points) - reported by every
 // fan-bearing featureset and restored by resetToDefaults. MUST equal
-// pure/curve.ts STOCK_FAN_CURVE (the canonical stock Intel table - pinned
-// by test/mock-backend.test.js; the main bundle cannot import renderer TS,
-// so the literal stays here with the pin as the sync guarantee).
+// pure/curve.ts STOCK_FAN_CURVE (the canonical stock Intel table - the
+// M4N fixed table capped at 50 % @ 85 C; pinned by test/mock-backend.test.js;
+// the main bundle cannot import renderer TS, so the literal stays here
+// with the pin as the sync guarantee).
 export const DEFAULT_FAN_CURVE = [
-  { t: 20, speedPct: 20 }, { t: 55, speedPct: 23 }, { t: 70, speedPct: 28 },
-  { t: 78, speedPct: 30 }, { t: 80, speedPct: 30 }, { t: 82, speedPct: 40 },
-  { t: 84, speedPct: 50 }, { t: 86, speedPct: 78 }, { t: 88, speedPct: 100 },
-  { t: 90, speedPct: 100 },
+  { t: 20, speedPct: 20 }, { t: 30, speedPct: 22 }, { t: 40, speedPct: 25 },
+  { t: 50, speedPct: 28 }, { t: 60, speedPct: 32 }, { t: 65, speedPct: 35 },
+  { t: 70, speedPct: 40 }, { t: 75, speedPct: 44 }, { t: 80, speedPct: 47 },
+  { t: 85, speedPct: 50 },
 ];
 
 // Editable fan fixture (mock overlay): the real A770's LEARNED mode set

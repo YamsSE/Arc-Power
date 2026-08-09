@@ -33,6 +33,27 @@ export function ramFreqText(speedMhz: number | null | undefined): string | null 
 }
 
 /**
+ * M4N (B.1): the CPU core frequency in GHz with one decimal ('4.3' from
+ * 4300 MHz) - the shared value helper of the dashboard + monitoring Core
+ * Frequency tiles. Honest '-' for null/non-finite/<= 0 (a zero or negative
+ * reading is not a real frequency - same degrade contract as formatBytes).
+ */
+export function ghzFreq(mhz: number | null | undefined): string {
+  if (typeof mhz !== 'number' || !Number.isFinite(mhz) || mhz <= 0) return '-';
+  return (mhz / 1000).toFixed(1);
+}
+
+/**
+ * M4N (B.1): a byte count as GB with one decimal ('3.0' from 2971324416) -
+ * the monitoring VRAM tile value (the M4M MiB tile's GB replacement).
+ * Honest '-' for null/non-finite/<= 0.
+ */
+export function gbValue(bytes: number | null | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) return '-';
+  return (bytes / 1e9).toFixed(1);
+}
+
+/**
  * M4J (B): the Mainboard manufacturer short-map - Win32_BaseBoard reports
  * the full legal names; the row renders the short brands. Unknown
  * manufacturers pass through unchanged (never a wrong claim).

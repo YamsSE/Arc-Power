@@ -979,6 +979,17 @@ html, body {
   display: none;
 }
 
+/* M4N (C): the profile TAG row - the active-profile tag chip + the
+   Save/Override-Profile button side by side. align-items: flex-start keeps
+   the BUTTON's top pinned to the column start regardless of the chip's
+   height (align-items:center would drop the button's top and break the
+   ui-verify button-vs-pill alignment pin). */
+.profile-tag-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
 .oc-mode-col {
   display: flex;
   flex-direction: column;

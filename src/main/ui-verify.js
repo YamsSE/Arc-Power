@@ -6,7 +6,7 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (the user's
 //      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.6 Alpha" (app:version IPC + the display Alpha suffix - the IPC
+//       1.0.7 Alpha" (app:version IPC + the display Alpha suffix - the IPC
 //       keeps the bare semver) - the driver version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
@@ -654,8 +654,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
   // Driver version row is REMOVED - M4-H).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.6 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.6 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.7 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.7 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -888,43 +888,57 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m4i-card-align', `M4-I (A4): the sysinfo-card and device-card kv rows start at the same y (diff ${kvTopDiff}px)`);
 
-  // --- M4-H (C3)/M4M (D): the TWO-GROUP live readout (CPU above GPU) ------
+  // --- M4-H (C3)/M4M (D)/M4N (A): the TWO-GROUP live readout (CPU above
+  // GPU) ----------------------------------------------------------------
   // The tile lookups are SCOPED to the group containers (N8 - both groups
-  // carry Temperature/Util-like labels). CPU: 4 tiles incl. the NEW
-  // Wattage (cpuPowerW 125.5 from the mock PowerMeter fixture); GPU: 6
-  // tiles incl. the NEW Util (utilPct 42 - the mock emits it now, N1).
+  // carry Temperature/Util-like labels). CPU: 4 tiles incl. the Power tile
+  // (cpuPowerW 125.5 from the mock PowerMeter fixture; M4N: renamed from
+  // Wattage); GPU: 6 tiles (M4N: 'Power' replaces 'Power draw'). M4N: the
+  // CPU Core Frequency tile reads the mock's 4300 MHz as '4.3' GHz.
   // M4M (D): Util FIRST in both groups (the user's order pin).
   const groupLabels = await js(`JSON.stringify(Array.from(document.querySelectorAll('.readout-card .readout-group-label')).map((l) => l.textContent))`);
   if (JSON.parse(groupLabels).join(',') !== 'CPU,GPU') fail(`M4-H: the readout groups are '${groupLabels}' (expected 'CPU','GPU' - CPU ABOVE GPU)`);
   const cpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
   const cpuParsed = JSON.parse(cpuTiles);
   if (cpuParsed.length !== 4) fail(`M4-H: the CPU group has ${cpuParsed.length} tiles (expected 4): ${cpuTiles}`);
-  if (cpuParsed.map(([l]) => l).join(',') !== 'Util,Core Frequency,Temperature,Wattage') {
-    fail(`M4M: the CPU group order is '${cpuParsed.map(([l]) => l).join(',')}' (expected Util, Core Frequency, Temperature, Wattage - Util first)`);
+  if (cpuParsed.map(([l]) => l).join(',') !== 'Util,Core Frequency,Temperature,Power') {
+    fail(`M4N: the CPU group order is '${cpuParsed.map(([l]) => l).join(',')}' (expected Util, Core Frequency, Temperature, Power - Util first)`);
   }
   // M4-I (C2): RID_MOCK_NO_POWER_METER=1 -> the mock cpuPowerW stays null -
-  // the Wattage tile honestly reads '-' (the no-metering shape; the gated
+  // the Power tile honestly reads '-' (the no-metering shape; the gated
   // pin below asserts it explicitly).
-  const wantWattage = process.env.RID_MOCK_NO_POWER_METER === '1' ? '-' : '125.5';
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Wattage' && (t.querySelector('.stat-value')?.textContent ?? '') === '${wantWattage}')`, 8000))) {
-    fail(`M4-H/M4-I: the CPU Wattage tile is missing/not ${wantWattage} W: ${cpuTiles}`);
+  const wantPower = process.env.RID_MOCK_NO_POWER_METER === '1' ? '-' : '125.5';
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Power' && (t.querySelector('.stat-value')?.textContent ?? '') === '${wantPower}')`, 8000))) {
+    fail(`M4-H/M4-N: the CPU Power tile is missing/not ${wantPower} W: ${cpuTiles}`);
   }
   for (const want of ['Core Frequency', 'Util', 'Temperature']) {
     if (!cpuParsed.some(([l]) => l === want)) fail(`M4-H: the CPU group is missing the '${want}' tile: ${cpuTiles}`);
   }
+  // M4N (A.3): the CPU Core Frequency tile reads the mock cpuFreqMhz 4300
+  // as '4.3' GHz (the shared ghzFreq helper) - the value + the unit.
+  if (!(await waitFor(win, `(() => {
+    const tile = Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Core Frequency');
+    return !!tile && (tile.querySelector('.stat-value')?.textContent ?? '') === '4.3' && (tile.querySelector('.stat-unit')?.textContent ?? '') === 'GHz';
+  })()`, 8000))) {
+    fail(`M4N: the CPU Core Frequency tile is not '4.3' GHz: ${cpuTiles}`);
+  }
   const gpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
   const gpuParsed = JSON.parse(gpuTiles);
   if (gpuParsed.length !== 6) fail(`M4-H: the GPU group has ${gpuParsed.length} tiles (expected 6): ${gpuTiles}`);
-  if (gpuParsed.map(([l]) => l).join(',') !== 'Util,Core clock,Memory clock,Temperature,Power draw,Fan speed') {
-    fail(`M4M: the GPU group order is '${gpuParsed.map(([l]) => l).join(',')}' (expected Util, Core clock, Memory clock, Temperature, Power draw, Fan speed - Util first)`);
+  if (gpuParsed.map(([l]) => l).join(',') !== 'Util,Core clock,Memory clock,Temperature,Power,Fan speed') {
+    fail(`M4N: the GPU group order is '${gpuParsed.map(([l]) => l).join(',')}' (expected Util, Core clock, Memory clock, Temperature, Power, Fan speed - Util first)`);
   }
-  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power draw', 'Fan speed', 'Util']) {
+  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Fan speed', 'Util']) {
     if (!gpuParsed.some(([l]) => l === want)) fail(`M4-H: the GPU group is missing the '${want}' tile: ${gpuTiles}`);
   }
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Util' && (t.querySelector('.stat-value')?.textContent ?? '') === '42')`, 8000))) {
     fail(`M4-H: the GPU Util tile is not 42 (the mock utilPct): ${gpuTiles}`);
   }
-  step('m4h-readout-groups', `M4-H/M4M: readout groups 'CPU,GPU'; CPU 4 tiles in order '${cpuParsed.map(([l]) => l).join(',')}' (incl. Wattage '${cpuParsed.find(([l]) => l === 'Wattage')?.[1]} W'), GPU 6 tiles in order '${gpuParsed.map(([l]) => l).join(',')}' (incl. Util '42' - Util first in both)`);
+  // M4N (A.2): the GPU Power tile reads the mock powerW fixture 38.8.
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Power' && (t.querySelector('.stat-value')?.textContent ?? '') === '38.8')`, 8000))) {
+    fail(`M4N: the GPU Power tile is not 38.8 (the mock powerW fixture): ${gpuTiles}`);
+  }
+  step('m4h-readout-groups', `M4-H/M4M/M4N: readout groups 'CPU,GPU'; CPU 4 tiles in order '${cpuParsed.map(([l]) => l).join(',')}' (incl. Power '${cpuParsed.find(([l]) => l === 'Power')?.[1]} W', Core Frequency '4.3 GHz'), GPU 6 tiles in order '${gpuParsed.map(([l]) => l).join(',')}' (incl. Util '42' + Power '38.8' - Util first in both)`);
 
   // --- M4-D2 (§3): the ReBAR pill is STANDALONE (no label kv row) --------
   // The mock fixture models a healthy setup: a multi-GiB BAR (rebarActive
@@ -2243,9 +2257,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // Hover a dot: the popup shows the label ("85% @ 72 °C · #N"-style) and
   // the two editable inputs (Fan % + Temp) synced to the point (M4-H: the
   // label is a NODE - showReadout updates the label + the input values,
-  // never textContent). Round-1 strengthening: the LAST dot is the
-  // 88C/100% TOP-EDGE point - the readout must be FULLY VISIBLE (inside
-  // the stage bounds).
+  // never textContent). M4N: under the FIXED Intel table the LAST dot is
+  // (85, 50) - the readout must still be FULLY VISIBLE (inside the stage
+  // bounds; the old 88C/100% top-edge flip check is DEAD under the new
+  // table and dropped - no dot reaches 100 % anymore).
   const hoverOk = await js(`(() => {
     const dots = Array.from(document.querySelectorAll('.fan-dot'));
     const dot = dots[dots.length - 1];
@@ -2267,9 +2282,6 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const inside = rr.top >= sr.top - 0.5 && rr.bottom <= sr.bottom + 0.5
       && rr.left >= sr.left - 0.5 && rr.right <= sr.right + 0.5;
     if (!inside) return 'clipped-outside-stage:' + JSON.stringify({ sr: [sr.top, sr.bottom, sr.left, sr.right], rr: [rr.top, rr.bottom, rr.left, rr.right] });
-    if (Number(dot.dataset.speed) === 100 && !ro.classList.contains('fan-dot-readout-below')) {
-      return 'top-edge-not-flipped';
-    }
     return 'ok';
   })()`);
   if (hoverOk !== 'ok') fail(`M4-C/M4-H: hover readout: ${hoverOk}`);
@@ -2300,17 +2312,20 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('M4-C: the hover readout did not hide on pointerout');
   }
   // Drag the same dot: the readout must appear and LIVE-UPDATE during the
-  // move, then hide on release.
+  // move, then hide on release. M4N: the drag target is (25, 60) - under
+  // the FIXED Intel table the t=30 column already holds a dot (the add
+  // step above inserted at the widest gap 20-30), so the drag pins a spot
+  // with room between the 20 C and 30 C neighbors.
   const dragOk = await js(`(() => {
     const stage = document.querySelector('.fan-stage');
     const rect = stage.getBoundingClientRect();
     const dot = Array.from(document.querySelectorAll('.fan-dot')).find((d) => Number(d.dataset.idx) === 1);
     dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7, clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 }));
-    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 7, clientX: rect.left + rect.width * 0.3, clientY: rect.top + rect.height * 0.4 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 7, clientX: rect.left + rect.width * 0.25, clientY: rect.top + rect.height * 0.4 }));
     const ro = document.querySelector('.fan-dot-readout');
     const moved = document.querySelector('.fan-dot[data-idx="1"]');
-    const movedOk = moved && Number(moved.dataset.t) === 30 && Number(moved.dataset.speed) === 60;
-    const roOk = !!ro && !ro.hidden && ro.querySelector('.fan-dot-readout-label')?.textContent === '60% @ 30 °C · #1';
+    const movedOk = moved && Number(moved.dataset.t) === 25 && Number(moved.dataset.speed) === 60;
+    const roOk = !!ro && !ro.hidden && ro.querySelector('.fan-dot-readout-label')?.textContent === '60% @ 25 °C · #1';
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7 }));
     const hiddenAfter = document.querySelector('.fan-dot-readout')?.hidden === true;
     return movedOk && roOk && hiddenAfter
@@ -2433,7 +2448,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (clickOutside !== 'ok') fail(`M4-I (F1): a click outside must close the editable popup: ${clickOutside}`);
   step('fan-m4i-edit-lifecycle', 'M4-I (F1): while editing, pointerout/pointerleave/focusout keep the popup; clicking another dot moves it; a click outside closes it');
 
-  // Typing a colliding temp clamps between the neighbors.
+  // Typing a colliding temp clamps between the neighbors. M4N: with the
+  // FIXED Intel table + the drag above (dot 1 at 25 C) the neighbors of
+  // dot 2 are 25 C and 40 C - typing 80 clamps to 39 (next.t - 1).
   await editDotFor(2);
   const popupTemp = await js(`(() => {
     const inp = document.querySelector('.fan-dot-readout input[data-readout-field="t"]');
@@ -2442,7 +2459,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const dot = document.querySelector('.fan-dot[data-idx="2"]');
     return dot.dataset.t + '/' + inp.value;
   })()`);
-  if (popupTemp !== '69/69') fail(`M4-H: popup temp edit: got '${popupTemp}' (expected 69/69 - clamped strictly between the neighbors)`);
+  if (popupTemp !== '39/39') fail(`M4-H: popup temp edit: got '${popupTemp}' (expected 39/39 - clamped strictly below the 40 C neighbor)`);
   // Typing an over-range speed clamps to 100.
   const popupSpeed = await js(`(() => {
     const inp = document.querySelector('.fan-dot-readout input[data-readout-field="speed"]');
@@ -2517,14 +2534,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Add point'))?.click()`);
   step('fan-m4h-popup-edit', 'M4-H: popup edit path - colliding temp clamped between (69), speed clamped to 100, outer domain clamp (150/-5 -> 100/0), empty input keeps the value, focus keeps the popup, action-row remove floors at 2 (disabled); no .fan-points-editor anywhere');
 
-  // --- M4-H (A1)/M4-I (F2)/M4M (A): the STOCK-curve preset chips ----------
-  // Exactly THREE chips: 'Intel Curve' (M4M: the FIXED stock 10-point
-  // STOCK_FAN_CURVE constant - the chip restores the stock curve, never a
-  // live store read; the mock fixture is pinned equal to the constant so
-  // this block also validates that equality), 'Quiet' (speeds x0.5 with the
-  // FIRST point pinned to 20 % at the base's first temp), 'Max' (speeds
-  // x1.35 with the SAME 20 % first-point pin, clamp 0..100, renamed from
-  // 'Max cooling'). No 'Max cooling' text anywhere.
+  // --- M4N (D): the FIXED-table preset chips --------------------------------
+  // Exactly THREE chips: 'Intel Curve' (the FIXED 10-point STOCK_FAN_CURVE
+  // constant - the chip restores the stock curve, never a live store read;
+  // the mock fixture is pinned equal to the constant so this block also
+  // validates that equality), 'Quiet' (the FIXED gentler table, capped at
+  // 40 %), 'Max' (the FIXED steeper table, capped at 70 % - renamed from
+  // 'Max cooling'). The M4M scaled derivation (x0.5/x1.35) is GONE - the
+  // tables below are the exact literals (the main bundle cannot import
+  // renderer TS; pure/curve.ts + test/pure-curve.test.ts pin them).
   if (await js(`document.body.textContent.includes('Max cooling')`)) {
     fail('M4-H: "Max cooling" is still rendered somewhere (renamed to "Max")');
   }
@@ -2537,6 +2555,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   const presetDots = () => js(`JSON.stringify(Array.from(document.querySelectorAll('.fan-dot')).map((d) => ({ t: Number(d.dataset.t), s: Number(d.dataset.speed) })))`);
   const clickPreset = (name) => js(`Array.from(document.querySelectorAll('.fan-presets .chip')).find((c) => c.textContent.trim() === '${name}')?.click()`);
+  // The exact M4N tables (pure/curve.ts STOCK/QUIET/MAX_FAN_CURVE).
+  const INTEL_TABLE = [
+    { t: 20, s: 20 }, { t: 30, s: 22 }, { t: 40, s: 25 }, { t: 50, s: 28 },
+    { t: 60, s: 32 }, { t: 65, s: 35 }, { t: 70, s: 40 }, { t: 75, s: 44 },
+    { t: 80, s: 47 }, { t: 85, s: 50 },
+  ];
+  const QUIET_TABLE = [
+    { t: 20, s: 20 }, { t: 30, s: 21 }, { t: 40, s: 22 }, { t: 50, s: 24 },
+    { t: 60, s: 26 }, { t: 65, s: 28 }, { t: 70, s: 30 }, { t: 75, s: 33 },
+    { t: 80, s: 36 }, { t: 85, s: 40 },
+  ];
+  const MAX_TABLE = [
+    { t: 20, s: 20 }, { t: 30, s: 26 }, { t: 40, s: 32 }, { t: 50, s: 38 },
+    { t: 60, s: 45 }, { t: 65, s: 50 }, { t: 70, s: 56 }, { t: 75, s: 62 },
+    { t: 80, s: 66 }, { t: 85, s: 70 },
+  ];
   // 'Intel Curve' restores the STOCK curve (the constant, clamped to the
   // device max - the mock fixture equals the constant, so the compare below
   // passes on both).
@@ -2546,27 +2580,28 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const fixtureCurve = (await js(`window.arcPower.getCurrentSettings(0)`).then((s) => s.fanCurve))
     .map((p) => ({ t: p.t, s: p.speedPct }));
   if (JSON.stringify(driverDots) !== JSON.stringify(fixtureCurve)) {
-    fail(`M4-I/M4M: 'Intel Curve' did not restore the stock curve: ${JSON.stringify(driverDots)} != ${JSON.stringify(fixtureCurve)}`);
+    fail(`M4-I/M4N: 'Intel Curve' did not restore the stock curve: ${JSON.stringify(driverDots)} != ${JSON.stringify(fixtureCurve)}`);
   }
-  // 'Quiet' = the FIRST point pinned to 20 (the mock base already starts at
-  // 20 - the pure unit test discriminates on a NON-20 base), the REST ×0.5
-  // (same temps).
+  if (JSON.stringify(driverDots) !== JSON.stringify(INTEL_TABLE)) {
+    fail(`M4N: 'Intel Curve' is not the fixed Intel table (never exceeds 50 %, exactly 50 % at 85 C): ${JSON.stringify(driverDots)}`);
+  }
+  // 'Quiet' = the FIXED gentler table (never exceeds 40 %).
   await clickPreset('Quiet');
   await sleep(250);
   const quietDots = JSON.parse(await presetDots());
-  if (quietDots.length !== fixtureCurve.length) fail(`M4-I: 'Quiet' point count is ${quietDots.length} (expected ${fixtureCurve.length})`);
-  const quietOk = quietDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === (i === 0 ? 20 : Math.round(fixtureCurve[i].s * 0.5)));
-  if (!quietOk) fail(`M4-I: 'Quiet' math is wrong (first point pinned to 20, rest speeds ×0.5): ${JSON.stringify(quietDots)} vs base ${JSON.stringify(fixtureCurve)}`);
-  // 'Max' = the FIRST point pinned to 20 (20×1.35 = 27 must NOT apply to
-  // it), the rest ×1.35 (clamp 0..100 - the ramp reaches 100% sooner).
+  if (quietDots.length !== fixtureCurve.length) fail(`M4N: 'Quiet' point count is ${quietDots.length} (expected ${fixtureCurve.length})`);
+  if (JSON.stringify(quietDots) !== JSON.stringify(QUIET_TABLE)) {
+    fail(`M4N: 'Quiet' is not the fixed Quiet table (never exceeds 40 %): ${JSON.stringify(quietDots)} vs ${JSON.stringify(QUIET_TABLE)}`);
+  }
+  // 'Max' = the FIXED steeper table (never exceeds 70 %).
   await clickPreset('Max');
   await sleep(250);
   const maxDots = JSON.parse(await presetDots());
-  if (maxDots.length !== fixtureCurve.length) fail(`M4-I: 'Max' point count is ${maxDots.length} (expected ${fixtureCurve.length})`);
-  const maxOk = maxDots.every((d, i) => d.t === fixtureCurve[i].t && d.s === (i === 0 ? 20 : Math.min(100, Math.round(fixtureCurve[i].s * 1.35))));
-  if (!maxOk) fail(`M4-I: 'Max' math is wrong (first point pinned to 20, rest ×1.35 capped 100): ${JSON.stringify(maxDots)} vs base ${JSON.stringify(fixtureCurve)}`);
-  if (maxDots.at(-1).s !== 100) fail(`M4-I: the 'Max' preset must end at 100 % (got ${maxDots.at(-1).s})`);
-  step('fan-presets', `M4-I/M4M: preset chips '${presetChips}'; Intel Curve restores the stock 10-point curve; Quiet 20%-pinned first point + ×0.5 -> ${JSON.stringify(quietDots)}; Max 20%-pinned first point + ×1.35 capped 100 -> ${JSON.stringify(maxDots)}; no 'Max cooling' text`);
+  if (maxDots.length !== fixtureCurve.length) fail(`M4N: 'Max' point count is ${maxDots.length} (expected ${fixtureCurve.length})`);
+  if (JSON.stringify(maxDots) !== JSON.stringify(MAX_TABLE)) {
+    fail(`M4N: 'Max' is not the fixed Max table (never exceeds 70 %): ${JSON.stringify(maxDots)} vs ${JSON.stringify(MAX_TABLE)}`);
+  }
+  step('fan-presets', `M4N: preset chips '${presetChips}'; Intel Curve restores the fixed 10-point stock curve (50 % cap at 85 C); Quiet/Max are the fixed tables -> ${JSON.stringify(quietDots)} / ${JSON.stringify(maxDots)}; no 'Max cooling' text`);
 
   await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings'))?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('fan apply success toast missing');
@@ -2670,25 +2705,43 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!reopened) fail('first segment did not re-expand');
   step('mon-collapse', 'segment header click toggles collapse/expand (chevron)');
 
-  // M4M (B): the readout is TWO groups - CPU (the dashboard tiles verbatim:
-  // Core Frequency / Util / Temperature / Wattage - 'Util' replaces the old
-  // 'CPU utilization' label) ABOVE GPU (the existing tile set: Core clock /
-  // Memory clock / Temperature / Power / Utilization / Fan + the GPU-memory
-  // MiB tile + the FPS tile). The tile lookups are GROUP-SCOPED (both
-  // groups carry Temperature-like labels).
+  // M4M (B)/M4N (B): the readout is TWO groups - CPU (the dashboard tiles
+  // verbatim, M4N order: Util / Core Frequency (GHz) / Temperature / Power)
+  // ABOVE GPU (the dashboard GPU order, M4N: Util / Core clock / Memory
+  // clock / VRAM (GB) / Temperature / Power / Fan + the FPS tile - the
+  // M4M 'Utilization' tile is renamed 'Util', the MiB tile becomes 'VRAM').
+  // The tile lookups are GROUP-SCOPED (both groups carry Temperature-like
+  // labels).
   const cpuLabels = await js(`Array.from(document.querySelectorAll('#mon-readout-cpu .stat-label')).map((l) => l.textContent).join(',')`);
   const gpuLabels = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-label')).map((l) => l.textContent).join(',')`);
-  for (const want of ['Core Frequency', 'Util', 'Temperature', 'Wattage']) {
+  if (cpuLabels.split(',').join(',') !== 'Util,Core Frequency,Temperature,Power') {
+    fail(`M4N: the monitoring CPU group order is '${cpuLabels}' (expected Util, Core Frequency, Temperature, Power - the dashboard order)`);
+  }
+  if (gpuLabels.split(',').join(',') !== 'Util,Core clock,Memory clock,VRAM,Temperature,Power,Fan,FPS') {
+    fail(`M4N: the monitoring GPU group order is '${gpuLabels}' (expected Util, Core clock, Memory clock, VRAM, Temperature, Power, Fan, FPS)`);
+  }
+  for (const want of ['Core Frequency', 'Util', 'Temperature', 'Power']) {
     if (!cpuLabels.includes(want)) fail(`monitoring CPU group missing '${want}' (got '${cpuLabels}')`);
   }
-  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Utilization', 'Fan', 'FPS', 'GPU memory']) {
+  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Util', 'Fan', 'FPS', 'VRAM']) {
     if (!gpuLabels.includes(want)) fail(`monitoring GPU group missing '${want}' (got '${gpuLabels}')`);
   }
-  // M4-D2 (§11): the new tiles read the mock system-stats (42 % util,
-  // 61 °C, 2834 MiB = 2971324416 / 1048576).
+  if (await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-label')).some((l) => l.textContent === 'Utilization' || l.textContent === 'GPU memory')`)) {
+    fail(`M4N: the old monitoring labels 'Utilization'/'GPU memory' are still rendered (got '${gpuLabels}')`);
+  }
+  // M4-D2 (§11)/M4N: the tiles read the mock system-stats (42 % util,
+  // 61 °C, 2971324416 bytes -> '3.0' GB VRAM, 4300 MHz -> '4.3' GHz).
   const tileOf = (group, label) => `Array.from(document.querySelectorAll('#mon-readout-${group} .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === '${label}')?.querySelector('.stat-value')?.textContent ?? ''`;
   if (!(await waitFor(win, `(${tileOf('cpu', 'Util')}) === '42'`, 8000))) {
     fail(`CPU Util tile is '${await js(tileOf('cpu', 'Util'))}' (expected '42' - the mock cpuUtilPct)`);
+  }
+  // M4N (B.2): the CPU Core Frequency tile reads the mock cpuFreqMhz 4300
+  // as '4.3' GHz (the shared ghzFreq helper) - the value + the unit.
+  if (!(await waitFor(win, `(() => {
+    const tile = Array.from(document.querySelectorAll('#mon-readout-cpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Core Frequency');
+    return !!tile && (tile.querySelector('.stat-value')?.textContent ?? '') === '4.3' && (tile.querySelector('.stat-unit')?.textContent ?? '') === 'GHz';
+  })()`, 8000))) {
+    fail(`CPU Core Frequency tile is not '4.3' GHz: '${await js(tileOf('cpu', 'Core Frequency'))}'`);
   }
   // M4-I (C1): the mock temp VARIES 61/62 - the exact-value pin accepts both
   // (under RID_MOCK_FROZEN_TEMP=1 the shared frozenDrop already reports '-'
@@ -2699,8 +2752,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(cpuTemp === '61' || cpuTemp === '62' || (frozenActive && cpuTemp === '-'))) {
     fail(`CPU Temperature tile is '${cpuTemp}' (expected '61'|'62' - the varying mock${frozenActive ? ', or the frozen "-"' : ''})`);
   }
-  if ((await js(tileOf('gpu', 'GPU memory'))) !== '2834') fail(`GPU memory tile is '${await js(tileOf('gpu', 'GPU memory'))}' (expected '2834 MiB' - 2971324416/1048576)`);
-  step('mon-readout', `monitoring readout groups: CPU '${cpuLabels}', GPU '${gpuLabels}'; CPU Util 42 % / CPU temp ${cpuTemp} °C / 2834 MiB (compact)`);
+  if ((await js(tileOf('gpu', 'VRAM'))) !== '3.0') fail(`VRAM tile is '${await js(tileOf('gpu', 'VRAM'))}' (expected '3.0' GB - 2971324416 / 1e9, one decimal)`);
+  step('mon-readout', `monitoring readout groups: CPU '${cpuLabels}', GPU '${gpuLabels}'; CPU Util 42 % / Core Frequency 4.3 GHz / CPU temp ${cpuTemp} °C / VRAM 3.0 GB (compact)`);
 
   // M4-I (C1): RID_MOCK_FROZEN_TEMP=1 -> the mock temp is CONSTANT, so the
   // shared frozenDrop reports null after 5 identical samples - the CPU
@@ -2714,15 +2767,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('mon-frozen', 'M4-I (C1): RID_MOCK_FROZEN_TEMP=1 - the frozen mock temp drops to the honest "-" (the Z97 static-zone shape)');
   }
   // M4-I (C2): RID_MOCK_NO_POWER_METER=1 -> the mock's cpuPowerW stays null
-  // (the honest no-metering shape) - the dashboard Wattage tile reads '-'.
+  // (the honest no-metering shape) - the dashboard Power tile reads '-'
+  // (M4N: renamed from Wattage).
   if (process.env.RID_MOCK_NO_POWER_METER === '1') {
     await js(`location.hash = '#/dashboard'`);
-    if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Wattage')?.querySelector('.stat-value')?.textContent === '-'`, 8000))) {
-      fail('M4-I (C2): RID_MOCK_NO_POWER_METER=1 - the Wattage tile does not read "-" (the mock cpuPowerW must stay null-honest)');
+    if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Power')?.querySelector('.stat-value')?.textContent === '-'`, 8000))) {
+      fail('M4-I (C2): RID_MOCK_NO_POWER_METER=1 - the Power tile does not read "-" (the mock cpuPowerW must stay null-honest)');
     }
     await js(`location.hash = '#/monitoring'`);
     await sleep(250);
-    step('mon-no-power', 'M4-I (C2): RID_MOCK_NO_POWER_METER=1 - the Wattage tile reads "-" (no PowerMeter -> honest)');
+    step('mon-no-power', 'M4-I (C2): RID_MOCK_NO_POWER_METER=1 - the Power tile reads "-" (no PowerMeter -> honest)');
   }
 
   if (process.env.RID_MOCK_FPS === '1') {
@@ -3202,36 +3256,36 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m4h-save-reload', 'M4-H: fresh reload keeps the active profile -> the save button still reads "Override Profile"');
 
-  // --- M4M (E): the "Currently selected profile" card -----------------------
-  // The M4-H flow left the ACTIVE profile applied: the tuning view's first
-  // card must show the profile name + the start-at-boot chip (derived OFF -
-  // the M4H profile was created/overridden with ocOnBoot false) + the
-  // settings-key count. After the active slot is cleared below, the card
-  // must be GONE entirely.
-  if (!(await waitFor(win, `(document.querySelector('.active-profile-card .kv[data-label="Profile"]')?.textContent ?? '').trim() === 'M4H saved profile v2'`, 8000))) {
-    fail(`M4M: the active-profile card is missing/does not show the profile name: '${await js(`document.querySelector('.active-profile-card')?.textContent ?? ''`)}'`);
+  // --- M4N (C): the active-profile TAG (the M4M card is REMOVED) ----------
+  // The M4-H flow left the ACTIVE profile applied: the tuning page's mode
+  // row must show the profile TAG ('Profile: M4H saved profile v2' - the
+  // compact chip next to the save button; the M4M "Currently selected
+  // profile" CARD with its Start-at-boot chip + settings count is GONE).
+  // After the active slot is cleared below, the tag must be GONE entirely.
+  if (await js(`!!document.querySelector('.active-profile-card')`)) {
+    fail('M4N: the "Currently selected profile" card is still rendered (removed - the tag replaces it)');
   }
-  const activeChip = await js(`document.querySelector('.active-profile-card .kv[data-label="Start at boot"] .chip')?.textContent ?? ''`);
-  if (activeChip !== 'Off') fail(`M4M: the start-at-boot chip is '${activeChip}' (expected 'Off' - the M4H profile has ocOnBoot false)`);
-  const activeSettingsCount = await js(`document.querySelector('.active-profile-card .kv[data-label="Settings"]')?.textContent ?? ''`);
-  if (!/^\s*\d+\s*$/.test(activeSettingsCount) || Number(activeSettingsCount.trim()) === 0) {
-    fail(`M4M: the Settings count row is '${activeSettingsCount}' (expected the profile's settings-key count)`);
+  if (!(await waitFor(win, `(document.querySelector('.profile-tag-row .active-profile-tag')?.textContent ?? '').trim() === 'Profile: M4H saved profile v2'`, 8000))) {
+    fail(`M4N: the active-profile tag is missing/does not show the profile name: '${await js(`document.querySelector('.profile-tag-row .active-profile-tag')?.textContent ?? ''`)}'`);
   }
-  step('m4m-active-card', `M4M: the active-profile card shows 'M4H saved profile v2' + the start-at-boot chip '${activeChip}' + Settings '${activeSettingsCount.trim()}'`);
+  if (await js(`(document.querySelector('.profile-tag-row .active-profile-tag')?.title ?? '') !== 'Currently selected profile'`)) {
+    fail('M4N: the active-profile tag lacks the "Currently selected profile" tooltip');
+  }
+  step('m4n-active-tag', `M4N: the active-profile TAG shows 'Profile: M4H saved profile v2' (the M4M card is gone)`);
 
   // Cleanup the M4-H profile + clear the active slot.
   await js(`window.arcPower.profilesDelete('${m4hCreatedId}')`).catch(() => {});
   await js(`window.arcPower.profilesSettingsSave({ activeProfileId: null })`).catch(() => {});
-  // No active profile -> the card is ABSENT entirely (a re-render proves it -
+  // No active profile -> the tag is ABSENT entirely (a re-render proves it -
   // the clear itself does not re-render the page).
   await js(`location.hash = '#/dashboard'`);
   await js(`location.hash = '#/tuning'`);
-  if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row')`, 5000))) fail('M4M: the tuning page did not re-render after the active-slot clear');
+  if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row')`, 5000))) fail('M4N: the tuning page did not re-render after the active-slot clear');
   await sleep(300);
-  if (await js(`!!document.querySelector('.active-profile-card')`)) {
-    fail('M4M: the active-profile card is still rendered after activeProfileId was cleared (must be absent entirely)');
+  if (await js(`!!document.querySelector('.profile-tag-row .active-profile-tag')`)) {
+    fail('M4N: the active-profile tag is still rendered after activeProfileId was cleared (must be absent entirely)');
   }
-  step('m4m-active-card-gone', 'M4M: no active profile -> the card is absent entirely');
+  step('m4n-active-tag-gone', 'M4N: no active profile -> the tag is absent entirely');
   await clearToasts();
 
   // M4J clarification (S1/F2 REVERTED): the upgrade-path pin is REMOVED -
@@ -3322,8 +3376,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format).
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.6 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.6 Alpha')`);
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.7 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.7 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3385,7 +3439,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.6`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.7`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -3668,10 +3722,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const sampleLine = fileOk.lines[1];
     const sampleFields = sampleLine.split(' | ').map((s) => s.trim());
     // M4-I (C1): the mock temp VARIES 61/62 - the cell accepts either;
+    // under RID_MOCK_FROZEN_TEMP=1 the shared frozenDrop trips to null, so
+    // the honest '-' cell is the pinned state there (the log writes the
+    // same sample the monitoring tile reads - the frozen '-' pin above).
     // M4M (C): the VRAM-used cell reads decimal GB with one decimal ('3.0'
     // for the mock's 2971324416 bytes - never a bare '3').
-    if (sampleFields[7] !== '42' || (sampleFields[8] !== '61' && sampleFields[8] !== '62')) {
-      fail(`M4-D2/M4-I: the log data line does not carry the mock system stats (cpuUtilPct 42, cpuTempC 61|62): '${sampleLine}'`);
+    const frozenLog = process.env.RID_MOCK_FROZEN_TEMP === '1';
+    if (sampleFields[7] !== '42'
+      || (!frozenLog && sampleFields[8] !== '61' && sampleFields[8] !== '62')
+      || (frozenLog && sampleFields[8] !== '-')) {
+      fail(`M4-D2/M4-I: the log data line does not carry the mock system stats (cpuUtilPct 42, cpuTempC ${frozenLog ? '"-" (frozen drop)' : '61|62'}): '${sampleLine}'`);
     }
     if (sampleFields[10] !== '3.0') fail(`M4M: the gpuMemUsedGb cell is '${sampleFields[10]}' on the mock line (expected '3.0' - 2971324416 bytes / 1e9 with one decimal): '${sampleLine}'`);
     // Toggle off -> the file length stays stable across a telemetry tick.
@@ -3685,7 +3745,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await sleep(1800); // > 3 telemetry ticks
     const after = fsMod.statSync(pathMod.join(logDir, fileOk.file)).size;
     if (after !== before) fail(`M4-D2: the log file kept growing after the toggle was OFF (${before} -> ${after} bytes)`);
-    step('m4j-log-file', `log-to-file: ${fileOk.file} appeared with the aligned 12-column header (gpuMemUsedGb) + ${fileOk.lines.length - 1} parseable line(s) (timestamp 1970-01-01 from the mock epoch via Date(t*1000), cpuUtilPct=42, cpuTempC=61, gpuMemUsedGb='3.0'); toggle off -> length stable (${before} bytes)`);
+    step('m4j-log-file', `log-to-file: ${fileOk.file} appeared with the aligned 12-column header (gpuMemUsedGb) + ${fileOk.lines.length - 1} parseable line(s) (timestamp 1970-01-01 from the mock epoch via Date(t*1000), cpuUtilPct=42, cpuTempC=${process.env.RID_MOCK_FROZEN_TEMP === '1' ? '-' : '61'}, gpuMemUsedGb='3.0'); toggle off -> length stable (${before} bytes)`);
   } else {
     step('m4j-log-file', 'log-to-file pin SKIPPED (RID_MOCK_LOG_DIR not set)');
   }
@@ -4242,12 +4302,15 @@ export async function runNoIntelVerify(win) {
   if (cpu['Temperature'] !== '61' && cpu['Temperature'] !== '62') {
     fail(`1.0.1: the CPU Temperature tile is '${cpu['Temperature']}' (expected 61|62 - the varying mock)`);
   }
-  if (gpu['GPU memory'] !== '2834') fail(`1.0.1: the GPU-memory tile is '${gpu['GPU memory']}' (expected 2834 MiB from 2971324416 bytes)`);
+  // M4N (B): the labels are 'VRAM' (GB - the M4M MiB tile's replacement)
+  // and 'Util' (the M4M 'Utilization' rename) - the per-group fromEntries
+  // are label-keyed, so the order is irrelevant here.
+  if (gpu['VRAM'] !== '3.0') fail(`1.0.1: the VRAM tile is '${gpu['VRAM']}' (expected '3.0' GB from 2971324416 bytes)`);
   if (gpu['Core clock'] !== '-') fail(`1.0.1: the core-clock tile is '${gpu['Core clock']}' (expected '-' - the GPU device tiles stay honest)`);
   // M4-I (D4): the Util tile reads `gpuUtilPct ?? utilPct` - on no-Intel the
   // OS GPUEngine counter (the mock's fixed 42) is the only source.
-  if (gpu['Utilization'] !== '42') fail(`1.0.1/M4-I: the monitoring Utilization tile is '${gpu['Utilization']}' (expected 42 - gpuUtilPct from the no-device sys-stats push)`);
-  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C, GPU memory 2834 MiB, GPU Utilization 42 % (M4-I: gpuUtilPct ?? utilPct); GPU device tiles '-'`);
+  if (gpu['Util'] !== '42') fail(`1.0.1/M4-I: the monitoring Util tile is '${gpu['Util']}' (expected 42 - gpuUtilPct from the no-device sys-stats push)`);
+  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C, VRAM 3.0 GB, GPU Util 42 % (M4-I: gpuUtilPct ?? utilPct); GPU device tiles '-'`);
 
   // --- 7. the Tuning page: 'No GPU available.', never the caps-loading text --
   // deviceId is null on no-Intel: the page must present the honest no-device
@@ -4706,6 +4769,20 @@ export async function runBootApplyVerify(win, backend, store) {
     fail(`M4M: the powerLimit Driver readout is '${bootDriverLine}' (expected '230 W' - the post-apply state read-back)`);
   }
   step('boot-apply-post-state', `tuning shows the POST-apply state: powerLimit slider + Driver readout '230 W' (the ordering-fix regression)`);
+
+  // M4N (A.1): the boot-apply OUTCOME reached the renderer - the dashboard
+  // OC Status row is GREEN and its detail carries the applied profile's
+  // name (the record reads "Profile 'Boot Apply Probe' applied"; the
+  // status-ok class sits on the inner .status-dot, not the row element).
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.health-row[data-row="oc"] .status-dot.status-ok')`, 8000))) {
+    fail(`M4N: the OC Status row is not green after the boot apply: '${await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`)}'`);
+  }
+  const ocRowText = await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`);
+  if (!ocRowText.includes('Boot Apply Probe')) {
+    fail(`M4N: the OC Status row detail does not carry the applied profile name ('Profile Boot Apply Probe applied'): '${ocRowText}'`);
+  }
+  step('boot-apply-outcome-row', `M4N: the OC Status health row is GREEN after the boot apply (detail '${ocRowText.trim()}')`);
 
   // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   await runCloseToTrayProbe(win);

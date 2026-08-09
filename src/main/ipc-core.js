@@ -307,6 +307,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
  *   buildKind?: 'installed' | 'portable' | 'dev',  // M4-E: app:build-info
+ *   bootApplyOutcome?: () => ({ ok: boolean, detail: string, at: number } | null),  // M4N: the window-path boot apply's outcome record (main.js injects it; null when no boot apply ran this session)
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
  *   applyRunner?: object|null,   // elevation-aware apply runner (elevated-apply)
  *   isElevated?: () => boolean,  // elevation probe for the app-elevated channel
@@ -378,6 +379,10 @@ export function createIpcHandlers({
   // M4-E: the distribution kind for the app:build-info channel ('dev' in
   // tests; main.js injects 'installed' | 'portable' | 'dev').
   buildKind = 'dev',
+  // M4N (A.1): the window-path boot apply's outcome record (main.js
+  // injects the session record; null when no boot apply ran this session -
+  // the DEFAULT is null, tests never have a boot apply).
+  bootApplyOutcome = () => null,
   // M2C-C: the 2023-runtime adapter + the elevation-aware apply runner.
   // Defaults: a no-op old runtime (never loads the DLL) and no runner
   // (applies run in-process) - safe for tests and mock mode.
@@ -873,6 +878,17 @@ export function createIpcHandlers({
       'app:build-info': async (...args) => {
         assertNoPayload(args, 'app:build-info');
         return { kind: buildKind };
+      },
+
+      // M4N (A.1): the window-path boot apply's outcome record - the
+      // renderer's boot fetch reads it to flip the dashboard OC Status row
+      // green after a boot apply ({ ok, detail, at } or null when no boot
+      // apply ran this session). The mock-only mock:run-boot-apply channel
+      // deliberately does NOT update this record - the mid-session probe
+      // leaves the OC row as the boot outcome (documented decision).
+      'boot-apply-outcome': async (...args) => {
+        assertNoPayload(args, 'boot-apply-outcome');
+        return bootApplyOutcome();
       },
 
       // M2C-C elevation state (read-only, cached koffi probe - no spawn):

@@ -78,7 +78,7 @@ import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
 import { newProfileId, promptModal, settingsFromState } from './profiles.ts';
-import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, ProfilesEnvelope } from '../types.ts';
+import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
 // there); this page re-exports them so the import surface stays local.
@@ -584,50 +584,15 @@ export const tuningPage: Page = {
         toast('error', 'OC mode could not be changed', err instanceof Error ? err.message : String(err));
       }
     };
-    // M4M (E): the "Currently selected profile" card - rendered ONLY in the
-    // tuning view (never the fan view) and ONLY when a profile is active
-    // (the fill REMOVES the card when the active slot is empty). Async: the
-    // card starts with a loading placeholder and fills from
-    // api.profilesList(). Display-only - profile management lives on the
-    // Profiles page.
-    let activeProfileCard: HTMLElement | null = null;
-    const fillActiveProfileCard = async (): Promise<void> => {
-      if (!activeProfileCard || !viewContainer?.isConnected) return;
-      let env: ProfilesEnvelope | null = null;
-      try {
-        env = await api.profilesList();
-      } catch {
-        return; // degraded: the loading placeholder stands
-      }
-      const active = env.settings.activeProfileId
-        ? env.profiles.find((p) => p.id === env.settings.activeProfileId) ?? null
-        : null;
-      if (!active) {
-        activeProfileCard.remove();
-        activeProfileCard = null;
-        return;
-      }
-      // The derived start-at-boot truth (the same derivation the Settings
-      // card uses): the persisted flag AND an active profile - never a
-      // claim without one.
-      const startAtBoot = env.settings.ocOnBoot === true && !!env.settings.activeProfileId;
-      clear(activeProfileCard);
-      activeProfileCard.append(
-        el('h2', { class: 'card-title', text: 'Currently selected profile' }),
-        el('div', { class: 'card-body kv-grid' }, [
-          el('div', { class: 'kv', 'data-label': 'Profile' }, [el('span', { text: active.name })]),
-          el('div', { class: 'kv', 'data-label': 'Start at boot' }, [
-            el('span', { class: `chip rebar-pill ${startAtBoot ? 'status-ok' : 'status-unknown'}`, text: startAtBoot ? 'On' : 'Off' }),
-          ]),
-          el('div', { class: 'kv', 'data-label': 'Settings' }, [el('span', { text: String(Object.keys(active.settings ?? {}).length) })]),
-        ]),
-      );
-    };
-
     // M4-I (E2): the compact Save-as-Profile button (btn-sm, in the mode
     // row right of the GPU selector - the old full-width card is REMOVED).
     // The button reads "Save as Profile" when no profile is applied,
     // "Override Profile" when activeProfileId is set (api.profilesList()).
+    // M4N (C): the ACTIVE-PROFILE TAG - the M4M "Currently selected
+    // profile" CARD is REMOVED; the tag is a small chip next to the save
+    // button showing the loaded profile's name, ONLY while one is selected
+    // (the same refreshLabel flow fills/removes it - one env fetch, both
+    // the button label and the tag).
     // Click -> the shared promptModal (prefilled with the applied profile's
     // name on override) -> settingsFromState + validateSettingsPayload ->
     // profilesSave({ id: newProfileId() | the ACTIVE id, name, settings,
@@ -635,14 +600,34 @@ export const tuningPage: Page = {
     // create> }) - never silently zero an at-boot profile's flag (N2) ->
     // success toast + trayRebuild.
     const saveProfileBtn = el('button', { class: 'btn btn-ghost btn-sm profile-save-btn', text: 'Save as Profile' }) as HTMLButtonElement;
+    const profileTagRow = el('div', { class: 'profile-tag-row' }, [saveProfileBtn]);
+    let activeProfileTag: HTMLElement | null = null;
     {
       const refreshLabel = async (): Promise<void> => {
         try {
           const env = await api.profilesList();
           const active = env.profiles.find((p) => p.id === env.settings.activeProfileId) ?? null;
           saveProfileBtn.textContent = active ? 'Override Profile' : 'Save as Profile';
+          // M4N (C): the tag mirrors the button's label truth - present
+          // with 'Profile: <name>' while an active profile exists, absent
+          // otherwise (the row holds just the button).
+          if (active) {
+            if (!activeProfileTag || !activeProfileTag.isConnected) {
+              activeProfileTag = el('span', {
+                class: 'chip active-profile-tag',
+                text: `Profile: ${active.name}`,
+                title: 'Currently selected profile',
+              });
+              profileTagRow.prepend(activeProfileTag);
+            } else {
+              activeProfileTag.textContent = `Profile: ${active.name}`;
+            }
+          } else {
+            activeProfileTag?.remove();
+            activeProfileTag = null;
+          }
         } catch {
-          // degraded: keep the current label (the click re-reads anyway)
+          // degraded: keep the current label + tag (the click re-reads anyway)
         }
       };
       void refreshLabel();
@@ -672,10 +657,10 @@ export const tuningPage: Page = {
             });
             toast('success', active ? 'Profile overridden' : 'Profile saved', name);
             void api.trayRebuild().catch(() => {});
-            // M4M (E): the save may have changed the ACTIVE profile (an
-            // override renames it) - re-fetch the card (a create with no
-            // active slot leaves it absent).
-            void fillActiveProfileCard();
+            // M4N (C): the save may have changed the ACTIVE profile (an
+            // override renames it) - re-fetch the button label + the tag (a
+            // create with no active slot leaves the tag absent).
+            void refreshLabel();
           } catch (err) {
             toast('error', 'Profile save failed', err instanceof Error ? err.message : String(err));
           }
@@ -743,9 +728,14 @@ export const tuningPage: Page = {
         el('span', { class: 'oc-mode-label', text: 'GPU' }),
         deviceSelect,
       ])] : []),
+      // M4N (C): the profile column holds the TAG ROW - the save button
+      // plus the active-profile tag (a flex row; the tag is absent while no
+      // profile is selected, so the row holds just the button - the
+      // .profile-tag-row flex keeps the button's TOP aligned with the
+      // pills' regardless of the tag, the ui-verify alignment pin).
       ...(saveProfileBtn ? [el('div', { class: 'oc-mode-col profile-save-col' }, [
         el('span', { class: 'oc-mode-label', text: 'Profile' }),
-        saveProfileBtn,
+        profileTagRow,
       ])] : []),
     ]);
     // M4-H (A3)/M4-I (E2): while the FAN view is active the OC-mode
@@ -781,18 +771,6 @@ export const tuningPage: Page = {
         return;
       }
       const body: Array<Node | string> = [
-        // M4M (E): the active-profile card - FIRST element of the tuning
-        // view body (absent entirely when no profile is active; the fan
-        // view never renders it).
-        ...(() => {
-          activeProfileCard = el('section', { class: 'card active-profile-card' }, [
-            el('h2', { class: 'card-title', text: 'Currently selected profile' }),
-            el('p', { class: 'card-note', text: 'Loading profile…' }),
-          ]);
-          void fillActiveProfileCard();
-          return [activeProfileCard];
-        })(),
-
         controls.length > 0
           ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),

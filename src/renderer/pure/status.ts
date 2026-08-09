@@ -209,8 +209,13 @@ export function overallHealthLevel(rows: HealthRow[]): HealthLevel {
  * so it counts as a status slot). M4-D: `sysinfo` lands once at boot (the
  * CPU card must re-render when it arrives - the boot fetch is fire-and-
  * forget, so it can land after the first render). M3-A: the IGS slot is
- * gone (no longer surfaced); the OC row reads lastApply at render time
- * (applies happen on other pages - the dashboard re-renders on navigation).
+ * gone (no longer surfaced). M4N (A.1): `lastApply` JOINED the signature -
+ * the OC row reads it at render time, and the window-path boot apply's
+ * outcome lands via a renderer boot fetch that can arrive after the first
+ * render (a degraded boot with no other sig change must still flip the row
+ * green - the old "applies happen on other pages" reasoning is stale: the
+ * BOOT apply happens in main before the window, so the dashboard cannot
+ * rely on re-rendering on navigation alone).
  */
 export interface DashboardSig {
   health: HealthReport | null;
@@ -224,12 +229,17 @@ export interface DashboardSig {
    *  boot). */
   noIntel: boolean;
   osGpu: { name: string; vramBytes: number | null } | null;
+  /** M4N (A.1): the last apply outcome (the OC Status row) - a status slot
+   *  since the window-path boot apply's outcome can land after the first
+   *  render. */
+  lastApply: LastApply | null;
 }
 
 /**
  * Full re-render decision for the dashboard's onUpdate: re-render when a
- * status slot changed (boot probe, boot errors, the sysinfo landing), not
- * on telemetry ticks. The first update (prev === null) always renders.
+ * status slot changed (boot probe, boot errors, the sysinfo landing, the
+ * boot-apply outcome landing), not on telemetry ticks. The first update
+ * (prev === null) always renders.
  */
 export function dashboardNeedsFullRender(prev: DashboardSig | null, next: DashboardSig): boolean {
   if (prev === null) return true;
@@ -239,5 +249,6 @@ export function dashboardNeedsFullRender(prev: DashboardSig | null, next: Dashbo
     || prev.driverDate !== next.driverDate
     || prev.sysinfo !== next.sysinfo
     || prev.noIntel !== next.noIntel
-    || prev.osGpu !== next.osGpu;
+    || prev.osGpu !== next.osGpu
+    || prev.lastApply !== next.lastApply;
 }

@@ -74,6 +74,12 @@ export interface ArcPowerApi {
   /** M4-E: the distribution kind - 'installed' (elevated logon task story),
    *  'portable' (unelevated in-app applies), 'dev' (dev tree). */
   appBuildInfo(): Promise<{ kind: 'installed' | 'portable' | 'dev' }>;
+  /** M4N (A.1): the window-path boot apply's outcome record ({ ok, detail,
+   *  at }) or null when no boot apply ran this session. The renderer's boot
+   *  fetch stores it as lastApply - the dashboard OC Status row flips green
+   *  after a successful boot apply (the apply runs in main before the
+   *  window exists; this fetch is how the renderer learns the result). */
+  bootApplyOutcome(): Promise<{ ok: boolean; detail: string; at: number } | null>;
   /** M2C-C: elevation state (cached koffi probe, no spawn). */
   appElevated(): Promise<ElevationState>;
   /** M3-C-E: the persisted OC mode ('stock'|'advanced'). */

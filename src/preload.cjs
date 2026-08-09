@@ -38,6 +38,10 @@ contextBridge.exposeInMainWorld('arcPower', {
   // M4-E: distribution kind - 'installed' | 'portable' | 'dev'
   // (the Settings start-with-Windows hint differentiates by it).
   appBuildInfo: () => ipcRenderer.invoke('app:build-info'),
+  // M4N (A.1): the window-path boot apply's outcome ({ ok, detail, at } or
+  // null when no boot apply ran this session) - the dashboard OC Status row
+  // reads it at boot.
+  bootApplyOutcome: () => ipcRenderer.invoke('boot-apply-outcome'),
   appElevated: () => ipcRenderer.invoke('app-elevated'),
   ocModeGet: () => ipcRenderer.invoke('oc-mode-get'),
   ocModeSet: (ocMode) => ipcRenderer.invoke('oc-mode-set', ocMode),

@@ -28,18 +28,37 @@ export interface CurveDomain {
   maxT: number;
 }
 
-// M4M (A): the STOCK Intel fan curve - the canonical 10-point table (the
-// same table the mock models). The base every adaptive preset derives from
-// and the fallback when the driver reports no curve (fan-editor.ts - a
-// canControl device that fails to report a curve used to degrade the
-// presets/editor to the 2-point 20->100 ramp). One source of truth:
-// mock-backend.js DEFAULT_FAN_CURVE must equal this table (pinned by
-// test/mock-backend.test.js).
+// M4N (D): the FIXED stock Intel fan curve - the user's spec: 10 points,
+// starts 20 % @ 20 C, a slow ramp, NEVER exceeds 50 %, reaching exactly
+// 50 % at 85 C. The fallback when the driver reports no curve
+// (fan-editor.ts - a canControl device that fails to report a curve used
+// to degrade the presets/editor to the 2-point 20->100 ramp). One source
+// of truth: mock-backend.js DEFAULT_FAN_CURVE must equal this table
+// (pinned by test/mock-backend.test.js).
 export const STOCK_FAN_CURVE: CurvePoint[] = [
-  { t: 20, speedPct: 20 }, { t: 55, speedPct: 23 }, { t: 70, speedPct: 28 },
-  { t: 78, speedPct: 30 }, { t: 80, speedPct: 30 }, { t: 82, speedPct: 40 },
-  { t: 84, speedPct: 50 }, { t: 86, speedPct: 78 }, { t: 88, speedPct: 100 },
-  { t: 90, speedPct: 100 },
+  { t: 20, speedPct: 20 }, { t: 30, speedPct: 22 }, { t: 40, speedPct: 25 },
+  { t: 50, speedPct: 28 }, { t: 60, speedPct: 32 }, { t: 65, speedPct: 35 },
+  { t: 70, speedPct: 40 }, { t: 75, speedPct: 44 }, { t: 80, speedPct: 47 },
+  { t: 85, speedPct: 50 },
+];
+
+// M4N (D): the FIXED 'Quiet' preset table - gentler than the Intel curve,
+// still 10 points from 20 % @ 20 C, never exceeding 40 % (40 % at 85 C).
+export const QUIET_FAN_CURVE: CurvePoint[] = [
+  { t: 20, speedPct: 20 }, { t: 30, speedPct: 21 }, { t: 40, speedPct: 22 },
+  { t: 50, speedPct: 24 }, { t: 60, speedPct: 26 }, { t: 65, speedPct: 28 },
+  { t: 70, speedPct: 30 }, { t: 75, speedPct: 33 }, { t: 80, speedPct: 36 },
+  { t: 85, speedPct: 40 },
+];
+
+// M4N (D): the FIXED 'Max' preset table - steeper than the Intel curve,
+// still 10 points from 20 % @ 20 C, never exceeding 70 % (exactly 70 % at
+// 85 C).
+export const MAX_FAN_CURVE: CurvePoint[] = [
+  { t: 20, speedPct: 20 }, { t: 30, speedPct: 26 }, { t: 40, speedPct: 32 },
+  { t: 50, speedPct: 38 }, { t: 60, speedPct: 45 }, { t: 65, speedPct: 50 },
+  { t: 70, speedPct: 56 }, { t: 75, speedPct: 62 }, { t: 80, speedPct: 66 },
+  { t: 85, speedPct: 70 },
 ];
 
 function clampPct(pct: number): number {
@@ -210,49 +229,24 @@ export interface CurvePreset {
 }
 
 /**
- * M4-H/M4-I + M4M (A): the ADAPTIVE fan curve presets - every preset derives
- * from the STOCK curve base (pure/curve.ts STOCK_FAN_CURVE - the canonical
- * Intel table, passed by fan-editor.ts), scaled in SPEED only (same temps):
- *   - 'Intel Curve' (M4-I rename of 'Driver Curve'): the base itself (the
- *     stock table IS the driver's curve; the chip replaces the old "Reset
- *     to driver curve" button. The base is the CONSTANT, never a live
- *     driver read - the driver curve read can fail and degrade the base to
- *     the 2-point ramp);
- *   - 'Quiet': the base's speeds x0.5 (clamped 0..100) - quieter by
- *     spinning slower;
- *   - 'Max': the base's speeds x1.35 (clamped 0..100) - the ramp reaches
- *     100 % sooner.
- * M4-I (F2): 'Quiet' and 'Max' PIN their FIRST point to speedPct 20 at the
- * base's FIRST temp (the lowest temp after the ascending sort) - a minimum
- * floor so the fan never drops below 20 % at the curve's low end; the
- * x0.5/x1.35 scale applies to the REST only. 'Intel Curve' is the base
- * AS-IS (no 20% pin). The stock base already starts at 20 - the pure-curve
- * unit test discriminates with a NON-20 base.
- * The base's point count is clamped to the device max (`numPoints`), and
- * every preset keeps the enforceAscending guarantee. A degenerate base
- * (< MIN_CURVE_POINTS points - empty state) degrades to the existing
- * 20 -> 100 ramp across the domain, exactly like seedCurvePoints.
+ * M4N (D): the FIXED fan curve presets - three exact 10-point tables (the
+ * user's spec), no scaling, no base derivation:
+ *   - 'Intel Curve' (M4-I rename of 'Driver Curve'): STOCK_FAN_CURVE - the
+ *     canonical Intel table (the chip replaces the old "Reset to driver
+ *     curve" button; the constant is the source, never a live driver read);
+ *   - 'Quiet': QUIET_FAN_CURVE - gentler than Intel (never above 40 %);
+ *   - 'Max': MAX_FAN_CURVE - steeper than Intel (never above 70 %).
+ * Every table is clamped to the device max (`numPoints`) with the
+ * clampPointCount + enforceAscending guarantees (a numPoints < 10 clamps
+ * the count; the 2-point minimum floor holds on tiny devices - the mock/
+ * A770 max is 10, so the tables pass through whole there).
  */
-export function fanCurvePresets(base: CurvePoint[], d: CurveDomain, numPoints: number): CurvePreset[] {
+export function fanCurvePresets(numPoints: number): CurvePreset[] {
   const n = Math.max(MIN_CURVE_POINTS, Math.min(Math.floor(numPoints), MAX_CURVE_POINTS));
-  const seeded = enforceAscending(
-    clampPointCount(
-      base.length >= MIN_CURVE_POINTS
-        ? base
-        : [{ t: d.minT, speedPct: 20 }, { t: d.maxT, speedPct: 100 }],
-      n,
-    ),
-  );
-  // M4-I (F2): the pinned first point - speedPct 20 at the base's FIRST
-  // (lowest) temp; the scale applies to the rest.
-  const scaled = (factor: number): CurvePoint[] => {
-    const rest = seeded.slice(1).map((p) => ({ t: p.t, speedPct: clampPct(p.speedPct * factor) }));
-    const points = [{ t: seeded[0].t, speedPct: 20 }, ...rest];
-    return enforceAscending(clampPointCount(points, n));
-  };
+  const fixed = (table: CurvePoint[]): CurvePoint[] => enforceAscending(clampPointCount(table, n));
   return [
-    { id: 'driver', name: 'Intel Curve', points: seeded.map((p) => ({ ...p })) },
-    { id: 'quiet', name: 'Quiet', points: scaled(0.5) },
-    { id: 'max', name: 'Max', points: scaled(1.35) },
+    { id: 'driver', name: 'Intel Curve', points: fixed(STOCK_FAN_CURVE) },
+    { id: 'quiet', name: 'Quiet', points: fixed(QUIET_FAN_CURVE) },
+    { id: 'max', name: 'Max', points: fixed(MAX_FAN_CURVE) },
   ];
 }

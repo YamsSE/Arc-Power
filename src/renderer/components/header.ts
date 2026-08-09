@@ -97,7 +97,7 @@ export class GpuHeader {
         el('div', { class: 'gpu-identity' }, [
           el('div', { class: 'gpu-name', text: gpuName }),
           // M4-A: the display label carries the " Alpha" suffix; the app:version
-          // IPC keeps the bare semver (test/ipc-core pins '1.0.6').
+          // IPC keeps the bare semver (test/ipc-core pins '1.0.7').
           el('div', { class: 'gpu-meta', text: gpuMeta }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),

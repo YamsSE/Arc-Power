@@ -271,6 +271,20 @@ async function boot() {
     store.set({ buildKind: 'dev' });
   }
 
+  // M4N (A.1): the window-path boot apply's outcome - a successful boot
+  // apply must flip the dashboard OC Status row GREEN (the apply runs in
+  // main before the window exists; this fetch is how the renderer learns
+  // it). Null -> nothing applied at boot (the row stays "No OC apply yet
+  // in this session"). The lastApply slot is part of the dashboard render
+  // signature, so the fetch re-renders the row even when nothing else
+  // changed since the first render.
+  try {
+    const o = await api.bootApplyOutcome();
+    if (o) store.set({ lastApply: { ok: o.ok === true, at: o.at, detail: o.detail } });
+  } catch {
+    // degraded: the row stays on its pre-fetch state (the OC row is honest)
+  }
+
   // Display-driver registry date (M2b-B, read-only): a lookup failure
   // degrades to null and the dashboard card shows the driver version alone.
   try {

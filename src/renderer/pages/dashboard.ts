@@ -22,7 +22,7 @@ import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
-import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
+import { cpuCardRows, rebarState, vramRowValue, ghzFreq } from '../pure/sysinfo.ts';
 import { stripVramSuffix } from '../pure/device.ts';
 import type { TelemetrySample } from '../types.ts';
 
@@ -48,31 +48,33 @@ function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
 }
 
-/** M4-H (C3)/M4M (D): the CPU group of the live readout - Util FIRST (the
- *  user's order), then Core Frequency, Temperature and the NEW Wattage tile
- *  (cpuPowerW from the PowerMeter counter; the class is often absent on
- *  desktops -> honest '-'). */
+/** M4-H (C3)/M4M (D)/M4N (A): the CPU group of the live readout - Util
+ *  FIRST (the user's order), then Core Frequency (M4N: GHz - the shared
+ *  ghzFreq helper, the mock's 4300 MHz reads '4.3'), Temperature and the
+ *  Power tile (M4N: renamed from Wattage; cpuPowerW from the PowerMeter
+ *  counter - the class is often absent on desktops -> honest '-'). */
 function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   return [
     { label: 'Util', value: statValue(sample?.cpuUtilPct), unit: '%' },
-    { label: 'Core Frequency', value: statValue(sample?.cpuFreqMhz), unit: 'MHz' },
+    { label: 'Core Frequency', value: ghzFreq(sample?.cpuFreqMhz), unit: 'GHz' },
     { label: 'Temperature', value: statValue(sample?.cpuTempC), unit: '°C' },
-    { label: 'Wattage', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
+    { label: 'Power', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
   ];
 }
 
-/** M4-H (C3)/M4M (D): the GPU group of the live readout - Util FIRST, then
- *  the classic five tiles. M4-I (D4): the Util tile reads
+/** M4-H (C3)/M4M (D)/M4N (A): the GPU group of the live readout - Util FIRST,
+ *  then the classic five tiles. M4-I (D4): the Util tile reads
  *  `gpuUtilPct ?? utilPct` - on no-Intel the OS GPUEngine counter is the
  *  only source; on Intel the IGCL activity counter wins when the OS
- *  counter is unpopulated. */
+ *  counter is unpopulated. M4N: the Power tile is renamed from 'Power
+ *  draw' (the monitoring label match). */
 function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   return [
     { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
     { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
     { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
     { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
-    { label: 'Power draw', value: statValue(sample?.powerW, 1), unit: 'W' },
+    { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
     { label: 'Fan speed', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
   ];
 }
@@ -88,6 +90,9 @@ function currentSig(ctx: PageContext): DashboardSig {
     sysinfo: s.sysinfo,
     noIntel: s.noIntel,
     osGpu: s.osGpu,
+    // M4N (A.1): the boot-apply outcome lands via the boot fetch - it is
+    // part of the signature so the OC Status row flips green on arrival.
+    lastApply: s.lastApply,
   };
 }
 

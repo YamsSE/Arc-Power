@@ -1079,6 +1079,17 @@ async function main() {
       at: Date.now(),
     });
   };
+  // M4N (A.1): the WINDOW-PATH boot apply's OUTCOME record - the renderer's
+  // boot fetch reads it ('boot-apply-outcome') so the dashboard OC Status
+  // row flips GREEN after a successful boot apply (the apply runs before
+  // createWindow - this record is how the renderer learns the result; the
+  // renderer's dashboard render sig includes lastApply, so the fetch
+  // re-renders the row no matter when it lands). Null when no boot apply
+  // ran this session. The mock-only mock:run-boot-apply channel does NOT
+  // update this record (documented decision: the mid-session probe leaves
+  // the OC row as the boot outcome - the record is the window-path apply's
+  // own).
+  let bootApplyOutcome = null;
   // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
   // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
   // (self-healing, M7 - a stale selection or an absent field must never
@@ -1102,15 +1113,28 @@ async function main() {
         log: (s) => console.log(s),
       });
       if (mock) recordBootApply(bootSettings.activeProfileId, out);
+      // M4N (A.1): record the outcome for the renderer's boot fetch. The
+      // success detail = "Profile '<name>' applied" with the name resolved
+      // like the balloon (the same loadProfiles lookup); a failure carries
+      // the apply's reason. A THROWN apply records too (the catch below) -
+      // an attempted-and-failed apply must never leave the row claiming
+      // "No OC apply yet".
+      let profileName = null;
+      try {
+        const ps = await store.loadProfiles();
+        profileName = ps.find((p) => p.id === bootSettings.activeProfileId)?.name ?? null;
+      } catch { /* best effort name */ }
+      bootApplyOutcome = {
+        ok: out.applied === true,
+        at: Date.now(),
+        detail: out.applied === true
+          ? `Profile '${profileName ?? bootSettings.activeProfileId}' applied`
+          : `Profile apply failed: ${out.reason}`,
+      };
       if (!out.applied && trayRef && !trayRef.isDestroyed()) {
         // M4M (F4): the moved block holds only the profile ID - the NAME is
         // resolved here (the runApplyOnStartup pattern) for the honest
         // reason balloon.
-        let profileName = null;
-        try {
-          const ps = await store.loadProfiles();
-          profileName = ps.find((p) => p.id === bootSettings.activeProfileId)?.name ?? null;
-        } catch { /* best effort name */ }
         const content = isElevated()
           ? trayBalloonForOutcome(out, profileName)
           : 'Profile apply needs administrator approval - the elevated logon apply is not set up.';
@@ -1119,6 +1143,9 @@ async function main() {
     }
   } catch (err) {
     console.log(`[boot] in-app boot apply skipped: ${err.message}`);
+    // M4N (A.1): a THROWN apply records the failure - the OC row must never
+    // claim "No OC apply yet" after an attempted-and-failed boot apply.
+    bootApplyOutcome = { ok: false, at: Date.now(), detail: `Profile apply failed: ${err.message}` };
   }
 
   const win = createWindow(windowBackground, !startMinimizedAtBoot);
@@ -1253,6 +1280,10 @@ async function main() {
     // packaged PORTABLE build (PORTABLE_EXECUTABLE_DIR set) reports
     // 'portable' too - never 'dev' (deriveBuildKind pin).
     buildKind: deriveBuildKind({ mock, installedBuild, isPackaged: app.isPackaged }),
+    // M4N (A.1): the window-path boot apply's outcome record (the renderer
+    // boot fetch reads it - the dashboard OC row flips green after a
+    // successful boot apply; null when no boot apply ran this session).
+    bootApplyOutcome: () => bootApplyOutcome,
     mock: mockCtl,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }

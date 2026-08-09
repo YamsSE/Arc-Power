@@ -21,6 +21,7 @@ import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import type { TelemetrySample } from '../types.ts';
 import { setLatestFps } from '../log-state.ts';
+import { ghzFreq, gbValue } from '../pure/sysinfo.ts';
 import {
   pushSeries,
   trimSeriesWindow,
@@ -91,38 +92,34 @@ function statTileNode(t: { label: string; value: string; unit: string; extraClas
   ]);
 }
 
-/** M4M (B): the CPU group - the DASHBOARD CPU tiles verbatim (same labels
- *  + same statValue formatting): Core Frequency / Util / Temperature /
- *  Wattage. */
+/** M4M (B)/M4N (B): the CPU group - the DASHBOARD CPU tiles verbatim (same
+ *  labels + same statValue formatting): Util / Core Frequency (GHz - the
+ *  shared ghzFreq helper) / Temperature / Power. */
 function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   return [
-    { label: 'Core Frequency', value: statValue(sample?.cpuFreqMhz), unit: 'MHz' },
     { label: 'Util', value: statValue(sample?.cpuUtilPct), unit: '%' },
+    { label: 'Core Frequency', value: ghzFreq(sample?.cpuFreqMhz), unit: 'GHz' },
     { label: 'Temperature', value: statValue(sample?.cpuTempC), unit: '°C' },
-    { label: 'Wattage', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
+    { label: 'Power', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
   ];
 }
 
-/** M4M (B): the GPU group - the existing tile set (labels kept: Core clock
- *  first, 'Utilization', 'Power' - the split is the ask, not a reorder) +
- *  the GPU-memory MiB tile + the FPS tile (the mon-fps-tile class - pollFps
- *  owns it). */
+/** M4M (B)/M4N (B): the GPU group - the DASHBOARD GPU tile set (Util FIRST,
+ *  the M4N rename of 'Utilization' -> 'Util', 'Power' already matched) +
+ *  the VRAM tile (M4N: the GPU-memory MiB tile becomes 'VRAM' in GB via the
+ *  shared gbValue helper - 2971324416 bytes -> '3.0') + the FPS tile (the
+ *  mon-fps-tile class - pollFps owns it, last). */
 function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string; extraClass?: string }> {
-  // M4-D2 (§11): the GPU-memory tile shows the used VRAM as whole MiB
-  // (integer; 2971324416 bytes -> 2834 MiB). Null -> honest '-'.
-  const gpuMemMiB = typeof sample?.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)
-    ? String(Math.round(sample.gpuMemUsedBytes / 1024 ** 2))
-    : '-';
   return [
-    { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
-    { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
-    { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
-    { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
     // M4-I (D4): the util tile reads `gpuUtilPct ?? utilPct` like the graph
     // segment (the no-Intel OS-counter source; IGCL wins when populated).
-    { label: 'Utilization', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
+    { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
+    { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
+    { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
+    { label: 'VRAM', value: gbValue(sample?.gpuMemUsedBytes), unit: 'GB' },
+    { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
+    { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
     { label: 'Fan', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
-    { label: 'GPU memory', value: gpuMemMiB, unit: 'MiB' },
     { label: 'FPS', value: '-', unit: 'FPS', extraClass: 'mon-fps-tile' },
   ];
 }

@@ -39,18 +39,17 @@ import type { FanMode } from '../types.ts';
 
 const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Curve', fixed: 'Fixed' };
 
-// M4-H (A1)/M4M (A): the ADAPTIVE preset chips. The chip NAMES are static;
-// the POINTS derive from the STOCK curve constant (STOCK_FAN_CURVE - the
-// canonical Intel table, pure/curve.ts; the old base was the DRIVER's curve
-// read LIVE at click time, but a canControl device that fails to report a
-// curve degrades the base to the 2-point ramp - the stock table is the
-// base the user remembers). The three presets:
-// 'Intel Curve' (M4-I rename of 'Driver Curve' - the base itself, the chip
-// REPLACES the old "Reset to driver curve" button), 'Quiet' = speeds ×0.5
-// with the FIRST point pinned to 20 % at the base's first temp, 'Max' =
-// speeds ×1.35 (both clamp 0..100, same temps, the 20 % pin on the first
-// point - F2). The math lives in pure/curve.ts fanCurvePresets
-// (unit-tested); this module only renders the chips.
+// M4N (D): the FIXED preset chips. The chip NAMES are static; the POINTS
+// are the three exact fixed tables in pure/curve.ts (STOCK_FAN_CURVE - the
+// canonical Intel table, capped at 50 % @ 85 C - plus the fixed Quiet and
+// Max tables; the M4M adaptive scaling is GONE). The old base was the
+// DRIVER's curve read LIVE at click time, but a canControl device that
+// fails to report a curve degrades the base to the 2-point ramp - the
+// fixed tables are the source the user remembers. The three presets:
+// 'Intel Curve' (M4-I rename of 'Driver Curve' - the chip REPLACES the old
+// "Reset to driver curve" button), 'Quiet' (gentler than Intel, capped at
+// 40 %), 'Max' (steeper, capped at 70 %). The math lives in pure/curve.ts
+// fanCurvePresets (unit-tested); this module only renders the chips.
 const PRESET_DEFS: Array<{ id: string; name: string }> = [
   { id: 'driver', name: 'Intel Curve' },
   { id: 'quiet', name: 'Quiet' },
@@ -697,17 +696,16 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
             },
           }),
         ]),
-        // M4-H (A1)/M4M (A): the ADAPTIVE preset chips - the base is the
-        // STOCK curve constant (seedCurvePoints clamps it to the device
-        // max). The driver curve is NEVER the base: its read can fail and
-        // degrade the presets to the 2-point ramp.
+        // M4N (D): the FIXED preset chips - the three exact tables from
+        // pure/curve.ts, clamped to the device max (fanCurvePresets -
+        // no store read, no base derivation).
         el('div', { class: 'chips fan-presets' }, PRESET_DEFS.map((def) =>
           el('button', {
             class: 'chip chip-btn',
             text: def.name,
             onClick: () => {
               resetReadout();
-              const presets = fanCurvePresets(seedCurvePoints(STOCK_FAN_CURVE, maxPoints), domain, maxPoints);
+              const presets = fanCurvePresets(maxPoints);
               const preset = presets.find((p) => p.id === def.id);
               if (!preset) return;
               editor.points = clampPointCount(preset.points, maxPoints);
