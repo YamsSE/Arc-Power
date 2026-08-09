@@ -28,6 +28,20 @@ export interface CurveDomain {
   maxT: number;
 }
 
+// M4M (A): the STOCK Intel fan curve - the canonical 10-point table (the
+// same table the mock models). The base every adaptive preset derives from
+// and the fallback when the driver reports no curve (fan-editor.ts - a
+// canControl device that fails to report a curve used to degrade the
+// presets/editor to the 2-point 20->100 ramp). One source of truth:
+// mock-backend.js DEFAULT_FAN_CURVE must equal this table (pinned by
+// test/mock-backend.test.js).
+export const STOCK_FAN_CURVE: CurvePoint[] = [
+  { t: 20, speedPct: 20 }, { t: 55, speedPct: 23 }, { t: 70, speedPct: 28 },
+  { t: 78, speedPct: 30 }, { t: 80, speedPct: 30 }, { t: 82, speedPct: 40 },
+  { t: 84, speedPct: 50 }, { t: 86, speedPct: 78 }, { t: 88, speedPct: 100 },
+  { t: 90, speedPct: 100 },
+];
+
 function clampPct(pct: number): number {
   return Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(pct)));
 }
@@ -196,12 +210,14 @@ export interface CurvePreset {
 }
 
 /**
- * M4-H/M4-I: the ADAPTIVE fan curve presets - every preset derives from the
- * DRIVER's own curve (the base), scaled in SPEED only (same temps):
+ * M4-H/M4-I + M4M (A): the ADAPTIVE fan curve presets - every preset derives
+ * from the STOCK curve base (pure/curve.ts STOCK_FAN_CURVE - the canonical
+ * Intel table, passed by fan-editor.ts), scaled in SPEED only (same temps):
  *   - 'Intel Curve' (M4-I rename of 'Driver Curve'): the base itself (the
- *     driver's curve - stock IS the driver's curve; the chip replaces the
- *     old "Reset to driver curve" button, so the base is read LIVE at click
- *     time - the editor seeds it with seedCurvePoints, see fan-editor.ts);
+ *     stock table IS the driver's curve; the chip replaces the old "Reset
+ *     to driver curve" button. The base is the CONSTANT, never a live
+ *     driver read - the driver curve read can fail and degrade the base to
+ *     the 2-point ramp);
  *   - 'Quiet': the base's speeds x0.5 (clamped 0..100) - quieter by
  *     spinning slower;
  *   - 'Max': the base's speeds x1.35 (clamped 0..100) - the ramp reaches
@@ -210,7 +226,7 @@ export interface CurvePreset {
  * base's FIRST temp (the lowest temp after the ascending sort) - a minimum
  * floor so the fan never drops below 20 % at the curve's low end; the
  * x0.5/x1.35 scale applies to the REST only. 'Intel Curve' is the base
- * AS-IS (no 20% pin). The mock base already starts at 20 - the pure-curve
+ * AS-IS (no 20% pin). The stock base already starts at 20 - the pure-curve
  * unit test discriminates with a NON-20 base.
  * The base's point count is clamped to the device max (`numPoints`), and
  * every preset keeps the enforceAscending guarantee. A degenerate base

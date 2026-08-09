@@ -16,7 +16,7 @@ import { monitoringPage, redrawMonitoringGraphs } from './pages/monitoring.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
-import { setMonitorLogToFile, setCurrentLogFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
+import { setMonitorLogToFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
 import { resolveBootDevice } from './pure/device.ts';
 import { isValidTheme } from './pure/theme.ts';
@@ -380,7 +380,8 @@ async function boot() {
   // (the module-level latest FPS the Monitoring page's poll updates; the
   // sample's own fields make up the rest). Same tick cadence as the
   // telemetry push - NO extra timers. The append result carries the log
-  // file path - surfaced to the Monitoring page's "current log path" line.
+  // file path - the append result is best-effort only (nothing displays the
+  // path; the Settings card shows the persisted toggle state).
   // 1.0.1 no-Intel round (S1): registered on BOTH boot paths - the
   // no-device telemetry push (telemetry-start null mode) rides the SAME
   // subscription, so log-file logging works for free there.
@@ -388,11 +389,6 @@ async function boot() {
     store.set({ latestSample: sample });
     if (getMonitorLogToFile()) {
       void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
-        .then((res) => {
-          if (res && typeof (res as { file?: unknown }).file === 'string') {
-            setCurrentLogFile((res as { file: string }).file);
-          }
-        })
         .catch(() => { /* a failed append never breaks the UI */ });
     }
   });

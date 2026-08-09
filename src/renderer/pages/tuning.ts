@@ -78,7 +78,7 @@ import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
 import { newProfileId, promptModal, settingsFromState } from './profiles.ts';
-import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile } from '../types.ts';
+import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, ProfilesEnvelope } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
 // there); this page re-exports them so the import surface stays local.
@@ -584,6 +584,46 @@ export const tuningPage: Page = {
         toast('error', 'OC mode could not be changed', err instanceof Error ? err.message : String(err));
       }
     };
+    // M4M (E): the "Currently selected profile" card - rendered ONLY in the
+    // tuning view (never the fan view) and ONLY when a profile is active
+    // (the fill REMOVES the card when the active slot is empty). Async: the
+    // card starts with a loading placeholder and fills from
+    // api.profilesList(). Display-only - profile management lives on the
+    // Profiles page.
+    let activeProfileCard: HTMLElement | null = null;
+    const fillActiveProfileCard = async (): Promise<void> => {
+      if (!activeProfileCard || !viewContainer?.isConnected) return;
+      let env: ProfilesEnvelope | null = null;
+      try {
+        env = await api.profilesList();
+      } catch {
+        return; // degraded: the loading placeholder stands
+      }
+      const active = env.settings.activeProfileId
+        ? env.profiles.find((p) => p.id === env.settings.activeProfileId) ?? null
+        : null;
+      if (!active) {
+        activeProfileCard.remove();
+        activeProfileCard = null;
+        return;
+      }
+      // The derived start-at-boot truth (the same derivation the Settings
+      // card uses): the persisted flag AND an active profile - never a
+      // claim without one.
+      const startAtBoot = env.settings.ocOnBoot === true && !!env.settings.activeProfileId;
+      clear(activeProfileCard);
+      activeProfileCard.append(
+        el('h2', { class: 'card-title', text: 'Currently selected profile' }),
+        el('div', { class: 'card-body kv-grid' }, [
+          el('div', { class: 'kv', 'data-label': 'Profile' }, [el('span', { text: active.name })]),
+          el('div', { class: 'kv', 'data-label': 'Start at boot' }, [
+            el('span', { class: `chip rebar-pill ${startAtBoot ? 'status-ok' : 'status-unknown'}`, text: startAtBoot ? 'On' : 'Off' }),
+          ]),
+          el('div', { class: 'kv', 'data-label': 'Settings' }, [el('span', { text: String(Object.keys(active.settings ?? {}).length) })]),
+        ]),
+      );
+    };
+
     // M4-I (E2): the compact Save-as-Profile button (btn-sm, in the mode
     // row right of the GPU selector - the old full-width card is REMOVED).
     // The button reads "Save as Profile" when no profile is applied,
@@ -632,6 +672,10 @@ export const tuningPage: Page = {
             });
             toast('success', active ? 'Profile overridden' : 'Profile saved', name);
             void api.trayRebuild().catch(() => {});
+            // M4M (E): the save may have changed the ACTIVE profile (an
+            // override renames it) - re-fetch the card (a create with no
+            // active slot leaves it absent).
+            void fillActiveProfileCard();
           } catch (err) {
             toast('error', 'Profile save failed', err instanceof Error ? err.message : String(err));
           }
@@ -737,6 +781,18 @@ export const tuningPage: Page = {
         return;
       }
       const body: Array<Node | string> = [
+        // M4M (E): the active-profile card - FIRST element of the tuning
+        // view body (absent entirely when no profile is active; the fan
+        // view never renders it).
+        ...(() => {
+          activeProfileCard = el('section', { class: 'card active-profile-card' }, [
+            el('h2', { class: 'card-title', text: 'Currently selected profile' }),
+            el('p', { class: 'card-note', text: 'Loading profile…' }),
+          ]);
+          void fillActiveProfileCard();
+          return [activeProfileCard];
+        })(),
+
         controls.length > 0
           ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),

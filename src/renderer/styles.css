@@ -1484,10 +1484,6 @@ html, body {
 .seg-body { padding: 6px 8px 3px; }
 .seg-canvas { height: 96px; }
 
-/* M4-D2 (§10): the Monitoring "Log to file" card. */
-.mon-log-card { max-width: 680px; }
-.mon-log-path { font-family: var(--mono); font-size: 12px; word-break: break-all; }
-
 /* -------------------------------------------------------------- profiles */
 
 .profiles-root {

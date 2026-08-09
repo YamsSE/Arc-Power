@@ -69,13 +69,15 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
  *   log?: (s: string) => void,
  *   requireOcOnBoot?: boolean,   // boot path only; explicit actions skip it
  *   oldIgcl?: object,            // M2C-C: bundled-2023-runtime adapter (null in tests that never extend)
- *   applyRunner?: object | null, // M2C-C: elevation-aware apply runner (null = in-process)
- *   skipDefaultsFallback?: boolean,  // M4-D2: the in-app (unelevated) boot
- *                                    // variant - NEVER restores defaults
- *                                    // (keyed on the SESSION, not the
- *                                    // errorCode: the unelevated PL refusal
- *                                    // maps to 'out-of-range')
- * }} ctx
+  *   applyRunner?: object | null, // M2C-C: elevation-aware apply runner (null = in-process)
+  *   skipDefaultsFallback?: boolean,  // M4M: the app-start boot variant -
+  *                                    // NEVER restores defaults (keyed on
+  *                                    // the SESSION, not the errorCode: the
+  *                                    // packaged app is always elevated -
+  *                                    // the failure is never an elevation
+  *                                    // refusal, yet a live-OC wipe over
+  *                                    // any failure stays forbidden)
+  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
  *   reason: string,
@@ -227,21 +229,21 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // non-waiver failure or by the M4-D retry also failing (the retry ran
   // exactly once above - a second waiver-not-set lands here honestly).
   //
-  // M4-D2 (no-UAC boot variant): the in-app boot apply runs applyRunner-less
-  // (in-process ONLY - never the elevated worker, no UAC at logon). The
-  // unelevated igcl writes are refused, and the refusal maps to an
-  // errorCode that an errorCode-keyed skip could never match ('out-of-range'
-  // for the PL refusal) - so the fallback-skip is keyed on the SESSION
-  // (skipDefaultsFallback), REGARDLESS of errorCode: logon must NEVER
-  // wipe the live OC state over an elevation refusal. The honest balloon
-  // ("needs administrator approval - the elevated logon apply is not set
-  // up") is the caller's job; the ELEVATED logon applies come from the
+  // M4M (F5): the in-app boot apply runs applyRunner-less (in-process ONLY -
+  // NEVER the elevated worker, NEVER a UAC at logon). The packaged app is
+  // ALWAYS elevated (requireAdministrator - the "unelevated" M4-D2 framing
+  // is stale since 1.0.4), so the in-process apply persists on the product
+  // path; only the dev tree can be unelevated. The fallback-skip is keyed
+  // on the SESSION (skipDefaultsFallback), REGARDLESS of errorCode: an
+  // app-start apply must NEVER wipe the live OC state over a failure (an
+  // elevation refusal in dev, a driver refusal in the product). The honest
+  // balloon is the caller's job; the ELEVATED logon applies come from the
   // ArcPowerBootApply task (--boot-apply mode, M4-E).
   if (skipDefaultsFallback) {
-    log('[apply-on-boot] boot variant (applyRunner-less, unelevated): apply failed - defaults-restore fallback SKIPPED (logon applies need an elevated session - the installed app applies elevated at logon via the ArcPowerBootApply task)');
+    log('[apply-on-boot] boot variant (applyRunner-less, in-process): apply failed - defaults-restore fallback SKIPPED (an app-start apply must never wipe live OC state over a failure; logon applies run elevated via the ArcPowerBootApply task)');
     return {
       applied: false,
-      reason: 'apply failed; defaults restore skipped (logon applies need an elevated session)',
+      reason: 'apply failed; defaults restore skipped (app-start applies never restore defaults)',
       result,
       state,
       fallbackSkipped: true,
@@ -300,11 +302,12 @@ export async function applyProfileOnBoot({ backend, store, profileId, deviceId =
 }
 
 /**
- * M4-D2: the IN-APP boot variant (window path - the app launched from the
- * HKCU Run value). Runs the boot-gated shared flow with applyRunner: null
- * (in-process ONLY - NEVER the elevated worker, no UAC at logon) and the
- * defaults-restore fallback SKIPPED regardless of errorCode (an unelevated
- * logon apply must never wipe the live OC state over an elevation refusal).
+ * M4M (F5): the IN-APP boot variant (window path - the app launched from
+ * the HKCU Run value). Runs the boot-gated shared flow with applyRunner:
+ * null (in-process ONLY - NEVER the elevated worker, no UAC at logon) and
+ * the defaults-restore fallback SKIPPED regardless of errorCode (an
+ * app-start apply must never wipe the live OC state over a failure - the
+ * packaged app is always elevated, only the dev tree can be unelevated).
  * @param {{
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,

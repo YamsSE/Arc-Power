@@ -48,31 +48,32 @@ function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
 }
 
-/** M4-H (C3): the CPU group of the live readout - Core Frequency, Util,
- *  Temperature and the NEW Wattage tile (cpuPowerW from the PowerMeter
- *  counter; the class is often absent on desktops -> honest '-'). */
+/** M4-H (C3)/M4M (D): the CPU group of the live readout - Util FIRST (the
+ *  user's order), then Core Frequency, Temperature and the NEW Wattage tile
+ *  (cpuPowerW from the PowerMeter counter; the class is often absent on
+ *  desktops -> honest '-'). */
 function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   return [
-    { label: 'Core Frequency', value: statValue(sample?.cpuFreqMhz), unit: 'MHz' },
     { label: 'Util', value: statValue(sample?.cpuUtilPct), unit: '%' },
+    { label: 'Core Frequency', value: statValue(sample?.cpuFreqMhz), unit: 'MHz' },
     { label: 'Temperature', value: statValue(sample?.cpuTempC), unit: '°C' },
     { label: 'Wattage', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
   ];
 }
 
-/** M4-H (C3): the GPU group of the live readout - the classic five tiles
- *  plus the NEW Util tile. M4-I (D4): the Util tile reads
+/** M4-H (C3)/M4M (D): the GPU group of the live readout - Util FIRST, then
+ *  the classic five tiles. M4-I (D4): the Util tile reads
  *  `gpuUtilPct ?? utilPct` - on no-Intel the OS GPUEngine counter is the
  *  only source; on Intel the IGCL activity counter wins when the OS
  *  counter is unpopulated. */
 function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
   return [
+    { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
     { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
     { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
     { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
     { label: 'Power draw', value: statValue(sample?.powerW, 1), unit: 'W' },
     { label: 'Fan speed', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
-    { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
   ];
 }
 

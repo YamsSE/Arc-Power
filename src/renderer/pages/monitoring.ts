@@ -6,6 +6,12 @@
 // output-duplication adapter); when no frame statistics are being reported
 // the page shows "FPS unavailable" gracefully - never an error.
 //
+// M4M (B): the live readout is TWO labeled groups like the dashboard - the
+// CPU group (the dashboard CPU tiles verbatim) ABOVE the GPU group (the
+// existing tiles + the GPU-memory MiB tile + the FPS tile). The M4-D2
+// "Log to file" card is DELETED from this page (item G - the Settings page
+// keeps the persisted toggle; the boot-level log writer is untouched).
+//
 // The graph math lives in pure/graph.ts (series push, time-window trim,
 // min/max scaling, downsampling - unit-tested); this file only owns the DOM
 // and the thin Canvas drawing.
@@ -13,9 +19,8 @@
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
-import { toast } from '../components/toast.ts';
 import type { TelemetrySample } from '../types.ts';
-import { setLatestFps, setMonitorLogToFile, getMonitorLogToFile, getCurrentLogFile } from '../log-state.ts';
+import { setLatestFps } from '../log-state.ts';
 import {
   pushSeries,
   trimSeriesWindow,
@@ -55,7 +60,6 @@ const SEGMENTS: SegmentDef[] = [
 interface MonState {
   deviceId: number | null;
   series: Record<string, SeriesPoint[]>;
-  readoutGrid: HTMLElement | null;
   canvases: Map<string, HTMLCanvasElement>;
   fpsTileValue: HTMLElement | null;
   fpsNote: HTMLElement | null;
@@ -74,37 +78,52 @@ function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#4cc2ff';
 }
 
-function statTile(label: string, value: string, unit: string, extraClass = ''): HTMLElement {
-  return el('div', { class: `stat-tile${extraClass ? ` ${extraClass}` : ''}` }, [
-    el('div', { class: 'stat-value', text: value }),
-    el('div', { class: 'stat-unit', text: unit }),
-    el('div', { class: 'stat-label', text: label }),
+/** The same value formatting as the dashboard readout ('-' for null). */
+function statValue(v: number | null | undefined, decimals = 0): string {
+  return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
+}
+
+function statTileNode(t: { label: string; value: string; unit: string; extraClass?: string }): HTMLElement {
+  return el('div', { class: `stat-tile${t.extraClass ? ` ${t.extraClass}` : ''}` }, [
+    el('div', { class: 'stat-value', text: t.value }),
+    el('div', { class: 'stat-unit', text: t.unit }),
+    el('div', { class: 'stat-label', text: t.label }),
   ]);
 }
 
-function readoutTiles(sample: TelemetrySample | null): HTMLElement[] {
-  const num = (v: number | undefined | null, decimals = 0): string => (v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v)));
-  const fpsTile = statTile('FPS', '-', 'FPS', 'mon-fps-tile');
+/** M4M (B): the CPU group - the DASHBOARD CPU tiles verbatim (same labels
+ *  + same statValue formatting): Core Frequency / Util / Temperature /
+ *  Wattage. */
+function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
+  return [
+    { label: 'Core Frequency', value: statValue(sample?.cpuFreqMhz), unit: 'MHz' },
+    { label: 'Util', value: statValue(sample?.cpuUtilPct), unit: '%' },
+    { label: 'Temperature', value: statValue(sample?.cpuTempC), unit: '°C' },
+    { label: 'Wattage', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
+  ];
+}
+
+/** M4M (B): the GPU group - the existing tile set (labels kept: Core clock
+ *  first, 'Utilization', 'Power' - the split is the ask, not a reorder) +
+ *  the GPU-memory MiB tile + the FPS tile (the mon-fps-tile class - pollFps
+ *  owns it). */
+function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string; extraClass?: string }> {
   // M4-D2 (§11): the GPU-memory tile shows the used VRAM as whole MiB
   // (integer; 2971324416 bytes -> 2834 MiB). Null -> honest '-'.
   const gpuMemMiB = typeof sample?.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)
     ? String(Math.round(sample.gpuMemUsedBytes / 1024 ** 2))
     : '-';
   return [
-    statTile('Core clock', num(sample?.gpuClockMhz), 'MHz'),
-    statTile('Memory clock', num(sample?.memClockMhz), 'MHz'),
-    statTile('Temperature', num(sample?.tempC), '°C'),
-    statTile('Power', num(sample?.powerW, 1), 'W'),
+    { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
+    { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
+    { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
+    { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
     // M4-I (D4): the util tile reads `gpuUtilPct ?? utilPct` like the graph
     // segment (the no-Intel OS-counter source; IGCL wins when populated).
-    statTile('Utilization', num(sample?.gpuUtilPct ?? sample?.utilPct), '%'),
-    statTile('Fan', num(sample?.fanRpm?.[0]), 'RPM'),
-    // M4-D2 (§11): the new system-stat tiles (the sample carries them on
-    // every push; null = honest '-' - never a fake number).
-    statTile('CPU utilization', num(sample?.cpuUtilPct), '%'),
-    statTile('CPU temperature', num(sample?.cpuTempC), '°C'),
-    statTile('GPU memory', gpuMemMiB, 'MiB'),
-    fpsTile,
+    { label: 'Utilization', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
+    { label: 'Fan', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
+    { label: 'GPU memory', value: gpuMemMiB, unit: 'MiB' },
+    { label: 'FPS', value: '-', unit: 'FPS', extraClass: 'mon-fps-tile' },
   ];
 }
 
@@ -240,7 +259,6 @@ export const monitoringPage: Page = {
     mon = {
       deviceId: s.deviceId,
       series: Object.fromEntries(SEGMENTS.map((seg) => [seg.id, [] as SeriesPoint[]])),
-      readoutGrid: null,
       canvases: new Map(),
       fpsTileValue: null,
       fpsNote: null,
@@ -251,69 +269,22 @@ export const monitoringPage: Page = {
     const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
     mon.fpsNote = fpsNote;
 
-    // M4-D2 (§10): the "Log to file" toggle + the current log path. The
-    // persisted value lives in profiles-settings (monitorLogToFile); the
-    // WRITE itself happens in the BOOT-LEVEL telemetry subscription in
-    // app.ts (logging continues across page navigation) - this card only
-    // owns the toggle + the honest path display.
-    const syncLogToggle = async (): Promise<void> => {
-      try {
-        const env = await api.profilesList();
-        setMonitorLogToFile(env.settings.monitorLogToFile === true);
-      } catch { /* the boot-time value stands */ }
-      const box = container.querySelector<HTMLInputElement>('.mon-log-checkbox');
-      if (box) box.checked = getMonitorLogToFile();
-      refreshLogPath();
-    };
-    const refreshLogPath = (): void => {
-      const line = container.querySelector<HTMLElement>('.mon-log-path');
-      if (!line) return;
-      const p = getCurrentLogFile();
-      line.textContent = getMonitorLogToFile()
-        ? (p ? `Log file: ${p}` : 'Waiting for the first telemetry sample…')
-        : 'Logging is off - no file is written.';
-    };
-    const logCard = el('section', { class: 'card mon-log-card' }, [
-      el('h2', { class: 'card-title', text: 'Log to file' }),
-      el('div', { class: 'settings-row' }, [
-        el('label', { class: 'boot-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox mon-log-checkbox',
-            dataset: { setting: 'monitorLogToFile' },
-            checked: getMonitorLogToFile(),
-            onchange: (ev: Event) => void onLogToggle((ev.target as HTMLInputElement).checked),
-          }),
-          el('span', { text: 'Write every telemetry sample to a text file' }),
-        ]),
-      ]),
-      el('p', { class: 'card-note mon-log-path' }),
-      el('p', {
-        class: 'card-note',
-        text: 'One aligned fixed-width line per second (timestamp, GPU + CPU stats, FPS) in your Documents folder - readable in any text editor. Logging continues while you navigate - it stops when the toggle is off.',
-      }),
-    ]);
-
-    const onLogToggle = async (checked: boolean): Promise<void> => {
-      const box = container.querySelector<HTMLInputElement>('.mon-log-checkbox');
-      try {
-        await api.profilesSettingsSave({ monitorLogToFile: checked });
-        setMonitorLogToFile(checked);
-        toast(checked ? 'success' : 'info', checked ? 'Log to file enabled' : 'Log to file disabled', '');
-        refreshLogPath();
-      } catch (err) {
-        toast('error', 'Log to file could not be changed', err instanceof Error ? err.message : String(err));
-        if (box) box.checked = !checked;
-      }
-    };
-    void syncLogToggle();
-
+    // M4M (B): the readout card renders TWO labeled groups (CPU above GPU -
+    // the dashboard pattern), each with its own grid (mon-readout-cpu /
+    // mon-readout-gpu; both keep the compact .mon-readout styling). The
+    // FPS tile starts '-' - pollFps owns it from the first poll.
     const readout = el('section', { class: 'card' }, [
       el('h2', { class: 'card-title', text: 'Live readout' }),
-      el('div', { class: 'readout-grid mon-readout' }, readoutTiles(s.latestSample)),
+      el('div', { class: 'readout-group' }, [
+        el('div', { class: 'readout-group-label', text: 'CPU' }),
+        el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-cpu' }, cpuStatTiles(s.latestSample).map(statTileNode)),
+      ]),
+      el('div', { class: 'readout-group' }, [
+        el('div', { class: 'readout-group-label', text: 'GPU' }),
+        el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-gpu' }, gpuStatTiles(s.latestSample).map(statTileNode)),
+      ]),
       fpsNote,
     ]);
-    mon.readoutGrid = readout.querySelector('.mon-readout');
     mon.fpsTileValue = readout.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
 
     const graphs = el('section', { class: 'seg-stack' }, SEGMENTS.map((seg, idx) => {
@@ -419,7 +390,6 @@ export const monitoringPage: Page = {
     container.append(
       el('h1', { class: 'page-title', text: 'Monitoring' }),
       el('p', { class: 'page-subtitle', text: 'Live values and 60-second rolling graphs from the GPU.' }),
-      logCard,
       readout,
       graphs,
     );
@@ -458,27 +428,21 @@ export const monitoringPage: Page = {
         );
       }
     }
-    // Refresh the readout grid tiles in place (values only). The FPS tile is
-    // owned by pollFps - telemetry ticks must never stomp it.
-    const grid = mon.readoutGrid;
-    if (grid && sample) {
-      const tiles = readoutTiles(sample);
-      const values = grid.querySelectorAll('.stat-value');
-      tiles.forEach((tile, i) => {
-        if (!tile.classList.contains('mon-fps-tile') && values[i]) {
-          (values[i] as HTMLElement).textContent = (tile.querySelector('.stat-value') as HTMLElement).textContent;
-        }
-      });
-    }
-    // M4-D2 (§10): the log path line follows the last append result (the
-    // append runs in the boot subscription; telemetry ticks are the natural
-    // refresh beat - no extra timers).
-    const pathLine = container.querySelector<HTMLElement>('.mon-log-path');
-    if (pathLine) {
-      const p = getCurrentLogFile();
-      pathLine.textContent = getMonitorLogToFile()
-        ? (p ? `Log file: ${p}` : 'Waiting for the first telemetry sample…')
-        : 'Logging is off - no file is written.';
+    // M4M (B): refresh the readout groups IN PLACE - rebuild each grid per
+    // tick (the dashboard pattern). The FPS tile is owned by pollFps - the
+    // rebuild KEEPS the existing tile element (moved to the end of the GPU
+    // grid) so the poll's live value is never stomped.
+    const refreshGroup = (id: string, tiles: Array<{ label: string; value: string; unit: string; extraClass?: string }>): void => {
+      const grid = container.querySelector<HTMLElement>(`#${id}`);
+      if (!grid) return;
+      const fpsTile = grid.querySelector<HTMLElement>('.mon-fps-tile');
+      clear(grid);
+      grid.append(...tiles.filter((t) => t.extraClass !== 'mon-fps-tile').map(statTileNode));
+      if (fpsTile) grid.append(fpsTile);
+    };
+    if (sample) {
+      refreshGroup('mon-readout-cpu', cpuStatTiles(sample));
+      refreshGroup('mon-readout-gpu', gpuStatTiles(sample));
     }
     redrawAll();
   },

@@ -16,7 +16,10 @@ import path from 'node:path';
 
 // M4J (E): the 12 columns - key + fixed display width. The header is the
 // column NAMES right-aligned to the same widths (the header + the data
-// lines align in a monospace viewer).
+// lines align in a monospace viewer). M4M (C): the VRAM-used column reads
+// decimal GB ('gpuMemUsedGb', width 12 so the 12-char header still fits
+// its column) - the payload key stays gpuMemUsedBytes (ipc-core/sys-stats);
+// formatLogLine special-cases the cell.
 const COLUMNS = [
   { key: 'timestamp', width: 19 }, // 'YYYY-MM-DD HH:MM:SS'
   { key: 'gpuClockMhz', width: 11 },
@@ -28,7 +31,7 @@ const COLUMNS = [
   { key: 'cpuUtilPct', width: 10 },
   { key: 'cpuTempC', width: 8 },
   { key: 'cpuFreqMhz', width: 10 },
-  { key: 'gpuMemUsedBytes', width: 14 },
+  { key: 'gpuMemUsedGb', width: 12 },
   { key: 'fps', width: 3 },
 ];
 
@@ -63,6 +66,16 @@ function formatCell(value, width) {
 }
 
 /**
+ * M4M (C): bytes -> decimal GB with ONE decimal, returned as a STRING
+ * ('3.0' - a NUMBER would route through formatCell's float branch and lose
+ * the trailing .0). Null/undefined -> null (the '-' cell).
+ */
+function formatGb(bytes) {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return null;
+  return (bytes / 1e9).toFixed(1);
+}
+
+/**
  * @param {object} sample the full telemetry sample (the pushed fields +
  *   the 4 system-stats fields + fps)
  * @returns {string} one aligned line (no trailing newline)
@@ -72,6 +85,13 @@ export function formatLogLine(sample) {
     if (c.key === 'timestamp') {
       const ts = formatTimestamp(sample.t);
       return ts === null ? '-'.padStart(c.width) : ts.padStart(c.width);
+    }
+    // M4M (C): the renamed cell formats the BYTES sample directly - a naive
+    // sample[c.key] read ('gpuMemUsedGb') would produce 12 cells of '-' (the
+    // payload key stays gpuMemUsedBytes).
+    if (c.key === 'gpuMemUsedGb') {
+      const gb = formatGb(sample.gpuMemUsedBytes);
+      return gb === null ? '-'.padStart(c.width) : gb.padStart(c.width);
     }
     return formatCell(sample[c.key], c.width);
   });

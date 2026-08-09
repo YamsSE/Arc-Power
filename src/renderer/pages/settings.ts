@@ -204,8 +204,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // M4-D2 (§10): the "Log to file" toggle. The persisted value rides in
     // profiles-settings (monitorLogToFile); the actual log writes live in
     // the BOOT-LEVEL telemetry subscription (app.ts) so logging continues
-    // across page navigation. The Monitoring page carries the same toggle
-    // + the current log path.
+    // across page navigation. M4M (G): this Settings card is now the ONLY
+    // home of the toggle - the Monitoring page's duplicate card is REMOVED.
     const logCard = el('section', { class: 'card settings-card' }, [
       el('h2', { class: 'card-title', text: 'Log to file' }),
       el('div', { class: 'settings-row' }, [

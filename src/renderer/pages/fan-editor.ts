@@ -28,6 +28,7 @@ import {
   seedCurvePoints,
   fanCurvePresets,
   fanSpeedTicks,
+  STOCK_FAN_CURVE,
   MIN_CURVE_POINTS,
 } from '../pure/curve.ts';
 import { buildFanSettings, validateSettingsPayload } from '../pure/settings.ts';
@@ -38,9 +39,12 @@ import type { FanMode } from '../types.ts';
 
 const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Curve', fixed: 'Fixed' };
 
-// M4-H (A1): the ADAPTIVE preset chips. The chip NAMES are static; the
-// POINTS are derived from the DRIVER's curve read LIVE at click time (N4 -
-// a render-time base would go stale after an apply). The three presets:
+// M4-H (A1)/M4M (A): the ADAPTIVE preset chips. The chip NAMES are static;
+// the POINTS derive from the STOCK curve constant (STOCK_FAN_CURVE - the
+// canonical Intel table, pure/curve.ts; the old base was the DRIVER's curve
+// read LIVE at click time, but a canControl device that fails to report a
+// curve degrades the base to the 2-point ramp - the stock table is the
+// base the user remembers). The three presets:
 // 'Intel Curve' (M4-I rename of 'Driver Curve' - the base itself, the chip
 // REPLACES the old "Reset to driver curve" button), 'Quiet' = speeds ×0.5
 // with the FIRST point pinned to 20 % at the base's first temp, 'Max' =
@@ -110,7 +114,15 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
 
   const canControl = caps.fan.canControl === true;
   const maxPoints = caps.fan.maxCurvePoints > 0 ? caps.fan.maxCurvePoints : 10;
-  const initial: CurvePoint[] = clampPointCount(state.fanCurve ?? [], maxPoints);
+  // M4M (A): the curve SOURCE - the driver's reported curve when it has
+  // >= 2 points, else the STOCK 10-point table (a canControl device that
+  // fails to report a curve used to degrade to the 2-point 20->100 ramp /
+  // an empty plot - the user sees the stock Intel curve instead).
+  const reportedCurve = state.fanCurve;
+  const curveSource: CurvePoint[] = reportedCurve && reportedCurve.length >= MIN_CURVE_POINTS
+    ? reportedCurve
+    : STOCK_FAN_CURVE;
+  const initial: CurvePoint[] = clampPointCount(curveSource, maxPoints);
 
   // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
   // GPU Health card - this view keeps no waiver UI beyond the apply-time
@@ -132,9 +144,12 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
     return;
   }
 
-  // Editable path: a device that reports < 2 curve points gets a seeded
-  // 2-point ramp so Add/Remove never get stuck (F6).
-  const editorPoints = seedCurvePoints(state.fanCurve ?? [], maxPoints);
+  // Editable path: a device that reports < 2 curve points gets the STOCK
+  // 10-point table (clamped to the device max - M4M A) so Add/Remove never
+  // get stuck and the user sees the stock curve (the seedCurvePoints
+  // 2-point ramp fallback only fires for a sub-2-point STOCK source, which
+  // cannot happen - the constant has 10 points).
+  const editorPoints = seedCurvePoints(curveSource, maxPoints);
   const editor: EditorState = {
     mode: modeFromCaps(state.fanMode, caps.fan.modes),
     points: editorPoints,
@@ -682,19 +697,17 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
             },
           }),
         ]),
-        // M4-H (A1): the ADAPTIVE preset chips - the base (the driver's
-        // curve) is read LIVE at click time (seedCurvePoints, the same seed
-        // the editor starts from - N4: a render-time base would go stale
-        // after an apply). 'Driver Curve' = the base itself; the chip
-        // REPLACES the removed "Reset to driver curve" button.
+        // M4-H (A1)/M4M (A): the ADAPTIVE preset chips - the base is the
+        // STOCK curve constant (seedCurvePoints clamps it to the device
+        // max). The driver curve is NEVER the base: its read can fail and
+        // degrade the presets to the 2-point ramp.
         el('div', { class: 'chips fan-presets' }, PRESET_DEFS.map((def) =>
           el('button', {
             class: 'chip chip-btn',
             text: def.name,
             onClick: () => {
               resetReadout();
-              const cur = ctx.store.get().state?.fanCurve ?? [];
-              const presets = fanCurvePresets(seedCurvePoints(cur, maxPoints), domain, maxPoints);
+              const presets = fanCurvePresets(seedCurvePoints(STOCK_FAN_CURVE, maxPoints), domain, maxPoints);
               const preset = presets.find((p) => p.id === def.id);
               if (!preset) return;
               editor.points = clampPointCount(preset.points, maxPoints);

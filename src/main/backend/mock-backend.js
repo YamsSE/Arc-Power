@@ -22,8 +22,11 @@ import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
 
 // The mock's default driver fan curve (10 points) - reported by every
-// fan-bearing featureset and restored by resetToDefaults.
-const DEFAULT_FAN_CURVE = [
+// fan-bearing featureset and restored by resetToDefaults. MUST equal
+// pure/curve.ts STOCK_FAN_CURVE (the canonical stock Intel table - pinned
+// by test/mock-backend.test.js; the main bundle cannot import renderer TS,
+// so the literal stays here with the pin as the sync guarantee).
+export const DEFAULT_FAN_CURVE = [
   { t: 20, speedPct: 20 }, { t: 55, speedPct: 23 }, { t: 70, speedPct: 28 },
   { t: 78, speedPct: 30 }, { t: 80, speedPct: 30 }, { t: 82, speedPct: 40 },
   { t: 84, speedPct: 50 }, { t: 86, speedPct: 78 }, { t: 88, speedPct: 100 },

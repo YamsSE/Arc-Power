@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runNoIntelVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runNoIntelVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId } from './ipc-core.js';
@@ -647,6 +647,42 @@ async function main() {
     } catch (err) {
       console.log(`[boot] waiver session seed skipped: ${err.message}`);
     }
+    // M4M (F6): the deterministic boot-apply session seed - every mock
+    // session writes ocOnBoot: RID_MOCK_BOOT_APPLY === '1' + activeProfileId
+    // (the variant's probe profile id, else null) into the ISOLATED store,
+    // so a failed/crashed run that leaked ocOnBoot=true can never make the
+    // NEXT variant boot an automatic apply (the M4-F device-0 baseline pin
+    // requires the clean state). Runs AFTER the waiver seed (which writes
+    // false for this variant and would clobber it) and BEFORE
+    // seedWaiverState (the device-side in-memory flag lands too -
+    // applyProfileBoot refuses on a false store flag). The variant ALSO
+    // seeds waiverAccepted: true + the probe profile itself.
+    try {
+      const cur = await store.loadSettings();
+      const bootApplyOn = process.env.RID_MOCK_BOOT_APPLY === '1';
+      await store.saveSettings({
+        ...cur,
+        ocOnBoot: bootApplyOn,
+        activeProfileId: bootApplyOn ? 'boot-apply-probe' : null,
+        waiverAccepted: bootApplyOn ? true : cur.waiverAccepted,
+      });
+      if (bootApplyOn) {
+        await store.saveProfile({
+          id: 'boot-apply-probe',
+          name: 'Boot Apply Probe',
+          settings: {
+            powerLimitW: 230,
+            gpuFreqOffsetMhz: 100,
+            tempLimitC: 90,
+            gpuVoltOffsetV: 0.05,
+            fanMode: 'auto',
+          },
+          ocOnBoot: false,
+        });
+      }
+    } catch (err) {
+      console.log(`[boot] boot-apply session seed skipped: ${err.message}`);
+    }
     // M4-B (user fix)/M4-D: RID_MOCK_WAIVER_LOST=1 reproduces the user's
     // report - the store says the waiver is ACCEPTED (persisted) but the
     // DRIVER lost it. The boot probe (probeWaiverState) writes the current
@@ -927,11 +963,13 @@ async function main() {
   // lands). The schtasks reads are unelevated + quick; a check failure
   // degrades to "gate unknown" (the in-app apply stays - the safe side).
   // The check is started WITHOUT awaiting (a hung schtasks must never stall
-  // the first window) and awaited at the boot-apply decision below with the
-  // same degraded-to-null catch.
+  // the first window). M4M (F): the verdict is INFORMATIONAL ONLY - the
+  // in-app boot apply ALWAYS runs on the window path (the old gate-green
+  // skip is REMOVED: the logon task still owns LOGON applies, and a logon
+  // double-apply with the Run-launched app is idempotent).
   const installedBuild = app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR;
   let bootGate = null; // { green: boolean } | null - null = not applicable/unknown
-  let bootGateCheck = null; // the in-flight check promise - awaited at the boot-apply decision
+  let bootGateCheck = null; // the in-flight check promise (informational since M4M)
   if (installedBuild && !mock) {
     const bootSetup = createBootSetup();
     // NOT awaited: the first window must never wait on schtasks (two
@@ -1013,6 +1051,76 @@ async function main() {
     applyRunner,
     createTrayImpl: uiVerify ? createTrayProbe : createTray,
   });
+
+  // M4M (F): the boot-apply decision runs BEFORE createWindow - the
+  // renderer's boot device-state-get (right after the window loads) reads
+  // the POST-apply state, so the sliders/readout show the applied profile
+  // on the first paint (the old post-window position made even a successful
+  // apply invisible in that launch - the "checked the box, started the app,
+  // nothing applied" report). The M4-E setup gate (above) still spawns the
+  // first-run elevated logon-task setup; the old gate-green SKIP is REMOVED
+  // - the boot-gated in-app apply (applyProfileBoot: applyRunner-less,
+  // defaults-restore fallback skipped regardless of errorCode) runs on
+  // EVERY window-path launch when ocOnBoot + an active profile are set
+  // (installed, portable, and dev alike - the logon task still owns LOGON
+  // applies; a logon double-apply with the Run-launched app is idempotent).
+  // The failure balloon: the ELEVATED product path (isElevated - the
+  // packaged app always is) balloons the honest apply reason via
+  // trayBalloonForOutcome; the unelevated dev tree keeps the old
+  // admin-approval line. Mock mode records the attempt in the mock
+  // boot-apply log. Never crashes - every failure is a logged balloon or a
+  // console line.
+  const mockBootApplyLog = [];
+  const recordBootApply = (profileId, out) => {
+    mockBootApplyLog.push({
+      profileId,
+      applied: out.applied === true,
+      reason: out.reason ?? null,
+      at: Date.now(),
+    });
+  };
+  // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
+  // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
+  // (self-healing, M7 - a stale selection or an absent field must never
+  // wedge the app on a dead id). The renderer's boot read (device-get) and
+  // the window-path boot apply both consume this resolution.
+  let bootDeviceId = null;
+  try {
+    bootDeviceId = await resolveBootDeviceId(backend, store);
+  } catch (err) {
+    console.log(`[boot] deviceId resolution skipped: ${err.message}`);
+  }
+  try {
+    const bootSettings = await store.loadSettings();
+    if (bootSettings.ocOnBoot === true && bootSettings.activeProfileId) {
+      const out = await applyProfileBoot({
+        backend,
+        store,
+        profileId: bootSettings.activeProfileId,
+        deviceId: bootDeviceId,
+        oldIgcl,
+        log: (s) => console.log(s),
+      });
+      if (mock) recordBootApply(bootSettings.activeProfileId, out);
+      if (!out.applied && trayRef && !trayRef.isDestroyed()) {
+        // M4M (F4): the moved block holds only the profile ID - the NAME is
+        // resolved here (the runApplyOnStartup pattern) for the honest
+        // reason balloon.
+        let profileName = null;
+        try {
+          const ps = await store.loadProfiles();
+          profileName = ps.find((p) => p.id === bootSettings.activeProfileId)?.name ?? null;
+        } catch { /* best effort name */ }
+        const content = isElevated()
+          ? trayBalloonForOutcome(out, profileName)
+          : 'Profile apply needs administrator approval - the elevated logon apply is not set up.';
+        if (content) trayRef.displayBalloon({ title: 'Arc Power', content });
+      }
+    }
+  } catch (err) {
+    console.log(`[boot] in-app boot apply skipped: ${err.message}`);
+  }
+
   const win = createWindow(windowBackground, !startMinimizedAtBoot);
   windowForInstance = win;
   // M4-D2 (§1 close-to-tray FIX): the close handler reads the SYNC settings
@@ -1047,16 +1155,9 @@ async function main() {
   // M4-D2: mock mode ALSO records every boot-apply attempt in a session
   // mock apply log + exposes the REAL boot-apply flow as a mock-only
   // channel (mock:run-boot-apply) - ui-verify proves the flow: the log
-  // records the active profile with no refusal.
-  const mockBootApplyLog = [];
-  const recordBootApply = (profileId, out) => {
-    mockBootApplyLog.push({
-      profileId,
-      applied: out.applied === true,
-      reason: out.reason ?? null,
-      at: Date.now(),
-    });
-  };
+  // records the active profile with no refusal. (mockBootApplyLog +
+  // recordBootApply live ABOVE the window-path apply block - the moved
+  // block calls recordBootApply and the defs must precede it.)
   const runMockBootApply = async () => {
     let settings;
     try {
@@ -1191,6 +1292,14 @@ async function main() {
       // lands, and the G2 self-heal re-shows the dialog after the driver
       // loses the waiver (the "fan applies fail without a prompt" bug).
       await runFanGateVerify(win, backend);
+    } else if (process.env.RID_MOCK_BOOT_APPLY === '1') {
+      // M4M (F7): the boot-apply variant - the session seed wrote
+      // ocOnBoot:true + activeProfileId 'boot-apply-probe' + an accepted
+      // waiver, so the WINDOW-PATH apply (moved BEFORE createWindow above)
+      // ran automatically at boot. Asserts the mock apply log recorded it
+      // AND the tuning page reflects the POST-apply state (the regression
+      // assertion for the ordering fix).
+      await runBootApplyVerify(win, backend, store);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides
@@ -1202,73 +1311,8 @@ async function main() {
   }
 
   await bootBackend();
-  // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
-  // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
-  // (self-healing, M7 - a stale selection or an absent field must never
-  // wedge the app on a dead id). The renderer's boot read (device-get) and
-  // the window-path boot apply both consume this resolution.
-  let bootDeviceId = null;
-  try {
-    bootDeviceId = await resolveBootDeviceId(backend, store);
-  } catch (err) {
-    console.log(`[boot] deviceId resolution skipped: ${err.message}`);
-  }
   const health = await collectHealth(backend);
   console.log(`[health] ${JSON.stringify(health)}`);
-
-  // M4J (G/S2): the tray was created BEFORE createWindow (see above) - the
-  // boot-apply decision below can rely on trayRef from the first moment.
-  // M4-D2 (boot apply - pinned F3/F4) + M4-E (S1 branching): the app
-  // launched from the HKCU Run value boots into the UI; when the profile's
-  // start-at-boot is on AND an active profile exists, the boot-gated IN-APP
-  // apply runs - UNLESS the M4-E setup gate is GREEN on the installed build
-  // (task exists + action matches the current exe): the ELEVATED logon task
-  // owns logon applies then, and the in-app apply is SKIPPED (the /xml
-  // result from the gate check above is in hand on the same launch - no
-  // extra query). Gate NOT green (first-run UAC declined, transient
-  // failure) or portable/dev: the in-app apply + honest balloon stay - a
-  // silent-dead logon apply with no signal must never happen until the
-  // setup lands. It runs AFTER setupTray (a failure balloon must never hit
-  // a null trayRef - pinned F3). The boot variant is applyRunner: null -
-  // in-process ONLY, NEVER the elevated worker, NEVER a UAC at logon (hard
-  // constraint); when it fails in this unelevated boot variant, the
-  // defaults-restore fallback is SKIPPED regardless of errorCode
-  // (applyProfileBoot) and the balloon says the honest line. Mock mode
-  // records the attempt in the mock boot-apply log. Never crashes - every
-  // failure is a logged balloon or a console line.
-  try {
-    const bootSettings = await store.loadSettings();
-    if (bootSettings.ocOnBoot === true && bootSettings.activeProfileId) {
-      // M4-E S1: the gate verdict is awaited HERE (the only consumer) - the
-      // check was started before createWindow WITHOUT awaiting, so a hung
-      // schtasks never stalls the first window; by this point (after the
-      // window, health, tray) the promise is normally already resolved.
-      // bootGateCheck never rejects (degraded-to-null catch above) - a null
-      // verdict keeps the in-app apply (never a silent-dead logon apply).
-      if (bootGateCheck) await bootGateCheck;
-      if (bootGate?.green === true) {
-        console.log('[boot] setup gate GREEN - the elevated logon task owns logon applies; in-app boot apply SKIPPED');
-      } else {
-        const out = await applyProfileBoot({
-          backend,
-          store,
-          profileId: bootSettings.activeProfileId,
-          deviceId: bootDeviceId,
-          oldIgcl,
-          log: (s) => console.log(s),
-        });
-        if (mock) recordBootApply(bootSettings.activeProfileId, out);
-        if (!out.applied && trayRef && !trayRef.isDestroyed()) {
-          trayRef.displayBalloon({
-            title: 'Arc Power',
-            content: 'Profile apply needs administrator approval - the elevated logon apply is not set up.',
-          });
-        }
-      }
-    }
-  } catch (err) {
-    console.log(`[boot] in-app boot apply skipped: ${err.message}`);
-  }
 }
 
 main().catch((err) => {
