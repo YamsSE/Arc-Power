@@ -8,9 +8,6 @@ import type {
   Capabilities,
   DeviceInfo,
   DeviceState,
-  DisplayApplyResponse,
-  DisplaySettings,
-  DisplayState,
   ElevationState,
   FpsSample,
   GraphicsApplyResponse,
@@ -52,16 +49,6 @@ export interface ArcPowerApi {
    *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
    *  with the FRESH read-back for the per-control refresh. */
   graphicsApply(deviceId: number, settings: GraphicsSettings): Promise<GraphicsApplyResponse>;
-  /** M10b (the Graphics "Display" view): the display-output read (never
-   *  throws - { displays: [] } is the honest no-controls degrade). NEVER
-   *  called with a null deviceId - the no-Intel page guard renders
-   *  'No GPU available.' first (assertValidDeviceId would throw). */
-  displayGet(deviceId: number): Promise<DisplayState>;
-  /** M10b: apply display settings for ONE display (the displayId from the
-   *  display:get payload) - the DEDICATED apply path (NO OC waiver, NO
-   *  OC-mode gate). Returns the { ok, perControl, displayState } envelope
-   *  with the FRESH read-back for the per-control refresh. */
-  displayApply(deviceId: number, displayId: number, settings: DisplaySettings): Promise<DisplayApplyResponse>;
   /** M4O: `opts.profileApply: true` marks a PROFILE apply (the Profiles-page
    *  Apply button) - main skips the OC-mode gate for it (the mode is the
    *  interactive slider gate ONLY; the ceiling + capability refusals stay). */

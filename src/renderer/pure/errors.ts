@@ -23,11 +23,6 @@ export const CONTROL_LABELS: Record<string, string> = {
   flipMode: 'Frame sync',
   frameLimit: 'FPS limit',
   lowLatency: 'Low latency',
-  // M10b (the Graphics "Display" view): the display controls (the
-  // dedicated display apply path's per-control toasts).
-  quantizationRange: 'Quantization range',
-  wireFormat: 'Wire format',
-  scalingMode: 'Scaling mode',
 };
 
 const ERROR_MESSAGES: Record<OcErrorCode, string> = {

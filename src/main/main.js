@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify, runDisplayVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
@@ -586,16 +586,6 @@ async function main() {
           try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
           return { ok: out.ok, perControl: out.perControl, graphicsState };
         },
-        // M10b (the Graphics "Display" view): the in-process display
-        // executor - the DEDICATED apply path (no OC waiver, no OC-mode
-        // gate). Returns the { ok, perControl, displayState } envelope with
-        // the FRESH read-back.
-        displayApply: async ({ deviceId, displayId, settings }) => {
-          const out = await backend.setDisplaySettings(deviceId, displayId, settings);
-          let displayState = null;
-          try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
-          return { ok: out.ok, perControl: out.perControl, displayState };
-        },
       },
       log: (s) => console.log(s),
     });
@@ -619,13 +609,6 @@ async function main() {
         let graphicsState = null;
         try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
         return { ok: out.ok, perControl: out.perControl, graphicsState };
-      },
-      // M10b: the fake runner's display path (in-process - never spawns).
-      displayApply: async ({ deviceId, displayId, settings }) => {
-        const out = await backend.setDisplaySettings(deviceId, displayId, settings);
-        let displayState = null;
-        try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
-        return { ok: out.ok, perControl: out.perControl, displayState };
       },
     };
   }
@@ -1625,10 +1608,7 @@ async function main() {
       // 'overlay+fps+api' (RID_MOCK_API=1 - 'FPS 60  DX12  1% Low 52
       // 99% FPS 58' - the Graphics-API badge rides the same sample).
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
-      // M10b: the display block rides right after (the Display view also
-      // runs under the overlay variants).
       await runGraphicsVerify(win, backend);
-      await runDisplayVerify(win, backend);
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar

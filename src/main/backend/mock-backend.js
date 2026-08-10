@@ -20,10 +20,6 @@ import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFan
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
-import {
-  DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS,
-  DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_FLASH_WARNING,
-} from './backend.interface.js';
 
 // M8 (the Graphics tab): the mock's graphics fixture - mirrors the
 // M8 checkpoint-1 probe record (pipeline/live-3d-feature.md, the A770
@@ -59,50 +55,6 @@ const GRAPHICS_DEGRADED = Object.freeze({
   frameLimitRange: null,
   values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null },
 });
-
-// M10b (the Graphics "Display" view): the mock's display fixture - mirrors
-// the M10b checkpoint-1 probe-record guidance (pipeline/live-display-
-// feature.md section 5): ONE display (2560x1440 @ 144 Hz DisplayPort), the
-// wire formats RGB/YCbCr444/YCbCr422, the BPC 8/10, the quantization
-// default/limited/full (controllable), the scaling modes from the recorded
-// caps (the A770's 0x1f = IDENTITY | CENTERED | STRETCHED |
-// ASPECT_RATIO_CENTERED_MAX | CUSTOM), the EDID monitor name, and the
-// probe-recorded Arc Sync surface (48-180 Hz monitor range, the RECOMMENDED
-// profile). Unlike the REAL backend (where this driver build never
-// populates the ColorDepth field and the wire-format surface is read-only
-// in effect), the mock POPULATES the color depth/format - it is the page's
-// live fixture for the COLOR card. The apply mutates the device's own
-// fixture copy - the next read-back reflects it (the mock round trip the
-// ui-verify pins).
-const DISPLAY_FIXTURE = Object.freeze({
-  displays: [
-    {
-      id: 0,
-      name: 'Arc Power Mock Display',
-      connection: 'DisplayPort',
-      resolution: { width: 2560, height: 1440 },
-      refreshRate: 144,
-      colorDepth: 10,
-      colorFormat: 'RGB',
-      quantizationRange: 'default',
-      scalingMode: 'identity',
-      supportedOptions: {
-        scalingModes: [...DISPLAY_SCALING_MODE_OPTIONS],
-        scalingMethods: [],
-        wireFormats: ['RGB', 'YCbCr444', 'YCbCr422'],
-        bpcDepths: [8, 10],
-        quantizationRanges: [...DISPLAY_QUANTIZATION_OPTIONS],
-      },
-      flags: { active: true, attached: true, dongleConnected: false, ditheringEnabled: false },
-      arcSync: { supported: true, minRefreshHz: 48, maxRefreshHz: 180, profile: 'recommended' },
-    },
-  ],
-});
-
-// The honest empty-display degrade (device 1 in the multi-device session +
-// the RID_MOCK_DISPLAY_UNSUPPORTED knob + the no-Intel session) - the same
-// shape the real backend's never-throw degrade serves.
-const DISPLAY_DEGRADED = Object.freeze({ displays: [] });
 
 // The mock's default driver fan curve (10 points) - reported by every
 // fan-bearing featureset and restored by resetToDefaults. MUST equal
@@ -144,27 +96,12 @@ export class MockBackend {
  *   multiDevice?: boolean,             // M4-F: emit device ids 0 AND 1 (device 1 =
    *                                      // the arc-igpu line) - the RID_MOCK_MULTI_DEVICE=1
    *                                      // ui-verify knob; tests pass the flag directly
- *  graphicsUnsupported?: boolean,    // M8: overlay - the WHOLE graphics surface
- *                                      // degrades to the supported-all-false state
- *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1, the
- *                                      // RID_MOCK_FAN_READONLY pattern); the
- *                                      // multi-device iGPU (device 1) degrades
- *                                      // regardless
-  *  displayUnsupported?: boolean,     // M10b: overlay - the WHOLE display
-  *                                      // surface degrades to the empty display
-  *                                      // list (RID_MOCK_DISPLAY_UNSUPPORTED=1,
-  *                                      // the RID_MOCK_GRAPHICS_UNSUPPORTED
-  *                                      // pattern); the multi-device iGPU
-  *                                      // (device 1) degrades regardless
-  *  displayWireReadonly?: boolean,    // M10b: overlay - the fixture's
-  *                                      // wire-format surface degrades to the
-  *                                      // REAL driver's read-only shape
-  *                                      // (wireFormats/bpcDepths EMPTY - the
-  *                                      // probe record; the COLOR card's
-  *                                      // wire-format controls then show the
-  *                                      // honest read-only state). The
-  *                                      // RID_MOCK_DISPLAY_WIRE_READONLY=1
-  *                                      // ui-verify knob.
+  *  graphicsUnsupported?: boolean,    // M8: overlay - the WHOLE graphics surface
+  *                                      // degrades to the supported-all-false state
+  *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1, the
+  *                                      // RID_MOCK_FAN_READONLY pattern); the
+  *                                      // multi-device iGPU (device 1) degrades
+  *                                      // regardless
   * }} opts
    */
   constructor(opts = {}) {
@@ -211,17 +148,6 @@ export class MockBackend {
     // supported-all-false state. The multi-device iGPU (device 1) degrades
     // regardless (honest - an iGPU exposes no 3D-feature overrides).
     this._graphicsUnsupported = opts.graphicsUnsupported === true || process.env.RID_MOCK_GRAPHICS_UNSUPPORTED === '1';
-    // M10b: the unsupported-display session knob (the same pattern) - the
-    // WHOLE display surface degrades to the empty display list (the honest
-    // no-controls state). The multi-device iGPU (device 1) degrades
-    // regardless (honest - an iGPU drives no display outputs).
-    this._displayUnsupported = opts.displayUnsupported === true || process.env.RID_MOCK_DISPLAY_UNSUPPORTED === '1';
-    // M10b: the wire-format-readonly session knob - the fixture's wire
-    // surface degrades to the REAL driver's read-only shape (wireFormats/
-    // bpcDepths EMPTY, the probe record): the page's COLOR card then shows
-    // the honest read-only state (never a dead control). The apply path
-    // refuses wire-format patches with 'unsupported' in this session.
-    this._displayWireReadonly = opts.displayWireReadonly === true || process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1';
     // Devices > 0 live here; device 0 is the legacy single-device fields
     // (_device/_caps/_state/_tick/_energyStepJ/_waiverAccepted/
     // _telemetryCbs - the pre-M4-F mock, pinned directly by tests).
@@ -263,9 +189,6 @@ export class MockBackend {
         telemetryCbs: this._telemetryCbs,
         // M8: the graphics state (the fixture values the apply mutates).
         graphics: this._graphics,
-        // M10b: the display state (the fixture the apply mutates; the
-        // per-device degrade: the iGPU serves an EMPTY display list).
-        displays: this._displays,
       };
     }
     const e = this._extraDevices.get(id);
@@ -317,12 +240,6 @@ export class MockBackend {
     // apply mutates the device's own copy; a swap resets it like the OC
     // state - a fresh device).
     this._graphics = JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values));
-    // M10b: the display state - the fixture deep-copied per device (same
-    // semantics: the apply mutates the device's own copy; a swap resets it).
-    // The apply log records every display apply (deviceId, displayId, the
-    // payload) - the mock round trip the tests/ui-verify pin.
-    this._displays = JSON.parse(JSON.stringify(DISPLAY_FIXTURE.displays));
-    this._displayApplies = [];
     // A swap is a fresh device: the telemetry timeline restarts (one
     // no-power sample while the energy counter resets, then the new
     // featureset's wattage - never a blended value).
@@ -343,10 +260,6 @@ export class MockBackend {
         // M8: the iGPU's graphics state (unused - the iGPU always serves
         // the degraded surface; kept for shape symmetry).
         graphics: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
-        // M10b: the iGPU's display state (unused - the iGPU always serves
-        // the EMPTY display list - an iGPU drives no display outputs;
-        // kept for shape symmetry).
-        displays: [],
       });
     }
     this._failOn = {};
@@ -724,141 +637,6 @@ export class MockBackend {
       const clamped = clampAndSnap(settings.frameLimit.value, GRAPHICS_FIXTURE.frameLimitRange);
       e.graphics.frameLimit = { enabled: settings.frameLimit.enabled === true, value: clamped };
       result.perControl.frameLimit = { ok: true, readBackEqual: true };
-    }
-    return result;
-  }
-
-  /**
-   * M10b: the Display view's mock state. Device 0 serves the fixture (ONE
-   * display - 2560x1440 @ 144 Hz DisplayPort, the wire formats
-   * RGB/YCbCr444/YCbCr422, the BPC 8/10, the quantization
-   * default/limited/full controllable, the probe-recorded scaling modes,
-   * the EDID name, the Arc Sync surface); the apply mutates the device's
-   * own copy so the next read reflects it (the mock round trip). Device 1
-   * (the multi-device iGPU) and the RID_MOCK_DISPLAY_UNSUPPORTED knob
-   * serve the honest EMPTY display list - a device switch must never crash
-   * the page. Never throws.
-   * @param {number} [deviceId]
-   * @returns {Promise<object>} the DisplayState shape
-   */
-  async getDisplaySettings(deviceId = 0) {
-    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
-    const degraded = id !== 0 || this._displayUnsupported || this._noIntel;
-    if (degraded) {
-      return JSON.parse(JSON.stringify(DISPLAY_DEGRADED));
-    }
-    const e = this._entry(id);
-    const displays = JSON.parse(JSON.stringify(e.displays));
-    // The wire-readonly session overlay (the REAL driver's shape, the probe
-    // record): the wire-format surface serves EMPTY lists + the never-
-    // populated ColorDepth - the page's COLOR card shows the honest
-    // read-only state (the current model still reads - the probe's live
-    // YCBCR_422 current member; the depth is never populated).
-    if (this._displayWireReadonly) {
-      for (const d of displays) {
-        d.supportedOptions.wireFormats = [];
-        d.supportedOptions.bpcDepths = [];
-        d.colorDepth = null;
-      }
-    }
-    return { displays };
-  }
-
-  /**
-   * M10b: apply the Display view's settings for ONE display (the mock
-   * round trip): the payload lands in the device's display fixture copy
-   * (validated against the fixture's supported lists) and is recorded in
-   * the apply log; the next getDisplaySettings read-back reflects it. The
-   * degraded surfaces refuse every control with the honest 'unsupported'
-   * (a device switch must never crash). Returns the ApplyResult shape;
-   * the scaling entry carries the honest modeset-flash warning (mirrors
-   * the real backend).
-   * @param {number} [deviceId]
-   * @param {number} [displayId]
-   * @param {object} patch
-   * @returns {Promise<{ ok: boolean, perControl: object }>}
-   */
-  async setDisplaySettings(deviceId = 0, displayId = 0, patch = {}) {
-    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
-    const result = { ok: true, perControl: {} };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode']
-      .filter((c) => patch[c] !== null && patch[c] !== undefined);
-    const degraded = id !== 0 || this._displayUnsupported || this._noIntel;
-    if (degraded) {
-      for (const c of controls) {
-        result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'display settings are not supported on this device' };
-      }
-      result.ok = controls.length === 0;
-      return result;
-    }
-    const e = this._entry(id);
-    const display = e.displays.find((d) => d.id === displayId);
-    if (!display) {
-      for (const c of controls) {
-        result.perControl[c] = { ok: false, errorCode: 'unsupported', message: `unknown display id ${displayId}` };
-      }
-      result.ok = controls.length === 0;
-      return result;
-    }
-    if (patch.quantizationRange !== undefined && patch.quantizationRange !== null) {
-      if (!DISPLAY_QUANTIZATION_OPTIONS.includes(patch.quantizationRange)) {
-        result.perControl.quantizationRange = { ok: false, errorCode: 'out-of-range', message: `unknown quantization range '${patch.quantizationRange}'` };
-        result.ok = false;
-      } else if (!display.supportedOptions.quantizationRanges.includes(patch.quantizationRange)) {
-        result.perControl.quantizationRange = { ok: false, errorCode: 'unsupported', message: `quantization range '${patch.quantizationRange}' is not supported by this display` };
-        result.ok = false;
-      } else {
-        display.quantizationRange = patch.quantizationRange;
-        result.perControl.quantizationRange = { ok: true, readBackEqual: true };
-      }
-    }
-    if (patch.wireFormat !== undefined && patch.wireFormat !== null) {
-      const { model, depth } = patch.wireFormat;
-      if (!DISPLAY_WIRE_FORMAT_OPTIONS.includes(model) || !DISPLAY_BPC_OPTIONS.includes(depth)) {
-        result.perControl.wireFormat = { ok: false, errorCode: 'out-of-range', message: `unknown wire format '${model}' ${depth}-bpc` };
-        result.ok = false;
-      } else if (this._displayWireReadonly || !display.supportedOptions.wireFormats.includes(model) || !display.supportedOptions.bpcDepths.includes(depth)) {
-        // The wire-readonly session: the wire surface is read-only in
-        // effect (the REAL driver's shape) - every wire-format patch is
-        // refused honestly, never a fake "applied". (Divergence note: the
-        // real backend surfaces the silent-noop shape - io-failed +
-        // silentNoop:true; the mock refuses with 'unsupported'. Both are
-        // honest refuses; the page's S1 gate keeps wireFormat out of the
-        // payload either way - this divergence is dev-knob-only.)
-        result.perControl.wireFormat = { ok: false, errorCode: 'unsupported', message: `wire format '${model}' ${depth}-bpc is not supported by this display` };
-        result.ok = false;
-      } else {
-        display.colorFormat = model;
-        display.colorDepth = depth;
-        result.perControl.wireFormat = { ok: true, readBackEqual: true };
-      }
-    }
-    if (patch.scalingMode !== undefined && patch.scalingMode !== null) {
-      if (!DISPLAY_SCALING_MODE_OPTIONS.includes(patch.scalingMode)) {
-        result.perControl.scalingMode = { ok: false, errorCode: 'out-of-range', message: `unknown scaling mode '${patch.scalingMode}'` };
-        result.ok = false;
-      } else if (!display.supportedOptions.scalingModes.includes(patch.scalingMode)) {
-        result.perControl.scalingMode = { ok: false, errorCode: 'unsupported', message: `scaling mode '${patch.scalingMode}' is not supported by this display` };
-        result.ok = false;
-      } else {
-        display.scalingMode = patch.scalingMode;
-        result.perControl.scalingMode = {
-          ok: true,
-          readBackEqual: true,
-          // The honest modeset note (mirrors the real backend's scaling
-          // result - the ui-verify pins it on the card).
-          warning: DISPLAY_SCALING_FLASH_WARNING,
-        };
-      }
-    }
-    // The apply record (the mock round trip: the read-back reflects the
-    // payload AND the log carries it for the tests/ui-verify pins).
-    if (Object.keys(result.perControl).length > 0) {
-      this._displayApplies.push({
-        deviceId: id,
-        displayId,
-        patch: JSON.parse(JSON.stringify(patch)),
-      });
     }
     return result;
   }

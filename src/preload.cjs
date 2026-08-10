@@ -18,13 +18,6 @@ contextBridge.exposeInMainWorld('arcPower', {
   // machinery: 3D features have no OC waiver).
   graphicsGet: (deviceId) => ipcRenderer.invoke('graphics:get', deviceId),
   graphicsApply: (deviceId, settings) => ipcRenderer.invoke('graphics:apply', deviceId, settings),
-  // M10b (the Graphics "Display" view): the display-output surface - the
-  // Graphics page's Display-view IPC (the dedicated display apply path -
-  // NOT the OC apply-routing machinery: display settings have no OC
-  // waiver). displayApply targets ONE display (the displayId from the
-  // display:get payload).
-  displayGet: (deviceId) => ipcRenderer.invoke('display:get', deviceId),
-  displayApply: (deviceId, displayId, settings) => ipcRenderer.invoke('display:apply', deviceId, displayId, settings),
   // M4O: the third arg carries apply options - { profileApply: true } marks
   // a PROFILE apply (the Profiles-page Apply button), which skips the
   // OC-mode gate (the mode is the interactive slider gate ONLY).

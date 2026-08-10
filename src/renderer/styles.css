@@ -1466,49 +1466,6 @@ html, body {
    this row just keeps the same page-top spacing). */
 .mon-view-toggle-row { margin: 2px 0 14px; }
 
-/* M10b: the Graphics | Display view pill - the same segmented pill, the
-   Graphics page's own row + button class (the ui-verify pins query
-   .graphics-view-btn). */
-.graphics-view-toggle-row { margin: 2px 0 14px; }
-
-/* M10b: the Graphics "Display" view - the group cards (GENERAL / COLOR /
-   INFORMATION), the control rows, the per-display picker and the info
-   rows. The control rows reuse the M8 .graphics-select + the M9 chip
-   classes; the groups carry the .card styling. */
-.display-picker-row { margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
-.display-picker-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-.display-stack { display: flex; flex-direction: column; gap: 10px; }
-.display-group { padding: 12px 14px; }
-.display-group .card-title { font-size: 13.5px; }
-.display-control { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.display-group > .display-control:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
-.display-control-title { font-size: 13px; font-weight: 600; color: var(--text); margin: 0; }
-.display-control-readonly .card-note { color: var(--text-dim); font-style: italic; }
-.display-note-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.display-note-row .card-note { margin-top: 2px; color: var(--text-dim); font-style: italic; }
-.display-wire-format-row { display: flex; gap: 16px; flex-wrap: wrap; }
-.display-wire-format-field { display: flex; flex-direction: column; gap: 4px; }
-.display-wire-format-field-label { font-size: 12px; color: var(--text-muted); }
-.display-wire-format-readonly { margin-top: 8px; max-width: 420px; }
-.display-info-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-}
-.display-info-row:last-child { border-bottom: none; }
-.display-info-label { color: var(--text-muted); }
-.display-info-value { color: var(--text); font-family: var(--mono); }
-
 /* M9: the Overlay Settings sub-view heading (inside the Monitoring page's
    Overlay view - the old page-title became the sub-view's heading). */
 .overlay-settings-title {

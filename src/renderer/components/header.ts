@@ -5,9 +5,9 @@
 // M2b-B dashboard redesign:
 //   - the driver line moved OUT of the header (M2C-B B3): the line below the
 //     GPU name is now "Arc Power Ver. X.XX" (the app version via the
-//     `app:version` IPC; M4-A: the DISPLAY label carries the " Alpha"
-//     suffix - the IPC keeps the bare semver; M5: displayVersion renders
-//     the line - ' Beta' for the -beta.x line, ' Alpha' for bare semvers);
+//     `app:version` IPC; the IPC keeps the bare semver; M5: displayVersion
+//     renders the line - ' Beta' for the -beta.x line, nothing else (the
+//     M11 "Alpha" scheme removal);
 //     the driver version + registry date stay in the dashboard device card
 //     ('Driver version' kv, driver-info IPC);
 //   - PCI ID is gone;
@@ -36,17 +36,18 @@ export function versionLine(version: string | null | undefined): string {
 
 /**
  * M5: the DISPLAY version line - the semver WITHOUT the prerelease tag,
- * plus ' Beta' for a -beta.x version / ' Alpha' for a bare version
- * (1.0.0-beta.1 -> 'Arc Power Ver. 1.0.0 Beta'; 1.0.8 -> 'Arc Power Ver.
- * 1.0.8 Alpha'). The app:version IPC keeps the BARE semver - the display
- * suffix is a renderer concern. Degraded/missing version falls back to
- * 0.0.0 (the ' Alpha' suffix - never an empty line).
+ * plus ' Beta' for a -beta.x version. M11: the "Alpha" naming scheme is
+ * GONE - a stable release AND any other prerelease show NO suffix (the
+ * app ships as the 1.0 Release -> 'Arc Power Ver. 1.0.0'; 1.0.0-rc.1 ->
+ * 'Arc Power Ver. 1.0.0'). The app:version IPC keeps the BARE semver -
+ * the display suffix is a renderer concern. Degraded/missing version
+ * falls back to 0.0.0 (a bare stable - no suffix - never an empty line).
  */
 export function displayVersion(version: string | null | undefined): string {
-  const bare = version && version.length > 0 ? version : '0.0.0';
-  const isBeta = /-beta\.\d+$/i.test(bare);
-  const cleaned = isBeta ? bare.replace(/-beta\.\d+$/i, '') : bare;
-  return `Arc Power Ver. ${cleaned}${isBeta ? ' Beta' : ' Alpha'}`;
+  const raw = version && version.length > 0 ? version : '0.0.0';
+  const beta = /^(.*?)-beta\.\d+$/i.exec(raw);
+  if (beta) return `Arc Power Ver. ${beta[1]} Beta`;
+  return `Arc Power Ver. ${raw.replace(/-[^-]*$/, '')}`;
 }
 
 /**
@@ -113,10 +114,10 @@ export class GpuHeader {
         el('div', { class: 'gpu-identity' }, [
           el('div', { class: 'gpu-name', text: gpuName }),
           // M4-A/M5: the display label carries the release-stage suffix
-          // (' Alpha' for bare semvers, ' Beta' for the -beta.x line - the
-          // Beta release restarted at 1.0.0); the app:version IPC keeps the
-          // bare semver (test/ipc-core pins the package.json version). M8:
-          // the 1.1.1 base bump displays 'Arc Power Ver. 1.1.1 Alpha'.
+          // (' Beta' for the -beta.x line only - the M11 "Alpha" scheme
+          // removal: a stable release shows the plain version, e.g. the
+          // 1.0 Release 'Arc Power Ver. 1.0.0'); the app:version IPC keeps
+          // the bare semver (test/ipc-core pins the package.json version).
           el('div', { class: 'gpu-meta', text: gpuMeta }),
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),

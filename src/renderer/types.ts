@@ -83,9 +83,6 @@ export interface PerControlResult {
   readBackEqual?: boolean;
   /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */
   silentNoop?: boolean;
-  /** M10b: the honest modeset-flash note the scaling apply carries (the
-   *  physical-modeset warning surfaced via the apply-result toast). */
-  warning?: string;
 }
 
 export interface ApplyResult {
@@ -544,50 +541,3 @@ export interface GraphicsApplyResponse {
   graphicsState: GraphicsState | null;
 }
 
-// ---------------------------------------------------------------------------
-// M10b - the Graphics "Display" view (the IGCL display-output surface)
-// ---------------------------------------------------------------------------
-
-/** M10b: the display-view apply intent for ONE display (an absent field =
- *  leave the driver value untouched). The canonical strings mirror the
- *  main-side contract (backend.interface.js option lists); the scalingMode
- *  values are the driver's scaling-type FLAG names. */
-export interface DisplaySettings {
-  quantizationRange?: 'default' | 'limited' | 'full';
-  wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444'; depth: number };
-  scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom';
-}
-
-/** M10b: the driver read-back (getDisplaySettings) - never throws; the
- *  { displays: [] } shape is the honest "no display outputs" degrade (the
- *  no-controls surface the page renders honestly). */
-export interface DisplayState {
-  displays: Array<{
-    id: number;
-    name: string | null;
-    connection: 'DisplayPort' | 'HDMI' | 'DVI' | 'MIPI' | 'CRT' | 'Unknown';
-    resolution: { width: number; height: number } | null;
-    refreshRate: number | null;
-    colorDepth: number | null;
-    colorFormat: string | null;
-    quantizationRange: 'default' | 'limited' | 'full' | null;
-    scalingMode: string | null;
-    supportedOptions: {
-      scalingModes: string[];
-      scalingMethods: string[];
-      wireFormats: string[];
-      bpcDepths: number[];
-      quantizationRanges: string[];
-    };
-    flags: { active: boolean; attached: boolean; dongleConnected: boolean; ditheringEnabled: boolean };
-    arcSync: { supported: boolean; minRefreshHz: number | null; maxRefreshHz: number | null; profile: string | null };
-  }>;
-}
-
-/** M10b: the display:apply envelope - the FRESH read-back (displayState)
- *  for the page's per-control refresh after every apply. */
-export interface DisplayApplyResponse {
-  ok: boolean;
-  perControl: Record<string, PerControlResult>;
-  displayState: DisplayState | null;
-}
