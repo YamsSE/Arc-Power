@@ -138,7 +138,13 @@ export function createMonitorLog(deps = {}) {
           fs.mkdirSync(path.dirname(file), { recursive: true });
           currentFile = { path: file, headerWritten: false };
         }
-        if (!currentFile.headerWritten) {
+        // M10b (ui-verify race fix): ALSO write the header when the file is
+        // MISSING - the verify's clean-slate deletion removes the day's file
+        // mid-session, and the in-memory headerWritten flag alone would then
+        // recreate the file WITHOUT its header (the header must never be
+        // lost on a recreated file - a log viewer needs it to read the
+        // columns).
+        if (!currentFile.headerWritten || !fs.existsSync(file)) {
           fs.appendFileSync(file, MONITOR_LOG_HEADER + '\n');
           currentFile.headerWritten = true;
         }

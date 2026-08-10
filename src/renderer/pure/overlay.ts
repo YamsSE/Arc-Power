@@ -122,12 +122,14 @@ export function isValidOverlayStat(v: unknown): v is string {
 }
 
 /** M10a: the canonical Graphics-API field labels (the ONLY strings the api
- *  field may ever show - 'DX12' / 'Vulkan' / 'DX11' / 'OpenGL'; the ids are
- *  the detector contract of src/main/foreground-api.js). */
+ *  field may ever show - 'DX12' / 'Vulkan' / 'DX11' / 'DX9' / 'OpenGL'; the
+ *  ids are the detector contract of src/main/foreground-api.js; M10b added
+ *  'dx9' - the League-of-Legends (DirectX 9) detection). */
 export const OVERLAY_API_LABELS: Record<string, string> = {
   dx12: 'DX12',
   vulkan: 'Vulkan',
   dx11: 'DX11',
+  dx9: 'DX9',
   opengl: 'OpenGL',
 };
 

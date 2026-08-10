@@ -462,9 +462,9 @@ export interface FpsSample {
   low1Pct: number | null;
   p99: number | null;
   /** M10a: the foreground window's graphics API - 'dx12' | 'vulkan' |
-   *  'dx11' | 'opengl'; null when nothing is detected (the overlay FPS-row
-   *  badge field vanishes - the honest "if it's none, it won't display
-   *  anything"). */
+   *  'dx11' | 'dx9' | 'opengl' (M10b: dx9 - the DirectX-9 detection);
+   *  null when nothing is detected (the overlay FPS-row badge field
+   *  vanishes - the honest "if it's none, it won't display anything"). */
   api: string | null;
 }
 

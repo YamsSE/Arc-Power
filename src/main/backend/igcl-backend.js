@@ -1252,11 +1252,17 @@ export class IgclBackend {
       if (!features.has(CTL_3D_FEATURE.LOW_LATENCY)) {
         fail('lowLatency', 'unsupported', 'low latency mode is not supported on this device');
       } else {
-        const detail = features.get(CTL_3D_FEATURE.LOW_LATENCY);
-        const optionOk = detail?.enumSupportedTypes != null
-          ? (v) => (detail.enumSupportedTypes & (1n << BigInt(v))) !== 0n
-          : null;
-        setEnum('lowLatency', CTL_3D_FEATURE.LOW_LATENCY, settings.lowLatency, GRAPHICS_LL_TO_IGCL, optionOk);
+        // M10b (user fix): NO caps pre-gate on the low-latency set - the M8
+        // probe recorded LOW_LATENCY caps 0x3 (off/on only) yet the driver
+        // ACCEPTS TURN_ON_BOOST_MODE_ON (the Intel Graphics Software proves
+        // it); the old optionOk gate refused 'on-boost' BEFORE the set and
+        // the user's apply failed with 'not supported in the driver' while
+        // IGS itself offers On + Boost and it works. The set now attempts
+        // the REAL driver set and lets the driver's ACTUAL result decide - a
+        // genuine refusal still surfaces honestly through the ApplyResult
+        // machinery (fail() below). The caps stay a UI hint only (the
+        // getGraphicsSettings supportedOptions list still mirrors them).
+        setEnum('lowLatency', CTL_3D_FEATURE.LOW_LATENCY, settings.lowLatency, GRAPHICS_LL_TO_IGCL, null);
       }
     }
 
