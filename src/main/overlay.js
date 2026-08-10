@@ -55,8 +55,11 @@ const OVERLAY_SCALE_MAX = 2.0;
 // three in lockstep like the positions).
 // M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
 // the list in THIS order, right after 'fps'.
+// M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
+// 'fps-99pct' (the lockstep owner is profile-store.js; the renderer mirror
+// is pure/overlay.ts).
 const OVERLAY_STAT_IDS = [
-  'fps', 'fps-1pct-low', 'fps-99pct', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
   'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];

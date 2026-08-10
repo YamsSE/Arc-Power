@@ -36,8 +36,13 @@ const OVERLAY_SCALE_MAX = 2.0;
 // M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
 // the list in THIS order, right after 'fps' (ipc-core imports this list -
 // the ids propagate automatically).
+// M10a: 'api' (the foreground-window Graphics-API badge - the FPS-row
+// field between FPS and 1% Low) rides AFTER 'fps-99pct' - the tickbox
+// renders after '99% FPS' while the ROW renders the field between FPS and
+// 1% Low (the row order and the tickbox order are independent - the
+// fpsLine field order is explicit in pure/overlay.ts).
 const OVERLAY_STAT_IDS = [
-  'fps', 'fps-1pct-low', 'fps-99pct', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
   'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];

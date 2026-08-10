@@ -461,6 +461,11 @@ export interface FpsSample {
    *  60-frame floor is reached - the honest '-' on the overlay FPS row). */
   low1Pct: number | null;
   p99: number | null;
+  /** M10a: the foreground window's graphics API - 'dx12' | 'vulkan' |
+   *  'dx11' | 'opengl'; null when nothing is detected (the overlay FPS-row
+   *  badge field vanishes - the honest "if it's none, it won't display
+   *  anything"). */
+  api: string | null;
 }
 
 // ---------------------------------------------------------------------------

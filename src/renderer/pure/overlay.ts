@@ -49,9 +49,13 @@ export const OVERLAY_SCALE_MAX = 2.0;
  * frametime id is NOT a line - it drives the canvas strip visibility.
  * M7a: 'fps-1pct-low' + 'fps-99pct' ride the FPS row (in this order, right
  * after 'fps') - the 1% Low / 99% FPS percentile stats.
+ * M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
+ * 'fps-99pct' - the tickbox renders after '99% FPS' while the ROW renders
+ * the field between FPS and 1% Low (the row order and the tickbox order
+ * are independent - the fpsLine field order is explicit in overlayLines).
  */
 export const OVERLAY_STAT_IDS: readonly string[] = [
-  'fps', 'fps-1pct-low', 'fps-99pct', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
   'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];
@@ -61,6 +65,7 @@ export const OVERLAY_STAT_LABELS: Record<string, string> = {
   fps: 'FPS',
   'fps-1pct-low': '1% Low',
   'fps-99pct': '99% FPS',
+  api: 'Graphics API',
   'cpu-util': 'CPU Util',
   'cpu-clock': 'CPU Clock',
   'cpu-temp': 'CPU Temp',
@@ -114,6 +119,22 @@ export function isValidOverlayPosition(v: unknown): v is OverlayPosition {
 /** M6: whether v is one of the canonical overlay stat ids. */
 export function isValidOverlayStat(v: unknown): v is string {
   return typeof v === 'string' && (OVERLAY_STAT_IDS as readonly string[]).includes(v);
+}
+
+/** M10a: the canonical Graphics-API field labels (the ONLY strings the api
+ *  field may ever show - 'DX12' / 'Vulkan' / 'DX11' / 'OpenGL'; the ids are
+ *  the detector contract of src/main/foreground-api.js). */
+export const OVERLAY_API_LABELS: Record<string, string> = {
+  dx12: 'DX12',
+  vulkan: 'Vulkan',
+  dx11: 'DX11',
+  opengl: 'OpenGL',
+};
+
+/** M10a: the display label for a detected api id - null for null/unknown
+ *  (the FPS-row field VANISHES - never '-', never a raw id). */
+export function apiLabelOf(v: unknown): string | null {
+  return typeof v === 'string' ? (OVERLAY_API_LABELS[v] ?? null) : null;
 }
 
 /**
@@ -205,8 +226,13 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  * it is prefixed ONCE to the first field when the row is non-empty
  * ('CPU 61°C' for a temp-only row - never a bare '61°C'; the stock rows
  * keep their exact strings).
+ * M10a: the api parameter (the foreground-window Graphics-API badge) - the
+ * field sits BETWEEN FPS and 1% Low ('FPS 60  DX12  1% Low 52  99% FPS 58')
+ * and VANISHES when the api is null/unknown (the user's "if it's none, it
+ * won't display anything" - no '-') and when the api stat is off; the
+ * field only ever shows the canonical labels (apiLabelOf).
  */
-export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null): OverlayLines {
+export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null): OverlayLines {
   const s = sample ?? {};
   // M6: the percentage formatter ROUNDS to whole percents (the user's
   // decimals complaint - the real OS GPUEngine counter is a float
@@ -234,8 +260,16 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // The percentile fields round to whole numbers and render '-' when null
   // (the sampler's honest degrade before the 60-frame floor). All three
   // off -> ''.
+  // M10a: the Graphics-API badge sits between FPS and 1% Low ('FPS 60
+  // DX12  1% Low 52  99% FPS 58') - the field VANISHES when the api is
+  // null/unknown (the user's "if it's none, it won't display anything" -
+  // no '-') and when the api stat is off.
   let fpsLine = '';
   if (enabled.has('fps')) fpsLine += fpsNum !== null && fpsNum > 0 ? `FPS ${Math.round(fpsNum)}` : 'FPS -';
+  if (enabled.has('api')) {
+    const apiLabel = apiLabelOf(api);
+    if (apiLabel !== null) fpsLine += `  ${apiLabel}`;
+  }
   if (enabled.has('fps-1pct-low')) fpsLine += `  1% Low ${low1 === null ? '-' : Math.round(low1)}`;
   if (enabled.has('fps-99pct')) fpsLine += `  99% FPS ${p99num === null ? '-' : Math.round(p99num)}`;
   // M6: each line builds from its ENABLED stats only - a stat off -> its

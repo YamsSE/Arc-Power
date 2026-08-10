@@ -31,6 +31,7 @@ import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createDxgiFpsAdapter } from './fps-dxgi.js';
+import { createForegroundApiDetector } from './foreground-api.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
 import { createMsrReader } from './msr-reader.js';
 import { createMonitorLog } from './monitor-log.js';
@@ -904,16 +905,30 @@ async function main() {
   // polling on navigation away (M2b review F4), and returns a FIXED sample
   // ONLY under RID_MOCK_FPS=1 (the new pin). M7a: the fixed sample carries
   // the percentile stats (52 / 58 - the ui-verify FPS-row pins).
+  // M10a: RID_MOCK_API=1 rides the SAME inline sample (api 'dx12' - the
+  // fixture) - the knobs travel together (RID_MOCK_API without
+  // RID_MOCK_FPS=1 produces nothing, because the poll returns null).
   let fpsPolls = 0;
   const fpsAdapter = mock
     ? {
         poll: async () => {
           fpsPolls += 1;
-          if (process.env.RID_MOCK_FPS === '1') return { fps: 60, frameTimeMs: 16.7, gpuBusy: 0.6, low1Pct: 52, p99: 58 };
+          if (process.env.RID_MOCK_FPS === '1') {
+            const sample = { fps: 60, frameTimeMs: 16.7, gpuBusy: 0.6, low1Pct: 52, p99: 58 };
+            if (process.env.RID_MOCK_API === '1') sample.api = 'dx12';
+            return sample;
+          }
           return null;
         },
       }
     : createDxgiFpsAdapter();
+  // M10a: the foreground-window Graphics-API detector. THE DETERMINISM
+  // SEAM (plan-review M-3): the REAL koffi detector runs ONLY in the
+  // non-mock path - mock/ui-verify mode leaves the null-returning DEFAULT
+  // in place, because the verify machine's own Electron/Chromium
+  // foreground process would honestly report 'dx11' and break the
+  // none-case pins nondeterministically.
+  const foregroundApi = mock ? undefined : createForegroundApiDetector();
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory used).
   // Mock: fixed deterministic values. Real: the rolling-delta CIM adapter;
   // its GPU-memory match needs the backend device's LUID - the IGCL
@@ -1513,6 +1528,7 @@ async function main() {
     registryCatalog,
     registryApply,
     fpsAdapter,
+    foregroundApi,
     sysStats,
     monitorLog,
     oldIgcl,
@@ -1586,9 +1602,11 @@ async function main() {
     } else if (process.env.RID_MOCK_OVERLAY === '1') {
       // M5: the overlay variant - the overlay window is REAL (created above
       // under the knob, seeded overlayEnabled:true); the hotkey is the
-      // counting probe (never a real registration). Two matrix configs:
-      // 'overlay' alone (the 'FPS -  1% Low -  99% FPS -' pin) and
-      // 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS 60  1% Low 52  99% FPS 58').
+      // counting probe (never a real registration). Three matrix configs:
+      // 'overlay' alone (the 'FPS -  1% Low -  99% FPS -' pin), 'overlay+fps'
+      // (RID_MOCK_FPS=1 - 'FPS 60  1% Low 52  99% FPS 58') and
+      // 'overlay+fps+api' (RID_MOCK_API=1 - 'FPS 60  DX12  1% Low 52
+      // 99% FPS 58' - the Graphics-API badge rides the same sample).
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
       await runGraphicsVerify(win, backend);
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);

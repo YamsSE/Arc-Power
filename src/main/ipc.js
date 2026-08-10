@@ -32,6 +32,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   registryCatalog?: ReturnType<typeof createRegistryCatalog>,
  *   registryApply?: ReturnType<typeof createRegistryApply>,
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
+ *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
  *   sysStats?: { sample: () => Promise<unknown> },
  *   monitorLog?: { append: (sample: object) => Promise<unknown> },
  *   rebuildTray?: () => Promise<unknown>,
@@ -47,7 +48,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {} }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), foregroundApi = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {} }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -59,6 +60,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     registryCatalog,
     registryApply,
     fpsAdapter,
+    foregroundApi,
     sysStats,
     monitorLog,
     rebuildTray,

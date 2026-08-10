@@ -48,6 +48,10 @@ let latestFps: number | null = null;
 // sampler reports them - the honest '-' fields on the FPS row).
 let latestLow1Pct: number | null = null;
 let latestP99: number | null = null;
+// M10a: the latest foreground-window Graphics-API id from the same poll
+// (null when nothing is detected - the api field vanishes; the sample's
+// null-returning polls keep the last known value, like the fps itself).
+let latestApi: string | null = null;
 let series: SeriesPoint[] = [];
 // M6: the pushed color + stats (undefined until the first push -> the
 // stock white + the full stat set - the overlayLines defaults).
@@ -114,7 +118,9 @@ function sizeCanvas(): void {
 function render(): void {
   // M7a: the latest percentile stats ride the same fps poll into the FPS
   // row (null -> the honest '-' fields).
-  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99);
+  // M10a: the latest Graphics-API id rides along (null -> the field
+  // vanishes - never '-', never a raw id).
+  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi);
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
   gpuEl.textContent = lines.gpuLine;
@@ -195,6 +201,10 @@ async function bootFpsLoop(): Promise<void> {
       // sample lacks them - the honest '-' on the FPS row).
       latestLow1Pct = typeof sample.low1Pct === 'number' ? sample.low1Pct : null;
       latestP99 = typeof sample.p99 === 'number' ? sample.p99 : null;
+      // M10a: the foreground-window Graphics-API id rides the same poll
+      // (null when the sample lacks it - the api field vanishes; the
+      // canonical labels are resolved by apiLabelOf in overlayLines).
+      latestApi = typeof sample.api === 'string' ? sample.api : null;
       // S1/M2: the frametime series - the real DXGI adapter returns
       // frameTimeMs: null on every path, so deriveFrameTimeMs derives
       // 1000/fps (TWO decimals - M6-amd2: the value line shows max 2

@@ -717,9 +717,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // Driver version row is REMOVED - M4-H). M8: the 1.1.0 base bump changed
   // the display form; M9: the 1.1.1 base bump (displayVersion strips the
   // -beta.x tag of a prerelease version and appends ' Alpha' to a bare
-  // semver).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.1 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.1 Alpha')`);
+  // semver). M10a: the 1.2.0 base bump.
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.2.0 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.2.0 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -3559,9 +3559,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   // Version row (app:version via the header line's display format). M9: the
-  // 1.1.1 base bump ('Arc Power Ver. 1.1.1 Alpha').
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.1 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.1 Alpha')`);
+  // 1.1.1 base bump ('Arc Power Ver. 1.1.1 Alpha'); M10a: the 1.2.0 bump.
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.2.0 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.2.0 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3623,7 +3623,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.1.1 Alpha`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.2.0 Alpha`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -5482,8 +5482,9 @@ export async function runBootApplyExtVerify(win, backend, store) {
 }
 
 // ---------------------------------------------------------------------------
-// M5 - the software-overlay variant (RID_MOCK_OVERLAY=1, two matrix configs:
-// 'overlay' alone and 'overlay+fps' with RID_MOCK_FPS=1).
+// M5 - the software-overlay variant (RID_MOCK_OVERLAY=1, three matrix
+// configs: 'overlay' alone, 'overlay+fps' with RID_MOCK_FPS=1, and
+// 'overlay+fps+api' with RID_MOCK_API=1 - the M10a Graphics-API badge).
 // ---------------------------------------------------------------------------
 //
 // The session seed (main.js) wrote overlayEnabled:true + the default
@@ -5498,7 +5499,10 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //       pattern-matched (/GPU 42%  \d+ MHz  2187 MHz  3\.0 GB  \d+°C
 //       38\.8 W  1030 RPM/); the FPS row pins the FULL line - 'FPS -  1%
 //       Low -  99% FPS -' unless RID_MOCK_FPS=1 -> 'FPS 60  1% Low 52
-//       99% FPS 58' (M7a: the percentile stats ride the FPS row);
+//       99% FPS 58' (M7a: the percentile stats ride the FPS row); M10a:
+//       RID_MOCK_API=1 -> 'FPS 60  DX12  1% Low 52  99% FPS 58' (the
+//       Graphics-API badge between FPS and 1% Low - the mock fixture at
+//       main.js; without the knob the field vanishes);
 //   (c) the frametime canvas has DRAWN content under RID_MOCK_FPS=1 (the
 //       16.7 ms passthrough series);
 //   (d) M7b (fix 5): the SHORTCUT semantics - 'overlay:toggle' (the
@@ -5514,8 +5518,8 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //       off -> persisted false + hidden (the shortcut does NOTHING while
 //       off), on -> persisted true + shown (the shortcut flips the
 //       visibility only, never the persisted value);
-//   (f3/f3b/f4) the stat tickbox round trips (gpu-fan, the M7a 1% Low /
-//       99% FPS pair, the frametime strip);
+//   (f3/f3b/f3c/f4) the stat tickbox round trips (gpu-fan, the M7a 1% Low /
+//       99% FPS pair, the M10a Graphics-API badge, the frametime strip);
 //   (f5) the color swatch round trip (overlayColor + the CSSOM var + the
 //       canvas stroke);
 //   (f6) M7b (fix 4): the background box round trip - the toggle, the
@@ -5554,6 +5558,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   const ojs = (code) => overlayWin.webContents.executeJavaScript(code);
   const mockFps = process.env.RID_MOCK_FPS === '1';
+  // M10a: RID_MOCK_API=1 - the mock fps sample carries the 'dx12' fixture
+  // (the knobs travel together; without RID_MOCK_FPS the poll returns null
+  // and no api field ever renders).
+  const mockApi = process.env.RID_MOCK_API === '1';
 
   // (a) the seeded session: exists + visible.
   const s0 = await js(`window.arcPower.overlayGetState()`);
@@ -5582,7 +5590,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // M7a: the FPS row carries the percentile stats - the full pinned line:
   // 'FPS 60  1% Low 52  99% FPS 58' under RID_MOCK_FPS=1 (the mock fixture
   // 52/58 at main.js) / 'FPS -  1% Low -  99% FPS -' without it.
-  const fpsPin = mockFps ? 'FPS 60  1% Low 52  99% FPS 58' : 'FPS -  1% Low -  99% FPS -';
+  // M10a: under RID_MOCK_API=1 the Graphics-API badge sits between FPS and
+  // 1% Low ('FPS 60  DX12  1% Low 52  99% FPS 58'); without the knob the
+  // field VANISHES (the none-detection case - 'FPS 60  1% Low 52
+  // 99% FPS 58').
+  const fpsPin = mockFps
+    ? (mockApi ? 'FPS 60  DX12  1% Low 52  99% FPS 58' : 'FPS 60  1% Low 52  99% FPS 58')
+    : 'FPS -  1% Low -  99% FPS -';
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 10000))) {
     fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
@@ -5814,9 +5828,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // round-trip like gpu-fan: unchecking BOTH reverts the fps line to the
   // plain frame-rate field ('FPS 60' under RID_MOCK_FPS=1 - the fields
   // vanish with their stats), re-checking restores the full pinned line.
+  // M10a: the Graphics-API badge is an INDEPENDENT stat - under
+  // RID_MOCK_API=1 it survives the percentile uncheck ('FPS 60  DX12').
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
-  const plainFpsPin = mockFps ? 'FPS 60' : 'FPS -';
+  const plainFpsPin = mockFps ? (mockApi ? 'FPS 60  DX12' : 'FPS 60') : 'FPS -';
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-1pct-low') === false && e.settings.overlayStats.includes('fps-99pct') === false)`, 5000))) {
     fail('M7a: unchecking the 1% Low / 99% FPS tickboxes did not persist overlayStats without them');
   }
@@ -5829,6 +5845,30 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     fail(`M7a: the overlay FPS line did not regain the percentile fields after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
   }
   step('m7a-fps-stats-tickbox', `the 1% Low / 99% FPS tickbox round trip: uncheck both -> the fps line reverts to '${plainFpsPin}'; re-check -> '${fpsPin}' again`);
+
+  // (f3c) M10a: the Graphics-API stat - the api tickbox round-trips like
+  // the percentile pair: unchecking it drops the ' DX12' field from the
+  // fps line (a stat off -> its field vanishes), re-checking restores the
+  // full pinned line. Meaningful ONLY under RID_MOCK_API=1 (the mock
+  // sample's 'dx12' - without the knob the field never renders and the
+  // base fpsPin above already pins the none-detection case).
+  if (mockApi) {
+    const noApiPin = 'FPS 60  1% Low 52  99% FPS 58';
+    await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="api"]'); if (b) b.click(); })()`);
+    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('api') === false)`, 5000))) {
+      fail('M10a: unchecking the Graphics-API tickbox did not persist overlayStats without api');
+    }
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${noApiPin}'`, 5000))) {
+      fail(`M10a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${noApiPin}' after unchecking the api stat - the field must vanish)`);
+    }
+    await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="api"]'); if (b) b.click(); })()`);
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 5000))) {
+      fail(`M10a: the overlay FPS line did not regain the Graphics-API badge after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
+    }
+    step('m10a-api-tickbox', `the Graphics-API tickbox round trip: uncheck -> the fps line reverts to '${noApiPin}'; re-check -> '${fpsPin}' again`);
+  } else {
+    step('m10a-api-tickbox', 'the Graphics-API tickbox round trip SKIPPED (RID_MOCK_API not set - the field never renders; the none-case fpsPin above covers it)');
+  }
 
   // (f4) M6: the frametime stat is NOT a line - unchecking it HIDES the
   // canvas strip AND the value line below it (M6-amd2: the stat controls

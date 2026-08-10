@@ -460,7 +460,8 @@ export async function resolveBootDeviceId(backend, store) {
  *   openExternal?: (url: string) => Promise<unknown>,  // M4-H: injected shell.openExternal (the sidebar GitHub link)
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
- *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null } | null>, stop?: () => Promise<void> },
+ *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, low1Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
+ *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }> },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample)
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
@@ -547,6 +548,12 @@ export function createIpcHandlers({
   // product path. On this machine the real adapter may also degrade to
   // null (DXGI unavailable), so mock and product agree on 'unavailable'.
   fpsAdapter = { poll: async () => null },
+  // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
+  // badge). The DEFAULT is the null-returning detector (tests + mock/
+  // ui-verify NEVER run the real koffi probe - the determinism seam:
+  // main.js wires the real detector ONLY in the non-mock path); the
+  // ipc-core fps-poll handler composes its result into the sample.
+  foregroundApi = { detect: async () => null },
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
   // M4-E: the distribution kind for the app:build-info channel ('dev' in
@@ -1182,9 +1189,17 @@ export function createIpcHandlers({
       // default adapter is the mock (always null); the product path injects
       // the real DXGI adapter, which itself degrades to null when DXGI is
       // unavailable. Never throws.
+      // M10a: the sample COMPOSES the foreground-window Graphics-API badge -
+      // the fpsAdapter's own api field (the RID_MOCK_API=1 mock fixture)
+      // wins, otherwise the injected detector answers (the DEFAULT is the
+      // null-returning detector - the determinism seam; the real koffi
+      // probe runs only in the product path).
       'fps-poll': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return fpsAdapter.poll(deviceId);
+        const sample = await fpsAdapter.poll(deviceId);
+        if (sample === null || typeof sample !== 'object') return null;
+        const api = sample.api ?? (await foregroundApi.detect());
+        return { ...sample, api };
       },
 
       // M4-D2 (user): Monitoring "Log to file" - append one log line for a
