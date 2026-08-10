@@ -2,6 +2,10 @@
   <img src="src/assets/icon.png" alt="Arc Power" width="120">
 </p>
 
+<p align="center">
+  <a href="https://discord.gg/nXAjasHy6e"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord"></a>
+</p>
+
 <h1 align="center">Arc Power</h1>
 
 <p align="center"><b>1.1.1 Alpha</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 360px; overflow: hidden; }
+  body {
+    font-family: 'Inter', system-ui, 'Segoe UI', sans-serif;
+    background: #0a0d14; color: #e8eef7;
+    position: relative;
+  }
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(76,194,255,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(76,194,255,0.05) 1px, transparent 1px);
+    background-size: 52px 52px;
+    mask-image: radial-gradient(ellipse 80% 100% at 50% 50%, black 25%, transparent 75%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 100% at 50% 50%, black 25%, transparent 75%);
+  }
+  .glow-a {
+    position: absolute; width: 1100px; height: 480px; top: -260px; left: 50%;
+    transform: translateX(-50%);
+    background: radial-gradient(ellipse, rgba(76,194,255,0.22), transparent 65%);
+  }
+  .glow-b {
+    position: absolute; width: 760px; height: 380px; bottom: -300px; left: 12%;
+    background: radial-gradient(ellipse, rgba(76,194,255,0.10), transparent 65%);
+  }
+  .wrap {
+    position: relative; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 20px;
+  }
+  .brand { display: flex; align-items: center; gap: 30px; }
+  .brand img {
+    width: 108px; height: 108px;
+    filter: drop-shadow(0 0 28px rgba(76,194,255,0.45));
+  }
+  .brand-name {
+    font-size: 104px; font-weight: 800; letter-spacing: -0.04em; line-height: 1;
+  }
+  .brand-name .grad {
+    background: linear-gradient(100deg, #4cc2ff 10%, #8fd8ff 55%, #7ee0ff 90%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 32px rgba(76,194,255,0.30));
+  }
+  .sub {
+    font-size: 27px; font-weight: 500; color: #93a0b4; letter-spacing: 0.01em;
+  }
+  .sub b { color: #8fd8ff; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="grid" aria-hidden="true"></div>
+  <div class="glow-a" aria-hidden="true"></div>
+  <div class="glow-b" aria-hidden="true"></div>
+
+  <div class="wrap">
+    <div class="brand">
+      <img src="../website/assets/logo.svg" alt="">
+      <span class="brand-name">Arc <span class="grad">Power</span></span>
+    </div>
+    <div class="sub">Overclocking &amp; tuning for Intel Arc GPUs &middot; <b>overlay</b> &middot; <b>graphics tuning</b></div>
+  </div>
+</body>
+</html>
