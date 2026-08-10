@@ -1,23 +1,23 @@
-// Arc Power — M3-C-C "new minimal mark" icon generator (PURE JS, no deps).
+// Arc Power - M3-C-C "new minimal mark" icon generator (PURE JS, no deps).
 //
 // Renders the brand icon procedurally and writes:
-//   build/icon.ico           — multi-size ICO for electron-builder
-//   build/icon.png           — 256 px reference PNG (build resources)
-//   src/assets/icon.png      — 256 px runtime icon (BrowserWindow)
-//   src/assets/tray-icon.png — 32 px runtime tray icon
-//   src/assets/favicon.png   — 16 px page favicon
+//   build/icon.ico           - multi-size ICO for electron-builder
+//   build/icon.png           - 256 px reference PNG (build resources)
+//   src/assets/icon.png      - 256 px runtime icon (BrowserWindow)
+//   src/assets/tray-icon.png - 32 px runtime tray icon
+//   src/assets/favicon.png   - 16 px page favicon
 //
-// Design (user: "new minimal mark", M3-C-C):
+// Design ("new minimal mark", M3-C-C):
 //   - a DARK rounded square (corner radius 24%) with a subtle vertical
-//     gradient #1a2132 (top) -> #0f131f (bottom) — the app's dark surface
+//     gradient #1a2132 (top) -> #0f131f (bottom) - the app's dark surface
 //     family, so the mark reads as a dark tile on any background;
-//   - a single BOLD blue "A" in #4cc2ff — EXACTLY the sidebar accent
+//   - a single BOLD blue "A" in #4cc2ff - EXACTLY the sidebar accent
 //     (styles.css --accent), the one brand color the app already uses;
 //     a filled triangle with a cut counter + a crossbar, so it stays a
 //     crisp "A" from 256 px down to 16 px (the favicon).
 //
 // The PNG encoder is hand-rolled (zlib for IDAT + manual chunks + CRC32)
-// and the ICO is a PNG-in-ICO container — no sharp/canvas/npm deps.
+// and the ICO is a PNG-in-ICO container - no sharp/canvas/npm deps.
 // Rendering uses 4x supersampling + box downsampling for smooth edges.
 
 import { deflateSync } from 'node:zlib';
@@ -31,14 +31,14 @@ const ASSETS_DIR = path.join(ROOT, 'src', 'assets');
 
 const SIZES = [16, 32, 64, 128, 256];
 
-// Palette (RGB). ACCENT is styles.css --accent (#4cc2ff) verbatim — the
+// Palette (RGB). ACCENT is styles.css --accent (#4cc2ff) verbatim - the
 // sidebar accent the mark must match.
 const ACCENT = [76, 194, 255];        // #4cc2ff
 const BG_TOP = [26, 33, 50];          // #1a2132
 const BG_BOTTOM = [15, 19, 31];       // #0f131f
 
 // ---------------------------------------------------------------------------
-// Shape tests (normalized 0..1 coordinates, y grows DOWN — SVG convention)
+// Shape tests (normalized 0..1 coordinates, y grows DOWN - SVG convention)
 // ---------------------------------------------------------------------------
 
 function roundedSquareAlpha(x, y) {
@@ -133,7 +133,7 @@ function renderIcon(size) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal PNG encoder (zlib + manual chunks + CRC32) — no deps
+// Minimal PNG encoder (zlib + manual chunks + CRC32) - no deps
 // ---------------------------------------------------------------------------
 
 const CRC_TABLE = (() => {
@@ -183,7 +183,7 @@ function encodePng(size, rgba) {
 }
 
 // ---------------------------------------------------------------------------
-// ICO container (PNG-in-ICO — valid for Vista+; entries carry PNG blobs)
+// ICO container (PNG-in-ICO - valid for Vista+; entries carry PNG blobs)
 // ---------------------------------------------------------------------------
 
 function encodeIco(pngs) {

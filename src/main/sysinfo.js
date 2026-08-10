@@ -256,7 +256,7 @@ export function jedecBrand(manufacturer) {
 }
 
 /**
- * M4-D2 (user: "read the driver's BAR state"): the DRIVER's Resizable BAR
+ * M4-D2 ("read the driver's BAR state"): the DRIVER's Resizable BAR
  * verdict (ctlPciGetProperties.resizable_bar_enabled - the same state IGS +
  * GPU-Z show) is the PRIMARY ReBAR source. Live-verified on this machine:
  * the driver reports enabled=1 while the OS resource map has no large BAR
@@ -283,7 +283,7 @@ export function applyDriverReBar(sysinfo, driverEnabled) {
 }
 
 /**
- * M4-D (user): the ReBAR verdict - a functioning Resizable BAR shows a
+ * M4-D: the ReBAR verdict - a functioning Resizable BAR shows a
  * multi-GiB memory BAR in the device resources (the A770's non-ReBAR
  * aperture is 16 MB; with ReBAR the BAR spans the full VRAM). True when
  * the largest memory range is >= 1 GiB; false otherwise (unknown when no
@@ -398,7 +398,7 @@ export function parseCimOutput(stdout) {
 }
 
 /**
- * M4-D (user): the honest os.cpus()/os.totalmem() fallback shape - RAM
+ * M4-D: the honest os.cpus()/os.totalmem() fallback shape - RAM
  * speed + video controllers degrade to null/empty (there is no OS-level
  * source for them), and `cores` degrades to null because os.cpus() cannot
  * distinguish physical from logical cores (never an estimate).

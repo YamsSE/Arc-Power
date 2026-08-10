@@ -6,7 +6,7 @@ import type { OcErrorCode } from '../types.ts';
 export const CONTROL_LABELS: Record<string, string> = {
   powerLimitW: 'Power limit',
   gpuVoltOffsetV: 'Voltage offset',
-  // M4-B (user): the card is named 'Core clock' in BOTH Offset and Clock
+  // M4-B: the card is named 'Core clock' in BOTH Offset and Clock
   // toggle modes - the mode is the input presentation, not the name.
   gpuFreqOffsetMhz: 'Core clock',
   tempLimitC: 'Temperature limit',
@@ -23,6 +23,11 @@ export const CONTROL_LABELS: Record<string, string> = {
   flipMode: 'Frame sync',
   frameLimit: 'FPS limit',
   lowLatency: 'Low latency',
+  // M10b (the Graphics "Display" view): the display controls (the
+  // dedicated display apply path's per-control toasts).
+  quantizationRange: 'Quantization range',
+  wireFormat: 'Wire format',
+  scalingMode: 'Scaling mode',
 };
 
 const ERROR_MESSAGES: Record<OcErrorCode, string> = {

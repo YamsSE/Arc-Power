@@ -11,7 +11,7 @@
 // on failure applies defaults (resetToDefaults) and reports the fallback -
 // never a silent partial apply. The "defaults restored" claim is only ever
 // made when a restore actually ran (fallbackApplied !== undefined).
-// M4O (user decision): the OC-MODE gate NEVER blocks a profile apply - the
+// M4O (decision): the OC-MODE gate NEVER blocks a profile apply - the
 // stock/advanced mode is the interactive SLIDER gate only; a saved profile
 // applies as saved against the driver's TRUE limits (the extended W/C
 // maxes), with the >315 W ceiling refusal + the runtime-capability refusal
@@ -128,7 +128,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     return { applied: false, reason: `profile '${profileId}' not found` };
   }
 
-  // M4O (user decision): the OC-mode gate is the INTERACTIVE slider gate
+  // M4O (decision): the OC-mode gate is the INTERACTIVE slider gate
   // ONLY - a profile apply (window boot apply, logon task, --apply-profile,
   // tray "Apply active profile", the Profiles-page Apply button) honors the
   // saved values as the user configured them ("it doesn't matter if the
@@ -158,7 +158,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // M4O: the gate keys on the RUNTIME capability, NOT the mode-gated
   // caps.extendedRanges flag - the backends only set that flag in advanced
   // mode, so in stock mode it is false even when the bundled 2023 runtime
-  // IS capable (the second blocker in the user report). The true probe is
+  // IS capable (the second blocker in the report). The true probe is
   // oldIgcl.isCapable() (mock: createMockOldIgcl -> backend.extendedCapable
   // - the RAW featureset flag, mode-independent). A genuinely not-capable
   // driver still refuses honestly with EXTENDED_UNAVAILABLE_MSG.

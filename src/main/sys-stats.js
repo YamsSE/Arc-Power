@@ -16,7 +16,7 @@
 //                      signal: on this BCLK-overclocked Z97 machine it
 //                      reads 130 (load-invariant - the ratio is locked at
 //                      33 and the bus at ~130 MHz), so the row shows
-//                      round(3301 × 130 / 100) = 4291 MHz = the user's
+//                      round(3301 × 130 / 100) = 4291 MHz = the
 //                      "4.3 GHz" (live-verified 2026-08-07). On machines
 //                      where the counter caps at 100 the row honestly
 //                      reads base × %-of-max (documented in the report);

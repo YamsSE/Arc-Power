@@ -10,7 +10,7 @@ import type { SysInfo, VideoControllerInfo } from '../types.ts';
  * Format a byte count as a human size ('32 GB'), '-' when null.
  * M4-D2 (§5, user): the RAM amount ROUNDS UP to the next whole GiB -
  * 34293735424 (31.93 GiB) renders "32 GB", never a floored "31 GB"
- * (documented ceil semantics per the user's request; the ".0" decimal is
+ * (documented ceil semantics per the request; the ".0" decimal is
  * dropped). Sub-GiB amounts render as whole MiB (never a rounded-up "1 GB"
  * lie for a 512 MB stick).
  */
@@ -86,7 +86,7 @@ export function mainboardRow(sysinfo: SysInfo | null): string {
 
 /**
  * M4-H: the CPU card's kv rows (data-label -> text). Honest '-' per null field.
- * M4-D (user): the cores/threads and the RAM brand/size/speed are BUNDLED
+ * M4-D: the cores/threads and the RAM brand/size/speed are BUNDLED
  * into single rows ("4 Cores / 8 Threads", "G.Skill 32 GB @ 2400 MHz").
  * M4-D2 (§6): the clock half of the cores row is the LIVE frequency - it
  * moved OUT of this static model (the dashboard renders it from the
@@ -181,7 +181,7 @@ export function cpuCardRows(sysinfo: SysInfo | null): CpuCardRows {
  * M4-I (B2): the shared VRAM-row value helper - the SAME ceil contract as
  * the backend's formatDeviceName (mirrored here - the renderer cannot
  * import the main-side module): >= 1 GiB -> "8GB" (CEIL to the next whole
- * GiB, the user's "round to the next number"), sub-GiB stays whole-MiB
+ * GiB, the "round to the next number"), sub-GiB stays whole-MiB
  * floor ("512 MB"), + the memType CARRIED ON THE DEVICE PAYLOAD when known
  * ("8GB GDDR6" - no renderer-side table). The no-Intel branch passes the
  * OS controller's vramBytes with no memType -> "size (+ type when known)".
@@ -198,7 +198,7 @@ export function vramRowValue(vramBytes: number | null | undefined, memType: stri
 }
 
 /**
- * M4-D (user): the ReBAR verdict for the GPU card pill. True -> green
+ * M4-D: the ReBAR verdict for the GPU card pill. True -> green
  * "ReBAR on"; false -> red "ReBAR off"; null -> grey "ReBAR -".
  */
 export interface RebarState {

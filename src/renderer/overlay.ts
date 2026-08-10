@@ -20,7 +20,7 @@
 // the fixed divs are never removed). The frametime stat is NOT a line - it
 // toggles the canvas strip's visibility.
 //
-// M6-amd2 (the user's amendment - the "below the FPS" part retracted, the
+// M6-amd2 (the amendment - the "below the FPS" part retracted, the
 // graph stays at the bottom): a frametime VALUE line sits directly BELOW
 // the canvas (#overlay-frametime-value) showing the latest derived frame
 // time with MAXIMUM 2 decimals ('16.67 ms' / '16.7 ms' - never padded;

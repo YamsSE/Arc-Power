@@ -3,7 +3,7 @@
 // OUT (the health card keeps it); Xe cores + shader units, bundled clocks
 // row, standalone ReBAR pill - M2C-B B2), the general GPU HEALTH card (five
 // honest rows: driver installed, device detected, OC working, OC waiver -
-// the ONLY persistent waiver display (M4-A user correction), Arc Power
+// the ONLY persistent waiver display (M4-A correction), Arc Power
 // working), the CPU & Memory card (M4-D2 - M4-H: DDR5 memory type + the
 // blue .kv-static-freq GHz speed span + the M4J Mainboard row), and a
 // compact live readout (M4-H: TWO labeled groups - CPU above GPU, both
@@ -49,7 +49,7 @@ function statValue(v: number | null | undefined, decimals = 0): string {
 }
 
 /** M4-H (C3)/M4M (D)/M4N (A): the CPU group of the live readout - Util
- *  FIRST (the user's order), then Core Frequency (M4N: GHz - the shared
+ *  FIRST (the planned order), then Core Frequency (M4N: GHz - the shared
  *  ghzFreq helper, the mock's 4300 MHz reads '4.3'), Temperature and the
  *  Power tile (M4N: renamed from Wattage; cpuPowerW from the PowerMeter
  *  counter - the class is often absent on desktops -> honest '-'). */
@@ -163,7 +163,7 @@ export const dashboardPage: Page = {
     lastSig = currentSig(ctx);
     const s = ctx.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-    // M4-D (user): the GPU-card PCIe/ReBAR rows read the sysinfo video
+    // M4-D: the GPU-card PCIe/ReBAR rows read the sysinfo video
     // controller matched to the device (name-family match - same rules as
     // the main-side VRAM lookup; null when unmatched -> honest '-' rows).
     const matchedController = s.sysinfo?.videoControllers
@@ -185,7 +185,7 @@ export const dashboardPage: Page = {
       el('h1', { class: 'page-title', text: 'Dashboard' }),
 
       el('div', { class: 'card-grid' }, [
-        // --- M4-D (user): the CPU & memory card - BEFORE the GPU card. ---
+        // --- M4-D: the CPU & memory card - BEFORE the GPU card. ---
         // M4-D2 (§9): the card title is "CPU & Memory". Fed by the
         // sysinfo:get payload (CIM at boot, mock fixture in --ui-verify);
         // every field degrades honestly to '-' (pure/sysinfo.ts
@@ -281,7 +281,7 @@ export const dashboardPage: Page = {
                 device.numXeCores > 0
                   ? el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}` })])
                   : null,
-                // M4-D (user): core + memory clock BUNDLED into one row -
+                // M4-D: core + memory clock BUNDLED into one row -
                 // "2400 MHz Core / 2187 MHz Memory" (the memory half tracks
                 // the latest telemetry sample in place).
                 el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', {
@@ -345,7 +345,7 @@ export const dashboardPage: Page = {
         grid.append(...tiles.map(statTileNode));
       }
     }
-    // M2C-B B8 (M4-D user update): the device-card COMBINED clocks row
+    // M2C-B B8 (M4-D update): the device-card COMBINED clocks row
     // tracks the latest sample in place (the card itself only re-renders
     // on status changes). 1.0.1 no-Intel round: skipped on the no-device
     // path - the row is the static honest '-' (no IGCL device to track).

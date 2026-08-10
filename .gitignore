@@ -3,7 +3,7 @@ dist/
 out/
 *.log
 
-# Testing (kept locally — npm test / smoke:mock / ui-verify need them on disk)
+# Testing (kept locally - npm test / smoke:mock / ui-verify need them on disk)
 test/
 mock/
 

@@ -56,7 +56,7 @@ const PRESET_DEFS: Array<{ id: string; name: string }> = [
   { id: 'max', name: 'Max' },
 ];
 
-// M4-B (user): the automatic waiver re-prompt + single retry counter - the
+// M4-B: the automatic waiver re-prompt + single retry counter - the
 // driver can lose the waiver while settings.json still says accepted; the
 // first fan apply then fails with waiver-not-set and re-prompts + retries
 // once. Reset on every successful apply. (Module-level: only one fan
@@ -123,7 +123,7 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
     : STOCK_FAN_CURVE;
   const initial: CurvePoint[] = clampPointCount(curveSource, maxPoints);
 
-  // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+  // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
   // GPU Health card - this view keeps no waiver UI beyond the apply-time
   // dialog gate (ensureWaiver in applyFan).
 
@@ -783,7 +783,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       } else {
         const freshCaps = await api.getCapabilities(deviceId);
         ctx.store.set({ caps: freshCaps });
-        // M4-B (user): a waiver-not-set failure must not dead-end the first
+        // M4-B: a waiver-not-set failure must not dead-end the first
         // apply with a confusing error - re-prompt the waiver dialog
         // AUTOMATICALLY (the store flag was just refreshed, so the dialog
         // shows) and retry ONCE. Never a loop; the counter resets on the

@@ -25,7 +25,7 @@
 import { createRequire } from 'node:module';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
-import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS } from './backend/backend.interface.js';
+import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
@@ -108,8 +108,48 @@ export function sanitizeGraphicsSettings(payload, range = null) {
 }
 
 /**
+ * M10b: validate a display-settings payload and return a clean copy - the
+ * DEDICATED display validator (plan-review S1, the graphics twin: the OC
+ * sanitizeSettings keeps rejecting display keys - display settings have no
+ * OC waiver and no OC-mode gate, so they never ride the OC machinery).
+ * Throws on anything illegal (unknown keys, bad options, a malformed
+ * wireFormat pair). The wire-format depth is validated against the
+ * canonical BPC list (6/8/10/12 - the driver's bpc-flag bit values). The
+ * per-display supported-list gating stays in the backend (the M10b-fix
+ * lesson: no caps pre-gate - the driver's ACTUAL answer decides).
+ * @param {unknown} payload
+ * @returns {import('./backend/backend.interface.js').DisplaySettings}
+ */
+export function sanitizeDisplaySettings(payload) {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error('display-settings payload must be a plain object');
+  }
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === 'quantizationRange') {
+      if (!DISPLAY_QUANTIZATION_OPTIONS.includes(value)) throw new Error(`quantizationRange must be one of: ${DISPLAY_QUANTIZATION_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else if (key === 'wireFormat') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || !DISPLAY_WIRE_FORMAT_OPTIONS.includes(value.model)
+        || !DISPLAY_BPC_OPTIONS.includes(value.depth)) {
+        throw new Error(`wireFormat must be { model: one of ${DISPLAY_WIRE_FORMAT_OPTIONS.join(', ')}, depth: one of ${DISPLAY_BPC_OPTIONS.join(', ')} }`);
+      }
+      out[key] = { model: value.model, depth: value.depth };
+    } else if (key === 'scalingMode') {
+      if (!DISPLAY_SCALING_MODE_OPTIONS.includes(value)) throw new Error(`scalingMode must be one of: ${DISPLAY_SCALING_MODE_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else {
+      throw new Error(`unknown display setting: ${key}`);
+    }
+  }
+  return out;
+}
+
+/**
  * M5: the hotkey letter must be EXACTLY one letter (CTRL + <letter> - the
- * user's rule: the letter is the only changeable part). Rejects with an
+ * rule: the letter is the only changeable part). Rejects with an
  * honest error - a multi-char or non-letter hotkey must never reach the
  * registration.
  * @param {unknown} v
@@ -317,14 +357,14 @@ export async function seedWaiverState(backend, store) {
 }
 
 /**
- * M4-D (user): boot-time driver-truth probe for the REAL path. A persisted
+ * M4-D: boot-time driver-truth probe for the REAL path. A persisted
  * `waiverAccepted: true` can be STALE - the driver-side waiver
  * (ctlOverclockWaiverSet) can be lost (reinstall, IGS reset) while
  * settings.json still says accepted. IGCL exposes no waiver getter, so the
  * only honest check is a write: apply the device's CURRENT power limit (a
  * no-op value write) and read the outcome.
  *
- * M4-D (user, PERMANENT acceptance): when the driver answers waiver-not-set
+ * M4-D (PERMANENT acceptance): when the driver answers waiver-not-set
  * while the persisted acceptance is TRUE, the elevated boot probe now
  * RESTORES the driver waiver (backend.setWaiverAccepted) instead of
  * clearing the store - the persisted acceptance is the user's permanent
@@ -667,7 +707,7 @@ export function createIpcHandlers({
     .some((p) => p?.errorCode === 'waiver-not-set');
 
   /**
-   * M4-D (user, PERMANENT acceptance): ONE apply attempt through the
+   * M4-D (PERMANENT acceptance): ONE apply attempt through the
    * elevation-aware worker or the in-process routed core, with the silent
    * waiver re-set + single retry. When the driver answers waiver-not-set
    * AND the persisted acceptance is true (settings.json - the user's
@@ -822,6 +862,42 @@ export function createIpcHandlers({
         return { ok: out.ok, perControl: out.perControl, graphicsState };
       },
 
+      // M10b (the Graphics "Display" view): the display-output surface.
+      // 'display:get' is the page's Display-view load read
+      // (assertValidDeviceId-guarded like graphics:get - the renderer NEVER
+      // calls it with a null deviceId: the no-Intel page guard renders
+      // 'No GPU available.' first). The backend never throws - the
+      // { displays: [] } shape is the honest no-controls degrade.
+      'display:get': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        return backend.getDisplaySettings(deviceId);
+      },
+
+      // M10b: the DEDICATED display apply path (plan-review S1, the
+      // graphics-apply twin - the OC machinery cannot carry a display
+      // payload: display settings have no OC waiver and no OC-mode gate).
+      // No ocModeRefusal, no extendedUnavailableRefusal, no OC waiver
+      // retry. The elevation-aware runner mirrors graphics:apply: the
+      // in-process branch + the elevated 'display-apply' worker branch (the
+      // elevation toast pattern stays on the page). The response envelope
+      // is { ok, perControl, displayState } with the FRESH
+      // getDisplaySettings read-back for the page's per-control refresh.
+      'display:apply': async (deviceId, displayId, payload) => {
+        assertValidDeviceId(deviceId);
+        if (!Number.isInteger(displayId) || displayId < 0) {
+          throw new Error(`invalid display id: ${JSON.stringify(displayId)}`);
+        }
+        const settings = sanitizeDisplaySettings(payload);
+        if (applyRunner?.needsWorker?.()) {
+          const out = await applyRunner.displayApply({ deviceId, displayId, settings });
+          return { ok: out.ok === true, perControl: out.perControl ?? {}, displayState: out.displayState ?? null };
+        }
+        const out = await backend.setDisplaySettings(deviceId, displayId, settings);
+        let displayState = null;
+        try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+        return { ok: out.ok, perControl: out.perControl, displayState };
+      },
+
       'apply-settings': async (deviceId, payload, opts) => {
         assertValidDeviceId(deviceId);
         const settings = sanitizeSettings(payload);
@@ -898,7 +974,7 @@ export function createIpcHandlers({
         // 2023 runtime above). The worker runs the SAME core + gate (the
         // request file carries ocMode - the worker's own caps always report
         // extendedRanges, so a caps-keyed gate there would silently clamp).
-        // M4-D (user, PERMANENT acceptance): runApply silently re-sets the
+        // M4-D (PERMANENT acceptance): runApply silently re-sets the
         // driver waiver + retries ONCE when the driver answers waiver-not-set
         // while the persisted acceptance is true (the consent stands - never
         // a dialog, never a dead-end, never a persisted false).
@@ -1058,7 +1134,7 @@ export function createIpcHandlers({
         return handlers['startup-get']();
       },
 
-      // M4-D (user): the system-info read (CPU card + the VRAM enrichment
+      // M4-D: the system-info read (CPU card + the VRAM enrichment
       // source). Read-side only, cached at boot in the product path; the
       // default adapter is the MOCK fixture (tests/--ui-verify never spawn
       // PowerShell).
@@ -1070,7 +1146,7 @@ export function createIpcHandlers({
         return typeof sysinfo.get === 'function' ? sysinfo.get() : sysinfo;
       },
 
-      // M4-D (user): the integrated-title-bar window controls. No payload;
+      // M4-D: the integrated-title-bar window controls. No payload;
       // the ops are injected (default no-ops in tests; main.js wires the
       // real BrowserWindow in the product path, counting probes in
       // --ui-verify mode).
@@ -1202,7 +1278,7 @@ export function createIpcHandlers({
         return { ...sample, api };
       },
 
-      // M4-D2 (user): Monitoring "Log to file" - append one log line for a
+      // M4-D2: Monitoring "Log to file" - append one log line for a
       // full telemetry sample (the pushed sample incl. the 4 system-stats
       // fields + fps). The payload is validated as a plain object; the
       // writer appends the line (header on first open) and never throws -
@@ -1338,7 +1414,7 @@ export function createIpcHandlers({
             : (THEMES.includes(patch.theme) ? patch.theme : cur.theme),
           // M5/M6: the software-overlay fields (the Overlay Settings page
           // persists them through this channel). The letter REJECTS with an
-          // honest error when it is not exactly one letter (the user's rule:
+          // honest error when it is not exactly one letter (the rule:
           // CTRL + <letter> - the letter is the only changeable part); the
           // position REJECTS outside the four corners; the scale is CLAMPED
           // to the slider's 0.5..2.0 range (never rejected - the slider
@@ -1446,7 +1522,7 @@ export function createIpcHandlers({
         return { ocMode };
       },
 
-      // M4-B (user): the Advanced OC Mode warning is accepted ONCE and
+      // M4-B: the Advanced OC Mode warning is accepted ONCE and
       // persisted - the renderer shows the disclaimer only on the FIRST
       // Stock->Advanced toggle and skips it on every later boot. There is
       // no revoke path (nothing resets the acceptance), mirroring the

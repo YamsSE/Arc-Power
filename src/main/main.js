@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify, runDisplayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
@@ -89,7 +89,7 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
     autoHideMenuBar: true,
-    // M4-D (user): the INTEGRATED title bar - the window is frameless and
+    // M4-D: the INTEGRATED title bar - the window is frameless and
     // the renderer draws the title bar (draggable region + brand + window
     // controls wired to window-minimize/maximize-toggle/close). Resizing
     // still works (resizable defaults true - Windows draws the edge resize
@@ -108,7 +108,7 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
     const message = typeof event.message === 'string' ? event.message : '';
     if (level >= 2) console.error(`[renderer] ${message}`);
   });
-  // M4-D (user): the pushed window:maximized-changed channel - the
+  // M4-D: the pushed window:maximized-changed channel - the
   // title-bar max button follows the live maximize state (the renderer
   // subscribes via preload's onWindowMaximizedChanged).
   const sendMaximized = () => {
@@ -118,7 +118,7 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
   };
   win.on('maximize', sendMaximized);
   win.on('unmaximize', sendMaximized);
-  // M4-D (user): push the INITIAL state once the renderer is up - the max
+  // M4-D: push the INITIAL state once the renderer is up - the max
   // button must reflect a window that starts (or was restored to) the
   // maximized state even before any later maximize/unmaximize event.
   win.webContents.on('did-finish-load', sendMaximized);
@@ -484,12 +484,12 @@ async function main() {
     // the query - it enriches the real-GPU name and the CPU card.
     sysinfo = null;
   } else {
-    // M4-D FIX (user: the CPU card was EMPTY in the product): the sysinfo:get
+    // M4-D FIX (the CPU card was EMPTY in the product): the sysinfo:get
     // handler calls `sysinfo.get()` - the REAL path previously passed the raw
     // query RESULT here, so the handler threw and the renderer degraded to
     // null (empty card; the mock adapter masked it in tests/ui-verify). Wrap
     // the cached result in the SAME adapter shape the mock uses.
-    // M4-D2 (user: ReBAR): the driver's BAR state (ctlPciGetProperties -
+    // M4-D2 (ReBAR): the driver's BAR state (ctlPciGetProperties -
     // resizable_bar_enabled) is the PRIMARY ReBAR source - the same driver
     // state IGS + GPU-Z report (live-verified: this A770's driver reports
     // resizable_bar_enabled=1 while the OS resource map shows no large BAR
@@ -586,6 +586,16 @@ async function main() {
           try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
           return { ok: out.ok, perControl: out.perControl, graphicsState };
         },
+        // M10b (the Graphics "Display" view): the in-process display
+        // executor - the DEDICATED apply path (no OC waiver, no OC-mode
+        // gate). Returns the { ok, perControl, displayState } envelope with
+        // the FRESH read-back.
+        displayApply: async ({ deviceId, displayId, settings }) => {
+          const out = await backend.setDisplaySettings(deviceId, displayId, settings);
+          let displayState = null;
+          try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+          return { ok: out.ok, perControl: out.perControl, displayState };
+        },
       },
       log: (s) => console.log(s),
     });
@@ -609,6 +619,13 @@ async function main() {
         let graphicsState = null;
         try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
         return { ok: out.ok, perControl: out.perControl, graphicsState };
+      },
+      // M10b: the fake runner's display path (in-process - never spawns).
+      displayApply: async ({ deviceId, displayId, settings }) => {
+        const out = await backend.setDisplaySettings(deviceId, displayId, settings);
+        let displayState = null;
+        try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+        return { ok: out.ok, perControl: out.perControl, displayState };
       },
     };
   }
@@ -700,7 +717,7 @@ async function main() {
     // every variant unpredictably, and a previous run's persisted
     // acceptance would change its state). The RID_MOCK_WAIVER_PERSISTED=1
     // ui-verify variant seeds an ACCEPTED store instead - M4-D (PERMANENT
-    // acceptance, user: "skipped IF permanently accepted after accepting
+    // acceptance: "skipped IF permanently accepted after accepting
     // once"): the accepted store means the boot prompt is SKIPPED entirely
     // (the accepted-state reminder dialog is REMOVED - the dashboard health
     // row remains the status display), and an apply-time waiver-not-set is
@@ -725,7 +742,7 @@ async function main() {
     // it branches the PROFILE seed, not piggybacks) - the EXT variant seeds
     // the SAME probe profile id with the EXTENDED 315 W values so the
     // window-path boot apply exercises the profileApply path against a
-    // stock-mode session (the user report shape).
+    // stock-mode session (the report shape).
     try {
       const cur = await store.loadSettings();
       const bootApplyOn = process.env.RID_MOCK_BOOT_APPLY === '1';
@@ -765,7 +782,7 @@ async function main() {
     } catch (err) {
       console.log(`[boot] boot-apply session seed skipped: ${err.message}`);
     }
-    // M4-B (user fix)/M4-D: RID_MOCK_WAIVER_LOST=1 reproduces the user's
+    // M4-B (fix)/M4-D: RID_MOCK_WAIVER_LOST=1 reproduces the
     // report - the store says the waiver is ACCEPTED (persisted) but the
     // DRIVER lost it. The boot probe (probeWaiverState) writes the current
     // power limit (value-neutral) and surfaces the waiver-not-set. M4-D
@@ -783,13 +800,13 @@ async function main() {
         console.log(`[boot] waiver probe skipped: ${err.message}`);
       }
     }
-    // M4-B (user): deterministic Advanced-mode-warning session seed - every
+    // M4-B: deterministic Advanced-mode-warning session seed - every
     // mock session boots with the warning UNACCEPTED so the first
     // Stock->Advanced toggle shows the disclaimer (the shared isolated mock
     // dir would otherwise leak a previous run's acceptance). The
     // RID_MOCK_ADVANCED_ACCEPTED=1 ui-verify variant seeds an ACCEPTED
     // store instead - its step asserts the toggle then shows NO dialog
-    // (the user: "once accepted, saved, next boot doesn't need this accept").
+    // ("once accepted, saved, next boot doesn't need this accept").
     try {
       const cur = await store.loadSettings();
       await store.saveSettings({ ...cur, advancedModeAccepted: process.env.RID_MOCK_ADVANCED_ACCEPTED === '1' });
@@ -829,9 +846,9 @@ async function main() {
     } catch (err) {
       console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
     }
-    // M4-B (user fix): boot-time driver-truth probe - the persisted
+    // M4-B (fix): boot-time driver-truth probe - the persisted
     // acceptance can be STALE (the driver lost the waiver while settings.json
-    // still says accepted - the user's report: "the popup said already
+    // still says accepted - the report: "the popup said already
     // accepted, then voltage changes threw a no-accepted-waiver error").
     // Only when ELEVATED (the packaged EXE always is): a value-neutral write
     // of the current power limit surfaces waiver-not-set when the driver
@@ -977,7 +994,7 @@ async function main() {
   });
 
   let teardown = null;
-  // M4-D (user): close-to-tray - the tray's Quit (app.quit) must NOT be
+  // M4-D: close-to-tray - the tray's Quit (app.quit) must NOT be
   // swallowed by the window close interception (the close event fires
   // during a quit too; the flag lets it through).
   let isQuitting = false;
@@ -1250,7 +1267,7 @@ async function main() {
   // M4-D2 (§1 close-to-tray FIX): the close handler reads the SYNC settings
   // cache (loadSettingsSync) and calls event.preventDefault() IN THE SAME
   // TICK - the old async loadSettings().then(...) ran preventDefault too
-  // late (the window had already closed - the user's "toggle doesn't
+  // late (the window had already closed - the "toggle doesn't
   // work"). The handler is registered in EVERY mode (incl. --ui-verify,
   // plan-review F2): the mock store updates the sync cache correctly, and
   // the REAL close-interception probe needs the handler live. A settings
@@ -1596,7 +1613,7 @@ async function main() {
       // the seed wrote the EXTENDED 315 W probe profile, so the automatic
       // window-path apply must land it against a STOCK-mode session (the
       // profileApply path ignores the OC-mode gate - the regression pin for
-      // the user report: stock mode + advanced profile values used to fail
+      // the report: stock mode + advanced profile values used to fail
       // at boot with the "Nothing was changed" mode message).
       await runBootApplyExtVerify(win, backend, store);
     } else if (process.env.RID_MOCK_OVERLAY === '1') {
@@ -1608,7 +1625,10 @@ async function main() {
       // 'overlay+fps+api' (RID_MOCK_API=1 - 'FPS 60  DX12  1% Low 52
       // 99% FPS 58' - the Graphics-API badge rides the same sample).
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
+      // M10b: the display block rides right after (the Display view also
+      // runs under the overlay variants).
       await runGraphicsVerify(win, backend);
+      await runDisplayVerify(win, backend);
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar

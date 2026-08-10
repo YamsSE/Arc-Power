@@ -1,8 +1,8 @@
 // Arc Power - warranty-waiver modal. Shown before the first OC apply while
 // the device waiver is not accepted, AND at every startup while the waiver
-// is NOT accepted (M4-B, user: "please prompt it when the Program opens" -
+// is NOT accepted (M4-B: "please prompt it when the Program opens" -
 // the driver exposes no waiver getter, so the dialog at open is the only
-// reliable visibility). M4-D (user, PERMANENT acceptance): a PERSISTED
+// reliable visibility). M4-D (PERMANENT acceptance): a PERSISTED
 // acceptance is the user's permanent consent - the boot prompt is SKIPPED
 // entirely then (the accepted-state reminder dialog is REMOVED; the
 // dashboard health row remains the status display), and an apply-time
@@ -61,7 +61,7 @@ export function showWaiverDialog(deviceName: string): Promise<WaiverDialogResult
 /**
  * M4-B/M4-D: the boot waiver prompt - shown ONLY while the waiver is not
  * accepted (the CALLER decides - app.ts fires it only when
- * caps.waiverAccepted !== true; a persisted acceptance is the user's
+ * caps.waiverAccepted !== true; a persisted acceptance is the
  * permanent consent and the app never asks again). Classic Cancel/Accept
  * pair; an explicit Accept persists via IPC (a persistence failure toasts
  * and returns 'cancelled' - same pattern as ensureWaiver). Never

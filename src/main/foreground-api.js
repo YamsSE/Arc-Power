@@ -18,7 +18,7 @@
 // -> the canonical ids 'vulkan' | 'dx12' | 'dx11' | 'dx9' | 'opengl'.
 // dxgi.dll is loaded by ALL of them and is NOT a discriminator; d3d11 is
 // loaded by Chromium too - the overlay over a browser honestly reports DX11.
-// M10b (user findings): vulkan-1.dll sits FIRST because it is ONLY loaded
+// M10b (findings): vulkan-1.dll sits FIRST because it is ONLY loaded
 // by Vulkan-using processes (the strongest signal - CS2 under -vulkan loads
 // vulkan-1 + d3d12 + d3d11 together and must report Vulkan, not DX12), and
 // d3d9.dll -> 'dx9' covers the DX9-only games (League of Legends - the
@@ -60,7 +60,7 @@ export const GRAPHICS_API_IDS = ['dx12', 'vulkan', 'dx11', 'dx9', 'opengl'];
 // loaded by every API and is deliberately absent - it is not a
 // discriminator; d3d11 wins over opengl32 because Chromium loads d3d11 and
 // the overlay over a browser honestly reports DX11).
-// M10b (user findings): vulkan-1.dll moved to the TOP - it is ONLY loaded
+// M10b (findings): vulkan-1.dll moved to the TOP - it is ONLY loaded
 // by Vulkan-using processes, the strongest signal (CS2 under -vulkan loads
 // vulkan-1 + d3d12 + d3d11 together and must report Vulkan, not DX12);
 // d3d9.dll -> 'dx9' covers the DX9-only games (League of Legends - the

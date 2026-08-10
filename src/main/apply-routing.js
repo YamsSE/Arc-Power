@@ -73,7 +73,7 @@ export const OC_CEILING_REFUSAL_MSG =
  * - advanced: PL/TL up to the EXTENDED ceiling (315 W / 115 C - the live-verified KMD ceiling) are allowed;
  *             values above it refuse with the ceiling message - NEVER
  *             clamped (an above-ceiling write would be silently capped by
- *             the clamp layer, voiding the user's 400 W probe - live 2026-08-06: 315 W is the ceiling).
+ *             the clamp layer, voiding the 400 W probe - live 2026-08-06: 315 W is the ceiling).
  * M4-E: unit-aware like splitByRuntime / extendedUnavailableRefusal - when
  * the capability ranges are known and a control's units are NOT W/C
  * (percent-unit Battlemage mock: volt/PL/TL as %), the W/C thresholds do

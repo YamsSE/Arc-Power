@@ -1,6 +1,6 @@
 // Arc Power - M2C-B F3 instant-apply core (electron-free), M2C-C revised.
 //
-// Replaces the M2C-A retry-with-verify apply-retry.js (user feedback
+// Replaces the M2C-A retry-with-verify apply-retry.js (feedback
 // 2026-08-05: retries never changed the off-window outcome on the live A770
 // and the retry UI "looks very bad" - instant is the design). Evidence basis
 // (docs/igcl-integration.md §8a + §8c):

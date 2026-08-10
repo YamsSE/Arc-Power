@@ -241,7 +241,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // style attributes (plan-review N10). The current theme's swatch is
     // marked .active.
     // M5: the Overlay card - the MSI Afterburner/RTSS-style HUD settings.
-    // M6-amd3 (the user's amendment): the card is BUTTON-ONLY - the
+    // M6-amd3 (the amendment): the card is BUTTON-ONLY - the
     // "Overlay settings" button + a one-line description. The enable
     // TOGGLE moved to the Overlay page's General card (overlay-settings.ts);
     // the hotkey letter / position / scale / honest notes moved there in M6

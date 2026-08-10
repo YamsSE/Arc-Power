@@ -8,6 +8,9 @@ import type {
   Capabilities,
   DeviceInfo,
   DeviceState,
+  DisplayApplyResponse,
+  DisplaySettings,
+  DisplayState,
   ElevationState,
   FpsSample,
   GraphicsApplyResponse,
@@ -49,6 +52,16 @@ export interface ArcPowerApi {
    *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
    *  with the FRESH read-back for the per-control refresh. */
   graphicsApply(deviceId: number, settings: GraphicsSettings): Promise<GraphicsApplyResponse>;
+  /** M10b (the Graphics "Display" view): the display-output read (never
+   *  throws - { displays: [] } is the honest no-controls degrade). NEVER
+   *  called with a null deviceId - the no-Intel page guard renders
+   *  'No GPU available.' first (assertValidDeviceId would throw). */
+  displayGet(deviceId: number): Promise<DisplayState>;
+  /** M10b: apply display settings for ONE display (the displayId from the
+   *  display:get payload) - the DEDICATED apply path (NO OC waiver, NO
+   *  OC-mode gate). Returns the { ok, perControl, displayState } envelope
+   *  with the FRESH read-back for the per-control refresh. */
+  displayApply(deviceId: number, displayId: number, settings: DisplaySettings): Promise<DisplayApplyResponse>;
   /** M4O: `opts.profileApply: true` marks a PROFILE apply (the Profiles-page
    *  Apply button) - main skips the OC-mode gate for it (the mode is the
    *  interactive slider gate ONLY; the ceiling + capability refusals stay). */
@@ -110,7 +123,7 @@ export interface ArcPowerApi {
   /** M4-B: persist the once-only Advanced OC Mode warning acceptance. */
   advancedModeAcceptedSet(): Promise<{ accepted: boolean }>;
   fpsPoll(deviceId: number): Promise<FpsSample | null>;
-  /** M4-D2 (user)/M4J: append one full telemetry sample as an ALIGNED
+  /** M4-D2/M4J: append one full telemetry sample as an ALIGNED
    *  fixed-width line (Log to file - monitor-YYYYMMDD.txt). The writer
    *  reports { ok, file } - the file is the resolved log path the
    *  Monitoring page shows. Never throws (IO errors -> ok:false). The

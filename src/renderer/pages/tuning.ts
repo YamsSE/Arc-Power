@@ -55,7 +55,7 @@
 // backend apply paths already existed); (4) expert-row texts are honest:
 // gpuLock = "Editing available", vfCurve/VRAM rows = "M5" (no apply path).
 //
-// M4-D (user): the Advanced (expert) section renders ONLY rows whose
+// M4-D: the Advanced (expert) section renders ONLY rows whose
 // control is SUPPORTED on the device (caps.controls[row.control] === true -
 // the IGCL-keyed caps key, M4-D review F1) - the "Unsupported on this GPU"
 // rows are REMOVED entirely (they said nothing the empty space could not);
@@ -123,7 +123,7 @@ let renderCaps: Capabilities | null = null;
 // session; null -> the toggle is hidden (no base to convert).
 let freqMode: 'offset' | 'clock' = 'offset';
 let baseClock: number | null = null;
-// M4-B (user): the automatic waiver re-prompt + single retry counter - the
+// M4-B: the automatic waiver re-prompt + single retry counter - the
 // driver can lose the waiver while settings.json still says accepted; the
 // first apply then fails with waiver-not-set and re-prompts + retries once.
 // Reset on every successful apply.
@@ -578,7 +578,7 @@ export const tuningPage: Page = {
       if (mode === 'advanced') {
         // M3-C-D disclaimer: enabling Advanced warns about beyond-standard
         // limits, card/driver/PSU dependence, and the BiFrost 300 W profile.
-        // M4-B (user): the warning shows ONLY on the first Stock->Advanced
+        // M4-B: the warning shows ONLY on the first Stock->Advanced
         // toggle - the acceptance is persisted (advanced-mode-accepted-set),
         // so a re-boot never re-asks. Only the toggle click reaches this
         // code path; nothing else can enable the mode.
@@ -702,7 +702,7 @@ export const tuningPage: Page = {
       });
     }
 
-    // M4-B (user): the label sits ABOVE the segmented control as a caption -
+    // M4-B: the label sits ABOVE the segmented control as a caption -
     // a label inside the pill made the whole control read as a single
     // "OC mode" button. The pill now holds only the two choices.
     // M4-D2 (§8): the row is a FLEX ROW - the "Tuning | Fan Curve" view pill
@@ -938,7 +938,7 @@ export const tuningPage: Page = {
           // The waiver may have been lost on the device (e.g. driver reset).
           const freshCaps = await api.getCapabilities(deviceId);
           ctx.store.set({ caps: freshCaps });
-          // M4-B (user): a waiver-not-set failure must not dead-end the
+          // M4-B: a waiver-not-set failure must not dead-end the
           // first apply with a confusing error - re-prompt the waiver dialog
           // AUTOMATICALLY (the store flag was just refreshed, so the dialog
           // shows) and retry ONCE. Never a loop; on success the counter
@@ -994,7 +994,7 @@ export const tuningPage: Page = {
             ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
             : 'Values are clamped to the range reported by this GPU. Changes apply on demand - nothing is applied until you press Apply.'),
       }),
-      // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+      // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
       // GPU Health card - this page keeps no waiver UI beyond the apply-time
       // dialog gate (ensureWaiver above). The pill row renders for every
       // device: the Fan Curve view must stay reachable on no-OC devices.

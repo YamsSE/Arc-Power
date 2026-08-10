@@ -2,11 +2,11 @@
 // health card).
 //
 // M3-A rework: the IGS service indicator is REMOVED (with the M2C-C elevation
-// gate, IGS state is no longer relevant to OC-applicability - the user's
+// gate, IGS state is no longer relevant to OC-applicability - the
 // decision, docs). The old health + IGS combined mapping (mapStatus /
 // IGS_LABELS / igsHalfState / IGS_NOTE) is gone; the general GPU HEALTH card
 // replaces the merged Service Status card. M3-C-I trims it to four honest
-// rows (the "Clocks normal" row is REMOVED per the user's dashboard picture):
+// rows (the "Clocks normal" row is REMOVED per the dashboard picture):
 //
 //   driver - "Driver installed": the IGCL runtime loaded + a driver version;
 //            the detail shows the driver version + date like the device card
@@ -154,7 +154,7 @@ export function ocRow(input: HealthInput): HealthRow {
 
 /**
  * M4-A: "OC waiver" - the LIVE waiver acceptance status, the ONLY persistent
- * waiver display in the app (user correction, mid-M4-A: the dashboard's GPU
+ * waiver display in the app (correction, mid-M4-A: the dashboard's GPU
  * Health card, NOT the OC/Fan pages). Reads caps.waiverAccepted at render
  * time; the dashboard full-re-renders on caps changes (its sig includes
  * caps), so an accept-time store patch refreshes this row. Unknown while no
@@ -172,7 +172,7 @@ export function waiverRow(input: HealthInput): HealthRow {
 /**
  * "Arc Power working": the app booted and the backend answered. M3-C-I: the
  * healthy detail reads "App & Service Running" (app-only - the app's own
- * engine/backend; NO IGS probe, per the user's decision). Honest warn/error
+ * engine/backend; NO IGS probe, per the decision). Honest warn/error
  * states as before.
  */
 export function appRow(input: HealthInput): HealthRow {

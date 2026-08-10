@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
+import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings, sanitizeDisplaySettings } from './ipc-core.js';
 import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /**
@@ -89,7 +89,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     await finish({ ok: false, error: 'invalid request: deviceId must be a non-negative integer' });
     return 1;
   }
-  if (!['apply', 'waiver-accept', 'reset', 'graphics-apply'].includes(op)) {
+  if (!['apply', 'waiver-accept', 'reset', 'graphics-apply', 'display-apply'].includes(op)) {
     await finish({ ok: false, error: `invalid request: unknown op '${op}'` });
     return 1;
   }
@@ -161,6 +161,30 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       let graphicsState = null;
       try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: out.ok, perControl: out.perControl, graphicsState });
+      return 0;
+    }
+
+    // M10b (the Graphics "Display" view): the DEDICATED display apply op -
+    // the graphics-apply twin. Display settings have NO OC waiver and NO
+    // OC-mode gate, so this branch never touches the OC machinery (no
+    // sanitizeSettings, no ocModeRefusal). The worker's own sanitizer
+    // validates the payload + the displayId; the response envelope is
+    // { ok, perControl, displayState } with the FRESH getDisplaySettings
+    // read-back for the page's per-control refresh.
+    if (op === 'display-apply') {
+      if (typeof req.settings !== 'object' || req.settings === null || Array.isArray(req.settings)) {
+        await finish({ ok: false, error: 'invalid request: settings must be an object' });
+        return 1;
+      }
+      if (!Number.isInteger(req.displayId) || req.displayId < 0) {
+        await finish({ ok: false, error: 'invalid request: displayId must be a non-negative integer' });
+        return 1;
+      }
+      const settings = sanitizeDisplaySettings(req.settings);
+      const out = await backend.setDisplaySettings(deviceId, req.displayId, settings);
+      let displayState = null;
+      try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+      await finish({ ok: out.ok, perControl: out.perControl, displayState });
       return 0;
     }
 

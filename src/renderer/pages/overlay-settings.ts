@@ -1,6 +1,6 @@
 // Arc Power - M6 the Overlay Settings content (M9: the #/overlay PAGE is
 // gone - the content lives inside the Monitoring page's Overlay view; the
-// old hash redirects there via the router). M6-amd3 (the user's
+// old hash redirects there via the router). M6-amd3 (
 // amendment): the content ALSO owns the enable TOGGLE now - the General
 // card at the top (the Settings card is button-only); everything else:
 //   - Stats - the 15 stat TICKBOXES (the Monitoring-tab-tickbox idea,
@@ -257,7 +257,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         positionSelect,
       ]),
       // M7b (fix 4): the Background section - a translucent box behind the
-      // HUD (the user's Appearance-card addition).
+      // HUD (the Appearance-card addition).
       el('div', { class: 'settings-row overlay-bg-row' }, [
         el('label', { class: 'boot-toggle' }, [
           el('input', {
@@ -296,7 +296,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
     ]);
 
-    // --- Hotkey card: the letter input (CTRL + FIXED - the user's rule:
+    // --- Hotkey card: the letter input (CTRL + FIXED - the rule:
     // the letter is the ONLY changeable part) + the honest
     // register-failure note (the get-state re-query on every render).
     const hotkeyInput = el('input', {

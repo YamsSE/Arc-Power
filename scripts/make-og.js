@@ -1,4 +1,4 @@
-// Arc Power — OpenGraph card generator (Electron offscreen capture).
+// Arc Power - OpenGraph card generator (Electron offscreen capture).
 //
 // Renders scripts/og-card.html (a fixed 1200x630 card matching the website
 // palette) in a hidden Electron window and writes website/assets/og.png -

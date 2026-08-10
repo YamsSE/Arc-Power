@@ -27,7 +27,7 @@ export function pushSeries(series: SeriesPoint[], t: number, v: number | undefin
 }
 
 /**
- * M4-D2 fix (user: "the monitoring graphs are glitched - the lines
+ * M4-D2 fix ("the monitoring graphs are glitched - the lines
  * overlap"): the REAL driver's telemetry timestamp occasionally ticks
  * BACKWARD (live-verified: 8 folds in 40 s under load on the A770 - a
  * counter-readout race in the driver). A non-monotonic t folds the drawn

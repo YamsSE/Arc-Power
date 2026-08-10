@@ -211,7 +211,7 @@ export function vramMemTypeOfName(name) {
  * ("Intel Arc A770 16GB GDDR6"), formatted ONCE at listDevices time by the
  * backends (never per render - every consumer reads device.name). Rules:
  *   - vramBytes null / 0 / missing -> the plain name (no suffix);
- *   - >= 1 GiB -> "XGB" - CEIL to the next whole GiB (M4-I S1: the user's
+ *   - >= 1 GiB -> "XGB" - CEIL to the next whole GiB (M4-I S1: the
  *     "round to the next number" - 8 GiB -> 8GB, 16 GiB -> 16GB, 2.4 GiB ->
  *     3GB; the M4-B nearest-GiB rounding is REPLACED);
  *   - < 1 GiB -> "X MB" (rounded down to whole MiB - the sub-GiB branch
@@ -229,7 +229,7 @@ export function formatDeviceName(name, vramBytes, memType) {
   if (!name || !Number.isInteger(vramBytes) || vramBytes <= 0) return name;
   const type = typeof memType === 'string' && memType.length > 0 ? memType : vramMemTypeOfName(name);
   const suffix = type ? ` ${type}` : '';
-  // M4-I (S1): the GB branch moves to CEIL (the user's "round to the next
+  // M4-I (S1): the GB branch moves to CEIL ( "round to the next
   // number" - no two-numbers-on-one-screen: 8 GiB -> "8GB", 16 GiB ->
   // "16GB"); the sub-GiB branch stays whole-MiB floor (a 512 MiB card never
   // rounds to "1GB" - the >= 1 GiB gate keeps the ceil from ever touching

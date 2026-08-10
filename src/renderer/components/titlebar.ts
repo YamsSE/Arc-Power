@@ -1,4 +1,4 @@
-// Arc Power - M4-D (user): the integrated title bar wiring (frameless
+// Arc Power - M4-D: the integrated title bar wiring (frameless
 // window). The markup lives in index.html: the brand CENTERED (assets/
 // icon.png on top, "Arc Power" below with "Power" in the website's blue
 // gradient + glow), the window controls (minimize / maximize-restore /
@@ -25,7 +25,7 @@ export function initTitlebar(): void {
   // M4-D: the max button icon follows the live maximize state (main pushes
   // window:maximized-changed on maximize/unmaximize). M4J (F): ONE svg -
   // the two inner groups are class-toggled (the pre-M4J markup hid one of
-  // TWO svg elements; the user's repeat request). Maximized -> the
+  // TWO svg elements; the repeat request). Maximized -> the
   // icon-state-restore class shows the restore group (overlapping squares);
   // else the maximize group (the single hollow square).
   api.onWindowMaximizedChanged(({ maximized }) => {

@@ -15,14 +15,14 @@ import type {
 // M6: the old #/overlay page (the Overlay Settings page) MOVED into the
 // Monitoring page as a sub-view in M9 - the PageId is gone; the old hash
 // redirects (pageFromHash) with the overlay view requested.
-// M8: the #/graphics page (the Graphics tab - the user's order: the tab
+// M8: the #/graphics page (the Graphics tab - the planned order: the tab
 // sits BELOW Tuning).
 export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
 
 // M6-amd1: the Overlay tab used to sit DIRECTLY BELOW the Monitoring tab
-// (the user's amendment - the sidebar order); M9 removes it (the Overlay
+// (the amendment - the sidebar order); M9 removes it (the Overlay
 // Settings content lives inside the Monitoring page's Overlay view).
-// M8: the Graphics tab sits DIRECTLY BELOW Tuning (the user's order:
+// M8: the Graphics tab sits DIRECTLY BELOW Tuning (the planned order:
 // dashboard / tuning / graphics / monitoring / profiles / tweaks /
 // settings).
 export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'monitoring', 'profiles', 'tweaks', 'settings'];

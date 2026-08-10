@@ -117,7 +117,7 @@ function renderSidebar() {
   const nav = document.getElementById('sidebar') as HTMLElement;
   const active = currentPage();
   clear(nav);
-  // M7b (user amendment): the Settings tab MOVED to the sidebar FOOTER -
+  // M7b (amendment): the Settings tab MOVED to the sidebar FOOTER -
   // the nav renders PAGE_IDS minus 'settings' (6 links); the footer holds
   // GitHub (bottom-LEFT) + Settings (bottom-RIGHT - the GitHub-page
   // mirror: GitHub pins its settings link at the sidebar bottom, this app
@@ -127,7 +127,7 @@ function renderSidebar() {
   // the router / the hash routing are untouched.
   const navIds = PAGE_IDS.filter((id) => id !== 'settings');
   nav.append(
-    // M4-D (user): the sidebar brand - "Arc Power" with "Power" ILLUMINATED
+    // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED
     // like the title bar (the blue gradient + glow) and a BOLD weight; the
     // small blue accent bar below stays.
     el('div', { class: 'sidebar-brand' }, [
@@ -139,7 +139,7 @@ function renderSidebar() {
         class: `sidebar-link${id === active ? ' active' : ''}`,
         href: `#/${id}`,
       }, [
-        // M4-D (user): one fitting icon per tab, left of the name.
+        // M4-D: one fitting icon per tab, left of the name.
         el('span', { class: `sidebar-icon sidebar-icon-${id}` }),
         el('span', { class: 'sidebar-link-label', text: NAV_LABELS[id] }),
       ]),
@@ -149,7 +149,7 @@ function renderSidebar() {
     // channel - ipc-core.js strict-checks https://github.com/YamsSE/Arc-Power
     // before shell.openExternal runs). The <a> has no href - the click is
     // the only path (a real navigation would reload the app shell).
-    // M7b (user amendment): the footer is a flex ROW - the Settings tab
+    // M7b (amendment): the footer is a flex ROW - the Settings tab
     // joins it at the bottom-RIGHT (the window's bottom-right corner; the
     // GitHub-page mirror). The Settings link keeps the .sidebar-link class
     // + the icon + the label + the active state + href '#/settings'.
@@ -180,7 +180,7 @@ function renderSidebar() {
 }
 
 async function boot() {
-  // M4-D (user): the integrated title bar (frameless window) - the window
+  // M4-D: the integrated title bar (frameless window) - the window
   // buttons + the maximized-state icon subscription. Static markup, wired
   // before the boot sequence so the buttons work immediately.
   initTitlebar();
@@ -319,7 +319,7 @@ async function boot() {
     store.set({ driverDate: null });
   }
 
-  // M4-D (user): the system info (dashboard CPU & memory card + the real-GPU
+  // M4-D: the system info (dashboard CPU & memory card + the real-GPU
   // VRAM source). Fire-and-forget semantics: a failure degrades to null and
   // the card renders '-' rows; when the payload lands AFTER the first render
   // the dashboard sig (sysinfo slot) triggers the re-render.
@@ -376,8 +376,8 @@ async function boot() {
       const state = await api.getCurrentSettings(deviceId as number);
       store.set({ caps, state });
       // M4-B: the OC waiver prompt shows at EVERY startup while the waiver is
-      // NOT accepted (the user: "please prompt it when the Program opens").
-      // M4-D (user, PERMANENT acceptance): a PERSISTED acceptance is the
+      // NOT accepted ("please prompt it when the Program opens").
+      // M4-D (PERMANENT acceptance): a PERSISTED acceptance is the
       // user's permanent consent - the boot prompt is SKIPPED entirely then
       // (the accepted-state reminder dialog is REMOVED; the dashboard health
       // row remains the status display). The driver-side waiver state cannot

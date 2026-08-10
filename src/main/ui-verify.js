@@ -3,7 +3,7 @@
 // Drives the REAL window (renderer + preload + IPC + MockBackend) through
 // the M2a/M2b-B/M2C-B/M2D/M3-A product flows and asserts the outcomes:
 //   1. shell renders (sidebar + header); M3-A: the sidebar brand is the
-//      "Arc Power" text with the small blue accent bar BELOW it (the user's
+//      "Arc Power" text with the small blue accent bar BELOW it (
 //      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
 //       1.0.0 Beta" (app:version IPC + the display suffix - the IPC
@@ -30,7 +30,7 @@
 //      flex row with the Stock/Advanced pill LEFT and the "Tuning | Fan
 //      Curve" view pill RIGHT (same height - the pills' getBoundingClientRect
 //      tops are pinned equal); M2b-B: the card label is "Core clock" (M4-B
-//      user: named Core clock in BOTH Offset and Clock modes), the floating
+//      named Core clock in BOTH Offset and Clock modes), the floating
 //      Apply is hidden when clean and appears when dirty;
 //   3. first Apply shows the warranty-waiver dialog; Accept persists the
 //      waiver; the apply succeeds and the state read-back refreshes; the
@@ -98,7 +98,7 @@
 //  18. M4-A/M4-B waiver-prompt variants: every mock session boots with a
 //      DETERMINISTIC waiver state (session-seeded in main.js, pre-window -
 //      the persisted variant never races the renderer's first caps query).
-//      M4-B (user: "please prompt it when the Program opens"): the boot
+//      M4-B ("please prompt it when the Program opens"): the boot
 //      waiver prompt appears in EVERY variant - CANCELLED here in the
 //      unaccepted sessions (default / stock / extended / worker / featureset
 //      / tweaks variants), ACCEPTED under RID_MOCK_WAIVER_BOOT_ACCEPT=1
@@ -107,7 +107,7 @@
 //      line + single OK, clicked here (persisted acceptance at boot: the
 //      boot prompt appears as a reminder, never a re-accept). The waiver
 //      STATUS lives ONLY in the dashboard GPU Health card row ("OC waiver:
-//      Accepted / Not Accepted", green/red - user correction, mid-M4-A): the
+//      Accepted / Not Accepted", green/red - correction, mid-M4-A): the
 //      OC and Fan pages render NO waiver status (the apply-time dialog gate
 //      only); the unaccepted row is clickable (opens the waiver dialog;
 //      Cancel leaves it red and the next apply still gates), the accepted
@@ -133,7 +133,7 @@
 //      stays on every device); (e) the b580 variant pins the mirrored freq
 //      range (-500..500) + volt % range (-100..100) with percent units
 //      intact + the VRAM-OC editor round trip.
-//  21. M4-B (user): the Advanced OC Mode warning is a ONCE-only gate - the
+//  21. M4-B: the Advanced OC Mode warning is a ONCE-only gate - the
 //      disclaimer shows ONLY on the first Stock->Advanced toggle (Cancel
 //      keeps stock; it re-asks until Enable), the acceptance is PERSISTED
 //      (advanced-mode-accepted-set), and neither a later toggle in the same
@@ -217,7 +217,7 @@ async function runCloseToTrayProbe(win) {
 // otherwise be the modal being clicked or asserted there). Every mock
 // session boots with a deterministic waiver state (session-seeded in
 // main.js BEFORE the window exists - the persisted variant never races the
-// renderer's first caps query, F2). M4-D (user, PERMANENT acceptance -
+// renderer's first caps query, F2). M4-D (PERMANENT acceptance -
 // "skipped IF permanently accepted after accepting once"):
 //   - RID_MOCK_WAIVER_PERSISTED=1 -> the store is ACCEPTED at boot: the boot
 //     prompt is SKIPPED ENTIRELY (the accepted-state reminder dialog is
@@ -395,7 +395,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
-  // M3-A: the logo IMAGE is gone - the user's preferred variant is the text
+  // M3-A: the logo IMAGE is gone - the preferred variant is the text
   // with the small blue accent bar BELOW it (the ::after pseudo-element).
   if (await js(`!!document.querySelector('.sidebar-brand img.sidebar-logo')`)) {
     fail('M3-A: the sidebar logo image is still rendered (the blue-bar variant was requested)');
@@ -409,7 +409,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('boot', `shell rendered; brand '${brand.trim()}' + blue accent bar (no logo img); mock badge=${await js(`!!document.querySelector('.badge-mock')`)}`);
 
-  // M4-D (user): the integrated title bar (frameless window).
+  // M4-D: the integrated title bar (frameless window).
   // The title bar spans the top of the window: the left drag zone, the
   // brand CENTERED (logo + 'Arc Power' with the blue gradient 'Power'),
   // the three window controls in the right cluster. The buttons are wired
@@ -423,7 +423,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!logo.includes('icon.png')) fail(`M4-D: the title bar logo src is '${logo}' (expected the assets/icon.png brand mark)`);
   const brandName = await js(`document.querySelector('#titlebar .titlebar-brand-name')?.textContent ?? ''`);
   if (brandName.trim() !== 'Arc Power') fail(`M4-D: the title bar brand name is '${brandName}' (expected 'Arc Power')`);
-  // The brand must be CENTERED in the title bar (user: "move the Arc Power
+  // The brand must be CENTERED in the title bar ("move the Arc Power
   // logo & writing to the middle of the top").
   const brandCentered = await js(`(() => {
     const tb = document.querySelector('#titlebar');
@@ -520,7 +520,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-D: the title-bar buttons did not tick the injected window ops: ${JSON.stringify({ before: tbOpsBefore, after: tbOpsAfter })}`);
   }
   step('titlebar', `integrated title bar: logo (${logo}), brand '${brandName.trim()}' (blue gradient 'Power'), ${await js(`document.querySelectorAll('#titlebar .window-btn').length`)} window buttons; max icon follows window:maximized-changed; buttons ticked the window-op counters (${JSON.stringify(tbOpsAfter)})`);
-  // M4-D (user): the app icon ALSO sits at the title bar's top-LEFT corner,
+  // M4-D: the app icon ALSO sits at the title bar's top-LEFT corner,
   // and the max/restore icons are exactly one glyph each (the restore glyph
   // is TWO overlapping squares drawn as one icon - a filled front square
   // over the back outline; the pin asserts the fill so it no longer reads
@@ -558,13 +558,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const tbRect = await js(`(() => { const b = document.querySelector('#titlebar .icon-maximize-restore'); const r = b.getBoundingClientRect(); return JSON.stringify({ w: r.width, h: r.height }); })()`);
   step('titlebar-extras', `top-left corner icon OK; restore glyph is ONE icon in ONE svg (M4-H: hollow back at 1.5,1.5 + filled front at 3.5,3.5 with the class fill '${glyph.fill}', ${JSON.parse(tbRect).w}x${JSON.parse(tbRect).h}px; the two groups class-swap by state)`);
 
-  // M4-D (user): the sidebar - per-tab icons left of the names, the brand
+  // M4-D: the sidebar - per-tab icons left of the names, the brand
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
   if (sidebarIcons.length !== 7) fail(`M9: expected 7 sidebar links with icons (the Overlay tab moved into the Monitoring page in M9 - the Graphics tab joined in M8), got ${sidebarIcons.length}`);
   // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
-  // user's order: dashboard / tuning / graphics / monitoring / ...).
+  // planned order: dashboard / tuning / graphics / monitoring / ...).
   const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
   const navLabels = JSON.parse(navOrder);
   const graphicsIdx = navLabels.indexOf('Graphics');
@@ -632,7 +632,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const ghOpAfter = getOpenExternalCount();
   step('m4h-github-footer', `M4-H: sidebar GitHub footer (icon + 'GitHub', bottom-left) -> open-external counter ticked (${ghOpBefore} -> ${ghOpAfter}); channel validation: repo URL ok, ${badUrls.length} bad URLs rejected`);
 
-  // M7b (user amendment): the Settings tab sits in the sidebar FOOTER -
+  // M7b (amendment): the Settings tab sits in the sidebar FOOTER -
   // bottom-RIGHT (the GitHub-page mirror: GitHub bottom-left, Settings
   // bottom-right = the window's bottom-right corner). The link KEEPS the
   // .sidebar-link class (the icon + the label + the active state + the
@@ -724,7 +724,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
   if (!favicon.includes('favicon.png')) fail(`favicon link is '${favicon}'`);
-  // M4-D (user): the pin must catch the old PCI-ID text ('PCI\VEN...'), not
+  // M4-D: the pin must catch the old PCI-ID text ('PCI\VEN...'), not
   // the word 'PCI'. M4-D2 (§2): the PCIe ROW is gone (the unpopulated 1/1
   // kernel pattern made it a permanent '-') - the body must not contain the
   // 'PCIe' row either.
@@ -798,7 +798,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m4i-vram-row', 'M4-I (B2): the device card renders the VRAM row (16GB GDDR6 - ceil + the payload-carried memType)');
 
-  // M4-D (user): the core + memory clock BUNDLED row ("… MHz Core /
+  // M4-D: the core + memory clock BUNDLED row ("… MHz Core /
   // 2187 MHz Memory" - a770 featureset telemetry memClockMhz = 2187).
   if (!(await waitFor(win, `(() => {
     const row = Array.from(document.querySelectorAll('.card-grid .kv'))
@@ -818,11 +818,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
 
-  // --- M4-D (user) + M4-D2 (§9): the CPU & memory card (sysinfo:get fixture)
+  // --- M4-D + M4-D2 (§9): the CPU & memory card (sysinfo:get fixture)
   // The card sits BEFORE the GPU card in the card-grid and renders the mock
   // fixture: CPU name + the BUNDLED cores/threads row (the CLOCK half is
   // LIVE - cpuFreqMhz from the telemetry tick, GHz always - pinned below)
-  // + the BUNDLED RAM brand/size/speed rows (user formats). Every field
+  // + the BUNDLED RAM brand/size/speed rows (chosen formats). Every field
   // degrades to '-' when null (pinned by the pure/sysinfo.ts unit tests;
   // the fixture here is all-populated).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid > .card')).some((c) => (c.querySelector('.card-title')?.textContent ?? '') === 'CPU & Memory')`, 5000))) {
@@ -958,7 +958,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // (cpuPowerW 125.5 from the mock PowerMeter fixture; M4N: renamed from
   // Wattage); GPU: 6 tiles (M4N: 'Power' replaces 'Power draw'). M4N: the
   // CPU Core Frequency tile reads the mock's 4300 MHz as '4.3' GHz.
-  // M4M (D): Util FIRST in both groups (the user's order pin).
+  // M4M (D): Util FIRST in both groups (the order pin).
   const groupLabels = await js(`JSON.stringify(Array.from(document.querySelectorAll('.readout-card .readout-group-label')).map((l) => l.textContent))`);
   if (JSON.parse(groupLabels).join(',') !== 'CPU,GPU') fail(`M4-H: the readout groups are '${groupLabels}' (expected 'CPU','GPU' - CPU ABOVE GPU)`);
   const cpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
@@ -1020,7 +1020,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // ONE general GPU HEALTH card (M3-A + M3-C-I + M4-A): FIVE rows, honest
   // per-row state, no Level Zero item, no IGCL detail line, NO clocks row
-  // (the user's dashboard picture); driver row detail = version + date like
+  // ( dashboard picture); driver row detail = version + date like
   // the device card; app row healthy detail = "App & Service Running"; the
   // M4-A waiver row is the ONLY persistent waiver display in the app.
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) fail('expected exactly one GPU Health card');
@@ -1053,7 +1053,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (await js(`!!document.querySelector('.igs-toggle')`)) fail('M3-A: the IGS toggle button is still rendered');
   step('health-card', `one 'GPU Health' card: rows '${rowLabels}', driver '${driverDetail.trim()}', app '${appDetail.trim()}'`);
 
-  // --- M4-A (user correction): the waiver STATUS row in the health card ---
+  // --- M4-A (correction): the waiver STATUS row in the health card ---
   // The ONLY persistent waiver display in the app: green "Accepted" when the
   // store caps say accepted, red "Not Accepted" otherwise - read LIVE at
   // render (the dashboard re-renders on caps changes). Unaccepted -> the row
@@ -1287,6 +1287,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // the page reads the mock fixture). Runs in the default variant AND under
   // the RID_MOCK_OVERLAY=1 / RID_MOCK_MULTI_DEVICE=1 variants.
   await runGraphicsVerify(win, backend);
+  // M10b (the Graphics "Display" view): the display block runs right after
+  // the graphics block (the same variant set + the RID_MOCK_DISPLAY_
+  // UNSUPPORTED knob).
+  await runDisplayVerify(win, backend);
 
   // --- 2. Tuning page control cards (M4-D2: #/overclocking -> #/tuning) ----
   await gotoOverclocking();
@@ -1389,7 +1393,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('oc-offgrid', `off-grid driver readout renders '${driverText.trim()}' (slider snapped to '${sliderReadout.trim()}')`);
   }
 
-  // --- 2c. M2b-B tuning UX: "Core clock" label (M4-B user: named Core
+  // --- 2c. M2b-B tuning UX: "Core clock" label (M4-B named Core
   // --- clock in BOTH Offset and Clock modes) + floating Apply ----------
   const freqTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
   if (freqTitle.trim() !== 'Core clock') fail(`freq offset card title is '${freqTitle}' (expected 'Core clock' in both modes)`);
@@ -1431,7 +1435,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await js(`location.hash = '#/profiles'`);
     if (!(await waitFor(win, `!!document.querySelector('.boot-checkbox')`))) fail('boot checkbox did not render');
     if (!(await js(`document.querySelector('.boot-checkbox').disabled`))) fail('start-at-boot must be gated on the waiver (unaccepted)');
-    // M4-D (user): in an UNACCEPTED session the profile LOAD PROMPTS - the
+    // M4-D: in an UNACCEPTED session the profile LOAD PROMPTS - the
     // classic waiver gate. Create a throwaway profile, click Load, Cancel
     // the dialog: the load is aborted, the device stays untouched (the
     // accepted-store variants never see this - their loads are silent).
@@ -1473,7 +1477,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (readoutBefore.trim() !== '220 W') fail(`slider readout is '${readoutBefore}' (expected '220 W')`);
   step('slider', `power slider set to 220 W (readout '${readoutBefore}')`);
 
-  // --- M4-A (user correction): the OC page renders NO waiver status --------
+  // --- M4-A (correction): the OC page renders NO waiver status --------
   // The status row lives ONLY in the dashboard GPU Health card; this page
   // keeps nothing but the apply-time dialog gate (exercised below).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
@@ -1491,13 +1495,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`))) fail('success toast missing after apply');
     const state = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(state.powerLimitW - 220) > 1e-6) fail(`powerLimit not applied: ${state.powerLimitW}`);
-    // M4-B (user): a SAVED waiver must survive the boot AND the apply - the
+    // M4-B: a SAVED waiver must survive the boot AND the apply - the
     // clock write lands with no waiver-not-set and the device still reports
     // the acceptance afterwards (the persisted flag is not consumed).
     const waiverAfter = await js(`window.arcPower.waiverGet(0)`);
     if (waiverAfter.accepted !== true) fail('M4-B: the waiver acceptance was lost across the apply (persisted-accepted session)');
     step('waiver-persisted', `waiver accepted at boot (persisted or boot-accept): apply without dialog -> read-back ${state.powerLimitW} W, waiverGet still accepted`);
-    // M4-D (user, PERMANENT acceptance): an ACCEPTED store + a driver that
+    // M4-D (PERMANENT acceptance): an ACCEPTED store + a driver that
     // loses the waiver mid-session - the apply is SILENTLY re-set + retried
     // ONCE in main (never a dialog, never a dead-end, never a persisted
     // false). Inject a one-shot waiver-not-set on the power limit: the apply
@@ -1929,7 +1933,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Clock')?.click()`);
   await sleep(150);
-  // M4-B (user): the CARD NAME is 'Core clock' in BOTH modes - the toggle
+  // M4-B: the CARD NAME is 'Core clock' in BOTH modes - the toggle
   // changes the input presentation, never the name.
   const clockTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
   if (clockTitle.trim() !== 'Core clock') fail(`M4-B: the freq card title is '${clockTitle}' in Clock mode (must stay 'Core clock')`);
@@ -2093,7 +2097,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await clearToasts();
   }
 
-  // --- M4-B (user): the Advanced OC Mode warning is a ONCE-only gate -------
+  // --- M4-B: the Advanced OC Mode warning is a ONCE-only gate -------
   // Shown ONLY on the first Stock->Advanced toggle, persisted on acceptance,
   // never re-asked on a later boot. Two flows:
   //   - stock-boot session (warning unaccepted): first Advanced click shows
@@ -2102,7 +2106,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   //     trip shows NO dialog (the persistence is the regression pin).
   //   - RID_MOCK_ADVANCED_ACCEPTED=1 (boot-persisted acceptance): a
   //     Stock->Advanced toggle shows NO dialog at all - the "saved onto
-  //     next boot" case the user asked for.
+  //     next boot" case.
   const advancedAccepted = process.env.RID_MOCK_ADVANCED_ACCEPTED === '1';
   const clickModeBtn = (label) => js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === '${label}')?.click()`);
   const modeActive = (label) => js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === '${label}')?.classList.contains('active')`);
@@ -2336,7 +2340,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('B1: fan axis edge ticks are not edge-clamped (their outer half is clipped by .fan-stage)');
   }
   step('fan-axis', `B1: right-side axis '${axisTicks}' outside the plot, aligned to the grid, edge ticks clamped`);
-  // M4-A (user correction): the Fan page renders NO waiver status - the row
+  // M4-A (correction): the Fan page renders NO waiver status - the row
   // lives only in the dashboard GPU Health card (the waiver was accepted
   // during the OC flow; the fan apply-time dialog gate is unaffected).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
@@ -3201,7 +3205,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('profiles-load', 'load applied the profile: 2 toasts, active highlight, activeProfileId persisted');
   await clearToasts();
 
-  // --- M4-D (user): the profile LOAD auto re-prompt + single retry -------
+  // --- M4-D: the profile LOAD auto re-prompt + single retry -------
   // A NEVER-accepted session whose load hits waiver-not-set (the driver
   // lost the waiver, no consent is persisted): MAIN cannot silently re-set
   // (the store is unaccepted), so the failure surfaces - and the renderer
@@ -3548,7 +3552,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (catalog.entries.length !== 4 || catalog.states.length !== 4) fail(`registry-catalog IPC returned ${catalog.entries.length} entries / ${catalog.states.length} states`);
   step('tweaks', `Tweaks: ${tweakIds} rendered; mpo=Off, hags=Active (HwSchMode=0x2), game-dvr=Default, fullscreen=Active; Enable/Disable/Revert per applyable card (mock round trip: mpo -> Active -> revert -> Default), fullscreen read-only`);
 
-  // --- M4-D (user) + M4-D2: the Settings tab ------------------------------
+  // --- M4-D + M4-D2: the Settings tab ------------------------------
   // Start with Windows (the HKCU Run value via the MOCK startup adapter -
   // never spawns, never elevates), Start minimized (persisted), Close to
   // tray (persisted), Log to file (persisted monitorLogToFile), the app
@@ -3946,7 +3950,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // mock fixture - never hardware)
 // ---------------------------------------------------------------------------
 //
-// Pins the four cards (the user's order) + the fixture values, the
+// Pins the four cards (the planned order) + the fixture values, the
 // driver-gated dropdown options (no Speed Sync - the live caps; the M9 On
 // + Boost change makes the Low Latency list FULL off/on/on-boost), the
 // FPS toggle OFF->no slider / ON->the range-driven slider, the
@@ -4026,7 +4030,7 @@ export async function runGraphicsVerify(win, backend) {
   const titles = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-card .card-title')).map((t) => (t.textContent ?? '').trim()))`);
   const wantTitles = ['XeSS Frame Generation Override', 'Frame Synchronization', 'FPS Limit', 'Low Latency Mode'];
   if (JSON.stringify(JSON.parse(titles)) !== JSON.stringify(wantTitles)) {
-    fail(`M8: the card order is ${titles} (expected ${JSON.stringify(wantTitles)} - the user's order)`);
+    fail(`M8: the card order is ${titles} (expected ${JSON.stringify(wantTitles)} - the planned order)`);
   }
   // The honest notes render (the Smart-VSync-out note on the Frame Sync card).
   const flipNote = await js(cardNote('flipMode'));
@@ -4036,7 +4040,7 @@ export async function runGraphicsVerify(win, backend) {
   if (!(await js(`document.body.textContent.includes('Per-game profiles stay in Intel Graphics Software')`))) {
     fail('M8: the page-level honest note (per-game profiles stay in IGS) is missing');
   }
-  step('m8-cards', `M8: #/graphics renders the four cards in the user's order ${JSON.stringify(wantTitles)}; the Frame Sync note carries the Smart-VSync-out honesty; the page-level IGS note is present`);
+  step('m8-cards', `M8: #/graphics renders the four cards in the planned order ${JSON.stringify(wantTitles)}; the Frame Sync note carries the Smart-VSync-out honesty; the page-level IGS note is present`);
 
   // --- 2. the fixture values + the driver-gated options ----------------------
   const fixtureValues = await js(`JSON.stringify({
@@ -4304,6 +4308,312 @@ export async function runGraphicsVerify(win, backend) {
       fail('M8: the A770 graphics surface must return after switching back (the fixture)');
     }
     step('m8-multi-device', 'M8 (RID_MOCK_MULTI_DEVICE=1): the iGPU serves the supported-all-false state (no crash); switching back to the A770 restores the fixture');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// M10b - the Graphics "Display" view (runDisplayVerify)
+// ---------------------------------------------------------------------------
+//
+// The display block (the runGraphicsVerify twin): the "Graphics | Display"
+// view pill + the switch round trip, the fixture values (the mock display
+// info rows), the quantization + scaling apply round trips (the mock log +
+// the read-back + the Applied chips), the scaling flash-warning toast, the
+// honest notes (the color sliders + the wire-format read-only surface on
+// this driver build + the scaling-method/VRR notes), the INFORMATION rows,
+// the RID_MOCK_DISPLAY_UNSUPPORTED knob block, and the multi-device
+// degrade. Runs in the default variant AND under the RID_MOCK_OVERLAY /
+// RID_MOCK_FPS / RID_MOCK_API / RID_MOCK_MULTI_DEVICE /
+// RID_MOCK_GRAPHICS_UNSUPPORTED variants (the display surface is
+// independent of the graphics surface).
+export async function runDisplayVerify(win, backend) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+
+  // CSS-SELECTOR helpers (NEVER expressions - the class names contain
+  // dashes, so `querySelector(...) .card-note` would parse as a
+  // subtraction).
+  const rowSel = (control) => `.display-control[data-control="${control}"]`;
+  const rowNote = (control) => `document.querySelector('${rowSel(control)} .card-note')?.textContent ?? ''`;
+  const chipApplied = (control) => `(() => {
+    const c = document.querySelector('${rowSel(control)} .oc-chip-status');
+    return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied' && c.className.includes('chip-ok');
+  })()`;
+
+  await js(`location.hash = '#/graphics'`);
+  if (!(await waitFor(win, `document.querySelectorAll('.graphics-view-btn').length === 2`, 8000))) {
+    fail(`M10b: the Graphics page did not render the view pill (page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
+  }
+
+  // --- 1a. the unsupported variant (RID_MOCK_DISPLAY_UNSUPPORTED=1) --------
+  // The knob runs the WHOLE display session degraded (the
+  // RID_MOCK_GRAPHICS_UNSUPPORTED pattern): the Display view serves the
+  // empty display list - the honest no-controls note, NO controls, NO
+  // chips/Apply. The supported-flow pins below cannot run in this session.
+  if (process.env.RID_MOCK_DISPLAY_UNSUPPORTED === '1') {
+    await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Display'); b.click(); })()`);
+    if (!(await waitFor(win, `!!document.querySelector('.display-no-displays') && (document.querySelector('.display-no-displays')?.textContent ?? '').includes('No display settings are available')`, 8000))) {
+      fail(`M10b: the RID_MOCK_DISPLAY_UNSUPPORTED variant must show the honest no-controls note (page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+    }
+    if (await js(`!!document.querySelector('.display-control') || !!document.querySelector('.display-select')`)) {
+      fail('M10b: the unsupported variant must render NO display controls');
+    }
+    if (await js(`!!document.querySelector('.display-control .oc-chip-apply')`)) {
+      fail('M10b: the unsupported variant must show no per-card Apply buttons');
+    }
+    if (await js(`!!document.querySelector('.display-picker')`)) {
+      fail('M10b: the unsupported variant must render no display selector (nothing to select)');
+    }
+    step('m10b-display-unsupported', 'M10b (RID_MOCK_DISPLAY_UNSUPPORTED=1): the Display view shows the honest "No display settings are available on this GPU." note, no controls, no selector, no Apply');
+    return;
+  }
+
+  // --- 1b. the wire-format read-only variant (RID_MOCK_DISPLAY_WIRE_READONLY=1) --
+  // The knob serves the REAL driver's wire-format shape (wireFormats/
+  // bpcDepths EMPTY - the probe record): the COLOR card's wire-format
+  // controls show the honest read-only state (the current Color Format +
+  // the never-populated Color Depth + the silent-no-op note), NEVER a dead
+  // control; a wire-format patch refuses honestly. The quantization +
+  // scaling surfaces stay live.
+  if (process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1') {
+    await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Display'); b.click(); })()`);
+    if (!(await waitFor(win, `!!document.querySelector('.display-control[data-control="wireFormat"]')`, 8000))) {
+      fail(`M10b: the wire-readonly variant must render the wire-format row (page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+    }
+    const wireNote = await js(`document.querySelector('.display-control[data-control="wireFormat"] .card-note')?.textContent ?? ''`);
+    if (!wireNote.includes('silent no-op')) {
+      fail(`M10b: the wire-format row must carry the honest silent-no-op note: '${wireNote}'`);
+    }
+    if (await js(`!!document.querySelector('.display-select[data-display-select="colorFormat"]') || !!document.querySelector('.display-select[data-display-select="colorDepth"]')`)) {
+      fail('M10b: the wire-readonly variant must render NO wire-format controls');
+    }
+    if (await js(`!!document.querySelector('.display-control[data-control="wireFormat"] .oc-chip-apply')`)) {
+      fail('M10b: the wire-readonly variant must show no wire-format Apply button');
+    }
+    // The read-only rows show the current values: the model ('RGB' - the
+    // mock still populates colorFormat) + the never-populated depth ('-').
+    const wireRows = await js(`JSON.stringify(Array.from(document.querySelectorAll('.display-control[data-control="wireFormat"] .display-info-row')).map((r) => [r.querySelector('.display-info-label')?.textContent ?? '', r.querySelector('.display-info-value')?.textContent ?? '']))`);
+    const wireMap = Object.fromEntries(JSON.parse(wireRows));
+    if (wireMap['Color Format'] !== 'RGB' || wireMap['Color Depth'] !== '-') {
+      fail(`M10b: the wire-readonly read-out is ${wireRows} (expected Color Format 'RGB' + Color Depth '-')`);
+    }
+    // The quantization + scaling controls stay live in this session.
+    if (await js(`!document.querySelector('.display-select[data-display-select="quantizationRange"]') || !document.querySelector('.display-select[data-display-select="scalingMode"]')`)) {
+      fail('M10b: the wire-readonly variant must keep the quantization + scaling controls live');
+    }
+    // A wire-format patch refuses honestly through the apply machinery.
+    const wireRefusal = await js(`window.arcPower.displayApply(0, 0, { wireFormat: { model: 'RGB', depth: 8 } })`);
+    if (wireRefusal.ok !== false || wireRefusal.perControl.wireFormat.errorCode !== 'unsupported') {
+      fail(`M10b: a wire-format apply in the read-only session must refuse honestly: ${JSON.stringify(wireRefusal)}`);
+    }
+    step('m10b-wire-readonly', 'M10b (RID_MOCK_DISPLAY_WIRE_READONLY=1): the wire-format card shows the honest read-only state (Color Format RGB, Color Depth -, the silent-no-op note), no controls, no Apply; a wire-format patch refuses honestly; quantization + scaling stay live');
+    return;
+  }
+
+  // --- 1. the view pill + the switch round trip -----------------------------
+  const viewLabels = await js(`Array.from(document.querySelectorAll('.graphics-view-btn')).map((b) => (b.textContent ?? '').trim()).join('|')`);
+  if (viewLabels !== 'Graphics|Display') fail(`M10b: the Graphics view pill must read 'Graphics|Display' (got '${viewLabels}')`);
+  // display -> the Display view loads (the per-display selector + the three
+  // groups).
+  await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Display'); b.click(); })()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.display-group').length === 3 && !!document.querySelector('.display-picker')`, 8000))) {
+    fail(`M10b: the Display view did not render the three groups + the selector (page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+  }
+  // graphics -> the settings view returns INTACT (the four M8 cards - the
+  // S2 re-registration contract).
+  await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Graphics'); b.click(); })()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4`, 8000))) {
+    fail('M10b: switching back to the Graphics view did not return the four settings cards');
+  }
+  await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Display'); b.click(); })()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.display-group').length === 3`, 8000))) {
+    fail('M10b: switching back to the Display view did not return the display groups');
+  }
+  step('m10b-view-switch', `M10b: the Graphics|Display pill round-tripped (settings view returned its 4 cards, the Display view its 3 groups + the selector)`);
+
+  // --- 2. the fixture values + the honest notes -----------------------------
+  const groupTitles = await js(`JSON.stringify(Array.from(document.querySelectorAll('.display-group .card-title')).map((t) => (t.textContent ?? '').trim()))`);
+  const wantGroups = ['General', 'Color', 'Information'];
+  if (JSON.stringify(JSON.parse(groupTitles)) !== JSON.stringify(wantGroups)) {
+    fail(`M10b: the display group order is ${groupTitles} (expected ${JSON.stringify(wantGroups)})`);
+  }
+  const fixtureValues = await js(`JSON.stringify({
+    scaling: document.querySelector('.display-select[data-display-select="scalingMode"]')?.value,
+    quant: document.querySelector('.display-select[data-display-select="quantizationRange"]')?.value,
+    fmt: document.querySelector('.display-select[data-display-select="colorFormat"]')?.value,
+    depth: document.querySelector('.display-select[data-display-select="colorDepth"]')?.value,
+  })`);
+  const fv = JSON.parse(fixtureValues);
+  if (fv.scaling !== 'identity' || fv.quant !== 'default' || fv.fmt !== 'RGB' || fv.depth !== '10') {
+    fail(`M10b: the Display dropdowns do not show the mock fixture values: ${fixtureValues}`);
+  }
+  // The scaling dropdown offers the full probe-recorded caps list; the
+  // quantization dropdown the default/limited/full list.
+  const scalingOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.display-select[data-display-select="scalingMode"] option')).map((o) => o.value))`);
+  if (JSON.stringify(JSON.parse(scalingOptions)) !== JSON.stringify(['identity', 'centered', 'stretched', 'aspect-ratio-centered-max', 'custom'])) {
+    fail(`M10b: the scaling dropdown must offer the probe-recorded caps list: ${scalingOptions}`);
+  }
+  // The honest notes: the scaling flash note sits ON the scaling row, the
+  // scaling-method + VRR + color-sliders notes render body-wide.
+  const scalingNote = await js(rowNote('scalingMode'));
+  if (!scalingNote.includes('brief screen flash')) {
+    fail(`M10b: the Scaling Mode card must carry the honest flash note: '${scalingNote}'`);
+  }
+  const bodyText = await js(`document.body.textContent`);
+  for (const want of [
+    'Not exposed by the driver interface.',
+    'Variable refresh rate is OS-controlled in Windows; the driver does not expose a VRR-mode surface here.',
+    'applied by the Intel Graphics Software service',
+  ]) {
+    if (!bodyText.includes(want)) fail(`M10b: the honest note '${want}' is missing from the page`);
+  }
+  step('m10b-fixture', `M10b: the Display view shows the fixture (scaling '${fv.scaling}', quantization '${fv.quant}', format '${fv.fmt}', depth ${fv.depth} bpc); the scaling list ${JSON.stringify(JSON.parse(scalingOptions))}; the honest notes (flash / scaling-method / VRR / color sliders) render`);
+
+  // --- 3. the INFORMATION rows (the fixture values) --------------------------
+  const infoRows = await js(`JSON.stringify(Array.from(document.querySelectorAll('.display-group[data-display-group="info"] .display-info-row')).map((r) => [r.querySelector('.display-info-label')?.textContent ?? '', r.querySelector('.display-info-value')?.textContent ?? '']))`);
+  const rows = JSON.parse(infoRows);
+  const rowMap = Object.fromEntries(rows);
+  const wantInfo = {
+    Display: 'Arc Power Mock Display',
+    Connection: 'DisplayPort',
+    Resolution: '2560x1440',
+    'Refresh rate': '144 Hz',
+    'Color depth': '10 bpc',
+    'Color format': 'RGB',
+    'Arc Sync refresh range': '48 - 180 Hz',
+    'Arc Sync profile': 'recommended',
+  };
+  for (const [label, value] of Object.entries(wantInfo)) {
+    if (rowMap[label] !== value) fail(`M10b: the INFORMATION row '${label}' reads '${rowMap[label]}' (expected '${value}')`);
+  }
+  step('m10b-info', `M10b: the INFORMATION rows show the fixture (${rows.map(([l, v]) => `${l} '${v}'`).join(', ')})`);
+
+  // --- 4. the quantization apply round trip ---------------------------------
+  await js(`(() => {
+    const s = document.querySelector('.display-select[data-display-select="quantizationRange"]');
+    s.value = 'limited';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('${rowSel('quantizationRange')} .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) {
+    fail('M10b: changing the Quantization Range dropdown must reveal its .oc-chip-apply button');
+  }
+  await clearToasts();
+  await js(`document.querySelector('${rowSel('quantizationRange')} .oc-chip-apply').click()`);
+  if (!(await waitFor(win, chipApplied('quantizationRange'), 8000))) {
+    fail(`M10b: the quantization apply did not flip its chip to 'Applied' (driver quant='${(await js(`window.arcPower.displayGet(0)`)).displays[0].quantizationRange}')`);
+  }
+  const quantDriver = await js(`window.arcPower.displayGet(0)`);
+  if (quantDriver.displays[0].quantizationRange !== 'limited') {
+    fail(`M10b: the quantization round trip failed (driver quant='${quantDriver.displays[0].quantizationRange}')`);
+  }
+  const quantLog = backend._displayApplies[backend._displayApplies.length - 1];
+  if (!quantLog || JSON.stringify(quantLog.patch) !== JSON.stringify({ quantizationRange: 'limited' })) {
+    fail(`M10b: the mock display apply log does not record the quantization apply: ${JSON.stringify(quantLog)}`);
+  }
+  step('m10b-quant-round-trip', `M10b: quantization 'limited' -> per-card apply -> the chip reads Applied, the driver read-back reflects it, the mock apply log records { quantizationRange: 'limited' }`);
+
+  // --- 5. the scaling apply round trip + the flash-warning toast ------------
+  await js(`(() => {
+    const s = document.querySelector('.display-select[data-display-select="scalingMode"]');
+    s.value = 'stretched';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('${rowSel('scalingMode')} .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) {
+    fail('M10b: changing the Scaling Mode dropdown must reveal its .oc-chip-apply button');
+  }
+  await clearToasts();
+  await js(`document.querySelector('${rowSel('scalingMode')} .oc-chip-apply').click()`);
+  if (!(await waitFor(win, chipApplied('scalingMode'), 8000))) {
+    fail(`M10b: the scaling apply did not flip its chip to 'Applied' (driver scaling='${(await js(`window.arcPower.displayGet(0)`)).displays[0].scalingMode}')`);
+  }
+  // The scaling success carries the honest modeset-flash warning - surfaced
+  // as the warn toast.
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-warn')).some((t) => (t.textContent ?? '').includes('flash'))`, 5000))) {
+    fail('M10b: the scaling apply must surface the honest modeset-flash warning toast');
+  }
+  const scalingDriver = await js(`window.arcPower.displayGet(0)`);
+  if (scalingDriver.displays[0].scalingMode !== 'stretched') {
+    fail(`M10b: the scaling round trip failed (driver scaling='${scalingDriver.displays[0].scalingMode}')`);
+  }
+  step('m10b-scaling-round-trip', `M10b: scaling 'stretched' -> per-card apply -> the chip reads Applied, the flash-warning toast appears, the driver read-back reflects it`);
+
+  // --- 5b. restore the fixture defaults (the deterministic session end) -----
+  // Quantization back to 'default', scaling back to 'identity' - a crashed
+  // run must never bleed into the next variant (the shared isolated mock
+  // dir is reset per session anyway, but the mock display STATE lives in
+  // the backend instance - this keeps the verify self-contained).
+  await js(`(() => {
+    const s = document.querySelector('.display-select[data-display-select="quantizationRange"]');
+    s.value = 'default';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await clearToasts();
+  await js(`document.querySelector('${rowSel('quantizationRange')} .oc-chip-apply').click()`);
+  await waitFor(win, chipApplied('quantizationRange'), 8000);
+  await js(`(() => {
+    const s = document.querySelector('.display-select[data-display-select="scalingMode"]');
+    s.value = 'identity';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await clearToasts();
+  await js(`document.querySelector('${rowSel('scalingMode')} .oc-chip-apply').click()`);
+  await waitFor(win, chipApplied('scalingMode'), 8000);
+  const restored = await js(`window.arcPower.displayGet(0)`);
+  if (restored.displays[0].quantizationRange !== 'default' || restored.displays[0].scalingMode !== 'identity') {
+    fail(`M10b: the fixture restore failed (quant='${restored.displays[0].quantizationRange}', scaling='${restored.displays[0].scalingMode}')`);
+  }
+  await clearToasts();
+  step('m10b-restore', 'M10b: the quantization + scaling fixture defaults restored (deterministic session end)');
+
+  // --- 6. the multi-device degrade (RID_MOCK_MULTI_DEVICE=1) ----------------
+  if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+    const IGPU_NAME = 'Mock Arc iGPU (fixture)';
+    const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
+    const driveSelector = (value) => js(`(() => {
+      const s = document.querySelector('.card-grid .device-select');
+      if (!s) return 'no-select';
+      s.value = '${value}';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    })()`);
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(200);
+    if ((await driveSelector('1')) !== 'ok') fail('M10b: the dashboard selector change did not dispatch (multi-device)');
+    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${IGPU_NAME}'`, 8000))) {
+      fail('M10b: the switch to device 1 did not land');
+    }
+    await js(`location.hash = '#/graphics'`);
+    await sleep(250);
+    await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Display'); if (b) b.click(); })()`);
+    if (!(await waitFor(win, `!!document.querySelector('.display-no-displays')`, 8000))) {
+      fail(`M10b: the iGPU must show the honest no-displays note in the Display view (a device switch must never crash - page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
+    }
+    if (await js(`!!document.querySelector('.display-control')`)) {
+      fail('M10b: the iGPU Display view must render NO controls');
+    }
+    // Switch back to the A770 -> the fixture returns.
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(200);
+    if ((await driveSelector('0')) !== 'ok') fail('M10b: the switch back to device 0 did not dispatch');
+    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
+      fail('M10b: the switch back to device 0 did not land');
+    }
+    await js(`location.hash = '#/graphics'`);
+    await sleep(250);
+    await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Display'); if (b && !b.classList.contains('active')) b.click(); })()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.display-group').length === 3`, 8000))) {
+      fail('M10b: the A770 display surface must return after switching back (the fixture)');
+    }
+    step('m10b-multi-device', 'M10b (RID_MOCK_MULTI_DEVICE=1): the iGPU serves the honest no-displays note in the Display view (no crash); switching back to the A770 restores the fixture');
   }
 }
 
@@ -4684,7 +4994,7 @@ export async function runFeaturesetVerify(win, fsId) {
 // 1.0.1 - the no-intel variant (RID_MOCK_NO_INTEL=1)
 // ---------------------------------------------------------------------------
 //
-// The user's AMD-machine test round pinned end to end against the MOCK (the
+// The AMD-machine test round pinned end to end against the MOCK (the
 // no-Intel session: listDevices [] + health igclLoaded false + the AMD
 // sysinfo fixture + the no-device telemetry push). The runFeaturesetVerify
 // SHAPE, diverging BEFORE bootWaiverStep - the no-device boot NEVER prompts
@@ -4911,6 +5221,17 @@ export async function runNoIntelVerify(win) {
   if (gNull !== 'rejected') fail(`M8: graphics:get(null) must be rejected in main (assertValidDeviceId), got '${gNull}'`);
   step('m8-no-intel', `M8: the Graphics tab on no-Intel shows 'No GPU available.' (never 'Loading graphics capabilities…'); graphics:get(null) rejects in main (assertValidDeviceId)`);
 
+  // --- 7c. M10b: the Graphics "Display" view on the no-Intel path ----------
+  // The SAME deviceId-null guard covers the Display view: the guard renders
+  // BEFORE the view pill (no pill, no display:get fetch), and display:get
+  // with a null deviceId is rejected in main (assertValidDeviceId).
+  if (await js(`!!document.querySelector('.graphics-view-btn') || !!document.querySelector('.display-group')`)) {
+    fail('M10b: the Graphics page on no-Intel must render NO view pill / display content (the "No GPU available." guard renders first)');
+  }
+  const dNull = await js(`(async () => { try { await window.arcPower.displayGet(null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
+  if (dNull !== 'rejected') fail(`M10b: display:get(null) must be rejected in main (assertValidDeviceId), got '${dNull}'`);
+  step('m10b-no-intel', 'M10b: the Display view on no-Intel is covered by the same guard (no pill, no display:get fetch); display:get(null) rejects in main (assertValidDeviceId)');
+
   // --- 8. NO waiver modal and NO toast anywhere -----------------------------
   await js(`location.hash = '#/dashboard'`);
   await sleep(400);
@@ -5117,7 +5438,7 @@ export async function runTweaksApplyVerify(win) {
 // M4-A - fan-gate regression variant (RID_MOCK_FAN_GATE=1)
 // ---------------------------------------------------------------------------
 //
-// The user report: fan-curve applies FAIL without a waiver prompt. This
+// The report: fan-curve applies FAIL without a waiver prompt. This
 // variant regression-tests the unaccepted-waiver fan apply through the mock
 // (the fan editor is the product apply surface - the dialog gate lives in
 // the renderer, so it is exercised end-to-end here, not unit-testable):
@@ -5169,7 +5490,7 @@ export async function runFanGateVerify(win, backend) {
   const pointsCount = () => js(`document.querySelectorAll('.fan-dot').length`);
   const clickApply = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings')); if (!b) return false; b.click(); return true; })()`);
   const clickRemove = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Remove point')); if (!b) return false; b.click(); return true; })()`);
-  // M4-A (user correction): the waiver STATUS lives ONLY in the dashboard
+  // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
   // GPU Health card - assert the row state there (red + clickable while
   // unaccepted, green + no click action once accepted).
   const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
@@ -5254,7 +5575,7 @@ export async function runFanGateVerify(win, backend) {
 
   // --- 4. M4-D: the driver loses the waiver mid-session (accepted store) ---
   // The injected ONE-SHOT waiver-not-set mirrors the real driver losing the
-  // waiver. M4-D (user, PERMANENT acceptance): with the persisted
+  // waiver. M4-D (PERMANENT acceptance): with the persisted
   // acceptance TRUE (the fan Accept above), a waiver-not-set apply is
   // SILENTLY re-set + retried ONCE in main - never a dialog, never a
   // dead-end, never a persisted false. The dashboard row stays green (the
@@ -5390,7 +5711,7 @@ export async function runBootApplyVerify(win, backend, store) {
 // The session seed wrote ocOnBoot:true + activeProfileId 'boot-apply-probe'
 // with the EXTENDED 315 W profile into the ISOLATED mock store, so the
 // WINDOW-PATH automatic apply (which runs BEFORE createWindow) executed at
-// boot against a STOCK-mode session - the exact user report shape (stock
+// boot against a STOCK-mode session - the exact report shape (stock
 // mode selected + a profile using advanced values fails at boot apply with
 // the "This value is beyond the standard Intel limit..." message). The M4O
 // fix makes the profileApply path ignore the OC-mode gate (the mode gates

@@ -11,7 +11,7 @@
 // mutation rebuilds the tray menu (tray-rebuild IPC) and marks the active
 // profile.
 //
-// M4-D (user): the load keeps its waiver gate and gains the SAME auto
+// M4-D: the load keeps its waiver gate and gains the SAME auto
 // re-prompt + single retry as OC/fan - a load whose apply answers
 // waiver-not-set re-prompts ONCE (the fresh caps show the driver truth) and
 // retries on accept; the counter resets on success. This renderer-side
@@ -31,7 +31,7 @@ import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings, St
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 
-// M4-D (user): the automatic waiver re-prompt + single retry counter - a
+// M4-D: the automatic waiver re-prompt + single retry counter - a
 // profile load can hit waiver-not-set (the driver lost the waiver while the
 // store had no persisted acceptance); the load then re-prompts ONCE and
 // retries on accept. Reset on every successful load - a later driver-side
@@ -449,7 +449,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           },
         });
       }
-      // M4-D (user): a waiver-not-set failure must not dead-end the load
+      // M4-D: a waiver-not-set failure must not dead-end the load
       // with a confusing error - re-prompt the waiver dialog AUTOMATICALLY
       // (the fresh caps reflect the driver truth, refreshed like the OC
       // page does) and retry ONCE. Never a loop; the counter resets on

@@ -1,4 +1,4 @@
-// Arc Power — Discord server banner generator (Electron offscreen capture).
+// Arc Power - Discord server banner generator (Electron offscreen capture).
 //
 // Renders scripts/discord-banner.html (a fixed 1920x360 banner matching the
 // website palette and wordmark) in a hidden Electron window and writes

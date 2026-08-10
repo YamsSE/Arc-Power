@@ -230,13 +230,13 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  * keep their exact strings).
  * M10a: the api parameter (the foreground-window Graphics-API badge) - the
  * field sits BETWEEN FPS and 1% Low ('FPS 60  DX12  1% Low 52  99% FPS 58')
- * and VANISHES when the api is null/unknown (the user's "if it's none, it
+ * and VANISHES when the api is null/unknown ( "if it's none, it
  * won't display anything" - no '-') and when the api stat is off; the
  * field only ever shows the canonical labels (apiLabelOf).
  */
 export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null): OverlayLines {
   const s = sample ?? {};
-  // M6: the percentage formatter ROUNDS to whole percents (the user's
+  // M6: the percentage formatter ROUNDS to whole percents (
   // decimals complaint - the real OS GPUEngine counter is a float
   // 42.12345678... and the raw digits used to show in the overlay; the
   // mock emits 42 so the old pins never caught it).
@@ -264,7 +264,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // off -> ''.
   // M10a: the Graphics-API badge sits between FPS and 1% Low ('FPS 60
   // DX12  1% Low 52  99% FPS 58') - the field VANISHES when the api is
-  // null/unknown (the user's "if it's none, it won't display anything" -
+  // null/unknown ( "if it's none, it won't display anything" -
   // no '-') and when the api stat is off.
   let fpsLine = '';
   if (enabled.has('fps')) fpsLine += fpsNum !== null && fpsNum > 0 ? `FPS ${Math.round(fpsNum)}` : 'FPS -';

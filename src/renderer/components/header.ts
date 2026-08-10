@@ -99,7 +99,7 @@ export class GpuHeader {
       : null;
     // 1.0.1 no-Intel round: the header shows the OS GPU (sysinfo primary
     // controller) with 'Non supported GPU' REPLACING the version line (n10
-    // - the user's exact ask); while the OS GPU is unknown the name reads
+    // - the exact ask); while the OS GPU is unknown the name reads
     // '-' (only 'No GPU detected' when sysinfo has nothing at all).
     const gpuName = s.noIntel
       ? (s.osGpu?.name ?? (s.sysinfo?.videoControllers?.length ? '-' : 'No GPU detected'))

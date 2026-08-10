@@ -352,7 +352,7 @@ export const monitoringPage: Page = {
     for (const seg of SEGMENTS) {
       const value = seg.value(sample);
       if (value !== undefined) {
-        // M4-D2 fix (user: "the lines overlap"): the REAL driver's
+        // M4-D2 fix ("the lines overlap"): the REAL driver's
         // telemetry t occasionally ticks BACKWARD (live-verified: 8 folds
         // in 40 s under load) - an unsorted push would fold the polyline
         // over itself. sortSeriesByTime keeps the drawn line on the true

@@ -5,7 +5,7 @@
 // enforcement, point-count clamping, presets) lives here so it is testable
 // without a DOM. Temps are rounded to whole °C, speeds to whole %.
 //
-// M4-B (user): the temp axis is STATIC 0..100 °C - deleting/adding/dragging
+// M4-B: the temp axis is STATIC 0..100 °C - deleting/adding/dragging
 // points never changes the domain (deleting the outer point of a curve used
 // to narrow the axis so the remaining points could not be dragged back to
 // higher/lower temps). Only the RPM y-axis is dynamic.
@@ -28,7 +28,7 @@ export interface CurveDomain {
   maxT: number;
 }
 
-// M4N (D): the FIXED stock Intel fan curve - the user's spec: 10 points,
+// M4N (D): the FIXED stock Intel fan curve - the spec: 10 points,
 // starts 20 % @ 20 C, a slow ramp, NEVER exceeds 50 %, reaching exactly
 // 50 % at 85 C. The fallback when the driver reports no curve
 // (fan-editor.ts - a canControl device that fails to report a curve used

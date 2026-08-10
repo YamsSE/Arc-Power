@@ -157,7 +157,7 @@ export class ProfileStore {
     const raw = fs.readFileSync(filePath, 'utf8');
     let data;
     try {
-      // M4-D2 (user-reported): tolerate a UTF-8 BOM - a settings/profiles
+      // M4-D2 (reported): tolerate a UTF-8 BOM - a settings/profiles
       // file saved by a third-party tool with a BOM (or an editor save)
       // must never brick every settings operation with an opaque parse
       // error. The app's own writer never emits a BOM.
@@ -292,7 +292,7 @@ export class ProfileStore {
       // M3-C-E: absent ocMode follows the store default (stock for the real
       // product, advanced for mock/ui-verify); a persisted value always wins.
       ocMode: data.ocMode === 'advanced' || data.ocMode === 'stock' ? data.ocMode : this.ocModeDefault,
-      // M4-B (user): the Advanced OC Mode warning is accepted ONCE and
+      // M4-B: the Advanced OC Mode warning is accepted ONCE and
       // persisted - a re-boot must not re-ask. Absent on old files -> false.
       advancedModeAccepted: data.advancedModeAccepted === true,
       // M4-D: the Settings-tab fields. Absent on old files -> false (same
