@@ -26,7 +26,7 @@ Details on expert controls, the safety design, and the capability model live in 
 
 | GPU | Family | Status |
 |---|---|---|
-| Arc A3 / A5 / A7 series (incl. A770) | Alchemist | **Verified** on A770 (primary dev target); A3/A5/A7 expected - same IGCL surface |
+| Arc A3 / A5 / A7 series (incl. A770) | Alchemist | **Verified** |
 | Arc B580 / B570 | Battlemage | Code paths complete, unverified on hardware |
 | Arc Pro B50 | Battlemage (pro) | Estimated - OC may be locked, telemetry + fan only |
 | Arc iGPU (Core Ultra) | - | Estimated - telemetry only |
