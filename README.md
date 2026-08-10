@@ -4,7 +4,7 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.0.2 Alpha</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
+<p align="center"><b>1.1.1 Alpha</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
 
 ## Features
 
@@ -12,6 +12,8 @@
 - **Extended range** - on Alchemist, power limits up to **315 W** and temperature limits up to **115 °C** (elevation prompt + explicit confirm required).
 - **Fan control** - auto / curve / fixed modes with an interactive SVG curve editor and adaptive presets (Driver Curve / Quiet / Max) derived from the driver's own curve.
 - **Live telemetry** - clocks, temperatures, power, fan RPM, utilization, FPS / frame-time, and VRAM usage, as readouts and rolling graphs. The dashboard also shows a CPU card (RAM type, L1-L4 caches) and a two-group live readout with CPU wattage and GPU utilization.
+- **In-game overlay** - a click-through, always-on-top stats overlay (MSI Afterburner/RTSS-style): clocks, temps, FPS with 1% Low / 99% FPS percentiles, and a frametime polyline. Hotkey toggle, 4-corner positioning, size/scale, text colors, and an optional background.
+- **Graphics tuning** - XeSS Frame Generation override (2x/3x/4x), frame synchronization, an FPS limit (30-300), and Low Latency (Off/On/On+Boost), applied through the IGCL 3D-feature API on the dedicated Graphics page.
 - **Multi-GPU** - pick which Intel Arc GPU to control; the choice persists and applies to the dashboard, tuning, telemetry, waiver, and boot/tray applies.
 - **UI themes** - Dark Steel (default), Midnight, and Arctic Light, selectable in Settings and persisted.
 - **Profiles** - save, load, and apply named profiles, optionally at every startup/logon (silently, via an elevated scheduled task on the installed build).
@@ -58,7 +60,9 @@ The app is organized into tabs:
 
 - **Dashboard** - GPU card (name, clocks, PCIe link, ReBAR status, health), CPU card (RAM type, L1-L4 caches), and a two-group live readout with CPU wattage and GPU utilization.
 - **Tuning** - the Overclocking and Fan pages. Sliders with step snapping and min/max/step ticks, preset chips, per-control Apply, one-click reset to defaults, plus a Save-as-Profile / Override-Profile card. First OC apply shows the warranty-waiver dialog; values above the standard range ask for explicit confirmation. The fan page offers auto / curve / fixed modes with an interactive SVG curve editor (hover/drag readouts, adaptive presets); fan control is read-only on boards that report `canControl = false`.
+- **Graphics** - XeSS Frame Generation override, frame synchronization, FPS limit, and Low Latency, mirrored from Intel Graphics Software.
 - **Monitoring** - telemetry readout grid and rolling graphs.
+- **Overlay Settings** - the in-game overlay: enabled stats, position, size, colors, background, hotkey, and the enable toggle.
 - **Profiles** - save and manage named profiles, toggle apply-on-startup.
 - **Tweaks** - reversible registry hacks (e.g. MPO disable).
 - **Settings** - start with Windows, start minimized, close to tray, log to file, UI theme, and version info.
@@ -87,7 +91,7 @@ Architecture notes and the IGCL integration write-up (struct mappings, capabilit
 - [x] Profiles, apply-on-startup, system tray
 - [x] Reversible tweaks (MPO disable and more)
 - [x] Installer (portable EXE + NSIS setup) and silent elevated logon applies
-- [x] 1.0.x Alpha feature batch (multi-GPU, themes, dashboard, fan presets)
+- [x] 1.0.x Alpha feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics tuning)
 - [ ] Published releases on GitHub
 - [ ] Battlemage enablement (live verification on B580 / B570)
 
