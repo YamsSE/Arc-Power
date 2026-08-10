@@ -93,7 +93,7 @@ Everyone is permitted to copy and distribute verbatim copies
 of this license document, but changing it is not allowed.
 
 [GPLv2 text (the full license text is distributed with the
-project source (LICENSE-GPL-2.0.txt) and published at
+project source (LICENSE) and published at
 https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt]
 ```
 

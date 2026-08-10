@@ -30,7 +30,7 @@
                                 "src/main/backend/COPYING",
                                 "src/main/backend/PawnIO_setup.exe",
                                 "THIRD_PARTY_NOTICES.txt",
-                                "LICENSE-GPL-2.0.txt",
+                                "LICENSE",
                                 "package.json"
                             ],
                   "asarUnpack":  [
