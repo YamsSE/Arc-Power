@@ -18,10 +18,12 @@
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
+import { consumeOverlayViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
 import type { TelemetrySample } from '../types.ts';
 import { setLatestFps } from '../log-state.ts';
 import { ghzFreq, gbValue } from '../pure/sysinfo.ts';
+import { renderOverlaySettings } from './overlay-settings.ts';
 import {
   pushSeries,
   trimSeriesWindow,
@@ -74,6 +76,15 @@ interface MonState {
 
 let mon: MonState | null = null;
 let fpsTimer: number | null = null;
+
+// M9: the Monitoring page's sub-view - 'monitoring' = the readout grid +
+// canvas graphs, 'overlay' = the overlay settings content. Module-level
+// (persists across re-renders - a navigation re-entry must not drop the
+// active view, the Tuning pattern); the #/overlay alias + the Settings
+// "Overlay settings" button force 'overlay' via consumeOverlayViewRequest
+// at render.
+let monView: 'monitoring' | 'overlay' = 'monitoring';
+let viewContainer: HTMLElement | null = null;
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#4cc2ff';
@@ -262,134 +273,62 @@ export const monitoringPage: Page = {
       hover: null,
     };
 
+    // M9: the old #/overlay hash + the Settings-button path arrive with the
+    // overlay view requested (the consumeFanViewRequest twin - the Tuning
+    // pattern); the view persists per render (module state, default
+    // 'monitoring').
+    if (consumeOverlayViewRequest()) monView = 'overlay';
+
     clear(container);
-    const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
-    mon.fpsNote = fpsNote;
-
-    // M4M (B): the readout card renders TWO labeled groups (CPU above GPU -
-    // the dashboard pattern), each with its own grid (mon-readout-cpu /
-    // mon-readout-gpu; both keep the compact .mon-readout styling). The
-    // FPS tile starts '-' - pollFps owns it from the first poll.
-    const readout = el('section', { class: 'card' }, [
-      el('h2', { class: 'card-title', text: 'Live readout' }),
-      el('div', { class: 'readout-group' }, [
-        el('div', { class: 'readout-group-label', text: 'CPU' }),
-        el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-cpu' }, cpuStatTiles(s.latestSample).map(statTileNode)),
+    const viewToggle = el('div', { class: 'mon-view-toggle-row' }, [
+      el('div', { class: 'oc-mode-toggle mon-view-toggle', role: 'group', 'aria-label': 'Monitoring view' }, [
+        el('button', {
+          class: `oc-mode-btn mon-view-btn${monView === 'monitoring' ? ' active' : ''}`,
+          dataset: { view: 'monitoring' },
+          text: 'Monitoring',
+          onClick: () => setMonView('monitoring'),
+        }),
+        el('button', {
+          class: `oc-mode-btn mon-view-btn${monView === 'overlay' ? ' active' : ''}`,
+          dataset: { view: 'overlay' },
+          text: 'Overlay',
+          onClick: () => setMonView('overlay'),
+        }),
       ]),
-      el('div', { class: 'readout-group' }, [
-        el('div', { class: 'readout-group-label', text: 'GPU' }),
-        el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-gpu' }, gpuStatTiles(s.latestSample).map(statTileNode)),
-      ]),
-      fpsNote,
     ]);
-    mon.fpsTileValue = readout.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
-
-    const graphs = el('section', { class: 'seg-stack' }, SEGMENTS.map((seg, idx) => {
-      const canvas = el('canvas', { class: 'seg-canvas' });
-      mon?.canvases.set(seg.id, canvas);
-      const popup = el('div', { class: 'seg-popup', hidden: true });
-      const body = el('div', { class: 'seg-body' }, [canvas, popup]);
-      const head = el('button', {
-        class: 'seg-head',
-        onClick: () => {
-          const collapsed = body.hidden;
-          body.hidden = !collapsed;
-          head.querySelector('.seg-chevron')!.textContent = collapsed ? '▾' : '▸';
-          // M4-C: collapsing the segment hides any stale hover popup and
-          // clears the persisted crosshair.
-          if (body.hidden) {
-            popup.hidden = true;
-            if (mon) mon.hover = null;
-          }
-          drawSeries(canvas, mon?.series[seg.id] ?? []);
-        },
-      }, [
-        el('span', { class: 'seg-chevron', text: idx === 0 ? '▾' : '▸' }),
-        el('span', { class: 'seg-label', text: seg.label }),
-        el('span', { class: 'seg-unit', text: seg.unit }),
-      ]);
-      // Collapsed by default except the first segment.
-      if (idx !== 0) body.hidden = true;
-
-      // M4-C: hover crosshair + nearest-sample popup - only while the
-      // segment is EXPANDED (the collapsed body is hidden, and the handler
-      // re-checks so a collapse mid-hover can never leave a popup behind).
-      const hideHover = () => {
-        popup.hidden = true;
-        if (mon) mon.hover = null;
-        drawSeries(canvas, mon?.series[seg.id] ?? []);
-      };
-      canvas.addEventListener('pointermove', (ev) => {
-        if (body.hidden) return;
-        const points = mon?.series[seg.id] ?? [];
-        const w = canvas.clientWidth;
-        const h = canvas.clientHeight;
-        if (w === 0 || h === 0 || points.length === 0) return;
-        const rect = canvas.getBoundingClientRect();
-        const padL = 42;
-        const padR = 8;
-        const padT = 8;
-        const padB = 16;
-        const pw = Math.max(10, w - padL - padR);
-        const xNorm = (ev.clientX - rect.left - padL) / pw;
-        const idx = nearestSampleIndex(points, xNorm);
-        if (idx < 0) return;
-        const p = points[idx];
-        const scale = autoScale(points);
-        if (!scale) return;
-        const ph = Math.max(10, h - padT - padB);
-        const span = scale.max - scale.min;
-        const x = padL + xNorm * pw;
-        const y = padT + (1 - (p.v - scale.min) / span) * ph;
-        // Relative time against the newest sample in the drawn window.
-        const nowT = points[points.length - 1].t;
-        popup.textContent = `${Math.round(p.v)} ${seg.unit} · ${Math.round(nowT - p.t)} s ago`;
-        // The canvas starts at the body's padding box + 10px/8px padding.
-        // M4-C (round-2 fix): the popup must stay FULLY inside the card -
-        // the old unclamped `left: 10 + x` (x reaches w - 8 at the canvas's
-        // right edge) centered the ~120px box up to ~60px past the card's
-        // right edge, and .seg-card{overflow:hidden} clipped the "· N s
-        // ago" tail - and the rightmost ~5 s of the graph is where the
-        // NEWEST sample (the common hover) sits. Top-edge samples
-        // (v = max -> y = padT = 8) parked the box ~12px above the canvas,
-        // over the segment header. Mirror the fan readout's round-1 fix:
-        // measure the segment body + box, clamp horizontally in px so the
-        // box never leaves the card, and flip BELOW the sample (the
-        // .seg-popup-below class) when there is no room above. The
-        // %-positioned default stays as the fallback when the body cannot
-        // be measured.
-        popup.hidden = false;
-        const bodyEl = popup.parentElement;
-        const br = bodyEl ? bodyEl.getBoundingClientRect() : null;
-        if (br && br.width > 0 && br.height > 0) {
-          const box = popup.getBoundingClientRect();
-          const px = 10 + x;
-          const py = 8 + y;
-          const flipBelow = py - 6 - box.height < 0 && py + 10 + box.height <= br.height;
-          popup.classList.toggle('seg-popup-below', flipBelow);
-          popup.style.left = `${Math.min(Math.max(box.width / 2, px), br.width - box.width / 2)}px`;
-          popup.style.top = `${py}px`;
-        } else {
-          popup.classList.remove('seg-popup-below');
-          popup.style.left = `${10 + x}px`;
-          popup.style.top = `${8 + y}px`;
-        }
-        // M4-C (round-1 fix): persist the hover so redrawAll can re-draw
-        // the crosshair on telemetry ticks (a stationary hover used to lose
-        // it every second while the popup stayed).
-        if (mon) mon.hover = { segId: seg.id, x, y };
-        drawSeries(canvas, points, { x, y });
-      });
-      canvas.addEventListener('pointerleave', hideHover);
-      return el('div', { class: 'card seg-card' }, [head, body]);
-    }));
-
+    viewContainer = el('div', { class: 'mon-view' });
     container.append(
       el('h1', { class: 'page-title', text: 'Monitoring' }),
-      el('p', { class: 'page-subtitle', text: 'Live values and 60-second rolling graphs from the GPU.' }),
-      readout,
-      graphs,
+      el('p', {
+        class: 'page-subtitle',
+        text: monView === 'overlay'
+          ? 'The in-game style HUD - its settings live in the Overlay view below (the readout grid keeps running behind it).'
+          : 'Live values and 60-second rolling graphs from the GPU.',
+      }),
+      viewToggle,
+      viewContainer,
     );
+    // M9: the view switch re-renders ONLY the sub-view container - the
+    // telemetry series (module-level mon.series) survive the round trip,
+    // and every monitoring-view rebuild re-registers the canvases + the
+    // FPS tile + the note (the S2 contract in renderMonitoringView).
+    const renderMonView = (): void => {
+      if (!viewContainer) return;
+      if (monView === 'overlay') {
+        renderOverlaySettings(viewContainer, ctx);
+        return;
+      }
+      renderMonitoringView(viewContainer, ctx);
+    };
+    const setMonView = (v: 'monitoring' | 'overlay'): void => {
+      if (monView === v) return;
+      monView = v;
+      renderMonView();
+      viewToggle.querySelectorAll<HTMLButtonElement>('.mon-view-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.view === monView);
+      });
+    };
+    renderMonView();
 
     fpsTimer = window.setInterval(() => void pollFps(), FPS_POLL_MS);
     void pollFps();
@@ -428,7 +367,9 @@ export const monitoringPage: Page = {
     // M4M (B): refresh the readout groups IN PLACE - rebuild each grid per
     // tick (the dashboard pattern). The FPS tile is owned by pollFps - the
     // rebuild KEEPS the existing tile element (moved to the end of the GPU
-    // grid) so the poll's live value is never stomped.
+    // grid) so the poll's live value is never stomped. M9: the grids only
+    // exist while the MONITORING view is active (the overlay view leaves
+    // them absent - the null-safe lookup just returns).
     const refreshGroup = (id: string, tiles: Array<{ label: string; value: string; unit: string; extraClass?: string }>): void => {
       const grid = container.querySelector<HTMLElement>(`#${id}`);
       if (!grid) return;
@@ -444,6 +385,143 @@ export const monitoringPage: Page = {
     redrawAll();
   },
 };
+
+/** M9: the monitoring sub-view build - the readout grid + the canvas
+ *  segments (the old render() body, extracted so the view switch can
+ *  rebuild it). THE RE-REGISTRATION CONTRACT (plan-review S2): every
+ *  (re)build re-registers mon.canvases, mon.fpsTileValue and mon.fpsNote,
+ *  so pollFps + redrawAll always write into the LIVE view and never into
+ *  the detached nodes a clear(viewContainer) orphans (a re-shown view
+ *  would otherwise show a frozen FPS tile + empty graphs). */
+function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
+  const m = mon;
+  if (!m) return;
+  clear(container);
+  const s = ctx.store.get();
+  m.canvases = new Map();
+  const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
+  m.fpsNote = fpsNote;
+
+  // M4M (B): the readout card renders TWO labeled groups (CPU above GPU -
+  // the dashboard pattern), each with its own grid (mon-readout-cpu /
+  // mon-readout-gpu; both keep the compact .mon-readout styling). The
+  // FPS tile starts '-' - pollFps owns it from the first poll.
+  const readout = el('section', { class: 'card' }, [
+    el('h2', { class: 'card-title', text: 'Live readout' }),
+    el('div', { class: 'readout-group' }, [
+      el('div', { class: 'readout-group-label', text: 'CPU' }),
+      el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-cpu' }, cpuStatTiles(s.latestSample).map(statTileNode)),
+    ]),
+    el('div', { class: 'readout-group' }, [
+      el('div', { class: 'readout-group-label', text: 'GPU' }),
+      el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-gpu' }, gpuStatTiles(s.latestSample).map(statTileNode)),
+    ]),
+    fpsNote,
+  ]);
+  m.fpsTileValue = readout.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
+
+  const graphs = el('section', { class: 'seg-stack' }, SEGMENTS.map((seg, idx) => {
+    const canvas = el('canvas', { class: 'seg-canvas' });
+    m.canvases.set(seg.id, canvas);
+    const popup = el('div', { class: 'seg-popup', hidden: true });
+    const body = el('div', { class: 'seg-body' }, [canvas, popup]);
+    const head = el('button', {
+      class: 'seg-head',
+      onClick: () => {
+        const collapsed = body.hidden;
+        body.hidden = !collapsed;
+        head.querySelector('.seg-chevron')!.textContent = collapsed ? '▾' : '▸';
+        // M4-C: collapsing the segment hides any stale hover popup and
+        // clears the persisted crosshair.
+        if (body.hidden) {
+          popup.hidden = true;
+          if (mon) mon.hover = null;
+        }
+        drawSeries(canvas, mon?.series[seg.id] ?? []);
+      },
+    }, [
+      el('span', { class: 'seg-chevron', text: idx === 0 ? '▾' : '▸' }),
+      el('span', { class: 'seg-label', text: seg.label }),
+      el('span', { class: 'seg-unit', text: seg.unit }),
+    ]);
+    // Collapsed by default except the first segment.
+    if (idx !== 0) body.hidden = true;
+
+    // M4-C: hover crosshair + nearest-sample popup - only while the
+    // segment is EXPANDED (the collapsed body is hidden, and the handler
+    // re-checks so a collapse mid-hover can never leave a popup behind).
+    const hideHover = () => {
+      popup.hidden = true;
+      if (mon) mon.hover = null;
+      drawSeries(canvas, mon?.series[seg.id] ?? []);
+    };
+    canvas.addEventListener('pointermove', (ev) => {
+      if (body.hidden) return;
+      const points = mon?.series[seg.id] ?? [];
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (w === 0 || h === 0 || points.length === 0) return;
+      const rect = canvas.getBoundingClientRect();
+      const padL = 42;
+      const padR = 8;
+      const padT = 8;
+      const padB = 16;
+      const pw = Math.max(10, w - padL - padR);
+      const xNorm = (ev.clientX - rect.left - padL) / pw;
+      const idx = nearestSampleIndex(points, xNorm);
+      if (idx < 0) return;
+      const p = points[idx];
+      const scale = autoScale(points);
+      if (!scale) return;
+      const ph = Math.max(10, h - padT - padB);
+      const span = scale.max - scale.min;
+      const x = padL + xNorm * pw;
+      const y = padT + (1 - (p.v - scale.min) / span) * ph;
+      // Relative time against the newest sample in the drawn window.
+      const nowT = points[points.length - 1].t;
+      popup.textContent = `${Math.round(p.v)} ${seg.unit} · ${Math.round(nowT - p.t)} s ago`;
+      // The canvas starts at the body's padding box + 10px/8px padding.
+      // M4-C (round-2 fix): the popup must stay FULLY inside the card -
+      // the old unclamped `left: 10 + x` (x reaches w - 8 at the canvas's
+      // right edge) centered the ~120px box up to ~60px past the card's
+      // right edge, and .seg-card{overflow:hidden} clipped the "· N s
+      // ago" tail - and the rightmost ~5 s of the graph is where the
+      // NEWEST sample (the common hover) sits. Top-edge samples
+      // (v = max -> y = padT = 8) parked the box ~12px above the canvas,
+      // over the segment header. Mirror the fan readout's round-1 fix:
+      // measure the segment body + box, clamp horizontally in px so the
+      // box never leaves the card, and flip BELOW the sample (the
+      // .seg-popup-below class) when there is no room above. The
+      // %-positioned default stays as the fallback when the body cannot
+      // be measured.
+      popup.hidden = false;
+      const bodyEl = popup.parentElement;
+      const br = bodyEl ? bodyEl.getBoundingClientRect() : null;
+      if (br && br.width > 0 && br.height > 0) {
+        const box = popup.getBoundingClientRect();
+        const px = 10 + x;
+        const py = 8 + y;
+        const flipBelow = py - 6 - box.height < 0 && py + 10 + box.height <= br.height;
+        popup.classList.toggle('seg-popup-below', flipBelow);
+        popup.style.left = `${Math.min(Math.max(box.width / 2, px), br.width - box.width / 2)}px`;
+        popup.style.top = `${py}px`;
+      } else {
+        popup.classList.remove('seg-popup-below');
+        popup.style.left = `${10 + x}px`;
+        popup.style.top = `${8 + y}px`;
+      }
+      // M4-C (round-1 fix): persist the hover so redrawAll can re-draw
+      // the crosshair on telemetry ticks (a stationary hover used to lose
+      // it every second while the popup stayed).
+      if (mon) mon.hover = { segId: seg.id, x, y };
+      drawSeries(canvas, points, { x, y });
+    });
+    canvas.addEventListener('pointerleave', hideHover);
+    return el('div', { class: 'card seg-card' }, [head, body]);
+  }));
+
+  container.append(readout, graphs);
+}
 
 function redrawAll(): void {
   if (!mon) return;

@@ -1,7 +1,8 @@
-// Arc Power - M6 the Overlay Settings page (#/overlay): the destination of
-// the Settings card's "Overlay settings" button. M6-amd3 (the user's
-// amendment): the page ALSO owns the enable TOGGLE now - the General card
-// at the top (the Settings card is button-only); everything else:
+// Arc Power - M6 the Overlay Settings content (M9: the #/overlay PAGE is
+// gone - the content lives inside the Monitoring page's Overlay view; the
+// old hash redirects there via the router). M6-amd3 (the user's
+// amendment): the content ALSO owns the enable TOGGLE now - the General
+// card at the top (the Settings card is button-only); everything else:
 //   - Stats - the 14 stat TICKBOXES (the Monitoring-tab-tickbox idea,
 //     landed here): FPS + the M7a 1% Low / 99% FPS row stats, CPU
 //     Util/Clock/Temp, GPU Util/Core clock/Mem clock/VRAM/Temp/Wattage/Fan
@@ -10,8 +11,9 @@
 //   - Appearance - the COLORS (a swatch palette - the theme-option pattern:
 //     white (stock), yellow, green, cyan, orange, red, magenta + a custom
 //     hex input (type=color - a plain value applied via CSSOM, CSP-safe))
-//     + the SIZE slider (the existing overlayScale);
-//   - Position - the 4 corners;
+//     + the SIZE slider (the existing overlayScale) + M9 the POSITION
+//     select (the standalone Position card is REMOVED - the corner lives
+//     in the Appearance card);
 //   - Hotkey - the letter input (CTRL + fixed - the letter is the only
 //     changeable part) + the register-failure note + the get-state re-query
 //     on every render (the Settings-card pattern - the honest note never
@@ -19,15 +21,15 @@
 //   - the honest notes at the bottom (topmost/MPO + the FPS/frametime data
 //     sources).
 //
-// The page KEEPS the Settings card's class names (.settings-hotkey-input,
+// The content KEEPS the Settings card's class names (.settings-hotkey-input,
 // .settings-position-select, .settings-scale-slider, ...) - the ui-verify
-// selectors survived the move (the (g) register-failure block runs against
-// THIS page's DOM). The General card's toggle KEEPS the
+// selectors survived the Settings->Overlay page move AND the M9 move into
+// the Monitoring view. The General card's toggle KEEPS the
 // .settings-checkbox[data-setting="overlayEnabled"] class + dataset so the
 // toggle pins moved with the control too.
 
 import { el, clear } from '../dom.ts';
-import type { Page, PageContext } from '../router.ts';
+import type { PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import {
@@ -44,22 +46,23 @@ import {
 } from '../pure/overlay.ts';
 import type { OverlayPosition, OverlayState } from '../types.ts';
 
-export const overlaySettingsPage: Page = {
-  id: 'overlay',
-
-  render(container: HTMLElement, ctx: PageContext) {
-    clear(container);
-    container.append(
-      el('h1', { class: 'page-title', text: 'Overlay Settings' }),
-      el('p', {
-        class: 'page-subtitle',
-        text: 'The in-game style HUD (bold text floating over the screen - no boxes, no window). Everything lives here: the enable toggle, which stats show, the text color, the size, the corner and the hotkey letter.',
-      }),
-      el('div', { id: 'overlay-settings-root', class: 'overlay-settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
-    );
-    void mount(ctx, container);
-  },
-};
+// M9: the Overlay Settings content renderer - the old page module's export
+// (the fan-editor.ts precedent: the old page shell moved into the
+// Monitoring page, this module renders the sub-view content). The
+// sub-view carries its own heading ("Overlay Settings" stays - the
+// ui-verify pins the title text).
+export function renderOverlaySettings(container: HTMLElement, ctx: PageContext): void {
+  clear(container);
+  container.append(
+    el('h2', { class: 'overlay-settings-title', text: 'Overlay Settings' }),
+    el('p', {
+      class: 'page-subtitle',
+      text: 'The in-game style HUD (bold text floating over the screen - no boxes, no window). Everything lives here: the enable toggle, which stats show, the text color, the size and the corner position (in the Appearance card) and the hotkey letter.',
+    }),
+    el('div', { id: 'overlay-settings-root', class: 'overlay-settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
+  );
+  void mount(ctx, container);
+}
 
 interface PersistedOverlay {
   enabled: boolean;
@@ -211,8 +214,17 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       onchange: (ev: Event) => void onBgColorSelect((ev.target as HTMLInputElement).value),
     });
     const bgOpacityValue = el('span', { class: 'settings-bg-opacity-value', text: `${Math.round(persisted.bgOpacity * 100)}%` });
+    // M9: the position select moves into the Appearance card (the
+    // standalone Position card is REMOVED - the same row pattern as the
+    // Size row; the .settings-position-select class survives).
+    const positionSelect = el('select', {
+      class: 'settings-position-select',
+      onchange: (ev: Event) => void onPositionChange((ev.target as HTMLSelectElement).value),
+    }, OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: OVERLAY_POSITION_LABELS[p] })));
+    positionSelect.value = persisted.position;
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('h2', { class: 'card-title', text: 'Appearance' }),
+      el('p', { class: 'card-note', text: 'The overlay text color, the size and the corner position.' }),
       el('div', { class: 'overlay-color-options' }, [
         ...colorOptions,
         el('label', { class: 'overlay-custom-color' }, [
@@ -236,6 +248,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           onchange: (ev: Event) => void onScaleChange(Number((ev.target as HTMLInputElement).value)),
         }),
         scaleValue,
+      ]),
+      // M9: the Position row - the old standalone Position card's select
+      // lives here now (the same settings-row pattern as the Size row).
+      el('div', { class: 'settings-row overlay-position-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Position' }),
+        positionSelect,
       ]),
       // M7b (fix 4): the Background section - a translucent box behind the
       // HUD (the user's Appearance-card addition).
@@ -274,20 +292,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           onchange: (ev: Event) => void onBgOpacityChange(Number((ev.target as HTMLInputElement).value)),
         }),
         bgOpacityValue,
-      ]),
-    ]);
-
-    // --- Position card: the 4 corners (the existing select).
-    const positionSelect = el('select', {
-      class: 'settings-position-select',
-      onchange: (ev: Event) => void onPositionChange((ev.target as HTMLSelectElement).value),
-    }, OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: OVERLAY_POSITION_LABELS[p] })));
-    positionSelect.value = persisted.position;
-    const positionCard = el('section', { class: 'card settings-card overlay-position-card' }, [
-      el('h2', { class: 'card-title', text: 'Position' }),
-      el('div', { class: 'settings-row overlay-position-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Corner' }),
-        positionSelect,
       ]),
     ]);
 
@@ -331,7 +335,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    root.append(generalCard, statsCard, appearanceCard, positionCard, hotkeyCard, notesCard);
+    root.append(generalCard, statsCard, appearanceCard, hotkeyCard, notesCard);
   };
 
   // --- M6 handlers (every save goes through profiles-settings-save;

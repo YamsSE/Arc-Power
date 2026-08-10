@@ -12,13 +12,17 @@
 // still spawns elevated for the packaged app.
 //
 // The card/chip/Apply pattern mirrors the Tuning page: the dirty vs the
-// LOADED DRIVER state -> the chip + the floating Apply button appear;
-// per-control chips are hidden until the first apply, green "Applied" while
-// equal to the last applied, warn "Unapplied" when different. The
-// supported-features caps gate the cards ('Not supported on this GPU.' -
-// no control); the driver's SupportedTypes gate the dropdown options
-// (Speed Sync / On + Boost only when the driver exposes them - the honest
-// probe record).
+// LOADED DRIVER state -> the chip + the floating Apply button appear.
+// M9: the shared chip state machine (pure/chip.ts) drives the per-card
+// status + the NEW per-card Apply button: 'none' (pristine - the hidden
+// attribute, invisible via the CSS [hidden] fix), green "Applied" while
+// equal to the last applied, 'dirty' (the per-card Apply button - the old
+// "Unapplied" warn chip is GONE). The supported-features caps gate the
+// cards ('Not supported on this GPU.' - no control); the driver's
+// SupportedTypes gate the dropdown options
+// (Speed Sync only when the driver exposes them - the honest probe record;
+// the M9 On + Boost change makes the Low Latency list FULL off/on/on-boost
+// on every driver - the card gate stays).
 //
 // The no-Intel guard renders FIRST (deviceId null -> 'No GPU available.') -
 // graphics:get is NEVER called with a null deviceId (assertValidDeviceId
@@ -29,6 +33,7 @@ import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
+import { chipState } from '../pure/chip.ts';
 import {
   FRAME_GEN_OPTIONS,
   FLIP_MODE_OPTIONS,
@@ -39,6 +44,8 @@ import {
   validateGraphicsSettings,
   computeGraphicsDirty,
   buildGraphicsSettings,
+  isGraphicsControlSupported,
+  isGraphicsControlDirtyVsApplied,
 } from '../pure/graphics.ts';
 import type { FrameGenOverride, FlipMode, GraphicsSettings, GraphicsState, LowLatency } from '../types.ts';
 
@@ -89,6 +96,9 @@ let applied: GraphicsSettings = {};
 let applying = false;
 let applyBtn: HTMLButtonElement | null = null;
 const chipNodes = new Map<string, HTMLElement>();
+// M9: the per-card Apply button (the chip state machine) - visible ONLY
+// while that card is dirty; clicking it applies THAT card only.
+const chipApplyNodes = new Map<string, HTMLButtonElement>();
 const valueNodes = new Map<string, HTMLElement>();
 const sliderNodes = new Map<string, HTMLInputElement>();
 const toggleNodes = new Map<string, HTMLInputElement>();
@@ -102,6 +112,7 @@ function resetPageState() {
   applying = false;
   applyBtn = null;
   chipNodes.clear();
+  chipApplyNodes.clear();
   valueNodes.clear();
   sliderNodes.clear();
   toggleNodes.clear();
@@ -109,32 +120,36 @@ function resetPageState() {
   viewContainer = null;
 }
 
-/** M3-C-G chip semantics (the Tuning pattern): hidden until the first apply
- *  of this control; green "Applied" while the draft equals the last applied;
- *  warn "Unapplied" once the value differs after applying. */
+/** M9: the shared chip state machine (pure/chip.ts) drives the per-card
+ *  status + the per-card Apply button: 'none' (pristine or unsupported -
+ *  the hidden attribute, invisible via the CSS [hidden] fix), 'applied'
+ *  (the green chip), 'dirty' (the Apply button - the old "Unapplied" warn
+ *  chip is GONE). The card gate (isGraphicsControlSupported) is the
+ *  machine's supported flag - an unsupported control never renders a
+ *  control, so its state would be 'none' anyway. */
 function refreshChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
-  if (!(key in applied)) {
-    chip.hidden = true;
-    return;
+  const state = chipState(
+    key,
+    draft as Record<string, unknown>,
+    applied as Record<string, unknown>,
+    graphicsState?.values[key as keyof GraphicsState['values']],
+    isGraphicsControlSupported(graphicsState, key),
+  );
+  chip.hidden = state !== 'applied';
+  if (state === 'applied') {
+    chip.textContent = 'Applied';
+    chip.className = 'chip oc-chip-status chip-ok';
+  } else {
+    // M9 review finding 3: leaving 'applied' must reset the className -
+    // the hidden ('none') + button ('dirty') states never carry a stale
+    // chip-ok (green) class.
+    chip.textContent = '';
+    chip.className = 'chip oc-chip-status';
   }
-  chip.hidden = false;
-  const ok = !isAppliedDiffers(key);
-  chip.textContent = ok ? 'Applied' : 'Unapplied';
-  chip.className = `chip oc-chip-status ${ok ? 'chip-ok' : 'chip-warn'}`;
-}
-
-function isAppliedDiffers(key: string): boolean {
-  const wanted = (draft as Record<string, unknown>)[key];
-  const appliedValue = (applied as Record<string, unknown>)[key];
-  if (key === 'frameLimit') {
-    const a = wanted as { enabled: boolean; value: number } | undefined;
-    const b = appliedValue as { enabled: boolean; value: number } | undefined;
-    if (!a || !b) return a !== b;
-    return a.enabled !== b.enabled || a.value !== b.value;
-  }
-  return wanted !== appliedValue;
+  const btn = chipApplyNodes.get(key);
+  if (btn) btn.hidden = state !== 'dirty';
 }
 
 function updateFloating() {
@@ -219,11 +234,19 @@ function supportedOf(state: GraphicsState, key: string): boolean {
   }
 }
 
+// M9 (the On + Boost fix): the Low Latency dropdown returns the FULL option
+// list (off/on/on-boost) on every driver - what gated the option before was
+// the DRIVER caps hiding the boost bit on this driver (the M8 caps 0x3
+// report off/on only). The CARD gate stays (supportedOf + the empty-options
+// guard + isGraphicsControlSupported): an unsupported driver still shows
+// the honest no-control card, never a dead control. The backend's set path
+// still refuses on-boost on a driver that does not expose the bit (the
+// honest refusal through the apply-result machinery - never raw hex).
 function optionsOf(state: GraphicsState, key: string): string[] {
   switch (key) {
     case 'frameGenOverride': return state.supportedOptions.frameGen;
     case 'flipMode': return state.supportedOptions.flipModes;
-    case 'lowLatency': return state.supportedOptions.lowLatency;
+    case 'lowLatency': return LOW_LATENCY_OPTIONS;
     default: return [];
   }
 }
@@ -282,6 +305,19 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       el('div', { class: 'graphics-control' }, [select]),
       el('div', { class: 'graphics-card-actions' }, [
         el('span', { class: 'chip oc-chip-status', hidden: true }),
+        // M9: the per-card Apply button (the chip state machine) - a
+        // small-chip button visible ONLY while this card is dirty; it
+        // applies THAT card only (the same graphics:apply channel with the
+        // single key).
+        el('button', {
+          class: 'chip chip-btn oc-chip-apply',
+          hidden: true,
+          text: 'Apply',
+          onClick: () => {
+            if (applying) return;
+            void apply(ctx, key);
+          },
+        }),
         el('button', {
           class: 'btn btn-ghost btn-sm',
           text: 'Reset to default',
@@ -296,6 +332,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       ]),
     ]);
     chipNodes.set(key, card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+    chipApplyNodes.set(key, card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
     refreshChip(key);
     return card;
   };
@@ -361,6 +398,17 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       ]),
       el('div', { class: 'graphics-card-actions' }, [
         el('span', { class: 'chip oc-chip-status', hidden: true }),
+        // M9: the per-card Apply button (the chip state machine) - same
+        // single-key apply as the dropdown cards.
+        el('button', {
+          class: 'chip chip-btn oc-chip-apply',
+          hidden: true,
+          text: 'Apply',
+          onClick: () => {
+            if (applying) return;
+            void apply(ctx, 'frameLimit');
+          },
+        }),
         el('button', {
           class: 'btn btn-ghost btn-sm',
           text: 'Reset to default',
@@ -382,6 +430,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       ]),
     ]);
     chipNodes.set('frameLimit', card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+    chipApplyNodes.set('frameLimit', card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
     refreshChip('frameLimit');
     return card;
   };
@@ -404,11 +453,19 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
 // Apply (the DEDICATED graphics path)
 // ---------------------------------------------------------------------------
 
-async function apply(ctx: PageContext) {
+// M9: `only` - the per-card apply path: the SAME graphics:apply channel
+// with the single key (the payload holds that control alone; the rest of
+// the flow - the per-control toasts + the applied reference + the busy
+// state - is shared).
+async function apply(ctx: PageContext, only?: string) {
   const live = ctx.store.get();
   const deviceId = live.deviceId;
   if (deviceId === null || !graphicsState) return;
-  const payload = buildGraphicsSettings(draft, graphicsState, applied);
+  const payload = only !== undefined
+    ? (isGraphicsControlDirtyVsApplied(only, draft, graphicsState, applied)
+      ? { [only]: (draft as Record<string, unknown>)[only] } as unknown as GraphicsSettings
+      : {})
+    : buildGraphicsSettings(draft, graphicsState, applied);
   if (!validateGraphicsSettings(payload)) {
     toast('error', 'Apply aborted', 'The graphics payload failed validation - this is a bug.');
     return;
@@ -424,6 +481,10 @@ async function apply(ctx: PageContext) {
     toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
   }
   applying = true;
+  // M9 review finding 4: the per-card Apply buttons share the busy state
+  // (visually disabled while any apply is in flight - the Tuning setBusy
+  // parity; clicks were already swallowed by the reentry guard).
+  for (const b of chipApplyNodes.values()) b.disabled = true;
   if (applyBtn) {
     applyBtn.disabled = true;
     applyBtn.textContent = APPLY_BTN_BUSY_TEXT;
@@ -453,6 +514,7 @@ async function apply(ctx: PageContext) {
     }
   } finally {
     applying = false;
+    for (const b of chipApplyNodes.values()) b.disabled = false;
     if (applyBtn) {
       applyBtn.disabled = false;
       applyBtn.textContent = APPLY_BTN_TEXT;

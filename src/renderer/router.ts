@@ -12,21 +12,20 @@ import type {
   TelemetrySample,
 } from './types.ts';
 
-// M6: the #/overlay page (the Overlay Settings page - the Settings card's
-// "Overlay settings" button destination; the overlay enable TOGGLE lives
-// on this page's General card - the user's amendment moved it out of
-// Settings).
+// M6: the old #/overlay page (the Overlay Settings page) MOVED into the
+// Monitoring page as a sub-view in M9 - the PageId is gone; the old hash
+// redirects (pageFromHash) with the overlay view requested.
 // M8: the #/graphics page (the Graphics tab - the user's order: the tab
 // sits BELOW Tuning).
-export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'monitoring' | 'profiles' | 'tweaks' | 'settings' | 'overlay';
+export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
 
-// M6-amd1: the Overlay tab sits DIRECTLY BELOW the Monitoring tab (the
-// user's amendment - the sidebar order; the count-only ui-verify pins are
-// unaffected).
+// M6-amd1: the Overlay tab used to sit DIRECTLY BELOW the Monitoring tab
+// (the user's amendment - the sidebar order); M9 removes it (the Overlay
+// Settings content lives inside the Monitoring page's Overlay view).
 // M8: the Graphics tab sits DIRECTLY BELOW Tuning (the user's order:
-// dashboard / tuning / graphics / monitoring / overlay / profiles / tweaks /
+// dashboard / tuning / graphics / monitoring / profiles / tweaks /
 // settings).
-export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'monitoring', 'overlay', 'profiles', 'tweaks', 'settings'];
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'monitoring', 'profiles', 'tweaks', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
@@ -40,9 +39,6 @@ export const NAV_LABELS: Record<PageId, string> = {
   tweaks: 'Tweaks',
   // M4-D: the Settings tab (Start with Windows / Start minimized / About).
   settings: 'Settings',
-  // M6: the Overlay Settings page (the stat tickboxes, the colors, the
-  // size, the position, the hotkey letter).
-  overlay: 'Overlay',
 };
 
 // M4-D2 (§8): the old #/overclocking and #/fan hashes redirect to #/tuning
@@ -51,12 +47,18 @@ export const NAV_LABELS: Record<PageId, string> = {
 // sub-view active (the hash itself is left in place - replaceState would
 // destroy the signal before the page renders).
 let fanViewRequested = false;
+// M9: the old #/overlay hash (and the Settings "Overlay settings" button)
+// signal the Monitoring page to start with the OVERLAY sub-view active -
+// the consumeFanViewRequest twin (the hash is left in place like #/fan).
+let overlayViewRequested = false;
 
 export function pageFromHash(hash: string): PageId {
   const raw = hash.replace(/^#\/?/, '').split('?')[0];
   if (raw === 'fan') fanViewRequested = true;
+  if (raw === 'overlay') overlayViewRequested = true;
   let id: string = raw;
   if (raw === 'overclocking' || raw === 'fan') id = 'tuning';
+  if (raw === 'overlay') id = 'monitoring';
   return PAGE_IDS.includes(id as PageId) ? (id as PageId) : 'dashboard';
 }
 
@@ -66,6 +68,23 @@ export function pageFromHash(hash: string): PageId {
 export function consumeFanViewRequest(): boolean {
   const v = fanViewRequested;
   fanViewRequested = false;
+  return v;
+}
+
+/** M9: the Settings "Overlay settings" button calls this BEFORE navigating
+ *  to #/monitoring - the Monitoring page then starts with the Overlay
+ *  sub-view active (the #/overlay alias sets the same flag via
+ *  pageFromHash). */
+export function requestOverlayView(): void {
+  overlayViewRequested = true;
+}
+
+/** M9: whether the current navigation arrived with the overlay sub-view
+ *  requested (the #/overlay alias or requestOverlayView) - the Monitoring
+ *  page consumes this once at render. */
+export function consumeOverlayViewRequest(): boolean {
+  const v = overlayViewRequested;
+  overlayViewRequested = false;
   return v;
 }
 

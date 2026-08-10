@@ -212,10 +212,11 @@ export function isNoopApply(control: string, settings: Settings, beforeState: De
 // ---------------------------------------------------------------------------
 //
 // Two separate references, deliberately NOT merged:
-//   (a) the dirty reference for the "Unapplied" chips AND the floating Apply
-//       button: per-`result.ok` control it becomes the APPLIED value, so the
-//       chip clears and the button hides even while the driver read-back
-//       lags (the mock/A770 read-back can trail the write);
+//   (a) the dirty reference for the per-card chips + the per-card Apply
+//       button (the M9 chip state machine) AND the floating Apply button:
+//       per-`result.ok` control it becomes the APPLIED value, so the chip
+//       clears and the button hides even while the driver read-back lags
+//       (the mock/A770 read-back can trail the write);
 //   (b) the no-op suppression comparison stays against the driver read-back
 //       (isNoopApply, untouched) so the silent-success rule survives.
 
@@ -257,8 +258,8 @@ export function computeDirtyVsApplied(settings: Settings, state: DeviceState | n
 }
 
 /**
- * B5(a): scalar variant for the per-card "Unapplied" chips (slider values
- * are numbers; the driver may report none - then it counts as dirty).
+ * B5(a): scalar variant for the per-card chips (slider values are numbers;
+ * the driver may report none - then it counts as dirty).
  * M3-C review F2: null-safe - a null state with no applied reference is
  * NOT dirty (nothing applied yet), never a throw.
  */

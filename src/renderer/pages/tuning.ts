@@ -38,10 +38,11 @@
 // the pure helpers ocStateChanged / ocCapsChanged (unit-tested).
 //
 // M3-C-G: the per-card Stock/Medium/Max preset chips are REMOVED (the pure
-// computePresets stays for other consumers). Per-control chip states:
-// hidden until the first apply of that control, green "Applied" while the
-// current value equals the last applied value, warn "Unapplied" once the
-// value differs after applying. "Reset to default" stays.
+// computePresets stays for other consumers). M9: the chip state machine
+// (pure/chip.ts) drives the per-control chip: 'none' (pristine - the hidden
+// attribute, invisible via the CSS [hidden] fix), green "Applied" while the
+// current value equals the last applied value, 'dirty' (the per-card Apply
+// button - the old warn "Unapplied" chip is GONE). "Reset to default" stays.
 //
 // M4-B: (1) the offset ranges mirror into the negative half-plane (the UI
 // math is range-driven - no special-casing); (2) the GPU-frequency-offset
@@ -66,6 +67,7 @@ import { consumeFanViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { clockToOffset, offsetToClock, clockRangeFromOffsetRange } from '../pure/clock.ts';
+import { chipState } from '../pure/chip.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
 import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
@@ -78,7 +80,7 @@ import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
 import { newProfileId, promptModal, settingsFromState } from './profiles.ts';
-import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile } from '../types.ts';
+import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
 // there); this page re-exports them so the import surface stays local.
@@ -134,6 +136,9 @@ const driverNodes = new Map<string, HTMLElement>();
 // OFFSET range caption under the absolute-clock slider).
 const rangeNodes = new Map<string, HTMLElement>();
 const chipNodes = new Map<string, HTMLElement>();
+// M9: the per-card Apply button (the chip state machine) - visible ONLY
+// while that card is dirty; clicking it applies THAT card only.
+const chipApplyNodes = new Map<string, HTMLButtonElement>();
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
 // M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
@@ -157,24 +162,35 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   driverNodes.clear();
   rangeNodes.clear();
   chipNodes.clear();
+  chipApplyNodes.clear();
   applyBtn = null;
   viewContainer = null;
 }
 
-/** M3-C-G: hidden until the first apply of this control; green "Applied"
- *  while the value equals the last applied value; warn "Unapplied" once the
- *  value differs after applying. */
+/** M9: the shared chip state machine (pure/chip.ts) drives the per-card
+ *  status + the per-card Apply button: 'none' (pristine or unsupported -
+ *  the hidden attribute, invisible via the CSS [hidden] fix), 'applied'
+ *  (the green chip), 'dirty' (the Apply button - the old "Unapplied" warn
+ *  chip is GONE). Every rendered card is supported, so the machine's
+ *  supported flag is always true here. */
 function refreshChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
-  if (!(key in applied)) {
-    chip.hidden = true;
-    return;
+  const driverValue = currentState?.[key as keyof DeviceState];
+  const state = chipState(key, values, applied, driverValue, true);
+  chip.hidden = state !== 'applied';
+  if (state === 'applied') {
+    chip.textContent = 'Applied';
+    chip.className = 'chip oc-chip-status chip-ok';
+  } else {
+    // M9 review finding 3: leaving 'applied' must reset the className -
+    // the hidden ('none') + button ('dirty') states never carry a stale
+    // chip-ok (green) class.
+    chip.textContent = '';
+    chip.className = 'chip oc-chip-status';
   }
-  chip.hidden = false;
-  const ok = values[key] === applied[key];
-  chip.textContent = ok ? 'Applied' : 'Unapplied';
-  chip.className = `chip oc-chip-status ${ok ? 'chip-ok' : 'chip-warn'}`;
+  const btn = chipApplyNodes.get(key);
+  if (btn) btn.hidden = state !== 'dirty';
 }
 
 /** M3-C-F: refresh ONE card in place from the current values + fresh state:
@@ -296,6 +312,9 @@ export const tuningPage: Page = {
     });
     const setBusy = (busy: boolean) => {
       applying = busy;
+      // M9: the per-card Apply buttons share the busy state (disabled while
+      // any apply is in flight - the same reentry guard as the floating one).
+      for (const b of chipApplyNodes.values()) b.disabled = busy;
       if (!applyBtn) return;
       applyBtn.disabled = busy;
       applyBtn.textContent = busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
@@ -380,6 +399,20 @@ export const tuningPage: Page = {
         ]),
         el('div', { class: 'oc-card-actions' }, [
           el('span', { class: 'chip oc-chip-status', hidden: true }),
+          // M9: the per-card Apply button (the chip state machine) - a
+          // small-chip button visible ONLY while this card is dirty; it
+          // applies THAT card only (the single-control payload through the
+          // same apply machinery - the waiver gate + the elevation toast +
+          // the busy state included).
+          el('button', {
+            class: 'chip chip-btn oc-chip-apply',
+            hidden: true,
+            text: 'Apply',
+            onClick: () => {
+              if (applying) return;
+              void apply(ctx, key);
+            },
+          }),
           el('button', {
             class: 'btn btn-ghost btn-sm',
             text: 'Reset to default',
@@ -403,6 +436,7 @@ export const tuningPage: Page = {
       driverNodes.set(key, card.querySelector<HTMLElement>('.oc-driver-value') as HTMLElement);
       rangeNodes.set(key, card.querySelector<HTMLElement>('.oc-range') as HTMLElement);
       chipNodes.set(key, card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+      chipApplyNodes.set(key, card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
       cards.set(key, card);
       refreshCard(key);
       return card;
@@ -797,11 +831,16 @@ export const tuningPage: Page = {
       updateFloating();
     };
 
-    const apply = async (ctx: PageContext) => {
+    // M9: `only` - the per-card apply path: the SAME machinery (waiver
+    // gate, elevation toast, busy state, per-control toasts + the applied
+    // reference) with a single-control payload `{ [key]: value }`.
+    const apply = async (ctx: PageContext, only?: string) => {
       const live = ctx.store.get();
       const deviceId = live.deviceId;
       if (deviceId === null || !caps) return;
-      const settings = buildScalarSettings(values);
+      const settings = only !== undefined
+        ? ({ [only]: values[only] } as unknown as Settings)
+        : buildScalarSettings(values);
       if (!validateSettingsPayload(settings)) {
         toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
         return;

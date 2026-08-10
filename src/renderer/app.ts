@@ -17,7 +17,6 @@ import { monitoringPage, redrawMonitoringGraphs } from './pages/monitoring.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
-import { overlaySettingsPage } from './pages/overlay-settings.ts';
 import { setMonitorLogToFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
 import { resolveBootDevice } from './pure/device.ts';
@@ -34,9 +33,6 @@ const PAGES: Record<PageId, Page> = {
   profiles: profilesPage,
   tweaks: tweaksPage,
   settings: settingsPage,
-  // M6: the #/overlay page (the Overlay Settings page - the Settings
-  // card's "Overlay settings" button destination).
-  overlay: overlaySettingsPage,
 };
 
 const store = new Store();

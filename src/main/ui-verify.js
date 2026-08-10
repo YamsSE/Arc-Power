@@ -388,9 +388,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // M4-D2 (§7): 6 nav links - the Overclocking + Fan pages merged into one
   // Tuning page. M6: 7 nav links - the Overlay Settings page (#/overlay)
   // joined the sidebar. M8: 8 nav links - the Graphics tab (#/graphics)
-  // joined below Tuning.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - Overclocking + Fan merged into Tuning, Overlay Settings added in M6, the Graphics tab added in M8)');
+  // joined below Tuning. M9: 7 again - the Overlay Settings content moved
+  // INTO the Monitoring page's Overlay view (the Overlay tab is gone).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -561,7 +562,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
-  if (sidebarIcons.length !== 8) fail(`M4-D/M6/M8: expected 8 sidebar links with icons (the Overlay Settings page joined in M6, the Graphics tab in M8), got ${sidebarIcons.length}`);
+  if (sidebarIcons.length !== 7) fail(`M9: expected 7 sidebar links with icons (the Overlay tab moved into the Monitoring page in M9 - the Graphics tab joined in M8), got ${sidebarIcons.length}`);
   // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
   // user's order: dashboard / tuning / graphics / monitoring / ...).
   const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
@@ -714,10 +715,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // B3: the line below the GPU name is the APP version (app:version IPC) -
   // the driver line lives in the dashboard GPU Health card (the GPU card's
   // Driver version row is REMOVED - M4-H). M8: the 1.1.0 base bump changed
-  // the display form (displayVersion strips the -beta.x tag of a prerelease
-  // version and appends ' Alpha' to a bare semver).
-  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.0 Alpha'`))) {
-    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.0 Alpha')`);
+  // the display form; M9: the 1.1.1 base bump (displayVersion strips the
+  // -beta.x tag of a prerelease version and appends ' Alpha' to a bare
+  // semver).
+  if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.1 Alpha'`))) {
+    fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.1 Alpha')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -734,7 +736,6 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (await js(`document.body.textContent.includes('Service Status')`)) fail('M3-A: "Service Status" is still rendered somewhere');
   if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS is still surfaced as a status item');
   step('version-line', `header line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; no status dot / Service Status label`);
-
   // --- 1.0.1 Themes (M3): the persisted theme applies at BOOT --------------
   // The attribute lives on <html> (documentElement.dataset.theme), written
   // by the boot sequence right after health + the hoisted profiles envelope
@@ -1738,6 +1739,88 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const freshChips = await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-card')).map((c) => c.querySelector('.oc-chip-status')?.hidden !== false))`);
   if (!JSON.parse(freshChips).every(Boolean)) fail('M3-C-G: a chip is visible on a clean re-render (applied reference is per-render state)');
   step('b5-fresh', 'B5: fresh re-render is clean (applied reference is per-render state)');
+
+  // --- M9: the per-card Apply button (the chip state machine) --------------
+  // Pristine cards carry the hidden chip AND no .oc-chip-apply button (the
+  // CSS [hidden] fix makes the empty pill truly invisible); moving a slider
+  // reveals THAT card's Apply button only; clicking it applies the card
+  // only (the single-control payload through the shared apply machinery);
+  // the card then shows the green 'Applied' chip + the button hides; a
+  // further change brings the button back. The old 'Unapplied' chip text
+  // must not exist anywhere in the DOM.
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-card')).every((c) => {
+    const chip = c.querySelector('.oc-chip-status');
+    const btn = c.querySelector('.oc-chip-apply');
+    return !!chip && chip.hidden && (!btn || btn.hidden);
+  })`, 8000))) {
+    fail('M9: a pristine Tuning card must carry the hidden chip and no VISIBLE .oc-chip-apply button');
+  }
+  if (await js(`document.body.textContent.includes('Unapplied')`)) fail('M9: the "Unapplied" chip text must not exist anywhere in the DOM');
+  await setSlider(230);
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.oc-card[data-control="powerLimitW"]');
+    const btn = card ? card.querySelector('.oc-chip-apply') : null;
+    return !!btn && !btn.hidden && (btn.textContent ?? '').trim() === 'Apply';
+  })()`, 5000))) {
+    fail('M9: moving the power slider must reveal its .oc-chip-apply button');
+  }
+  const otherButtons = await js(`Array.from(document.querySelectorAll('.oc-card')).filter((c) => c.dataset.control !== 'powerLimitW').some((c) => {
+    const b = c.querySelector('.oc-chip-apply');
+    return !!b && !b.hidden;
+  })`);
+  if (otherButtons) fail('M9: only the changed card may show its Apply button');
+  await clearToasts();
+  await js(`(() => { const b = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply'); b.click(); })()`);
+  if (!(await waitFor(win, `(() => {
+    const c = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-status');
+    return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied' && c.className.includes('chip-ok');
+  })()`, 8000))) {
+    fail(`M9: the per-card apply did not flip the powerLimitW chip to 'Applied' (driver power='${(await js(`window.arcPower.getCurrentSettings(0)`)).powerLimitW}')`);
+  }
+  if (!(await waitFor(win, `(() => {
+    const b = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply');
+    return !!b && b.hidden;
+  })()`, 5000))) {
+    fail('M9: the per-card Apply button must hide after its successful apply');
+  }
+  if ((await js(`window.arcPower.getCurrentSettings(0)`)).powerLimitW !== 230) {
+    fail(`M9: the per-card apply did not reach the mock driver (power='${(await js(`window.arcPower.getCurrentSettings(0)`)).powerLimitW}')`);
+  }
+  await setSlider(240);
+  if (!(await waitFor(win, `(() => {
+    const b = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply');
+    return !!b && !b.hidden;
+  })()`, 5000))) {
+    fail('M9: the per-card Apply button must return after the setting changes again');
+  }
+  // Restore the deterministic power baseline the io-failed section expects
+  // (the driver must read 210 W there - the apply below).
+  await clearToasts();
+  await js(`(() => { const b = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply'); b.click(); })()`);
+  if (!(await waitFor(win, `(() => {
+    const c = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-status');
+    return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied';
+  })()`, 8000))) {
+    fail('M9: the restore per-card apply did not flip the powerLimitW chip back to Applied');
+  }
+  // Restore the deterministic 210 W baseline the io-failed section expects
+  // (the driver must read 210 there).
+  await setSlider(210);
+  if (!(await waitFor(win, `(() => {
+    const b = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply');
+    return !!b && !b.hidden;
+  })()`, 5000))) {
+    fail('M9: the baseline restore must reveal the per-card Apply button');
+  }
+  await clearToasts();
+  await js(`(() => { const b = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply'); b.click(); })()`);
+  if (!(await waitFor(win, `(() => {
+    const c = document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-status');
+    return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied';
+  })()`, 8000))) {
+    fail('M9: the baseline restore apply did not flip the powerLimitW chip back to Applied');
+  }
+  step('m9-per-card-apply', `M9: per-card Apply - pristine cards carry only the hidden chip; moving the slider revealed the card's Apply button; its click applied powerLimitW 230 through the mock (chip 'Applied', button hidden, driver power=230); a further change brought the button back; the restore apply returned 240 W then the baseline 210 W; 'Unapplied' never rendered`);
 
   // An io-failed powerLimit apply fails INSTANTLY and the toast is the plain
   // driver message + code (M2C-C: the IGS-naming wording is REMOVED - the
@@ -2876,6 +2959,39 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (canvases !== 5) fail(`expected 5 canvases, got ${canvases}`);
   step('mon-canvas', `${canvases} canvas graphs rendered from telemetry pushes`);
 
+  // --- M9: the Monitoring | Overlay view switch (the S2 re-registration) ----
+  // The view pill renders 'Monitoring | Overlay' at the page top; the
+  // round trip (monitoring -> overlay -> monitoring) must return the
+  // readout grid AND keep the FPS tile LIVE - every monitoring-view
+  // rebuild re-registers the canvases + the FPS tile + the note (the S2
+  // contract), so the poll writes into the live view, never into the
+  // detached nodes a clear() orphaned.
+  const viewLabels = await js(`Array.from(document.querySelectorAll('.mon-view-btn')).map((b) => (b.textContent ?? '').trim()).join('|')`);
+  if (viewLabels !== 'Monitoring|Overlay') fail(`M9: the Monitoring view pill must read 'Monitoring|Overlay' (got '${viewLabels}')`);
+  // overlay -> the Overlay Settings content renders (its own heading).
+  await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Overlay'); b.click(); })()`);
+  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Overlay Settings')`, 8000))) {
+    fail('M9: the Overlay view did not render the Overlay Settings content');
+  }
+  // monitoring -> the readout grid returns.
+  await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Monitoring'); b.click(); })()`);
+  if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 8`, 8000))) {
+    fail('M9: switching back to the Monitoring view did not return the readout grid');
+  }
+  // The FPS tile is LIVE after the round trip (the S2 re-registration - the
+  // poll writes into the re-registered tile, never the detached one).
+  if (process.env.RID_MOCK_FPS === '1') {
+    if (!(await waitFor(win, `(${tileOf('gpu', 'FPS')}) === '60'`, 8000))) {
+      fail(`M9 (S2): the FPS tile is '${await js(tileOf('gpu', 'FPS'))}' after the view round trip (expected '60' - the poll must write into the re-registered tile)`);
+    }
+    step('m9-mon-view-switch', `M9: the Monitoring|Overlay pill round-tripped; the readout grid returned + the FPS tile stays live (S2 re-registration, ${await js(tileOf('gpu', 'FPS'))} FPS)`);
+  } else {
+    if (!(await waitFor(win, `(document.querySelector('.mon-fps-note')?.textContent ?? '').includes('FPS unavailable')`, 5000))) {
+      fail('M9 (S2): the FPS note did not re-render after the view round trip');
+    }
+    step('m9-mon-view-switch', 'M9: the Monitoring|Overlay pill round-tripped; the readout grid returned + the FPS note stays live (S2 re-registration)');
+  }
+
   // --- M4-C: canvas hover crosshair + nearest-sample popup ------------------
   // The first segment is expanded (re-opened above): pointer-move over its
   // canvas shows the popup at the NEAREST sample ("1410 MHz · 12 s ago"
@@ -3313,8 +3429,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`, 15000))) {
-    fail('M4-H: the reload did not boot the shell (8 sidebar links expected - the Graphics tab joined in M8)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`, 15000))) {
+    fail('M4-H: the reload did not boot the shell (7 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
   }
   await js(`location.hash = '#/tuning'`);
   await sleep(300);
@@ -3442,10 +3558,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   await js(`location.hash = '#/settings'`);
   await sleep(250);
-  // Version row (app:version via the header line's display format). M8: the
-  // 1.1.0 base bump changed the display form ('Arc Power Ver. 1.1.0 Alpha').
-  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.0 Alpha'`))) {
-    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.0 Alpha')`);
+  // Version row (app:version via the header line's display format). M9: the
+  // 1.1.1 base bump ('Arc Power Ver. 1.1.1 Alpha').
+  if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.1 Alpha'`))) {
+    fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.1 Alpha')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3507,7 +3623,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.1.0 Alpha`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.1.1 Alpha`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -3831,11 +3947,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // ---------------------------------------------------------------------------
 //
 // Pins the four cards (the user's order) + the fixture values, the
-// driver-gated dropdown options (no Speed Sync / no On + Boost - the live
-// caps), the FPS toggle OFF->no slider / ON->the range-driven slider, the
-// dirty Apply + the mock round trip + the "Applied" chip, the Reset-to-
-// default lifecycle (change -> dirty, reset -> clean, apply -> Applied,
-// reset after apply -> Unapplied), the honest unsupported state
+// driver-gated dropdown options (no Speed Sync - the live caps; the M9 On
+// + Boost change makes the Low Latency list FULL off/on/on-boost), the
+// FPS toggle OFF->no slider / ON->the range-driven slider, the
+// dirty Apply + the mock round trip + the "Applied" chip, the per-card
+// Apply button (M9: the chip state machine - a change reveals the card's
+// .oc-chip-apply, its click applies that card only, the green 'Applied'
+// chip replaces it, a further change brings the button back; the old
+// 'Unapplied' warn chip is GONE), the Reset-to-default lifecycle (change
+// -> dirty, reset -> clean, apply -> Applied, reset after apply -> the
+// Apply button), the honest unsupported state
 // (RID_MOCK_GRAPHICS_UNSUPPORTED=1), and the multi-device device-switch
 // degrade (the iGPU serves the supported-all-false state - a device switch
 // must never crash). The no-Intel guard pin lives in runNoIntelVerify (the
@@ -3928,15 +4049,18 @@ export async function runGraphicsVerify(win, backend) {
     fail(`M8: the dropdowns do not show the mock fixture values: ${fixtureValues}`);
   }
   // The dropdown options mirror the LIVE caps (the probe record): no
-  // Speed Sync (the flip caps 0x6f lack the bit), no On + Boost (the
-  // low-latency caps 0x3 lack the boost bit), all four FG options.
+  // Speed Sync (the flip caps 0x6f lack the bit), all four FG options.
+  // M9 (the On + Boost fix): the Low Latency list is the FULL off/on/
+  // on-boost on every driver (the option is no longer driver-gated - what
+  // hid it was the M8 caps 0x3 lacking the boost bit; the backend set of
+  // on-boost on such a driver still refuses honestly).
   const flipOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="flipMode"] option')).map((o) => o.value))`);
   const llOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="lowLatency"] option')).map((o) => o.value))`);
   if (JSON.parse(flipOptions).includes('speed-frame')) {
     fail(`M8: the Frame Sync dropdown offers Speed Sync, but the mock caps (the live 0x6f) do not expose the bit: ${flipOptions}`);
   }
-  if (JSON.parse(llOptions).includes('on-boost')) {
-    fail(`M8: the Low Latency dropdown offers On + Boost, but the mock caps (the live 0x3) do not expose the bit: ${llOptions}`);
+  if (!JSON.parse(llOptions).includes('on-boost')) {
+    fail(`M9: the Low Latency dropdown must offer On + Boost (the option is no longer driver-gated - the M9 optionsOf change): ${llOptions}`);
   }
   if (JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="frameGenOverride"] option')).map((o) => o.value))`)).length !== 4) {
     fail('M8: the FG dropdown must offer all four override options');
@@ -3945,7 +4069,18 @@ export async function runGraphicsVerify(win, backend) {
   if (!(await js(`!!document.querySelector('.floating-apply') && document.querySelector('.floating-apply').hidden`))) {
     fail('M8: the floating Apply must be HIDDEN while the draft equals the driver state');
   }
-  step('m8-fixture', `M8: dropdowns show the fixture (fg '${fv.fg}', flip '${fv.flip}', ll '${fv.ll}'); options are driver-gated (no speed-frame in ${flipOptions}, no on-boost in ${llOptions}); the Apply stays hidden while clean`);
+  // M9: pristine cards carry the hidden chip + no per-card Apply button
+  // (the CSS [hidden] fix makes the empty pill truly invisible); the old
+  // 'Unapplied' chip text must not exist anywhere in the DOM.
+  if (!(await js(`Array.from(document.querySelectorAll('.graphics-card')).every((c) => {
+    const chip = c.querySelector('.oc-chip-status');
+    const btn = c.querySelector('.oc-chip-apply');
+    return !!chip && chip.hidden && (!btn || btn.hidden);
+  })`))) {
+    fail('M9: a pristine Graphics card must carry the hidden chip and no VISIBLE .oc-chip-apply button');
+  }
+  if (await js(`document.body.textContent.includes('Unapplied')`)) fail('M9: the "Unapplied" chip text must not exist anywhere in the DOM');
+  step('m9-fixture', `M9: dropdowns show the fixture (fg '${fv.fg}', flip '${fv.flip}', ll '${fv.ll}'); options are driver-gated (no speed-frame in ${flipOptions}, the FULL on-boost list in ${llOptions}); the Apply stays hidden while clean; pristine cards carry only the hidden chip`);
 
   // --- 3. the FPS toggle: OFF -> no slider; ON -> the range-driven slider ---
   const fpsToggle = `${cardSel('frameLimit')} .graphics-toggle`;
@@ -3972,9 +4107,13 @@ export async function runGraphicsVerify(win, backend) {
     s.value = 'vsync-on';
     s.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
-  // The chip stays hidden until the first apply.
+  // The chip stays hidden until the first apply (the M9 machine: a never-
+  // applied change is the DIRTY state - the per-card Apply button shows).
   if (!(await js(`(() => { const c = document.querySelector('${cardSel('flipMode')} .oc-chip-status'); return !!c && c.hidden; })()`))) {
     fail('M8: the chip must stay hidden until the first apply');
+  }
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('${cardSel('flipMode')} .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) {
+    fail('M9: changing the Frame Sync dropdown must reveal its .oc-chip-apply button');
   }
   await clearToasts();
   await js(`document.querySelector('.floating-apply').click()`);
@@ -3990,6 +4129,49 @@ export async function runGraphicsVerify(win, backend) {
   }
   step('m8-round-trip', 'M8: change -> dirty Apply appears; Apply -> the mock round trip -> the Frame Sync chip reads "Applied" (chip-ok), the Apply hides, graphicsGet reflects flipMode=vsync-on');
 
+  // --- 4b. M9: the per-card Apply button (the chip state machine) ----------
+  // The per-card .oc-chip-apply applies THAT card only (the same
+  // graphics:apply channel with the single key); after the round trip the
+  // card shows the green 'Applied' chip + the button hides; changing the
+  // same setting again brings the button back; applying again restores the
+  // clean state (the FPS section below expects only its own dirty control).
+  await js(`(() => {
+    const s = document.querySelector('.graphics-select[data-graphics-select="flipMode"]');
+    s.value = 'vsync-off';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('${cardSel('flipMode')} .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) {
+    fail('M9: changing the Frame Sync dropdown again must reveal its .oc-chip-apply button');
+  }
+  await clearToasts();
+  await js(`document.querySelector('${cardSel('flipMode')} .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('flipMode')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied' && c.className.includes('chip-ok'); })()`, 8000))) {
+    fail(`M9: the per-card apply did not flip the Frame Sync chip to 'Applied' (driver flip='${(await js(`window.arcPower.graphicsGet(0)`)).values.flipMode}')`);
+  }
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('${cardSel('flipMode')} .oc-chip-apply'); return !!b && b.hidden; })()`, 5000))) {
+    fail('M9: the Frame Sync Apply button must hide after its successful per-card apply');
+  }
+  if ((await js(`window.arcPower.graphicsGet(0)`)).values.flipMode !== 'vsync-off') {
+    fail(`M9: the per-card apply did not reach the mock driver (flip='${(await js(`window.arcPower.graphicsGet(0)`)).values.flipMode}')`);
+  }
+  await js(`(() => {
+    const s = document.querySelector('.graphics-select[data-graphics-select="flipMode"]');
+    s.value = 'smooth-sync';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('${cardSel('flipMode')} .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) {
+    fail('M9: the Frame Sync Apply button must return after a further change');
+  }
+  await clearToasts();
+  await js(`document.querySelector('${cardSel('flipMode')} .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('flipMode')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 8000))) {
+    fail('M9: the second per-card apply did not restore the Frame Sync Applied chip');
+  }
+  if (!(await waitFor(win, `document.querySelector('.floating-apply').hidden`, 5000))) {
+    fail('M9: the floating Apply must hide after the per-card apply cleaned the last dirty control');
+  }
+  step('m9-per-card-apply', 'M9: per-card Apply - a change reveals the card button; its click round-tripped vsync-off through the mock (chip Applied, button hidden, driver flip=vsync-off); a further change brought the button back; clicking it again cleaned the page (floating Apply hidden)');
+
   // --- 5. the FPS apply + the Reset-to-default lifecycle ---------------------
   await js(`(() => {
     const s = document.querySelector('${fpsSlider}');
@@ -4003,11 +4185,12 @@ export async function runGraphicsVerify(win, backend) {
   if ((await js(`window.arcPower.graphicsGet(0)`)).values.frameLimit.value !== 144) {
     fail(`M8: the FPS round trip failed (driver frameLimit='${JSON.stringify((await js(`window.arcPower.graphicsGet(0)`)).values.frameLimit)}')`);
   }
-  // The Reset-to-default lifecycle on the FG card: change -> dirty; reset ->
+  // M9 (the FG Reset lifecycle - the block name): change -> dirty; reset ->
   // back to the driver default -> CLEAN (the Apply hides); change + apply ->
-  // 'Applied' chip; reset AFTER an apply -> 'Unapplied' chip (the warn
-  // state) + dirty; apply -> 'Applied' again + the driver returns to the
-  // fixture default.
+  // 'Applied' chip; reset AFTER an apply -> the DIRTY state - the card shows
+  // the .oc-chip-apply BUTTON (the M9 chip machine; the old warn 'Unapplied'
+  // chip is GONE) + the floating Apply; apply -> 'Applied' again + the
+  // driver returns to the fixture default.
   const fgReset = `(() => {
     const btns = Array.from(document.querySelectorAll('${cardSel('frameGenOverride')} .btn'));
     const reset = btns.find((b) => (b.textContent ?? '').includes('Reset'));
@@ -4029,9 +4212,14 @@ export async function runGraphicsVerify(win, backend) {
     fail(`M8: the FG apply did not flip its chip to 'Applied' (driver fg='${(await js(`window.arcPower.graphicsGet(0)`)).values.frameGenOverride}')`);
   }
   await js(fgReset);
-  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('frameGenOverride')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Unapplied' && c.className.includes('chip-warn'); })()`, 5000))) {
-    fail('M8: Reset after an apply must flip the FG chip to the warn "Unapplied" state');
+  if (!(await waitFor(win, `(() => {
+    const c = document.querySelector('${cardSel('frameGenOverride')} .oc-chip-status');
+    const b = document.querySelector('${cardSel('frameGenOverride')} .oc-chip-apply');
+    return !!c && c.hidden && !!b && !b.hidden;
+  })()`, 5000))) {
+    fail('M9: Reset after an apply must flip the FG card to the dirty state (the .oc-chip-apply button shows, the chip hides)');
   }
+  if (await js(`document.body.textContent.includes('Unapplied')`)) fail('M9: the "Unapplied" chip text must not exist anywhere in the DOM');
   await clearToasts();
   await js(`document.querySelector('.floating-apply').click()`);
   if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('frameGenOverride')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 8000))) {
@@ -4040,7 +4228,44 @@ export async function runGraphicsVerify(win, backend) {
   if ((await js(`window.arcPower.graphicsGet(0)`)).values.frameGenOverride !== 'app-choice') {
     fail(`M8: the FG reset apply did not return the driver to the fixture default (fg='${(await js(`window.arcPower.graphicsGet(0)`)).values.frameGenOverride}')`);
   }
-  step('m8-fps-reset', 'M8: FPS slider apply round trip (144 FPS); the FG Reset lifecycle: change -> dirty, reset -> clean, apply -> "Applied" chip, reset after apply -> "Unapplied" (warn) chip, apply -> driver back to the fixture default');
+  step('m9-fps-reset', 'M9: FPS slider apply round trip (144 FPS); the FG Reset lifecycle: change -> dirty, reset -> clean, apply -> "Applied" chip, reset after apply -> the .oc-chip-apply button (the dirty state - the old "Unapplied" chip is GONE), apply -> driver back to the fixture default');
+
+  // --- 5b. M9: the On + Boost round trip ------------------------------------
+  // The Low Latency dropdown carries the FULL off/on/on-boost list on every
+  // driver (the M9 optionsOf change; the card gate stays). The mock accepts
+  // the value - select -> per-card apply -> the 'Applied' chip + the driver
+  // reads 'on-boost'; restore the fixture default (the deterministic
+  // session end).
+  await js(`(() => {
+    const s = document.querySelector('.graphics-select[data-graphics-select="lowLatency"]');
+    s.value = 'on-boost';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('${cardSel('lowLatency')} .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) {
+    fail('M9: selecting On + Boost must reveal the Low Latency card Apply button');
+  }
+  await clearToasts();
+  await js(`document.querySelector('${cardSel('lowLatency')} .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('lowLatency')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied' && c.className.includes('chip-ok'); })()`, 8000))) {
+    fail(`M9: the On + Boost apply did not flip the Low Latency chip to 'Applied' (driver ll='${(await js(`window.arcPower.graphicsGet(0)`)).values.lowLatency}')`);
+  }
+  if ((await js(`window.arcPower.graphicsGet(0)`)).values.lowLatency !== 'on-boost') {
+    fail(`M9: the On + Boost round trip failed (driver lowLatency='${(await js(`window.arcPower.graphicsGet(0)`)).values.lowLatency}')`);
+  }
+  await js(`(() => {
+    const s = document.querySelector('.graphics-select[data-graphics-select="lowLatency"]');
+    s.value = 'off';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await clearToasts();
+  await js(`document.querySelector('${cardSel('lowLatency')} .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `(() => { const c = document.querySelector('${cardSel('lowLatency')} .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 8000))) {
+    fail('M9: the Low Latency restore apply did not flip the chip back to Applied');
+  }
+  if ((await js(`window.arcPower.graphicsGet(0)`)).values.lowLatency !== 'off') {
+    fail(`M9: the Low Latency restore did not reach the driver (lowLatency='${(await js(`window.arcPower.graphicsGet(0)`)).values.lowLatency}')`);
+  }
+  step('m9-on-boost', 'M9: the On + Boost round trip - the Low Latency dropdown offered on-boost (the full list on every driver), the per-card apply landed it in the mock driver (chip Applied), restored to off');
 
   // --- 6. the multi-device degrade (RID_MOCK_MULTI_DEVICE=1) -----------------
   if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
@@ -4128,9 +4353,10 @@ export async function runFeaturesetVerify(win, fsId) {
   // --- boot: shell + dropdown -----------------------------------------------
   // M4-D2 (§7): 6 nav links (Overclocking + Fan merged into Tuning). M6: 7
   // nav links (the Overlay Settings page joined the sidebar). M8: 8 (the
-  // Graphics tab joined below Tuning).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
+  // Graphics tab joined below Tuning). M9: 7 again (the Overlay tab moved
+  // into the Monitoring page's Overlay view).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
   // the IGS indicator is gone everywhere.
@@ -4501,8 +4727,8 @@ export async function runNoIntelVerify(win) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders ----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -4746,9 +4972,10 @@ export async function runTweaksApplyVerify(win) {
   const cancelKnob = process.env.RID_MOCK_REGAPPLY_CANCEL === '1';
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
-  // (the Graphics tab joined below Tuning).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
+  // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
+  // moved into the Monitoring page's Overlay view).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
@@ -4928,9 +5155,10 @@ export async function runFanGateVerify(win, backend) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
-  // (the Graphics tab joined below Tuning).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - M6 added the Overlay Settings page, M8 the Graphics tab)');
+  // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
+  // moved into the Monitoring page's Overlay view).
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then
@@ -5467,33 +5695,60 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   step('m5-geometry', `position patch -> bottom-right corner (bounds ${JSON.stringify(ps.bounds)} vs display ${JSON.stringify(display)}); scale patch -> ${scaled.bounds.width}x${scaled.bounds.height}`);
 
-  // (f2) M6: the shrunk Settings card's "Overlay settings" button navigates
-  // to #/overlay. M6-amd3: the card is BUTTON-ONLY now - the enable toggle
-  // moved to the Overlay page's General card (the .settings-checkbox
-  // [data-setting="overlayEnabled"] class + dataset moved with it).
+  // (f2) M9: the shrunk Settings card's "Overlay settings" button navigates
+  // to #/monitoring with the OVERLAY view active (the Overlay Settings
+  // content moved into the Monitoring page in M9 - the old #/overlay page
+  // is gone; the old hash still redirects). M6-amd3: the card is
+  // BUTTON-ONLY now - the enable toggle moved to the overlay view's
+  // General card (the .settings-checkbox[data-setting="overlayEnabled"]
+  // class + dataset moved with it).
   await js(`location.hash = '#/settings'`);
   if (!(await waitFor(win, `!!document.querySelector('.overlay-settings-button')`, 5000))) {
     fail('M6: the Settings page has no "Overlay settings" button');
   }
   if (await js(`!!document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]')`)) {
-    fail('M6-amd3: the Settings Overlay card still has the enable toggle (it moved to the #/overlay General card)');
+    fail('M6-amd3: the Settings Overlay card still has the enable toggle (it moved to the overlay view General card)');
   }
   await js(`(() => { const b = document.querySelector('.overlay-settings-button'); b.click(); })()`);
-  if (!(await waitFor(win, `location.hash === '#/overlay'`, 5000))) {
-    fail('M6: the Settings "Overlay settings" button did not navigate to #/overlay');
+  if (!(await waitFor(win, `location.hash === '#/monitoring'`, 5000))) {
+    fail('M9: the Settings "Overlay settings" button did not navigate to #/monitoring');
   }
   if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Overlay Settings')`, 5000))) {
-    fail('M6: the #/overlay page did not render (no "Overlay Settings" title)');
+    fail('M9: the Monitoring page did not render the Overlay view (no "Overlay Settings" heading)');
   }
-  step('m6-settings-button', 'Settings "Overlay settings" button navigated to #/overlay (the Overlay Settings page rendered; the Settings card is button-only)');
+  // M9: the view pill marks the Overlay view active (the Settings-button
+  // path requested the view before navigating).
+  if (!(await waitFor(win, `(() => {
+    const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Overlay');
+    return !!b && b.classList.contains('active');
+  })()`, 5000))) {
+    fail('M9: the Monitoring view pill does not mark the Overlay view active after the Settings-button navigation');
+  }
+  step('m9-settings-button', 'Settings "Overlay settings" button navigated to #/monitoring with the Overlay view active (the "Overlay Settings" heading renders in the Monitoring page; the Settings card is button-only)');
+
+  // (f2-m9) M9: the Position setting moved INTO the Appearance card - the
+  // standalone Position card is GONE, the .settings-position-select now
+  // lives in the Appearance card (the same row pattern as the Size row).
+  if (await js(`!!document.querySelector('.overlay-position-card')`)) {
+    fail('M9: the standalone Position card is still rendered (the position moved into the Appearance card)');
+  }
+  if (!(await js(`!!document.querySelector('.overlay-appearance-card .settings-position-select')`))) {
+    fail('M9: the Appearance card has no .settings-position-select (the position row must live there)');
+  }
+  const positionRow = await js(`(() => {
+    const row = Array.from(document.querySelectorAll('.overlay-appearance-card .settings-row')).find((r) => r.querySelector('.settings-position-select'));
+    return row ? (row.querySelector('.settings-row-label')?.textContent ?? '').trim() : '';
+  })()`);
+  if (positionRow !== 'Position') fail(`M9: the Appearance position row label is '${positionRow}' (expected 'Position')`);
+  step('m9-position-in-appearance', 'M9: the Position setting lives in the Appearance card (the standalone Position card is gone; the .settings-position-select row reads "Position")');
 
   // (f2b) M6-amd3: the enable toggle MOVED to the General card at the top
-  // of #/overlay - clicking it flips the persisted overlayEnabled AND the
-  // overlay window (the same read-modify-write the Settings toggle used).
-  // M7b (fix 5): this toggle is the MASTER's only writer - the shortcut
-  // gate pin below proves the independence both ways.
+  // of the overlay view - clicking it flips the persisted overlayEnabled
+  // AND the overlay window (the same read-modify-write the Settings toggle
+  // used). M7b (fix 5): this toggle is the MASTER's only writer - the
+  // shortcut gate pin below proves the independence both ways.
   if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]')`, 5000))) {
-    fail('M6-amd3: the #/overlay General card has no overlayEnabled toggle');
+    fail('M6-amd3: the overlay view General card has no overlayEnabled toggle');
   }
   await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayEnabled"]'); b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === false)`, 5000))) {
@@ -5533,7 +5788,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
     fail('M7b: the second shortcut press with the master ON must NOT write overlayEnabled either');
   }
-  step('m6-general-toggle', 'the #/overlay General toggle round trip: off -> persisted false + overlay hidden (the shortcut does NOTHING while the master is off); on -> persisted true + overlay shown (the shortcut flips the visibility only - the master never flips from the hotkey)');
+  step('m6-general-toggle', 'the overlay view General toggle round trip: off -> persisted false + overlay hidden (the shortcut does NOTHING while the master is off); on -> persisted true + overlay shown (the shortcut flips the visibility only - the master never flips from the hotkey)');
 
   // (f3) M6: the stat tickboxes round-trip through profiles-settings-save.
   // Unchecking gpu-fan trims the persisted overlayStats AND the overlay
@@ -5631,9 +5886,12 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // persists overlayBgColor + re-renders the --overlay-bg-color CSS var;
   // (c) the opacity slider (0-100) persists overlayBgOpacity + re-renders
   // the --overlay-bg-opacity CSS var; (d) off -> the backdrop hides again.
-  // The page is #/overlay here (the color-swatch block above ran on it).
+  // The overlay view of the Monitoring page is active here (the
+  // Settings-button block above navigated there; the M9 .settings-position-
+  // select lives in the SAME Appearance card now - the position pins below
+  // run against this card).
   if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]')`, 5000))) {
-    fail('M7b: the #/overlay Appearance card has no overlayBgEnabled toggle');
+    fail('M7b: the overlay view Appearance card has no overlayBgEnabled toggle');
   }
   // The boot defaults: box off, black, 0.5 - the backdrop is hidden + the
   // CSS vars carry the defaults (the seeded session).
@@ -5696,15 +5954,17 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
 
   // (g) the mid-run register-failure honesty: the probe fakes a failure
   // (settable mid-run - not a boot-time knob), a letter save via the
-  // Overlay Settings page (#/overlay - the hotkey input MOVED here with
-  // the card, M6; the page KEEPS the .settings-hotkey-input class so the
-  // selector survived) re-registers through the probe, and the honest note
-  // appears after the page's every-render get-state re-query (M1: a
-  // letter-save re-register failure mid-session must not leave the note
-  // stale).
+  // Overlay view (the #/overlay hash redirects here with the view active -
+  // the hotkey input MOVED into the Monitoring page with the rest, M9; the
+  // view KEEPS the .settings-hotkey-input class so the selector survived)
+  // re-registers through the probe, and the honest note appears after the
+  // every-render get-state re-query (M1: a letter-save re-register failure
+  // mid-session must not leave the note stale).
   hotkeyProbe.failRegister = true;
   await js(`location.hash = '#/overlay'`);
-  await sleep(250);
+  if (!(await waitFor(win, `!!document.querySelector('.settings-hotkey-input')`, 8000))) {
+    fail('M9: the #/overlay alias did not render the Overlay view (no hotkey input)');
+  }
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input');
     if (!i) return;
@@ -5742,6 +6002,9 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   await js(`location.hash = '#/dashboard'`);
   await js(`location.hash = '#/overlay'`);
+  if (!(await waitFor(win, `!!document.querySelector('.settings-hotkey-input')`, 8000))) {
+    fail('M9: the #/overlay alias did not re-render the Overlay view');
+  }
   await sleep(250);
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
     fail('M5: the hotkey-failure note is still visible after the successful re-registration (the page must re-query get-state on every render)');

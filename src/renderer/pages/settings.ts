@@ -30,6 +30,7 @@
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
+import { requestOverlayView } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 // M5 (N3): displayVersion is imported ALIASED - the settings page used to
@@ -71,7 +72,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const versionDisplay = s.appVersion && s.appVersion !== '0.0.0' ? displayVersionLine(s.appVersion) : '-';
 
   // M6-amd3: the shrunk Overlay card is BUTTON-ONLY (the enable toggle
-  // moved to the #/overlay page's General card).
+  // moved to the Overlay view - M6 the #/overlay page, M9 the Monitoring
+  // page's Overlay view; the old #/overlay page is gone).
   let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
   let bootState: StartupGetState | null = null;
   try {
@@ -240,18 +242,25 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // marked .active.
     // M5: the Overlay card - the MSI Afterburner/RTSS-style HUD settings.
     // M6-amd3 (the user's amendment): the card is BUTTON-ONLY - the
-    // "Overlay settings" button (the #/overlay page destination) + a
-    // one-line description. The enable TOGGLE moved to the Overlay page's
-    // General card (overlay-settings.ts); the hotkey letter / position /
-    // scale / honest notes moved there in M6 too.
+    // "Overlay settings" button + a one-line description. The enable
+    // TOGGLE moved to the Overlay page's General card (overlay-settings.ts);
+    // the hotkey letter / position / scale / honest notes moved there in M6
+    // too.
+    // M9: the button navigates to the MONITORING page with the Overlay
+    // view active (the Overlay Settings content lives there now - the old
+    // #/overlay page is gone; requestOverlayView signals the view BEFORE
+    // the navigation, the #/fan pattern).
     const overlayCard = el('section', { class: 'card settings-card overlay-card' }, [
       el('h2', { class: 'card-title', text: 'Overlay' }),
-      el('p', { class: 'card-note', text: 'The in-game style HUD - bold text floating over the screen. The enable toggle, the stats, colors, size, position and hotkey live on the Overlay Settings page.' }),
+      el('p', { class: 'card-note', text: 'The in-game style HUD - bold text floating over the screen. The enable toggle, the stats, colors, size, position and hotkey live in the Monitoring tab\'s Overlay view.' }),
       el('div', { class: 'settings-row overlay-open-row' }, [
         el('button', {
           type: 'button',
           class: 'overlay-settings-button',
-          onclick: () => { window.location.hash = '#/overlay'; },
+          onclick: () => {
+            requestOverlayView();
+            window.location.hash = '#/monitoring';
+          },
         }, [el('span', { text: 'Overlay settings' })]),
       ]),
     ]);
