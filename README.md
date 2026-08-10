@@ -94,3 +94,7 @@ Architecture notes and the IGCL integration write-up (struct mappings, capabilit
 ## Disclaimer
 
 Overclocking voids warranties and can damage hardware. Arc Power respects the ranges Intel reports and never overrides driver-level ceilings; use the extended range at your own risk. This project is not affiliated with or endorsed by Intel Corporation.
+
+## License
+
+[GNU General Public License v2.0](LICENSE-GPL-2.0.txt). Third-party components and their licenses are documented in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
