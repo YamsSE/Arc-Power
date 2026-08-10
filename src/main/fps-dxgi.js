@@ -23,11 +23,13 @@
 //     window (the same presentSum/dt semantics as the old 1 s cadence;
 //     rounded to 1 decimal; an empty ring honestly reads 0 - the
 //     static-desktop shape, never '-');
-//   - low1Pct / p99 from percentileStats (null until the 60-frame floor -
-//     the honest degrade; a static desktop pushes nothing, so after the
-//     window elapses the ring is empty and the percentiles return null,
-//     never stale values).
-//   Return shape: { fps, frameTimeMs: null, gpuBusy: null, low1Pct, p99 }.
+//   - avgFps / low1Pct / low01Pct / p99 from percentileStats (null until
+//     the 60-frame floor - the honest degrade; low01Pct additionally needs
+//     the >= 1000-frame floor; a static desktop pushes nothing, so after
+//     the window elapses the ring is empty and the percentiles return
+//     null, never stale values).
+//   Return shape: { fps, avgFps, low1Pct, low01Pct, p99, frameTimeMs:
+//     null, gpuBusy: null }.
 //
 // Pinned vtable slots (verified against the Windows SDK dxgi.idl layout /
 // Microsoft's interface docs + Wine's dxgi implementation, 2026-08-07):
@@ -257,9 +259,10 @@ export function wrappedDelta(curr, base) {
  * The DXGI FPS adapter + the adapter-LUID link. Interface (mirrors the old
  * PresentMon adapter): poll(deviceId) → sample|null, stop(), and the
  * M4-D2 addition adapterLuidOf(deviceIdHex) for sys-stats.
- * M7a: poll() no longer reads the counters itself - the internal 200 ms
- * sampler does (started lazily on the FIRST poll, cleared in stop()); the
- * poll derives { fps, low1Pct, p99 } from the ring the sampler maintains.
+ * M7a/M12: poll() no longer reads the counters itself - the internal
+ * 200 ms sampler does (started lazily on the FIRST poll, cleared in
+ * stop()); the poll derives { fps, avgFps, low1Pct, low01Pct, p99 } from
+ * the ring the sampler maintains.
  * Graceful degradation: a load/factory/enumeration failure leaves
  * available=false and poll() returns null forever - never throws.
  * @param {{
@@ -596,16 +599,18 @@ export function createDxgiFpsAdapter(deps = {}) {
     },
 
     /**
-     * System-wide FPS + the 1% Low / 99% FPS stats (M7a). The FIRST call
-     * starts the 200 ms sampler (the baseline reads happen on its ticks);
-     * the poll NEVER reads the counters itself - the sample derives from
-     * the ring: fps = the frames presented within the last 1 s window
-     * (rounded to 1 decimal; an empty ring honestly reads 0 - the
-     * static-desktop shape, never '-'), low1Pct/p99 from the percentile
-     * math (null until the 60-frame floor - the honest degrade). DXGI
-     * unavailable → null.
+     * System-wide FPS + the percentile stats (M7a/M12): the window
+     * average (avgFps - the harmonic mean), the 1% Low, the 0.1% Low
+     * (low01Pct - the >= 1000-frame floor) and the 99% FPS. The FIRST
+     * call starts the 200 ms sampler (the baseline reads happen on its
+     * ticks); the poll NEVER reads the counters itself - the sample
+     * derives from the ring: fps = the frames presented within the last
+     * 1 s window (rounded to 1 decimal; an empty ring honestly reads 0 -
+     * the static-desktop shape, never '-'), avgFps/low1Pct/low01Pct/p99
+     * from the percentile math (null until the 60-frame floor - the
+     * honest degrade). DXGI unavailable → null.
      * @param {number} _deviceId (ignored - system-wide)
-     * @returns {Promise<{ fps: number, frameTimeMs: null, gpuBusy: null, low1Pct: number | null, p99: number | null } | null>}
+     * @returns {Promise<{ fps: number, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null, frameTimeMs: null, gpuBusy: null } | null>}
      */
     async poll(_deviceId) {
       if (!init()) return null;
@@ -616,10 +621,12 @@ export function createDxgiFpsAdapter(deps = {}) {
         const stats = percentileStats(ring, at, PERCENTILE_WINDOW_MS);
         return {
           fps: Math.round(frames * 10) / 10,
+          avgFps: stats === null ? null : stats.avgFps,
+          low1Pct: stats === null ? null : stats.low1Pct,
+          low01Pct: stats === null ? null : stats.low01Pct,
+          p99: stats === null ? null : stats.p99,
           frameTimeMs: null,
           gpuBusy: null,
-          low1Pct: stats === null ? null : stats.low1Pct,
-          p99: stats === null ? null : stats.p99,
         };
       } catch {
         return null;

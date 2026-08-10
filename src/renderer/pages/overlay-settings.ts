@@ -3,12 +3,12 @@
 // old hash redirects there via the router). M6-amd3 (
 // amendment): the content ALSO owns the enable TOGGLE now - the General
 // card at the top (the Settings card is button-only); everything else:
-//   - Stats - the 15 stat TICKBOXES (the Monitoring-tab-tickbox idea,
-//     landed here): FPS + the M7a 1% Low / 99% FPS row stats + the M10a
-//     Graphics-API badge, CPU
-//     Util/Clock/Temp, GPU Util/Core clock/Mem clock/VRAM/Temp/Wattage/Fan
-//     + the Frametime graph. Persisted as overlayStats (string[], default =
-//     ALL - the stock set);
+//   - Stats - the 18 stat TICKBOXES (the Monitoring-tab-tickbox idea,
+//     landed here): FPS + the M7a 1% Low / 99% FPS + the M12 AVG / 0.1%
+//     Low row stats + the M10a Graphics-API badge, CPU
+//     Util/Clock/Temp + the M12 Memory, GPU Util/Core clock/Mem
+//     clock/VRAM/Temp/Wattage/Fan + the Frametime graph. Persisted as
+//     overlayStats (string[], default = ALL - the stock set);
 //   - Appearance - the COLORS (a swatch palette - the theme-option pattern:
 //     white (stock), yellow, green, cyan, orange, red, magenta + a custom
 //     hex input (type=color - a plain value applied via CSSOM, CSP-safe))

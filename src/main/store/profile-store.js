@@ -34,16 +34,20 @@ const OVERLAY_SCALE_MAX = 2.0;
 // files -> the FULL set (the stock overlay shows everything); a garbage
 // value degrades to the full set at the STORE.
 // M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
-// the list in THIS order, right after 'fps' (ipc-core imports this list -
-// the ids propagate automatically).
+// the list right after the M12 AVG / 0.1% Low pair (ipc-core imports this
+// list - the ids propagate automatically).
 // M10a: 'api' (the foreground-window Graphics-API badge - the FPS-row
-// field between FPS and 1% Low) rides AFTER 'fps-99pct' - the tickbox
-// renders after '99% FPS' while the ROW renders the field between FPS and
-// 1% Low (the row order and the tickbox order are independent - the
-// fpsLine field order is explicit in pure/overlay.ts).
+// field at the ROW FRONT under M12) rides AFTER 'fps-99pct' - the tickbox
+// renders after '99% FPS' while the ROW renders the field first (the row
+// order and the tickbox order are independent - the fpsLine field order is
+// explicit in pure/overlay.ts).
+// M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% Low row stats)
+// ride right after 'fps' (the row field order) and 'memory-util' (the
+// Memory row) joins after the CPU stats; 'gpu-vram' stays where it was -
+// it now feeds the standalone VRAM row.
 const OVERLAY_STAT_IDS = [
-  'fps', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
-  'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
+  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];
 // M6: the stock overlay text color (white - the M5 pre-color default).

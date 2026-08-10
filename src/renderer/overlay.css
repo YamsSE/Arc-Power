@@ -43,10 +43,14 @@ body {
 
 /* M7b: the HUD content paints ABOVE the backdrop - an absolutely-positioned
    sibling paints above in-flow content otherwise, which would bury the
-   text under the box. */
+   text under the box. M12: the #overlay-memory + #overlay-vram rows JOIN
+   the group (without them the two new rows would paint BELOW the backdrop
+   and the background box would bury them - the M4 review fold). */
 #overlay-fps,
 #overlay-cpu,
+#overlay-memory,
 #overlay-gpu,
+#overlay-vram,
 #overlay-frametime,
 #overlay-frametime-value {
   position: relative;

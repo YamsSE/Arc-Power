@@ -1,6 +1,7 @@
 // Arc Power - M5 the software overlay renderer (the Overlay window).
 //
-// Renders the RTSS-style HUD: three BOLD monospace lines (FPS / CPU / GPU)
+// Renders the RTSS-style HUD: FIVE BOLD monospace lines (FPS / CPU / Memory /
+// GPU / VRAM - the M12 Memory + VRAM rows joined below the CPU / GPU rows)
 // from the forwarded telemetry stream + the 1 s fps-poll, plus the frametime
 // polyline on a transparent canvas (ONLY the 1.5px line - no grid, no
 // background). The window itself is transparent/frameless/unfocusable and
@@ -48,6 +49,10 @@ let latestFps: number | null = null;
 // sampler reports them - the honest '-' fields on the FPS row).
 let latestLow1Pct: number | null = null;
 let latestP99: number | null = null;
+// M12: the window AVG + the 0.1% Low ride the same poll (null when the
+// sampler has not reached their frame floors - the honest '-' fields).
+let latestAvgFps: number | null = null;
+let latestLow01Pct: number | null = null;
 // M10a: the latest foreground-window Graphics-API id from the same poll
 // (null when nothing is detected - the api field vanishes; the sample's
 // null-returning polls keep the last known value, like the fps itself).
@@ -63,7 +68,11 @@ let latestFrameTime: number | null = null;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
+// M12: the Memory + VRAM rows (the fixed-div pattern - the renderer only
+// empties them, never removes).
+const memoryEl = document.getElementById('overlay-memory') as HTMLElement;
 const gpuEl = document.getElementById('overlay-gpu') as HTMLElement;
+const vramEl = document.getElementById('overlay-vram') as HTMLElement;
 const canvas = document.getElementById('overlay-frametime') as HTMLCanvasElement;
 const valueEl = document.getElementById('overlay-frametime-value') as HTMLElement;
 
@@ -117,13 +126,16 @@ function sizeCanvas(): void {
 
 function render(): void {
   // M7a: the latest percentile stats ride the same fps poll into the FPS
-  // row (null -> the honest '-' fields).
-  // M10a: the latest Graphics-API id rides along (null -> the field
-  // vanishes - never '-', never a raw id).
-  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi);
+  // row (null -> the honest '-' fields). M10a: the latest Graphics-API id
+  // rides along (null -> the field vanishes - never '-', never a raw id).
+  // M12: the AVG / 0.1% Low + the RAM utilization ride along too (the
+  // memoryUtilPct comes from the telemetry sample's composed field).
+  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi, latestAvgFps, latestLow01Pct, latestSample?.memoryUtilPct ?? null);
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
+  memoryEl.textContent = lines.memoryLine;
   gpuEl.textContent = lines.gpuLine;
+  vramEl.textContent = lines.vramLine;
   // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
   // strip's AND the value line's visibility together (a fully-off line
   // writes '' into its KEPT div, but the strip + the number are HIDDEN -
@@ -201,6 +213,10 @@ async function bootFpsLoop(): Promise<void> {
       // sample lacks them - the honest '-' on the FPS row).
       latestLow1Pct = typeof sample.low1Pct === 'number' ? sample.low1Pct : null;
       latestP99 = typeof sample.p99 === 'number' ? sample.p99 : null;
+      // M12: the window AVG + the 0.1% Low ride the same poll (null when
+      // the sample lacks them - the honest '-' on the FPS row).
+      latestAvgFps = typeof sample.avgFps === 'number' ? sample.avgFps : null;
+      latestLow01Pct = typeof sample.low01Pct === 'number' ? sample.low01Pct : null;
       // M10a: the foreground-window Graphics-API id rides the same poll
       // (null when the sample lacks it - the api field vanishes; the
       // canonical labels are resolved by apiLabelOf in overlayLines).

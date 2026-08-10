@@ -10,12 +10,13 @@
 </head>
 <body>
   <!-- M5: the RTSS-style HUD - BOLD TEXT ONLY, no boxes, no background.
-       The three stat lines + the frametime polyline strip. M6-amd2: a
-       frametime VALUE line sits DIRECTLY BELOW the canvas (
-       retracted "below the FPS" part - the graph stays at the bottom) -
-       the latest derived frame time, max 2 decimals ('16.67 ms'), '-'
-       when no data. The 'frametime' stat controls BOTH the strip and the
-       number (stat off -> both hidden).
+       The five stat lines (FPS / CPU / Memory / GPU / VRAM - M12: the
+       Memory + VRAM rows joined below the CPU / GPU rows) + the frametime
+       polyline strip. M6-amd2: a frametime VALUE line sits DIRECTLY BELOW
+       the canvas (the retracted "below the FPS" part - the graph stays at
+       the bottom) - the latest derived frame time, max 2 decimals
+       ('16.67 ms'), '-' when no data. The 'frametime' stat controls BOTH
+       the strip and the number (stat off -> both hidden).
        M7b (fix 4): the OPTIONAL background box - a translucent rounded
        box behind the HUD (the Appearance card's Background section). The
        #overlay-backdrop div is the FIRST child of #overlay-root (behind
@@ -27,7 +28,9 @@
     <div id="overlay-backdrop"></div>
     <div class="overlay-line" id="overlay-fps"></div>
     <div class="overlay-line" id="overlay-cpu"></div>
+    <div class="overlay-line" id="overlay-memory"></div>
     <div class="overlay-line" id="overlay-gpu"></div>
+    <div class="overlay-line" id="overlay-vram"></div>
     <canvas id="overlay-frametime" class="overlay-frametime"></canvas>
     <div class="overlay-line overlay-frametime-value" id="overlay-frametime-value"></div>
   </div>

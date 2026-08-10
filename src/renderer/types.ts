@@ -352,6 +352,13 @@ export interface TelemetrySample {
    *  cap 100). Null when the counter is unpopulated; the readout tiles
    *  read `gpuUtilPct ?? utilPct` (the no-Intel util source). */
   gpuUtilPct?: number | null;
+  /** M12: the system-wide RAM utilization percent (GlobalMemoryStatusEx ->
+   *  dwMemoryLoad, 0-100 - the Memory row's source). Composed into BOTH
+   *  telemetry emit sites (the device + the no-device null mode) with the
+   *  fixture-wins shape: the sysStats fixture's memoryUtilPct wins,
+   *  otherwise the injected detector answers (null -> the honest '-' -
+   *  never a fake 0). */
+  memoryUtilPct?: number | null;
 }
 
 /** A saved profile (mirrors the main-process Profile typedef). */
@@ -457,12 +464,23 @@ export interface FpsSample {
   fps: number | null;
   frameTimeMs: number | null;
   gpuBusy: number | null;
+  /** M12: the window AVERAGE fps - the CapFrameX harmonic mean (the
+   *  frame-weighted mean of the frame times over the 30 s ring, converted);
+   *  the same 60-frame floor as the percentiles. The overlay FPS-row AVG
+   *  field. */
+  avgFps: number | null;
   /** M7a: the 1% Low / 99% FPS percentile stats (null until the sampler's
    *  60-frame floor is reached - the honest '-' on the overlay FPS row). */
   low1Pct: number | null;
+  /** M12: the 0.1% Low - the worst-0.1% tail (the ceil(0.999N) boundary +
+   *  the weighted tail average); null below the >= 1000-frame floor (the
+   *  honest '-' on the overlay FPS row - the tail needs ~1000 frames to be
+   *  meaningful). */
+  low01Pct: number | null;
   p99: number | null;
   /** M10a: the foreground window's graphics API - 'dx12' | 'vulkan' |
-   *  'dx11' | 'dx9' | 'opengl' (M10b: dx9 - the DirectX-9 detection);
+   *  'dx11' | 'dx10' | 'dx9' | 'opengl' (M10b: dx9 - the DirectX-9
+   *  detection; M12: dx10 - the DirectX-10 detection completeness);
    *  null when nothing is detected (the overlay FPS-row badge field
    *  vanishes - the honest "if it's none, it won't display anything"). */
   api: string | null;

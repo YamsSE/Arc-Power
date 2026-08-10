@@ -54,13 +54,16 @@ const OVERLAY_SCALE_MAX = 2.0;
 // profile-store.js; the renderer mirror is pure/overlay.ts - keep the
 // three in lockstep like the positions).
 // M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
-// the list in THIS order, right after 'fps'.
+// the list right after the M12 AVG / 0.1% Low pair.
 // M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
 // 'fps-99pct' (the lockstep owner is profile-store.js; the renderer mirror
 // is pure/overlay.ts).
+// M12: 'fps-avg' + 'fps-01pct-low' ride right after 'fps' and
+// 'memory-util' (the Memory row) joins after the CPU stats; 'gpu-vram'
+// stays where it was - it now feeds the standalone VRAM row.
 const OVERLAY_STAT_IDS = [
-  'fps', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
-  'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
+  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];
 // M6: the stock overlay text color (white - the M5 pre-color default).

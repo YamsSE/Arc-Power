@@ -449,7 +449,12 @@ export function createSysStats(deps = {}) {
  * RID_MOCK_NO_POWER_METER=1 makes cpuPowerW null (the honest no-metering
  * shape). The mock also emits a deterministic gpuUtilPct (D1 - the
  * no-Intel util tile reads it; the value matches utilPct 42).
- * @param {{ cpuUtilPct?: number, cpuTempC?: number, cpuFreqMhz?: number, gpuMemUsedBytes?: number, cpuPowerW?: number, gpuUtilPct?: number }} [overrides]
+ * M12: the fixture carries a fixed memoryUtilPct 62 (the RAM-utilization
+ * field - the 'Memory 62%' ui-verify pin; the fixture-WINS composition:
+ * the telemetry emit sites prefer extra.memoryUtilPct over the injected
+ * detector, so the mock value rides the push while the null-returning
+ * mock detector stays unrun).
+ * @param {{ cpuUtilPct?: number, cpuTempC?: number, cpuFreqMhz?: number, gpuMemUsedBytes?: number, cpuPowerW?: number, gpuUtilPct?: number, memoryUtilPct?: number }} [overrides]
  */
 export function createMockSysStats(overrides = {}) {
   const frozen = process.env.RID_MOCK_FROZEN_TEMP === '1';
@@ -462,6 +467,7 @@ export function createMockSysStats(overrides = {}) {
     gpuMemUsedBytes: 2971324416, // ~2.77 GiB (the A770's live-ish dedicated usage)
     cpuPowerW: 125.5, // M4-H: the fixed PowerMeter fixture (watts)
     gpuUtilPct: 42, // M4-I (D1): the fixed OS GPU-utilization fixture
+    memoryUtilPct: 62, // M12: the fixed RAM-utilization fixture (percent)
     ...overrides,
   };
   return {
@@ -482,6 +488,7 @@ export function createMockSysStats(overrides = {}) {
         gpuMemUsedBytes: base.gpuMemUsedBytes,
         cpuPowerW: noPowerMeter ? null : base.cpuPowerW,
         gpuUtilPct: base.gpuUtilPct,
+        memoryUtilPct: base.memoryUtilPct,
       };
     },
   };

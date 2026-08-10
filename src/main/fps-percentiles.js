@@ -19,6 +19,18 @@
 //     keeps the first seconds honest instead of showing garbage from 2
 //     samples).
 //
+// M12 (the percentile extension):
+//   - avgFps (the window AVERAGE): the CapFrameX harmonic mean -
+//     1000 * totalFrames / sum(ft * frames) over the age-evicted ring (the
+//     frame-time mean weighted by the frames each tick counted, converted
+//     to fps - the correct average of a rate). Same 60-frame floor.
+//   - low01 ("0.1% Low"): the SAME family as the 1% low - the boundary
+//     j = max(1, ceil(0.999 * N)) + the weighted tail average - but with
+//     its own >= 1000-frame floor: the worst-0.1% tail is 2-3 dropped
+//     frames, which needs ~1000 frames to be meaningful (at 60 fps that is
+//     ~17 s of the 30 s window); below the floor -> null -> the honest '-'
+//     on the overlay row.
+//
 // AGE EVICTION (plan-review F1): every computation is scoped to a recency
 // window - entries older than windowMs are dropped FIRST. A static desktop
 // pushes nothing, so after the window elapses the ring is empty and the
@@ -38,6 +50,15 @@ export const MIN_FRAMES_FOR_PERCENTILES = 60;
 
 /** The p99 boundary fraction: i = max(1, ceil(0.99 * N)). */
 export const P99_BOUNDARY = 0.99;
+
+/** M12: the 0.1%-low floor: the worst-0.1% tail (2-3 dropped frames) needs
+ *  >= 1000 frames in the window to be meaningful (~17 s at 60 fps of the
+ *  30 s window) - below it low01Pct honestly reports null. The avg/1%/
+ *  99% stats keep the 60-frame floor. */
+export const MIN_FRAMES_FOR_001_PCT = 1000;
+
+/** M12: the 0.1%-low boundary fraction: j = max(1, ceil(0.999 * N)). */
+export const P001_BOUNDARY = 0.999;
 
 /** The per-entry expansion clamp: one tick may contribute at most this
  *  many frame copies to the weighted ft list. 10,000 frames in one 200 ms
@@ -80,14 +101,18 @@ export function rollingFps(ring, nowMs, windowMs) {
 }
 
 /**
- * The 1% Low / 99% FPS stats over the recency window - { low1Pct, p99 } or
- * null (the 60-frame floor / an empty ring after age eviction - the honest
- * degrade). Age eviction happens FIRST: entries older than windowMs never
- * contribute.
+ * The window-average / 1% Low / 0.1% Low / 99% FPS stats over the recency
+ * window - { avgFps, low1Pct, low01Pct, p99 } or null (the 60-frame floor
+ * / an empty ring after age eviction - the honest degrade). Age eviction
+ * happens FIRST: entries older than windowMs never contribute.
+ * M12: avgFps is the CapFrameX harmonic mean (1000 * totalFrames /
+ * sum(ft * frames)); low01Pct is the 0.1% low (the ceil(0.999N) boundary +
+ * the weighted tail average - the 1%-low family) with the >= 1000-frame
+ * floor (below it -> null -> the honest '-').
  * @param {Array<{ tMs: number, ftMs: number, frames: number }>} ring
  * @param {number} nowMs
  * @param {number} windowMs
- * @returns {{ low1Pct: number, p99: number } | null}
+ * @returns {{ avgFps: number, low1Pct: number, low01Pct: number | null, p99: number } | null}
  */
 export function percentileStats(ring, nowMs, windowMs) {
   // Age eviction first: the computation is scoped to the recency window.
@@ -100,6 +125,15 @@ export function percentileStats(ring, nowMs, windowMs) {
   }
   // The 60-frame floor: fewer frames than this is noise, not a percentile.
   if (totalFrames < MIN_FRAMES_FOR_PERCENTILES) return null;
+  // avgFps (M12): the frame-weighted harmonic mean over the age-evicted
+  // ring - 1000 * totalFrames / sum(ft * frames) (the mean frame time
+  // weighted by the frames each tick counted, converted to fps - the
+  // correct average of a rate). The SAME raw totalFrames as the floor.
+  let ftWeightedSum = 0;
+  for (const e of fresh) ftWeightedSum += e.ftMs * e.frames;
+  const avgFps = ftWeightedSum > 0
+    ? Math.round((1000 * totalFrames) / ftWeightedSum)
+    : null;
   // Expand into the frame-count-weighted ft list (each entry contributes
   // `frames` copies of its mean frame time), sorted ascending.
   const ft = [];
@@ -128,5 +162,17 @@ export function percentileStats(ring, nowMs, windowMs) {
   let tailSum = 0;
   for (let j = i - 1; j < n; j++) tailSum += ft[j];
   const low1Pct = Math.round(1000 / (tailSum / (n - i + 1)));
-  return { low1Pct, p99 };
+  // 0.1% Low (M12): the SAME family - the boundary
+  // j = max(1, ceil(0.999 * N)) + the weighted tail average - but with the
+  // >= 1000-frame floor (the worst-0.1% tail is 2-3 dropped frames; below
+  // ~1000 frames the tail is noise -> null -> the honest '-' on the
+  // overlay row). The 1% Low / 99% FPS stats still compute below it.
+  let low01Pct = null;
+  if (totalFrames >= MIN_FRAMES_FOR_001_PCT) {
+    const j = Math.max(1, Math.ceil(P001_BOUNDARY * n));
+    let tail01Sum = 0;
+    for (let k = j - 1; k < n; k++) tail01Sum += ft[k];
+    low01Pct = Math.round(1000 / (tail01Sum / (n - j + 1)));
+  }
+  return { avgFps, low1Pct, low01Pct, p99 };
 }

@@ -14,8 +14,8 @@
 //     LIST_MODULES_ALL) -> the module list;
 //   GetModuleBaseNameW per module -> the module base names.
 // The API match (module names, case-insensitive) with the precedence
-//   vulkan-1.dll > d3d12.dll > d3d11.dll > d3d9.dll > opengl32.dll
-// -> the canonical ids 'vulkan' | 'dx12' | 'dx11' | 'dx9' | 'opengl'.
+//   vulkan-1.dll > d3d12.dll > d3d11.dll > d3d10.dll > d3d9.dll > opengl32.dll
+// -> the canonical ids 'vulkan' | 'dx12' | 'dx11' | 'dx10' | 'dx9' | 'opengl'.
 // dxgi.dll is loaded by ALL of them and is NOT a discriminator; d3d11 is
 // loaded by Chromium too - the overlay over a browser honestly reports DX11.
 // M10b (findings): vulkan-1.dll sits FIRST because it is ONLY loaded
@@ -23,6 +23,9 @@
 // vulkan-1 + d3d12 + d3d11 together and must report Vulkan, not DX12), and
 // d3d9.dll -> 'dx9' covers the DX9-only games (League of Legends - the
 // detection list previously lacked d3d9 and LoL showed no API at all).
+// M12: d3d10.dll -> 'dx10' joins after d3d11 (the DirectX-10 games load
+// d3d10.dll + d3d9.dll together for the legacy fallback - d3d10 outranks
+// d3d9 so a DX10 process never misreads as DX9).
 // HEURISTIC LIMIT: the loaded-module scan CANNOT distinguish the ACTIVE
 // renderer when a process loads several API DLLs (a D3D12 game that also
 // loaded vulkan-1 reports Vulkan, and vice versa) - the precedence picks
@@ -54,7 +57,7 @@ import koffi from 'koffi';
 
 // The canonical Graphics-API ids (the renderer's display labels live in
 // pure/overlay.ts - the single-owner pattern like the stat ids).
-export const GRAPHICS_API_IDS = ['dx12', 'vulkan', 'dx11', 'dx9', 'opengl'];
+export const GRAPHICS_API_IDS = ['dx12', 'vulkan', 'dx11', 'dx10', 'dx9', 'opengl'];
 
 // The module-name precedence: the FIRST matching module wins (dxgi.dll is
 // loaded by every API and is deliberately absent - it is not a
@@ -65,6 +68,8 @@ export const GRAPHICS_API_IDS = ['dx12', 'vulkan', 'dx11', 'dx9', 'opengl'];
 // vulkan-1 + d3d12 + d3d11 together and must report Vulkan, not DX12);
 // d3d9.dll -> 'dx9' covers the DX9-only games (League of Legends - the
 // detection list previously lacked d3d9 and LoL showed no API at all).
+// M12: d3d10.dll -> 'dx10' (after d3d11, before d3d9 - the DirectX-10
+// games load d3d10 + d3d9 together, and the DX10 signal must win).
 // HEURISTIC LIMIT: the loaded-module scan cannot distinguish the ACTIVE
 // renderer when a process loads several API DLLs (a D3D12 game that also
 // loaded vulkan-1 reports Vulkan, and vice versa) - the precedence picks
@@ -74,6 +79,7 @@ const API_MODULE_PRECEDENCE = [
   ['vulkan', 'vulkan-1.dll'],
   ['dx12', 'd3d12.dll'],
   ['dx11', 'd3d11.dll'],
+  ['dx10', 'd3d10.dll'],
   ['dx9', 'd3d9.dll'],
   ['opengl', 'opengl32.dll'],
 ];
@@ -101,7 +107,7 @@ const MODULE_LIST_SLOTS = 512;
  * renders no api field. Unit-tested directly (the cheap-oracle seam).
  * @param {unknown} moduleNames the module base names (e.g. from
  *   GetModuleBaseNameW) - garbage/absent -> null
- * @returns {string | null} 'vulkan' | 'dx12' | 'dx11' | 'dx9' | 'opengl' | null
+ * @returns {string | null} 'vulkan' | 'dx12' | 'dx11' | 'dx10' | 'dx9' | 'opengl' | null
  */
 export function matchGraphicsApi(moduleNames) {
   if (!Array.isArray(moduleNames)) return null;
@@ -137,8 +143,8 @@ export function createForegroundApiDetector(deps = {}) {
   /**
    * The foreground window's graphics API (the overlay's target process).
    * Every step degrades to null - NEVER throws.
-   * @returns {Promise<string | null>} 'vulkan' | 'dx12' | 'dx11' | 'dx9' | 'opengl'
-   *   or null when nothing is detected
+   * @returns {Promise<string | null>} 'vulkan' | 'dx12' | 'dx11' | 'dx10' |
+   *   'dx9' | 'opengl' or null when nothing is detected
    */
   const detect = async () => {
     try {
