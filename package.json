@@ -28,6 +28,7 @@
                   "files":  [
                                 "src/**/*",
                                 "src/main/backend/IntelMSR.bin",
+                                "src/main/backend/AMDFamily17.bin",
                                 "src/main/backend/COPYING",
                                 "src/main/backend/PawnIO_setup.exe",
                                 "THIRD_PARTY_NOTICES.txt",

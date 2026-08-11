@@ -32,7 +32,7 @@ import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
   GRAPHICS_LOW_LATENCY_OPTIONS,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, VOLT_OFFSET_MAX_V, vramMemTypeOfName } from './units.js';
 import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
@@ -781,6 +781,18 @@ export class IgclBackend {
         // pass through untouched (their max IS the honest ceiling).
         if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C' && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
           caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
+        }
+        // M15 (F4): the voltage-OFFSET exposed-max pin - the LIVE probe
+        // (2026-08-11, pipeline/live-volt-max-probe.mjs) shows the driver
+        // accepts 0.234 V (raw ctlOverclockGpuMaxVoltageOffsetSetV2(0.234) ->
+        // SUCCESS, read-back 0.234) and refuses 0.235 with 0x44000002, but
+        // the props may under-report the grid-aligned 0.230 - so the EXPOSED
+        // V-unit max is pinned to VOLT_OFFSET_MAX_V in BOTH directions (a
+        // driver that ever drifts above 0.234 is clamped back; a driver
+        // reporting 0.230 is raised to the real ceiling). M4-E rule:
+        // percent-unit ranges (Battlemage) pass through untouched.
+        if (caps.ranges.gpuVoltOffsetV && caps.ranges.gpuVoltOffsetV.units === 'V') {
+          caps.ranges.gpuVoltOffsetV = { ...caps.ranges.gpuVoltOffsetV, max: VOLT_OFFSET_MAX_V };
         }
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
         // this driver AND the OC mode is advanced (M3-C-E), report the FULL

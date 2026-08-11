@@ -29,10 +29,10 @@
 //      capability ranges; the page-title is 'Tuning'; the OC-mode row is a
 //      flex row with the Stock/Advanced pill LEFT and the "Tuning | Fan
 //      Curve" view pill RIGHT (same height - the pills' getBoundingClientRect
-//      tops are pinned equal); M2b-B: the freq card title FOLLOWS the
-//      freqControl mode (M14 amendment: 'Performance Boost' by default -
-//      the M4-B 'Core clock' name applies in coreClock mode), the floating
-//      Apply is hidden when clean and appears when dirty;
+//      tops are pinned equal); M2b-B: the freq card title is the M4-B 'Core
+//      clock' name (the Offset/Clock toggle is the input presentation, not
+//      the name), the floating Apply is hidden when clean and appears when
+//      dirty;
 //   3. first Apply shows the warranty-waiver dialog; Accept persists the
 //      waiver; the apply succeeds and the state read-back refreshes; the
 //      per-control toast count is exactly 1 (the other three controls are
@@ -1378,11 +1378,8 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // --- 2b. off-grid driver readout (RID_MOCK_OFFGRID_FREQ_MHZ knob) -------
   const offGridFreq = process.env.RID_MOCK_OFFGRID_FREQ_MHZ;
   if (offGridFreq !== undefined) {
-    // M14 amendment: the boost toggle DEFAULTS to Performance Boost at
-    // render - leave it FIRST: the off-grid pins read the MHz DRIVER
-    // readout (the boost percent presentation would hide the off-grid
-    // decimal, defeating this pin's purpose).
-    await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-boost-mode-btn')).find((b) => b.textContent.trim() === 'Core Clock')?.click()`);
+    // The freq card renders in the offset/clock mode by default (the M4-B
+    // presentation) - the off-grid pins read the MHz DRIVER readout.
     await sleep(150);
     const expected = String(Number(offGridFreq));
     if (!(await waitFor(win, `(() => {
@@ -1398,15 +1395,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     step('oc-offgrid', `off-grid driver readout renders '${driverText.trim()}' (slider snapped to '${sliderReadout.trim()}')`);
   }
 
-  // --- 2c. M2b-B tuning UX: the freq card TITLE follows the freqControl
-  // --- mode (M14 amendment: 'Performance Boost' by default at render -
-  // --- the M4-B 'Core clock' name applies in coreClock mode; the
-  // --- off-grid block above left boost first, so its title reads 'Core
-  // --- clock') + floating Apply -----------------------------------------
+  // --- 2c. M2b-B tuning UX: the freq card TITLE (the M4-B 'Core clock'
+  // --- name in every mode - the Offset/Clock toggle is the input
+  // --- presentation, not the name) + floating Apply ----------------------
   const freqTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-  const labelExpected = offGridFreq !== undefined ? 'Core clock' : 'Performance Boost';
-  if (freqTitle.trim() !== labelExpected) fail(`freq offset card title is '${freqTitle}' (expected '${labelExpected}' at this point - the M14 mode-following title: 'Performance Boost' in boost / 'Core clock' in coreClock)`);
-  step('label', `freq card title '${freqTitle.trim()}' (the M14 mode-following title - 'Performance Boost' in boost mode, the M4-B 'Core clock' in coreClock mode)`);
+  if (freqTitle.trim() !== 'Core clock') fail(`freq offset card title is '${freqTitle}' (expected 'Core clock' - the M4-B name in every mode)`);
+  step('label', `freq card title '${freqTitle.trim()}' (the M4-B 'Core clock' name - the Offset/Clock toggle is the presentation, not the name)`);
 
   const floatingHidden = () => js(`(() => { const b = document.querySelector('.floating-apply'); return !b || b.hidden === true; })()`);
   const setSlider = async (value) => {
@@ -1885,10 +1879,9 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // --- 5b2. M4-B: negative slider territory + Offset/Clock toggle + the
   // --- gpuLock editor. The waiver is accepted here (the apply flow above),
   // --- so every apply in this block is dialog-free. -------------------------
-  // M14 amendment: PERFORMANCE BOOST IS THE DEFAULT at render - leave the
-  // boost mode first so the M4-B pins see the OFFSET slider (-300..300),
-  // the visible Offset|Clock row and the 'Core clock' title.
-  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-boost-mode-btn')).find((b) => b.textContent.trim() === 'Core Clock')?.click()`);
+  // The freq card renders in the offset presentation by default - the M4-B
+  // pins read the OFFSET slider (-300..300), the visible Offset|Clock row
+  // and the 'Core clock' title.
   await sleep(150);
   const setFreqSlider = (value) => js(`(() => {
     const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
@@ -1972,145 +1965,6 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (!clockDriver.includes('2050')) fail(`M4-B: Clock-mode driver readout is '${clockDriver}' (expected the absolute 2050 MHz)`);
   step('m4b-clock', `M4-B: Clock mode range ${clockMin}..${clockMax} MHz, slider 2050 -> readout '${clockReadout.trim()}', apply -> offset ${clockState.gpuFreqOffsetMhz} MHz, driver '${clockDriver.trim()}'`);
   await clearToasts();
-
-  // --- (2b) M14: the Performance Boost | Core Clock toggle (the IGS
-  // --- pattern). The new row renders BEFORE the Offset|Clock row; boost
-  // --- mode slides the 0-100 % range, HIDES the Offset|Clock row (the
-  // --- hidden attribute - the user's clarification), and the
-  // --- stored/applied value stays the OFFSET (presentation only). The
-  // --- driver still reads -50 MHz here (the clock-mode apply above), so
-  // --- the negative-offset clamp pins for free: the boost readout + the
-  // --- Driver line show 0 % (never a negative %). -------------------------
-  // M14 amendment: PERFORMANCE BOOST IS THE DEFAULT - the toggle-row pin
-  // asserts the RENDER-time state, so re-render the page fresh (the M4-B
-  // block above left it in coreClock mode; the driver's -50 MHz offset
-  // survives the re-render - the values re-derive from the driver state).
-  await js(`location.hash = '#/dashboard'`);
-  await sleep(250);
-  await gotoOverclocking();
-  // The new toggle row [Performance Boost | Core Clock] BEFORE the
-  // Offset|Clock row, 'Performance Boost' active at render (the M14
-  // amendment's default).
-  const boostToggleState = await js(`(() => {
-    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
-    if (!card) return 'no-card';
-    const rows = Array.from(card.querySelectorAll('.oc-boost-mode-row, .oc-freq-mode-row'));
-    const texts = rows.map((r) => Array.from(r.querySelectorAll('button')).map((b) => b.textContent.trim()).join(' | '));
-    const active = Array.from(card.querySelectorAll('.oc-boost-mode-btn')).find((b) => b.classList.contains('active'))?.textContent.trim() ?? '';
-    return JSON.stringify({ rows: texts, active });
-  })()`);
-  const boostToggle = JSON.parse(boostToggleState);
-  if (boostToggle.rows[0] !== 'Performance Boost | Core Clock' || boostToggle.rows[1] !== 'Offset | Clock') {
-    fail(`M14: the freq-card toggle rows are '${boostToggleState}' (expected [Performance Boost | Core Clock] BEFORE [Offset | Clock])`);
-  }
-  if (boostToggle.active !== 'Performance Boost') fail(`M14: the boost toggle does not default to 'Performance Boost': '${boostToggleState}'`);
-  step('m14-toggle-row', `M14: the [Performance Boost | Core Clock] toggle renders before the Offset|Clock row (Performance Boost ACTIVE at render - the boost default)`);
-
-  // The boost-mode pins (the page already renders in boost mode - the
-  // fresh-render default; the click below is the idempotent guard): the
-  // Offset|Clock row has the hidden attribute, the slider is the 0-100 %
-  // range (step 1), the readout + the Driver line read %, the caption is
-  // the en-dash '0 – 100 % · step 1', the card title reads
-  // 'Performance Boost'.
-  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-boost-mode-btn')).find((b) => b.textContent.trim() === 'Performance Boost')?.click()`);
-  await sleep(150);
-  const boostHidden = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-row')?.hidden ?? 'no-row'`);
-  if (boostHidden !== true) fail(`M14: the Offset|Clock row is not hidden in boost mode (hidden=${boostHidden} - the user's clarification)`);
-  const boostMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
-  const boostMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
-  const boostStep = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('step')`);
-  if (boostMin !== '0' || boostMax !== '100' || boostStep !== '1') fail(`M14: the boost-mode slider range is '${boostMin}'..'${boostMax}' step '${boostStep}' (expected 0..100 step 1 - the IGS shape)`);
-  const boostCaption = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-meta .oc-range')?.textContent ?? ''`);
-  if (boostCaption.trim() !== '0 – 100 % · step 1') fail(`M14: the boost-mode range caption is '${boostCaption}' (expected '0 – 100 % · step 1' - the en-dash)`);
-  // The negative-offset clamp: the driver reads -50 MHz -> the boost
-  // readout + the Driver line clamp to 0 % (never a negative %).
-  const boostReadout0 = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-value')?.textContent ?? ''`);
-  if (boostReadout0.trim() !== '0 %') fail(`M14: the boost-mode readout is '${boostReadout0}' (expected '0 %' - the -50 MHz driver offset clamps to 0 %)`);
-  const boostDriver0 = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-driver-value')?.textContent ?? ''`);
-  if (boostDriver0.trim() !== '0 %') fail(`M14: the boost-mode Driver line is '${boostDriver0}' (expected '0 %' - the negative offset clamps)`);
-  // M14 amendment: the card TITLE follows the mode - 'Performance Boost'
-  // in boost mode (here the render-time default title).
-  const boostTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-  if (boostTitle.trim() !== 'Performance Boost') fail(`M14: the boost-mode card title is '${boostTitle}' (expected 'Performance Boost' - the mode-following title)`);
-  step('m14-boost-mode', `M14: boost mode - Offset|Clock row hidden, slider ${boostMin}..${boostMax} step ${boostStep}, caption '0 – 100 % · step 1', readout+driver '0 %' (the -50 MHz clamp), title '${boostTitle.trim()}'`);
-
-  // The boost slider round trip: 25 % -> the stored offset 75 MHz
-  // (boostToOffset), then the clock->boost->coreClock transition pin:
-  // the back-switch shows the OFFSET slider at the SAME value (75 MHz -
-  // the F2 freqMode reset made the pin literal).
-  const setBoostSlider = (value) => js(`(() => {
-    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
-    const input = card.querySelector('input[type="range"]');
-    input.value = '${value}';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    return card.querySelector('.oc-value')?.textContent ?? '';
-  })()`);
-  const boostReadout25 = await setBoostSlider(25);
-  if (boostReadout25.trim() !== '25 %') fail(`M14: the boost slider readout is '${boostReadout25}' (expected '25 %' - 25 % of 300 = 75 MHz stored)`);
-  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-boost-mode-btn')).find((b) => b.textContent.trim() === 'Core Clock')?.click()`);
-  await sleep(150);
-  const coreHidden = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-row')?.hidden ?? 'no-row'`);
-  if (coreHidden !== false) fail(`M14: the Offset|Clock row did not come back after the back-switch (hidden=${coreHidden})`);
-  const coreReadout = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-value')?.textContent ?? ''`);
-  if (coreReadout.trim() !== '75 MHz') fail(`M14: the back-switched offset readout is '${coreReadout}' (expected '75 MHz' - the same value the boost slider stored)`);
-  const coreMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
-  if (coreMin !== '-300') fail(`M14: the back-switched slider is not the OFFSET range (min='${coreMin}' - expected -300)`);
-  // M14 amendment: the card TITLE follows the mode at runtime - the
-  // back-switch flipped it to the M4-B 'Core clock' name (setFreqControl's
-  // titleNodes ref update).
-  const coreTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-  if (coreTitle.trim() !== 'Core clock') fail(`M14: the coreClock card title is '${coreTitle}' (expected 'Core clock' - the M4-B name in coreClock mode)`);
-  step('m14-transition', `M14: boost 25 % -> the stored offset 75 MHz; back-switch to Core Clock restores the Offset|Clock row + the offset slider at 75 MHz + the title '${coreTitle.trim()}' (the values survive the presentation flips)`);
-
-  // The boost-mode apply round trip: enter boost again, set 40 % (-> the
-  // offset 120), click the PER-CARD Apply - the payload carries the
-  // OFFSET, the mock reads it back, the Applied chip shows, the Driver
-  // line reads the live 40 %.
-  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-boost-mode-btn')).find((b) => b.textContent.trim() === 'Performance Boost')?.click()`);
-  await sleep(150);
-  // M14 amendment: the title follows the mode IN PLACE - re-entering boost
-  // flips the card title back to 'Performance Boost' (the runtime
-  // setFreqControl update, not just the render-time default).
-  const boostTitle2 = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-  if (boostTitle2.trim() !== 'Performance Boost') fail(`M14: the re-entered boost-mode card title is '${boostTitle2}' (expected 'Performance Boost' - the runtime title follow)`);
-  await setBoostSlider(40);
-  if ((await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-value')?.textContent ?? ''`)).trim() !== '40 %') {
-    fail('M14: the boost slider 40 % readout missing');
-  }
-  if (!(await waitFor(win, `(() => {
-    const b = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply');
-    return !!b && !b.hidden;
-  })()`, 5000))) {
-    fail('M14: the boost-mode move did not reveal the per-card Apply button');
-  }
-  await clearToasts();
-  await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.click()`);
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M14: the boost-mode apply success toast missing');
-  if (!(await waitFor(win, `(() => {
-    const c = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-status');
-    return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied';
-  })()`, 8000))) {
-    fail('M14: the boost-mode apply did not flip the freq chip to Applied');
-  }
-  const boostState = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (Math.abs(boostState.gpuFreqOffsetMhz - 120) > 1e-6) fail(`M14: the boost-mode apply stored the wrong value: ${boostState.gpuFreqOffsetMhz} (expected 120 = 40 % of 300 - the payload carries the OFFSET)`);
-  const boostDriver40 = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-driver-value')?.textContent ?? ''`);
-  if (boostDriver40.trim() !== '40 %') fail(`M14: the boost Driver line is '${boostDriver40}' (expected '40 %' after the 120 MHz apply)`);
-  step('m14-boost-apply', `M14: boost 40 % -> per-card Apply -> the OFFSET 120 MHz sticks (mock read-back), the Applied chip, the Driver line '40 %'`);
-
-  // The card-note: the shared-knob/last-writer-wins clause renders on the
-  // freq card (the vram-editor pattern) - present in boost mode here and
-  // checked again in coreClock mode after the back-switch below.
-  const boostNote = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-note')?.textContent ?? ''`);
-  if (!boostNote.includes('shared') || !boostNote.includes('IGS')) fail(`M14: the freq card-note is missing the shared-knob clause: '${boostNote}'`);
-  // Back to Core Clock + Offset for the M4J block + the baseline restore
-  // (the freq card must never be left in boost mode - the restore below
-  // clicks the Offset button + applies 0).
-  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-boost-mode-btn')).find((b) => b.textContent.trim() === 'Core Clock')?.click()`);
-  await sleep(150);
-  const coreNote = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-note')?.textContent ?? ''`);
-  if (!coreNote.includes('shared') || !coreNote.includes('IGS')) fail(`M14: the freq card-note is missing in coreClock mode: '${coreNote}'`);
-  step('m14-card-note', `M14: the freq card-note carries the shared-knob/last-writer-wins clause in BOTH modes ('${boostNote.trim()}')`);
 
   // (3) M4J (D) + clarification: the Advanced section renders ONLY on
   // vramFreqOffset sessions and holds the VRAM clock editor ONLY (the full
@@ -4603,10 +4457,6 @@ export async function runFeaturesetVerify(win, fsId) {
       if (plMax !== '150') fail(`b580 PL slider max is '${plMax}' (expected 150)`);
       // M4-B: the b580 freq range mirrors into the negative half-plane too
       // (-500..500) and the percent units still render with the mirror.
-      // M14 amendment: PERFORMANCE BOOST IS THE DEFAULT at render - leave
-      // the boost mode first so the MHz offset range pins see the OFFSET
-      // slider (the b580 max 500 > 0 -> boostAvailable -> boost default).
-      await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-boost-mode-btn')).find((b) => b.textContent.trim() === 'Core Clock')?.click()`);
       await sleep(150);
       const b580FreqMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
       const b580FreqMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);

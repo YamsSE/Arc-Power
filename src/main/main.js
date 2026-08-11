@@ -971,7 +971,11 @@ async function main() {
     // install failed, AV quarantine) - the honest degrade. The install
     // state is checked by the reader at the first sample (the bundled
     // official setup runs silently once when the device is absent).
-    msrReader = createMsrReader({});
+    // M15 (F2): Win32_Processor.Manufacturer (the cached sysinfo row fetched
+    // above) selects the module - an AMD vendor string loads AMDFamily17.bin
+    // (SMN temp + the RAPL pair), anything else the IntelMSR.bin path. The
+    // module itself re-checks the CPUID vendor + family 0x17-0x1A.
+    msrReader = createMsrReader({ cpuVendor: cached?.cpu?.manufacturer ?? null });
     sysStats = createSysStats({
       deviceIdHex,
       luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,

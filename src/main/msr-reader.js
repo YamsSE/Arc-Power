@@ -36,6 +36,20 @@
 //     dE  = the 32-bit wrapped delta of MSR_PKG_ENERGY_STATUS 0x611,
 //     dt  >= 10 ms from a monotonic wall-clock (no time-unit register).
 //   The first energy sample calibrates (null until the second).
+//
+// M15 (F2): AMD CPUs (Win32_Processor.Manufacturer matching /amd/ -
+// 'AuthenticAMD', 'Advanced Micro Devices, Inc.', ...; see isAmdVendor)
+// load the vendored AMDFamily17.bin module instead (IntelMSR.bin's main()
+// gates on the Intel vendor and necessarily fails on AMD - the pre-M15
+// reader returned null everywhere there) and read:
+//   - the die temperature from the SMN register F17H_M01H_THM_TCON_CUR_TMP
+//     (ioctl_read_smn - the same 1-in/1-out protocol as ioctl_read_msr);
+//   - the RAPL pair MSRC001_0299 (power unit, ESU - esuOf reuses) +
+//     MSRC001_029B (package energy, the 32-bit wrap state reuses).
+// The AMD energy counter is MICRO-JOULE based (0.5^ESU uJ per increment -
+// LHM Amd17Cpu.cs) - amdPackagePowerW scales raplPowerW by 1e-6. Register
+// truth verified against the AMDFamily17.p module source, k10temp and
+// LibreHardwareMonitor Amd17Cpu.cs.
 
 import koffi from 'koffi';
 import fs from 'node:fs';
@@ -56,6 +70,17 @@ export const MSR_TEMPERATURE_TARGET = 0x1A2; // TjMax
 export const MSR_PACKAGE_THERM_STATUS = 0x1B1; // the package DTS
 export const MSR_RAPL_POWER_UNIT = 0x606; // ESU
 export const MSR_PKG_ENERGY_STATUS = 0x611; // the package energy counter
+// M15 (F2): the AMD module's SMN-read function name (the same 1-in/1-out
+// protocol as ioctl_read_msr - an index in, the 64-bit value out).
+export const IOCTL_READ_SMN = 'ioctl_read_smn';
+// M15 (F2): the Zen die temperature register - F17H_M01H_THM_TCON_CUR_TMP
+// (the SMN register space, NOT an MSR: CUR_TEMP [31:21], 0.125 C/LSB).
+export const AMD_SMN_CUR_TMP = 0x00059800;
+// M15 (F2): the AMD RAPL pair - MSRC001_0299 (power unit, ESU bits 12:8,
+// same layout as the Intel 0x606) + MSRC001_029B (package energy). The
+// P-state MSRs 0xC0010063/64 must NEVER be read for power.
+export const AMD_RAPL_PWR_UNIT_MSR = 0xC0010299;
+export const AMD_PKG_ENERGY_MSR = 0xC001029B;
 
 export const GENERIC_READ = 0x80000000;
 export const GENERIC_WRITE = 0x40000000;
@@ -162,6 +187,69 @@ export function raplPowerW(esu, dE, dtSeconds) {
   return (dE / 2 ** esu) / dtSeconds;
 }
 
+/**
+ * M15 (F2): the AMD-vs-not CPU gate - the Win32_Processor.Manufacturer
+ * string (WMI exposes the CPUID vendor 'AuthenticAMD' / 'GenuineIntel',
+ * and some boards' SMBIOS Type-4 name 'Advanced Micro Devices, Inc.').
+ * True when the string (case-insensitive) matches /amd/ OR the SMBIOS
+ * phrase 'advanced micro devices' - so 'AuthenticAMD',
+ * 'Advanced Micro Devices, Inc.' and 'AMD Ryzen 7 5800X'-style names all
+ * hit; null/non-string/'GenuineIntel'/'Intel(R) ...' -> false. The
+ * predicate is the MODULE-SELECTION decision only: AMDFamily17.bin ITSELF
+ * re-checks the CPUID vendor AND family 0x17-0x1A in its main()
+ * (source-verified AMDFamily17.p), so a non-Zen AMD part self-refuses with
+ * STATUS_NOT_SUPPORTED -> the existing honest null degrade, and loading
+ * the AMD module on an AuthenticAMD box is always safe. A manufacturer
+ * gate is used instead of a Win32_Processor family-range gate because the
+ * DMTF SMBIOS family table defines no AMD Zen values for real machines
+ * (see the S1 deviation record in the M15 report) - a family gate provably
+ * never activated on Zen and misloaded the AMD module on Intel machines
+ * reporting its boundary values.
+ * @param {string | null | undefined} manufacturer
+ * @returns {boolean}
+ */
+export function isAmdVendor(manufacturer) {
+  return typeof manufacturer === 'string' && /amd|advanced micro devices/i.test(manufacturer);
+}
+
+/**
+ * M15 (F2): the Zen die temperature from the SMN register
+ * F17H_M01H_THM_TCON_CUR_TMP (offset 0x00059800 - NOT an MSR): CUR_TEMP
+ * [31:21] at 0.125 C/LSB, minus 49 when RANGE_SEL (bit 19) or TJ_SEL
+ * (bits 17:16 == 3) is set - the k10temp + LibreHardwareMonitor Amd17Cpu.cs
+ * single formula for ALL Zen (17h/19h/1Ah; no family split). A sanity
+ * guard keeps only [0, 110] C readings; raw 0 and anything outside
+ * degrade to null (the honest read, never a wrong temperature).
+ * @param {bigint | number | null | undefined} smnValue
+ * @returns {number | null}
+ */
+export function amdTdieC(smnValue) {
+  const v = typeof smnValue === 'bigint' ? smnValue : typeof smnValue === 'number' ? BigInt(Math.trunc(smnValue)) : null;
+  if (v === null || v === 0n) return null;
+  let temp = Number(v >> 21n) * 0.125;
+  const rangeSel = (v & (1n << 19n)) !== 0n;
+  const tjSel = ((v >> 16n) & 3n) === 3n;
+  if (rangeSel || tjSel) temp -= 49;
+  return temp >= 0 && temp <= 110 ? temp : null;
+}
+
+/**
+ * M15 (F2): the AMD RAPL package power - the package-energy counter
+ * MSRC001_029B is MICRO-JOULE based (0.5^ESU uJ per increment - LHM
+ * Amd17Cpu.cs "micro Joule per increment", NOT the Intel joule base), so
+ * the shared raplPowerW result scales by 1e-6. The ESU layout (bits 12:8
+ * of MSRC001_0299) and the 32-bit wrap + dt guard semantics are identical
+ * to the Intel side.
+ * @param {number | null} esu
+ * @param {number} dE the wrapped 32-bit energy delta
+ * @param {number} dtSeconds
+ * @returns {number | null}
+ */
+export function amdPackagePowerW(esu, dE, dtSeconds) {
+  const w = raplPowerW(esu, dE, dtSeconds);
+  return w === null ? null : w * 1e-6;
+}
+
 // ---------------------------------------------------------------------------
 // The native layer (injectable for tests - the igcl-deps pattern)
 // ---------------------------------------------------------------------------
@@ -226,10 +314,16 @@ export function bundledSetupPath() {
  * bundled official setup runs silently once (-install -silent); a
  * failed/declined install degrades honestly (null reads + the pawnio.eu
  * download link in `status()`).
+ * M15 (F2): `cpuVendor` (Win32_Processor.Manufacturer) selects the module +
+ * read path - an AMD vendor string (isAmdVendor) loads AMDFamily17.bin
+ * (IntelMSR.bin's main() gates on the Intel vendor and necessarily fails on
+ * AMD) and reads the die temperature via ioctl_read_smn + the RAPL pair;
+ * anything else keeps the IntelMSR.bin path unchanged.
  * @param {{
  *   lib?: object,            // injectable kernel32 (the igcl-deps pattern)
  *   koffiMod?: object,       // injectable koffi module
- *   modulePath?: string,     // the IntelMSR.bin path (default: the vendored copy)
+ *   modulePath?: string,     // the module .bin path (default: the vendored copy for the cpu vendor)
+ *   cpuVendor?: string | null, // Win32_Processor.Manufacturer (the AMD-vs-not gate)
  *   setupPath?: string,      // the PawnIO_setup.exe path (default: bundledSetupPath())
  *   execFile?: Function,     // injectable (install-state check)
  *   now?: () => number,      // injectable clock (RAPL window; default Date.now)
@@ -239,7 +333,15 @@ export function bundledSetupPath() {
 export function createMsrReader(deps = {}) {
   const koffiMod = deps.koffiMod ?? koffi;
   const lib = bindKernel32(deps.lib, koffiMod);
-  const modulePath = deps.modulePath ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'backend', 'IntelMSR.bin');
+  // M15 (F2): the AMD-vs-not gate decides the module default - both are the
+  // plain asar path (the .bin is byte-read inside the asar, like the setup
+  // EXE's sibling; the bundledSetupPath unpacked-fallback is ONLY for the
+  // spawned setup EXE). The module itself re-checks the CPUID vendor AND
+  // family 0x17-0x1A (AMDFamily17.p main() - a non-Zen AMD part self-refuses
+  // with STATUS_NOT_SUPPORTED -> the honest null degrade).
+  const amd = isAmdVendor(deps.cpuVendor ?? null);
+  const moduleName = amd ? 'AMDFamily17.bin' : 'IntelMSR.bin';
+  const modulePath = deps.modulePath ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'backend', moduleName);
   const setupPath = deps.setupPath ?? bundledSetupPath();
   const exec = deps.execFile ?? execFile;
   const nowFn = deps.now ?? (() => performance.now()); // monotonic (review nit 2: Date.now is a wall clock)
@@ -392,9 +494,24 @@ export function createMsrReader(deps = {}) {
     /**
      * M4L: the CPU package temperature = TjMax - DTS (bit-31 gated). Null on
      * any error (device absent, load refused, AV quarantine, invalid DTS).
+     * M15 (F2): on an AMD vendor the Zen die temperature comes from the SMN
+     * register F17H_M01H_THM_TCON_CUR_TMP instead (ioctl_read_smn - the same
+     * 1-in/1-out protocol as ioctl_read_msr). NOTE: the AMDFamily17.p source
+     * warns to hold the \BaseNamedObjects\Access_PCI mutant before SMN reads
+     * - the concern is CROSS-PROCESS interleaving (LHM/HWiNFO/Ryzen Master
+     * hold the named mutant during their SMN/PCI cycles; the app's
+     * index-write/data-read pair could interleave with theirs and corrupt
+     * one SMN value on either side). M15 does NOT acquire the mutant: the
+     * [0,110] sanity guard in amdTdieC absorbs an app-side corrupted
+     * reading, and a monitoring read is low-stakes.
      * @returns {Promise<number | null>}
      */
     async packageTempC() {
+      if (amd) {
+        await ensureReady();
+        const out = execute(IOCTL_READ_SMN, [BigInt(AMD_SMN_CUR_TMP)], 1);
+        return out && out.length > 0 ? amdTdieC(out[0]) : null;
+      }
       const tj = await this.readMsr(MSR_TEMPERATURE_TARGET);
       if (tj === null) return null;
       const dts = await this.readMsr(MSR_PACKAGE_THERM_STATUS);
@@ -407,13 +524,18 @@ export function createMsrReader(deps = {}) {
      * 32-bit wrap and the >= 10 ms window guard. The FIRST sample
      * calibrates (null until the second - the plan's contract). Null on any
      * error.
+     * M15 (F2): on an AMD vendor the RAPL pair is MSRC001_0299 (power unit,
+     * ESU bits 12:8 - esuOf reuses) + MSRC001_029B (package energy, the
+     * same 32-bit wrap state) and the micro-joule base scales the result
+     * (amdPackagePowerW). The P-state MSRs 0xC0010063/64 are NEVER read for
+     * power.
      * @returns {Promise<number | null>}
      */
     async packagePowerW() {
-      const esuMsr = await this.readMsr(MSR_RAPL_POWER_UNIT);
+      const esuMsr = await this.readMsr(amd ? AMD_RAPL_PWR_UNIT_MSR : MSR_RAPL_POWER_UNIT);
       if (esuMsr === null) return null;
       const esu = esuOf(esuMsr);
-      const energy = await this.readMsr(MSR_PKG_ENERGY_STATUS);
+      const energy = await this.readMsr(amd ? AMD_PKG_ENERGY_MSR : MSR_PKG_ENERGY_STATUS);
       if (energy === null) return null;
       const t = nowFn();
       if (prevEnergy === null || prevEnergyTime === null) {
@@ -425,7 +547,7 @@ export function createMsrReader(deps = {}) {
       const dtSeconds = (t - prevEnergyTime) / 1000;
       prevEnergy = energy;
       prevEnergyTime = t;
-      return raplPowerW(esu, dE, dtSeconds);
+      return amd ? amdPackagePowerW(esu, dE, dtSeconds) : raplPowerW(esu, dE, dtSeconds);
     },
 
     /**
@@ -467,7 +589,7 @@ export function createMsrReader(deps = {}) {
         case 'device-absent': return `PawnIO driver not installed - CPU temp/wattage unavailable; download the official setup from ${PAWNIO_DOWNLOAD_LINK}`;
         case 'install-failed': return `PawnIO setup could not be installed - CPU temp/wattage unavailable; download the official setup from ${PAWNIO_DOWNLOAD_LINK}`;
         case 'access-denied': return `PawnIO device access denied (${errName(lastErrorText())}) - CPU temp/wattage unavailable`;
-        case 'load-refused': return `PawnIO refused the IntelMSR.bin module load (${errName(lastErrorText())}) - CPU temp/wattage unavailable`;
+        case 'load-refused': return `PawnIO refused the ${moduleName} module load (${errName(lastErrorText())}) - CPU temp/wattage unavailable`;
         default: return `PawnIO error (${status}, ${errName(lastErrorText())}) - CPU temp/wattage unavailable`;
       }
     },

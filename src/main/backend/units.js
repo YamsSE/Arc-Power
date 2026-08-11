@@ -159,6 +159,20 @@ export const GPU_LOCK_VOLT_MAX_V = 1.5;
 export const TEMP_LIMIT_MAX_C = 90;
 
 /**
+ * M15 (F4): the EXPOSED voltage-offset ceiling (V). Live probe evidence
+ * (2026-08-11, pipeline/live-volt-max-probe.mjs, this machine): the IGCL
+ * props report gpuVoltageOffset min 0, max 0.234, step 0.005, units V; the
+ * RAW set ctlOverclockGpuMaxVoltageOffsetSetV2(0.234) -> SUCCESS with
+ * read-back 0.234, while 0.235 is refused with 0x44000002
+ * (VOLTAGE_OUTSIDE_RANGE). So 0.234 V IS the driver's real acceptance
+ * ceiling - the props may under-report the grid-aligned 0.230 (the last
+ * 0.005-multiple below 0.234), which is exactly the user's report. The
+ * exposed max is pinned here and applied by every backend + the renderer
+ * (the TEMP_LIMIT_MAX_C pattern, but a ceiling pin for V-unit ranges).
+ */
+export const VOLT_OFFSET_MAX_V = 0.234;
+
+/**
  * Clamp a gpuLock pair to the DOCUMENTED ABSOLUTE bounds before it reaches
  * the driver (M4-B: the lock pair is an absolute VF point, not an offset -
  * the voltage bound is the absolute ceiling GPU_LOCK_VOLT_MAX_V, floor 0

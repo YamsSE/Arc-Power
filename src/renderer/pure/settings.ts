@@ -27,6 +27,18 @@ export const EXTENDED_TL_MAX_C = 115;
 // 2023 runtime and need the extended-range confirm dialog.
 export const STD_PL_MAX_W = 252;
 export const STD_TL_MAX_C = 90;
+// M15 (F4): the EXPOSED voltage-offset ceiling (V). Live probe evidence
+// (2026-08-11, pipeline/live-volt-max-probe.mjs, this machine): the IGCL
+// props report gpuVoltageOffset min 0, max 0.234, step 0.005, units V; the
+// RAW set ctlOverclockGpuMaxVoltageOffsetSetV2(0.234) -> SUCCESS with
+// read-back 0.234, while 0.235 is refused with 0x44000002
+// (VOLTAGE_OUTSIDE_RANGE). So 0.234 V IS the driver's real acceptance
+// ceiling - the props may under-report the grid-aligned 0.230 (the last
+// 0.005-multiple below 0.234), which is exactly the user's report. The
+// exposed max is pinned here on top of the backend clamp so the slider
+// always offers the real ceiling (the TEMP_LIMIT_MAX_C duplication
+// pattern).
+export const VOLT_OFFSET_MAX_V = 0.234;
 
 /**
  * Clamp the exposed range for tempLimitC to TEMP_LIMIT_MAX_C (F3). Other
@@ -37,6 +49,12 @@ export const STD_TL_MAX_C = 90;
  * M2D: the W/C pins apply ONLY to canonical-unit ranges - percent-unit
  * featuresets (Battlemage mock: volt/PL/TL as %) are not DriverStore W/C
  * limits and must pass through untouched.
+ * M15 (F4): gpuVoltOffsetV gains the same treatment as a CEILING PIN - a
+ * V-unit range is pinned to VOLT_OFFSET_MAX_V in BOTH directions (a driver
+ * reporting the grid-aligned 0.230 is raised to the real 0.234 ceiling; one
+ * drifting above 0.234 is clamped back). When the max is ALREADY 0.234 the
+ * SAME object is returned (the pass-through identity pins stay green);
+ * percent-unit ranges (Battlemage) pass through untouched.
  */
 export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
   if (!range) return range;
@@ -45,6 +63,9 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
   }
   if (key === 'tempLimitC' && range.units === 'C' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
     return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
+  }
+  if (key === 'gpuVoltOffsetV' && range.units === 'V' && range.max !== VOLT_OFFSET_MAX_V) {
+    return { ...range, max: VOLT_OFFSET_MAX_V };
   }
   return range;
 }
