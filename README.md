@@ -30,7 +30,7 @@ Details on expert controls, the safety design, and the capability model live in 
 
 | GPU | Family | Status |
 |---|---|---|
-| Arc A3 / A5 / A7 series (incl. A770) | Alchemist | **Verified** |
+| Arc A3 / A5 / A7 series (incl. A770) | Alchemist | **Verified - Fully working** |
 | Arc B580 / B570 | Battlemage | Code paths complete, unverified on hardware |
 | Arc Pro B50 | Battlemage (pro) | Estimated - OC may be locked, telemetry + fan only |
 | Arc iGPU | Alchemist & Battlemage | **Verified - Telemetry & Tweaks only** |
