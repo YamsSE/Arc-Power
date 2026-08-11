@@ -36,17 +36,19 @@ const OVERLAY_SCALE_MAX = 2.0;
 // M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
 // the list right after the M12 AVG / 0.1% Low pair (ipc-core imports this
 // list - the ids propagate automatically).
-// M10a: 'api' (the foreground-window Graphics-API badge - the FPS-row
-// field at the ROW FRONT under M12) rides AFTER 'fps-99pct' - the tickbox
-// renders after '99% FPS' while the ROW renders the field first (the row
-// order and the tickbox order are independent - the fpsLine field order is
-// explicit in pure/overlay.ts).
+// M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
+// 'fps-99pct' - the tickbox renders after '99% FPS' while the badge
+// renders in its OWN standalone overlay row (M13: the apiLine - the api
+// field LEFT the FPS row; the row order and the tickbox order are
+// independent - the apiLine content is explicit in pure/overlay.ts).
 // M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% Low row stats)
 // ride right after 'fps' (the row field order) and 'memory-util' (the
 // Memory row) joins after the CPU stats; 'gpu-vram' stays where it was -
 // it now feeds the standalone VRAM row.
+// M13: 'cpu-power' (the CPU wattage field) joins right after 'cpu-temp'
+// (the insertion shifts 'memory-util' one slot later).
 const OVERLAY_STAT_IDS = [
-  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
   'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];

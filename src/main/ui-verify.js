@@ -5487,7 +5487,7 @@ export async function runBootApplyExtVerify(win, backend, store) {
 // ---------------------------------------------------------------------------
 // M5 - the software-overlay variant (RID_MOCK_OVERLAY=1, three matrix
 // configs: 'overlay' alone, 'overlay+fps' with RID_MOCK_FPS=1, and
-// 'overlay+fps+api' with RID_MOCK_API=1 - the M10a Graphics-API badge).
+// 'overlay+fps+api' with RID_MOCK_API=1 - the M13 standalone API row).
 // ---------------------------------------------------------------------------
 //
 // The session seed (main.js) wrote overlayEnabled:true + the default
@@ -5497,18 +5497,19 @@ export async function runBootApplyExtVerify(win, backend, store) {
 // real globalShortcut registration). This runner asserts:
 //   (a) 'overlay:get-state' -> exists + visible (the seeded session);
 //   (b) the overlay DOM lines - ONLY the STABLE fields pinned exactly
-//       ('CPU 42%', '4.3 GHz', '61°C'|'62°C', 'GPU 42%', '2187 MHz',
-//       '38.8 W', '1030 RPM' + the M12 'Memory 62%' + 'VRAM 3.0 GB'
-//       rows); the climbing clock/temp are pattern-matched (/GPU 42%
+//       ('CPU 42%', '4.3 GHz', '61°C'|'62°C', '125.5 W'|'-' - the M13 CPU
+//       watt field with the RID_MOCK_NO_POWER_METER degrade, 'GPU 42%',
+//       '2187 MHz', '38.8 W', '1030 RPM' + the M12 'RAM 62%' + 'VRAM 3.0
+//       GB' rows); the climbing clock/temp are pattern-matched (/GPU 42%
 //       \d+ MHz  2187 MHz  \d+°C  38\.8 W  1030 RPM/ - M12: the VRAM
 //       field LEFT the GPU row); the FPS row pins the FULL line -
 //       'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -' unless
 //       RID_MOCK_FPS=1 -> 'FPS 60  AVG 58  1% Low 52  0.1% Low 42
 //       99% FPS 58' (M7a/M12: the percentile + AVG stats ride the FPS
-//       row); M10a: RID_MOCK_API=1 -> 'DX12  FPS 60  AVG 58  1% Low 52
-//       0.1% Low 42  99% FPS 58' (the Graphics-API badge at the ROW
-//       FRONT - the M12/M2 move from between-FPS-and-1%Low; the mock
-//       fixture at main.js; without the knob the field vanishes);
+//       row); M13: the standalone API row (#overlay-api between the VRAM
+//       row and the frametime strip) reads 'DX12' under RID_MOCK_API=1
+//       and stays EMPTY without the knob (the M10a vanish rule - never
+//       '-'); the mock fixture at main.js feeds the 'dx12';
 //   (c) the frametime canvas has DRAWN content under RID_MOCK_FPS=1 (the
 //       16.7 ms passthrough series);
 //   (d) M7b (fix 5): the SHORTCUT semantics - 'overlay:toggle' (the
@@ -5524,10 +5525,10 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //       off -> persisted false + hidden (the shortcut does NOTHING while
 //       off), on -> persisted true + shown (the shortcut flips the
 //       visibility only, never the persisted value);
-//   (f3/f3b/f3c/f4) the stat tickbox round trips (gpu-fan, the M7a 1% Low /
-//       99% FPS pair, the M12 AVG / 0.1% Low pair, the M12 Memory row +
-//       the gpu-vram VRAM row, the M10a Graphics-API badge, the frametime
-//       strip);
+//   (f3/f3b/f3c/f3d/f3e) the stat tickbox round trips (gpu-fan, the M7a 1%
+//       Low / 99% FPS pair, the M12 AVG / 0.1% Low pair, the M13
+//       Graphics-API row, the M12 Memory row + the gpu-vram VRAM row, the
+//       frametime strip);
 //   (f5) the color swatch round trip (overlayColor + the CSSOM var + the
 //       canvas stroke);
 //   (f6) M7b (fix 4): the background box round trip - the toggle, the
@@ -5566,10 +5567,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   const ojs = (code) => overlayWin.webContents.executeJavaScript(code);
   const mockFps = process.env.RID_MOCK_FPS === '1';
-  // M10a: RID_MOCK_API=1 - the mock fps sample carries the 'dx12' fixture
+  // M13: RID_MOCK_API=1 - the mock fps sample carries the 'dx12' fixture
   // (the knobs travel together; without RID_MOCK_FPS the poll returns null
-  // and no api field ever renders).
+  // and the API row never fills).
   const mockApi = process.env.RID_MOCK_API === '1';
+  // M13: RID_MOCK_NO_POWER_METER=1 - the mock's cpuPowerW stays null (the
+  // honest no-metering shape - the CPU-row watt field renders '-').
+  const noPowerMeter = process.env.RID_MOCK_NO_POWER_METER === '1';
 
   // (a) the seeded session: exists + visible.
   const s0 = await js(`window.arcPower.overlayGetState()`);
@@ -5592,6 +5596,14 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   if (!(await waitFor(overlayWin, `/61°C|62°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 5000))) {
     fail(`M5: the overlay CPU line lacks the 61°C|62°C temp: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
+  // M13: the CPU-row watt field - the mock PowerMeter fixture 125.5 W
+  // (M4-H, the sys-stats fixture) with the toFixed(1) format; the
+  // RID_MOCK_NO_POWER_METER=1 knob makes it the honest '-' degrade (the
+  // temp alternates 61|62 so the row is matched by its tail field).
+  const wantCpuWatt = noPowerMeter ? '-' : '125.5 W';
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').trim().endsWith('${wantCpuWatt}')`, 10000))) {
+    fail(`M13: the overlay CPU line lacks the watt field '${wantCpuWatt}': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  }
   if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  2187 MHz  \\d+°C  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
     fail(`M5: the overlay GPU line does not match the pinned pattern: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
@@ -5599,28 +5611,48 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // pinned line: 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
   // under RID_MOCK_FPS=1 (the mock fixture 58/52/42/58 at main.js) /
   // 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -' without it (the
-  // 0.1% Low honest '-' degrade - the >= 1000-frame floor).
-  // M10a: under RID_MOCK_API=1 the Graphics-API badge leads the ROW
-  // ('DX12  FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58' - the
-  // M12/M2 row-front move); without the knob the field VANISHES (the
-  // none-detection case).
+  // 0.1% Low honest '-' degrade - the 300-frame floor).
+  // M13: the api field LEFT this row - the fpsLine NEVER carries a badge
+  // (the standalone API row pins below cover the mockApi shape).
   const fpsPin = mockFps
-    ? (mockApi ? 'DX12  FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58' : 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58')
+    ? 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
     : 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -';
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 10000))) {
     fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
-  // M12: the Memory row - the sysStats fixture's memoryUtilPct 62 (the
-  // fixture-wins composition) and the VRAM row - the mock's
-  // gpuMemUsedBytes 2971324416 -> '3.0 GB' (the gpu-vram field LEFT the
-  // GPU row; the standalone row below it carries the value).
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'Memory 62%'`, 10000))) {
-    fail(`M12: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected 'Memory 62%' - the sysStats fixture's memoryUtilPct)`);
+  // M13: the standalone API row - the api field LEFT the FPS row and
+  // renders here. Under RID_MOCK_API=1 the row reads 'DX12'; without the
+  // knob (or when the api is null/unknown) the row stays EMPTY - never a
+  // '-' (the M10a vanish rule).
+  const apiPin = mockApi ? 'DX12' : '';
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === '${apiPin}'`, 10000))) {
+    fail(`M13: the overlay API row is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '${apiPin}'${mockApi ? '' : ' - no api detected, the row stays empty'})`);
+  }
+  // M13: the row-ORDER pin - the api row sits BETWEEN the VRAM row and the
+  // frametime strip (the user's placement: above the frametime graph).
+  const apiOrder = await ojs(`(() => {
+    const root = document.getElementById('overlay-root');
+    if (!root) return 'missing-root';
+    const html = root.innerHTML;
+    const iVram = html.indexOf('id="overlay-vram"');
+    const iApi = html.indexOf('id="overlay-api"');
+    const iCanvas = html.indexOf('id="overlay-frametime"');
+    return iVram < iApi && iApi < iCanvas ? 'ok' : 'wrong';
+  })()`);
+  if (apiOrder !== 'ok') {
+    fail(`M13: the api row is not between the VRAM row and the frametime strip (DOM order '${apiOrder}')`);
+  }
+  // M12/M13: the Memory row - the sysStats fixture's memoryUtilPct 62 (the
+  // fixture-wins composition; M13: the row label reads 'RAM') and the VRAM
+  // row - the mock's gpuMemUsedBytes 2971324416 -> '3.0 GB' (the gpu-vram
+  // field LEFT the GPU row; the standalone row below it carries the value).
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM 62%'`, 10000))) {
+    fail(`M12: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected 'RAM 62%' - the sysStats fixture's memoryUtilPct)`);
   }
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').trim() === 'VRAM 3.0 GB'`, 10000))) {
     fail(`M12: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM 3.0 GB' - the mock fixture's gpuMemUsedBytes)`);
   }
-  step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'; memory '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'; gpu matches the pinned pattern (stable fields + climbing clock/temp - no VRAM field); vram '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'; fps '${fpsPin}'`);
+  step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'; memory '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'; gpu matches the pinned pattern (stable fields + climbing clock/temp - no VRAM field); vram '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'; api '${apiPin}' (row order: vram -> api -> frametime strip); fps '${fpsPin}'`);
   // M6: the stock color applies at boot (the seeded white) - the
   // --overlay-color CSS var drives the line color (the renderer applies
   // the pushed hex via CSSOM; the var fallback is the stock white).
@@ -5724,8 +5756,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   await js(`window.arcPower.profilesSettingsSave({ overlayScale: 2 })`);
   await sleep(500);
   const scaled = await js(`window.arcPower.overlayGetState()`);
-  if (Math.abs(scaled.bounds.width - 460 * 2) > 2 || Math.abs(scaled.bounds.height - 150 * 2) > 2) {
-    fail(`M5: the scale 2 patch did not resize the overlay (bounds ${JSON.stringify(scaled.bounds)} - expected ~920x300)`);
+  if (Math.abs(scaled.bounds.width - 460 * 2) > 2 || Math.abs(scaled.bounds.height - 170 * 2) > 2) {
+    fail(`M5: the scale 2 patch did not resize the overlay (bounds ${JSON.stringify(scaled.bounds)} - expected ~920x340)`);
   }
   step('m5-geometry', `position patch -> bottom-right corner (bounds ${JSON.stringify(ps.bounds)} vs display ${JSON.stringify(display)}); scale patch -> ${scaled.bounds.width}x${scaled.bounds.height}`);
 
@@ -5848,12 +5880,12 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // round-trip like gpu-fan: unchecking BOTH reverts the fps line to the
   // plain frame-rate + AVG / 0.1% Low fields (the fields vanish with their
   // stats), re-checking restores the full pinned line.
-  // M10a/M12: the Graphics-API badge is an INDEPENDENT stat - under
-  // RID_MOCK_API=1 it survives the percentile uncheck at the ROW FRONT
-  // ('DX12  FPS 60  AVG 58  0.1% Low 42').
+  // M13: the Graphics-API row is an INDEPENDENT line - the fpsPin above
+  // carries no badge and the api row pins are separate (the percentile
+  // uncheck never touches them).
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
-  const plainFpsPin = mockFps ? (mockApi ? 'DX12  FPS 60  AVG 58  0.1% Low 42' : 'FPS 60  AVG 58  0.1% Low 42') : 'FPS -  AVG -  0.1% Low -';
+  const plainFpsPin = mockFps ? 'FPS 60  AVG 58  0.1% Low 42' : 'FPS -  AVG -  0.1% Low -';
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-1pct-low') === false && e.settings.overlayStats.includes('fps-99pct') === false)`, 5000))) {
     fail('M7a: unchecking the 1% Low / 99% FPS tickboxes did not persist overlayStats without them');
   }
@@ -5873,7 +5905,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-avg"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-01pct-low"]'); if (b) b.click(); })()`);
   const noAvg01Pin = mockFps
-    ? (mockApi ? 'DX12  FPS 60  1% Low 52  99% FPS 58' : 'FPS 60  1% Low 52  99% FPS 58')
+    ? 'FPS 60  1% Low 52  99% FPS 58'
     : 'FPS -  1% Low -  99% FPS -';
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-avg') === false && e.settings.overlayStats.includes('fps-01pct-low') === false)`, 5000))) {
     fail('M12: unchecking the AVG / 0.1% Low tickboxes did not persist overlayStats without them');
@@ -5888,34 +5920,35 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   step('m12-avg01-fps-stats-tickbox', `the AVG / 0.1% Low tickbox round trip: uncheck both -> the fps line reverts to '${noAvg01Pin}'; re-check -> '${fpsPin}' again`);
 
-  // (f3c) M10a/M12 (M2): the Graphics-API stat - the api tickbox
-  // round-trips like the percentile pair: unchecking it drops the
-  // 'DX12 ' lead from the fps line (a stat off -> its field vanishes),
-  // re-checking restores the full pinned line. Meaningful ONLY under
-  // RID_MOCK_API=1 (the mock sample's 'dx12' - without the knob the field
-  // never renders and the base fpsPin above already pins the none-detection
-  // case).
+  // (f3c) M13: the Graphics-API stat - the api tickbox round-trips the
+  // Memory/VRAM row pattern now: unchecking it EMPTIES the API row ('' -
+  // the fixed div stays, the fps line keeps its badge-free pinned text),
+  // re-checking restores 'DX12'. Meaningful ONLY under RID_MOCK_API=1
+  // (without the knob the row never fills and the none-case apiPin above
+  // already covers it).
   if (mockApi) {
-    const noApiPin = 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58';
     await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="api"]'); if (b) b.click(); })()`);
     if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('api') === false)`, 5000))) {
-      fail('M10a: unchecking the Graphics-API tickbox did not persist overlayStats without api');
+      fail('M13: unchecking the Graphics-API tickbox did not persist overlayStats without api');
     }
-    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${noApiPin}'`, 5000))) {
-      fail(`M10a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${noApiPin}' after unchecking the api stat - the field must vanish)`);
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === ''`, 5000))) {
+      fail(`M13: the overlay API row is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '' after unchecking the api stat - the row empties)`);
+    }
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 5000))) {
+      fail(`M13: the overlay FPS line changed when the api stat was unchecked: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}' - the api row is independent)`);
     }
     await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="api"]'); if (b) b.click(); })()`);
-    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 5000))) {
-      fail(`M10a: the overlay FPS line did not regain the Graphics-API badge after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === 'DX12'`, 5000))) {
+      fail(`M13: the overlay API row did not regain 'DX12' after re-checking: '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}'`);
     }
-    step('m10a-api-tickbox', `the Graphics-API tickbox round trip: uncheck -> the fps line reverts to '${noApiPin}'; re-check -> '${fpsPin}' again`);
+    step('m13-api-tickbox', `the Graphics-API tickbox round trip: uncheck -> the API row writes '' (the fps line untouched); re-check -> 'DX12' again`);
   } else {
-    step('m10a-api-tickbox', 'the Graphics-API tickbox round trip SKIPPED (RID_MOCK_API not set - the field never renders; the none-case fpsPin above covers it)');
+    step('m13-api-tickbox', 'the Graphics-API tickbox round trip SKIPPED (RID_MOCK_API not set - the row never fills; the none-case apiPin above covers it)');
   }
 
   // (f3d) M12: the Memory-row stat - the memory-util tickbox round-trips
   // like the FPS-row stats: unchecking it empties the row ('' - the fixed
-  // div stays), re-checking restores 'Memory 62%'.
+  // div stays), re-checking restores 'RAM 62%'.
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="memory-util"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('memory-util') === false)`, 5000))) {
     fail('M12: unchecking the Memory tickbox did not persist overlayStats without memory-util');
@@ -5924,10 +5957,34 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     fail(`M12: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected '' after unchecking memory-util - the row fully off writes '')`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="memory-util"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'Memory 62%'`, 5000))) {
-    fail(`M12: the overlay Memory row did not regain 'Memory 62%' after re-checking: '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM 62%'`, 5000))) {
+    fail(`M12: the overlay Memory row did not regain 'RAM 62%' after re-checking: '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'`);
   }
-  step('m12-memory-tickbox', 'the Memory tickbox round trip: uncheck -> the Memory row writes \'\'; re-check -> \'Memory 62%\' again');
+  step('m12-memory-tickbox', 'the Memory tickbox round trip: uncheck -> the Memory row writes \'\'; re-check -> \'RAM 62%\' again');
+
+  // (f3d-2) M13: the CPU-row watt field - the cpu-power tickbox round-trips
+  // like the Memory/VRAM stats: unchecking it drops the '125.5 W' TAIL from
+  // the CPU row (the row itself stays - the watt is a FIELD, not a line -
+  // the line ends with the 61|62°C temp instead), re-checking restores the
+  // tail. Meaningful ONLY without RID_MOCK_NO_POWER_METER=1 (with the knob
+  // the on-shape tail is '-' and the wantCpuWatt pin above already covers
+  // the null render).
+  if (!noPowerMeter) {
+    await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="cpu-power"]'); if (b) b.click(); })()`);
+    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('cpu-power') === false)`, 5000))) {
+      fail('M13: unchecking the CPU Wattage tickbox did not persist overlayStats without cpu-power');
+    }
+    if (!(await waitFor(overlayWin, `/61°C|62°C$/.test((document.getElementById('overlay-cpu')?.textContent ?? '').trim())`, 5000))) {
+      fail(`M13: the overlay CPU line still ends with a watt field after unchecking cpu-power: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (expected the 61°C|62°C temp tail)`);
+    }
+    await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="cpu-power"]'); if (b) b.click(); })()`);
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').trim().endsWith('125.5 W')`, 5000))) {
+      fail(`M13: the overlay CPU line did not regain the '125.5 W' watt tail after re-checking: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+    }
+    step('m13-cpu-power-tickbox', 'the CPU Wattage tickbox round trip: uncheck -> the \'125.5 W\' tail vanishes from the CPU row; re-check -> it restores');
+  } else {
+    step('m13-cpu-power-tickbox', 'the CPU Wattage tickbox round trip SKIPPED (RID_MOCK_NO_POWER_METER set - the on-shape tail is \'-\'; the wantCpuWatt pin above covers it)');
+  }
 
   // (f3e) M12: the VRAM-row stat - the gpu-vram tickbox round-trips the
   // same way: unchecking it empties the row (the field is GONE from the

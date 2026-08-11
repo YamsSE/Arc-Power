@@ -25,7 +25,7 @@
 //     static-desktop shape, never '-');
 //   - avgFps / low1Pct / low01Pct / p99 from percentileStats (null until
 //     the 60-frame floor - the honest degrade; low01Pct additionally needs
-//     the >= 1000-frame floor; a static desktop pushes nothing, so after
+//     the >= 300-frame floor (M13); a static desktop pushes nothing, so after
 //     the window elapses the ring is empty and the percentiles return
 //     null, never stale values).
 //   Return shape: { fps, avgFps, low1Pct, low01Pct, p99, frameTimeMs:
@@ -601,7 +601,7 @@ export function createDxgiFpsAdapter(deps = {}) {
     /**
      * System-wide FPS + the percentile stats (M7a/M12): the window
      * average (avgFps - the harmonic mean), the 1% Low, the 0.1% Low
-     * (low01Pct - the >= 1000-frame floor) and the 99% FPS. The FIRST
+     * (low01Pct - the >= 300-frame floor) and the 99% FPS. The FIRST
      * call starts the 200 ms sampler (the baseline reads happen on its
      * ticks); the poll NEVER reads the counters itself - the sample
      * derives from the ring: fps = the frames presented within the last

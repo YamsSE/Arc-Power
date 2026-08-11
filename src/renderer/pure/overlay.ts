@@ -1,7 +1,8 @@
 // Arc Power - M5/M6 software-overlay model (pure, DOM-free; unit-tested).
 //
-// The overlay window renders FIVE BOLD monospace lines (FPS / CPU / Memory /
-// GPU / VRAM) plus a frametime polyline. This module owns the line
+// The overlay window renders SIX BOLD monospace lines (FPS / CPU / RAM /
+// GPU / VRAM / API - the M13 API row joined above the frametime graph)
+// plus a frametime polyline. This module owns the line
 // formatting + the frametime derivation so the renderer stays thin; every
 // function here is unit-tested (the cheap-oracle seam of the milestone).
 // The example strings in the plan are ILLUSTRATIVE - the tests pin the
@@ -52,16 +53,19 @@ export const OVERLAY_SCALE_MAX = 2.0;
  * AVG / 0.1% Low pair) - the 1% Low / 99% FPS percentile stats.
  * M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
  * 'fps-99pct' - the tickbox renders after '99% FPS' while the ROW renders
- * the field at the ROW FRONT (M12 - the user's GraphicsAPI-first order;
- * the row order and the tickbox order are independent - the fpsLine field
- * order is explicit in overlayLines).
+ * the badge in its OWN standalone line (M13: the api field LEFT the FPS
+ * row - the apiLine row sits between the VRAM row and the frametime
+ * strip; the row order and the tickbox order are independent - the
+ * apiLine content is explicit in overlayLines).
  * M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% Low row stats)
  * ride right after 'fps' (the row field order); 'memory-util' (the Memory
  * row) joins after the CPU stats; 'gpu-vram' stays where it was - it now
  * feeds the standalone VRAM row.
+ * M13: 'cpu-power' (the CPU wattage field) joins right after 'cpu-temp'
+ * (the row field order - the watt renders after the temp on the CPU row).
  */
 export const OVERLAY_STAT_IDS: readonly string[] = [
-  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
   'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];
@@ -77,7 +81,11 @@ export const OVERLAY_STAT_LABELS: Record<string, string> = {
   'cpu-util': 'CPU Util',
   'cpu-clock': 'CPU Clock',
   'cpu-temp': 'CPU Temp',
-  'memory-util': 'Memory',
+  // M13: the CPU wattage stat (the CPU-row watt field after the temp).
+  'cpu-power': 'CPU Wattage',
+  // M13: the Memory row's label renames to RAM (the stat id stays
+  // 'memory-util' - internal, zero churn).
+  'memory-util': 'RAM',
   'gpu-util': 'GPU Util',
   'gpu-clock': 'GPU Core clock',
   'gpu-mem-clock': 'GPU Mem clock',
@@ -145,7 +153,7 @@ export const OVERLAY_API_LABELS: Record<string, string> = {
 };
 
 /** M10a: the display label for a detected api id - null for null/unknown
- *  (the FPS-row field VANISHES - never '-', never a raw id). */
+ *  (the API row stays EMPTY - never '-', never a raw id). */
 export function apiLabelOf(v: unknown): string | null {
   return typeof v === 'string' ? (OVERLAY_API_LABELS[v] ?? null) : null;
 }
@@ -196,6 +204,10 @@ export interface OverlaySample {
   cpuUtilPct?: number | null;
   cpuFreqMhz?: number | null;
   cpuTempC?: number | null;
+  /** M13: the CPU package wattage (watts - the PowerMeter / MSR RAPL
+   *  source, already carried by the telemetry; the CPU-row watt field
+   *  after the temp, toFixed(1) - the GPU watt format). */
+  cpuPowerW?: number | null;
   /** M12: the system-wide RAM utilization percent (GlobalMemoryStatusEx ->
    *  dwMemoryLoad - the Memory row's source; the explicit memoryUtilPct
    *  parameter wins when both are present). */
@@ -205,12 +217,18 @@ export interface OverlaySample {
 export interface OverlayLines {
   fpsLine: string;
   cpuLine: string;
-  /** M12: the Memory row (the memory-util stat; '' when the stat is off). */
+  /** M12: the Memory row (the memory-util stat; '' when the stat is off).
+   *  M13: the row label reads 'RAM'. */
   memoryLine: string;
   gpuLine: string;
   /** M12: the VRAM row (the gpu-vram stat - the field LEFT the GPU row and
    *  now feeds this standalone row; '' when the stat is off). */
   vramLine: string;
+  /** M13: the standalone Graphics-API row (the api field LEFT the fpsLine
+   *  and now feeds this row between the VRAM row and the frametime strip).
+   *  'DX12' or '' - the M10a vanish rule: EMPTY when the api is
+   *  null/unknown or the api stat is off, never a '-'. */
+  apiLine: string;
   /** M6: the frametime stat is enabled - the stat is NOT a line, it feeds
    *  the canvas strip; the renderer shows/hides the strip by this flag. */
   frametimeEnabled: boolean;
@@ -238,30 +256,33 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  *     null, non-finite or <= 0 fps (0 is the DXGI no-signal shape - not a
  *     real frame rate); the AVG / 1% Low / 0.1% Low / 99% FPS fields
  *     render '-' when their numbers are null (the honest degrade - never
- *     a stale value); each field vanishes with its stat; '' when all six
- *     are off. The api field (M10a/M12) rides at the ROW FRONT -
- *     'DX12  FPS 60 ...' - and VANISHES when the api is null/unknown
- *     ( "if it's none, it won't display anything" - no '-');
- *   cpuLine: 'CPU 42%  4.3 GHz  61°C' (Util / Clock via ghzFreq / Temp -
- *     each field vanishes with its stat; '' when all three are off);
- *   memoryLine: 'Memory 62%' (M12 - the system-wide RAM utilization; ''
- *     when the memory-util stat is off);
+ *     a stale value); each field vanishes with its stat; '' when all five
+ *     are off (M13: the api field LEFT this row - the six FPS-row stats
+ *     became five);
+ *   cpuLine: 'CPU 42%  4.3 GHz  61°C  125.5 W' (Util / Clock via ghzFreq /
+ *     Temp / Wattage with ONE decimal (toFixed(1) - the GPU watt format;
+ *     M13) - each field vanishes with its stat; '' when all four are off);
+ *   memoryLine: 'RAM 62%' (M12 - the system-wide RAM utilization; M13: the
+ *     row label reads 'RAM' - the stat id stays 'memory-util'; '' when the
+ *     memory-util stat is off);
  *   gpuLine: 'GPU 42%  2500 MHz  2187 MHz  65°C  122 W  1030 RPM' (Util /
  *     Core clock / Memory clock / Temp / Power with ONE decimal (toFixed(1)
  *     - 38.8) / Fan (first RPM of the array) - each field vanishes with its
  *     stat; '' when all six are off; M12: the VRAM field LEFT this row);
  *   vramLine: 'VRAM 8.5 GB' (M12 - the gpu-vram stat via gbValue; '' when
- *     the stat is off).
+ *     the stat is off);
+ *   apiLine: 'DX12' (M13 - the standalone Graphics-API row; the api field
+ *     LEFT the fpsLine and now renders its own row between the VRAM row
+ *     and the frametime strip. EMPTY when the api is null/unknown or the
+ *     api stat is off - "if it's none, it won't display anything", never
+ *     a '-'; only the canonical labels ever render (apiLabelOf)).
  * M7a (fix 3): the 'CPU '/'GPU ' row label is NOT baked into any field -
  * it is prefixed ONCE to the first field when the row is non-empty
  * ('CPU 61°C' for a temp-only row - never a bare '61°C'; the stock rows
  * keep their exact strings). The Memory / VRAM labels ride the same rule.
- * M10a/M12 (the M2 explicit move): the api parameter (the
- * foreground-window Graphics-API badge) - the field sits at the ROW FRONT
- * ('DX12  FPS 60  AVG 58  1% Low 52  0.1% Low 40  99% FPS 58') and
- * VANISHES when the api is null/unknown ( "if it's none, it won't
- * display anything" - no '-') and when the api stat is off; the field
- * only ever shows the canonical labels (apiLabelOf).
+ * M13 (the M2 explicit move): the api parameter (the foreground-window
+ * Graphics-API badge) feeds the STANDALONE apiLine - the fpsLine carries
+ * no api field anymore.
  */
 export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null, avgFps?: number | null, low01Pct?: number | null, memoryUtilPct?: number | null): OverlayLines {
   const s = sample ?? {};
@@ -274,6 +295,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const cpuUtil = numOrNull(s.cpuUtilPct);
   const cpuFreqMhz = numOrNull(s.cpuFreqMhz);
   const cpuTemp = numOrNull(s.cpuTempC);
+  const cpuPower = numOrNull(s.cpuPowerW);
   // The device utilPct wins; the OS counter is the fallback (both null -> '-').
   const gpuUtil = numOrNull(s.utilPct) ?? numOrNull(s.gpuUtilPct);
   const gpuClock = numOrNull(s.gpuClockMhz);
@@ -290,25 +312,15 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // M12: the explicit memoryUtilPct parameter wins; the sample's field is
   // the fallback (the renderer passes the telemetry field explicitly).
   const memoryUtil = numOrNull(memoryUtilPct ?? s.memoryUtilPct);
-  // M7a/M12: the FPS row builds from its SIX enabled stats in fixed order -
-  // the api badge (row front) + 'FPS <round>' + ' AVG <round>' + ' 1% Low
-  // <round>' + ' 0.1% Low <round>' + ' 99% FPS <round>' (each field
-  // carries its leading two-space separator, exactly like the plan pins -
-  // the api field leads WITHOUT a separator). The numeric fields round to
-  // whole numbers and render '-' when null (the sampler's honest degrade
-  // before its frame floors). All six off -> ''.
-  // M10a/M12 (M2): the Graphics-API badge leads the row ('DX12  FPS 60
-  // AVG 58  1% Low 52  0.1% Low 40  99% FPS 58') - the field VANISHES
-  // when the api is null/unknown ( "if it's none, it won't display
-  // anything" - no '-') and when the api stat is off. The FPS field
-  // follows the badge with its own leading separator; without the badge
-  // it leads the row (every OTHER field keeps its leading separator
-  // regardless - the row-leading rule only applies to api + fps).
+  // M7a/M12: the FPS row builds from its FIVE enabled stats in fixed
+  // order - 'FPS <round>' + ' AVG <round>' + ' 1% Low <round>' +
+  // ' 0.1% Low <round>' + ' 99% FPS <round>' (each field carries its
+  // leading two-space separator, exactly like the plan pins; the FPS field
+  // leads the row - M13: the api badge LEFT this row and renders its own
+  // standalone apiLine below). The numeric fields round to whole numbers
+  // and render '-' when null (the sampler's honest degrade before its
+  // frame floors). All five off -> ''.
   let fpsLine = '';
-  if (enabled.has('api')) {
-    const apiLabel = apiLabelOf(api);
-    if (apiLabel !== null) fpsLine += apiLabel;
-  }
   if (enabled.has('fps')) {
     const fpsField = fpsNum !== null && fpsNum > 0 ? `FPS ${Math.round(fpsNum)}` : 'FPS -';
     fpsLine += fpsLine === '' ? fpsField : `  ${fpsField}`;
@@ -317,6 +329,11 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   if (enabled.has('fps-1pct-low')) fpsLine += `  1% Low ${low1 === null ? '-' : Math.round(low1)}`;
   if (enabled.has('fps-01pct-low')) fpsLine += `  0.1% Low ${low01 === null ? '-' : Math.round(low01)}`;
   if (enabled.has('fps-99pct')) fpsLine += `  99% FPS ${p99num === null ? '-' : Math.round(p99num)}`;
+  // M13: the standalone Graphics-API row - the api field LEFT the fpsLine.
+  // 'DX12' or '' - the M10a vanish rule: EMPTY when the api is
+  // null/unknown ( "if it's none, it won't display anything" - never a
+  // '-', never a raw id) and when the api stat is off.
+  const apiLine = enabled.has('api') ? (apiLabelOf(api) ?? '') : '';
   // M6: each line builds from its ENABLED stats only - a stat off -> its
   // field vanishes; ALL of a line's stats off -> the line writes '' (the
   // renderer KEEPS the fixed div and only empties it - never removed).
@@ -327,10 +344,13 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   if (enabled.has('cpu-util')) cpuFields.push(pct(cpuUtil));
   if (enabled.has('cpu-clock')) cpuFields.push(unit(cpuFreqMhz, (n) => ghzFreq(n), ' GHz'));
   if (enabled.has('cpu-temp')) cpuFields.push(unit(cpuTemp, (n) => String(n), '°C'));
+  // M13: the CPU wattage - after the temp, toFixed(1) (the GPU watt format).
+  if (enabled.has('cpu-power')) cpuFields.push(unit(cpuPower, (n) => n.toFixed(1), ' W'));
   const cpuLine = cpuFields.length === 0 ? '' : `CPU ${cpuFields.join('  ')}`;
-  // M12: the Memory row - the memory-util stat only ('Memory 62%' / the
-  // honest '-' when the field is null); '' when the stat is off.
-  const memoryLine = enabled.has('memory-util') ? `Memory ${pct(memoryUtil)}` : '';
+  // M12: the Memory row - the memory-util stat only ('RAM 62%' - the M13
+  // row label; the honest '-' when the field is null); '' when the stat
+  // is off.
+  const memoryLine = enabled.has('memory-util') ? `RAM ${pct(memoryUtil)}` : '';
   const gpuFields: string[] = [];
   if (enabled.has('gpu-util')) gpuFields.push(pct(gpuUtil));
   if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), ' MHz'));
@@ -342,7 +362,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // M12: the VRAM row - the gpu-vram stat (the field LEFT the GPU row and
   // now feeds this standalone row below it); '' when the stat is off.
   const vramLine = enabled.has('gpu-vram') ? `VRAM ${unit(vram, (n) => gbValue(n), ' GB')}` : '';
-  return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, frametimeEnabled: enabled.has('frametime') };
+  return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, frametimeEnabled: enabled.has('frametime') };
 }
 
 /**

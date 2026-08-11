@@ -10,9 +10,11 @@
 </head>
 <body>
   <!-- M5: the RTSS-style HUD - BOLD TEXT ONLY, no boxes, no background.
-       The five stat lines (FPS / CPU / Memory / GPU / VRAM - M12: the
-       Memory + VRAM rows joined below the CPU / GPU rows) + the frametime
-       polyline strip. M6-amd2: a frametime VALUE line sits DIRECTLY BELOW
+       The six stat lines (FPS / CPU / RAM / GPU / VRAM - M12: the Memory +
+       VRAM rows joined below the CPU / GPU rows - / API - M13: the
+       standalone Graphics-API row joined between the VRAM row and the
+       frametime strip, above the graph) + the frametime polyline strip.
+       M6-amd2: a frametime VALUE line sits DIRECTLY BELOW
        the canvas (the retracted "below the FPS" part - the graph stays at
        the bottom) - the latest derived frame time, max 2 decimals
        ('16.67 ms'), '-' when no data. The 'frametime' stat controls BOTH
@@ -31,6 +33,7 @@
     <div class="overlay-line" id="overlay-memory"></div>
     <div class="overlay-line" id="overlay-gpu"></div>
     <div class="overlay-line" id="overlay-vram"></div>
+    <div class="overlay-line" id="overlay-api"></div>
     <canvas id="overlay-frametime" class="overlay-frametime"></canvas>
     <div class="overlay-line overlay-frametime-value" id="overlay-frametime-value"></div>
   </div>

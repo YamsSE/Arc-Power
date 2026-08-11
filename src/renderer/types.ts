@@ -472,10 +472,11 @@ export interface FpsSample {
   /** M7a: the 1% Low / 99% FPS percentile stats (null until the sampler's
    *  60-frame floor is reached - the honest '-' on the overlay FPS row). */
   low1Pct: number | null;
-  /** M12: the 0.1% Low - the worst-0.1% tail (the ceil(0.999N) boundary +
-   *  the weighted tail average); null below the >= 1000-frame floor (the
-   *  honest '-' on the overlay FPS row - the tail needs ~1000 frames to be
-   *  meaningful). */
+  /** M12/M13: the 0.1% Low - the worst-0.1% tail (the ceil(0.999N) boundary +
+   *  the weighted tail average); null below the >= 300-frame floor (the
+   *  honest '-' on the overlay FPS row - at 300 the tail is the single
+   *  worst frame, a noisy-but-honest minimum vs the research's ~1000-frame
+   *  recommendation). */
   low01Pct: number | null;
   p99: number | null;
   /** M10a: the foreground window's graphics API - 'dx12' | 'vulkan' |

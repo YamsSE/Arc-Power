@@ -24,7 +24,7 @@
 // an injected seam - deps.load (the koffi loader) - so the success path +
 // the failure degrades are unit-testable without the real kernel32, and
 // the dwMemoryLoad value passes through EXACTLY (the clobber-guard: a
-// scripted 62 must come back as 62 - the 'Memory 62%' pin depends on it).
+// scripted 62 must come back as 62 - the 'RAM 62%' pin depends on it).
 
 import koffi from 'koffi';
 

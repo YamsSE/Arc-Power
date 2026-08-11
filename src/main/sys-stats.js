@@ -450,7 +450,7 @@ export function createSysStats(deps = {}) {
  * shape). The mock also emits a deterministic gpuUtilPct (D1 - the
  * no-Intel util tile reads it; the value matches utilPct 42).
  * M12: the fixture carries a fixed memoryUtilPct 62 (the RAM-utilization
- * field - the 'Memory 62%' ui-verify pin; the fixture-WINS composition:
+ * field - the 'RAM 62%' ui-verify pin; the fixture-WINS composition:
  * the telemetry emit sites prefer extra.memoryUtilPct over the injected
  * detector, so the mock value rides the push while the null-returning
  * mock detector stays unrun).

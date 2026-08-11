@@ -26,10 +26,12 @@
 //     to fps - the correct average of a rate). Same 60-frame floor.
 //   - low01 ("0.1% Low"): the SAME family as the 1% low - the boundary
 //     j = max(1, ceil(0.999 * N)) + the weighted tail average - but with
-//     its own >= 1000-frame floor: the worst-0.1% tail is 2-3 dropped
-//     frames, which needs ~1000 frames to be meaningful (at 60 fps that is
-//     ~17 s of the 30 s window); below the floor -> null -> the honest '-'
-//     on the overlay row.
+//     its own >= 300-frame floor (M13): at 300 frames the worst-0.1% tail
+//     IS the single worst frame - a noisy-but-honest minimum (the
+//     research's ~1000-frame recommendation was too strict for short
+//     sessions: at 30 fps the 30 s window holds only 900 frames, so the
+//     field never filled; at 60 fps the 300-frame floor fills after
+//     ~5 s); below the floor -> null -> the honest '-' on the overlay row.
 //
 // AGE EVICTION (plan-review F1): every computation is scoped to a recency
 // window - entries older than windowMs are dropped FIRST. A static desktop
@@ -51,11 +53,15 @@ export const MIN_FRAMES_FOR_PERCENTILES = 60;
 /** The p99 boundary fraction: i = max(1, ceil(0.99 * N)). */
 export const P99_BOUNDARY = 0.99;
 
-/** M12: the 0.1%-low floor: the worst-0.1% tail (2-3 dropped frames) needs
- *  >= 1000 frames in the window to be meaningful (~17 s at 60 fps of the
- *  30 s window) - below it low01Pct honestly reports null. The avg/1%/
- *  99% stats keep the 60-frame floor. */
-export const MIN_FRAMES_FOR_001_PCT = 1000;
+/** M12/M13: the 0.1%-low floor - LOWERED to 300 in M13: the 1000-frame
+ *  floor never filled for short sessions (at 30 fps the 30 s window holds
+ *  only 900 frames, so the field showed the honest '-' forever). At 300
+ *  frames the worst-0.1% tail is the SINGLE worst frame - a
+ *  noisy-but-honest minimum (the research's ~1000-frame recommendation is
+ *  the statistically meaningful target; 300 trades that for the field
+ *  actually appearing after ~5 s at 60 fps). Below it low01Pct honestly
+ *  reports null. The avg/1%/99% stats keep the 60-frame floor. */
+export const MIN_FRAMES_FOR_001_PCT = 300;
 
 /** M12: the 0.1%-low boundary fraction: j = max(1, ceil(0.999 * N)). */
 export const P001_BOUNDARY = 0.999;
@@ -107,7 +113,7 @@ export function rollingFps(ring, nowMs, windowMs) {
  * happens FIRST: entries older than windowMs never contribute.
  * M12: avgFps is the CapFrameX harmonic mean (1000 * totalFrames /
  * sum(ft * frames)); low01Pct is the 0.1% low (the ceil(0.999N) boundary +
- * the weighted tail average - the 1%-low family) with the >= 1000-frame
+ * the weighted tail average - the 1%-low family) with the >= 300-frame
  * floor (below it -> null -> the honest '-').
  * @param {Array<{ tMs: number, ftMs: number, frames: number }>} ring
  * @param {number} nowMs
@@ -162,11 +168,12 @@ export function percentileStats(ring, nowMs, windowMs) {
   let tailSum = 0;
   for (let j = i - 1; j < n; j++) tailSum += ft[j];
   const low1Pct = Math.round(1000 / (tailSum / (n - i + 1)));
-  // 0.1% Low (M12): the SAME family - the boundary
+  // 0.1% Low (M12/M13): the SAME family - the boundary
   // j = max(1, ceil(0.999 * N)) + the weighted tail average - but with the
-  // >= 1000-frame floor (the worst-0.1% tail is 2-3 dropped frames; below
-  // ~1000 frames the tail is noise -> null -> the honest '-' on the
-  // overlay row). The 1% Low / 99% FPS stats still compute below it.
+  // >= 300-frame floor (M13: at 300 the tail IS the single worst frame - a
+  // noisy-but-honest minimum vs the research's ~1000-frame recommendation;
+  // below 300 the tail is noise -> null -> the honest '-' on the overlay
+  // row). The 1% Low / 99% FPS stats still compute below it.
   let low01Pct = null;
   if (totalFrames >= MIN_FRAMES_FOR_001_PCT) {
     const j = Math.max(1, Math.ceil(P001_BOUNDARY * n));

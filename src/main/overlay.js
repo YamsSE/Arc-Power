@@ -4,7 +4,7 @@
 // shows bold text over the screen/game. This module owns:
 //   - the GEOMETRY: anchored to the PRIMARY display bounds; the position
 //     setting (top-left STOCK / top-right / bottom-left / bottom-right)
-//     with an 8px margin; the size = the base overlay size (~460x150 CSS px
+//     with an 8px margin; the size = the base overlay size (~460x170 CSS px
 //     at scale 1.0 - the stock RTSS-ish footprint) x the overlayScale;
 //   - the VISIBILITY: shown when overlayEnabled (apply() drives it - the
 //     enabled-driven show/hide); toggle() is the SHORTCUT flip - M7b (fix
@@ -40,9 +40,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** The base overlay size (CSS px at scale 1.0) - the stock RTSS-ish size.
  *  The renderer's HUD spans this width (the overlay.css rem sizes derive
  *  from the same 14px base font at scale 1.0); the ui-verify corner assert
- *  pins the resulting geometry live, so a drift fails the verify. */
+ *  pins the resulting geometry live, so a drift fails the verify.
+ *  M13: the height grew from 150 to 170 - the SIX stat lines (FPS, CPU,
+ *  RAM, GPU, VRAM, API) + the frametime strip + the value line measure
+ *  ~162 px and the base needs the headroom. */
 const OVERLAY_BASE_WIDTH = 460;
-const OVERLAY_BASE_HEIGHT = 150;
+const OVERLAY_BASE_HEIGHT = 170;
 /** The margin from the display edge (every corner). */
 const OVERLAY_MARGIN = 8;
 
@@ -57,12 +60,14 @@ const OVERLAY_SCALE_MAX = 2.0;
 // the list right after the M12 AVG / 0.1% Low pair.
 // M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
 // 'fps-99pct' (the lockstep owner is profile-store.js; the renderer mirror
-// is pure/overlay.ts).
+// is pure/overlay.ts). M13: the badge renders its OWN standalone row (the
+// apiLine - the field left the FPS row).
 // M12: 'fps-avg' + 'fps-01pct-low' ride right after 'fps' and
 // 'memory-util' (the Memory row) joins after the CPU stats; 'gpu-vram'
 // stays where it was - it now feeds the standalone VRAM row.
+// M13: 'cpu-power' (the CPU wattage field) joins right after 'cpu-temp'.
 const OVERLAY_STAT_IDS = [
-  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp',
+  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
   'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
 ];

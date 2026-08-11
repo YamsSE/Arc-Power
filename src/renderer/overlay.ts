@@ -1,11 +1,13 @@
 // Arc Power - M5 the software overlay renderer (the Overlay window).
 //
-// Renders the RTSS-style HUD: FIVE BOLD monospace lines (FPS / CPU / Memory /
-// GPU / VRAM - the M12 Memory + VRAM rows joined below the CPU / GPU rows)
-// from the forwarded telemetry stream + the 1 s fps-poll, plus the frametime
-// polyline on a transparent canvas (ONLY the 1.5px line - no grid, no
-// background). The window itself is transparent/frameless/unfocusable and
-// ignores mouse input - the text floats directly over the screen/game.
+// Renders the RTSS-style HUD: SIX BOLD monospace lines (FPS / CPU / RAM /
+// GPU / VRAM / API - the M12 Memory + VRAM rows joined below the CPU / GPU
+// rows; M13: the API row joined between the VRAM row and the frametime
+// strip) from the forwarded telemetry stream + the 1 s fps-poll, plus the
+// frametime polyline on a transparent canvas (ONLY the 1.5px line - no
+// grid, no background). The window itself is transparent/frameless/
+// unfocusable and ignores mouse input - the text floats directly over the
+// screen/game.
 //
 // The scale's single source of truth (M7): the 'overlay:settings' push
 // carries the SAME persisted overlayScale the main-side geometry used for
@@ -54,7 +56,7 @@ let latestP99: number | null = null;
 let latestAvgFps: number | null = null;
 let latestLow01Pct: number | null = null;
 // M10a: the latest foreground-window Graphics-API id from the same poll
-// (null when nothing is detected - the api field vanishes; the sample's
+// (null when nothing is detected - the API row stays empty; the sample's
 // null-returning polls keep the last known value, like the fps itself).
 let latestApi: string | null = null;
 let series: SeriesPoint[] = [];
@@ -73,6 +75,10 @@ const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
 const memoryEl = document.getElementById('overlay-memory') as HTMLElement;
 const gpuEl = document.getElementById('overlay-gpu') as HTMLElement;
 const vramEl = document.getElementById('overlay-vram') as HTMLElement;
+// M13: the standalone Graphics-API row (the same fixed-div pattern - the
+// api field LEFT the FPS row and renders here, between the VRAM row and
+// the frametime strip).
+const apiEl = document.getElementById('overlay-api') as HTMLElement;
 const canvas = document.getElementById('overlay-frametime') as HTMLCanvasElement;
 const valueEl = document.getElementById('overlay-frametime-value') as HTMLElement;
 
@@ -126,16 +132,18 @@ function sizeCanvas(): void {
 
 function render(): void {
   // M7a: the latest percentile stats ride the same fps poll into the FPS
-  // row (null -> the honest '-' fields). M10a: the latest Graphics-API id
-  // rides along (null -> the field vanishes - never '-', never a raw id).
-  // M12: the AVG / 0.1% Low + the RAM utilization ride along too (the
-  // memoryUtilPct comes from the telemetry sample's composed field).
+  // row (null -> the honest '-' fields). M10a/M13: the latest Graphics-API
+  // id rides along into the STANDALONE API row (null -> the row stays
+  // empty - never '-', never a raw id). M12: the AVG / 0.1% Low + the RAM
+  // utilization ride along too (the memoryUtilPct comes from the telemetry
+  // sample's composed field).
   const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi, latestAvgFps, latestLow01Pct, latestSample?.memoryUtilPct ?? null);
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
   memoryEl.textContent = lines.memoryLine;
   gpuEl.textContent = lines.gpuLine;
   vramEl.textContent = lines.vramLine;
+  apiEl.textContent = lines.apiLine;
   // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
   // strip's AND the value line's visibility together (a fully-off line
   // writes '' into its KEPT div, but the strip + the number are HIDDEN -
@@ -217,9 +225,9 @@ async function bootFpsLoop(): Promise<void> {
       // the sample lacks them - the honest '-' on the FPS row).
       latestAvgFps = typeof sample.avgFps === 'number' ? sample.avgFps : null;
       latestLow01Pct = typeof sample.low01Pct === 'number' ? sample.low01Pct : null;
-      // M10a: the foreground-window Graphics-API id rides the same poll
-      // (null when the sample lacks it - the api field vanishes; the
-      // canonical labels are resolved by apiLabelOf in overlayLines).
+      // M10a/M13: the foreground-window Graphics-API id rides the same
+      // poll (null when the sample lacks it - the API row stays empty;
+      // the canonical labels are resolved by apiLabelOf in overlayLines).
       latestApi = typeof sample.api === 'string' ? sample.api : null;
       // S1/M2: the frametime series - the real DXGI adapter returns
       // frameTimeMs: null on every path, so deriveFrameTimeMs derives

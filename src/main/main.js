@@ -939,7 +939,7 @@ async function main() {
   // (the foregroundApi pattern): the REAL koffi detector runs ONLY in the
   // non-mock path - mock/ui-verify mode leaves the null-returning DEFAULT
   // in place and the sysStats fixture's memoryUtilPct 62 wins (the
-  // fixture-wins composition, pinned by the 'Memory 62%' ui-verify pin).
+  // fixture-wins composition, pinned by the 'RAM 62%' ui-verify pin).
   const memoryUtil = mock ? undefined : createMemoryUtilDetector();
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory used).
   // Mock: fixed deterministic values. Real: the rolling-delta CIM adapter;
@@ -1619,8 +1619,8 @@ async function main() {
       // 'overlay' alone (the 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS
       // -' pin), 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS 60  AVG 58  1% Low
       // 52  0.1% Low 42  99% FPS 58') and 'overlay+fps+api'
-      // (RID_MOCK_API=1 - 'DX12  FPS 60  AVG 58  1% Low 52  0.1% Low 42
-      // 99% FPS 58' - the Graphics-API badge leads the row).
+      // (RID_MOCK_API=1 - the standalone API row reads 'DX12' - M13: the
+      // api field LEFT the FPS row).
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
       await runGraphicsVerify(win, backend);
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);
