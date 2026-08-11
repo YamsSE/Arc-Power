@@ -534,7 +534,7 @@ html, body {
 .status-error { background: var(--error); box-shadow: 0 0 6px rgba(248, 113, 113, 0.6); }
 .status-unknown { background: var(--text-dim); }
 
-/* M3-A: the dashboard GPU Health card rows (dot + label + detail). */
+/* M3-A: the dashboard GPU Status card rows (dot + label + detail). */
 .health-card .card-body { gap: 9px; }
 .health-row {
   display: flex;

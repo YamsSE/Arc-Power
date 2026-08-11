@@ -7,7 +7,9 @@
 // frametime polyline on a transparent canvas (ONLY the 1.5px line - no
 // grid, no background). The window itself is transparent/frameless/
 // unfocusable and ignores mouse input - the text floats directly over the
-// screen/game.
+// screen/game. M16 (amended 2026-08-11): the GPU voltage renders as a
+// FIELD INSIDE the GPU row (between the temp and the power fields) - the
+// standalone Voltage row is gone and the line count is back to SIX.
 //
 // The scale's single source of truth (M7): the 'overlay:settings' push
 // carries the SAME persisted overlayScale the main-side geometry used for

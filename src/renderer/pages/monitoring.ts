@@ -128,6 +128,11 @@ function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; va
     { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
     { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
     { label: 'VRAM', value: gbValue(sample?.gpuMemUsedBytes), unit: 'GB' },
+    // M16: the GPU voltage + the VRAM temperature tiles (the same fields
+    // the overlay's new rows show - gpuVoltageV volts with 3 decimals,
+    // vramTempC °C; both already ride the telemetry stream).
+    { label: 'Voltage', value: statValue(sample?.gpuVoltageV, 3), unit: 'V' },
+    { label: 'VramTemp', value: statValue(sample?.vramTempC), unit: '°C' },
     { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
     { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
     { label: 'Fan', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },

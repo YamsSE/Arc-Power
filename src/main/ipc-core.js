@@ -197,6 +197,11 @@ export function clampOverlayBgOpacity(v) {
  * degrades to the FULL set (the stock overlay). Never rejects - the
  * tickboxes can only produce known ids, and a partial garbage value must
  * not fail the whole save.
+ * M16 (B1): the SAVE-path normalize is deliberately FILTER-ONLY - the
+ * one-time upgrade of PERSISTED pre-M16 lists (gaining 'gpu-voltage' +
+ * 'gpu-vram-temp') runs in the store's v2 -> v3 schema migration. A union
+ * here would re-add a stat the user just unchecked on the very save that
+ * was supposed to persist the uncheck.
  * @param {unknown} v
  * @returns {string[]}
  */
@@ -1191,12 +1196,14 @@ export function createIpcHandlers({
         return { kind: buildKind };
       },
 
-      // M4N (A.1): the window-path boot apply's outcome record - the
-      // renderer's boot fetch reads it to flip the dashboard OC Status row
-      // green after a boot apply ({ ok, detail, at } or null when no boot
-      // apply ran this session). The mock-only mock:run-boot-apply channel
-      // deliberately does NOT update this record - the mid-session probe
-      // leaves the OC row as the boot outcome (documented decision).
+      // M4N (A.1): the window-path boot apply's outcome record ({ ok,
+      // detail, at } or null when no boot apply ran this session). M16:
+      // the record no longer drives the dashboard OC Status row (the row
+      // derives its stock-state verdict from the driver read-back) - it is
+      // kept for the boot fetch contract + the boot-apply ui-verify pins.
+      // The mock-only mock:run-boot-apply channel deliberately does NOT
+      // update this record - the mid-session probe leaves the OC row as the
+      // boot outcome (documented decision).
       'boot-apply-outcome': async (...args) => {
         assertNoPayload(args, 'boot-apply-outcome');
         return bootApplyOutcome();

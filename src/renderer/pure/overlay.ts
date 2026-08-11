@@ -6,7 +6,9 @@
 // formatting + the frametime derivation so the renderer stays thin; every
 // function here is unit-tested (the cheap-oracle seam of the milestone).
 // The example strings in the plan are ILLUSTRATIVE - the tests pin the
-// REAL expected strings.
+// REAL expected strings. M16 (amended 2026-08-11): the GPU VOLTAGE is a
+// FIELD INSIDE the GPU row (between the temp and the power fields) - the
+// standalone Voltage row is gone, the overlay is back to the SIX lines.
 //
 // Field format: one value + its unit per field ('42%', '4.3 GHz', '61°C'),
 // '-' for a null field (the unit is dropped with it - the honest degrade,
@@ -63,11 +65,15 @@ export const OVERLAY_SCALE_MAX = 2.0;
  * feeds the standalone VRAM row.
  * M13: 'cpu-power' (the CPU wattage field) joins right after 'cpu-temp'
  * (the row field order - the watt renders after the temp on the CPU row).
+ * M16: 'gpu-voltage' (the GPU-row voltage field - the amended shape has NO
+ * standalone Voltage row: the field renders INSIDE the GPU row between the
+ * temp and the power fields) joins after 'gpu-clock'; 'gpu-vram-temp' (the
+ * VRAM row's trailing field) closes the GPU stats.
  */
 export const OVERLAY_STAT_IDS: readonly string[] = [
   'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
-  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
-  'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
+  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-voltage',
+  'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime',
 ];
 
 /** M6: the Overlay Settings page's tickbox labels (one per stat id). */
@@ -88,11 +94,18 @@ export const OVERLAY_STAT_LABELS: Record<string, string> = {
   'memory-util': 'RAM',
   'gpu-util': 'GPU Util',
   'gpu-clock': 'GPU Core clock',
-  'gpu-mem-clock': 'GPU Mem clock',
-  'gpu-vram': 'VRAM',
+  // M16: the GPU voltage stat - a FIELD INSIDE the GPU row (between the
+  // temp and the power fields - the amended shape; the standalone Voltage
+  // row is gone). This is the tickbox label.
+  'gpu-voltage': 'GPU Voltage',
   'gpu-temp': 'GPU Temp',
   'gpu-power': 'GPU Wattage',
   'gpu-fan': 'GPU Fan',
+  // M16: the mem-clock stat LEFT the GPU row - it now leads the VRAM row
+  // ('MemClock;VRAM;VramTEMP' - the user's requested order).
+  'gpu-mem-clock': 'Mem clock',
+  'gpu-vram': 'VRAM',
+  'gpu-vram-temp': 'VRAM temp',
   frametime: 'Frametime graph',
 };
 
@@ -163,6 +176,11 @@ export function apiLabelOf(v: unknown): string | null {
  * (order preserved); absent/garbage -> the FULL set (the default - the
  * stock overlay shows everything). The renderer mirror of the main-side
  * normalize (profile-store.js owns the persisted truth).
+ * M16 (B1): this mirror deliberately does NOT union the ids the canonical
+ * list gained in M16 onto a trimmed array - the overlay renders whatever
+ * stats main pushes, and a save-side union would resurrect a stat the user
+ * just unchecked. The one-time upgrade of PERSISTED lists (the M15 ->
+ * M16 migration) lives in the store's v2 -> v3 schema migration.
  */
 export function normalizeOverlayStats(v: unknown): string[] {
   if (!Array.isArray(v)) return [...OVERLAY_STAT_IDS];
@@ -213,6 +231,13 @@ export interface OverlaySample {
    *  memoryUsedBytes parameter wins when both are present). The M12
    *  memoryUtilPct percent field is REPLACED by this. */
   memoryUsedBytes?: number | null;
+  /** M16: the GPU voltage (volts - the GPU-row voltage field's source
+   *  between the temp and the power fields; the mock emits 0.652, the real
+   *  backend reads gpuVoltage telemetry). */
+  gpuVoltageV?: number | null;
+  /** M16: the VRAM temperature (°C - the VRAM row's trailing field; the
+   *  mock emits tempCBase + 8, the real backend reads vramCurrentTemp). */
+  vramTempC?: number | null;
 }
 
 export interface OverlayLines {
@@ -223,7 +248,10 @@ export interface OverlayLines {
   memoryLine: string;
   gpuLine: string;
   /** M12: the VRAM row (the gpu-vram stat - the field LEFT the GPU row and
-   *  now feeds this standalone row; '' when the stat is off). */
+   *  now feeds this standalone row; '' when the stat is off). M16: the
+   *  mem-clock field LEFT the GPU row too and LEADS this row, followed by
+   *  the VRAM usage + the VRAM temperature ('MemClock;VRAM;VramTEMP' - the
+   *  user's requested order). */
   vramLine: string;
   /** M13: the standalone Graphics-API row (the api field LEFT the fpsLine
    *  and now feeds this row between the VRAM row and the frametime strip).
@@ -268,12 +296,17 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  *     M12 memoryUtilPct percent is REPLACED); M13: the row label reads
  *     'RAM' - the stat id stays 'memory-util'; '' when the memory-util
  *     stat is off);
- *   gpuLine: 'GPU 42%  2500 MHz  2187 MHz  65°C  122 W  1030 RPM' (Util /
- *     Core clock / Memory clock / Temp / Power with ONE decimal (toFixed(1)
- *     - 38.8) / Fan (first RPM of the array) - each field vanishes with its
- *     stat; '' when all six are off; M12: the VRAM field LEFT this row);
- *   vramLine: 'VRAM 8.5 GB' (M12 - the gpu-vram stat via gbValue; '' when
- *     the stat is off);
+ *   gpuLine: 'GPU 42%  2500 MHz  65°C  0.652 V  38.8 W  1030 RPM'
+ *     (Util / Core clock / Temp / Voltage (volts with 3 decimals - M16,
+ *     the amended shape: the voltage field rides INSIDE the GPU row
+ *     between the temp and the power fields) / Power with ONE decimal
+ *     (toFixed(1) - 38.8) / Fan (first RPM of the array) - each field
+ *     vanishes with its stat; '' when all six are off; M16: the MEM-CLOCK
+ *     field LEFT this row - it leads the VRAM row now);
+ *   vramLine: 'VRAM 2187 MHz  3.0 GB  73°C' (M16 - the mem-clock field
+ *     LEADS (gpu-mem-clock), then the VRAM usage (gpu-vram via gbValue),
+ *     then the VRAM temperature (gpu-vram-temp); '' when ALL three stats
+ *     are off);
  *   apiLine: 'DX12' (M13 - the standalone Graphics-API row; the api field
  *     LEFT the fpsLine and now renders its own row between the VRAM row
  *     and the frametime strip. EMPTY when the api is null/unknown or the
@@ -304,6 +337,8 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const gpuClock = numOrNull(s.gpuClockMhz);
   const memClock = numOrNull(s.memClockMhz);
   const vram = numOrNull(s.gpuMemUsedBytes);
+  const vramTemp = numOrNull(s.vramTempC);
+  const gpuVoltage = numOrNull(s.gpuVoltageV);
   const gpuTemp = numOrNull(s.tempC);
   const power = numOrNull(s.powerW);
   const fan = Array.isArray(s.fanRpm) ? numOrNull(s.fanRpm[0]) : null;
@@ -357,14 +392,23 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const gpuFields: string[] = [];
   if (enabled.has('gpu-util')) gpuFields.push(pct(gpuUtil));
   if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), ' MHz'));
-  if (enabled.has('gpu-mem-clock')) gpuFields.push(unit(memClock, (n) => String(n), ' MHz'));
   if (enabled.has('gpu-temp')) gpuFields.push(unit(gpuTemp, (n) => String(n), '°C'));
+  // M16: the GPU voltage - a GPU-row field between the temp and the power
+  // fields (volts with 3 decimals - the mock 0.652 reads '0.652 V'; the
+  // honest '-' when null). The amended shape: NO standalone Voltage row.
+  if (enabled.has('gpu-voltage')) gpuFields.push(unit(gpuVoltage, (n) => n.toFixed(3), ' V'));
   if (enabled.has('gpu-power')) gpuFields.push(unit(power, (n) => n.toFixed(1), ' W'));
   if (enabled.has('gpu-fan')) gpuFields.push(unit(fan, (n) => String(n), ' RPM'));
   const gpuLine = gpuFields.length === 0 ? '' : `GPU ${gpuFields.join('  ')}`;
-  // M12: the VRAM row - the gpu-vram stat (the field LEFT the GPU row and
-  // now feeds this standalone row below it); '' when the stat is off.
-  const vramLine = enabled.has('gpu-vram') ? `VRAM ${unit(vram, (n) => gbValue(n), ' GB')}` : '';
+  // M16: the VRAM row - the mem-clock field LEADS, then the VRAM usage, then
+  // the VRAM temperature (the user's requested 'MemClock;VRAM;VramTEMP'
+  // order). Each field vanishes with its stat; the row writes '' only when
+  // ALL THREE are off.
+  const vramFields: string[] = [];
+  if (enabled.has('gpu-mem-clock')) vramFields.push(unit(memClock, (n) => String(n), ' MHz'));
+  if (enabled.has('gpu-vram')) vramFields.push(unit(vram, (n) => gbValue(n), ' GB'));
+  if (enabled.has('gpu-vram-temp')) vramFields.push(unit(vramTemp, (n) => String(n), '°C'));
+  const vramLine = vramFields.length === 0 ? '' : `VRAM ${vramFields.join('  ')}`;
   return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, frametimeEnabled: enabled.has('frametime') };
 }
 

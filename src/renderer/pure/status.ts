@@ -12,8 +12,10 @@
 //            the detail shows the driver version + date like the device card
 //            (driverLine: "32.0.101.8861 - Jul 05, 2026");
 //   device - "Device detected": a GPU is enumerated (or the boot error);
-//   oc - "OC Status" (M4-B rename of "OC working"): the last apply outcome
-//        (ok / failed / never applied);
+//            M16: this row renders ABOVE the driver row (the flip);
+//   oc - "OC status" (M16 rename of "OC Status"): the STOCK-STATE verdict -
+//        "No Overclock Applied" / "Overclock Applied" (the M4-B last-apply
+//        outcome is no longer displayed here);
 //   waiver - "OC waiver": the LIVE waiver status (Accepted ok / Not Accepted
 //            error) - the ONLY persistent waiver display in the app (user
 //            correction, mid-M4-A: not on the OC or Fan pages);
@@ -24,7 +26,7 @@
 // The legacy health-only level mapping (healthLevel) stays for the header
 // test contract.
 
-import type { Capabilities, DeviceInfo, HealthReport, LastApply, SysInfo, TelemetrySample } from '../types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, HealthReport, SysInfo, TelemetrySample } from '../types.ts';
 import { decodeDriverVersion, formatDriverDate } from './driver.ts';
 
 export type HealthLevel = 'ok' | 'warn' | 'error' | 'unknown';
@@ -45,7 +47,6 @@ export interface HealthInput {
   health: HealthReport | null;
   device: DeviceInfo | null;
   sample: TelemetrySample | null;
-  lastApply: LastApply | null;
   bootError: string | null;
   /** M3-C-I: the display-driver registry date for the driver row detail. */
   driverDate: string | null;
@@ -55,6 +56,25 @@ export interface HealthInput {
    * false Accepted/Not Accepted).
    */
   waiverAccepted: boolean | null;
+  /**
+   * M17: FALSE on OC-locked devices (caps.overclockingSupported === false) -
+   * there is no waiver to accept; the row reads the neutral
+   * "Not supported on this GPU" (ok, never the clickable error state).
+   */
+  overclockingSupported?: boolean | null;
+  /**
+   * M16: the device's current read-back (getCurrentSettings) - the OC status
+   * row's source: stock vs non-stock is derived from the ACTUAL driver
+   * values vs the capability defaults, never from the last apply outcome.
+   */
+  state: DeviceState | null;
+  /**
+   * M16: the capability ranges (the stock defaults' source - every control's
+   * `default` is the stock value; power/temperature defaults are the
+   * DriverStore values, so a 90 C limit in an extended session still reads
+   * stock).
+   */
+  caps: Capabilities | null;
   /**
    * 1.0.1 no-Intel round: FALSE when the app runs in the no-device mode
    * (no Intel GPU enumerated) - the driver/device rows then swap to the
@@ -137,19 +157,98 @@ export function deviceRow(input: HealthInput): HealthRow {
 }
 
 /**
- * "OC Status" (M4-B rename of "OC working"): the last apply outcome -
- * honest: never applied, last apply ok, or last apply failed (with a hint
- * of what failed).
+ * M16: whether the device currently runs STOCK values. Stock = every
+ * SUPPORTED control's driver value equals its capability default:
+ *   - the scalar controls gpuFreqOffsetMhz / gpuVoltOffsetV (default 0),
+ *     powerLimitW / tempLimitC (the DriverStore defaults - a 90 C / 210 W
+ *     session in an EXTENDED range is still stock) AND the two expert
+ *     scalars vramFreqOffsetGts / vramVoltOffsetV - the latter two are
+ *     judged ONLY when caps.ranges[key] exists (the same range-presence
+ *     gate as the four main controls scopes them per device - a b580 VRAM
+ *     offset is a real overclock, so it must flip the verdict);
+ *   - gpuLock - judged when caps.controls.gpuLock is true, against the
+ *     UNLOCKED shape { voltageV: 0, freqMhz: 0 } (the mock's stock shape
+ *     and the backend's documented unlocked read-back; any non-zero pair
+ *     is a lock = Overclock Applied);
+ *   - vfCurve (M16-F1) - judged when caps.controls.vfCurve is true (the
+ *     same no-range controls flag gate as gpuLock; DeviceState.vfCurve is
+ *     null when the control is unsupported). The STOCK reference is the
+ *     EMPTY/ABSENT shape: null or [] - the mock's stock read-back is null
+ *     and an apply stores a sanitized NON-EMPTY array, so any non-empty
+ *     curve is a real custom V/F curve = Overclock Applied.
+ * Fan controls are deliberately EXCLUDED (fan is cooling, not
+ * overclocking) - documented scope. Unsupported controls are never judged
+ * (absent range / control -> skipped). "ANYTHING BUT Stock = Overclock
+ * Applied". True only when both state and caps exist; null when they are
+ * missing (nothing to judge). M16 (B4): the comparison uses the documented
+ * STOCK_COMPARE_EPS (1e-6) - a driver read-back with tiny float drift
+ * (e.g. powerLimit 210.0000001) must still read stock.
+ * M16 (B3 - documented boundary): the verdict derives from `state`,
+ * refreshed at boot / device-switch / apply. An EXTERNAL change (made
+ * outside this app, e.g. through Intel Graphics Software) after the last
+ * refresh is NOT detected until the next boot/switch/apply - the row can
+ * claim stock while the driver actually differs (the same class of
+ * limitation the old last-apply row had). M16-F1 extends the boundary
+ * note to vfCurve: the REAL backend reads the driver curve blindly
+ * (igcl-backend.js getCurrentSettings -> ctlOverclockReadVFCurve) - if a
+ * stock Battlemage device reports a NON-NULL default curve the verdict
+ * reads Overclock Applied until a refresh shows the empty/absent shape
+ * (verified on hardware before relying on the empty default).
+ */
+export const STOCK_COMPARE_EPS = 1e-6;
+
+const UNLOCKED_LOCK = { voltageV: 0, freqMhz: 0 };
+
+export function isStockState(state: DeviceState | null, caps: Capabilities | null): boolean | null {
+  if (!state || !caps) return null;
+  for (const key of ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'powerLimitW', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV']) {
+    const range = caps.ranges[key];
+    if (!range) continue; // unsupported on this device - never judged
+    const value = state[key as keyof DeviceState];
+    if (typeof value !== 'number' || typeof range.default !== 'number') continue;
+    if (Math.abs(value - range.default) > STOCK_COMPARE_EPS) return false;
+  }
+  // gpuLock: supported when caps.controls.gpuLock says so (no range
+  // exists for the lock pair - the controls flag is the gate). The
+  // unlocked { 0, 0 } shape is stock; any non-zero pair is a real lock.
+  if (caps.controls.gpuLock === true && state.gpuLock) {
+    if (Math.abs(state.gpuLock.voltageV - UNLOCKED_LOCK.voltageV) > STOCK_COMPARE_EPS
+      || Math.abs(state.gpuLock.freqMhz - UNLOCKED_LOCK.freqMhz) > STOCK_COMPARE_EPS) {
+      return false;
+    }
+  }
+  // vfCurve (M16-F1): judged when caps.controls.vfCurve says so (same
+  // controls-flag gate as gpuLock - DeviceState.vfCurve is null when the
+  // control is unsupported, never judged then). The stock reference is the
+  // EMPTY/ABSENT shape: the mock's stock read-back is vfCurve: null and an
+  // apply stores a sanitized NON-EMPTY array, so any non-empty array is a
+  // real custom V/F curve = Overclock Applied (a profile-applied curve on
+  // Battlemage must never read "No Overclock Applied").
+  if (caps.controls.vfCurve === true && Array.isArray(state.vfCurve) && state.vfCurve.length > 0) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * "OC status" (M16 - renamed from "OC Status", RE-USED as the stock-state
+ * indicator): shows ONLY "No Overclock Applied" (the device runs stock) or
+ * "Overclock Applied" (ANY supported control differs from its stock
+ * default - see isStockState) - the last-apply outcome is no longer
+ * displayed here. Unknown while no state/caps have landed; the no-Intel
+ * path reads the honest no-OC text.
  */
 export function ocRow(input: HealthInput): HealthRow {
-  const last = input.lastApply;
-  if (!last) {
-    return { id: 'oc', label: 'OC Status', level: 'unknown', detail: 'No OC apply yet in this session' };
+  if (input.hasIntelGpu === false) {
+    return { id: 'oc', label: 'OC status', level: 'ok', detail: 'No Overclock Applied' };
   }
-  if (last.ok) {
-    return { id: 'oc', label: 'OC Status', level: 'ok', detail: last.detail ?? 'Last apply succeeded' };
+  const stock = isStockState(input.state, input.caps);
+  if (stock === null) {
+    return { id: 'oc', label: 'OC status', level: 'unknown', detail: 'Waiting for device…' };
   }
-  return { id: 'oc', label: 'OC Status', level: 'error', detail: last.detail ?? 'Last apply failed' };
+  return stock
+    ? { id: 'oc', label: 'OC status', level: 'ok', detail: 'No Overclock Applied' }
+    : { id: 'oc', label: 'OC status', level: 'ok', detail: 'Overclock Applied' };
 }
 
 /**
@@ -158,9 +257,14 @@ export function ocRow(input: HealthInput): HealthRow {
  * Health card, NOT the OC/Fan pages). Reads caps.waiverAccepted at render
  * time; the dashboard full-re-renders on caps changes (its sig includes
  * caps), so an accept-time store patch refreshes this row. Unknown while no
- * caps have landed.
+ * caps have landed. M17 (B50-class): on OC-locked devices there is no
+ * waiver - the row reads the neutral "Not supported on this GPU" (ok level,
+ * never clickable) instead of an un-answerable "Not Accepted" error.
  */
 export function waiverRow(input: HealthInput): HealthRow {
+  if (input.overclockingSupported === false) {
+    return { id: 'waiver', label: 'OC waiver', level: 'ok', detail: 'Not supported on this GPU' };
+  }
   if (input.waiverAccepted === null) {
     return { id: 'waiver', label: 'OC waiver', level: 'unknown', detail: 'Waiting for device…' };
   }
@@ -186,9 +290,11 @@ export function appRow(input: HealthInput): HealthRow {
 }
 
 /** All health rows in display order (M3-C-I: the clocks row is removed;
- *  M4-A: the waiver row sits between the OC and app rows). */
+ *  M4-A: the waiver row sits between the OC and app rows; M16: the device
+ *  row moves ABOVE the driver row - "Flip 'Driver Installed' Row and
+ *  'Device Installed' Row"). */
 export function healthRows(input: HealthInput): HealthRow[] {
-  return [driverRow(input), deviceRow(input), ocRow(input), waiverRow(input), appRow(input)];
+  return [deviceRow(input), driverRow(input), ocRow(input), waiverRow(input), appRow(input)];
 }
 
 /** Overall health-card level: the worst of the five rows. */
@@ -209,13 +315,11 @@ export function overallHealthLevel(rows: HealthRow[]): HealthLevel {
  * so it counts as a status slot). M4-D: `sysinfo` lands once at boot (the
  * CPU card must re-render when it arrives - the boot fetch is fire-and-
  * forget, so it can land after the first render). M3-A: the IGS slot is
- * gone (no longer surfaced). M4N (A.1): `lastApply` JOINED the signature -
- * the OC row reads it at render time, and the window-path boot apply's
- * outcome lands via a renderer boot fetch that can arrive after the first
- * render (a degraded boot with no other sig change must still flip the row
- * green - the old "applies happen on other pages" reasoning is stale: the
- * BOOT apply happens in main before the window, so the dashboard cannot
- * rely on re-rendering on navigation alone).
+ * gone (no longer surfaced). M16: the M4N `lastApply` slot LEFT the
+ * signature (the OC row no longer displays the last-apply outcome) - the
+ * device read-back `state` joined in its place: the row's stock-state
+ * verdict needs a re-render when the read-back lands or changes (an apply
+ * from ANY path refreshes the store state).
  */
 export interface DashboardSig {
   health: HealthReport | null;
@@ -229,10 +333,10 @@ export interface DashboardSig {
    *  boot). */
   noIntel: boolean;
   osGpu: { name: string; vramBytes: number | null } | null;
-  /** M4N (A.1): the last apply outcome (the OC Status row) - a status slot
-   *  since the window-path boot apply's outcome can land after the first
-   *  render. */
-  lastApply: LastApply | null;
+  /** M16: the device's current read-back - the OC status row's stock-state
+   *  source (an apply from ANY path refreshes the store state, so the row
+   *  flips Overclock Applied / No Overclock Applied on the re-render). */
+  state: DeviceState | null;
 }
 
 /**
@@ -250,5 +354,5 @@ export function dashboardNeedsFullRender(prev: DashboardSig | null, next: Dashbo
     || prev.sysinfo !== next.sysinfo
     || prev.noIntel !== next.noIntel
     || prev.osGpu !== next.osGpu
-    || prev.lastApply !== next.lastApply;
+    || prev.state !== next.state;
 }

@@ -86,6 +86,16 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('window:maximized-changed', listener);
     return () => ipcRenderer.removeListener('window:maximized-changed', listener);
   },
+  // M16-F1: pushed POST-APPLY device read-backs ({ deviceId, state } on
+  // 'device:state-updated') - the tray "Apply active profile" runs entirely
+  // in main, so main pushes the fresh read-back; the renderer refreshes its
+  // store `state` slot (the dashboard OC status row derives from the live
+  // read-back and must flip after a tray apply).
+  onStateUpdated: (cb) => {
+    const listener = (_event, payload) => cb(payload);
+    ipcRenderer.on('device:state-updated', listener);
+    return () => ipcRenderer.removeListener('device:state-updated', listener);
+  },
   // M5: the software overlay (the Overlay window's surface - the main
   // window never calls these; the channels validate in ipc-core.js).
   // onOverlaySettings receives the pushed 'overlay:settings' payload (the

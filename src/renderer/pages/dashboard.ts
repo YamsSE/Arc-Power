@@ -1,7 +1,7 @@
 // Arc Power - Dashboard page (M2b-B redesign + M3-A + M3-C-I): GPU card
 // (M4-H: title 'GPU' + a 'GPU' name kv row - the Driver version row moved
 // OUT (the health card keeps it); Xe cores + shader units, bundled clocks
-// row, standalone ReBAR pill - M2C-B B2), the general GPU HEALTH card (five
+// row, standalone ReBAR pill - M2C-B B2), the general GPU Status card (five
 // honest rows: driver installed, device detected, OC working, OC waiver -
 // the ONLY persistent waiver display (M4-A correction), Arc Power
 // working), the CPU & Memory card (M4-D2 - M4-H: DDR5 memory type + the
@@ -73,6 +73,11 @@ function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; va
     { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
     { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
     { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
+    // M16: the GPU voltage + the VRAM temperature tiles (the Monitor-tab
+    // readout mirrors the overlay's new fields; the telemetry already
+    // carries both - gpuVoltageV in volts with 3 decimals, vramTempC °C).
+    { label: 'Voltage', value: statValue(sample?.gpuVoltageV, 3), unit: 'V' },
+    { label: 'VramTemp', value: statValue(sample?.vramTempC), unit: '°C' },
     { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
     { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
     { label: 'Fan speed', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
@@ -90,9 +95,10 @@ function currentSig(ctx: PageContext): DashboardSig {
     sysinfo: s.sysinfo,
     noIntel: s.noIntel,
     osGpu: s.osGpu,
-    // M4N (A.1): the boot-apply outcome lands via the boot fetch - it is
-    // part of the signature so the OC Status row flips green on arrival.
-    lastApply: s.lastApply,
+    // M16: the device read-back - the OC status row's stock-state source
+    // (an apply from any path refreshes the store state, so the row flips
+    // on the re-render).
+    state: s.state,
   };
 }
 
@@ -132,7 +138,8 @@ async function openWaiverFromRow(ctx: PageContext) {
   }
 }
 
-/** M3-A: the general GPU Health card (replaces the merged Service Status card). */
+/** M3-A/M16: the general GPU Status card (replaces the merged Service Status
+ *  card; renamed from "GPU Health" - M16). */
 function healthCard(ctx: PageContext): HTMLElement {
   const s = ctx.store.get();
   const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
@@ -140,10 +147,15 @@ function healthCard(ctx: PageContext): HTMLElement {
     health: s.health,
     device,
     sample: s.latestSample,
-    lastApply: s.lastApply,
     bootError: s.bootError,
     driverDate: s.driverDate,
     waiverAccepted: s.caps?.waiverAccepted ?? null,
+    // M17 (B50-class): OC-locked devices carry no waiver - the row must read
+    // the neutral text, never the clickable Not Accepted error.
+    overclockingSupported: s.caps?.overclockingSupported ?? null,
+    // M16: the stock-state source (the OC status row).
+    state: s.state,
+    caps: s.caps,
     // 1.0.1 no-Intel round: the rows swap to the honest no-Intel texts on
     // the no-device path ('No Intel Driver Found' / the OS GPU name).
     hasIntelGpu: s.noIntel !== true,
@@ -151,7 +163,7 @@ function healthCard(ctx: PageContext): HTMLElement {
   });
 
   return el('section', { class: 'card health-card' }, [
-    el('h2', { class: 'card-title', text: 'GPU Health' }),
+    el('h2', { class: 'card-title', text: 'GPU Status' }),
     el('div', { class: 'card-body' }, rows.map((row) => healthRowEl(row, ctx))),
   ]);
 }
@@ -303,7 +315,7 @@ export const dashboardPage: Page = {
             : [el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' })]),
         ]),
 
-        // --- M3-A: the general GPU Health card (was the Service Status card) ---
+        // --- M3-A: the general GPU Status card (was the Service Status card) ---
         healthCard(ctx),
       ]),
 

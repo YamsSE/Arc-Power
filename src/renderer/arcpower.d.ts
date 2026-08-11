@@ -92,10 +92,10 @@ export interface ArcPowerApi {
    *  'portable' (unelevated in-app applies), 'dev' (dev tree). */
   appBuildInfo(): Promise<{ kind: 'installed' | 'portable' | 'dev' }>;
   /** M4N (A.1): the window-path boot apply's outcome record ({ ok, detail,
-   *  at }) or null when no boot apply ran this session. The renderer's boot
-   *  fetch stores it as lastApply - the dashboard OC Status row flips green
-   *  after a successful boot apply (the apply runs in main before the
-   *  window exists; this fetch is how the renderer learns the result). */
+   *  at }) or null when no boot apply ran this session. M16: the dashboard
+   *  OC status row no longer displays the record - the row's stock-state
+   *  verdict derives from the driver read-back; the channel stays for the
+   *  boot-apply ui-verify pins (window.arcPower.bootApplyOutcome). */
   bootApplyOutcome(): Promise<{ ok: boolean; detail: string; at: number } | null>;
   /** M2C-C: elevation state (cached koffi probe, no spawn). */
   appElevated(): Promise<ElevationState>;
@@ -140,6 +140,12 @@ export interface ArcPowerApi {
   /** M4-D: pushed window-maximize state ({ maximized: boolean } on
    *  maximize/unmaximize - the title-bar max button follows it). */
   onWindowMaximizedChanged(cb: (state: { maximized: boolean }) => void): () => void;
+  /** M16-F1: pushed POST-APPLY device read-backs ({ deviceId, state } on
+   *  'device:state-updated') - the tray "Apply active profile" runs
+   *  entirely in main, so main pushes the fresh read-back; the renderer
+   *  refreshes its store `state` slot (the dashboard OC status row derives
+   *  from the live read-back and must flip after a tray apply). */
+  onStateUpdated(cb: (payload: { deviceId: number; state: DeviceState }) => void): () => void;
   /** M5: pushed overlay settings (the Overlay window surface) - the scale
    *  source of truth, sent by main on every apply (incl. the initial
    *  did-finish-load push; the renderer registers this SYNCHRONOUSLY at

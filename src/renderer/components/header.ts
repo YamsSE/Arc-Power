@@ -13,7 +13,7 @@
 //   - PCI ID is gone;
 //   - M3-A: the top-right status dot + "Service Status" label are REMOVED
 //     (with the M2C-C elevation gate, IGS state is no longer relevant to
-//     OC-applicability - the general GPU Health card on the dashboard
+//     OC-applicability - the general GPU Status card on the dashboard
 //     carries the status now). The header keeps the GPU name + version line
 //     + the mock badge + the mock featureset dropdown.
 //

@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
@@ -42,7 +42,8 @@ import { runBootApplyMode } from './boot-apply-mode.js';
 import { shouldUseInstanceLock, acquireInstanceLock, focusExistingWindow } from './single-instance.js';
 import { createBootSetup, taskActionMatches } from './setup-boot.js';
 import { deriveBuildKind } from './build-kind.js';
-import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, trayBalloonForOutcome } from './tray.js';
+import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, TRAY_LABEL_APPLY_PROFILE, trayBalloonForOutcome } from './tray.js';
+import { trayApplyActiveProfile } from './tray-apply.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
 import { executeApply } from './apply-routing.js';
@@ -169,42 +170,21 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, crea
           win.focus();
         }
       },
-      onApplyProfile: async () => {
-        try {
-          const settings = await store.loadSettings();
-          const profiles = await store.loadProfiles();
-          const profile = profiles.find((p) => p.id === settings.activeProfileId);
-          // M3-C-D (double-dialog decision): the per-apply extended-range
-          // confirm is DROPPED from the tray entirely - in Advanced mode the
-          // mode-enable confirm already warned; in Stock mode the shared
-          // oc-mode gate refuses extended values with a balloon (never a
-          // dead-end confirm). applyProfile below owns that honesty.
-          // Explicit user action: skips the ocOnBoot gate (like the
-          // renderer's Load button) but keeps the waiver gates. The balloon
-          // only claims "defaults restored" when a restore actually ran
-          // (M2b review F1) - gate refusals (incl. the oc-mode refusal)
-          // get a reason-specific message.
-          // M4-F (S2): the tray apply targets the PERSISTED/SELECTED device
-          // (resolved like every other apply - explicit id ?? persisted ?? devices[0]).
-          const deviceId = await resolveApplyDeviceId(backend, store, null);
-          const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, deviceId, oldIgcl, applyRunner });
-          if (!out.applied && trayRef && !trayRef.isDestroyed()) {
-            let name = 'unknown';
-            try {
-              const ps = await store.loadProfiles();
-              const p = ps.find((x) => x.id === settings.activeProfileId);
-              if (p) name = p.name;
-            } catch { /* best effort name */ }
-            const content = trayBalloonForOutcome(out, name);
-            if (content) trayRef.displayBalloon({ title: 'Arc Power', content });
-          }
-        } catch (err) {
-          console.error(`[tray] apply active profile failed: ${err.message}`);
-          if (trayRef && !trayRef.isDestroyed()) {
-            trayRef.displayBalloon({ title: 'Arc Power', content: `Arc Power: profile apply failed - ${err.message}` });
-          }
-        }
-      },
+      onApplyProfile: () => trayApplyActiveProfile({
+        backend,
+        store,
+        oldIgcl,
+        applyRunner,
+        // M16-F1 (D2): the renderer state push needs the main window
+        // (resolved lazily - the tray can exist before the window in a
+        // start-minimized session; a destroyed window never receives).
+        getWindow,
+        // The module-level trayRef is assigned AFTER setupTray returns -
+        // pass a getter so the click handler sees the LIVE tray, never a
+        // stale null (the balloon path needs it).
+        getTray: () => trayRef,
+        log: (s) => console.error(s),
+      }),
       onQuit: () => app.quit(),
     });
   };
@@ -727,14 +707,20 @@ async function main() {
     // the SAME probe profile id with the EXTENDED 315 W values so the
     // window-path boot apply exercises the profileApply path against a
     // stock-mode session (the report shape).
+    // M16-F1 (D2): RID_MOCK_TRAY_APPLY=1 seeds the SAME probe profile (the
+    // in-range 230 W values) WITHOUT ocOnBoot - the active profile exists
+    // for the tray "Apply active profile" click, and the boot NEVER
+    // auto-applies (the tray-apply ui-verify pin drives the recorded tray
+    // handler itself and asserts the renderer state push flips the OC row).
     try {
       const cur = await store.loadSettings();
       const bootApplyOn = process.env.RID_MOCK_BOOT_APPLY === '1';
       const bootApplyExtOn = process.env.RID_MOCK_BOOT_APPLY_EXT === '1';
-      const seedOn = bootApplyOn || bootApplyExtOn;
+      const trayApplyOn = process.env.RID_MOCK_TRAY_APPLY === '1';
+      const seedOn = bootApplyOn || bootApplyExtOn || trayApplyOn;
       await store.saveSettings({
         ...cur,
-        ocOnBoot: seedOn,
+        ocOnBoot: bootApplyOn || bootApplyExtOn,
         activeProfileId: seedOn ? 'boot-apply-probe' : null,
         waiverAccepted: seedOn ? true : cur.waiverAccepted,
       });
@@ -1140,6 +1126,10 @@ async function main() {
   const trayProbe = {
     builds: 0,
     toggleHandler: null,
+    // M16-F1 (D2): the "Apply active profile" click handler - the
+    // tray-apply ui-verify pin drives it (main-side apply -> pushed
+    // device:state-updated -> the dashboard OC row flips in place).
+    applyHandler: null,
     probe: {
       setContextMenu: () => {},
       setToolTip: () => {},
@@ -1151,6 +1141,8 @@ async function main() {
     trayProbe.builds += 1;
     const toggle = template.find((i) => i.label === TRAY_LABEL_TOGGLE);
     trayProbe.toggleHandler = toggle && typeof toggle.click === 'function' ? toggle.click : null;
+    const apply = template.find((i) => i.label === TRAY_LABEL_APPLY_PROFILE);
+    trayProbe.applyHandler = apply && typeof apply.click === 'function' ? apply.click : null;
     return trayProbe.probe;
   };
   // M4J (G/S2): setupTray runs BEFORE createWindow - the tray exists from
@@ -1194,15 +1186,15 @@ async function main() {
     });
   };
   // M4N (A.1): the WINDOW-PATH boot apply's OUTCOME record - the renderer's
-  // boot fetch reads it ('boot-apply-outcome') so the dashboard OC Status
-  // row flips GREEN after a successful boot apply (the apply runs before
-  // createWindow - this record is how the renderer learns the result; the
-  // renderer's dashboard render sig includes lastApply, so the fetch
-  // re-renders the row no matter when it lands). Null when no boot apply
-  // ran this session. The mock-only mock:run-boot-apply channel does NOT
-  // update this record (documented decision: the mid-session probe leaves
-  // the OC row as the boot outcome - the record is the window-path apply's
-  // own).
+  // boot fetch reads it ('boot-apply-outcome'). M16: the dashboard OC
+  // Status row NO LONGER displays this record - the row derives its
+  // stock-state verdict from the LIVE driver read-back (the post-apply
+  // state the boot fetch also receives), so this record is kept for the
+  // boot fetch contract + the boot-apply ui-verify pins, not for the row's
+  // text. Null when no boot apply ran this session. The mock-only
+  // mock:run-boot-apply channel does NOT update this record (documented
+  // decision: the mid-session probe leaves the OC row as the boot outcome -
+  // the record is the window-path apply's own).
   let bootApplyOutcome = null;
   // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
   // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
@@ -1230,9 +1222,10 @@ async function main() {
       // M4N (A.1): record the outcome for the renderer's boot fetch. The
       // success detail = "Profile '<name>' applied" with the name resolved
       // like the balloon (the same loadProfiles lookup); a failure carries
-      // the apply's reason. A THROWN apply records too (the catch below) -
-      // an attempted-and-failed apply must never leave the row claiming
-      // "No OC apply yet".
+      // the apply's reason. A THROWN apply records too (the catch below).
+      // M16: the dashboard OC row no longer displays this record (it shows
+      // the STOCK-STATE verdict from the driver read-back) - the record is
+      // kept for the boot fetch contract + the boot-apply ui-verify pins.
       let profileName = null;
       try {
         const ps = await store.loadProfiles();
@@ -1257,8 +1250,9 @@ async function main() {
     }
   } catch (err) {
     console.log(`[boot] in-app boot apply skipped: ${err.message}`);
-    // M4N (A.1): a THROWN apply records the failure - the OC row must never
-    // claim "No OC apply yet" after an attempted-and-failed boot apply.
+    // M4N (A.1): a THROWN apply records the failure. M16: the OC row's
+    // stock-state verdict derives from the driver read-back, never from
+    // this record - it is kept for the boot fetch + the verify pins.
     bootApplyOutcome = { ok: false, at: Date.now(), detail: `Profile apply failed: ${err.message}` };
   }
 
@@ -1559,8 +1553,10 @@ async function main() {
     // 'portable' too - never 'dev' (deriveBuildKind pin).
     buildKind: deriveBuildKind({ mock, installedBuild, isPackaged: app.isPackaged }),
     // M4N (A.1): the window-path boot apply's outcome record (the renderer
-    // boot fetch reads it - the dashboard OC row flips green after a
-    // successful boot apply; null when no boot apply ran this session).
+    // boot fetch reads it; M16: the dashboard OC row no longer displays it -
+    // the row derives its stock-state verdict from the driver read-back -
+    // the record is kept for the boot fetch contract + the ui-verify pins;
+    // null when no boot apply ran this session).
     bootApplyOutcome: () => bootApplyOutcome,
     mock: mockCtl,
     rebuildTray: async () => {
@@ -1617,6 +1613,15 @@ async function main() {
       // the report: stock mode + advanced profile values used to fail
       // at boot with the "Nothing was changed" mode message).
       await runBootApplyExtVerify(win, backend, store);
+    } else if (process.env.RID_MOCK_TRAY_APPLY === '1') {
+      // M16-F1 (D2): the tray-apply variant - the seed wrote an ACTIVE
+      // profile (230 W, no ocOnBoot - the boot NEVER auto-applies) so the
+      // tray menu's "Apply active profile" item is enabled. The recorded
+      // tray click handler runs the REAL main-side apply; the variant
+      // asserts the pushed post-apply read-back flips the dashboard OC
+      // status row IN PLACE (the D2 regression: the tray path used to
+      // leave the stale pre-apply verdict for the rest of the session).
+      await runTrayApplyVerify(win, backend, store, () => trayProbe);
     } else if (process.env.RID_MOCK_OVERLAY === '1') {
       // M5: the overlay variant - the overlay window is REAL (created above
       // under the knob, seeded overlayEnabled:true); the hotkey is the

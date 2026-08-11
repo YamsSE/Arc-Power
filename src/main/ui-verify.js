@@ -18,13 +18,13 @@
 //       a 'Memory clock' kv row next to 'Graphics clock'; memory-clock
 //       readout next to core clock; M3-A: the header has NO status dot and
 //       NO "Service Status" label (the IGS indicator is gone);
-//   1c. M3-A + M3-C-I: the dashboard shows the general GPU HEALTH card (four
-//       rows: Driver installed / Device detected / OC Status (M4-B rename of
-//       "OC working") / Arc Power working - the "Clocks normal" row is
-//       REMOVED) - the merged Service Status card is GONE, as is everything
-//       IGS (dot, half-state note, toggle button). The driver row detail is
-//       version + date like the device card; the app row healthy detail is
-//       "App & Service Running".
+//   1c. M3-A + M3-C-I + M16: the dashboard shows the general GPU STATUS
+//       card (five rows: Device detected / Driver installed / OC status
+//       (M16 rename; the stock-state verdict) / OC waiver / Arc Power
+//       working - the "Clocks normal" row is REMOVED) - the merged Service
+//       Status card is GONE, as is everything IGS (dot, half-state note,
+//       toggle button). The driver row detail is version + date like the
+//       device card; the app row healthy detail is "App & Service Running".
 //   2. Tuning (renamed from Overclocking, M4-D2): control cards render from
 //      capability ranges; the page-title is 'Tuning'; the OC-mode row is a
 //      flex row with the Stock/Advanced pill LEFT and the "Tuning | Fan
@@ -107,7 +107,7 @@
 //      state under RID_MOCK_WAIVER_PERSISTED=1 - title + 'Status: Accepted'
 //      line + single OK, clicked here (persisted acceptance at boot: the
 //      boot prompt appears as a reminder, never a re-accept). The waiver
-//      STATUS lives ONLY in the dashboard GPU Health card row ("OC waiver:
+//      STATUS lives ONLY in the dashboard GPU Status card row ("OC waiver:
 //      Accepted / Not Accepted", green/red - correction, mid-M4-A): the
 //      OC and Fan pages render NO waiver status (the apply-time dialog gate
 //      only); the unaccepted row is clickable (opens the waiver dialog;
@@ -121,8 +121,9 @@
 //      G2 self-heal: after a waiver-not-set failure the store flag flips
 //      back to unaccepted (row red again) and the NEXT apply re-shows the
 //      dialog (the "fan applies fail without a prompt" bug).
-//  20. M4-B: (a) the dashboard health row is renamed "OC Status" (was "OC
-//      working"); (b) the freq offset ranges mirror into the negative half
+//  20. M4-B: (a) the dashboard health row is renamed "OC status" (was "OC
+//      working"; M16: the row now shows the STOCK-STATE verdict); (b) the
+//      freq offset ranges mirror into the negative half
 //      (a770 -300..300) - the slider reaches the negative half, applies and
 //      reads back -100 MHz; (c) the freq card's Offset/Clock toggle: Clock
 //      mode slides over base+[min,max] (2100 + -300..300 = 1800..2400 MHz),
@@ -268,7 +269,7 @@ async function bootWaiverStep(win, js, waitFor) {
     // M4-D (PERMANENT acceptance): the boot prompt must NOT appear at all.
     // The accepted store never asks again - the accepted-state reminder
     // dialog is REMOVED. Wait for the boot sequence to land (the dashboard
-    // GPU Health card renders only after caps arrive - the point where a
+    // GPU Status card renders only after caps arrive - the point where a
     // (buggy) boot prompt would have shown), then assert no modal. The
     // WAIVER_LOST overlay changes nothing: the boot probe RESTORED the
     // driver waiver for the accepted store (the consent stands), so the
@@ -324,7 +325,7 @@ export class UiVerifyFailure extends Error {}
  *   instead of performing the real BrowserWindow ops) - run 2 pins the
  *   integrated title-bar buttons through this.
  */
-export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null })) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null, applyHandler: null })) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -714,7 +715,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard GPU card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) -
-  // the driver line lives in the dashboard GPU Health card (the GPU card's
+  // the driver line lives in the dashboard GPU Status card (the GPU card's
   // Driver version row is REMOVED - M4-H). M8: the 1.1.0 base bump changed
   // the display form; M9: the 1.1.1 base bump (displayVersion strips the
   // -beta.x tag of a prerelease version and appends ' Alpha' to a bare
@@ -779,7 +780,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   // The waiver status row lives in the HEALTH card (below), not on the
   // device card: no 'OC waiver' text in any device-card kv row.
-  if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Health card)');
+  if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Status card)');
   // B2: the chips footer ("Fan curve N points", power/volt/freq/temp notes)
   // is GONE from the device card - no chips inside the card grid EXCEPT the
   // M4-D ReBAR pill (a deliberate new chip, excluded here).
@@ -990,12 +991,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   const gpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
   const gpuParsed = JSON.parse(gpuTiles);
-  if (gpuParsed.length !== 6) fail(`M4-H: the GPU group has ${gpuParsed.length} tiles (expected 6): ${gpuTiles}`);
-  if (gpuParsed.map(([l]) => l).join(',') !== 'Util,Core clock,Memory clock,Temperature,Power,Fan speed') {
-    fail(`M4N: the GPU group order is '${gpuParsed.map(([l]) => l).join(',')}' (expected Util, Core clock, Memory clock, Temperature, Power, Fan speed - Util first)`);
+  if (gpuParsed.length !== 8) fail(`M16: the GPU group has ${gpuParsed.length} tiles (expected 8): ${gpuTiles}`);
+  if (gpuParsed.map(([l]) => l).join(',') !== 'Util,Core clock,Memory clock,Voltage,VramTemp,Temperature,Power,Fan speed') {
+    fail(`M16: the GPU group order is '${gpuParsed.map(([l]) => l).join(',')}' (expected Util, Core clock, Memory clock, Voltage, VramTemp, Temperature, Power, Fan speed - Util first)`);
   }
-  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Fan speed', 'Util']) {
-    if (!gpuParsed.some(([l]) => l === want)) fail(`M4-H: the GPU group is missing the '${want}' tile: ${gpuTiles}`);
+  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Fan speed', 'Util', 'Voltage', 'VramTemp']) {
+    if (!gpuParsed.some(([l]) => l === want)) fail(`M16: the GPU group is missing the '${want}' tile: ${gpuTiles}`);
   }
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Util' && (t.querySelector('.stat-value')?.textContent ?? '') === '42')`, 8000))) {
     fail(`M4-H: the GPU Util tile is not 42 (the mock utilPct): ${gpuTiles}`);
@@ -1004,7 +1005,15 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Power' && (t.querySelector('.stat-value')?.textContent ?? '') === '38.8')`, 8000))) {
     fail(`M4N: the GPU Power tile is not 38.8 (the mock powerW fixture): ${gpuTiles}`);
   }
-  step('m4h-readout-groups', `M4-H/M4M/M4N: readout groups 'CPU,GPU'; CPU 4 tiles in order '${cpuParsed.map(([l]) => l).join(',')}' (incl. Power '${cpuParsed.find(([l]) => l === 'Power')?.[1]} W', Core Frequency '4.3 GHz'), GPU 6 tiles in order '${gpuParsed.map(([l]) => l).join(',')}' (incl. Util '42' + Power '38.8' - Util first in both)`);
+  // M16: the Voltage + VramTemp tiles read the mock telemetry (0.652 V /
+  // the 44..53 °C ramp).
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Voltage' && (t.querySelector('.stat-value')?.textContent ?? '') === '0.652')`, 8000))) {
+    fail(`M16: the GPU Voltage tile is not 0.652 (the mock gpuVoltageV): ${gpuTiles}`);
+  }
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'VramTemp' && /^\\d+$/.test(t.querySelector('.stat-value')?.textContent ?? ''))`, 8000))) {
+    fail(`M16: the GPU VramTemp tile is missing (expected the 44..53 °C ramp): ${gpuTiles}`);
+  }
+  step('m4h-readout-groups', `M4-H/M4M/M4N/M16: readout groups 'CPU,GPU'; CPU 4 tiles in order '${cpuParsed.map(([l]) => l).join(',')}' (incl. Power '${cpuParsed.find(([l]) => l === 'Power')?.[1]} W', Core Frequency '4.3 GHz'), GPU 8 tiles in order '${gpuParsed.map(([l]) => l).join(',')}' (incl. Util '42' + Power '38.8' + Voltage '0.652' + VramTemp - Util first in both)`);
 
   // --- M4-D2 (§3): the ReBAR pill is STANDALONE (no label kv row) --------
   // The mock fixture models a healthy setup: a multi-GiB BAR (rebarActive
@@ -1021,21 +1030,24 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (!/ReBAR on\|.*status-ok/.test(rebarPill)) fail(`M4-D2: the standalone ReBAR pill is '${rebarPill}' (expected the green 'ReBAR on')`);
   step('m4d2-gpu-rows', `GPU card: ReBAR standalone pill '${rebarPill.split('|')[0]}' (green), no PCIe row, no Resizable BAR label row`);
 
-  // ONE general GPU HEALTH card (M3-A + M3-C-I + M4-A): FIVE rows, honest
-  // per-row state, no Level Zero item, no IGCL detail line, NO clocks row
-  // ( dashboard picture); driver row detail = version + date like
-  // the device card; app row healthy detail = "App & Service Running"; the
-  // M4-A waiver row is the ONLY persistent waiver display in the app.
-  if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) fail('expected exactly one GPU Health card');
+  // ONE general GPU STATUS card (M3-A + M3-C-I + M4-A + M16): FIVE rows,
+  // honest per-row state, no Level Zero item, no IGCL detail line, NO
+  // clocks row (dashboard picture); M16: the card title is 'GPU Status'
+  // and the DEVICE row renders ABOVE the driver row (the flip); the OC row
+  // reads the stock-state text ('No Overclock Applied' / 'Overclock
+  // Applied'); driver row detail = version + date like the device card;
+  // app row healthy detail = "App & Service Running"; the M4-A waiver row
+  // is the ONLY persistent waiver display in the app.
+  if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) fail('expected exactly one GPU Status card');
   const statusTitle = await js(`document.querySelector('.health-card .card-title')?.textContent ?? ''`);
-  if (statusTitle.trim() !== 'GPU Health') fail(`health card title is '${statusTitle}'`);
+  if (statusTitle.trim() !== 'GPU Status') fail(`health card title is '${statusTitle}'`);
   if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
     fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app - the clocks row is removed)`);
+  if (rowIds !== 'device,driver,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected device,driver,oc,waiver,app - the M16 flip puts the device row FIRST)`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Driver installed', 'Device detected', 'OC Status', 'OC waiver', 'Arc Power working']) {
+  for (const want of ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working']) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   if (rowLabels.includes('Clocks normal')) fail('M3-C-I: the "Clocks normal" health row is still rendered');
@@ -1047,14 +1059,23 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   const appDetail = await js(`document.querySelector('.health-card .health-row[data-row="app"] .health-row-detail')?.textContent ?? ''`);
   if (appDetail.trim() !== 'App & Service Running') fail(`M3-C-I: app row detail is '${appDetail}' (expected 'App & Service Running')`);
-  // The mock boot state: driver + device + app rows ok, OC row unknown
-  // (nothing applied yet in this session).
+  // M16: the OC status row derives from the STOCK STATE - the mock boots
+  // at the featureset defaults, so the row reads 'No Overclock Applied'
+  // (ok) - never the old last-apply text. The OFFGRID knob
+  // (RID_MOCK_OFFGRID_FREQ_MHZ) deliberately boots the mock with a
+  // non-stock freq offset (the off-grid readout pin below) - the row then
+  // honestly reads 'Overclock Applied' (the knob's own expected shape).
+  const ocDetail = await js(`document.querySelector('.health-card .health-row[data-row="oc"] .health-row-detail')?.textContent ?? ''`);
+  const offgridBoot = process.env.RID_MOCK_OFFGRID_FREQ_MHZ !== undefined;
+  const wantOcDetail = offgridBoot ? 'Overclock Applied' : 'No Overclock Applied';
+  if (ocDetail.trim() !== wantOcDetail) fail(`M16: the OC status row reads '${ocDetail}' (expected '${wantOcDetail}'${offgridBoot ? ' - the off-grid fixture boots with a non-stock freq offset' : ' - the mock boots at stock'})`);
+  // The mock boot state: driver + device + app rows ok, OC row ok (stock),
+  // the waiver row drives the unknown/error dot.
   const dots = await js(`Array.from(document.querySelectorAll('.health-card .health-row .status-dot')).map((d) => d.className).join('|')`);
   if (!/status-ok/.test(dots)) fail(`no ok dot on the health card: '${dots}'`);
-  if (!/status-unknown/.test(dots)) fail(`no unknown dot (OC never applied) on the health card: '${dots}'`);
   if (await js(`document.querySelector('.health-card')?.textContent.includes('Level Zero')`)) fail('Level Zero is still a health item');
   if (await js(`!!document.querySelector('.igs-toggle')`)) fail('M3-A: the IGS toggle button is still rendered');
-  step('health-card', `one 'GPU Health' card: rows '${rowLabels}', driver '${driverDetail.trim()}', app '${appDetail.trim()}'`);
+  step('health-card', `one 'GPU Status' card: rows '${rowLabels}' (device above driver), driver '${driverDetail.trim()}', oc '${ocDetail.trim()}', app '${appDetail.trim()}'`);
 
   // --- M4-A (correction): the waiver STATUS row in the health card ---
   // The ONLY persistent waiver display in the app: green "Accepted" when the
@@ -1481,7 +1502,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   step('slider', `power slider set to 220 W (readout '${readoutBefore}')`);
 
   // --- M4-A (correction): the OC page renders NO waiver status --------
-  // The status row lives ONLY in the dashboard GPU Health card; this page
+  // The status row lives ONLY in the dashboard GPU Status card; this page
   // keeps nothing but the apply-time dialog gate (exercised below).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
     fail('M4-A: the OC page still renders the waiver status (dashboard health card only)');
@@ -1910,7 +1931,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 
   // (1b) NEGATIVE VOLT half-plane: the mirrored volt range -0.234..0.234 V
   // (a770) - a -0.050 V apply writes + reads back through the clamp (the
-  // finding-5b negative-volt e2e pin; step 0.005, so -0.05 is on-grid).
+  // finding-5b negative-volt e2e pin; M15 F4-fix: the exposed step is
+  // 0.001, so -0.05 is on-grid). M16 (nit): the step + the 0.234 max
+  // reachability are pinned below - the slider must actually reach +
+  // display the real ceiling (the old 0.005 step maxed at 0.230).
   const setVoltSlider = (value) => js(`(() => {
     const card = document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]');
     const input = card.querySelector('input[type="range"]');
@@ -1921,6 +1945,21 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   const voltMin = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('min')`);
   const voltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
   if (voltMin !== '-0.234' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.234..0.234 - the mirrored min)`);
+  // M15 F4-fix / M16 (nit 9a): the slider's step attribute is the pinned
+  // 0.001 grid - the old driver-reported 0.005 put the 0.234 ceiling
+  // OFF-GRID (the slider maxed at 0.230). The step + the reachability of
+  // the REAL ceiling are the regression pins here.
+  const voltStep = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('step')`);
+  if (voltStep !== '0.001') fail(`M16: the volt slider step is '${voltStep}' (expected 0.001 - the M15 F4-fix grid for the 0.234 ceiling)`);
+  const voltMaxReadout = await setVoltSlider(0.234);
+  if (voltMaxReadout.trim() !== '0.234 V') fail(`M16: the volt slider cannot reach/display the real ceiling: '${voltMaxReadout}' (expected '0.234 V' - the M15 F4-fix reachability pin)`);
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M16: the 0.234 V max apply success toast missing');
+  const maxVoltState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(maxVoltState.gpuVoltOffsetV - 0.234) > 1e-6) fail(`M16: the 0.234 V max apply did not stick: ${maxVoltState.gpuVoltOffsetV} (the 0.001 step must NOT re-snap it to 0.230)`);
+  step('m16-volt-max', `M16: volt slider step '${voltStep}', max '${voltMax}' reachable -> readout '${voltMaxReadout.trim()}', apply -> read-back ${maxVoltState.gpuVoltOffsetV} V (the 0.234 ceiling survives the clamp)`);
+  await clearToasts();
   const voltReadout = await setVoltSlider(-0.05);
   if (voltReadout.trim() !== '-0.050 V') fail(`M4-B: volt slider readout is '${voltReadout}' (expected '-0.050 V' - 3-decimal volt format)`);
   if (await floatingHidden()) fail('M4-B: floating Apply did not appear for the negative volt move');
@@ -2348,7 +2387,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   step('fan-axis', `B1: right-side axis '${axisTicks}' outside the plot, aligned to the grid, edge ticks clamped`);
   // M4-A (correction): the Fan page renders NO waiver status - the row
-  // lives only in the dashboard GPU Health card (the waiver was accepted
+  // lives only in the dashboard GPU Status card (the waiver was accepted
   // during the OC flow; the fan apply-time dialog gate is unaffected).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
     fail('M4-A: the fan page still renders the waiver status (dashboard health card only)');
@@ -2878,13 +2917,13 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (cpuLabels.split(',').join(',') !== 'Util,Core Frequency,Temperature,Power') {
     fail(`M4N: the monitoring CPU group order is '${cpuLabels}' (expected Util, Core Frequency, Temperature, Power - the dashboard order)`);
   }
-  if (gpuLabels.split(',').join(',') !== 'Util,Core clock,Memory clock,VRAM,Temperature,Power,Fan,FPS') {
-    fail(`M4N: the monitoring GPU group order is '${gpuLabels}' (expected Util, Core clock, Memory clock, VRAM, Temperature, Power, Fan, FPS)`);
+  if (gpuLabels.split(',').join(',') !== 'Util,Core clock,Memory clock,VRAM,Voltage,VramTemp,Temperature,Power,Fan,FPS') {
+    fail(`M16: the monitoring GPU group order is '${gpuLabels}' (expected Util, Core clock, Memory clock, VRAM, Voltage, VramTemp, Temperature, Power, Fan, FPS - the M16 Voltage + VramTemp tiles)`);
   }
   for (const want of ['Core Frequency', 'Util', 'Temperature', 'Power']) {
     if (!cpuLabels.includes(want)) fail(`monitoring CPU group missing '${want}' (got '${cpuLabels}')`);
   }
-  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Util', 'Fan', 'FPS', 'VRAM']) {
+  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Util', 'Fan', 'FPS', 'VRAM', 'Voltage', 'VramTemp']) {
     if (!gpuLabels.includes(want)) fail(`monitoring GPU group missing '${want}' (got '${gpuLabels}')`);
   }
   if (await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-label')).some((l) => l.textContent === 'Utilization' || l.textContent === 'GPU memory')`)) {
@@ -2914,7 +2953,11 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     fail(`CPU Temperature tile is '${cpuTemp}' (expected '61'|'62' - the varying mock${frozenActive ? ', or the frozen "-"' : ''})`);
   }
   if ((await js(tileOf('gpu', 'VRAM'))) !== '3.0') fail(`VRAM tile is '${await js(tileOf('gpu', 'VRAM'))}' (expected '3.0' GB - 2971324416 / 1e9, one decimal)`);
-  step('mon-readout', `monitoring readout groups: CPU '${cpuLabels}', GPU '${gpuLabels}'; CPU Util 42 % / Core Frequency 4.3 GHz / CPU temp ${cpuTemp} °C / VRAM 3.0 GB (compact)`);
+  // M16: the Voltage + VramTemp tiles read the mock telemetry (0.652 V /
+  // tempCBase + 8 + tick%10 -> 44..53 °C - the temp is pattern-matched).
+  if ((await js(tileOf('gpu', 'Voltage'))) !== '0.652') fail(`Voltage tile is '${await js(tileOf('gpu', 'Voltage'))}' (expected '0.652' V - the mock gpuVoltageV)`);
+  if (!/^\d+$/.test(await js(tileOf('gpu', 'VramTemp')))) fail(`VramTemp tile is '${await js(tileOf('gpu', 'VramTemp'))}' (expected the 44..53 °C ramp)`);
+  step('mon-readout', `monitoring readout groups: CPU '${cpuLabels}', GPU '${gpuLabels}'; CPU Util 42 % / Core Frequency 4.3 GHz / CPU temp ${cpuTemp} °C / VRAM 3.0 GB / Voltage 0.652 V / VramTemp ${await js(tileOf('gpu', 'VramTemp'))} °C (compact)`);
 
   // M4-I (C1): RID_MOCK_FROZEN_TEMP=1 -> the mock temp is CONSTANT, so the
   // shared frozenDrop reports null after 5 identical samples - the CPU
@@ -2986,8 +3029,8 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   // monitoring -> the readout grid returns.
   await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Monitoring'); b.click(); })()`);
-  if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 8`, 8000))) {
-    fail('M9: switching back to the Monitoring view did not return the readout grid');
+  if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 10`, 8000))) {
+    fail('M16: switching back to the Monitoring view did not return the readout grid (10 GPU tiles - the M16 Voltage + VramTemp added)');
   }
   // The FPS tile is LIVE after the round trip (the S2 re-registration - the
   // poll writes into the re-registered tile, never the detached one).
@@ -4386,9 +4429,24 @@ export async function runFeaturesetVerify(win, fsId) {
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the per-featureset assertions (F4: the
   // b580 apply-dialog section below must see a clean page, not the boot
-  // modal).
-  const bootAccepted = await bootWaiverStep(win, js, waitFor);
-  step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: boot prompt SKIPPED entirely (M4-D permanent acceptance)' : 'cancelled'})`);
+  // modal). M17 (B50-class): OC-locked devices (pro-b50 / arc-igpu - no OC
+  // controls, no waiver) must NOT prompt at boot - the driver refuses
+  // ctlOverclockWaiverSet with UNSUPPORTED_FEATURE, a prompt the user could
+  // never satisfy.
+  let bootAccepted = false;
+  if (noOc) {
+    if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 15000))) {
+      fail(`M17: the no-OC boot did not land the dashboard health card: page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+    }
+    await sleep(600);
+    if (await js(`!!document.querySelector('.modal')`)) {
+      fail(`M17: the boot waiver prompt appeared on an OC-locked device ('${fsId}') - no OC, no waiver`);
+    }
+    step('waiver-boot', `no-OC boot waiver prompt ABSENT (OC-locked device - no waiver to accept)`);
+  } else {
+    bootAccepted = await bootWaiverStep(win, js, waitFor);
+    step('waiver-boot', `boot waiver prompt handled (${process.env.RID_MOCK_WAIVER_PERSISTED === '1' ? 'persisted acceptance: boot prompt SKIPPED entirely (M4-D permanent acceptance)' : 'cancelled'})`);
+  }
 
   // --- boot: wait for caps + state in the store -----------------------------
   // The renderer boot (health -> devices -> probes -> caps -> telemetry)
@@ -4403,32 +4461,37 @@ export async function runFeaturesetVerify(win, fsId) {
   step('boot-caps', `boot delivered caps (device card 'Compute' row)`);
 
   // M4-A review F2: the featureset variants must not drift from the shared
-  // waiver display - the dashboard GPU Health card + waiver row are pinned
-  // here like the default flow (5 rows, live per-caps waiver detail).
+  // waiver display - the dashboard GPU Status card + waiver row are pinned
+  // here like the default flow (5 rows, live per-caps waiver detail; M16:
+  // the device row renders ABOVE the driver row + the OC row reads the
+  // stock-state text).
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) {
-    fail('expected exactly one GPU Health card');
+    fail('expected exactly one GPU Status card');
   }
   if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
     fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app)`);
+  if (rowIds !== 'device,driver,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected device,driver,oc,waiver,app - the M16 flip)`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Driver installed', 'Device detected', 'OC Status', 'OC waiver', 'Arc Power working']) {
+  for (const want of ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working']) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
-  const waiverExpected = bootAccepted ? 'Accepted' : 'Not Accepted';
+  // M17 (B50-class): OC-locked devices read the neutral no-waiver text
+  // (ok dot, never clickable) - the old 'Not Accepted' error row was an
+  // un-answerable dead end there.
+  const waiverExpected = noOc ? 'Not supported on this GPU' : (bootAccepted ? 'Accepted' : 'Not Accepted');
   if (!(await waitFor(win, `(${waiverDetailExpr}).trim() === '${waiverExpected}'`, 5000))) {
     fail(`M4-A: the health-card waiver row reads '${await js(waiverDetailExpr)}' (expected '${waiverExpected}')`);
   }
   const waiverDot = await js(`document.querySelector('.health-card .health-row[data-row="waiver"] .status-dot')?.className ?? ''`);
-  if (!(bootAccepted ? /status-ok/ : /status-error/).test(waiverDot)) {
-    fail(`M4-A: the waiver row dot is '${waiverDot}' (expected ${bootAccepted ? 'ok (green)' : 'error (red)'})`);
+  if (!(noOc || bootAccepted ? /status-ok/ : /status-error/).test(waiverDot)) {
+    fail(`M4-A: the waiver row dot is '${waiverDot}' (expected ${noOc || bootAccepted ? 'ok (green)' : 'error (red)'})`);
   }
   const waiverClickable = await js(`document.querySelector('.health-card .health-row[data-row="waiver"]')?.classList.contains('health-row-clickable')`);
-  if (waiverClickable === bootAccepted) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${!bootAccepted} - clickable only while unaccepted)`);
-  step('health-card', `GPU Health card: 5 rows '${rowLabels}'; waiver row 'OC waiver - ${waiverExpected}' (${bootAccepted ? 'green, no click action' : 'red, clickable'})`);
+  if (waiverClickable === (noOc || bootAccepted)) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${noOc || bootAccepted ? 'not clickable' : 'clickable'} - clickable only while unaccepted on an OC-capable device)`);
+  step('health-card', `GPU Status card: 5 rows '${rowLabels}'; waiver row 'OC waiver - ${waiverExpected}' (${noOc || bootAccepted ? 'green, no click action' : 'red, clickable'})`);
 
   // --- tuning surface per featureset (M4-D2: #/overclocking -> #/tuning) ---
   await gotoOverclocking();
@@ -4496,7 +4559,7 @@ export async function runFeaturesetVerify(win, fsId) {
     }
   }
   // M4-A review F2: the OC page renders NO waiver status (the row lives only
-  // in the dashboard GPU Health card - the apply-time dialog gate below is
+  // in the dashboard GPU Status card - the apply-time dialog gate below is
   // unaffected).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
     fail('M4-A: the OC page still renders the waiver status (dashboard health card only)');
@@ -4538,7 +4601,7 @@ export async function runFeaturesetVerify(win, fsId) {
     step('fan-editor', `'${fsId}': fan editor rendered (M4-C: Fixed chip disabled + honest note)`);
   }
   // M4-A review F2: the Fan page renders NO waiver status either (the row
-  // lives only in the dashboard GPU Health card).
+  // lives only in the dashboard GPU Status card).
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('OC waiver')`)) {
     fail('M4-A: the fan page still renders the waiver status (dashboard health card only)');
   }
@@ -4770,13 +4833,13 @@ export async function runNoIntelVerify(win) {
 
   // --- 3. the health rows: honest no-Intel texts, NEVER the raw errors ------
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 10000))) {
-    fail('expected exactly one GPU Health card');
+    fail('expected exactly one GPU Status card');
   }
   if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
     fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'driver,device,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected driver,device,oc,waiver,app)`);
+  if (rowIds !== 'device,driver,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected device,driver,oc,waiver,app - the M16 flip puts the device row FIRST)`);
   const driverDetail = await js(`document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent ?? ''`);
   if (driverDetail.trim() !== 'No Intel Driver Found') {
     fail(`1.0.1: the driver row reads '${driverDetail}' (expected 'No Intel Driver Found' - NEVER the raw IGCL/error text)`);
@@ -5183,7 +5246,7 @@ export async function runFanGateVerify(win, backend) {
   const clickApply = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings')); if (!b) return false; b.click(); return true; })()`);
   const clickRemove = () => js(`(() => { const b = Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Remove point')); if (!b) return false; b.click(); return true; })()`);
   // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
-  // GPU Health card - assert the row state there (red + clickable while
+  // GPU Status card - assert the row state there (red + clickable while
   // unaccepted, green + no click action once accepted).
   const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
   const expectRow = async (detail, clickable) => {
@@ -5374,19 +5437,26 @@ export async function runBootApplyVerify(win, backend, store) {
   }
   step('boot-apply-post-state', `tuning shows the POST-apply state: powerLimit slider + Driver readout '230 W' (the ordering-fix regression)`);
 
-  // M4N (A.1): the boot-apply OUTCOME reached the renderer - the dashboard
-  // OC Status row is GREEN and its detail carries the applied profile's
-  // name (the record reads "Profile 'Boot Apply Probe' applied"; the
-  // status-ok class sits on the inner .status-dot, not the row element).
+  // M4N (A.1) + M16: the boot-apply OUTCOME reached the renderer - the
+  // dashboard OC status row is GREEN and reads the M16 STOCK-STATE text:
+  // the boot-applied 230 W differs from the 210 W stock default, so the
+  // row must read 'Overclock Applied' (the last-apply profile NAME is no
+  // longer displayed in the row - the record is pinned via
+  // window.arcPower.bootApplyOutcome() below). The status-ok class sits on
+  // the inner .status-dot, not the row element.
   await js(`location.hash = '#/dashboard'`);
   if (!(await waitFor(win, `!!document.querySelector('.health-row[data-row="oc"] .status-dot.status-ok')`, 8000))) {
-    fail(`M4N: the OC Status row is not green after the boot apply: '${await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`)}'`);
+    fail(`M4N: the OC status row is not green after the boot apply: '${await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`)}'`);
   }
   const ocRowText = await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`);
-  if (!ocRowText.includes('Boot Apply Probe')) {
-    fail(`M4N: the OC Status row detail does not carry the applied profile name ('Profile Boot Apply Probe applied'): '${ocRowText}'`);
+  if (!ocRowText.includes('Overclock Applied')) {
+    fail(`M16: the OC status row reads '${ocRowText}' (expected 'Overclock Applied' - the boot-applied 230 W is non-stock)`);
   }
-  step('boot-apply-outcome-row', `M4N: the OC Status health row is GREEN after the boot apply (detail '${ocRowText.trim()}')`);
+  const bootOutcome = await js(`window.arcPower.bootApplyOutcome()`);
+  if (!bootOutcome || bootOutcome.ok !== true || !bootOutcome.detail.includes('Boot Apply Probe')) {
+    fail(`M4N: the boot-apply outcome record does not carry the applied profile ("Profile 'Boot Apply Probe' applied"): '${JSON.stringify(bootOutcome)}'`);
+  }
+  step('boot-apply-outcome-row', `M16/M4N: the OC status health row is GREEN after the boot apply (reads '${ocRowText.trim()}'); the bootApplyOutcome record carries '${bootOutcome.detail}'`);
 
   // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   await runCloseToTrayProbe(win);
@@ -5416,8 +5486,10 @@ export async function runBootApplyVerify(win, backend, store) {
 //   (b) getCurrentSettings(0).powerLimitW === 315 - the post-apply DEVICE
 //       state (the tuning slider would display the stock-snapped 252, so
 //       the assertion is the device state, NOT the slider);
-//   (c) the OC Status health row is GREEN with the applied profile name
-//       (the M4N window-path bootApplyOutcome pattern).
+//   (c) the OC status health row is GREEN and reads the M16 stock-state
+//       text ('Overclock Applied' - the boot-applied 315 W is non-stock);
+//       the profile-name record is pinned via bootApplyOutcome() (the
+//       M4N window-path bootApplyOutcome pattern).
 // THE regression pin: the old code refused this exact seed with the mode
 // message and the boot-apply log recorded applied:false.
 
@@ -5471,19 +5543,25 @@ export async function runBootApplyExtVerify(win, backend, store) {
   step('boot-apply-ext-device-state', `M4O: the post-apply DEVICE state is ${state.powerLimitW} W (315 - the stock-mode gate did not block the profile apply)`);
 
   // (c) the boot-apply OUTCOME reached the renderer - the dashboard OC
-  // Status row is GREEN and its detail carries the applied profile's name
-  // (the M4N pattern: the record reads "Profile 'Boot Apply Probe'
-  // applied"; the status-ok class sits on the inner .status-dot, not the
-  // row element).
+  // status row is GREEN and reads the M16 STOCK-STATE text: the boot-applied
+  // 315 W differs from the 210 W stock default, so the row reads
+  // 'Overclock Applied' (the last-apply profile NAME is no longer displayed
+  // in the row - the record is pinned via window.arcPower.bootApplyOutcome()
+  // below; the status-ok class sits on the inner .status-dot, not the row
+  // element).
   await js(`location.hash = '#/dashboard'`);
   if (!(await waitFor(win, `!!document.querySelector('.health-row[data-row="oc"] .status-dot.status-ok')`, 8000))) {
-    fail(`M4O: the OC Status row is not green after the boot apply: '${await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`)}'`);
+    fail(`M4O: the OC status row is not green after the boot apply: '${await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`)}'`);
   }
   const ocRowText = await js(`document.querySelector('.health-row[data-row="oc"]')?.textContent ?? ''`);
-  if (!ocRowText.includes('Boot Apply Probe')) {
-    fail(`M4O: the OC Status row detail does not carry the applied profile name ('Profile Boot Apply Probe applied'): '${ocRowText}'`);
+  if (!ocRowText.includes('Overclock Applied')) {
+    fail(`M16: the OC status row reads '${ocRowText}' (expected 'Overclock Applied' - the boot-applied 315 W is non-stock)`);
   }
-  step('boot-apply-ext-outcome-row', `M4O: the OC Status health row is GREEN after the boot apply (detail '${ocRowText.trim()}')`);
+  const bootOutcome = await js(`window.arcPower.bootApplyOutcome()`);
+  if (!bootOutcome || bootOutcome.ok !== true || !bootOutcome.detail.includes('Boot Apply Probe')) {
+    fail(`M4O: the boot-apply outcome record does not carry the applied profile ("Profile 'Boot Apply Probe' applied"): '${JSON.stringify(bootOutcome)}'`);
+  }
+  step('boot-apply-ext-outcome-row', `M16/M4O: the OC status health row is GREEN after the boot apply (reads '${ocRowText.trim()}'); the bootApplyOutcome record carries '${bootOutcome.detail}'`);
 
   // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step
   // (the exactly-one log assert above ran BEFORE it - hide/show never
@@ -5491,6 +5569,108 @@ export async function runBootApplyExtVerify(win, backend, store) {
   await runCloseToTrayProbe(win);
 
   console.log('\nUI VERIFY OK (boot-apply-ext)\n' + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// M16-F1 (D2) - tray-apply variant (RID_MOCK_TRAY_APPLY=1)
+// ---------------------------------------------------------------------------
+//
+// The session seed wrote activeProfileId 'boot-apply-probe' + the probe
+// profile itself (the in-range 230 W values) WITHOUT ocOnBoot - the boot
+// NEVER auto-applies, and the tray menu's "Apply active profile" item is
+// enabled. The seed ALSO writes waiverAccepted:true (the tray apply must
+// pass the waiver gate), so the boot prompt is SKIPPED entirely (the
+// M4-D permanent-acceptance shape). This runner asserts the D2 fix end to
+// end:
+//   (a) the boot landed at STOCK: the dashboard OC status row reads
+//       'No Overclock Applied' (nothing applied yet - the tray variant
+//       must NOT boot an auto-apply);
+//   (b) the recorded tray "Apply active profile" click handler runs the
+//       REAL main-side apply (applyProfile) - the tray probe recorded it
+//       from the menu template;
+//   (c) the renderer PUSH flipped the OC row to 'Overclock Applied' IN
+//       PLACE (main sent device:state-updated with the post-apply
+//       read-back - the renderer's store.state slot refreshed, no
+//       navigation) - the D2 regression: the row used to keep the stale
+//       pre-apply 'No Overclock Applied' for the rest of the session;
+//   (d) the DRIVER really runs the applied values (the mock read-back
+//       agrees: 230 W).
+//
+// Modeled on runBootApplyVerify (same shared store/backend, same
+// close-to-tray ending) - a separate runner because the tray-apply seed's
+// active profile would trip the DEFAULT flow's no-profile pins.
+
+/**
+ * @param {import('electron').BrowserWindow} win
+ * @param {import('./backend/mock-backend.js').MockBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ * @param {() => { builds: number, toggleHandler: null | (() => void), applyHandler: null | (() => void) }} getTrayProbe
+ */
+export async function runTrayApplyVerify(win, backend, store, getTrayProbe) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const ocRowExpr = `document.querySelector('.health-card .health-row[data-row="oc"] .health-row-detail')?.textContent ?? ''`;
+
+  // The seed wrote waiverAccepted:true - the boot prompt is SKIPPED
+  // entirely (the M4-D permanent-acceptance shape). Assert the boot
+  // sequence landed (the dashboard health card renders after caps arrive)
+  // and no modal ever appeared.
+  if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 15000))) {
+    fail(`M16-F1: the tray-apply session did not land the dashboard health card: page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`))}'`);
+  }
+  await sleep(600);
+  if (await js(`!!document.querySelector('.modal')`)) {
+    fail('M16-F1: the boot waiver prompt appeared in the tray-apply session (the seed wrote waiverAccepted:true - the boot prompt must be skipped)');
+  }
+  step('tray-apply-waiver', 'tray-apply session: the seed writes an ACCEPTED store (the tray "Apply active profile" must pass the waiver gate) - boot prompt SKIPPED entirely');
+
+  // (a) booted at STOCK: the row reads 'No Overclock Applied' - the tray
+  // variant never auto-applies at boot (ocOnBoot is never seeded for it).
+  const ocBefore = (await js(ocRowExpr)).trim();
+  if (ocBefore !== 'No Overclock Applied') {
+    fail(`M16-F1: the OC status row must read 'No Overclock Applied' BEFORE the tray apply (got '${ocBefore}' - the tray variant must boot at stock; ocOnBoot is never seeded for it)`);
+  }
+  step('tray-apply-before', `M16-F1: the OC status row reads '${ocBefore}' before the tray apply (the boot never auto-applies)`);
+
+  // (b) the recorded tray click handler exists (the menu template wired it
+  // to trayApplyActiveProfile - the D2 wiring) and runs the REAL apply.
+  const probe = getTrayProbe();
+  if (typeof probe.applyHandler !== 'function') {
+    fail('M16-F1: the tray probe did not record the "Apply active profile" click handler');
+  }
+  probe.applyHandler();
+
+  // (c) THE D2 REGRESSION: the pushed post-apply read-back flipped the row
+  // IN PLACE (device:state-updated -> store.state -> the dashboard
+  // re-render sig). The old code never pushed - the row stayed stale
+  // 'No Overclock Applied' for the rest of the session.
+  if (!(await waitFor(win, `(${ocRowExpr}).trim() === 'Overclock Applied'`, 8000))) {
+    fail(`M16-F1: the OC status row did not flip to 'Overclock Applied' after the tray apply (still '${(await js(ocRowExpr)).trim()}' - the pushed post-apply read-back never refreshed the store state)`);
+  }
+  step('m16-tray-apply-row', `M16-F1: tray apply -> the dashboard OC status row flipped '${ocBefore}' -> 'Overclock Applied' IN PLACE (main pushed the post-apply read-back via device:state-updated)`);
+
+  // (d) the DRIVER really runs the applied values - the mock read-back
+  // agrees with the probe profile (230 W, 100 MHz) - the row flipped for
+  // the RIGHT reason, not a cosmetic store patch.
+  const driver = await backend.getCurrentSettings(0);
+  if (Math.abs(driver.powerLimitW - 230) > 1e-6 || driver.gpuFreqOffsetMhz !== 100) {
+    fail(`M16-F1: the driver read-back after the tray apply is PL=${driver.powerLimitW} W / freq=${driver.gpuFreqOffsetMhz} MHz (expected the probe profile's 230 W / 100 MHz - the apply must really land)`);
+  }
+  step('tray-apply-driver', `M16-F1: the driver read-back after the tray apply is ${driver.powerLimitW} W / ${driver.gpuFreqOffsetMhz} MHz (the probe profile really landed)`);
+
+  // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
+  await runCloseToTrayProbe(win);
+
+  console.log('\nUI VERIFY OK (tray-apply)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }
 
@@ -5509,10 +5689,14 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //   (b) the overlay DOM lines - ONLY the STABLE fields pinned exactly
 //       ('CPU 42%', '4.3 GHz', '61°C'|'62°C', '125.5 W'|'-' - the M13 CPU
 //       watt field with the RID_MOCK_NO_POWER_METER degrade, 'GPU 42%',
-//       '2187 MHz', '38.8 W', '1030 RPM' + the M14 'RAM 12.4 GB' + 'VRAM 3.0
+//       '0.652 V', '38.8 W', '1030 RPM' + the M14 'RAM 12.4 GB' + 'VRAM 3.0
 //       GB' rows); the climbing clock/temp are pattern-matched (/GPU 42%
-//       \d+ MHz  2187 MHz  \d+°C  38\.8 W  1030 RPM/ - M12: the VRAM
-//       field LEFT the GPU row); the FPS row pins the FULL line -
+//       \d+ MHz  \d+°C  0\.652 V  38\.8 W  1030 RPM/ - M16: the GPU line is
+//       Util / Core clock / Temp / Voltage / Power / Fan - the mem-clock
+//       LEFT the row (it leads the VRAM row now) and the voltage rides
+//       INSIDE the row between the temp and the power fields; the
+//       standalone #overlay-voltage div does NOT exist); the FPS row pins
+//       the FULL line -
 //       'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -' unless
 //       RID_MOCK_FPS=1 -> 'FPS 60  AVG 58  1% Low 52  0.1% Low 42
 //       99% FPS 58' (M7a/M12: the percentile + AVG stats ride the FPS
@@ -5535,10 +5719,11 @@ export async function runBootApplyExtVerify(win, backend, store) {
 //       off -> persisted false + hidden (the shortcut does NOTHING while
 //       off), on -> persisted true + shown (the shortcut flips the
 //       visibility only, never the persisted value);
-//   (f3/f3b/f3c/f3d/f3e) the stat tickbox round trips (gpu-fan, the M7a 1%
-//       Low / 99% FPS pair, the M12 AVG / 0.1% Low pair, the M13
+//   (f3/f3b/f3c/f3d/f3e/f3f/f3g) the stat tickbox round trips (gpu-fan, the
+//       M7a 1% Low / 99% FPS pair, the M12 AVG / 0.1% Low pair, the M13
 //       Graphics-API row, the M12 Memory row + the gpu-vram VRAM row, the
-//       frametime strip);
+//       frametime strip, the M16 gpu-voltage GPU-row field + the gpu-vram-temp
+//       VRAM-row tail);
 //   (f5) the color swatch round trip (overlayColor + the CSSOM var + the
 //       canvas stroke);
 //   (f6) M7b (fix 4): the background box round trip - the toggle, the
@@ -5614,8 +5799,19 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').trim().endsWith('${wantCpuWatt}')`, 10000))) {
     fail(`M13: the overlay CPU line lacks the watt field '${wantCpuWatt}': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
-  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  2187 MHz  \\d+°C  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
-    fail(`M5: the overlay GPU line does not match the pinned pattern: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  // M16 (amended 2026-08-11): the MEM-CLOCK field LEFT the GPU row (it
+  // leads the VRAM row now) and the GPU VOLTAGE is a FIELD INSIDE the GPU
+  // row (between the temp and the power fields) - the standalone Voltage
+  // row is GONE. The GPU line is Util / Core clock / Temp / Voltage /
+  // Power / Fan: 'GPU 42%  <clock> MHz  <temp>°C  0.652 V  38.8 W  1030
+  // RPM' (the mock's gpuVoltageV 0.652 - volts keep 3 decimals).
+  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  \\d+°C  0\\.652 V  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
+    fail(`M16: the overlay GPU line does not match the pinned pattern (Util / Core clock / Temp / Voltage 0.652 V / Power / Fan): '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  // M16: the standalone Voltage row is REMOVED - the #overlay-voltage div
+  // must not exist (the voltage is a GPU-row field now).
+  if (await ojs(`!!document.getElementById('overlay-voltage')`)) {
+    fail('M16: the standalone #overlay-voltage row still exists (the GPU voltage must be a field INSIDE the GPU row - the row div was removed)');
   }
   // M7a/M12: the FPS row carries the percentile + AVG stats - the full
   // pinned line: 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
@@ -5654,16 +5850,20 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   // M14: the Memory row - the sysStats fixture's memoryUsedBytes
   // 12400000000 (12.4 GB - decimal, the fixture-wins composition; M13:
-  // the row label reads 'RAM') and the VRAM row - the mock's
-  // gpuMemUsedBytes 2971324416 -> '3.0 GB' (the gpu-vram field LEFT the
-  // GPU row; the standalone row below it carries the value).
+  // the row label reads 'RAM'). M16: the VRAM row now carries
+  // 'MemClock;VRAM;VramTEMP' - the mock's memClockMhz 2187, gpuMemUsedBytes
+  // 2971324416 -> '3.0 GB' and vramTempC = tempCBase + 8 + (tick % 10)
+  // (the 44|..|53°C ramp - pattern-matched: /2187 MHz  3\.0 GB  \d+°C/).
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM 12.4 GB'`, 10000))) {
     fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected 'RAM 12.4 GB' - the sysStats fixture's memoryUsedBytes)`);
   }
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').trim() === 'VRAM 3.0 GB'`, 10000))) {
-    fail(`M12: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM 3.0 GB' - the mock fixture's gpuMemUsedBytes)`);
+  // M16: the VRAM row carries 'MemClock;VRAM;VramTEMP' - the mock's
+  // memClockMhz 2187, gpuMemUsedBytes 2971324416 ('3.0 GB') and the
+  // vramTempC ramp (tempCBase + 8 + tick%10 -> 44..53°C - pattern-matched).
+  if (!(await waitFor(overlayWin, `/VRAM 2187 MHz  3\\.0 GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 10000))) {
+    fail(`M16: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM 2187 MHz  3.0 GB  <temp>°C' - MemClock;VRAM;VramTEMP)`);
   }
-  step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'; memory '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'; gpu matches the pinned pattern (stable fields + climbing clock/temp - no VRAM field); vram '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'; api '${apiPin}' (row order: vram -> api -> frametime strip); fps '${fpsPin}'`);
+  step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'; memory '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'; gpu matches the pinned pattern (Util / Core clock / Temp / Voltage 0.652 V / Power / Fan - the voltage rides INSIDE the GPU row, no #overlay-voltage row); vram '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (MemClock;VRAM;VramTEMP); api '${apiPin}' (row order: vram -> api -> frametime strip); fps '${fpsPin}'`);
   // M6: the stock color applies at boot (the seeded white) - the
   // --overlay-color CSS var drives the line color (the renderer applies
   // the pushed hex via CSSOM; the var fallback is the stock white).
@@ -5768,7 +5968,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   await sleep(500);
   const scaled = await js(`window.arcPower.overlayGetState()`);
   if (Math.abs(scaled.bounds.width - 460 * 2) > 2 || Math.abs(scaled.bounds.height - 170 * 2) > 2) {
-    fail(`M5: the scale 2 patch did not resize the overlay (bounds ${JSON.stringify(scaled.bounds)} - expected ~920x340)`);
+    fail(`M16: the scale 2 patch did not resize the overlay (bounds ${JSON.stringify(scaled.bounds)} - expected ~920x340 - the base height is back to 170: the Voltage row is a GPU-row FIELD now, not a standalone line)`);
   }
   step('m5-geometry', `position patch -> bottom-right corner (bounds ${JSON.stringify(ps.bounds)} vs display ${JSON.stringify(display)}); scale patch -> ${scaled.bounds.width}x${scaled.bounds.height}`);
 
@@ -5997,22 +6197,58 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     step('m13-cpu-power-tickbox', 'the CPU Wattage tickbox round trip SKIPPED (RID_MOCK_NO_POWER_METER set - the on-shape tail is \'-\'; the wantCpuWatt pin above covers it)');
   }
 
-  // (f3e) M12: the VRAM-row stat - the gpu-vram tickbox round-trips the
-  // same way: unchecking it empties the row (the field is GONE from the
-  // GPU row too - the gpuLine pin above already proves the order), the
-  // re-check restores 'VRAM 3.0 GB'.
+  // (f3e) M16: the VRAM-row stats - the gpu-vram tickbox round-trips the
+  // same way, but the row does NOT empty (the mem-clock + the VRAM-temp
+  // fields stay - the row is MemClock;VRAM;VramTEMP): unchecking drops
+  // only the '3.0 GB' field, re-checking restores the full row.
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-vram') === false)`, 5000))) {
     fail('M12: unchecking the VRAM tickbox did not persist overlayStats without gpu-vram');
   }
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').trim() === ''`, 5000))) {
-    fail(`M12: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected '' after unchecking gpu-vram - the row fully off writes '')`);
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').includes('3.0 GB') === false`, 5000))) {
+    fail(`M16: the overlay VRAM row still shows the VRAM field after unchecking gpu-vram: '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').trim() === 'VRAM 3.0 GB'`, 5000))) {
-    fail(`M12: the overlay VRAM row did not regain 'VRAM 3.0 GB' after re-checking: '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(overlayWin, `/VRAM 2187 MHz  3\\.0 GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 5000))) {
+    fail(`M16: the overlay VRAM row did not regain the full 'MemClock;VRAM;VramTEMP' row after re-checking: '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'`);
   }
-  step('m12-vram-tickbox', 'the VRAM tickbox round trip: uncheck -> the VRAM row writes \'\'; re-check -> \'VRAM 3.0 GB\' again');
+  step('m12-vram-tickbox', 'the VRAM tickbox round trip: uncheck -> the \'3.0 GB\' field vanishes from the VRAM row (mem-clock + vram-temp stay); re-check -> \'VRAM 2187 MHz  3.0 GB  <temp>°C\' again');
+
+  // (f3f) M16 (nit 9b): the GPU-voltage stat - a GPU-row FIELD (between the
+  // temp and the power fields), so unchecking it drops ONLY the '0.652 V'
+  // field from the GPU line (the row itself stays), re-checking restores
+  // the full pinned line.
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-voltage"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-voltage') === false)`, 5000))) {
+    fail('M16: unchecking the GPU Voltage tickbox did not persist overlayStats without gpu-voltage');
+  }
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('0.652 V') === false`, 5000))) {
+    fail(`M16: the overlay GPU line still shows the voltage field after unchecking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  \\d+°C  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
+    fail(`M16: the GPU line lost more than the voltage field after unchecking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-voltage"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  \\d+°C  0\\.652 V  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
+    fail(`M16: the overlay GPU line did not regain the voltage field after re-checking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  step('m16-gpu-voltage-tickbox', 'the GPU Voltage tickbox round trip: uncheck -> the \'0.652 V\' field vanishes from the GPU row (the rest stays); re-check -> the full row again');
+
+  // (f3g) M16 (nit 9b): the VRAM-temp stat - the trailing field of the VRAM
+  // row: unchecking drops the '<temp>°C' tail (MemClock;VRAM remain),
+  // re-checking restores the full row.
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram-temp"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-vram-temp') === false)`, 5000))) {
+    fail('M16: unchecking the VRAM temp tickbox did not persist overlayStats without gpu-vram-temp');
+  }
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').trim() === 'VRAM 2187 MHz  3.0 GB'`, 5000))) {
+    fail(`M16: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM 2187 MHz  3.0 GB' after unchecking gpu-vram-temp - the temp tail drops, MemClock;VRAM stay)`);
+  }
+  await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram-temp"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(overlayWin, `/VRAM 2187 MHz  3\\.0 GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 5000))) {
+    fail(`M16: the overlay VRAM row did not regain the temp field after re-checking gpu-vram-temp: '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'`);
+  }
+  step('m16-vram-temp-tickbox', 'the VRAM temp tickbox round trip: uncheck -> the \'<temp>°C\' tail vanishes from the VRAM row (MemClock;VRAM stay); re-check -> \'VRAM 2187 MHz  3.0 GB  <temp>°C\' again');
 
   // (f4) M6: the frametime stat is NOT a line - unchecking it HIDES the
   // canvas strip AND the value line below it (M6-amd2: the stat controls

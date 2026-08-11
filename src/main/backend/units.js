@@ -173,6 +173,16 @@ export const TEMP_LIMIT_MAX_C = 90;
 export const VOLT_OFFSET_MAX_V = 0.234;
 
 /**
+ * M15 (F4-fix): the EXPOSED voltage-offset step (V). The driver props report
+ * step 0.005, which puts the pinned 0.234 V ceiling OFF-GRID (the last
+ * 0.005-multiple below it is 0.230 - the user's report: the slider maxed at
+ * 0.230 V). The exposed step is pinned to 0.001 V so the slider can actually
+ * reach + display the real 0.234 V ceiling (the driver accepts any value up
+ * to it - live probe: 0.234 applies, 0.235 is refused).
+ */
+export const VOLT_OFFSET_STEP_V = 0.001;
+
+/**
  * Clamp a gpuLock pair to the DOCUMENTED ABSOLUTE bounds before it reaches
  * the driver (M4-B: the lock pair is an absolute VF point, not an offset -
  * the voltage bound is the absolute ceiling GPU_LOCK_VOLT_MAX_V, floor 0

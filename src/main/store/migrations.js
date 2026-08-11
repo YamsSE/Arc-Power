@@ -9,8 +9,17 @@
 // ABSENT-FIELD DEFAULTS mechanism in loadSettings (like ocMode and
 // advancedModeAccepted) - an old file without them reads false, so there is
 // deliberately NO SCHEMA_VERSION bump (Round-1 F8).
+// M16 (B1): settings gains the M16 overlay stat ids (gpu-voltage +
+// gpu-vram-temp). This one DOES bump the schema (v2 -> v3): a persisted
+// overlayStats from M15 must gain the new ids ONCE (the new overlay
+// fields would silently vanish for upgraded users), and the union must
+// NEVER run on a file that already carries the user's post-M16 choices -
+// an every-load union would resurrect a stat the user intentionally
+// unchecked (the tickbox round-trip regression). The one-time migration
+// is the only shape that upgrades old files without re-enabling later
+// unchecks.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * v0 -> v1: adopt schemaVersion and normalize.
@@ -63,6 +72,40 @@ const MIGRATIONS = [
         activeProfileId: typeof data.activeProfileId === 'string' ? data.activeProfileId : null,
       };
       if (data.ocMode === 'advanced' || data.ocMode === 'stock') out.ocMode = data.ocMode;
+      return out;
+    },
+  },
+  // v2 -> v3 (M16, B1): settings gains the two M16 overlay stat ids
+  // ('gpu-voltage' - the GPU-row voltage field - and 'gpu-vram-temp' - the
+  // VRAM row's trailing field). The spread keeps every v2-era field; the
+  // union appends ONLY the ids the canonical list gained in M16 onto an
+  // EXISTING persisted overlayStats array (in canonical order at the end) -
+  // a user's intentional unchecks of pre-existing stats are preserved.
+  // Absent/garbage overlayStats is left for the load-time defaults (the
+  // full set, which already includes the new ids). The migration is
+  // one-time: a file written after the upgrade carries the user's exact
+  // choices and is never re-unioned (a stat unchecked in M16 stays
+  // unchecked across reboots).
+  {
+    from: 2,
+    to: 3,
+    upProfiles: (data) => ({
+      ...data,
+      schemaVersion: 3,
+      profiles: Array.isArray(data.profiles)
+        ? data.profiles.map((p) => ({ ...p, schemaVersion: 3 }))
+        : data.profiles,
+    }),
+    upSettings: (data) => {
+      const out = { ...data, schemaVersion: 3 };
+      if (Array.isArray(data.overlayStats)) {
+        const m16Added = ['gpu-voltage', 'gpu-vram-temp'];
+        const seen = new Set(data.overlayStats.filter((id) => typeof id === 'string'));
+        out.overlayStats = [...data.overlayStats];
+        for (const id of m16Added) {
+          if (!seen.has(id)) out.overlayStats.push(id);
+        }
+      }
       return out;
     },
   },

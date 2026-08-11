@@ -37,8 +37,12 @@ export const STD_TL_MAX_C = 90;
 // 0.005-multiple below 0.234), which is exactly the user's report. The
 // exposed max is pinned here on top of the backend clamp so the slider
 // always offers the real ceiling (the TEMP_LIMIT_MAX_C duplication
-// pattern).
+// pattern). M15 (F4-fix): the STEP is pinned to VOLT_OFFSET_STEP_V too -
+// the driver's 0.005 step puts the 0.234 ceiling OFF-GRID (the slider
+// maxed at 0.230); the 0.001 step lets the slider reach + display the real
+// ceiling.
 export const VOLT_OFFSET_MAX_V = 0.234;
+export const VOLT_OFFSET_STEP_V = 0.001;
 
 /**
  * Clamp the exposed range for tempLimitC to TEMP_LIMIT_MAX_C (F3). Other
@@ -55,6 +59,9 @@ export const VOLT_OFFSET_MAX_V = 0.234;
  * drifting above 0.234 is clamped back). When the max is ALREADY 0.234 the
  * SAME object is returned (the pass-through identity pins stay green);
  * percent-unit ranges (Battlemage) pass through untouched.
+ * M15 (F4-fix): the STEP is pinned to VOLT_OFFSET_STEP_V (0.001) with the
+ * max - the driver's 0.005 step puts 0.234 OFF-GRID, so the slider would
+ * max at 0.230; the finer step makes the real ceiling reachable + readable.
  */
 export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
   if (!range) return range;
@@ -64,8 +71,9 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
   if (key === 'tempLimitC' && range.units === 'C' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
     return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
   }
-  if (key === 'gpuVoltOffsetV' && range.units === 'V' && range.max !== VOLT_OFFSET_MAX_V) {
-    return { ...range, max: VOLT_OFFSET_MAX_V };
+  if (key === 'gpuVoltOffsetV' && range.units === 'V'
+    && (range.max !== VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V)) {
+    return { ...range, max: VOLT_OFFSET_MAX_V, step: VOLT_OFFSET_STEP_V };
   }
   return range;
 }

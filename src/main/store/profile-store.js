@@ -47,10 +47,13 @@ const OVERLAY_SCALE_MAX = 2.0;
 // it now feeds the standalone VRAM row.
 // M13: 'cpu-power' (the CPU wattage field) joins right after 'cpu-temp'
 // (the insertion shifts 'memory-util' one slot later).
+// M16: 'gpu-voltage' (the standalone Voltage row) joins after 'gpu-clock';
+// 'gpu-mem-clock' LEFT the GPU row (it now leads the VRAM row) and
+// 'gpu-vram-temp' (the VRAM row's trailing field) closes the GPU stats.
 const OVERLAY_STAT_IDS = [
   'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
-  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
-  'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
+  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-voltage',
+  'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime',
 ];
 // M6: the stock overlay text color (white - the M5 pre-color default).
 const OVERLAY_COLOR_DEFAULT = '#ffffff';
@@ -81,7 +84,13 @@ function clampOverlayBgOpacity(v) {
 
 /** M6: normalize a raw overlayStats value - an array of KNOWN ids, deduped
  *  (order preserved); absent/garbage -> the FULL set (the stock default).
- *  The store mirror of the renderer's normalizeOverlayStats. */
+ *  The store mirror of the renderer's normalizeOverlayStats.
+ *  M16 (B1): this normalize is deliberately FILTER-ONLY - the one-time
+ *  upgrade of PERSISTED pre-M16 lists (gaining 'gpu-voltage' +
+ *  'gpu-vram-temp') runs in the store's v2 -> v3 schema migration, NOT
+ *  here. A save-path union would resurrect a stat the user just unchecked
+ *  (the tickbox round trip). A file at v3 already carries the user's
+ *  choices; the migration ran exactly once. */
 function normalizeOverlayStats(v) {
   if (!Array.isArray(v)) return [...OVERLAY_STAT_IDS];
   const seen = new Set();

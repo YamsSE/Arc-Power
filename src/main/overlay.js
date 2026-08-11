@@ -43,7 +43,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *  pins the resulting geometry live, so a drift fails the verify.
  *  M13: the height grew from 150 to 170 - the SIX stat lines (FPS, CPU,
  *  RAM, GPU, VRAM, API) + the frametime strip + the value line measure
- *  ~162 px and the base needs the headroom. */
+ *  ~162 px and the base needs the headroom.
+ *  M16 (amended 2026-08-11): the height stays 170 - the standalone Voltage
+ *  row is GONE (the GPU voltage is a field INSIDE the GPU row now), so the
+ *  M16 200px bump is rolled back. */
 const OVERLAY_BASE_WIDTH = 460;
 const OVERLAY_BASE_HEIGHT = 170;
 /** The margin from the display edge (every corner). */
@@ -66,10 +69,14 @@ const OVERLAY_SCALE_MAX = 2.0;
 // 'memory-util' (the Memory row) joins after the CPU stats; 'gpu-vram'
 // stays where it was - it now feeds the standalone VRAM row.
 // M13: 'cpu-power' (the CPU wattage field) joins right after 'cpu-temp'.
+// M16: 'gpu-voltage' (the GPU-row voltage field - the amended shape has NO
+// standalone Voltage row) joins after 'gpu-clock'; 'gpu-mem-clock' LEFT the
+// GPU row (it leads the VRAM row now) and 'gpu-vram-temp' (the VRAM row's
+// trailing field) closes the GPU stats.
 const OVERLAY_STAT_IDS = [
   'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
-  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-mem-clock', 'gpu-vram',
-  'gpu-temp', 'gpu-power', 'gpu-fan', 'frametime',
+  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-voltage',
+  'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime',
 ];
 // M6: the stock overlay text color (white - the M5 pre-color default).
 const OVERLAY_COLOR_DEFAULT = '#ffffff';
@@ -96,7 +103,10 @@ function normalizeSettings(raw = {}) {
     : 'O';
   // M6: the text color (a /^#[0-9a-fA-F]{6}$/ hex - the stock white
   // default) + the enabled stats (known ids, deduped; absent/garbage ->
-  // the FULL set - the stock overlay).
+  // the FULL set - the stock overlay). M16 (B1): this normalize is the
+  // FILTER-only mirror - the persisted one-time upgrade of old lists (the
+  // M15 -> M16 stat ids) runs in the store's v2 -> v3 migration, so a
+  // stat the user just unchecked is never resurrected here.
   const color = typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color)
     ? raw.color
     : OVERLAY_COLOR_DEFAULT;
@@ -194,6 +204,26 @@ export function createOverlayWindow({ getOverlaySettings }) {
     // taskbar edge cases); the overlay never takes focus or mouse input.
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setIgnoreMouseEvents(true);
+    // M16 (the always-on-top investigation): Windows DWM does not guarantee
+    // a topmost window stays above every windowed/borderless program - a
+    // game can re-raise itself above the overlay (SetWindowPos z-order
+    // fights are common with borderless fullscreen; exclusive fullscreen
+    // still bypasses the desktop entirely - the documented limit). The
+    // mitigation: REASSERT the topmost flag periodically + on show, so the
+    // overlay climbs back over any window that jumped it. The reassert is
+    // cheap (a no-op SetWindowPos when nothing changed) and only runs while
+    // the overlay is visible.
+    const reassertTopmost = () => {
+      if (win && !win.isDestroyed() && win.isVisible()) {
+        try {
+          win.setAlwaysOnTop(true, 'screen-saver');
+        } catch {
+          // a destroyed mid-tick window must never throw through the timer
+        }
+      }
+    };
+    const topmostTimer = setInterval(reassertTopmost, 3000);
+    win.on('closed', () => clearInterval(topmostTimer));
     win.webContents.on('console-message', (event) => {
       // Electron >= 30: the event object carries { level, message, ... }.
       const level = typeof event.level === 'number' ? event.level : 0;
@@ -288,6 +318,14 @@ export function createOverlayWindow({ getOverlaySettings }) {
         });
         if (applied.enabled) {
           if (!win.isVisible()) win.show();
+          // M16: reassert the topmost state right after a show - a
+          // show() can land the window under a program that raised itself
+          // while the overlay was hidden.
+          try {
+            win.setAlwaysOnTop(true, 'screen-saver');
+          } catch {
+            // never throw through the apply path
+          }
           visible = true;
         } else {
           if (win.isVisible()) win.hide();

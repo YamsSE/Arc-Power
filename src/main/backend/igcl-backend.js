@@ -32,7 +32,7 @@ import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
   GRAPHICS_LOW_LATENCY_OPTIONS,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, VOLT_OFFSET_MAX_V, vramMemTypeOfName } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, VOLT_OFFSET_MAX_V, VOLT_OFFSET_STEP_V, vramMemTypeOfName } from './units.js';
 import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
@@ -791,8 +791,16 @@ export class IgclBackend {
         // driver that ever drifts above 0.234 is clamped back; a driver
         // reporting 0.230 is raised to the real ceiling). M4-E rule:
         // percent-unit ranges (Battlemage) pass through untouched.
+        // M15 (F4-fix): the STEP is pinned to VOLT_OFFSET_STEP_V (0.001) with
+        // the max - the driver's 0.005 step puts 0.234 OFF-GRID (the slider
+        // maxed at 0.230); the finer step lets the slider reach + display the
+        // real ceiling (the driver accepts any value up to it).
         if (caps.ranges.gpuVoltOffsetV && caps.ranges.gpuVoltOffsetV.units === 'V') {
-          caps.ranges.gpuVoltOffsetV = { ...caps.ranges.gpuVoltOffsetV, max: VOLT_OFFSET_MAX_V };
+          caps.ranges.gpuVoltOffsetV = {
+            ...caps.ranges.gpuVoltOffsetV,
+            max: VOLT_OFFSET_MAX_V,
+            step: VOLT_OFFSET_STEP_V,
+          };
         }
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
         // this driver AND the OC mode is advanced (M3-C-E), report the FULL
@@ -831,6 +839,14 @@ export class IgclBackend {
         caps.controls.vfCurve = this._vfCurveReadable(dev.handle);
       }
     }
+    // M17 (B50-class): OC-locked devices (Arc B50 / Arc Pro B50 and friends)
+    // have NO overclocking surface - ctlOverclockGetProperties fails (or
+    // reports every control unsupported) and ctlOverclockWaiverSet answers
+    // ERROR_UNSUPPORTED_FEATURE: there is no warranty waiver to accept. The
+    // flag lets the UI skip the boot prompt, the clickable dashboard row and
+    // the apply-time waiver gate on such devices (the driver's per-control
+    // 'unsupported' refusals stay the honest floor).
+    caps.overclockingSupported = Object.values(caps.controls).some(Boolean);
 
     // --- Fan ---
     const fanHandles = await this._fanHandlesOf(deviceId);
@@ -1736,6 +1752,15 @@ export class IgclBackend {
     }
     const result = lib.ctlOverclockWaiverSet(dev.handle);
     if (result !== CTL_RESULT.SUCCESS) {
+      // M17 (B50-class): the driver refuses the waiver on OC-locked devices
+      // (ERROR_UNSUPPORTED_FEATURE) - the raw code is a dead end for the
+      // user, name the actual situation. getCapabilities already reports
+      // overclockingSupported:false on such devices, so the product paths
+      // never get here; this maps the honest residual (a stale UI, a
+      // race, an elevated worker) to a message instead of a hex code.
+      if (result === CTL_RESULT.ERROR_UNSUPPORTED_FEATURE) {
+        throw new Error('Overclocking is not supported on this GPU - the driver refused the warranty waiver (ERROR_UNSUPPORTED_FEATURE)');
+      }
       throw new Error(`ctlOverclockWaiverSet failed: ${describeResult(result)}`);
     }
     this._waiverAccepted.set(deviceId, true);

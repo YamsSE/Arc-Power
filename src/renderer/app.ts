@@ -296,13 +296,11 @@ async function boot() {
     store.set({ buildKind: 'dev' });
   }
 
-  // M4N (A.1): the window-path boot apply's outcome - a successful boot
-  // apply must flip the dashboard OC Status row GREEN (the apply runs in
-  // main before the window exists; this fetch is how the renderer learns
-  // it). Null -> nothing applied at boot (the row stays "No OC apply yet
-  // in this session"). The lastApply slot is part of the dashboard render
-  // signature, so the fetch re-renders the row even when nothing else
-  // changed since the first render.
+  // M4N (A.1): the window-path boot apply's outcome record (kept for the
+  // boot-apply verification contract). M16: the dashboard OC status row no
+  // longer displays it - the row derives its stock-state verdict from the
+  // driver read-back `state` (a status slot in the dashboard render
+  // signature, so the row flips when the read-back lands/changes).
   try {
     const o = await api.bootApplyOutcome();
     if (o) store.set({ lastApply: { ok: o.ok === true, at: o.at, detail: o.detail } });
@@ -387,7 +385,11 @@ async function boot() {
       // continues; a declined prompt must not break it. Accept patches the
       // store caps so the dashboard GPU Health card row flips to Accepted in
       // place.
-      if (caps.waiverAccepted !== true) {
+      // M17 (B50-class): OC-locked devices (overclockingSupported === false)
+      // have NO waiver - the driver refuses ctlOverclockWaiverSet with
+      // ERROR_UNSUPPORTED_FEATURE. The prompt is skipped entirely there (a
+      // prompt the user can never satisfy would toast on every boot).
+      if (caps.waiverAccepted !== true && caps.overclockingSupported !== false) {
         void (async () => {
           const decision = await promptWaiverAtBoot(deviceId as number, caps.deviceName || 'this GPU');
           if (decision !== 'accepted') return;
@@ -430,6 +432,21 @@ async function boot() {
       void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
         .catch(() => { /* a failed append never breaks the UI */ });
     }
+  });
+
+  // M16-F1 (D2): the tray "Apply active profile" runs ENTIRELY in main -
+  // this subscription receives the pushed post-apply read-back
+  // (device:state-updated) and refreshes the store `state` slot so the
+  // dashboard OC status row (derived from the live read-back) flips in
+  // place after a tray apply - "an apply from ANY path refreshes the store
+  // state" (the documented M16 refresh contract). Guarded like the other
+  // pushed paths: only a NON-NULL state for the CURRENT device replaces
+  // the slot (the tray apply targets the persisted/selected device - a
+  // mismatch must never clobber the live view).
+  api.onStateUpdated((payload) => {
+    if (!payload?.state) return;
+    const live = store.get();
+    if (live.deviceId === payload.deviceId) store.set({ state: payload.state });
   });
 
   if (noIntel) {

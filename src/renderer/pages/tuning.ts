@@ -894,8 +894,13 @@ export const tuningPage: Page = {
           currentState = fresh;
           ctx.store.set({ state: fresh });
         }
-        // M3-A: record the outcome for the dashboard "OC Status" health row
-        // (honest: ok with what changed / failed with the first error).
+        // M3-A: record the last-apply outcome (honest: ok with what
+        // changed / failed with the first error). M16: the dashboard OC
+        // status row no longer displays this record (the row derives its
+        // stock-state verdict from the live driver read-back) - the store
+        // slot is kept because the apply paths still record it (M16 review
+        // nit 1), it feeds the boot-fetch outcome mapping in app.ts, and
+        // nothing in the UI reads it anymore.
         {
           const changed = Object.entries(result.perControl)
             .filter(([k, per]) => per.ok && !isNoopApply(k, settings, before as DeviceState))
@@ -996,7 +1001,7 @@ export const tuningPage: Page = {
             : 'Values are clamped to the range reported by this GPU. Changes apply on demand - nothing is applied until you press Apply.'),
       }),
       // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
-      // GPU Health card - this page keeps no waiver UI beyond the apply-time
+      // GPU Status card - this page keeps no waiver UI beyond the apply-time
       // dialog gate (ensureWaiver above). The pill row renders for every
       // device: the Fan Curve view must stay reachable on no-OC devices.
       modeRow,
