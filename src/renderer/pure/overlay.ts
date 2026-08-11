@@ -319,9 +319,25 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  * M13 (the M2 explicit move): the api parameter (the foreground-window
  * Graphics-API badge) feeds the STANDALONE apiLine - the fpsLine carries
  * no api field anymore.
+ * M17b (2c): the optional opts parameter carries the chip-name row labels
+ * ({ chipLabels: { cpu, gpu } } - the pure chip-label cut-downs from the
+ * renderer's boot names fetch). A non-empty label REPLACES the stock
+ * 'CPU '/'GPU ' prefix ONLY (the field order is untouched - the label is
+ * the row prefix, never a field); absent/empty -> the stock prefixes (all
+ * existing pins stay green).
  */
-export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null, avgFps?: number | null, low01Pct?: number | null, memoryUsedBytes?: number | null): OverlayLines {
+export interface OverlayLinesOpts {
+  /** M17b: the chip-name row labels (null/absent -> the stock prefixes). */
+  chipLabels?: { cpu?: string | null; gpu?: string | null };
+}
+
+export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null, avgFps?: number | null, low01Pct?: number | null, memoryUsedBytes?: number | null, opts?: OverlayLinesOpts): OverlayLines {
   const s = sample ?? {};
+  // M17b (2c): the chip-name row labels - a non-empty label replaces the
+  // stock prefix (the renderer passes them when the overlayChipNames
+  // setting is on); absent/empty -> 'CPU '/'GPU ' (the stock rows).
+  const cpuPrefix = typeof opts?.chipLabels?.cpu === 'string' && opts.chipLabels.cpu.length > 0 ? opts.chipLabels.cpu : 'CPU';
+  const gpuPrefix = typeof opts?.chipLabels?.gpu === 'string' && opts.chipLabels.gpu.length > 0 ? opts.chipLabels.gpu : 'GPU';
   // M6: the percentage formatter ROUNDS to whole percents (
   // decimals complaint - the real OS GPUEngine counter is a float
   // 42.12345678... and the raw digits used to show in the overlay; the
@@ -381,10 +397,14 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const cpuFields: string[] = [];
   if (enabled.has('cpu-util')) cpuFields.push(pct(cpuUtil));
   if (enabled.has('cpu-clock')) cpuFields.push(unit(cpuFreqMhz, (n) => ghzFreq(n), ' GHz'));
-  if (enabled.has('cpu-temp')) cpuFields.push(unit(cpuTemp, (n) => String(n), '°C'));
+  // M17b: the temp fields round to whole degrees (Math.round - the AMD
+  // SMN die temp is 0.125 °C/LSB, so 60.5 renders '61°C', never '60.5°C').
+  if (enabled.has('cpu-temp')) cpuFields.push(unit(cpuTemp, (n) => String(Math.round(n)), '°C'));
   // M13: the CPU wattage - after the temp, toFixed(1) (the GPU watt format).
   if (enabled.has('cpu-power')) cpuFields.push(unit(cpuPower, (n) => n.toFixed(1), ' W'));
-  const cpuLine = cpuFields.length === 0 ? '' : `CPU ${cpuFields.join('  ')}`;
+  // M17b (2c): the chip-name label replaces the stock 'CPU ' prefix ONLY -
+  // the field order is untouched.
+  const cpuLine = cpuFields.length === 0 ? '' : `${cpuPrefix} ${cpuFields.join('  ')}`;
   // M14: the Memory row - the memory-util stat only ('RAM 12.4 GB' - the
   // M13 row label + the gbValue decimal-GB format; the honest '-' when
   // the field is null); '' when the stat is off.
@@ -392,14 +412,16 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const gpuFields: string[] = [];
   if (enabled.has('gpu-util')) gpuFields.push(pct(gpuUtil));
   if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), ' MHz'));
-  if (enabled.has('gpu-temp')) gpuFields.push(unit(gpuTemp, (n) => String(n), '°C'));
+  if (enabled.has('gpu-temp')) gpuFields.push(unit(gpuTemp, (n) => String(Math.round(n)), '°C'));
   // M16: the GPU voltage - a GPU-row field between the temp and the power
   // fields (volts with 3 decimals - the mock 0.652 reads '0.652 V'; the
   // honest '-' when null). The amended shape: NO standalone Voltage row.
   if (enabled.has('gpu-voltage')) gpuFields.push(unit(gpuVoltage, (n) => n.toFixed(3), ' V'));
   if (enabled.has('gpu-power')) gpuFields.push(unit(power, (n) => n.toFixed(1), ' W'));
   if (enabled.has('gpu-fan')) gpuFields.push(unit(fan, (n) => String(n), ' RPM'));
-  const gpuLine = gpuFields.length === 0 ? '' : `GPU ${gpuFields.join('  ')}`;
+  // M17b (2c): the chip-name label replaces the stock 'GPU ' prefix ONLY -
+  // the field order is untouched.
+  const gpuLine = gpuFields.length === 0 ? '' : `${gpuPrefix} ${gpuFields.join('  ')}`;
   // M16: the VRAM row - the mem-clock field LEADS, then the VRAM usage, then
   // the VRAM temperature (the user's requested 'MemClock;VRAM;VramTEMP'
   // order). Each field vanishes with its stat; the row writes '' only when
@@ -407,7 +429,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const vramFields: string[] = [];
   if (enabled.has('gpu-mem-clock')) vramFields.push(unit(memClock, (n) => String(n), ' MHz'));
   if (enabled.has('gpu-vram')) vramFields.push(unit(vram, (n) => gbValue(n), ' GB'));
-  if (enabled.has('gpu-vram-temp')) vramFields.push(unit(vramTemp, (n) => String(n), '°C'));
+  if (enabled.has('gpu-vram-temp')) vramFields.push(unit(vramTemp, (n) => String(Math.round(n)), '°C'));
   const vramLine = vramFields.length === 0 ? '' : `VRAM ${vramFields.join('  ')}`;
   return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, frametimeEnabled: enabled.has('frametime') };
 }

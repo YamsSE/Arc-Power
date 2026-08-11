@@ -6067,6 +6067,38 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   }
   step('m6-general-toggle', 'the overlay view General toggle round trip: off -> persisted false + overlay hidden (the shortcut does NOTHING while the master is off); on -> persisted true + overlay shown (the shortcut flips the visibility only - the master never flips from the hotkey)');
 
+  // (m17b-chipnames) M17b (2c): the chip-name row labels - the General
+  // card's second checkbox round-trips like the master: ON -> the overlay
+  // rows derive their labels from the BOOT NAMES FETCH (api.sysinfo() -
+  // the mock fixture 'Intel(R) Arc(TM) A770 Graphics' -> 'A770', the CPU
+  // 'Intel(R) Core(TM) i7-14700K' -> 'i7 14700K') with UNCHANGED field
+  // order; OFF -> the stock 'CPU '/'GPU ' prefixes return (byte-identical).
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayChipNames"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === true)`, 5000))) {
+    fail('M17b: toggling the chip-names checkbox did not persist overlayChipNames=true');
+  }
+  if (!(await waitFor(overlayWin, `/^A770 42%  \\d+ MHz  \\d+°C  0\\.652 V  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: the overlay GPU row label is not the mock-derived 'A770': '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}' (expected 'A770 42%  <clock> MHz  <temp>°C  0.652 V  38.8 W  1030 RPM' - the field order unchanged)`);
+  }
+  if (!(await waitFor(overlayWin, `/^i7 14700K 42%  4\\.3 GHz/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: the overlay CPU row label is not the mock-derived 'i7 14700K': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (expected 'i7 14700K 42%  4.3 GHz ...' - the field order unchanged)`);
+  }
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('GPU ') === false && (document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU ') === false`, 5000))) {
+    fail('M17b: the chip labels must REPLACE the stock prefixes (no doubling)');
+  }
+  step('m17b-chipnames-on', `the chip-names toggle ON: the overlay rows read 'A770 ...' + 'i7 14700K ...' (the boot names fetch labels) with the field order unchanged (${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)} / ${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)})`);
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayChipNames"]'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === false)`, 5000))) {
+    fail('M17b: re-toggling the chip-names checkbox did not persist overlayChipNames=false');
+  }
+  if (!(await waitFor(overlayWin, `/^GPU 42%  \\d+ MHz  \\d+°C  0\\.652 V  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: re-toggling did not restore the stock 'GPU ' prefix: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  if (!(await waitFor(overlayWin, `/^CPU 42%  4\\.3 GHz/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: re-toggling did not restore the stock 'CPU ' prefix: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  }
+  step('m17b-chipnames-off', 'the chip-names toggle OFF: the stock CPU / GPU prefixes return (byte-identical)');
+
   // (f3) M6: the stat tickboxes round-trip through profiles-settings-save.
   // Unchecking gpu-fan trims the persisted overlayStats AND the overlay
   // gpuLine loses the RPM field (a stat off -> its field vanishes); the

@@ -112,6 +112,26 @@ https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt]
 - The module communicates with the driver solely via the device IOCTL
   interface, per the PawnIO GPLv2 special exception above.
 
+## PawnIO.Modules - AMDFamily17.bin (the AMD MSR/SMN module)
+
+- Component: `src/main/backend/AMDFamily17.bin`, the PawnIO module for
+  AMD Zen CPUs exposing "ioctl_read_msr" / "ioctl_read_smn" /
+  "ioctl_write_msr" (the SMN die temperature + the RAPL package-energy
+  pair; the reader selects it on AMD vendor strings).
+- License: GNU Lesser General Public License v2.1 (the same license text
+  as IntelMSR.bin, reproduced in `src/main/backend/COPYING`; the module
+  source header: "SPDX-License-Identifier: LGPL-2.1-or-later").
+- Source: https://github.com/namazso/PawnIO.Modules - the SAME tag as
+  IntelMSR.bin (0.2.10; the tag tree contains AMDFamily17.p - verified
+  2026-08-11). Source file fetched from the tag: AMDFamily17.p, SHA-256
+  8A1808A2E51E184F96D17362991AE900C65A1A23135A68C256EC6759E8297BB9.
+- SHA-256 (the vendored module): DAE74615761B78BDF064DFB3E136252DDCC6FC727D88F14738D0E5800D427A91
+- Purpose: the MSR + SMN read functions for AMD Zen (family 17h-1Ah) -
+  the CPU die temperature (SMN F17H_M01H_THM_TCON_CUR_TMP) and the RAPL
+  package energy (MSRC001_0299/029B) on AMD systems.
+- The module communicates with the driver solely via the device IOCTL
+  interface, per the PawnIO GPLv2 special exception above.
+
 ## PawnIO Setup (the official signed installer)
 
 - Component: `src/main/backend/PawnIO_setup.exe` (version 2.2.0, the

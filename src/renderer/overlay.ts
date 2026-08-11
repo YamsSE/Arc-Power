@@ -34,6 +34,9 @@
 
 import { api } from './ipc.ts';
 import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, OVERLAY_BG_COLOR_DEFAULT } from './pure/overlay.ts';
+// M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
+// derives the row labels from the sysinfo fixture/real names).
+import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, TelemetrySample } from './types.ts';
@@ -66,6 +69,17 @@ let series: SeriesPoint[] = [];
 // stock white + the full stat set - the overlayLines defaults).
 let color: string = '#ffffff';
 let stats: unknown = undefined;
+// M17b (2c): the chip-name row labels - the pushed overlayChipNames flag +
+// the boot names fetch (api.listDevices() + api.sysinfo() ONCE - the
+// existing bootFpsLoop deviceGet is NOT a names fetch). The labels derive
+// from the SY SINFO primary video-controller name + cpu.name (the plain
+// 'Intel(R) Arc(TM) A770 Graphics' lives there - NOT listDevices, whose
+// mock IGCL name is the fixture-decorated 'Mock Arc A770 Graphics
+// (fixture)'; listDevices is the fallback only when sysinfo has no
+// controllers). null until fetched -> the stock prefixes.
+let chipNamesEnabled = false;
+let cpuChipLabel: string | null = null;
+let gpuChipLabel: string | null = null;
 // M6-amd2: the latest derived frame time (the value line below the strip;
 // null -> the honest '-').
 let latestFrameTime: number | null = null;
@@ -118,6 +132,10 @@ api.onOverlaySettings((settings) => {
   // M6: the enabled stats - an absent value means the FULL set (the stock
   // overlay; overlayLines normalizes).
   stats = s.stats;
+  // M17b (2c): the chip-name row labels flag - on -> the boot-derived
+  // labels replace the stock 'CPU '/'GPU ' prefixes (null labels degrade
+  // to the stock prefixes inside overlayLines).
+  chipNamesEnabled = s.overlayChipNames === true;
   sizeCanvas();
   render();
 });
@@ -139,7 +157,14 @@ function render(): void {
   // empty - never '-', never a raw id). M12/M14: the AVG / 0.1% Low + the
   // RAM used-bytes ride along too (the memoryUsedBytes comes from the
   // telemetry sample's composed field).
-  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi, latestAvgFps, latestLow01Pct, latestSample?.memoryUsedBytes ?? null);
+  // M17b (2c): the chip-name row labels ride into overlayLines ONLY when
+  // the pushed overlayChipNames flag is on (absent/empty labels keep the
+  // stock 'CPU '/'GPU ' prefixes - the labels never invent a row).
+  const lines = overlayLines(
+    latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
+    latestAvgFps, latestLow01Pct, latestSample?.memoryUsedBytes ?? null,
+    chipNamesEnabled ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel } } : undefined,
+  );
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
   memoryEl.textContent = lines.memoryLine;
@@ -253,3 +278,38 @@ async function bootFpsLoop(): Promise<void> {
 }
 
 void bootFpsLoop();
+
+// M17b (2c): the boot NAMES fetch - api.listDevices() + api.sysinfo() ONCE
+// (a NEW fetch - the bootFpsLoop deviceGet above is the FPS poll's device
+// id, NOT a names fetch). The chip-name labels derive from the SY SINFO
+// payload (the plain 'Intel(R) Arc(TM) A770 Graphics' primary video-
+// controller name + cpu.name - the mock/real names the cut-down rules
+// were pinned against); listDevices is the fallback ONLY when sysinfo has
+// no controllers (the real IGCL device name cuts down the same way).
+// Never throws: a failed fetch leaves the labels null -> the stock
+// 'CPU '/'GPU ' prefixes (the honest degrade).
+async function bootNamesFetch(): Promise<void> {
+  try {
+    let gpuName: unknown = null;
+    let cpuName: unknown = null;
+    const sysinfo = await api.sysinfo();
+    const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
+    gpuName = controllers.length > 0 ? controllers[0].name : null;
+    cpuName = sysinfo?.cpu?.name ?? null;
+    if (!gpuName) {
+      // The edge fallback: sysinfo without controllers -> the IGCL device
+      // name (its real shape cuts down identically).
+      try {
+        const devices = await api.listDevices();
+        gpuName = Array.isArray(devices) && devices.length > 0 ? devices[0].name : null;
+      } catch { /* best effort */ }
+    }
+    gpuChipLabel = chipLabelGpu(gpuName);
+    cpuChipLabel = chipLabelCpu(cpuName);
+    if (chipNamesEnabled) render();
+  } catch {
+    // the labels stay null - the stock prefixes (never a crash at boot)
+  }
+}
+
+void bootNamesFetch();

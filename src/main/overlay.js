@@ -139,6 +139,10 @@ function normalizeSettings(raw = {}) {
     overlayBgEnabled: raw.overlayBgEnabled === true,
     overlayBgColor: bgColor,
     overlayBgOpacity: bgOpacity,
+    // M17b: the chip-name row labels - off when absent/garbage (the stock
+    // 'CPU '/'GPU ' prefixes; the payload carries the flag so the overlay
+    // renderer can fetch + apply the chip names).
+    overlayChipNames: raw.overlayChipNames === true,
   };
 }
 
@@ -277,6 +281,11 @@ export function createOverlayWindow({ getOverlaySettings }) {
     overlayBgEnabled: applied.overlayBgEnabled,
     overlayBgColor: applied.overlayBgColor,
     overlayBgOpacity: applied.overlayBgOpacity,
+    // M17b: the chip-name row labels ride the same push - without the flag
+    // the renderer would never know when to apply the chip names (the
+    // main.js applyOverlaySettings MUST forward it - the overlay.js
+    // normalize is the final gate).
+    overlayChipNames: applied.overlayChipNames,
   });
 
   return {

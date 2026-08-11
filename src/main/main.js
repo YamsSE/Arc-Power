@@ -1396,6 +1396,10 @@ async function main() {
         && Number.isFinite(settings.overlayBgOpacity)
         ? Math.min(1, Math.max(0, settings.overlayBgOpacity))
         : 0.5,
+      // M17b: the chip-name row labels - forwarded like the background box
+      // (a required-but-insufficient owner set would silently ship a dead
+      // feature; the overlay.js normalize is the final gate for garbage).
+      overlayChipNames: settings.overlayChipNames === true,
     });
   };
   if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {

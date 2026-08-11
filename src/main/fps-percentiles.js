@@ -47,6 +47,13 @@ export const RING_MAX = 300;
  *  200 ms sampler cadence). */
 export const PERCENTILE_WINDOW_MS = 60000;
 
+/** M17b: the AVG-FPS sub-window (ms) - avgFps is computed over the LAST
+ *  10 s only (the user's recency request), while the 1% / 0.1% / 99%
+ *  percentile tails keep their 60 s window (untouched). The fps-dxgi.js
+ *  poll passes this explicitly; the default parameter keeps every
+ *  existing caller at the full window. */
+export const AVG_WINDOW_MS = 10000;
+
 /** The 60-frame floor: the percentiles need at least this many frames in
  *  the window or they honestly report null (the first seconds after a poll
  *  never show garbage from a couple of samples). */
@@ -119,12 +126,21 @@ export function rollingFps(ring, nowMs, windowMs) {
  * sum(ft * frames)); low01Pct is the 0.1% low (the ceil(0.999N) boundary +
  * the weighted tail average - the 1%-low family) with the >= 300-frame
  * floor (below it -> null -> the honest '-').
+ * M17b: avgFps is computed over the avgWindowMs SUB-WINDOW only (the last
+ * 10 s when the caller passes AVG_WINDOW_MS) - the average tracks the
+ * game's CURRENT rate instead of the whole 60 s recency window. The
+ * sub-window is age-evicted with the same rule (t >= now - avgWindowMs)
+ * and uses its OWN frame sums (the 60-frame floor still gates the whole
+ * result - the percentile tails are unchanged). The default parameter
+ * (avgWindowMs = windowMs) keeps every existing caller at the full
+ * window - byte-identical behavior without the explicit argument.
  * @param {Array<{ tMs: number, ftMs: number, frames: number }>} ring
  * @param {number} nowMs
  * @param {number} windowMs
+ * @param {number} [avgWindowMs] the AVG-FPS sub-window (default = windowMs)
  * @returns {{ avgFps: number, low1Pct: number, low01Pct: number | null, p99: number } | null}
  */
-export function percentileStats(ring, nowMs, windowMs) {
+export function percentileStats(ring, nowMs, windowMs, avgWindowMs = windowMs) {
   // Age eviction first: the computation is scoped to the recency window.
   const fresh = [];
   let totalFrames = 0;
@@ -135,14 +151,21 @@ export function percentileStats(ring, nowMs, windowMs) {
   }
   // The 60-frame floor: fewer frames than this is noise, not a percentile.
   if (totalFrames < MIN_FRAMES_FOR_PERCENTILES) return null;
-  // avgFps (M12): the frame-weighted harmonic mean over the age-evicted
-  // ring - 1000 * totalFrames / sum(ft * frames) (the mean frame time
-  // weighted by the frames each tick counted, converted to fps - the
-  // correct average of a rate). The SAME raw totalFrames as the floor.
-  let ftWeightedSum = 0;
-  for (const e of fresh) ftWeightedSum += e.ftMs * e.frames;
-  const avgFps = ftWeightedSum > 0
-    ? Math.round((1000 * totalFrames) / ftWeightedSum)
+  // avgFps (M12, M17b): the frame-weighted harmonic mean over the
+  // avgWindowMs SUB-WINDOW only - 1000 * subFrames / sum(ft * frames) over
+  // the sub-window's entries (the mean frame time weighted by the frames
+  // each tick counted, converted to fps - the correct average of a rate).
+  // The 60-frame floor above still gates on the FULL window (an empty
+  // sub-window honestly reports null - never a stale long-window average).
+  let avgFrames = 0;
+  let avgFtWeightedSum = 0;
+  for (const e of fresh) {
+    if (e.tMs < nowMs - avgWindowMs) continue;
+    avgFrames += e.frames;
+    avgFtWeightedSum += e.ftMs * e.frames;
+  }
+  const avgFps = avgFtWeightedSum > 0
+    ? Math.round((1000 * avgFrames) / avgFtWeightedSum)
     : null;
   // Expand into the frame-count-weighted ft list (each entry contributes
   // `frames` copies of its mean frame time), sorted ascending.

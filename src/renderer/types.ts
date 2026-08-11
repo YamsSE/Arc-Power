@@ -33,6 +33,11 @@ export interface Settings {
   fanMode?: FanMode;
   fanCurve?: Array<{ t: number; speedPct: number }>;
   fixedFanPct?: number;
+  /** M17b: the persisted chip-name row-labels flag (APPENDED - the OC
+   *  apply surface never reads it; it mirrors the settings.json field so
+   *  the spread-save shapes stay type-complete). Absent -> false (the
+   *  stock 'CPU '/'GPU ' prefixes). */
+  overlayChipNames?: boolean;
 }
 
 /** Read-back of the device's current state (all supported controls resolved). */
@@ -400,6 +405,10 @@ export interface OverlaySettings {
   overlayBgEnabled: boolean;
   overlayBgColor: string;
   overlayBgOpacity: number;
+  /** M17b: the chip-name row labels - the overlay:settings payload flag
+   *  (absent on old pushes -> false = the stock 'CPU '/'GPU ' prefixes;
+   *  the renderer fetches + applies the chip names only when this is on). */
+  overlayChipNames: boolean;
 }
 
 /** M5: the overlay:get-state envelope (the Settings card + the verify read it). */
@@ -457,6 +466,10 @@ export interface ProfileSettingsState {
   overlayBgEnabled: boolean;
   overlayBgColor: string;
   overlayBgOpacity: number;
+  /** M17b: the chip-name row labels - absent on old files -> false (the
+   *  stock 'CPU '/'GPU ' prefixes; same absent-field mechanism, NO schema
+   *  bump). The Overlay Settings page's chip-name checkbox persists this. */
+  overlayChipNames: boolean;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

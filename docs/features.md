@@ -58,3 +58,23 @@ Quick access and apply-on-startup controls without opening the window.
   have no waiver: no prompt, the dashboard row reads "Not supported on this
   GPU", and fan/profile applies skip the gate (the driver's per-control
   refusals are the honest floor).
+
+## Overlay and monitoring accuracy
+
+- **FPS** - the displayed frame rate is a 400-600 ms window of the DXGI
+  presentation sampler (previously a laggy 1-second average); the AVG FPS
+  stat is the last 10 seconds of frames. On the windowed desktop the count
+  tracks the display refresh rate, not the game's render rate - the honest
+  limit of the unelevated DXGI path.
+- **API badge** - the foreground graphics API is detected from the process's
+  loaded modules: Vulkan and OpenGL-with-a-vendor-ICD rank above DirectX, a
+  bare system OpenGL falls through to DirectX, and launcher-owned windows
+  fall back to the child process that renders.
+- **Chip-name labels** - an overlay toggle shows the CPU/GPU row labels as
+  the chip names (for example "A770" or "i7 5775C") instead of "GPU"/"CPU".
+- **Temperatures** - CPU, GPU and VRAM temperatures round to whole degrees;
+  AMD Ryzen CPU wattage comes from the RAPL energy counters (with an honest
+  status in the log when the counters are unavailable or frozen).
+- **RAM brand** - the JEDEC manufacturer decode covers more raw encodings,
+  with a part-number fallback for modules whose SPD brand string the board
+  BIOS reports as "Unknown".

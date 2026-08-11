@@ -46,10 +46,24 @@
 //     (ioctl_read_smn - the same 1-in/1-out protocol as ioctl_read_msr);
 //   - the RAPL pair MSRC001_0299 (power unit, ESU - esuOf reuses) +
 //     MSRC001_029B (package energy, the 32-bit wrap state reuses).
-// The AMD energy counter is MICRO-JOULE based (0.5^ESU uJ per increment -
-// LHM Amd17Cpu.cs) - amdPackagePowerW scales raplPowerW by 1e-6. Register
-// truth verified against the AMDFamily17.p module source, k10temp and
-// LibreHardwareMonitor Amd17Cpu.cs.
+// The AMD energy counter increments 2^-ESU JOULES per count - M17b
+// evidence: AMDFamily17.p (PawnIO.Modules tag 0.2.10, SHA-256
+// 8A1808A2E51E184F96D17362991AE900C65A1A23135A68C256EC6759E8297BB9)
+// exports ioctl_read_msr (binary offset 658 re-recorded 2026-08-11) with
+// the pair on the allowed-read list, and LHM Amd17Cpu.cs assigns
+// Math.Pow(0.5, esu) * pwr / dt DIRECTLY as watts (no micro-joule scale;
+// the "15.3 micro Joule per increment (default)" comment IS 2^-16 J at
+// the default ESU 16). The pre-M17b 1e-6 scale underreported by 1e6 - the
+// "wattage still null" root cause. Register truth verified against the
+// AMDFamily17.p module source, k10temp and LibreHardwareMonitor
+// Amd17Cpu.cs.
+// M17b: the reader exposes a per-field POWER status (powerStatus() -
+// 'ready' | 'energy-counter-frozen' | 'amd-msr-unavailable') so sys-stats
+// can log the NAMED AMD status on the POWER path alone (temp may keep
+// working): the frozen-counter guard (two identical reads across a sample
+// -> 'energy-counter-frozen' - an SMU-gated counter, never a fake 0 W)
+// and 'amd-msr-unavailable' ONLY as the defensive fallback for OTHER
+// module versions (the vendored one exports ioctl_read_msr - verified).
 
 import koffi from 'koffi';
 import fs from 'node:fs';
@@ -234,20 +248,24 @@ export function amdTdieC(smnValue) {
 }
 
 /**
- * M15 (F2): the AMD RAPL package power - the package-energy counter
- * MSRC001_029B is MICRO-JOULE based (0.5^ESU uJ per increment - LHM
- * Amd17Cpu.cs "micro Joule per increment", NOT the Intel joule base), so
- * the shared raplPowerW result scales by 1e-6. The ESU layout (bits 12:8
- * of MSRC001_0299) and the 32-bit wrap + dt guard semantics are identical
- * to the Intel side.
+ * M15 (F2): the AMD RAPL package power. The energy counter MSRC001_029B
+ * increments 2^-ESU JOULES per count (LHM Amd17Cpu.cs: energyBaseUnit =
+ * Math.Pow(0.5, esu); energy = energyBaseUnit * pwr / dt assigned DIRECTLY
+ * as watts - the register is NOT micro-joule based, the default ESU 16
+ * increment IS 15.3 uJ = 2^-16 J. The pre-M17b 1e-6 scale underreported
+ * by six orders of magnitude - a 60 W Ryzen read 0.00006 W, the "wattage
+ * still null" report). M17b: the math is now the shared raplPowerW
+ * (2^-ESU J per count -> watts directly); the ESU layout (bits 12:8 of
+ * MSRC001_0299) and the 32-bit wrap + dt guard semantics are identical
+ * to the Intel side (the 32-bit masked delta IS the LHM mirror - it reads
+ * the register's [31:0] field and wraps modulo 2^32 explicitly).
  * @param {number | null} esu
  * @param {number} dE the wrapped 32-bit energy delta
  * @param {number} dtSeconds
  * @returns {number | null}
  */
 export function amdPackagePowerW(esu, dE, dtSeconds) {
-  const w = raplPowerW(esu, dE, dtSeconds);
-  return w === null ? null : w * 1e-6;
+  return raplPowerW(esu, dE, dtSeconds);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +374,15 @@ export function createMsrReader(deps = {}) {
   // RAPL window state (per session).
   let prevEnergy = null;
   let prevEnergyTime = null;
+  // M17b: the per-field POWER status (the sys-stats N4 per-field degrade
+  // surface) - 'ready' | 'energy-counter-frozen' | 'amd-msr-unavailable'.
+  // 'ready' = the last power read succeeded (or the calibration null);
+  // 'energy-counter-frozen' = two identical energy reads across a sample
+  // (an SMU-gated counter - never a fake 0 W); 'amd-msr-unavailable' =
+  // the AMD MSR read path failed (defensive - ONLY for other module
+  // versions: the vendored AMDFamily17.bin exports ioctl_read_msr,
+  // binary-verified at offset 658).
+  let powerStatus = 'ready';
 
   const lastErrorText = () => {
     try { return lib.GetLastError(); } catch { return 0; }
@@ -522,31 +549,53 @@ export function createMsrReader(deps = {}) {
     /**
      * M4L: the CPU package wattage via RAPL - (dE * 2^-ESU) / dt with the
      * 32-bit wrap and the >= 10 ms window guard. The FIRST sample
-     * calibrates (null until the second - the plan's contract). Null on any
-     * error.
+     * calibrates (null until the second - the plan's contract). Null on
+     * any error.
      * M15 (F2): on an AMD vendor the RAPL pair is MSRC001_0299 (power unit,
      * ESU bits 12:8 - esuOf reuses) + MSRC001_029B (package energy, the
-     * same 32-bit wrap state) and the micro-joule base scales the result
-     * (amdPackagePowerW). The P-state MSRs 0xC0010063/64 are NEVER read for
-     * power.
+     * same 32-bit wrap state) and the math is the LHM-verified watts
+     * (amdPackagePowerW - M17b: the 1e-6 micro-joule scale is DROPPED; the
+     * counter increments 2^-ESU J). The P-state MSRs 0xC0010063/64 are
+     * NEVER read for power.
+     * M17b: the FROZEN-COUNTER GUARD - two identical energy reads across
+     * a sample (dE === 0) set the per-field power status
+     * 'energy-counter-frozen' and return null (an SMU-gated counter is
+     * never a fake 0 W; the NAMED status reaches the log via sys-stats'
+     * per-field power degrade emit). A failed read sets
+     * 'amd-msr-unavailable' (defensive - other module versions); a
+     * successful read (or the calibration null) leaves 'ready'.
      * @returns {Promise<number | null>}
      */
     async packagePowerW() {
       const esuMsr = await this.readMsr(amd ? AMD_RAPL_PWR_UNIT_MSR : MSR_RAPL_POWER_UNIT);
-      if (esuMsr === null) return null;
+      if (esuMsr === null) {
+        if (amd) powerStatus = 'amd-msr-unavailable';
+        return null;
+      }
       const esu = esuOf(esuMsr);
       const energy = await this.readMsr(amd ? AMD_PKG_ENERGY_MSR : MSR_PKG_ENERGY_STATUS);
-      if (energy === null) return null;
+      if (energy === null) {
+        if (amd) powerStatus = 'amd-msr-unavailable';
+        return null;
+      }
       const t = nowFn();
       if (prevEnergy === null || prevEnergyTime === null) {
         prevEnergy = energy;
         prevEnergyTime = t;
-        return null; // the first sample calibrates
+        return null; // the first sample calibrates - not a degrade
       }
       const dE = energyDelta32(prevEnergy, energy);
       const dtSeconds = (t - prevEnergyTime) / 1000;
       prevEnergy = energy;
       prevEnergyTime = t;
+      // M17b: the frozen-counter guard - the counter must increment; two
+      // identical reads across a sample are an SMU-gated counter, never
+      // a fake 0 W (the named status reaches the log via the N4 emit).
+      if (dE === 0) {
+        powerStatus = 'energy-counter-frozen';
+        return null;
+      }
+      powerStatus = 'ready';
       return amd ? amdPackagePowerW(esu, dE, dtSeconds) : raplPowerW(esu, dE, dtSeconds);
     },
 
@@ -574,6 +623,22 @@ export function createMsrReader(deps = {}) {
      */
     status() {
       return status;
+    },
+
+    /**
+     * M17b: the per-field POWER status - 'ready' | 'energy-counter-frozen'
+     * | 'amd-msr-unavailable'. The sys-stats per-field power degrade emit
+     * (the N4 log surface) reads it: the NAMED AMD status reaches the log
+     * on the POWER path ALONE (temp may keep working - the pre-M17b
+     * fireMsrDegrade only fired when BOTH fields were null). 'ready' also
+     * covers the calibration null (the first sample is not a degrade);
+     * 'energy-counter-frozen' = two identical energy reads across a
+     * sample; 'amd-msr-unavailable' = the AMD MSR read path failed
+     * (defensive - other module versions, not the vendored one).
+     * @returns {string}
+     */
+    powerStatus() {
+      return powerStatus;
     },
 
     /**

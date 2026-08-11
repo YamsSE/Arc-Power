@@ -77,6 +77,9 @@ interface PersistedOverlay {
   bgEnabled: boolean;
   bgColor: string;
   bgOpacity: number;
+  // M17b: the chip-name row labels (the General card checkbox) - off =
+  // the stock 'CPU '/'GPU ' prefixes.
+  chipNames: boolean;
 }
 
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
@@ -105,6 +108,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       bgEnabled: s.overlayBgEnabled === true,
       bgColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : '#000000',
       bgOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
+      // M17b: the chip-name row labels (absent on old files -> false).
+      chipNames: s.overlayChipNames === true,
     };
   } catch (err) {
     clear(root);
@@ -140,6 +145,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             onchange: (ev: Event) => void onOverlayEnabledToggle((ev.target as HTMLInputElement).checked),
           }),
           el('span', { text: 'Show the overlay' }),
+        ]),
+      ]),
+      // M17b: the chip-name row labels - the overlayEnabled/overlayBgEnabled
+      // checkbox pattern (NOT the per-stat .overlay-stat-toggle hook; the
+      // ui-verify pin queries [data-setting="overlayChipNames"]).
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'overlayChipNames' },
+            checked: persisted.chipNames,
+            onchange: (ev: Event) => void onChipNamesToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Use chip names (A770, i7 5775C) instead of the CPU / GPU labels' }),
         ]),
       ]),
     ]);
@@ -332,7 +352,16 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const notesCard = el('section', { class: 'card settings-card overlay-notes-card' }, [
       el('h2', { class: 'card-title', text: 'Notes' }),
       el('p', { class: 'card-note overlay-note', text: 'The overlay is a standard topmost window - Windows does not expose overlay-plane (MPO) assignment to apps; exclusive-fullscreen games may cover it (tools like MSI Afterburner inject into games to avoid this; Arc Power does not).' }),
-      el('p', { class: 'card-note overlay-note', text: 'FPS comes from the graphics-driver frame statistics (DXGI); the frametime line is derived from the frame rate when per-frame timing is unavailable. Unavailable readings show "-".' }),
+      // M17b (2d-1): the honest refresh-bound limit. The GFS-borderless
+      // probe (pipeline/live-fps-accuracy.mjs, 2026-08-11) proved
+      // GetFrameStatistics does NOT answer for a borderless-fullscreen
+      // window (14/14 NOT_CURRENTLY_AVAILABLE) - only EXCLUSIVE
+      // fullscreen. On windowed/borderless programs the reading is the
+      // per-display presented-frame count (the DWM duplication drain),
+      // which tracks the DISPLAY REFRESH RATE, not the game's render
+      // rate - and the displayed window is the last 400-600 ms (no 1 s-lagged
+      // average). Documented here so the limit is never silent.
+      el('p', { class: 'card-note overlay-note', text: 'FPS comes from the graphics-driver frame statistics (DXGI) - exact in exclusive fullscreen; on a windowed or borderless program the reading follows the DISPLAY refresh rate (the per-display presented-frame count, last 400-600 ms), not the game\'s render rate. The frametime line is derived from the frame rate when per-frame timing is unavailable. Unavailable readings show "-".' }),
     ]);
 
     clear(root);
@@ -354,6 +383,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     } catch (err) {
       toast('error', 'Overlay could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = persisted.enabled;
+      return;
+    }
+  };
+
+  // M17b: the chip-name row labels toggle (the same profiles-settings-save
+  // pattern as the enable toggle - the honest error revert on failure).
+  const onChipNamesToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="overlayChipNames"]');
+    try {
+      await api.profilesSettingsSave({ overlayChipNames: checked });
+      persisted.chipNames = checked;
+      toast(checked ? 'success' : 'info', checked ? 'Chip names shown' : 'Stock labels restored', '');
+    } catch (err) {
+      toast('error', 'Chip names could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = persisted.chipNames;
       return;
     }
   };

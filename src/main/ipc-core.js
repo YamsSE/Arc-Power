@@ -1415,6 +1415,11 @@ export function createIpcHandlers({
           overlayBgOpacity: patch.overlayBgOpacity === undefined
             ? cur.overlayBgOpacity
             : clampOverlayBgOpacity(patch.overlayBgOpacity),
+          // M17b: the chip-name row labels - coerced like overlayBgEnabled
+          // (off = the stock 'CPU '/'GPU ' prefixes).
+          overlayChipNames: patch.overlayChipNames === undefined
+            ? cur.overlayChipNames
+            : patch.overlayChipNames === true,
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
@@ -1444,7 +1449,7 @@ export function createIpcHandlers({
         // overlay never re-renders (the box would only appear on the next
         // boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity']) {
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

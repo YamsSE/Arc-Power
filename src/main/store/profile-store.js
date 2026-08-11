@@ -240,7 +240,9 @@ export class ProfileStore {
    * the full stat set when absent).
    * M7b: overlayBgEnabled/overlayBgColor/overlayBgOpacity (the background
    * box) ride it too (off / #000000 / 0.5 when absent).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number }>}
+   * M17b: overlayChipNames (the chip-name row labels) rides it too (off =
+   * the stock 'CPU '/'GPU ' prefixes when absent).
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -298,6 +300,10 @@ export class ProfileStore {
         overlayBgEnabled: false,
         overlayBgColor: OVERLAY_BG_COLOR_DEFAULT,
         overlayBgOpacity: OVERLAY_BG_OPACITY_DEFAULT,
+        // M17b: the chip-name row labels - absent -> off (the stock
+        // 'CPU '/'GPU ' prefixes; the same absent-field mechanism, NO
+        // schema bump - the overlay renderer reads the pushed setting).
+        overlayChipNames: false,
       };
     }
     return {
@@ -355,11 +361,15 @@ export class ProfileStore {
         ? data.overlayBgColor
         : OVERLAY_BG_COLOR_DEFAULT,
       overlayBgOpacity: clampOverlayBgOpacity(data.overlayBgOpacity),
+      // M17b: the chip-name row labels - absent on old files -> false (the
+      // stock 'CPU '/'GPU ' prefixes; a garbage value degrades to false -
+      // never a crash).
+      overlayChipNames: data.overlayChipNames === true,
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -408,6 +418,10 @@ export class ProfileStore {
         ? settings.overlayBgColor
         : OVERLAY_BG_COLOR_DEFAULT,
       overlayBgOpacity: clampOverlayBgOpacity(settings.overlayBgOpacity),
+      // M17b: the chip-name row labels - validated on save like the rest
+      // (the channel validates first; the store fallback covers direct
+      // callers - an absent/garbage value persists as false).
+      overlayChipNames: settings.overlayChipNames === true,
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.

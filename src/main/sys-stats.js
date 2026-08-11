@@ -302,6 +302,12 @@ export function gpuUtilPctOf(rows, luid) {
  * PowerShell query stays the only WMI source. `onMsrDegrade` fires ONCE
  * with the reader's honest degrade text (the pawnio.eu download link)
  * when the MSR path is unavailable - the log surface for the honest note.
+ * M17b (N4): the PER-FIELD POWER degrade - when the POWER reading alone
+ * is null (temp may keep working - the AMD frozen-counter / MSR-refusal
+ * shape), the reader's named power status (powerStatus()) reaches the
+ * log through the SAME onMsrDegrade channel with a 'CPU wattage:'
+ * prefix. The both-fields-null path keeps the session-level fireMsrDegrade
+ * (never double-fired).
  * @param {{
  *   execFile?: typeof execFile,
  *   powershellExe?: string,
@@ -312,6 +318,7 @@ export function gpuUtilPctOf(rows, luid) {
  *     packagePowerW: () => Promise<number | null>,
  *     status: () => string,
  *     describe: () => string,
+ *     powerStatus?: () => string,   // M17b: the per-field power status
  *   } | null,
  *   onMsrDegrade?: (text: string) => void,  // M4L: once-per-session degrade note
  * }} [deps]
@@ -329,6 +336,10 @@ export function createSysStats(deps = {}) {
   // source on this machine; the plan's ground truth).
   let tempWindow = [];
   let msrDegradeFired = false;
+  // M17b (N4): the per-field POWER degrade - its OWN once-flag (the power
+  // path may degrade while temp keeps working; the AMD named status must
+  // reach the log on the power path alone).
+  let msrPowerDegradeFired = false;
   let last = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
 
   // M4L (B4): the once-per-session MSR degrade note - fired when the MSR
@@ -341,6 +352,19 @@ export function createSysStats(deps = {}) {
     if (st === 'ready' || st === 'closed') return;
     msrDegradeFired = true;
     onMsrDegrade(msrReader.describe());
+  };
+
+  // M17b (N4): the once-per-session PER-FIELD power degrade - the named
+  // AMD power status (energy-counter-frozen / amd-msr-unavailable)
+  // reaches the log on the POWER path ALONE (temp may keep working). The
+  // session-level fireMsrDegrade above is the both-fields-null surface;
+  // this emit is gated on it NOT having fired (never double-logged).
+  const fireMsrPowerDegrade = () => {
+    if (msrPowerDegradeFired || msrDegradeFired || !msrReader || !onMsrDegrade) return;
+    const detail = typeof msrReader.powerStatus === 'function' ? msrReader.powerStatus() : 'ready';
+    if (detail === 'ready' || detail === 'closed') return;
+    msrPowerDegradeFired = true;
+    onMsrDegrade(`CPU wattage unavailable: ${detail} (the RAPL power path - temp may keep working)`);
   };
 
   return {
@@ -415,6 +439,11 @@ export function createSysStats(deps = {}) {
           msrPower = null;
         }
         if (msrReader && msrTemp === null && msrPower === null) fireMsrDegrade();
+        // M17b (N4): the per-field POWER degrade - the named AMD status
+        // reaches the log on the POWER path ALONE (temp may keep working;
+        // a frozen energy counter / MSR refusal must not hide behind a
+        // working temp - the pre-M17b emit only fired when BOTH were null).
+        if (msrReader && msrPower === null) fireMsrPowerDegrade();
         last = {
           cpuUtilPct: utilPct,
           cpuFreqMhz: freqMhz,

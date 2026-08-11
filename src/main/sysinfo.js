@@ -70,7 +70,10 @@ export function buildSysinfoScript() {
     // M4-H: the memory row also reads SMBIOSMemoryType (the Type-17 code -
     // 24 = DDR3, 34 = DDR5 on the mock; the parse maps it, anything unknown
     // is omitted).
-    '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed,SMBIOSMemoryType',
+    // M17b: PartNumber joins the query (the ramBrandOf fallback source -
+    // a Juhor part number resolves the brand when the JEDEC decode yields
+    // nothing usable, e.g. the BIOS writing the literal string "Unknown").
+    '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed,SMBIOSMemoryType,PartNumber',
     // M4J (B): the Mainboard row source - Win32_BaseBoard Manufacturer +
     // Product (the M4-I Win32_CacheMemory query is REMOVED with the Cache
     // row; the baseboard replaces it).
@@ -445,6 +448,83 @@ function jedecCode8(raw) {
   return popcount % 2 === 0 ? code | 0x80 : code;
 }
 
+/** The parity-carrying rendering of a 2-hex byte ('4E' -> 'CE'). */
+function jedecCode8Hex(hex2) {
+  return jedecCode8(parseInt(hex2, 16)).toString(16).toUpperCase().padStart(2, '0');
+}
+
+/**
+ * M17b: resolve one zero-padded [count][code] pair through the map - every
+ * packing + the parity-fixed lookups, bounded (six tries total):
+ *   XY, YX                    - the two direct packings (both carry the
+ *                               stored code byte);
+ *   XY', Y'X                  - the parity-normalized CODE byte (the
+ *                               count-first raw DDR4/DDR5 rendering);
+ *   X'Y, YX'                  - the parity-normalized CODE byte in the
+ *                               FIRST position too (the code-first raw
+ *                               rendering - the M17b x-side fix).
+ * Candidates resolve ONLY through the existing map keys; a miss returns
+ * undefined (the caller passes the input through unchanged).
+ * @param {string} countHex2 zero-padded 2-hex count byte
+ * @param {string} codeHex2 zero-padded 2-hex code byte
+ * @returns {string | undefined}
+ */
+function resolveJedecPair(countHex2, codeHex2) {
+  const tries = [
+    countHex2 + codeHex2,
+    codeHex2 + countHex2,
+    countHex2 + jedecCode8Hex(codeHex2),
+    jedecCode8Hex(codeHex2) + countHex2,
+    jedecCode8Hex(countHex2) + codeHex2,
+    codeHex2 + jedecCode8Hex(countHex2),
+  ];
+  for (const key of tries) {
+    if (key in JEDEC_BRAND) return JEDEC_BRAND[key];
+  }
+  return undefined;
+}
+
+/**
+ * M17b: the bounded candidate search for a 3-5 hex digit code - every
+ * [count][code] / [code][count] split with 1-2 digits per half (zero-
+ * padded), resolved through resolveJedecPair (parity on the code half in
+ * both positions). A 5-digit string cannot split into two 1-2-digit
+ * halves, so no candidates exist for it - the caller's zero-drop re-run
+ * (00875 -> 0875) is the only 5-digit path.
+ * @param {string} stripped the 0x-stripped code (3-5 hex digits)
+ * @returns {string | undefined}
+ */
+function searchJedecCandidates(stripped) {
+  const upper = stripped.toUpperCase();
+  // The 1-2-digit-per-half splits: [1][2] and [2][1] (a 3-digit value; a
+  // 4-digit value rides the fast path, a 5-digit value has no valid split).
+  const halves = [
+    [upper.slice(0, 1), upper.slice(1)],
+    [upper.slice(0, 2), upper.slice(2)],
+  ];
+  for (const [a, b] of halves) {
+    if (a.length === 0 || b.length === 0 || a.length > 2 || b.length > 2) continue;
+    const hit = resolveJedecPair(a.padStart(2, '0'), b.padStart(2, '0'));
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a 4-hex code through the map: the two direct packings first
+ * (both carry the stored code byte), then the bounded pair resolution
+ * (the parity-fixed lookups on the code half in both positions).
+ * undefined when nothing matches - the caller passes the input through.
+ * @param {string} hex4 4 uppercase hex digits
+ * @returns {string | undefined}
+ */
+function resolveFourHexCode(hex4) {
+  const upper = hex4.toUpperCase();
+  const direct = JEDEC_BRAND[upper] ?? JEDEC_BRAND[upper.slice(2) + upper.slice(0, 2)];
+  if (direct !== undefined) return direct;
+  return resolveJedecPair(upper.slice(0, 2), upper.slice(2, 4));
+}
+
 /**
  * Decode a CIM manufacturer value: a JEDEC code maps to the brand;
  * anything else (a real brand name, an empty value, a longer string)
@@ -457,6 +537,15 @@ function jedecCode8(raw) {
  * DDR4/DDR5 raw rendering both resolve (e.g. '004E' resolves via '00CE'
  * to Samsung). 5-8 hex digits are exact-match only; everything unknown
  * passes through unchanged.
+ * M17b: the 4-hex FAST PATH also gains the parity-fixed lookups on the
+ * FIRST byte (X'Y / YX' - jedecCode8 applied to the CODE half in both
+ * positions, fixing the y-only asymmetry), so a code-first raw rendering
+ * like 7D0A (bank-10 code 0x7D) resolves via the x-side parity; a
+ * 5-digit value drops ONE leading zero (00875 -> 0875) and re-runs the
+ * 4-hex logic; other 3-hex shapes run the bounded candidate search
+ * (every [count][code] / [code][count] split, 1-2 digits per half
+ * zero-padded, parity on the code half in both positions). Unknowns pass
+ * through unchanged.
  * @param {unknown} manufacturer
  * @returns {string | null}
  */
@@ -465,23 +554,60 @@ export function jedecBrand(manufacturer) {
   const trimmed = manufacturer.trim();
   const stripped = trimmed.replace(/^0x/i, '');
   if (/^[0-9A-Fa-f]{4}$/.test(stripped)) {
-    const upper = stripped.toUpperCase();
-    const x = upper.slice(0, 2);
-    const y = upper.slice(2, 4);
-    // The two direct packings first (both carry the stored code byte).
-    const direct = JEDEC_BRAND[x + y] ?? JEDEC_BRAND[y + x];
-    if (direct !== undefined) return direct;
-    // Then the parity-normalized code byte (covers the raw DDR4/DDR5
-    // rendering where the tools stored no parity bit).
-    const yPrime = jedecCode8(parseInt(y, 16)).toString(16).toUpperCase().padStart(2, '0');
-    const normalized = JEDEC_BRAND[x + yPrime] ?? JEDEC_BRAND[yPrime + x];
-    if (normalized !== undefined) return normalized;
+    return resolveFourHexCode(stripped) ?? trimmed;
+  }
+  if (/^[0-9A-Fa-f]{5}$/.test(stripped)) {
+    // M17b (N2): a 5-digit value like 00875 - drop ONE leading zero and
+    // re-run the 4-hex logic (the split rule cannot cover 5 digits as two
+    // 1-2-digit halves). Non-zero-leading 5-digit values have no valid
+    // split either - they fall through to the exact-match passthrough.
+    if (stripped.startsWith('0')) {
+      const resolved = resolveFourHexCode(stripped.slice(1));
+      if (resolved !== undefined) return resolved;
+    }
+    return JEDEC_BRAND[stripped.toUpperCase()] ?? trimmed;
+  }
+  if (/^[0-9A-Fa-f]{3}$/.test(stripped)) {
+    // M17b: the bounded candidate search - 875 resolves via [8][75] ->
+    // count 08, code 75 -> '0875' -> Juhor.
+    const resolved = searchJedecCandidates(stripped);
+    if (resolved !== undefined) return resolved;
     return trimmed;
   }
   if (/^[0-9A-Fa-f]{5,8}$/.test(stripped)) {
     return JEDEC_BRAND[stripped.toUpperCase()] ?? trimmed;
   }
   return trimmed;
+}
+
+// M17b: the literal SMBIOS "no brand" strings some BIOSes write into the
+// Type-17 Manufacturer string (the JEDEC decode table predates the module
+// and the board writes a plain word instead of a hex code) - case-
+// insensitive. ramBrandOf treats these as "nothing usable" and falls back
+// to the part-number heuristic.
+const SMBIOS_UNKNOWN_BRANDS = new Set(['unknown', 'not specified', 'standard']);
+
+/**
+ * M17b: the RAM-brand resolver with the part-number fallback. When
+ * jedecBrand yields nothing usable (null / empty / the literal SMBIOS
+ * unknowns 'unknown' / 'not specified' / 'standard', case-insensitive), a
+ * part-number match on /juhor|^jhd/i resolves 'Juhor' (the documented
+ * heuristic: the Juhor part numbers read 'JUHOR DDR4-3200 16GB', 'JHD...'
+ * - the pre-JEP106-programmed modules whose BIOS decode table predates
+ * the bank-8 code). NEVER applied when the JEDEC decode succeeded - a
+ * decoded brand always wins (never overridden by the part number). Pure.
+ * @param {unknown} manufacturer the raw CIM Manufacturer (SPD JEDEC code)
+ * @param {unknown} partNumber the raw CIM PartNumber
+ * @returns {string | null}
+ */
+export function ramBrandOf(manufacturer, partNumber) {
+  const decoded = jedecBrand(manufacturer);
+  const usable = typeof decoded === 'string'
+    && decoded.length > 0
+    && !SMBIOS_UNKNOWN_BRANDS.has(decoded.trim().toLowerCase());
+  if (usable) return decoded;
+  const pn = typeof partNumber === 'string' ? partNumber : '';
+  return /juhor|^jhd/i.test(pn) ? 'Juhor' : decoded;
 }
 
 /**
@@ -603,7 +729,11 @@ export function parseCimOutput(stdout) {
     speedMhz: num(memRaw?.ConfiguredClockSpeed),
     // M4-D2: the raw SPD JEDEC code ("0420") decodes to the brand
     // (G.Skill); a real name / unknown code passes through honestly.
-    manufacturer: jedecBrand(memRaw?.Manufacturer),
+    // M17b: the part-number fallback (ramBrandOf) - a literal SMBIOS
+    // 'Unknown' manufacturer with a Juhor part number resolves 'Juhor'
+    // (the BIOS decode table predates the Juhor bank-8 code); a decoded
+    // brand always wins.
+    manufacturer: ramBrandOf(memRaw?.Manufacturer, memRaw?.PartNumber),
     // M4-H: the SMBIOS Type-17 memory-type code (24=DDR3, 34=DDR5, ... -
     // the pure ramMemoryType mapping in the renderer derives the label).
     memoryType: num(memRaw?.SMBIOSMemoryType),

@@ -139,7 +139,7 @@
 //     Never throws.
 
 import koffi from 'koffi';
-import { pushRing, rollingFps, percentileStats, RING_MAX, PERCENTILE_WINDOW_MS } from './fps-percentiles.js';
+import { pushRing, rollingFps, percentileStats, RING_MAX, PERCENTILE_WINDOW_MS, AVG_WINDOW_MS } from './fps-percentiles.js';
 
 // DXGI error codes (HRESULTs are compared unsigned).
 export const DXGI_ERROR_NOT_FOUND = 0x887A0002;
@@ -180,9 +180,24 @@ export const DESC1_LUID_LOW_OFF = 296;
 export const DESC1_LUID_HIGH_OFF = 300;
 
 // M7a: the sampler cadence (the ring's 200 ms entries) + the poll's fps
-// rolling window (the same 1 s cadence as the old poll-driven reads).
+// rolling window.
+// M17b (2d-1, the GFS-borderless probe verdict - pipeline/
+// live-fps-accuracy.mjs, 2026-08-11): GetFrameStatistics does NOT answer
+// for a borderless-fullscreen window (14/14 DXGI_ERROR_NOT_CURRENTLY_
+// AVAILABLE with a real frameless-maximized window on the output - the
+// "fullscreen-only" claim holds: GFS maintains its counters only in
+// EXCLUSIVE fullscreen). The duplication path is therefore the display
+// rate source on windowed/borderless programs, and the displayed fps is
+// REFRESH-BOUND there by design (documented in the overlay Notes card).
+// The old 1 s rolling sum was a 1 s-lagged average by construction; the
+// M17b fallback TIGHTENS the displayed window to 500 ms (2-3 ticks at
+// the 200 ms cadence - the plan's 400-600 ms range) so the reading
+// tracks the game's rate changes far closer. The poll divides the
+// window's frame sum by the window IN SECONDS (a 500 ms window summing
+// 90 frames on the 180 Hz desktop must read 180, never 90 - the frame
+// count is linear in the window, the rate is not).
 const SAMPLER_INTERVAL_MS = 200;
-const FPS_WINDOW_MS = 1000;
+const FPS_WINDOW_MS = 500;
 
 // Function-pointer prototypes for the vtable slots (COM 'this' is the
 // first explicit argument - x64 unifies the calling conventions).
@@ -607,10 +622,13 @@ export function createDxgiFpsAdapter(deps = {}) {
      * call starts the 200 ms sampler (the baseline reads happen on its
      * ticks); the poll NEVER reads the counters itself - the sample
      * derives from the ring: fps = the frames presented within the last
-     * 1 s window (rounded to 1 decimal; an empty ring honestly reads 0 -
-     * the static-desktop shape, never '-'), avgFps/low1Pct/low01Pct/p99
-     * from the percentile math (null until the 60-frame floor - the
-     * honest degrade). DXGI unavailable → null.
+     * FPS_WINDOW_MS (M17b: 500 ms - the tightened 2-3-tick window)
+     * scaled to per-second (rounded to 1 decimal; an empty ring
+     * honestly reads 0 - the static-desktop shape, never '-'), avgFps
+     * over the AVG_WINDOW_MS sub-window (M17b: the last 10 s),
+     * low1Pct/low01Pct/p99 from the percentile math over the full 60 s
+     * window (null until the 60-frame floor - the honest degrade). DXGI
+     * unavailable → null.
      * @param {number} _deviceId (ignored - system-wide)
      * @returns {Promise<{ fps: number, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null, frameTimeMs: null, gpuBusy: null } | null>}
      */
@@ -619,10 +637,18 @@ export function createDxgiFpsAdapter(deps = {}) {
       ensureSampler();
       const at = now();
       try {
+        // M17b (2d-1): the fps is the frame sum over the tightened
+        // FPS_WINDOW_MS sub-window SCALED to per-second (frames /
+        // windowSeconds) - a 500 ms window summing 90 frames reads 180.
         const frames = rollingFps(ring, at, FPS_WINDOW_MS);
-        const stats = percentileStats(ring, at, PERCENTILE_WINDOW_MS);
+        const fps = frames / (FPS_WINDOW_MS / 1000);
+        // M17b (2d-2): the poll passes AVG_WINDOW_MS EXPLICITLY - avgFps
+        // is the last-10 s window (the percentile tails keep the 60 s
+        // window). Pinned by a test so a forgotten call cannot silently
+        // regress (avgWindowMs defaults to the full window).
+        const stats = percentileStats(ring, at, PERCENTILE_WINDOW_MS, AVG_WINDOW_MS);
         return {
-          fps: Math.round(frames * 10) / 10,
+          fps: Math.round(fps * 10) / 10,
           avgFps: stats === null ? null : stats.avgFps,
           low1Pct: stats === null ? null : stats.low1Pct,
           low01Pct: stats === null ? null : stats.low01Pct,
