@@ -934,12 +934,13 @@ async function main() {
   // foreground process would honestly report 'dx11' and break the
   // none-case pins nondeterministically.
   const foregroundApi = mock ? undefined : createForegroundApiDetector();
-  // M12: the RAM-utilization detector (GlobalMemoryStatusEx ->
-  // dwMemoryLoad 0-100 - the Memory row's source). THE DETERMINISM SEAM
-  // (the foregroundApi pattern): the REAL koffi detector runs ONLY in the
-  // non-mock path - mock/ui-verify mode leaves the null-returning DEFAULT
-  // in place and the sysStats fixture's memoryUtilPct 62 wins (the
-  // fixture-wins composition, pinned by the 'RAM 62%' ui-verify pin).
+  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
+  // bytes - total - avail - the Memory row's source). THE DETERMINISM
+  // SEAM (the foregroundApi pattern): the REAL koffi detector runs ONLY
+  // in the non-mock path - mock/ui-verify mode leaves the null-returning
+  // DEFAULT in place and the sysStats fixture's memoryUsedBytes
+  // 12400000000 wins (the fixture-wins composition, pinned by the
+  // 'RAM 12.4 GB' ui-verify pin).
   const memoryUtil = mock ? undefined : createMemoryUtilDetector();
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory used).
   // Mock: fixed deterministic values. Real: the rolling-delta CIM adapter;

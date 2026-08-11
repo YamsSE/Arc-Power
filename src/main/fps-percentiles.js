@@ -29,7 +29,7 @@
 //     its own >= 300-frame floor (M13): at 300 frames the worst-0.1% tail
 //     IS the single worst frame - a noisy-but-honest minimum (the
 //     research's ~1000-frame recommendation was too strict for short
-//     sessions: at 30 fps the 30 s window holds only 900 frames, so the
+//     sessions: at 30 fps the 60 s window holds only 1800 frames, so the
 //     field never filled; at 60 fps the 300-frame floor fills after
 //     ~5 s); below the floor -> null -> the honest '-' on the overlay row.
 //
@@ -38,12 +38,14 @@
 // pushes nothing, so after the window elapses the ring is empty and the
 // percentiles honestly return null (NOT stale last-known values).
 
-/** The ring's max depth: ~150 entries at the 200 ms sampler cadence is the
- *  ~30 s rolling window (fps-dxgi.js pushes through pushRing with this). */
-export const RING_MAX = 150;
+/** The ring's max depth: ~300 entries at the 200 ms sampler cadence is the
+ *  ~60 s rolling window (fps-dxgi.js pushes through pushRing with this). */
+export const RING_MAX = 300;
 
-/** The percentile recency window (ms) - the ring's age-eviction horizon. */
-export const PERCENTILE_WINDOW_MS = 30000;
+/** The percentile recency window (ms) - the ring's age-eviction horizon
+ *  (M14 amendment: 30 s -> 60 s - the ring holds a full 60 s at the
+ *  200 ms sampler cadence). */
+export const PERCENTILE_WINDOW_MS = 60000;
 
 /** The 60-frame floor: the percentiles need at least this many frames in
  *  the window or they honestly report null (the first seconds after a poll
@@ -54,13 +56,15 @@ export const MIN_FRAMES_FOR_PERCENTILES = 60;
 export const P99_BOUNDARY = 0.99;
 
 /** M12/M13: the 0.1%-low floor - LOWERED to 300 in M13: the 1000-frame
- *  floor never filled for short sessions (at 30 fps the 30 s window holds
- *  only 900 frames, so the field showed the honest '-' forever). At 300
+ *  floor never filled for short sessions (at 30 fps the 60 s window holds
+ *  only 1800 frames, so the field showed the honest '-' forever). At 300
  *  frames the worst-0.1% tail is the SINGLE worst frame - a
  *  noisy-but-honest minimum (the research's ~1000-frame recommendation is
  *  the statistically meaningful target; 300 trades that for the field
  *  actually appearing after ~5 s at 60 fps). Below it low01Pct honestly
- *  reports null. The avg/1%/99% stats keep the 60-frame floor. */
+ *  reports null. The avg/1%/99% stats keep the 60-frame floor. The floor
+ *  itself stays 300 under the M14 60 s window (the amendment touched only
+ *  the ring depth + the recency window). */
 export const MIN_FRAMES_FOR_001_PCT = 300;
 
 /** M12: the 0.1%-low boundary fraction: j = max(1, ceil(0.999 * N)). */

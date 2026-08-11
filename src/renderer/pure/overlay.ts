@@ -208,10 +208,11 @@ export interface OverlaySample {
    *  source, already carried by the telemetry; the CPU-row watt field
    *  after the temp, toFixed(1) - the GPU watt format). */
   cpuPowerW?: number | null;
-  /** M12: the system-wide RAM utilization percent (GlobalMemoryStatusEx ->
-   *  dwMemoryLoad - the Memory row's source; the explicit memoryUtilPct
-   *  parameter wins when both are present). */
-  memoryUtilPct?: number | null;
+  /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
+   *  ullTotalPhys - ullAvailPhys - the Memory row's source; the explicit
+   *  memoryUsedBytes parameter wins when both are present). The M12
+   *  memoryUtilPct percent field is REPLACED by this. */
+  memoryUsedBytes?: number | null;
 }
 
 export interface OverlayLines {
@@ -262,9 +263,11 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  *   cpuLine: 'CPU 42%  4.3 GHz  61°C  125.5 W' (Util / Clock via ghzFreq /
  *     Temp / Wattage with ONE decimal (toFixed(1) - the GPU watt format;
  *     M13) - each field vanishes with its stat; '' when all four are off);
- *   memoryLine: 'RAM 62%' (M12 - the system-wide RAM utilization; M13: the
- *     row label reads 'RAM' - the stat id stays 'memory-util'; '' when the
- *     memory-util stat is off);
+ *   memoryLine: 'RAM 12.4 GB' (M14 - the system-wide USED RAM in bytes
+ *     via gbValue (decimal GB, one decimal - the VRAM row's format; the
+ *     M12 memoryUtilPct percent is REPLACED); M13: the row label reads
+ *     'RAM' - the stat id stays 'memory-util'; '' when the memory-util
+ *     stat is off);
  *   gpuLine: 'GPU 42%  2500 MHz  2187 MHz  65°C  122 W  1030 RPM' (Util /
  *     Core clock / Memory clock / Temp / Power with ONE decimal (toFixed(1)
  *     - 38.8) / Fan (first RPM of the array) - each field vanishes with its
@@ -284,7 +287,7 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  * Graphics-API badge) feeds the STANDALONE apiLine - the fpsLine carries
  * no api field anymore.
  */
-export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null, avgFps?: number | null, low01Pct?: number | null, memoryUtilPct?: number | null): OverlayLines {
+export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null, avgFps?: number | null, low01Pct?: number | null, memoryUsedBytes?: number | null): OverlayLines {
   const s = sample ?? {};
   // M6: the percentage formatter ROUNDS to whole percents (
   // decimals complaint - the real OS GPUEngine counter is a float
@@ -309,9 +312,9 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const low1 = numOrNull(low1Pct);
   const low01 = numOrNull(low01Pct);
   const p99num = numOrNull(p99);
-  // M12: the explicit memoryUtilPct parameter wins; the sample's field is
-  // the fallback (the renderer passes the telemetry field explicitly).
-  const memoryUtil = numOrNull(memoryUtilPct ?? s.memoryUtilPct);
+  // M14: the explicit memoryUsedBytes parameter wins; the sample's field
+  // is the fallback (the renderer passes the telemetry field explicitly).
+  const memoryUsed = numOrNull(memoryUsedBytes ?? s.memoryUsedBytes);
   // M7a/M12: the FPS row builds from its FIVE enabled stats in fixed
   // order - 'FPS <round>' + ' AVG <round>' + ' 1% Low <round>' +
   // ' 0.1% Low <round>' + ' 99% FPS <round>' (each field carries its
@@ -347,10 +350,10 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // M13: the CPU wattage - after the temp, toFixed(1) (the GPU watt format).
   if (enabled.has('cpu-power')) cpuFields.push(unit(cpuPower, (n) => n.toFixed(1), ' W'));
   const cpuLine = cpuFields.length === 0 ? '' : `CPU ${cpuFields.join('  ')}`;
-  // M12: the Memory row - the memory-util stat only ('RAM 62%' - the M13
-  // row label; the honest '-' when the field is null); '' when the stat
-  // is off.
-  const memoryLine = enabled.has('memory-util') ? `RAM ${pct(memoryUtil)}` : '';
+  // M14: the Memory row - the memory-util stat only ('RAM 12.4 GB' - the
+  // M13 row label + the gbValue decimal-GB format; the honest '-' when
+  // the field is null); '' when the stat is off.
+  const memoryLine = enabled.has('memory-util') ? `RAM ${unit(memoryUsed, (n) => gbValue(n), ' GB')}` : '';
   const gpuFields: string[] = [];
   if (enabled.has('gpu-util')) gpuFields.push(pct(gpuUtil));
   if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), ' MHz'));

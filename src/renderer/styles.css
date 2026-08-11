@@ -1059,6 +1059,22 @@ html, body {
 
 .oc-freq-mode-btn { padding: 4px 12px; font-size: 12px; }
 
+/* M14: the freq card's Performance Boost | Core Clock row (the IGS
+   pattern - mirrors the Offset|Clock row's flex) + the hidden guard: the
+   Offset|Clock row's class sets display:flex, which would override the
+   UA [hidden] rule - the attribute must win (the M9 chip lesson). */
+
+.oc-boost-mode-row {
+  display: flex;
+  margin: 8px 0 2px;
+}
+
+.oc-boost-mode-toggle { margin: 0; }
+
+.oc-boost-mode-btn { padding: 4px 12px; font-size: 12px; }
+
+.oc-freq-mode-row[hidden] { display: none; }
+
 .oc-meta {
   display: flex;
   align-items: center;

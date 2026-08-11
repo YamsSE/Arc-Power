@@ -134,10 +134,10 @@ function render(): void {
   // M7a: the latest percentile stats ride the same fps poll into the FPS
   // row (null -> the honest '-' fields). M10a/M13: the latest Graphics-API
   // id rides along into the STANDALONE API row (null -> the row stays
-  // empty - never '-', never a raw id). M12: the AVG / 0.1% Low + the RAM
-  // utilization ride along too (the memoryUtilPct comes from the telemetry
-  // sample's composed field).
-  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi, latestAvgFps, latestLow01Pct, latestSample?.memoryUtilPct ?? null);
+  // empty - never '-', never a raw id). M12/M14: the AVG / 0.1% Low + the
+  // RAM used-bytes ride along too (the memoryUsedBytes comes from the
+  // telemetry sample's composed field).
+  const lines = overlayLines(latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi, latestAvgFps, latestLow01Pct, latestSample?.memoryUsedBytes ?? null);
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
   memoryEl.textContent = lines.memoryLine;

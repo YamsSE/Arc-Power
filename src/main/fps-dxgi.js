@@ -16,8 +16,9 @@
 // IDXGIOutputDuplication drain (its own baseline; the sampler is the ONLY
 // duplication drainer, so the queue is never double-drained). Each tick
 // with frames > 0 and dt > 0 pushes { tMs, ftMs: dtMs / frames, frames }
-// into a ring (~150 entries / 30 s window; the pure fps-percentiles module
-// owns the math). poll() never reads the counters itself anymore - it
+// into a ring (~300 entries / 60 s window - the M14 amendment: the ring
+// holds a full 60 s at the 200 ms sampler cadence; the pure fps-percentiles
+// module owns the math). poll() never reads the counters itself anymore - it
 // derives the sample from the ring:
 //   - fps = the frames summed over the ring entries within the last 1 s
 //     window (the same presentSum/dt semantics as the old 1 s cadence;
@@ -299,7 +300,8 @@ export function createDxgiFpsAdapter(deps = {}) {
   let dupObjects = new Map(); // output ptr -> IDXGIOutputDuplication ptr
   let dupBaselineAt = null; // the fallback path's own baseline (ms)
   // M7a: the sampler state - the ring of { tMs, ftMs, frames } entries
-  // (max ~150 / 30 s, the pure fps-percentiles constants) + the interval
+  // (max ~300 / 60 s - the M14 amendment: a full 60 s at the 200 ms
+  // sampler cadence; the pure fps-percentiles constants) + the interval
   // id (null until the first poll starts the sampler).
   let ring = [];
   let samplerTimer = null;

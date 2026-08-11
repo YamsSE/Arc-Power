@@ -8,6 +8,10 @@ export const CONTROL_LABELS: Record<string, string> = {
   gpuVoltOffsetV: 'Voltage offset',
   // M4-B: the card is named 'Core clock' in BOTH Offset and Clock
   // toggle modes - the mode is the input presentation, not the name.
+  // M14 amendment: the Performance Boost mode is the exception - the
+  // card title FOLLOWS the freqControl mode ('Performance Boost' in
+  // boost mode, this M4-B 'Core clock' name in coreClock mode; the
+  // runtime flip lives in setFreqControl, tuning.ts).
   gpuFreqOffsetMhz: 'Core clock',
   tempLimitC: 'Temperature limit',
   vramFreqOffsetGts: 'VRAM frequency offset',

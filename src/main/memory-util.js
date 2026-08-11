@@ -1,30 +1,34 @@
-// Arc Power - M12 the RAM-utilization detector (kernel32 via koffi).
+// Arc Power - M12/M14 the RAM-utilization detector (kernel32 via koffi).
 //
-// GlobalMemoryStatusEx -> MEMORYSTATUSEX.dwMemoryLoad - the OS's own
-// system-wide RAM utilization percentage (0-100, the number Windows Task
-// Manager shows as "Memory"). The Memory overlay row + the telemetry
-// sample's memoryUtilPct field are composed from this detector.
+// M14: GlobalMemoryStatusEx -> MEMORYSTATUSEX.ullTotalPhys + ullAvailPhys -
+// the detector returns the system-wide USED RAM in BYTES (total - avail,
+// the source of the overlay row's 'RAM 12.4 GB'). The old dwMemoryLoad
+// percent is superseded: the user asked for the used GB, and the used
+// bytes derive from the same single call (no extra polling).
 //
 // MEMORYSTATUSEX layout (Windows SDK winbase.h):
 //   DWORD     dwLength@0                    (must be sizeof(MEMORYSTATUSEX)
 //                                            before the call - the API
 //                                            rejects a zeroed length)
-//   DWORD     dwMemoryLoad@4                (the percent, 0-100)
+//   DWORD     dwMemoryLoad@4                (the percent, 0-100 - read for
+//                                            completeness, not used)
 //   DWORDLONG ullTotalPhys@8, ullAvailPhys@16, ullTotalPageFile@24,
 //     ullAvailPageFile@32, ullTotalVirtual@40, ullAvailVirtual@48,
 //     ullAvailExtendedVirtual@56 - 64 bytes total.
-// Only dwLength + dwMemoryLoad are touched; the trailing DWORDLONGs keep
-// the buffer at the struct's true size so the API writes within bounds.
+// The trailing DWORDLONGs keep the buffer at the struct's true size so the
+// API writes within bounds.
 //
 // The fps-dxgi never-throw pattern: detect() returns null on ANY failure
 // path (kernel32 load failure, a bad func, the call returning FALSE, any
-// koffi error) - the honest degrade, NEVER a throw.
+// koffi error, an impossible negative used-bytes) - the honest degrade,
+// NEVER a throw.
 //
 // Testable (the fps-dxgi test-harness pattern): the koffi load sits behind
 // an injected seam - deps.load (the koffi loader) - so the success path +
 // the failure degrades are unit-testable without the real kernel32, and
-// the dwMemoryLoad value passes through EXACTLY (the clobber-guard: a
-// scripted 62 must come back as 62 - the 'RAM 62%' pin depends on it).
+// the scripted total/avail come back EXACTLY (the clobber-guard: scripted
+// 12.4 GB used must come back as 12400000000 - the 'RAM 12.4 GB' pin
+// depends on it).
 
 import koffi from 'koffi';
 
@@ -32,14 +36,16 @@ import koffi from 'koffi';
 // (DWORDLONGs) = 64 bytes. The dwLength field MUST carry this value before
 // the call.
 export const MEMORY_STATUS_EX_SIZE = 64;
-// MEMORYSTATUSEX.dwMemoryLoad@4 - the utilization percent (0-100).
-export const MEMORY_LOAD_OFF = 4;
+// M14: MEMORYSTATUSEX.ullTotalPhys@8 + ullAvailPhys@16 - the used-bytes
+// source (the 'RAM 12.4 GB' row).
+export const TOTAL_PHYS_OFF = 8;
+export const AVAIL_PHYS_OFF = 16;
 
 /**
  * The RAM-utilization detector. detect() runs ONE GlobalMemoryStatusEx
- * call and returns dwMemoryLoad (the OS's system-wide RAM utilization
- * percent, 0-100) - or null on ANY failure (the honest degrade, NEVER a
- * throw - the fps-dxgi pattern).
+ * call and returns the system-wide USED RAM in BYTES (total - avail) - or
+ * null on ANY failure (the honest degrade, NEVER a throw - the fps-dxgi
+ * pattern).
  * @param {{
  *   load?: (name: string) => object,   // injectable koffi load (tests)
  * }} [deps]
@@ -56,10 +62,11 @@ export function createMemoryUtilDetector(deps = {}) {
   };
 
   /**
-   * The system-wide RAM utilization percent (0-100). Every failure path
-   * degrades to null - NEVER throws.
-   * @returns {Promise<number | null>} dwMemoryLoad (0-100) or null when
-   *   the call failed
+   * The system-wide used RAM in bytes (ullTotalPhys - ullAvailPhys, the
+   * 'RAM 12.4 GB' row's source). Every failure path degrades to null -
+   * NEVER throws.
+   * @returns {Promise<number | null>} the used bytes or null when the
+   *   call failed
    */
   const detect = async () => {
     try {
@@ -70,7 +77,10 @@ export function createMemoryUtilDetector(deps = {}) {
       koffi.encode(buf, 0, 'uint32', MEMORY_STATUS_EX_SIZE);
       const ok = statusEx(buf);
       if (!ok) return null; // GlobalMemoryStatusEx returned FALSE
-      return koffi.decode(buf, MEMORY_LOAD_OFF, 'uint32');
+      const total = Number(koffi.decode(buf, TOTAL_PHYS_OFF, 'uint64'));
+      const avail = Number(koffi.decode(buf, AVAIL_PHYS_OFF, 'uint64'));
+      const used = total - avail;
+      return Number.isFinite(used) && used >= 0 ? used : null;
     } catch {
       return null; // ANY koffi error resolves to the honest null
     }

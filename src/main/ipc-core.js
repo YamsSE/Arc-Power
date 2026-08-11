@@ -462,7 +462,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
- *   memoryUtil?: { detect: () => Promise<number | null> },  // M12: the RAM-utilization detector (GlobalMemoryStatusEx -> dwMemoryLoad 0-100; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe; the two telemetry emit sites compose its result into the pushed sample)
+ *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe; the two telemetry emit sites compose its result into the pushed sample)
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }> },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample)
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
@@ -555,12 +555,13 @@ export function createIpcHandlers({
   // main.js wires the real detector ONLY in the non-mock path); the
   // ipc-core fps-poll handler composes its result into the sample.
   foregroundApi = { detect: async () => null },
-  // M12: the RAM-utilization detector (GlobalMemoryStatusEx -> dwMemoryLoad
-  // 0-100 - the Memory row's source). The DEFAULT is the null-returning
-  // detector (the same determinism seam: main.js wires the real detector
-  // ONLY in the non-mock path; the mock fixture's memoryUtilPct 62 wins
-  // over it - the fixture-wins composition); the ipc-core telemetry emit
-  // sites compose its result into the pushed sample.
+  // M12: the RAM-utilization detector (GlobalMemoryStatusEx -> the USED
+  // RAM in BYTES - total - avail - the Memory row's source). The DEFAULT
+  // is the null-returning detector (the same determinism seam: main.js
+  // wires the real detector ONLY in the non-mock path; the mock fixture's
+  // memoryUsedBytes 12400000000 wins over it - the fixture-wins
+  // composition); the ipc-core telemetry emit sites compose its result
+  // into the pushed sample.
   memoryUtil = { detect: async () => null },
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
@@ -618,12 +619,12 @@ export function createIpcHandlers({
    * cadence as the device TelemetryService; the boot-level log-to-file
    * subscription consumes the same telemetry:sample push, so log-file logging
    * works for free.
-   * M12: the sample COMPOSES the RAM-utilization field here too - the
+   * M14: the sample COMPOSES the used-RAM-bytes field here too - the
    * no-Intel machine must get the Memory row as well. The fixture-wins
    * shape (the M10a `sample.api ?? detect()` pattern): the sysStats
-   * fixture's memoryUtilPct (62) wins, otherwise the injected detector
-   * answers (the DEFAULT is the null-returning detector - the determinism
-   * seam).
+   * fixture's memoryUsedBytes (12400000000) wins, otherwise the injected
+   * detector answers (the DEFAULT is the null-returning detector - the
+   * determinism seam).
    */
   const startNullTelemetry = async () => {
     if (telemetry.has(NULL_DEVICE_KEY)) return;
@@ -634,7 +635,7 @@ export function createIpcHandlers({
           emit('telemetry:sample', {
             t: Date.now(),
             ...extra,
-            memoryUtilPct: extra.memoryUtilPct ?? (await memoryUtil.detect()),
+            memoryUsedBytes: extra.memoryUsedBytes ?? (await memoryUtil.detect()),
           });
         } catch {
           // a stats failure must never break the timer (skip this tick)
@@ -659,11 +660,11 @@ export function createIpcHandlers({
     // keys (N1), but an injected colliding field must never let an OS
     // stat overwrite the device's IGCL reading (igcl-wins; pinned by the
     // injected-collision unit test).
-    // M12: the sample COMPOSES the RAM-utilization field - the fixture-wins
+    // M14: the sample COMPOSES the used-RAM-bytes field - the fixture-wins
     // shape (the M10a `sample.api ?? detect()` pattern): the sysStats
-    // fixture's memoryUtilPct (62) wins, otherwise the injected detector
-    // answers (the DEFAULT is the null-returning detector - the determinism
-    // seam; the real koffi probe runs only in the product path).
+    // fixture's memoryUsedBytes (12400000000) wins, otherwise the injected
+    // detector answers (the DEFAULT is the null-returning detector - the
+    // determinism seam; the real koffi probe runs only in the product path).
     svc.onSample(async (sample) => {
       let extra = {};
       try {
@@ -675,7 +676,7 @@ export function createIpcHandlers({
       emit('telemetry:sample', {
         ...extra,
         ...sample,
-        memoryUtilPct: extra.memoryUtilPct ?? (await memoryUtil.detect()),
+        memoryUsedBytes: extra.memoryUsedBytes ?? (await memoryUtil.detect()),
       });
     });
     svc.onPollError(() => { /* stale readouts recover on the next tick */ });

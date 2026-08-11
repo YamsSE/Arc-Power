@@ -352,13 +352,14 @@ export interface TelemetrySample {
    *  cap 100). Null when the counter is unpopulated; the readout tiles
    *  read `gpuUtilPct ?? utilPct` (the no-Intel util source). */
   gpuUtilPct?: number | null;
-  /** M12: the system-wide RAM utilization percent (GlobalMemoryStatusEx ->
-   *  dwMemoryLoad, 0-100 - the Memory row's source). Composed into BOTH
-   *  telemetry emit sites (the device + the no-device null mode) with the
-   *  fixture-wins shape: the sysStats fixture's memoryUtilPct wins,
-   *  otherwise the injected detector answers (null -> the honest '-' -
-   *  never a fake 0). */
-  memoryUtilPct?: number | null;
+  /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
+   *  ullTotalPhys - ullAvailPhys - the Memory row's source). Composed
+   *  into BOTH telemetry emit sites (the device + the no-device null
+   *  mode) with the fixture-wins shape: the sysStats fixture's
+   *  memoryUsedBytes (12400000000 - 12.4 GB) wins, otherwise the
+   *  injected detector answers (null -> the honest '-' - never a fake
+   *  0). The M12 memoryUtilPct percent field is REPLACED by this. */
+  memoryUsedBytes?: number | null;
 }
 
 /** A saved profile (mirrors the main-process Profile typedef). */

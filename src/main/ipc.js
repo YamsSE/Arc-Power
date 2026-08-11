@@ -33,7 +33,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   registryApply?: ReturnType<typeof createRegistryApply>,
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
- *   memoryUtil?: { detect: () => Promise<number | null> },  // M12: the RAM-utilization detector (GlobalMemoryStatusEx -> dwMemoryLoad 0-100; the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
+ *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
  *   sysStats?: { sample: () => Promise<unknown> },
  *   monitorLog?: { append: (sample: object) => Promise<unknown> },
  *   rebuildTray?: () => Promise<unknown>,

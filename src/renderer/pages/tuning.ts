@@ -66,7 +66,7 @@ import type { Page, PageContext } from '../router.ts';
 import { consumeFanViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
-import { clockToOffset, offsetToClock, clockRangeFromOffsetRange } from '../pure/clock.ts';
+import { clockToOffset, offsetToClock, clockRangeFromOffsetRange, boostToOffset, offsetToBoost, boostAvailable } from '../pure/clock.ts';
 import { chipState } from '../pure/chip.ts';
 import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
 import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible } from '../pure/settings.ts';
@@ -123,6 +123,24 @@ let renderCaps: Capabilities | null = null;
 // session; null -> the toggle is hidden (no base to convert).
 let freqMode: 'offset' | 'clock' = 'offset';
 let baseClock: number | null = null;
+// M14: the freq card's IGS "Performance Boost" mode ('boost' = the slider
+// is a PERCENT of the positive offset caps max - the A770: 100% = +300 MHz
+// over the 2400 MHz reference; the stored/applied value stays the OFFSET).
+// The [Performance Boost | Core Clock] toggle renders BEFORE the
+// Offset|Clock row when the device exposes a positive max (boostAvailable
+// - INDEPENDENT of baseClock: boost mode does not need one). ENTERING
+// boost mode RESETS freqMode = 'offset' (the F2 hazard: a leftover 'clock'
+// mode would route the boost slider's raw % through clockToOffset -> a
+// wrong-value apply; the reset also makes the back-switch pin literal:
+// the coreClock view shows the offset slider).
+// M14 amendment: PERFORMANCE BOOST IS THE DEFAULT - resetPageState picks
+// 'boost' whenever boostAvailable (the F3 gate: a non-positive caps max
+// falls back to 'coreClock' - no boost possible); the declaration below is
+// only the fallback value.
+let freqControl: 'coreClock' | 'boost' = 'coreClock';
+// M14: the boost slider's percent range (0..100, step 1 - the IGS shape;
+// the offset conversion reads the caps range's positive max live).
+const boostRange = (): RangeInfo => ({ min: 0, max: 100, step: 1, default: 0, units: '%' });
 // M4-B: the automatic waiver re-prompt + single retry counter - the
 // driver can lose the waiver while settings.json still says accepted; the
 // first apply then fails with waiver-not-set and re-prompts + retries once.
@@ -131,6 +149,11 @@ let waiverRetryCount = 0;
 const cards = new Map<string, HTMLElement>();
 const valueNodes = new Map<string, HTMLElement>();
 const driverNodes = new Map<string, HTMLElement>();
+// M14 amendment: the freq card's TITLE element ref - the title is built at
+// card-build time ('Performance Boost' in boost mode, the M4-B 'Core
+// clock' name in coreClock mode) and FOLLOWS setFreqControl at runtime via
+// this ref (the mode-following card title).
+const titleNodes = new Map<string, HTMLElement>();
 // M4-B step-5 F2: the card's meta range line - refreshCard keeps it in sync
 // with the mode's slider range (Clock mode would otherwise leave the
 // OFFSET range caption under the absolute-clock slider).
@@ -156,10 +179,21 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   renderCaps = caps;
   applying = false;
   freqMode = 'offset';
+  // M14 amendment: PERFORMANCE BOOST IS THE DEFAULT - the page renders in
+  // boost mode whenever the device exposes a positive offset max (the F3
+  // gate - boostAvailable); only a non-positive max (no boost possible)
+  // falls back to 'coreClock'. The boost default also RESETS freqMode to
+  // 'offset' at render (the F2 discipline - the card never renders in a
+  // mixed boost+clock state). The null-caps guard: on the no-Intel path
+  // resetPageState runs with caps === null BEFORE the deviceId-null branch
+  // renders its honest 'No GPU available.' (the boost gate must never
+  // dereference a null caps - boostAvailable degrades on null/undefined).
+  freqControl = boostAvailable(caps?.ranges?.gpuFreqOffsetMhz?.max) ? 'boost' : 'coreClock';
   baseClock = null;
   cards.clear();
   valueNodes.clear();
   driverNodes.clear();
+  titleNodes.clear();
   rangeNodes.clear();
   chipNodes.clear();
   chipApplyNodes.clear();
@@ -196,6 +230,10 @@ function refreshChip(key: string) {
 /** M3-C-F: refresh ONE card in place from the current values + fresh state:
  *  slider, value readout, the "Driver:" readout, the chip. M4-B: the freq
  *  card in Clock mode slides/reads out the ABSOLUTE clock (base + offset).
+ *  M14: in boost mode it slides/reads out the PERCENT (offsetToBoost) -
+ *  the boost branch takes precedence over the clock branch (a mode flip
+ *  must move the conversion in place, and the two modes never coexist:
+ *  entering boost resets freqMode to 'offset').
  *  M4-B step-5 F1: the range derives from the CLAMPED exposure (same helper
  *  as buildCard) - the raw caps must never re-widen the slider after build
  *  (the M2C-A F3 guard). F2: the .oc-range meta line follows the mode. */
@@ -204,17 +242,23 @@ function refreshCard(key: string) {
   const range = cardSliderRange(caps, key);
   if (!range) return;
   const value = values[key];
+  const boostMode = isFreqBoostMode(key);
   const clockMode = isFreqClockMode(key);
-  const sliderRange = clockMode ? clockRangeFromOffsetRange(range, baseClock as number) : range;
-  const displayValue = clockMode ? offsetToClock(value, baseClock as number) : value;
+  const sliderRange = boostMode
+    ? boostRange()
+    : (clockMode ? clockRangeFromOffsetRange(range, baseClock as number) : range);
+  const displayValue = boostMode
+    ? (offsetToBoost(value, range.max) ?? 0)
+    : (clockMode ? offsetToClock(value, baseClock as number) : value);
   const input = cards.get(key)?.querySelector<HTMLInputElement>(`input[type="range"]`);
   const fill = cards.get(key)?.querySelector<HTMLElement>('.oc-track-fill');
   const valueNode = valueNodes.get(key);
   const driverNode = driverNodes.get(key);
   const rangeNode = rangeNodes.get(key);
   // M4-B: the slider's min/max/step attributes follow the mode - Clock mode
-  // slides over the absolute-clock range (the attrs are set at build time
-  // from the offset range; the mode flip must move them in place).
+  // slides over the absolute-clock range, boost mode over the 0..100 %
+  // range (the attrs are set at build time from the offset range; the mode
+  // flip must move them in place).
   if (input) {
     input.min = String(sliderRange.min);
     input.max = String(sliderRange.max);
@@ -225,20 +269,31 @@ function refreshCard(key: string) {
   if (valueNode) valueNode.textContent = formatValue(displayValue, sliderRange.units);
   // M4-B step-5 F2: the meta range caption describes the CURRENT slider -
   // in Clock mode it must read the absolute-clock range, never the stale
-  // offset range the card was built with.
+  // offset range the card was built with; M14: in boost mode the 0..100 %
+  // range (the en-dash caption format is shared).
   if (rangeNode) rangeNode.textContent = `${sliderRange.min} – ${sliderRange.max} ${sliderRange.units} · step ${sliderRange.step}`;
   // The "Driver:" readout always reflects the FRESH state - never built once
   // at render (the stale part that forced the leave-and-return dance). In
-  // Clock mode it shows the absolute clock of the driver's current offset.
+  // Clock mode it shows the absolute clock of the driver's current offset;
+  // in boost mode the percent (the negative half-plane clamps to 0 %).
   if (driverNode) {
     const raw = currentState?.[key as keyof DeviceState];
-    const driverValue = clockMode && typeof raw === 'number'
-      ? offsetToClock(raw, baseClock as number)
-      : raw;
+    const driverValue = boostMode && typeof raw === 'number'
+      ? (offsetToBoost(raw, range.max) ?? 0)
+      : (clockMode && typeof raw === 'number'
+        ? offsetToClock(raw, baseClock as number)
+        : raw);
     driverNode.textContent = formatDriverValue(typeof driverValue === 'number' ? driverValue : null, sliderRange);
   }
   refreshChip(key);
   updateFloating();
+}
+
+// M14: the freq card is in Performance Boost mode (the toggle only renders
+// when a positive offset max exists - boostAvailable; the flag itself can
+// never be set otherwise).
+function isFreqBoostMode(key: string): boolean {
+  return key === 'gpuFreqOffsetMhz' && freqControl === 'boost';
 }
 
 // M4-B: the freq card is in Clock mode (and a base clock is available).
@@ -331,21 +386,45 @@ export const tuningPage: Page = {
       // refresh path uses, so the clamp survives every in-place refresh.
       const range: RangeInfo = cardSliderRange(caps, key) as RangeInfo;
       // M4-B: the freq card in Clock mode slides over the ABSOLUTE clock
-      // range (offset range translated by baseClock).
+      // range (offset range translated by baseClock). M14: in boost mode
+      // over the 0..100 % percent range (the IGS shape - the offset
+      // conversion reads the caps range's positive max live).
+      const boostMode = isFreqBoostMode(key);
       const clockMode = isFreqClockMode(key);
-      const sliderRange = clockMode ? clockRangeFromOffsetRange(range, baseClock as number) : range;
+      const sliderRange = boostMode
+        ? boostRange()
+        : (clockMode ? clockRangeFromOffsetRange(range, baseClock as number) : range);
       const rawDriver = state[key as keyof DeviceState];
       const driverRaw = typeof rawDriver === 'number' ? rawDriver : null;
-      const driverValue = clockMode && driverRaw !== null ? offsetToClock(driverRaw, baseClock as number) : driverRaw;
+      const driverValue = boostMode && driverRaw !== null
+        ? (offsetToBoost(driverRaw, range.max) ?? 0)
+        : (clockMode && driverRaw !== null ? offsetToClock(driverRaw, baseClock as number) : driverRaw);
       const driverText = formatDriverValue(driverValue, sliderRange);
       const offGrid = isOffGrid(driverValue, sliderRange);
 
       const card = el('section', { class: 'card oc-card', dataset: { control: key } }, [
         el('div', { class: 'oc-card-head' }, [
-          el('h2', { class: 'card-title', text: CONTROL_LABELS[key] ?? key }),
+          // M14 amendment: the card title FOLLOWS the freqControl mode - in
+          // boost mode the freq card reads 'Performance Boost', in
+          // coreClock mode the M4-B 'Core clock' name (CONTROL_LABELS). The
+          // title is built at card-build time + updated at runtime by
+          // setFreqControl through the titleNodes ref.
+          el('h2', { class: 'card-title', text: key === 'gpuFreqOffsetMhz' && boostMode ? 'Performance Boost' : (CONTROL_LABELS[key] ?? key) }),
           el('span', { class: 'oc-driver', title: offGrid ? 'Off-grid value reported by the driver (snap applies on move)' : undefined },
             [el('span', { class: 'oc-driver-label', text: 'Driver: ' }), el('span', { class: 'oc-driver-value', text: driverText })]),
         ]),
+        // M14: the freq card's honest note (the vram-editor pattern - the
+        // freq card had NO note before): the shared-knob/last-writer-wins
+        // clause - the boost knob is the SAME driver control this card and
+        // Intel Graphics Software (IGS) both write; the "Driver:" readout
+        // shows reality. Renders in BOTH modes (the arbitration applies to
+        // the whole shared knob, not one presentation).
+        ...(key === 'gpuFreqOffsetMhz'
+          ? [el('p', {
+            class: 'card-note',
+            text: 'The frequency offset is a single shared driver value - this app and Intel Graphics Software (IGS) both write it. The last apply wins; the Driver: readout always shows the current driver value.',
+          })]
+          : []),
         el('div', { class: 'oc-slider-row' }, [
           el('div', { class: 'oc-slider' }, [
             el('div', { class: 'oc-track-fill' }),
@@ -354,26 +433,62 @@ export const tuningPage: Page = {
               min: sliderRange.min,
               max: sliderRange.max,
               step: sliderRange.step,
-              value: snapToRange(clockMode ? offsetToClock(values[key], baseClock as number) : values[key], sliderRange),
+              value: snapToRange(boostMode ? (offsetToBoost(values[key], range.max) ?? 0) : (clockMode ? offsetToClock(values[key], baseClock as number) : values[key]), sliderRange),
               oninput: (e: Event) => {
                 const raw = Number((e.target as HTMLInputElement).value);
                 // M4-B: in Clock mode the slider yields an ABSOLUTE clock -
-                // convert back to the offset the apply path stores. The mode
-                // is read LIVE (isFreqClockMode), never the build-time
-                // closure: a mode flip must change the conversion too.
-                values[key] = isFreqClockMode(key)
-                  ? clockToOffset(snapToRange(raw, clockRangeFromOffsetRange(range, baseClock as number)), baseClock as number)
-                  : snapToRange(raw, range);
+                // convert back to the offset the apply path stores. M14:
+                // the boost branch takes precedence - in boost mode the
+                // slider yields a PERCENT, converted back to the offset
+                // (boostToOffset). The mode is read LIVE (isFreqBoostMode /
+                // isFreqClockMode), never the build-time closure: a mode
+                // flip must change the conversion too.
+                values[key] = isFreqBoostMode(key)
+                  ? (boostToOffset(raw, range.max) ?? range.default)
+                  : (isFreqClockMode(key)
+                    ? clockToOffset(snapToRange(raw, clockRangeFromOffsetRange(range, baseClock as number)), baseClock as number)
+                    : snapToRange(raw, range));
                 refreshCard(key);
               },
             }),
           ]),
-          el('div', { class: 'oc-value', text: formatValue(clockMode ? offsetToClock(values[key], baseClock as number) : values[key], sliderRange.units) }),
+          el('div', { class: 'oc-value', text: formatValue(boostMode ? (offsetToBoost(values[key], range.max) ?? 0) : (clockMode ? offsetToClock(values[key], baseClock as number) : values[key]), sliderRange.units) }),
         ]),
+        // M14: the Performance Boost | Core Clock toggle (the IGS pattern) -
+        // the GPU-frequency-offset card ONLY, gated on a POSITIVE offset
+        // max (boostAvailable - INDEPENDENT of baseClock: boost mode does
+        // not need a base clock). Renders BEFORE the Offset|Clock row (the
+        // user's exact layout: the new toggle IN FRONT of the existing one).
+        ...(key === 'gpuFreqOffsetMhz' && boostAvailable(range.max)
+          ? [el('div', { class: 'oc-boost-mode-row' }, [
+              el('div', { class: 'oc-mode-toggle oc-boost-mode-toggle', role: 'group' }, [
+                el('button', {
+                  class: `oc-mode-btn oc-boost-mode-btn${freqControl === 'boost' ? ' active' : ''}`,
+                  dataset: { boostMode: 'boost' },
+                  text: 'Performance Boost',
+                  title: 'Set the frequency as a percent of the maximum offset (like Intel Graphics Software)',
+                  onClick: () => setFreqControl('boost'),
+                }),
+                el('button', {
+                  class: `oc-mode-btn oc-boost-mode-btn${freqControl === 'coreClock' ? ' active' : ''}`,
+                  dataset: { boostMode: 'coreClock' },
+                  text: 'Core Clock',
+                  title: 'Set the frequency as an offset from the base clock',
+                  onClick: () => setFreqControl('coreClock'),
+                }),
+              ]),
+            ])]
+          : []),
         // M4-B: the Offset/Clock segmented toggle (Wattman-style) - the
         // GPU-frequency-offset card ONLY, hidden when no base clock exists.
+        // M14: BUILT in both freqControl modes + HIDDEN at runtime when
+        // freqControl === 'boost' (the user's clarification: the
+        // Offset|Clock row renders ONLY in the 'coreClock' mode - the
+        // hidden ATTRIBUTE is queried by the verify pins; the
+        // .oc-freq-mode-row[hidden] CSS guard overrides the row's
+        // display:flex - the M9 chip lesson).
         ...(key === 'gpuFreqOffsetMhz' && baseClock !== null
-          ? [el('div', { class: 'oc-freq-mode-row' }, [
+          ? [el('div', { class: 'oc-freq-mode-row', hidden: freqControl === 'boost' }, [
               el('div', { class: 'oc-mode-toggle oc-freq-mode-toggle', role: 'group' }, [
                 el('button', {
                   class: `oc-mode-btn oc-freq-mode-btn${freqMode === 'offset' ? ' active' : ''}`,
@@ -419,8 +534,13 @@ export const tuningPage: Page = {
             onClick: () => {
               // M4-B: in Clock mode the default is the ABSOLUTE default
               // (base + range.default) - converts back to the same offset.
-              // Mode read LIVE (a flip must move the reset too).
-              if (isFreqClockMode(key)) {
+              // M14: the boost branch takes precedence - in boost mode the
+              // reset restores the OFFSET default (range.default; the
+              // percent slider then reads its 0 % equivalent). Mode read
+              // LIVE (a flip must move the reset too).
+              if (isFreqBoostMode(key)) {
+                values[key] = snapToRange(range.default, range);
+              } else if (isFreqClockMode(key)) {
                 const clockRange = clockRangeFromOffsetRange(range, baseClock as number);
                 values[key] = clockToOffset(snapToRange(clockRange.default, clockRange), baseClock as number);
               } else {
@@ -434,6 +554,9 @@ export const tuningPage: Page = {
 
       valueNodes.set(key, card.querySelector<HTMLElement>('.oc-value') as HTMLElement);
       driverNodes.set(key, card.querySelector<HTMLElement>('.oc-driver-value') as HTMLElement);
+      // M14 amendment: the title ref - setFreqControl flips the freq card's
+      // title in place through it (the mode-following card title).
+      titleNodes.set(key, card.querySelector<HTMLElement>('.card-title') as HTMLElement);
       rangeNodes.set(key, card.querySelector<HTMLElement>('.oc-range') as HTMLElement);
       chipNodes.set(key, card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
       chipApplyNodes.set(key, card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
@@ -453,6 +576,34 @@ export const tuningPage: Page = {
       toggle?.querySelectorAll<HTMLButtonElement>('.oc-freq-mode-btn').forEach((b) => {
         b.classList.toggle('active', b.dataset.mode === freqMode);
       });
+    };
+
+    // M14: flip the freq card between Core Clock and Performance Boost
+    // presentation. The stored value stays an OFFSET in both modes - only
+    // the slider range + readouts translate (refreshCard handles the rest).
+    // THE F2 HAZARD: entering boost mode RESETS freqMode = 'offset' - a
+    // leftover 'clock' mode would route the boost slider's raw % through
+    // clockToOffset -> a wrong-value apply; the reset also makes the
+    // back-switch pin literal (the coreClock view shows the offset slider
+    // at the SAME stored value). The Offset|Clock row is hidden by the
+    // hidden ATTRIBUTE while boost mode is active.
+    // M14 amendment: the card TITLE follows the mode at runtime - the
+    // title element is built at card-build time ('Performance Boost' when
+    // the page renders in the boost default; 'Core clock' via
+    // CONTROL_LABELS) and flipped in place through the titleNodes ref.
+    const setFreqControl = (mode: 'coreClock' | 'boost') => {
+      if (freqControl === mode) return;
+      freqControl = mode;
+      if (mode === 'boost') freqMode = 'offset';
+      refreshCard('gpuFreqOffsetMhz');
+      const toggle = cards.get('gpuFreqOffsetMhz')?.querySelector<HTMLElement>('.oc-boost-mode-toggle');
+      toggle?.querySelectorAll<HTMLButtonElement>('.oc-boost-mode-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.boostMode === freqControl);
+      });
+      const freqRow = cards.get('gpuFreqOffsetMhz')?.querySelector<HTMLElement>('.oc-freq-mode-row');
+      if (freqRow) freqRow.hidden = freqControl === 'boost';
+      const title = titleNodes.get('gpuFreqOffsetMhz');
+      if (title) title.textContent = mode === 'boost' ? 'Performance Boost' : (CONTROL_LABELS['gpuFreqOffsetMhz'] ?? 'Core clock');
     };
 
     // M4J (D): the VRAM clock editor card (Advanced section - Battlemage
