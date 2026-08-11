@@ -739,7 +739,11 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
       return;
     }
-    const decision = await ensureWaiver(deviceId, caps.waiverAccepted, caps.deviceName || 'this GPU');
+    // M17 (B50-class): on OC-locked devices there is no waiver to accept -
+    // skip the gate (the driver's own per-control answer on the fan writes
+    // decides; the waiver dialog would only dead-end with UNSUPPORTED_FEATURE).
+    const waiverRequired = caps.overclockingSupported !== false;
+    const decision = await ensureWaiver(deviceId, caps.waiverAccepted, caps.deviceName || 'this GPU', waiverRequired);
     if (decision === 'cancelled') {
       toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before changing fan settings.');
       return;
@@ -792,7 +796,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
           && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
           waiverRetryCount += 1;
           const live2 = ctx.store.get();
-          const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, live2.caps?.deviceName || 'this GPU');
+          const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, live2.caps?.deviceName || 'this GPU', live2.caps?.overclockingSupported !== false);
           if (decision === 'accepted') {
             // Patch the store caps BEFORE the retry - the retry re-enters
             // the pre-apply waiver gate, which reads the store flag; without

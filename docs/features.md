@@ -53,4 +53,8 @@ Quick access and apply-on-startup controls without opening the window.
   prompts; apply-on-startup runs through an elevated scheduled task.
 - The warranty-waiver gate is prompted at open and on first apply; acceptance
   is permanent, and an apply that hits an unset waiver re-prompts once and
-  retries automatically.
+  retries automatically. OC-locked GPUs (Arc B50 / Arc Pro B50-class - the
+  driver refuses `ctlOverclockWaiverSet` with `ERROR_UNSUPPORTED_FEATURE`)
+  have no waiver: no prompt, the dashboard row reads "Not supported on this
+  GPU", and fan/profile applies skip the gate (the driver's per-control
+  refusals are the honest floor).

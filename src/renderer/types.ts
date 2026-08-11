@@ -66,6 +66,11 @@ export interface Capabilities {
    *  supplies it). Null when unknown. */
   memType?: string | null;
   waiverAccepted: boolean;
+  /** M17: FALSE on OC-locked devices (Arc B50-class) - the driver exposes
+   *  no OC control and refuses the warranty waiver (ERROR_UNSUPPORTED_FEATURE).
+   *  The waiver prompt/row/gate are skipped on such devices. Absent/undefined
+   *  is treated as supported (older payloads). */
+  overclockingSupported?: boolean;
   controls: Record<string, boolean>;
   ranges: Record<string, RangeInfo>;
   fan: { canControl: boolean; modes: string[]; maxRpm: number; maxCurvePoints: number };

@@ -4,7 +4,10 @@
 // Electron-free so the whole flow is testable under plain `node --test`
 // with MockBackend. Gates: the persisted settings must have waiverAccepted
 // (the waiver must also be accepted on the device - seedWaiverState runs
-// before this at boot). The ocOnBoot gate applies ONLY to the boot path:
+// before this at boot). M17 (B50-class): OC-locked devices
+// (caps.overclockingSupported === false - no OC surface, the driver refuses
+// the waiver) SKIP both waiver gates - there is no waiver to accept. The
+// ocOnBoot gate applies ONLY to the boot path:
 // an explicit user action (tray click, renderer Load) skips it but keeps
 // the waiver gates. Applies the profile with read-back verification (the
 // backend's per-control read-back + the routing layer's delayed re-read);
@@ -96,9 +99,6 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
   }
-  if (settings.waiverAccepted !== true) {
-    return { applied: false, reason: 'Waiver not accepted' };
-  }
 
   let targetDeviceId;
   try {
@@ -117,9 +117,25 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   } catch (err) {
     return { applied: false, reason: `capability query failed: ${err.message}` };
   }
-  if (caps.waiverAccepted !== true) {
-    // The driver lost the waiver since the last session - never auto-accept.
-    return { applied: false, reason: 'waiver not accepted on the device' };
+  // M17 (B50-class): OC-locked devices (caps.overclockingSupported === false)
+  // have NO warranty waiver - the driver refuses ctlOverclockWaiverSet with
+  // ERROR_UNSUPPORTED_FEATURE, so a waiver gate there would dead-end every
+  // profile apply (boot apply, logon task, --apply-profile, tray "Apply
+  // active profile"). BOTH waiver gates are SKIPPED on such devices - the
+  // driver's per-control 'unsupported' refusals are the honest floor. OC
+  // devices keep the exact persisted-then-device refusal order (the reason
+  // texts are pinned in test/apply-on-boot.test.js and test/tray.test.js);
+  // the one device-truth gate runs AFTER the caps read, so on OC devices
+  // enumeration/caps failures surface before the waiver refusal instead of
+  // after (the pins do not depend on that ordering).
+  if (caps.overclockingSupported !== false) {
+    if (settings.waiverAccepted !== true) {
+      return { applied: false, reason: 'Waiver not accepted' };
+    }
+    if (caps.waiverAccepted !== true) {
+      // The driver lost the waiver since the last session - never auto-accept.
+      return { applied: false, reason: 'waiver not accepted on the device' };
+    }
   }
 
   const profiles = await store.loadProfiles();

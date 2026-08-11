@@ -12,9 +12,13 @@ export type WaiverDialogResult = 'accepted' | 'cancelled';
 
 /**
  * The single product decision rule for an apply: when the device waiver is
- * not accepted, the apply must stop and the dialog must show.
+ * not accepted, the apply must stop and the dialog must show. M17: on
+ * OC-locked devices (overclockingSupported === false) there is NO waiver to
+ * accept - the gate is skipped entirely (the driver's per-control
+ * 'unsupported' refusals are the honest floor there).
  */
-export function decideApply(waiverAccepted: boolean): ApplyDecision {
+export function decideApply(waiverAccepted: boolean, required = true): ApplyDecision {
+  if (!required) return 'proceed';
   return waiverAccepted ? 'proceed' : 'show-waiver';
 }
 

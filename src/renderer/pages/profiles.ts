@@ -402,7 +402,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // in-session acceptance must not re-prompt (the mount-time caps lag
     // until a re-render).
     const liveCaps = ctx.store.get().caps;
-    const decision = await ensureWaiver(deviceId, liveCaps?.waiverAccepted === true, caps.deviceName || 'this GPU');
+    // M17 (B50-class): OC-locked devices have no waiver - skip the gate (the
+    // per-control 'unsupported' refusals are the honest floor).
+    const decision = await ensureWaiver(deviceId, liveCaps?.waiverAccepted === true, caps.deviceName || 'this GPU', liveCaps?.overclockingSupported !== false);
     if (decision === 'cancelled') {
       done();
       toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
@@ -462,7 +464,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         if (waiverRetryCount === 0
           && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
           waiverRetryCount += 1;
-          const retryDecision = await ensureWaiver(deviceId, freshCaps.waiverAccepted === true, caps.deviceName || 'this GPU');
+          const retryDecision = await ensureWaiver(deviceId, freshCaps.waiverAccepted === true, caps.deviceName || 'this GPU', freshCaps.overclockingSupported !== false);
           if (retryDecision === 'accepted') {
             // The store caps flag must be patched BEFORE the retry - the
             // retry re-enters the pre-load waiver gate, which reads the

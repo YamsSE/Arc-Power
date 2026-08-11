@@ -84,10 +84,12 @@ export async function promptWaiverAtBoot(deviceId: number, deviceName: string): 
  * Product apply gate: when the device waiver is not accepted, show the
  * dialog; on explicit Accept, persist acceptance (backend + ProfileStore via
  * IPC) and return 'accepted'. Returns 'cancelled' when the user declined or
- * the acceptance could not be saved.
+ * the acceptance could not be saved. M17: `required: false` on OC-locked
+ * devices (overclockingSupported === false) - there is no waiver to accept,
+ * the gate passes and the driver's own per-control answers decide.
  */
-export async function ensureWaiver(deviceId: number, waiverAccepted: boolean, deviceName: string): Promise<WaiverDialogResult> {
-  if (decideApply(waiverAccepted) === 'proceed') return 'accepted';
+export async function ensureWaiver(deviceId: number, waiverAccepted: boolean, deviceName: string, required = true): Promise<WaiverDialogResult> {
+  if (decideApply(waiverAccepted, required) === 'proceed') return 'accepted';
   const decision = await showWaiverDialog(deviceName);
   if (decision === 'cancelled') return 'cancelled';
   try {

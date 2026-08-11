@@ -492,7 +492,9 @@ export const tuningPage: Page = {
         const deviceId = live.deviceId;
         if (deviceId === null) return;
         // Same waiver gate as every apply path (read LIVE from the store).
-        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU');
+        // M17 (B50-class): OC-locked devices (overclockingSupported === false)
+        // have no waiver - the gate is skipped (uniform with every apply path).
+        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
         if (decision === 'cancelled') {
           toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
           return;
@@ -852,7 +854,11 @@ export const tuningPage: Page = {
       // waiver-accept) must not re-prompt on the next apply. The closure
       // caps lag until a re-render (the post-apply store update is a
       // content-only caps change that does not re-render the page).
-      const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, deviceName);
+      // M17 (B50-class): OC-locked devices (overclockingSupported === false)
+      // have no waiver - the gate is skipped (uniform with every apply path;
+      // unreachable today on no-OC devices, but the guard keeps the whole
+      // waiver surface uniform).
+      const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, deviceName, live.caps?.overclockingSupported !== false);
       if (decision === 'cancelled') {
         toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
         return;
@@ -953,7 +959,7 @@ export const tuningPage: Page = {
             && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
             waiverRetryCount += 1;
             const live2 = ctx.store.get();
-            const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, deviceName);
+            const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, deviceName, live2.caps?.overclockingSupported !== false);
             if (decision === 'accepted') {
               // The store caps flag must be patched BEFORE the retry - the
               // retry re-enters the pre-apply waiver gate, which reads the

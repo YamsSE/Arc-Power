@@ -299,6 +299,9 @@ export class MockBackend {
       memType: fs.memType ?? null,
       waiverAccepted: false,
       controls,
+      // M17: mirror IgclBackend - a device with no OC control (pro-b50 /
+      // arc-igpu) has no warranty waiver; the UI must not prompt for it.
+      overclockingSupported: Object.values(controls).some(Boolean),
       ranges,
       fan: this._buildFanCaps(fs, fanCanControl),
     };
