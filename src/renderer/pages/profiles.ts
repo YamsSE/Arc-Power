@@ -24,7 +24,7 @@ import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
-import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
+import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
 import type { Capabilities, DeviceState, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
@@ -482,8 +482,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       for (const [key, per] of Object.entries(result.perControl)) {
         if (!per.ok) {
           // F3 instant: refusals carry the composed actionable message;
-          // hard errors keep the errorCode mapping.
-          toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
+          // hard errors keep the errorCode mapping (M17d item 0b: the
+          // shared applyFailureText preference).
+          toast('error', `${CONTROL_LABELS[key] ?? key} failed`, applyFailureText(per, key));
         } else if (!isNoopApply(key, p.settings, before)) {
           changed += 1;
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');

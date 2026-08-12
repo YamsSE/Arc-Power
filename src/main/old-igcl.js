@@ -157,6 +157,12 @@ export class OldIgcl {
     this._capable = null; // tri-state: null = unknown
     this._lastError = null;
     this._props = null;
+    // M17d (Run E): the in-flight latch - isCapable() may now be entered
+    // CONCURRENTLY (the boot warm-up + the first caps query + a boot-apply
+    // all race for the same probe). The first caller owns the init/enum/
+    // waiver sequence; every concurrent caller awaits the SAME promise -
+    // the 2023 runtime is never ctlInit'd twice in one process.
+    this._capablePromise = null;
   }
 
   get lastError() {
@@ -171,14 +177,22 @@ export class OldIgcl {
    */
   async isCapable() {
     if (this._capable !== null) return this._capable;
-    try {
-      await this._ensureReady();
-      this._capable = true;
-    } catch (err) {
-      this._capable = false;
-      this._lastError = err.message;
+    // M17d (Run E): the latch - concurrent callers share ONE in-flight
+    // init/enum/waiver sequence (a second ctlInit of the same runtime in
+    // one process is never entered; the result stays tri-state-cached).
+    if (!this._capablePromise) {
+      this._capablePromise = (async () => {
+        try {
+          await this._ensureReady();
+          this._capable = true;
+        } catch (err) {
+          this._capable = false;
+          this._lastError = err.message;
+        }
+        return this._capable;
+      })();
     }
-    return this._capable;
+    return this._capablePromise;
   }
 
   async _ensureReady() {

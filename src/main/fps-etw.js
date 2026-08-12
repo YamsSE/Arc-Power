@@ -100,12 +100,21 @@ export const MAX_BUFFERED_LINES = 1024;
  *  (a header arrived) restarts immediately on a crash. */
 export const RESTART_BACKOFF_MS = 15000;
 
-/** The pinned spawn flags (see the header comment for the rationale). */
+/** The pinned spawn flags (see the header comment for the rationale).
+ *  --exclude_dropped (M17d step-4 S2): the plan item-8 pin - "the spawn
+ *  flags gain the display-cadence columns (MsBetweenDisplayChange +
+ *  --exclude_dropped + --track_display default-on)". The vendored 2.5.1
+ *  binary supports it (--help: "Exclude frames that were not displayed to
+ *  the screen from the CSV output"); the flag stops dropped (never-
+ *  displayed) frames from reaching the present-basis fallback (the parser's
+ *  ms <= 0 skip covers the display basis by accident; the flag makes the
+ *  exclusion explicit at the source). */
 export const PRESENTMON_ARGS = [
   '--process_id',
   '--output_stdout',
   '--qpc_time_ms',
   '--no_console_stats',
+  '--exclude_dropped',
   '--terminate_on_proc_exit',
   '--session_name',
   'ArcPower',
@@ -523,4 +532,81 @@ export function createPresentMonLane({ source, resolveForegroundPid, isOwnPid = 
   };
 
   return { poll, stop, retarget, get targetPid() { return targetPid; } };
+}
+
+/**
+ * M17d: the SOURCE CHAIN - the pm-service source + the M17c sidecar source
+ * composed into ONE source the createPresentMonLane wrapper consumes (the
+ * fallback is INSIDE the chain, not duplicated in the caller). Ordering
+ * (per the plan): pm active -> pm data; pm absent/idle -> the sidecar
+ * source (the display-cadence columns); both absent/idle -> the chain
+ * reports null and the fps-poll falls back to the DXGI desktop-rate tier.
+ * The composition is per-POLL: sample() answers the FIRST source with a
+ * FRESH reading (each source's own freshness gate is inside its sample()).
+ * start/stop/onSample fan out to every present source; active/restartEligible
+ * are the OR across the chain (the wrapper's same-pid restart gate).
+ * @param {{
+ *   pmSource?: object | null,     // the service source (fps-pm.js) or null
+ *   sidecarSource?: object | null // the M17c sidecar source (fps-etw.js) or null
+ * }} [deps]
+ * @returns {{
+ *   start: (processId: number) => void,
+ *   stop: () => void,
+ *   onSample: (cb: ((s: object) => void) | null) => void,
+ *   latest: () => object | null,
+ *   sample: (nowMs?: number) => object | null,
+ *   active: boolean,
+ *   restartEligible: boolean,
+ * }}
+ */
+export function createPresentMonSourceChain({ pmSource = null, sidecarSource = null } = {}) {
+  const sources = [pmSource, sidecarSource].filter(Boolean);
+  return {
+    start(processId) {
+      for (const s of sources) {
+        try { s.start(processId); } catch { /* a source failure never breaks the chain */ }
+      }
+    },
+    stop() {
+      for (const s of sources) {
+        try { s.stop(); } catch { /* best effort */ }
+      }
+    },
+    onSample(cb) {
+      for (const s of sources) {
+        try { s.onSample(cb); } catch { /* best effort */ }
+      }
+    },
+    latest() {
+      for (const s of sources) {
+        try {
+          const v = s.latest();
+          if (v !== null && v !== undefined) return v;
+        } catch { /* best effort */ }
+      }
+      return null;
+    },
+    // The ordering pin: pm data wins when fresh; the sidecar answers when
+    // the pm lane is idle/stale (the sidecar's own capture has been running
+    // since the first start - a zero-gap fallback).
+    sample(nowMs) {
+      for (const s of sources) {
+        try {
+          const v = s.sample(nowMs);
+          if (v !== null && v !== undefined) return v;
+        } catch { /* best effort */ }
+      }
+      return null;
+    },
+    get active() {
+      return sources.some((s) => {
+        try { return s.active === true; } catch { return false; }
+      });
+    },
+    get restartEligible() {
+      return sources.some((s) => {
+        try { return s.restartEligible === true; } catch { return false; }
+      });
+    },
+  };
 }

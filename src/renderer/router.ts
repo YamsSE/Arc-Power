@@ -10,6 +10,7 @@ import type {
   RegistryCatalogResponse,
   SysInfo,
   TelemetrySample,
+  VendorDeviceInfo,
 } from './types.ts';
 
 // M6: the old #/overlay page (the Overlay Settings page) MOVED into the
@@ -159,9 +160,15 @@ export interface AppState {
    *  caps/state, null-mode telemetry, honest no-Intel UI). */
   noIntel: boolean;
   /** 1.0.1 no-Intel round: the OS GPU (the sysinfo primary non-basic video
-   *  controller - { name, vramBytes } | null). The header, the dashboard
-   *  GPU card and the health rows read it; null while sysinfo has nothing. */
-  osGpu: { name: string; vramBytes: number | null } | null;
+   *  controller - { name, vramBytes, pnpDeviceId } | null). The header, the
+   *  dashboard GPU card and the health rows read it; null while sysinfo has
+   *  nothing. M17d: the payload carries the controller's pnpDeviceId too
+   *  (the no-Intel Board-partner row's SUBSYS decode source). */
+  osGpu: { name: string; vramBytes: number | null; pnpDeviceId: string | null } | null;
+  /** M17d: the vendor-lane STATIC-INFO (vendor-info:get - the no-Intel
+   *  dashboard VRAM/Compute rows' source: the NVML total + core count;
+   *  null while the boot fetch hasn't landed / on Intel machines). */
+  vendorInfo: VendorDeviceInfo | null;
 }
 
 const INITIAL: AppState = {
@@ -185,6 +192,7 @@ const INITIAL: AppState = {
   sysinfo: null,
   noIntel: false,
   osGpu: null,
+  vendorInfo: null,
 };
 
 export class Store {

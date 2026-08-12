@@ -68,8 +68,8 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { clockToOffset, offsetToClock, clockRangeFromOffsetRange } from '../pure/clock.ts';
 import { chipState } from '../pure/chip.ts';
-import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible } from '../pure/settings.ts';
+import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible, parseGpuLockInput, formatLockPair, gpuLockToastPair, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
@@ -139,6 +139,9 @@ const chipNodes = new Map<string, HTMLElement>();
 // M9: the per-card Apply button (the chip state machine) - visible ONLY
 // while that card is dirty; clicking it applies THAT card only.
 const chipApplyNodes = new Map<string, HTMLButtonElement>();
+// M17d (Run D): the gpuLock card's current-lock read-out (in-place refresh
+// target - the same pattern as the slider driver lines; (0,0) = Dynamic).
+let lockCurrentNode: HTMLElement | null = null;
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
 // M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
@@ -163,6 +166,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   rangeNodes.clear();
   chipNodes.clear();
   chipApplyNodes.clear();
+  lockCurrentNode = null;
   applyBtn = null;
   viewContainer = null;
 }
@@ -191,6 +195,13 @@ function refreshChip(key: string) {
   }
   const btn = chipApplyNodes.get(key);
   if (btn) btn.hidden = state !== 'dirty';
+}
+
+/** M17d (Run D): refresh the gpuLock card's current-driver-lock read-out
+ *  from the module-level state (the (0,0) pair = 'Dynamic (unlocked)'). */
+function refreshLockReadout(): void {
+  if (!lockCurrentNode) return;
+  lockCurrentNode.textContent = `Lock: ${formatLockPair(currentState?.gpuLock ?? null)}`;
 }
 
 /** M3-C-F: refresh ONE card in place from the current values + fresh state:
@@ -521,7 +532,7 @@ export const tuningPage: Page = {
             toast('success', 'VRAM clock applied', formatValue(vramApplied, range.units));
             ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
           } else {
-            toast('error', 'VRAM clock failed', per?.message ?? errorMessage(per?.errorCode, 'vramFreqOffsetGts'));
+            toast('error', 'VRAM clock failed', applyFailureText(per, 'vramFreqOffsetGts'));
             const freshCaps = await api.getCapabilities(deviceId);
             ctx.store.set({ caps: freshCaps });
           }
@@ -571,6 +582,136 @@ export const tuningPage: Page = {
             },
           }),
         ]),
+      ]);
+    };
+
+    // M17d (Run D - item 2, the user's request): the Fixed Clock / Voltage
+    // Lock card RETURNS as a STANDALONE Tuning-page card (NOT the dead M4-J
+    // Advanced section). The backend apply + read-back (applyLock + the
+    // state read), the mock, clampGpuLock, the pure validation + the status
+    // judgment ALL survived M4-J - only the editor was removed. Voltage (V)
+    // + Frequency (MHz) inputs + Apply + Reset-to-Dynamic (the (0,0) pair) +
+    // the current driver lock state read-out (state.gpuLock - (0,0) =
+    // 'Dynamic (unlocked)') + the honest lock-vs-offset-mode interplay note
+    // (the lock and the offset mode are SEPARATE control families - the
+    // driver decides the interplay; stated honestly, per the live-A770
+    // probe verdict). Gated on caps.controls.gpuLock (a770/a750/acer-a750
+    // support it; b580/arc-igpu/pro-b50 render NO lock card).
+    const buildLockCard = (ctx: PageContext): HTMLElement => {
+      const lock = (currentState?.gpuLock && typeof currentState.gpuLock === 'object'
+        ? currentState.gpuLock
+        : { voltageV: 0, freqMhz: 0 }) as { voltageV: number; freqMhz: number };
+      const currentLine = el('div', { class: 'gpu-lock-current' });
+      const voltageInput = el('input', {
+        type: 'number',
+        min: '0',
+        max: String(GPU_LOCK_VOLT_MAX_V),
+        step: '0.001',
+        value: lock.voltageV,
+        dataset: { lockField: 'voltageV' },
+        title: 'Absolute lock voltage (V). 0 = don\'t touch voltage (the driver keeps the stock voltage at the locked frequency).',
+      });
+      const freqInput = el('input', {
+        type: 'number',
+        min: '0',
+        max: String(GPU_LOCK_FREQ_MAX_MHZ),
+        step: '1',
+        value: lock.freqMhz,
+        dataset: { lockField: 'freqMhz' },
+        title: 'Absolute lock frequency (MHz).',
+      });
+      const applyLock = async (): Promise<void> => {
+        const live = ctx.store.get();
+        const deviceId = live.deviceId;
+        if (deviceId === null || !caps) return;
+        // M4-B step-5 F3: parse + validate FIRST - empty/whitespace fields
+        // are rejected before conversion (Number('') === 0 would silently
+        // apply the legal 0 V / 0 MHz UNLOCK pair); non-numeric fields too.
+        const parsed = parseGpuLockInput(voltageInput.value, freqInput.value);
+        if (!parsed.ok) {
+          toast('error', 'Fixed Clock / Voltage Lock', 'Voltage and frequency must be numbers.');
+          return;
+        }
+        const { voltageV, freqMhz } = parsed.pair;
+        // Same waiver gate as every apply path (read LIVE from the store).
+        // M17 (B50-class): OC-locked devices have no waiver - skipped.
+        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
+        if (decision === 'cancelled') {
+          toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
+          return;
+        }
+        {
+          const cur = ctx.store.get();
+          if (cur.caps && cur.caps.waiverAccepted !== true) {
+            ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
+          }
+        }
+        try {
+          const { result, state: fresh } = await api.applySettings(deviceId, { gpuLock: { voltageV, freqMhz } });
+          if (fresh) {
+            currentState = fresh;
+            ctx.store.set({ state: fresh });
+          }
+          const per = result.perControl.gpuLock;
+          if (per?.ok) {
+            // M4-B step-5 F4: report the pair the DRIVER received - the
+            // read-back pair when the fresh envelope carried one (main
+            // clamped the typed values), else the locally clamped pair.
+            const appliedPair = gpuLockToastPair({ voltageV, freqMhz }, fresh?.gpuLock);
+            toast('success', 'Fixed Clock / Voltage Lock applied', formatLockPair(appliedPair));
+            ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
+          } else {
+            toast('error', 'Fixed Clock / Voltage Lock failed', applyFailureText(per, 'gpuLock'));
+            const freshCaps = await api.getCapabilities(deviceId);
+            ctx.store.set({ caps: freshCaps });
+          }
+          ctx.store.set({
+            lastApply: {
+              ok: result.ok,
+              at: Date.now(),
+              detail: result.ok ? 'Fixed Clock / Voltage Lock applied' : (per?.message ?? 'GPU lock failed'),
+            },
+          });
+          // Only refresh the read-out on a NON-NULL fresh envelope - a
+          // refused/null-state apply keeps the previous line (the driver
+          // state is unknown, never "unlocked").
+          if (fresh) refreshLockReadout();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
+          toast('error', 'Fixed Clock / Voltage Lock failed', msg);
+        }
+      };
+      const resetToDynamic = (): void => {
+        voltageInput.value = '0';
+        freqInput.value = '0';
+      };
+      return el('div', { class: 'card gpu-lock-editor' }, [
+        el('h3', { class: 'card-title', text: 'Fixed Clock / Voltage Lock' }),
+        el('p', {
+          class: 'card-note',
+          text: 'Lock the GPU to a voltage/frequency pair. The pair 0 V / 0 MHz unlocks (dynamic). The lock and the offset mode are separate control families - while a lock is set, the driver decides how the two interact; Reset restores dynamic.',
+        }),
+        el('div', { class: 'gpu-lock-fields' }, [
+          el('label', { class: 'gpu-lock-field' }, [
+            el('span', { class: 'gpu-lock-label', text: 'Voltage (V)' }),
+            voltageInput,
+          ]),
+          el('label', { class: 'gpu-lock-field' }, [
+            el('span', { class: 'gpu-lock-label', text: 'Frequency (MHz)' }),
+            freqInput,
+          ]),
+        ]),
+        el('div', { class: 'gpu-lock-actions' }, [
+          el('button', { class: 'btn btn-primary btn-sm', text: 'Apply', onClick: () => void applyLock() }),
+          el('button', {
+            class: 'btn btn-ghost btn-sm',
+            text: 'Reset to Dynamic',
+            title: 'Reset the editor to the default unlock pair (0 V / 0 MHz)',
+            onClick: resetToDynamic,
+          }),
+        ]),
+        currentLine,
       ]);
     };
 
@@ -828,9 +969,18 @@ export const tuningPage: Page = {
           ])]
           : []),
 
+        // M17d (Run D): the STANDALONE Fixed Clock / Voltage Lock card -
+        // gated on caps.controls.gpuLock (a770/a750/acer-a750 render it;
+        // b580/arc-igpu/pro-b50 stay editor-less - unsupported). Renders
+        // OUTSIDE the Advanced section (the plan: a standalone card, NOT
+        // the dead M4-J section).
+        ...(caps.controls.gpuLock === true ? [buildLockCard(ctx)] : []),
+
         applyBtn as Node,
       ];
       viewContainer.append(...body);
+      lockCurrentNode = viewContainer.querySelector<HTMLElement>('.gpu-lock-current');
+      refreshLockReadout();
       updateFloating();
     };
 
@@ -929,8 +1079,11 @@ export const tuningPage: Page = {
           const range = caps.ranges[key];
           if (!per.ok) {
             // F3 instant: refusals carry the composed actionable message;
-            // hard errors keep the errorCode mapping.
-            toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
+            // hard errors keep the errorCode mapping (M17d item 0b: the
+            // preference is the shared applyFailureText - the per-control
+            // message wins, the errorCode mapping is the driver-shaped
+            // fallback - never the 'clamps' lie for a gate refusal).
+            toast('error', `${CONTROL_LABELS[key] ?? key} failed`, applyFailureText(per, key));
           } else {
             // B5(a): a control that applied becomes the APPLIED reference -
             // its chip clears and the button hides even while the driver
@@ -1053,6 +1206,10 @@ export const tuningPage: Page = {
         if (typeof raw === 'number' && range) values[key] = snapToRange(raw, range);
       }
       for (const key of cards.keys()) refreshCard(key);
+      // M17d (Run D): the gpuLock card's current-lock read-out refreshes
+      // in place too (a tray apply / profile load can change the driver
+      // lock while this page is current).
+      refreshLockReadout();
       updateFloating();
     }
   },

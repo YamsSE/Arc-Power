@@ -180,6 +180,16 @@ function renderSidebar() {
 }
 
 async function boot() {
+  // M17d (Run E): the --profile-boot harness marks. The main process passes
+  // the flag via the window load query (the sandboxed renderer has no env
+  // access); without it these lines never print (product runs stay silent).
+  // first-paint = the double-rAF right after the first paint completes.
+  const profileBoot = new URLSearchParams(window.location.search).get('profileBoot') === '1';
+  const pb = (name: string) => {
+    if (profileBoot) console.log(`[profile-boot] renderer:${name}`);
+  };
+  if (profileBoot) requestAnimationFrame(() => requestAnimationFrame(() => pb('first-paint')));
+
   // M4-D: the integrated title bar (frameless window) - the window
   // buttons + the maximized-state icon subscription. Static markup, wired
   // before the boot sequence so the buttons work immediately.
@@ -370,9 +380,11 @@ async function boot() {
     // prompt + the OC surface must never render).
   } else {
     try {
+      pb('pre-caps');
       const caps = await api.getCapabilities(deviceId as number);
       const state = await api.getCurrentSettings(deviceId as number);
       store.set({ caps, state });
+      pb('post-caps');
       // M4-B: the OC waiver prompt shows at EVERY startup while the waiver is
       // NOT accepted ("please prompt it when the Program opens").
       // M4-D (PERMANENT acceptance): a PERSISTED acceptance is the
@@ -460,10 +472,23 @@ async function boot() {
     } catch (err) {
       toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
     }
+    // M17d (round-1 S2): the vendor-lane static info (the no-Intel
+    // dashboard VRAM/Compute rows' source - { vramBytes, computeCores }:
+    // the NVML total + core count; honest nulls when the lane has no
+    // source). Fire-and-forget like sysinfo: a failure degrades to null and
+    // the rows render the honest fallback; a late landing re-renders the
+    // GPU card via the dashboard sig (the vendorInfo slot).
+    try {
+      const info = await api.vendorInfo();
+      store.set({ vendorInfo: info ?? null });
+    } catch {
+      store.set({ vendorInfo: null });
+    }
     // S1: the noIntel store flag lands AFTER the null-mode start (and in
     // the same set as osGpu so the dashboard GPU card re-renders once).
     store.set({ noIntel: true, osGpu });
     console.log('[renderer] boot complete - no Intel GPU');
+    pb('boot-complete');
   } else {
     try {
       await api.telemetryStart(deviceId as number);
@@ -472,6 +497,7 @@ async function boot() {
     }
 
     console.log(`[renderer] boot complete - device ${deviceId}${health?.backend === 'mock' ? ' (mock)' : ''}`);
+    pb('boot-complete');
   }
 }
 

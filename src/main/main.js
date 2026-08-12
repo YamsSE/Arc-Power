@@ -23,7 +23,7 @@ import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
+import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
 import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS } from './store/profile-store.js';
 import { createOverlayWindow } from './overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
@@ -31,7 +31,8 @@ import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createDxgiFpsAdapter } from './fps-dxgi.js';
-import { createPresentMonFpsSource, createPresentMonLane } from './fps-etw.js';
+import { createPresentMonFpsSource, createPresentMonLane, createPresentMonSourceChain } from './fps-etw.js';
+import { createPmFpsSource } from './fps-pm.js';
 import { createForegroundApiDetector } from './foreground-api.js';
 import { createMemoryUtilDetector } from './memory-util.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
@@ -51,8 +52,17 @@ import { executeApply } from './apply-routing.js';
 import { runApplyWorker } from './apply-worker.js';
 import { createApplyRunner } from './elevated-apply.js';
 import { createMockOldIgcl } from './backend/mock-backend.js';
+// M17d (Run E): the --profile-boot stage-timing harness (env-gated; a no-op
+// in product runs - see profile-boot.js).
+import { markProfileBoot, bootProfilingEnabled, profileElapsedMs } from './profile-boot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// M17d (Run E): the harness gate - ARC_POWER_PROFILE_BOOT=1 OR
+// --profile-boot. When on, the boot stages log elapsed-from-launch lines and
+// the window path auto-exits after the renderer boot completes (a
+// measurement run, never a lingering session).
+const profileBoot = bootProfilingEnabled();
 
 const headless = process.argv.includes('--headless');
 const uiVerify = process.argv.includes('--ui-verify');
@@ -109,6 +119,12 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
     // Electron >= 30: the event object carries { level, message, ... }.
     const level = typeof event.level === 'number' ? event.level : 0;
     const message = typeof event.message === 'string' ? event.message : '';
+    // M17d (Run E): the profile run forwards the renderer's info-level
+    // marks too (the first-paint / first-caps / boot-complete stages live in
+    // the renderer boot path - the harness's stage table needs them; a
+    // product run never forwards info lines). The receipt elapsed stamps the
+    // renderer marks with the same clock as the main-process stages.
+    if (profileBoot && level === 0) console.log(`[renderer @+${profileElapsedMs()}ms] ${message}`);
     if (level >= 2) console.error(`[renderer] ${message}`);
   });
   // M4-D: the pushed window:maximized-changed channel - the
@@ -125,7 +141,11 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
   // button must reflect a window that starts (or was restored to) the
   // maximized state even before any later maximize/unmaximize event.
   win.webContents.on('did-finish-load', sendMaximized);
-  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  // M17d (Run E): the profile window run passes the harness flag to the
+  // renderer via the load query (the renderer is sandboxed - no env access;
+  // its boot marks are gated on the same flag so product runs never emit
+  // the harness lines).
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), profileBoot ? { query: { profileBoot: '1' } } : undefined);
   return win;
 }
 
@@ -363,6 +383,7 @@ async function main() {
   }
 
   await app.whenReady();
+  markProfileBoot('when-ready');
 
   // --- M4-F single-instance lock (UI WINDOW mode ONLY) ---------------------
   // Helpers (--headless / --ui-verify / --boot-apply / --apply-profile /
@@ -396,6 +417,7 @@ async function main() {
       focusExistingWindow(windowForInstance);
     });
   }
+  markProfileBoot('instance-lock');
   // --ui-verify runs against MockBackend; the env knobs act as OVERLAYS on
   // the featureset base (mock/featuresets/*.json, RID_MOCK_FEATURESET):
   //   - the a770 featureset base is the real card's TRUE editable fan fixture
@@ -440,6 +462,16 @@ async function main() {
   // backend instead). The backend's extended probe consults it lazily
   // (isCapable runs on the first caps query).
   const realOldIgcl = mock ? null : new OldIgcl();
+  // M17d (Run E): warm the bundled-2023-runtime probe in parallel with the
+  // pre-window sequence - its load + ctlInit + enum + waiver takes hundreds
+  // of ms and today the FIRST extended-value consumer pays it serially (the
+  // boot-apply's routing on this box, the renderer's first getCapabilities
+  // on a no-boot-apply box - see pipeline/startup-boot-before.md). The
+  // result is tri-state-cached + the isCapable latch shares ONE in-flight
+  // sequence with any concurrent caller (never a second ctlInit of the same
+  // runtime in one process). Never rejects (isCapable catches internally);
+  // the caps read stays lazy - this only pre-starts the load.
+  if (!mock) void realOldIgcl.isCapable();
   // M4-D: the sysinfo cache (PowerShell CIM, ONE query per session - the
   // dashboard CPU card + the real-GPU VRAM suffix source). Run BEFORE the
   // backend so the VRAM lookup can enrich the device names at enumeration
@@ -463,8 +495,29 @@ async function main() {
   const laptopFixture = process.env.RID_MOCK_LAPTOP === '1'
     ? { laptop: { manufacturer: 'Micro-Star International Co., Ltd.', model: 'Claw 8 AI+', pcSystemType: 2, chassisTypes: [10] } }
     : {};
+  // M17d (Run B): the no-intel ui-verify variant with the vendor lane
+  // (RID_MOCK_NO_INTEL=1 + RID_MOCK_VENDOR=nvml) - the sysinfo fixture's
+  // REAL controller becomes the GTX 980-class shape: the NVIDIA part whose
+  // PNP SUBSYS_36811458 decodes 'Gigabyte' through the aib table (the
+  // no-Intel Board-partner row pin), whose vramBytes simulates the OS
+  // VRAM source (4 GiB - the AdapterRAM/registry fallback) and whose
+  // rebarActive simulates the RESOLVED OS verdict (the fixed two-line-
+  // pnputil / PnPEntity cross-check output - the pre-fix sources left it
+  // null). The vendor lane's fixture adapter (mock/vendor/nvml.json) then
+  // feeds the live clocks + the deviceInfo() seam (the NVML total + cores).
+  const noIntelVendorFixture = process.env.RID_MOCK_NO_INTEL === '1' && process.env.RID_MOCK_VENDOR === 'nvml'
+    ? {
+        noIntelController: {
+          name: 'NVIDIA GeForce GTX 980',
+          vramBytes: 4294967296, // 4 GiB (the OS AdapterRAM/registry value)
+          pnpDeviceId: 'PCI\\VEN_10DE&DEV_13C2&SUBSYS_36811458&REV_A1',
+          driverVersion: '31.0.15.6262',
+          rebarActive: false, // the resolved OS verdict (ReBAR off - a pre-ReBAR part)
+        },
+      }
+    : {};
   if (mock) {
-    sysinfo = createMockSysinfo(laptopFixture);
+    sysinfo = createMockSysinfo({ ...laptopFixture, ...noIntelVendorFixture });
   } else if (applyProfileId) {
     // M4-D review F3 (logon latency): the --apply-profile flow is TRAY-ONLY -
     // the VRAM name suffix is never displayed there, so the PowerShell CIM
@@ -488,8 +541,35 @@ async function main() {
     // The driver query runs ONCE, LAZILY at the first sysinfo:get (the
     // renderer asks after boot - the backend exists by then; no boot
     // latency added).
-    const cachedResult = await collectSysinfo({ timeoutMs: 10000 });
-    cached = cachedResult;
+    // M17d (Run E): the CIM query is FIRED here but not awaited - the
+    // profile's #1 stage (~3.1 s; a single PowerShell spawn with the
+    // per-controller pnputil ReBAR sources) overlaps the pre-window
+    // construction/init/seed span; the FIRST hard await sits in the
+    // sysinfoResult helper below (the sysStats block), still before the
+    // boot-apply gate and the window. The vramBytesOf/laptopInfoOf
+    // providers read the mutable holder - a pre-landing enumeration (the
+    // first listDevices at the waiver seed) sees plain names and the
+    // helper re-enriches the cached devices IN PLACE (setVramBytesOf) as
+    // soon as the query lands, so every post-window consumer (the
+    // renderer's listDevices + caps + sysinfo:get) sees the enriched
+    // names exactly as before.
+    const sysinfoPromise = collectSysinfo({ timeoutMs: 10000 });
+    let sysinfoLanded = false;
+    const sysinfoResult = async () => {
+      if (!sysinfoLanded) {
+        const result = await sysinfoPromise;
+        cached = result;
+        sysinfoLanded = true;
+        markProfileBoot('sysinfo');
+        try {
+          backend.setVramBytesOf((device) => vramBytesOfDevice(device, result));
+        } catch {
+          // the backend is not constructible/enumerable yet - the
+          // constructor provider (reading the holder) covers it
+        }
+      }
+      return cached;
+    };
     let driverBarCached = null;
     let driverBarDone = false;
     const driverReBar = async () => {
@@ -507,8 +587,9 @@ async function main() {
     };
     sysinfo = {
       get: async () => {
+        const result = await sysinfoResult();
         const verdict = await driverReBar();
-        return verdict === null ? cachedResult : applyDriverReBar(cachedResult, verdict);
+        return verdict === null ? result : applyDriverReBar(result, verdict);
       },
     };
   }
@@ -572,7 +653,9 @@ async function main() {
         // M4O: forward the profileApply flag into executeApply's opts - the
         // clamp then uses the driver's TRUE limits (extendedRangesFor) and
         // the safety-net capability refusal keys on the runtime probe.
-        apply: async ({ deviceId, settings, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } }),
+        // M17d (Run D): forward the ocMode too - executeApply threads it
+        // into splitByRuntime (the V1-call pin: the mode-based W/C routing).
+        apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode }),
         waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
         reset: async (deviceId) => {
           await backend.resetToDefaults(deviceId);
@@ -599,7 +682,7 @@ async function main() {
     // (which is pinned advanced).
     applyRunner = {
       needsWorker: () => true,
-      apply: async ({ deviceId, settings, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } }),
+      apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode }),
       waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
       reset: async (deviceId) => {
         await backend.resetToDefaults(deviceId);
@@ -832,11 +915,13 @@ async function main() {
     } catch {
       // health() reports the init error; the window stays up degraded.
     }
+    markProfileBoot('backend-init');
     try {
       await seedWaiverState(backend, store);
     } catch (err) {
       console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
     }
+    markProfileBoot('seed-waiver');
     // M4-B (fix): boot-time driver-truth probe - the persisted
     // acceptance can be STALE (the driver lost the waiver while settings.json
     // still says accepted - the report: "the popup said already
@@ -846,13 +931,27 @@ async function main() {
     // lost it; probeWaiverState then clears the stale flag + store so the
     // boot prompt shows the REAL state and applies work first-try. Never in
     // non-elevated dev (a probe write there would raise a UAC prompt).
+    // M17d (Run E): the probe is gated to the FIRST boot per driver version
+    // (waiverProbeDue) - a driver round trip that exists for
+    // driver-version-bound waiver losses (reinstall / IGS reset) is
+    // redundant on every later boot of the SAME version; the gate key is
+    // persisted only AFTER a successful probe (a failure re-probes next
+    // boot - the safe side).
     if (isElevated()) {
       try {
-        await probeWaiverState(backend, store);
+        const verdict = await waiverProbeDue(backend, store);
+        if (verdict.due) {
+          await probeWaiverState(backend, store);
+          if (verdict.key !== null) {
+            const s = await store.loadSettings();
+            await store.saveSettings({ ...s, waiverProbedDriverVersion: verdict.key });
+          }
+        }
       } catch (err) {
         console.log(`[boot] waiver truth probe skipped: ${err.message}`);
       }
     }
+    markProfileBoot('probe-waiver');
   }
   // M3-C review F3: seed the persisted OC mode into the backend BEFORE the
   // window and the IPC surface exist - the renderer's FIRST getCapabilities
@@ -863,6 +962,7 @@ async function main() {
   // is an in-memory caps-cache invalidation - safe before backend.init().
   const seededMode = await seedOcMode(backend, store);
   if (seededMode) console.log(`[boot] oc-mode pre-seed: ${seededMode}`);
+  markProfileBoot('seed-oc-mode');
   // Run-key adapter: the real one writes HKCU only on an explicit user click
   // (startup-set IPC); mock mode (incl. --ui-verify) never touches the
   // registry.
@@ -907,6 +1007,7 @@ async function main() {
       // M4-B: the CATALOG is the first argument (a deps-only call used to
       // land the deps in `catalog` -> "catalog.find is not a function").
       createRegistryApply(REGISTRY_CATALOG, { isElevated });
+  markProfileBoot('adapters');
   // FPS adapter (M4-D2): DXGI GetFrameStatistics - unelevated, system-wide,
   // no service. Mock mode reports unavailable (never loads dxgi.dll/koffi),
   // counts polls so --ui-verify can assert the Monitoring page stops
@@ -950,50 +1051,20 @@ async function main() {
   // 'RAM 12.4 GB' ui-verify pin).
   const memoryUtil = mock ? undefined : createMemoryUtilDetector();
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory used).
-  // Mock: fixed deterministic values. Real: the rolling-delta CIM adapter;
-  // its GPU-memory match needs the backend device's LUID - the IGCL
-  // bindings expose none, so the DXGI display-enumeration link resolves it
-  // (GetDesc1: DeviceId -> LUID), matched against the sysinfo video
-  // controllers' PCI device id (DEV_56A0 on the A770). Unmatched -> null
-  // (honest '-').
-  let sysStats;
+  // M17d (Run E): the ASSIGNMENT moved AFTER the boot-apply gate (see
+  // below) - this block is the CIM query's first hard await, and the boot
+  // apply (0.5-2.1 s) runs while the CIM query is in flight; the
+  // declarations + the before-quit teardown stay here (the assignment just
+  // happens later, still before createWindow). Mock: fixed deterministic
+  // values. Real: the rolling-delta CIM adapter; its GPU-memory match needs
+  // the backend device's LUID - the IGCL bindings expose none, so the DXGI
+  // display-enumeration link resolves it (GetDesc1: DeviceId -> LUID),
+  // matched against the backend's OWN enumerated PCI id (the exact
+  // monitored device - the pre-M17d source was the CIM controller list's
+  // first pnpDeviceId, which could name a different adapter on multi-GPU
+  // boxes). Unmatched -> null (honest '-').
+  let sysStats = null;
   let msrReader = null;
-  if (mock) {
-    sysStats = createMockSysStats();
-  } else {
-    let deviceIdHex = null;
-    try {
-      const cached = await sysinfo?.get?.();
-      const row = Array.isArray(cached?.videoControllers)
-        ? cached.videoControllers.find((c) => c?.pnpDeviceId)
-        : null;
-      const m = typeof row?.pnpDeviceId === 'string' ? row.pnpDeviceId.match(/DEV_([0-9A-Fa-f]{4})/) : null;
-      if (m) deviceIdHex = `0x${m[1].toLowerCase()}`;
-    } catch {
-      deviceIdHex = null;
-    }
-    // M4L (B): the PawnIO MSR reader (CPU temp + wattage - the HWiNFO-class
-    // route). Lazy open + module load once per session (the reader's
-    // contract); every read returns null on any error (device absent,
-    // install failed, AV quarantine) - the honest degrade. The install
-    // state is checked by the reader at the first sample (the bundled
-    // official setup runs silently once when the device is absent).
-    // M15 (F2): Win32_Processor.Manufacturer (the cached sysinfo row fetched
-    // above) selects the module - an AMD vendor string loads AMDFamily17.bin
-    // (SMN temp + the RAPL pair), anything else the IntelMSR.bin path. The
-    // module itself re-checks the CPUID vendor + family 0x17-0x1A.
-    msrReader = createMsrReader({ cpuVendor: cached?.cpu?.manufacturer ?? null });
-    sysStats = createSysStats({
-      deviceIdHex,
-      luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
-      msrReader,
-      // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
-      // download link included) - logged when the MSR path is unavailable.
-      onMsrDegrade: (text) => {
-        console.log(`[sys-stats] ${text}`);
-      },
-    });
-  }
   // M4-D2: the Monitoring log-to-file writer. RID_MOCK_LOG_DIR redirects
   // the directory (ui-verify); the default is <Documents>\Arc Power.
   const monitorLog = createMonitorLog({
@@ -1178,6 +1249,7 @@ async function main() {
     applyRunner,
     createTrayImpl: uiVerify ? createTrayProbe : createTray,
   });
+  markProfileBoot('tray');
 
   // M4M (F): the boot-apply decision runs BEFORE createWindow - the
   // renderer's boot device-state-get (right after the window loads) reads
@@ -1228,6 +1300,7 @@ async function main() {
   } catch (err) {
     console.log(`[boot] deviceId resolution skipped: ${err.message}`);
   }
+  markProfileBoot('device-resolve');
   try {
     const bootSettings = await store.loadSettings();
     if (bootSettings.ocOnBoot === true && bootSettings.activeProfileId) {
@@ -1276,9 +1349,83 @@ async function main() {
     // this record - it is kept for the boot fetch + the verify pins.
     bootApplyOutcome = { ok: false, at: Date.now(), detail: `Profile apply failed: ${err.message}` };
   }
+  markProfileBoot('boot-apply-gate');
+
+  // M17d (Run E): the sysStats/MSR assignment (MOVED here from its old
+  // pre-tray position). This is the CIM query's FIRST hard await - moving
+  // it after the boot-apply gate lets the apply (0.5-2.1 s on this box)
+  // overlap the in-flight CIM query (the profile's #1 stage) instead of
+  // serializing them. Everything the block consumes (sysinfo, backend,
+  // fpsAdapter) exists by now and nothing between here and createWindow
+  // uses sysStats/msrReader (registerIpc + the before-quit teardown read
+  // them later). The landing re-enriches the enumerated device names
+  // (setVramBytesOf in sysinfoResult) before the window exists, so the
+  // renderer's first listDevices/caps still see the enriched names.
+  if (mock) {
+    sysStats = createMockSysStats();
+  } else {
+    // M4L (B): the PawnIO MSR reader (CPU temp + wattage - the HWiNFO-class
+    // route). Lazy open + module load once per session (the reader's
+    // contract); every read returns null on any error (device absent,
+    // install failed, AV quarantine) - the honest degrade. The install
+    // state is checked by the reader at the first sample (the bundled
+    // official setup runs silently once when the device is absent).
+    // M15 (F2): Win32_Processor.Manufacturer (the CIM payload - awaited at
+    // the sysinfo landing inside this block) selects the module - an AMD
+    // vendor string loads AMDFamily17.bin (SMN temp + the RAPL pair),
+    // anything else the IntelMSR.bin path. The module itself re-checks the
+    // CPUID vendor + family 0x17-0x1A.
+    let deviceIdHex = null;
+    try {
+      const cached = await sysinfo?.get?.();
+      // The GPU-memory match's PCI id now comes from the backend's OWN
+      // enumerated device payload (the exact monitored device), not the
+      // CIM controller list's first pnpDeviceId (a multi-GPU box could
+      // name a different adapter).
+      const devices = await backend.listDevices();
+      const row = devices.find((d) => typeof d?.pciDeviceId === 'string' && /0x[0-9a-fA-F]{6,8}/.test(d.pciDeviceId)) ?? devices[0];
+      const m = typeof row?.pciDeviceId === 'string' ? row.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/) : null;
+      if (m) deviceIdHex = `0x${m[1].toLowerCase()}`;
+      msrReader = createMsrReader({ cpuVendor: cached?.cpu?.manufacturer ?? null });
+    } catch {
+      deviceIdHex = null;
+      msrReader = createMsrReader({ cpuVendor: null });
+    }
+    sysStats = createSysStats({
+      deviceIdHex,
+      luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
+      msrReader,
+      // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
+      // download link included) - logged when the MSR path is unavailable.
+      onMsrDegrade: (text) => {
+        console.log(`[sys-stats] ${text}`);
+      },
+    });
+  }
 
   const win = createWindow(windowBackground, !startMinimizedAtBoot);
   windowForInstance = win;
+  markProfileBoot('window');
+  // M17d (Run E): the profile window run exits by itself - after the
+  // renderer's boot-complete mark lands, dwell briefly (the trailing main
+  // marks - bootBackend/health - run concurrently with the renderer boot)
+  // and exit 0. A 60 s fallback keeps a renderer-load failure from hanging
+  // the measurement. Mock/ui-verify never auto-exit (their own flows own
+  // the session).
+  if (profileBoot && !mock && !uiVerify) {
+    let exited = false;
+    const exitProfileRun = () => {
+      if (exited) return;
+      exited = true;
+      markProfileBoot('profile-exit');
+      app.exit(0);
+    };
+    win.webContents.on('console-message', (event) => {
+      const message = typeof event.message === 'string' ? event.message : '';
+      if (message.includes('renderer:boot-complete')) setTimeout(exitProfileRun, 1000);
+    });
+    setTimeout(exitProfileRun, 60000);
+  }
   // M4-D2 (§1 close-to-tray FIX): the close handler reads the SYNC settings
   // cache (loadSettingsSync) and calls event.preventDefault() IN THE SAME
   // TICK - the old async loadSettings().then(...) ran preventDefault too
@@ -1503,22 +1650,34 @@ async function main() {
         bootApplyLog: async () => mockBootApplyLog.slice(),
       }
     : null;
-  // M17c: the ETW/PresentMon FPS lane - the PREFERRED FPS source in the
-  // product path (the game's per-frame present rate via the dxgkrnl ETW
-  // stream; the packaged app runs elevated, which ETW realtime sessions
+  // M17c/M17d: the ETW/PresentMon FPS lane - the PREFERRED FPS source in
+  // the product path (the game's per-frame present rate via the dxgkrnl
+  // ETW stream; the packaged app runs elevated, which ETW realtime sessions
   // require - the dev run degrades to the DXGI fallback honestly). THE
   // DETERMINISM SEAM (the foregroundApi pattern): the lane exists ONLY in
   // the non-mock path - mock/ui-verify never spawn the sidecar or probe
-  // the foreground. The lane is LAZY: the sidecar spawns on the first
-  // fps-poll (no capture before anything asks for FPS); the retarget
-  // check runs per poll (getForegroundWindow + GetWindowThreadProcessId -
-  // the cheap foreground-api probe ops). ownPids = the main process + the
-  // windows' renderer processes - the lane never measures the app itself
-  // (the foreground over Arc Power keeps the last game target instead).
+  // the foreground. M17d (Run C): the lane consumes the SOURCE CHAIN - the
+  // PresentMon SERVICE source (the IGS-class DISPLAYED_FPS when the driver
+  // ships the service: pmOpenSession + pmStartTrackingProcess + the
+  // DISPLAYED_FPS/PRESENT_RUNTIME dynamic query - the plan's primary lane;
+  // on this dev box the probe finds NO SCM service - the IGS spawns its
+  // middleware as a child - so the pm source stays idle) + the M17c
+  // vendored console-exe sidecar (the display-cadence columns); the chain
+  // orders pm data first, the sidecar second, and the fps-poll falls back
+  // to the DXGI desktop-rate tier when both are idle. The lane is LAZY:
+  // the sidecar spawns / the pm probe runs on the first fps-poll (no
+  // capture before anything asks for FPS); the retarget check runs per
+  // poll (getForegroundWindow + GetWindowThreadProcessId - the cheap
+  // foreground-api probe ops). ownPids = the main process + the windows'
+  // renderer processes - the lane never measures the app itself (the
+  // foreground over Arc Power keeps the last game target instead).
   let presentMonLane = null;
   if (!mock) {
     presentMonLane = createPresentMonLane({
-      source: createPresentMonFpsSource({}),
+      source: createPresentMonSourceChain({
+        pmSource: createPmFpsSource({}),
+        sidecarSource: createPresentMonFpsSource({}),
+      }),
       resolveForegroundPid: async () => await foregroundApi.detectPid(),
       isOwnPid: async (pid) => {
         const own = new Set([process.pid]);
@@ -1705,7 +1864,9 @@ async function main() {
   }
 
   await bootBackend();
+  markProfileBoot('boot-backend');
   const health = await collectHealth(backend);
+  markProfileBoot('health');
   console.log(`[health] ${JSON.stringify(health)}`);
 }
 

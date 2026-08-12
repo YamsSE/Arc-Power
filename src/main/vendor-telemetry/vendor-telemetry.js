@@ -21,6 +21,13 @@
 // fake-vendor fixture samples) so the lane is testable + verifiable
 // without the vendor DLLs; an unset knob runs the REAL koffi adapters
 // (absent DLLs degrade to the null adapter - deterministic in tests).
+//
+// M17d (round-1 S2): the STATIC-INFO seam - every adapter (real + fixture)
+// also exposes deviceInfo(): { vramBytes, computeCores } (the NVML memory
+// total + nvmlDeviceGetNumGpuCores; ADL mirrors the honest nulls). The
+// no-Intel dashboard VRAM/Compute rows read it via the 'vendor-info:get'
+// channel (ipc-core.js) - the renderer falls back to the OS controller
+// bytes when the lane has no source.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -87,15 +94,35 @@ export function createVendorFixtureAdapter(vendorId) {
     init: () => {},
     // Emit only the non-null SAMPLE fields (a null fixture field = the
     // honest absent source - never a literal null in the sample; the
-    // `notes`/`vendor` fixture metadata never rides the sample).
+    // `notes`/`vendor` fixture metadata never rides the sample). M17d:
+    // `vramBytes` is the deviceInfo()-ONLY static field (the NVML total) -
+    // it must never leak into the telemetry sample (it is not a
+    // TelemetrySample field).
     sample: async () => {
       if (!fixture) return null;
       const out = {};
       for (const [k, v] of Object.entries(fixture)) {
-        if ((k === 'notes' || k === 'vendor') || v === null || v === undefined) continue;
+        if ((k === 'notes' || k === 'vendor' || k === 'vramBytes') || v === null || v === undefined) continue;
         out[k] = v;
       }
       return out;
+    },
+    /**
+     * M17d: the STATIC-INFO seam - the fixture mirror of the NVML
+     * deviceInfo() (vramBytes = the fixture's NVML-total field, computeCores
+     * = the fixture's numCores; the ADL fixture mirrors the honest nulls).
+     * Never throws.
+     * @returns {{ vramBytes: number | null, computeCores: number | null }}
+     */
+    deviceInfo: () => {
+      if (!fixture) return { vramBytes: null, computeCores: null };
+      const vramBytes = typeof fixture.vramBytes === 'number' && Number.isFinite(fixture.vramBytes) && fixture.vramBytes > 0
+        ? Math.floor(fixture.vramBytes)
+        : null;
+      const computeCores = typeof fixture.numCores === 'number' && Number.isFinite(fixture.numCores) && fixture.numCores > 0
+        ? Math.floor(fixture.numCores)
+        : null;
+      return { vramBytes, computeCores };
     },
     close: () => {},
   };

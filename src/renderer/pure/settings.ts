@@ -67,7 +67,8 @@ export const VOLT_OFFSET_STEP_V = 0.001;
  * on THIS driver - the ceiling is card-specific). Keyed on caps.pciDeviceId:
  * the A770 (0x56A0) exposes max = min(degraded ceiling, 0.234) - the pin
  * NEVER RAISES a value (a session refused-ceiling store degrade below 0.234
- * is preserved); other V-unit cards (the A750's 0.285 driver props) keep
+ *  is preserved); other V-unit cards (the A750's 0.288 driver props - the
+ *  2026-08-12 probe: props max 0.288 V step 0.005) keep
  * their driver props untouched - the global 0.234 clamp is gone. The step
  * stays pinned to 0.001 on the A770 (the 0.234 ceiling is reachable). A
  * call WITHOUT the caps key keeps the legacy M15 both-directions behavior
@@ -101,8 +102,9 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
       }
       return range;
     }
-    // M17c: a known non-A770 device (the A750's 0.285 driver props) keeps
-    // its driver props - the global 0.234 clamp is gone.
+    // M17c: a known non-A770 device (the A750's 0.288 driver props - the
+    // 2026-08-12 probe) keeps its driver props - the global 0.234 clamp is
+    // gone.
     return range;
   }
   return range;
@@ -119,8 +121,8 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
  * guard before use.
  * M17c: the CAPS KEY always flows through here (the tuning.ts call sites
  * pass the full caps) - the device-scoped A770 volt pin keys on
- * caps.pciDeviceId, so the A750's driver props (0.285) pass through and the
- * A770 ceiling stays 0.234.
+ * caps.pciDeviceId, so the A750's driver props (0.288 - the 2026-08-12
+ * probe) pass through and the A770 ceiling stays 0.234.
  */
 export function cardSliderRange(caps: Capabilities | null | undefined, key: string): RangeInfo | undefined {
   return clampExposedRange(caps?.ranges[key], key, caps ?? undefined);
@@ -149,11 +151,16 @@ export function advancedUiVisible(caps: Capabilities | null | undefined): boolea
  * M2D: the extended-range concept is W/C-only - when the device caps are
  * known, percent-unit ranges (Battlemage mock: volt/PL/TL as %) never count
  * as extended (e.g. a 100% temp limit is not 100 C).
- * M17c: the thresholds feed from the SAME device-scoped limits table the
- * main-side gate uses (requiresExtendedRangeConfirm feeds from the same
- * table - round-2 S8): a LISTED card's confirm threshold = its listed row's
- * max (the a750 ASRock's 216 W PL / the 90 C TL caps), the default
- * 252/90 for unlisted cards. Keyed on the caps identity
+ * M17c/M17d: the thresholds feed from the SAME device-scoped limits table
+ * the main-side gate uses (requiresExtendedRangeConfirm feeds from the
+ * same table - round-2 S8): a LISTED card's confirm threshold = its listed
+ * STOCK row's max (the a750 ASRock's 216 W PL / the 90 C TL caps), the
+ * default 252/90 for unlisted cards. M17d (round-1 S1): PINNED TO THE
+ * STOCK SHAPE explicitly - the confirm dialog is about crossing the
+ * standard Intel limit, so the STOCK ceiling is the threshold (an advanced
+ * apply of 250 W on the A750 still needs the extended-range confirm even
+ * though the advanced ceiling is 270 - the default shape selection must
+ * not silently flip). Keyed on the caps identity
  * (pciDeviceId/aibVendor/aibModel) - never caps.ranges.
  */
 export function requiresExtendedRangeConfirm(settings: Settings, caps?: Capabilities): boolean {
@@ -413,9 +420,67 @@ export function ocCapsChanged(prev: Capabilities | null, next: Capabilities | nu
 }
 
 // ---------------------------------------------------------------------------
-// M4-B - gpuLock editor (pure; mirrors the main-side clamp bounds)
+// M4-B/M17d - gpuLock card (pure; mirrors the main-side clamp bounds)
 // ---------------------------------------------------------------------------
 // The main process clamps the lock pair to these bounds before it reaches
 // the driver (src/main/backend/units.js clampGpuLock). The renderer mirrors
 // them ONLY for honest toasts when no read-back envelope exists - main stays
-// the authoritative gate.
+// the authoritative gate. The helpers were REMOVED with the M4-J editor and
+// RETURN with the M17d standalone Fixed Clock / Voltage Lock card (Run D).
+
+/** Renderer mirror of units.js GPU_LOCK_VOLT_MAX_V (the absolute VF-point
+ *  ceiling; 0 = "don't touch voltage"). */
+export const GPU_LOCK_VOLT_MAX_V = 1.5;
+/** Renderer mirror of units.js GPU_LOCK_FREQ_MAX_MHZ. */
+export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
+
+/**
+ * M4-B step-5 F3: parse the gpuLock editor inputs. Empty / whitespace-only
+ * fields are rejected BEFORE numeric conversion - `Number('') === 0` and the
+ * 0 V / 0 MHz pair is the legal UNLOCK, so a cleared field (or a number
+ * input's empty-value state after an invalid entry) must never silently
+ * unlock the GPU. Non-finite conversions are rejected too.
+ */
+export function parseGpuLockInput(
+  voltageText: string,
+  freqText: string,
+): { ok: true; pair: { voltageV: number; freqMhz: number } } | { ok: false } {
+  const v = voltageText.trim();
+  const f = freqText.trim();
+  if (v === '' || f === '') return { ok: false };
+  const voltageV = Number(v);
+  const freqMhz = Number(f);
+  if (!Number.isFinite(voltageV) || !Number.isFinite(freqMhz)) return { ok: false };
+  return { ok: true, pair: { voltageV, freqMhz } };
+}
+
+/**
+ * M17d (Run D): the gpuLock card read-out / toast formatting - the pair the
+ * DRIVER holds, formatted honestly. The (0,0) pair IS the dynamic/unlocked
+ * convention; any other pair renders the absolute VF values.
+ */
+export function formatLockPair(pair: { voltageV: number; freqMhz: number } | null | undefined): string {
+  if (!pair) return 'Dynamic (unlocked)';
+  if (pair.voltageV === 0 && pair.freqMhz === 0) return 'Dynamic (unlocked)';
+  return `${pair.voltageV} V / ${pair.freqMhz} MHz`;
+}
+
+/**
+ * M4-B step-5 F4: the pair the gpuLock SUCCESS toast must report. Main
+ * clamps the typed pair before the write, so the driver received the
+ * CLAMPED values - the toast must show the read-back pair when the fresh
+ * envelope carried one (honesty: toast == the 'Applied:' line), else the
+ * locally clamped pair (same bounds as main's clampGpuLock) so a
+ * null/degraded envelope still cannot re-print an out-of-bounds typed
+ * value.
+ */
+export function gpuLockToastPair(
+  typed: { voltageV: number; freqMhz: number },
+  freshLock: { voltageV: number; freqMhz: number } | null | undefined,
+): { voltageV: number; freqMhz: number } {
+  if (freshLock) return freshLock;
+  return {
+    voltageV: Math.min(Math.max(0, typed.voltageV), GPU_LOCK_VOLT_MAX_V),
+    freqMhz: Math.min(Math.max(0, typed.freqMhz), GPU_LOCK_FREQ_MAX_MHZ),
+  };
+}

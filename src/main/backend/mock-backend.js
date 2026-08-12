@@ -24,10 +24,13 @@ import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } f
 // the real backend runs in getCapabilities (the renderer TS imports fine
 // under the packaged Electron - Node 22.21 type stripping).
 import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
-// M17c: the per-device limits table - the MOCK mirrors the real backend's
-// getCapabilities finalize (step-4 N1): the table's listed rows cap the
-// advanced ranges (the a770's advanced TL 115 -> the documented 90) so the
-// mock slider never offers a window the real caps refuse.
+// M17c/M17d: the per-device limits table - the MOCK mirrors the real
+// backend's getCapabilities finalize (step-4 N1) with the STOCK/ADVANCED
+// SPLIT (round-1 S1): the listed rows' ceilings per ACTIVE shape (the
+// stock per-AIB maxes + the TL 90 caps; the advanced per-card KMD ceilings
+// - a770 315/115, a750 270/115 - the A750 TL probe-verified 2026-08-12;
+// the round-3-N3 rule flipped) so the mock
+// slider never offers a window the real caps refuse.
 import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
 // M17c: the session refused-ceiling store (the mock mirrors the real
 // backend's parent-side merge - getCapabilities merges the store so the
@@ -450,6 +453,20 @@ export class MockBackend {
    * @returns {Promise<{ ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean }>}
    */
   async extendedApply(control, value) {
+    // M17d (Run E): the injected waiver-not-set fail reaches the V1 path -
+    // the bundled 2023 runtime's write answers the SAME driver-state code
+    // (0x44000008) any write answers when the driver lost the waiver, so
+    // the mock's V1 setter must mirror it (the ui-verify renderer-side
+    // re-prompt pin drives exactly this). ONLY the waiver-not-set code is
+    // honored here: the other injected codes (out-of-range / io-failed /
+    // unsupported) stay V2-path-scoped by the existing pins - they model
+    // RUNTIME-specific answers (the V2 client clamp, the V1 clamp) whose
+    // injection point is deliberately the driverstore path.
+    if (this._failOn[control] === 'waiver-not-set') {
+      const errorCode = this._failOn[control];
+      this._consumeFailOnce(control);
+      return { ok: false, errorCode, readBackEqual: false, message: `injected failure (${control})` };
+    }
     if (!this._extended || this._extendedFail) {
       return { ok: false, errorCode: 'unsupported', readBackEqual: false, message: EXTENDED_UNAVAILABLE_MSG };
     }
@@ -596,12 +613,15 @@ export class MockBackend {
   }
 
   /**
-   * M17c (step-4 N1): the DEVICE-LIMITS table application - the mock
-   * mirrors the real backend's _finalizeCaps table section (the same pure
-   * table, the same row resolution + units guard + min-cap + step rules).
-   * The real backend caps the listed A770's advanced TL at the documented
-   * 90 C - the mock must expose the SAME ranges or the mock slider offers
-   * a (90, 115] window the real caps refuse. MUTATES caps.ranges in place
+   * M17c/M17d (step-4 N1 + round-1 S1): the DEVICE-LIMITS table application
+   * - the mock mirrors the real backend's _finalizeCaps table section (the
+   * same pure table, the same row resolution + units guard + min-cap + step
+   * rules) with the STOCK/ADVANCED SPLIT: the ACTIVE shape's ceilings apply
+   * (the stock per-AIB maxes + the TL 90 caps; the advanced per-card KMD
+   * ceilings - a770 315/115, a750 270/115 - the A750 TL probe-verified
+   * 2026-08-12). The mock must expose the SAME
+   * ranges as the real caps or the mock slider offers a window the real
+   * caps refuse. MUTATES caps.ranges in place
    * (deterministic + idempotent - a re-finalize is a no-op); the caller
    * passes the fresh per-read clone.
    * @param {number} deviceId
@@ -613,11 +633,16 @@ export class MockBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    const limits = deviceLimitsOf(identity);
+    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the mock mirror selects
+    // the ADVANCED shape when caps.extendedRanges is true and the STOCK
+    // shape otherwise - NOT the same row in both modes (the round-3-N3 rule
+    // FLIPS to "listed-row advanced ceiling = the app-verified KMD
+    // ceiling": A770 315/115, A750 270/115 - probe-verified 2026-08-12).
+    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
-      // (stock 252/90, extended 315/115); a LISTED card's row is the
-      // documented ceiling in BOTH modes (round-2 S8).
+      // (stock 252/90, extended 315/115); a LISTED card's row is the ACTIVE
+      // shape (stock or advanced - round-2 S8).
       const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;

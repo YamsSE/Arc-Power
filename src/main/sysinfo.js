@@ -91,21 +91,29 @@ export function buildSysinfoScript() {
     '$regMem = @(Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; if ($p.\'HardwareInformation.qwMemorySize\' -and $p.MatchingDeviceId) { [pscustomobject]@{ PNPDeviceID = $p.MatchingDeviceId; MemoryBytes = $p.\'HardwareInformation.qwMemorySize\' } } })',
     // M4-D2: per-controller ReBAR sources. (a) pnputil memory resources -
     // the ONE-LINE layout ("Memory Resources: 0x... - 0x...",
-    // live-verified on the A770). The indented two-line layout (the label
-    // on its own line, the range indented on the NEXT line) is NOT matched
-    // by this per-line -match - machines with that layout are covered by
-    // the (b) allocated-resource cross-check (the plan's second source).
+    // live-verified on the A770). M17d (the GTX 980-class fix): the
+    // TWO-LINE layout is matched too - the "Memory Resources:" label on its
+    // own line with the ranges INDENTED on the FOLLOWING lines (the shape
+    // some pnputil builds emit; the pre-M17d per-line -match only caught
+    // the same-line ranges, so a two-line machine reported no pnputil
+    // bytes and the verdict fell to the cross-check alone). The
+    // allocated-resource cross-check stays as the second source.
     // (b) the allocated-resource
     // cross-check: Win32_AllocatedResource links each Win32_VideoController
     // (by its DeviceID "VideoControllerN") to Win32_DeviceMemoryAddress
     // ranges (by StartingAddress) - 64-bit ranges handled with
-    // [Convert]::ToInt64. rebarActive = any range >= 1 GiB from EITHER
-    // source (the A770's only range is 16-20 MB below 4 GB -> ReBAR off,
+    // [Convert]::ToInt64. M17d (the GTX 980-class fix): the Dependent
+    // reference is matched BOTH ways - the Win32_VideoController shape AND
+    // the Win32_PnPEntity shape (DeviceID = the controller's PNPDeviceID,
+    // equality or prefix - the reference some machines emit; the pre-M17d
+    // match only accepted the VideoController reference, so those rows
+    // never joined). rebarActive = any range >= 1 GiB from EITHER source
+    // (the A770's only range is 16-20 MB below 4 GB -> ReBAR off,
     // live-verified; no >= 1 GiB window exists anywhere on this machine).
-    '$vga = @($vga | ForEach-Object { $id = $_.PNPDeviceID; $res = & pnputil /enum-devices /instanceid $id /resources /format txt 2>$null; $barMax = 0; if ($res) { $res | ForEach-Object { if ($_ -match \'^Memory Resources:\\s*0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz } } } }; [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $id; DriverVersion = $_.DriverVersion; MaxBarBytes = $barMax } })',
+    '$vga = @($vga | ForEach-Object { $id = $_.PNPDeviceID; $res = & pnputil /enum-devices /instanceid $id /resources /format txt 2>$null; $barMax = 0; $inMemRes = $false; if ($res) { $res | ForEach-Object { if ($_ -match \'^Memory Resources:\\s*0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz }; $inMemRes = $true } elseif ($_ -match \'^Memory Resources:\') { $inMemRes = $true } elseif ($inMemRes -and $_ -match \'^\\s+0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz } } elseif ($_ -match \'^[A-Za-z][A-Za-z /]*:\') { $inMemRes = $false } } }; [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $id; DriverVersion = $_.DriverVersion; MaxBarBytes = $barMax } })',
     '$dma = @(Get-CimInstance Win32_DeviceMemoryAddress | Select-Object StartingAddress,EndingAddress)',
     '$alloc = @(Get-CimInstance Win32_AllocatedResource)',
-    '$barRes = @(foreach ($v in $vga) { $max = 0; foreach ($r in $alloc) { if ("$($r.Dependent)" -match "Win32_VideoController \\(DeviceID = ""$($v.DeviceID)""\\)" -and "$($r.Antecedent)" -match \'StartingAddress = (\\d+)\') { $start = [Convert]::ToInt64($Matches[1]); $e = @($dma | Where-Object { [Convert]::ToInt64($_.StartingAddress) -eq $start })[0]; if ($e) { $sz = [Convert]::ToInt64($e.EndingAddress) - $start + 1; if ($sz -gt $max) { $max = $sz } } } }; [pscustomobject]@{ PNPDeviceID = $v.PNPDeviceID; MaxBarBytes = $max } })',
+    '$barRes = @(foreach ($v in $vga) { $max = 0; foreach ($r in $alloc) { $dep = "$($r.Dependent)"; $depOk = $dep -match "Win32_VideoController \\(DeviceID = ""$($v.DeviceID)""\\)"; if (-not $depOk -and $dep -match \'Win32_PnPEntity \\(DeviceID\\s*=\\s*"([^"]+)"\\)\') { $pnpRef = $Matches[1]; $depOk = ($pnpRef -eq "$($v.PNPDeviceID)") -or ($pnpRef -like "$($v.PNPDeviceID)*") }; if ($depOk -and "$($r.Antecedent)" -match \'StartingAddress = (\\d+)\') { $start = [Convert]::ToInt64($Matches[1]); $e = @($dma | Where-Object { [Convert]::ToInt64($_.StartingAddress) -eq $start })[0]; if ($e) { $sz = [Convert]::ToInt64($e.EndingAddress) - $start + 1; if ($sz -gt $max) { $max = $sz } } } }; [pscustomobject]@{ PNPDeviceID = $v.PNPDeviceID; MaxBarBytes = $max } })',
     '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; systemEnclosure = $enc; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
 }
@@ -989,6 +997,12 @@ export function vramBytesOfDevice(device, sysinfo) {
  * controller to an AMD part ('AMD Radeon RX 7600'-style with vramBytes + a
  * pnpDeviceId + rebarActive false) - the no-Intel machine shape the
  * renderer's osGpu / header / GPU card read.
+ * M17d (Run B): the no-Intel REAL controller is overridable via
+ * `overrides.noIntelController` - the ui-verify no-intel+nvml variant
+ * (RID_MOCK_NO_INTEL=1 + RID_MOCK_VENDOR=nvml) swaps in the GTX 980-class
+ * NVIDIA shape (SUBSYS_36811458 -> the 'Gigabyte' Board-partner decode, the
+ * 4 GiB OS-VRAM source, the resolved ReBAR verdict); the Basic/DisplayLink
+ * rows stay so the M7b filter pin keeps its meaning.
  * M7b (fix 1): the no-Intel fixture ALSO carries a 'Microsoft Basic Display
  * Adapter' FIRST + a DisplayLink dock (the non-GPU devices that leak into
  * Win32_VideoController) - the fixture path bypasses the parse, so the
@@ -1007,6 +1021,21 @@ export function vramBytesOfDevice(device, sysinfo) {
  */
 export function createMockSysinfo(overrides = {}) {
   const noIntel = process.env.RID_MOCK_NO_INTEL === '1';
+  // M17d (Run B): the no-Intel REAL-controller override - the ui-verify
+  // no-intel+nvml variant (RID_MOCK_NO_INTEL=1 + RID_MOCK_VENDOR=nvml)
+  // replaces the default AMD row with the GTX 980-class shape (the
+  // NVIDIA controller whose SUBSYS_36811458 decodes Gigabyte + whose
+  // vramBytes/rebarActive simulate the resolved OS sources); the
+  // Basic/DisplayLink rows stay so the M7b filter pin keeps its meaning.
+  const noIntelReal = overrides.noIntelController ?? {
+    name: 'AMD Radeon RX 7600',
+    vramBytes: 8589934592, // 8 GiB
+    pnpDeviceId: 'PCI\\VEN_1002&DEV_7480&SUBSYS_24011462&REV_C7',
+    // M4-I: the controller's display-driver version (the no-Intel
+    // device card's Driver version row - works on ANY GPU).
+    driverVersion: '31.0.12027.9001',
+    rebarActive: false,
+  };
   // M7b (fix 1): the fixture's controller list is filtered through
   // isRealGpuController like the parse filters the CIM payload - the mock
   // path bypasses the parse, so the filter must run HERE (the default +
@@ -1032,15 +1061,7 @@ export function createMockSysinfo(overrides = {}) {
       driverVersion: '10.0.19041.1',
       rebarActive: null,
     },
-    {
-      name: 'AMD Radeon RX 7600',
-      vramBytes: 8589934592, // 8 GiB
-      pnpDeviceId: 'PCI\\VEN_1002&DEV_7480&SUBSYS_24011462&REV_C7',
-      // M4-I: the controller's display-driver version (the no-Intel
-      // device card's Driver version row - works on ANY GPU).
-      driverVersion: '31.0.12027.9001',
-      rebarActive: false,
-    },
+    noIntelReal,
     ...(overrides.videoControllers ?? []),
   ] : [
     {

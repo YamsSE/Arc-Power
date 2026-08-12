@@ -32,7 +32,7 @@
 // non-elevated instance fails honestly per control.
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
 // M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
 // in-process executeApply clamps profile.settings against
 // extendedRangesFor(caps) internally; the recording must use the SAME
@@ -165,13 +165,18 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // class the codebase forbids). The refusal classification is unchanged: a
   // config refusal reports the reason ONLY and never runs the reset-to-
   // defaults fallback (fallbackApplied stays undefined).
-  // M17c: the DEVICE-SCOPED gate thresholds - the caps carry the device
-  // identity (pciDeviceId/aibVendor/aibModel), which the ocModeRefusal
-  // limits-key resolves from the pure device-limits table (the listed
-  // rows' ceilings for listed cards, the default row for unlisted - never
-  // caps.ranges). A listed-card profile value in (216, 315] (or
-  // (90, 115] TL) REFUSES with the ceiling class - never a silent clamp
-  // down to the card's ceiling via caps.ranges (round-2 S8).
+  // M17c/M17d: the DEVICE-SCOPED gate thresholds - the caps carry the
+  // device identity (pciDeviceId/aibVendor/aibModel), which the
+  // ocModeRefusal limits-key resolves from the pure device-limits table
+  // with the STOCK/ADVANCED SPLIT (round-1 S1): a profile apply (advanced-
+  // gated, OC_MODE_ADVANCED) on a listed card is checked against the
+  // per-card KMD ceilings (a770 315/115, a750 270/115 - the probe-verified
+  // 2026-08-12 values; the round-3-N3 rule
+  // flipped: a profile value in (216, 315] on an a750 REFUSES only above
+  // the 270 ceiling, and the a750's (90, 115] TL is the probe-verified KMD
+  // ceiling, NOT a refusal); an unlisted card gets the default row (315/
+  // 115). Never a silent clamp down to the card's ceiling via caps.ranges
+  // (round-2 S8).
   const refusal = ocModeRefusal(OC_MODE_ADVANCED, profile.settings, caps.ranges, caps);
   if (refusal) {
     log(`[apply-on-boot] ceiling refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) - nothing applied, NO defaults restore`);
@@ -192,7 +197,20 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // - the RAW featureset flag, mode-independent). A genuinely not-capable
   // driver still refuses honestly with EXTENDED_UNAVAILABLE_MSG.
   const extendedCapable = oldIgcl ? await oldIgcl.isCapable() : caps.extendedRanges === true;
-  const unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable });
+  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable });
+  if (!unavailable && !extendedCapable) {
+    // M17d (Run D - the V1-call pin): a profile apply is advanced-gated, so
+    // its W/C values route through the bundled 2023 runtime (V1) REGARDLESS
+    // of value (the mode-based split). On a driver where that runtime cannot
+    // load, an IN-RANGE profile W/C value (e.g. 240 W - below the old 252
+    // threshold) must refuse with the same capability refusal here - without
+    // it the apply would fail per-control and run the defaults-restore
+    // fallback over a capability degradation (the "silent wipe over a
+    // degradation" class; the pre-pin behavior applied in-range values via
+    // the V2 setter, which is exactly the fall-through the pin forbids).
+    const wc = wcUnitControls(profile.settings, caps.ranges);
+    if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
+  }
   if (unavailable) {
     log(`[apply-on-boot] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied, NO defaults restore`);
     return { applied: false, reason: unavailable.message, extendedUnavailable: true };
@@ -243,7 +261,12 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         settings: profile.settings,
         profileName: profile.name,
         waiverAccepted,
-        ocMode: settings.ocMode,
+        // M17d (Run D): the runner request carries the APPLY MODE (the same
+        // value ocModeRefusal received here - OC_MODE_ADVANCED: a profile
+        // applies as saved, so its W/C values route through the V1 runtime
+        // per the V1-call pin; the interactive slider gate never applies to
+        // profile applies).
+        ocMode: OC_MODE_ADVANCED,
         profileApply: true,
         // M17c (step-4 N6): the parent-resolved limits-key rides the worker
         // request - the worker's gate thresholds must match the parent's
@@ -259,7 +282,10 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // caps.ranges (stock max 252 would silently reduce a saved 300 W
     // profile) and keys its safety-net capability refusal on the runtime
     // probe (oldIgcl.isCapable) instead of caps.extendedRanges.
-    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true } });
+    // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
+    // received above, threaded into the split (the V1-call pin: a profile's
+    // W/C values route through the bundled 2023 runtime's V1 setters).
+    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED });
     recordRefusals(out.result);
     return out;
   };

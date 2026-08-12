@@ -32,7 +32,7 @@ import {
   MIN_CURVE_POINTS,
 } from '../pure/curve.ts';
 import { buildFanSettings, validateSettingsPayload } from '../pure/settings.ts';
-import { errorMessage } from '../pure/errors.ts';
+import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { toast } from '../components/toast.ts';
 import type { FanMode } from '../types.ts';
@@ -772,8 +772,9 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) toast('success', `${key === 'fanMode' ? 'Fan mode' : 'Fan curve'} applied`, '');
         // F3 instant: refusals carry the composed actionable message; hard
-        // errors keep the errorCode mapping (same as the OC page).
-        else toast('error', 'Fan apply failed', per.message ?? errorMessage(per.errorCode, key));
+        // errors keep the errorCode mapping (M17d item 0b: the shared
+        // applyFailureText preference - same as the OC page).
+        else toast('error', 'Fan apply failed', applyFailureText(per, key));
       }
       // M4-A G2 mirror (the OC page's !result.ok branch): a failed apply can
       // mean the DRIVER lost the waiver (waiver-not-set) - re-fetch the caps

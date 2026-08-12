@@ -46,3 +46,24 @@ export function errorMessage(errorCode: OcErrorCode | undefined, control?: strin
   const base = ERROR_MESSAGES[errorCode] ?? 'The apply failed.';
   return control ? `${CONTROL_LABELS[control] ?? control}: ${base}` : base;
 }
+
+/**
+ * M17d (Run C, item 0b): the per-control apply-failure text - the toast
+ * surface's ONE preference point. The app-side GATE refusals (ocModeRefusal
+ * -> refusalPerControl in main) carry their OWN actionable message (the
+ * mode/ceiling text - 'This value is above the maximum the GPU can accept.
+ * Nothing was changed.' / the stock-mode text): that message ALWAYS wins.
+ * The errorCode mapping (errors.ts ERROR_MESSAGES - e.g. the 'out-of-range'
+ * 'slider clamps' text) is the FALLBACK for the DRIVER-shaped refusals (a
+ * real driver out-of-range carries errorCode only, no message - the honest
+ * mapped text answers). A refusal changes nothing - the 'clamps' lie must
+ * never surface for a gate refusal; a driver out-of-range without a message
+ * keeps the mapping.
+ * @param {import('../types.ts').PerControlResult | null | undefined} per
+ * @param {string} [control] the control label key (CONTROL_LABELS)
+ * @returns {string}
+ */
+export function applyFailureText(per: import('../types.ts').PerControlResult | null | undefined, control?: string): string {
+  if (typeof per?.message === 'string' && per.message.length > 0) return per.message;
+  return errorMessage(per?.errorCode, control);
+}

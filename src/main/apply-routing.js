@@ -28,15 +28,19 @@ export const STD_TL_MAX_C = 90;
 
 /**
  * M17c: resolve the DEVICE-SCOPED gate thresholds from the pure limits
- * table. A LISTED card's thresholds come from its LISTED row (the per-AIB
- * PL ceilings 216/228/235 W + the TL 90 C caps - BOTH modes, so a listed
- * card's advanced ceiling is never the default 315/115 - round-2 S8); a
- * control with NO override in the listed row keeps today's thresholds (the
- * ASRock A770 keeps 252/315 - the "dev-box card keeps 252/315" rule). An
- * UNLISTED card gets the DEFAULT row (252/90 stock, 315/115 advanced -
- * today's pins exactly). Null/garbage identity -> the default row. THE
+ * table. A LISTED card's thresholds come from its LISTED row; an UNLISTED
+ * card gets the DEFAULT row (252/90 stock, 315/115 advanced - today's pins
+ * exactly). Null/garbage identity -> the default row. THE
  * M3-C-E PROHIBITION: the thresholds come from the PURE TABLE, never from
  * caps.ranges (a caps-keyed gate would silently clamp on the worker side).
+ * M17d (round-1 S1): the thresholds consume the SAME STOCK/ADVANCED SPLIT
+ * as the finalize consumers - `advanced` selects the ADVANCED shape (the
+ * per-card KMD ceilings: A770 315/115, A750 270/115 - the A750 TL
+ * probe-verified 2026-08-12; the round-3-N3 rule
+ * FLIPS to "listed-row advanced ceiling = the app-verified KMD ceiling"),
+ * the stock shape otherwise (the per-AIB maxes + the TL 90 caps). A
+ * listed-card advanced apply of e.g. 250 W on the A750 now PASSES the
+ * advanced gate (the 270 ceiling) instead of refusing at the stock 216.
  * @param {unknown} limitsKey the device identity - the caps object (the
  *   pciDeviceId/aibVendor/aibModel fields) or null (the default row)
  * @param {boolean} advanced whether the ADVANCED (extended) ceiling applies
@@ -50,7 +54,7 @@ export function deviceGateThresholds(limitsKey, advanced) {
         aibModel: limitsKey.aibModel ?? null,
       }
     : null;
-  const limits = deviceLimitsOf(identity);
+  const limits = deviceLimitsOf(identity, { advanced: advanced === true });
   if (!limits || !limits.listed) {
     return advanced
       ? { plMax: EXTENDED_PL_MAX_W, tlMax: EXTENDED_TL_MAX_C }
@@ -126,15 +130,22 @@ export const OC_CEILING_REFUSAL_MSG =
  * property identical on both sides of the worker boundary (never the
  * extendedRanges flag - the caps-keyed mode gate the plan forbids stays
  * forbidden). Unknown ranges keep the historical threshold behavior.
- * M17c (round-2 S8): the thresholds become DEVICE-SCOPED from the pure
- * limits table (`limitsKey` - the caps object; the call sites always pass
- * the caps they already read). A LISTED card's thresholds come from its
- * LISTED row (per-AIB PL 216/228/235 W, TL 90 C - in BOTH modes, so a
- * profile/boot/tray apply of a value in (216, 315] on a listed card must
- * REFUSE with the ceiling class, never silently clamp down to the card's
- * ceiling via caps.ranges); the DEFAULT row (252/315) is only for unlisted
- * cards. PRE-CLAMP and non-caps-keyed: the thresholds come from the pure
- * table, never caps.ranges (the M3-C-E prohibition).
+ * M17c/M17d (round-2 S8 + round-1 S1): the thresholds become DEVICE-SCOPED
+ * from the pure limits table (`limitsKey` - the caps object; the call
+ * sites always pass the caps they already read) and consume the
+ * STOCK/ADVANCED SPLIT: a LISTED card's STOCK thresholds come from its
+ * listed STOCK row (per-AIB PL 216/228 W + the probe-pinned Acer 216 W -
+ * the 2026-08-12 verdict, the 235 BiFrost documented claim refuted as a
+ * stock value on the Acer card; TL 90 C - a profile/boot/
+ * tray apply of a value in (216, 315] on a listed card must REFUSE with
+ * the ceiling class in stock mode, never silently clamp down to the card's
+ * ceiling via caps.ranges); the ADVANCED thresholds are the per-card KMD
+ * ceilings (A770 315/115, A750 270/115 - probe-verified 2026-08-12; the
+ * round-3-N3 rule FLIPS: a listed-card advanced apply up to the KMD
+ * ceiling SUCCEEDS). The DEFAULT
+ * row (252/315) is only for unlisted cards. PRE-CLAMP and non-caps-keyed:
+ * the thresholds come from the pure table, never caps.ranges (the M3-C-E
+ * prohibition).
  * @param {string} ocMode 'stock' | 'advanced'
  * @param {Record<string, unknown>} settings
  * @param {Record<string, { units?: string }>} [ranges]
@@ -215,6 +226,37 @@ export function extendedUnavailableRefusal(settings, caps) {
 }
 
 /**
+ * M17d (Run D - the V1-call pin): the W/C-unit control keys present in a
+ * settings payload - the controls the mode-based split routes through the
+ * bundled 2023 runtime (V1) when the apply runs in ADVANCED mode (a profile
+ * apply is advanced-gated, so ITS W/C values route V1 REGARDLESS of value).
+ * Unit-aware like the split (M2D): percent-unit ranges (Battlemage) are
+ * never V1-routed controls; unknown ranges keep the historical behavior.
+ * Used by the PROFILE-apply capability refusal - on a driver where the
+ * bundled 2023 runtime cannot load, an in-range profile W/C value must
+ * REFUSE with EXTENDED_UNAVAILABLE_MSG (a capability/config refusal, never
+ * the defaults-restore fallback - the "silent wipe over a degradation"
+ * class), because the split would route it to a runtime that does not
+ * exist instead of silently falling through to the V2 setter (which is
+ * exactly the fall-through the pin forbids).
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, { units?: string }>} [ranges]
+ * @returns {string[]}
+ */
+export function wcUnitControls(settings, ranges = null) {
+  if (!settings || typeof settings !== 'object') return [];
+  const isWcUnits = (key) => {
+    const units = ranges?.[key]?.units ?? null;
+    if (units === null || units === undefined) return true; // unknown -> historical behavior
+    return key === 'powerLimitW' ? units === 'W' : units === 'C';
+  };
+  const out = [];
+  if (typeof settings.powerLimitW === 'number' && isWcUnits('powerLimitW')) out.push('powerLimitW');
+  if (typeof settings.tempLimitC === 'number' && isWcUnits('tempLimitC')) out.push('tempLimitC');
+  return out;
+}
+
+/**
  * Per-control failure entries for the extended-unavailable refusal - the
  * same 'unsupported' shape the old runtime reports itself (honest, no
  * read-back claim).
@@ -271,11 +313,32 @@ const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * temp limit) can never be an extended-range request: it goes to the
  * DriverStore runtime like any other percent value. Unknown ranges (no caps
  * available) keep the historical threshold behavior.
+ *
+ * M17d (Run D - THE V1-CALL PIN, the user directive, ALCHEMIST FAMILY-WIDE):
+ * the split becomes MODE-BASED for the W/C controls. In ADVANCED mode the
+ * W-unit powerLimitW + the C-unit tempLimitC ALWAYS route to the extended
+ * (V1) part - the bundled 2023 runtime's ctlOverclockPowerLimitSet (mW) /
+ * ctlOverclockTemperatureLimitSet (C); in STOCK mode they route to the
+ * driverstore part (V2 - as today). THE BUG IT FIXES (real-hardware
+ * evidence, the 2026-08-12 A750 probe): the threshold-based split routed
+ * PL/TL to the extended runtime ONLY when the value > 252 W / 90 C - an
+ * ADVANCED apply of e.g. 250 W on the A750 (whose KMD ceiling is 270) fell
+ * through to the DriverStore path, whose props max is 216 on the Acer A750,
+ * and the driver refused 0x44000004; the probe proved 250 AND 270 W apply
+ * ONLY through the V1 mW setters. Non-W/C controls (percent-unit Battlemage,
+ * volt, freq, vram...) route exactly as before (the units check unchanged).
+ * `mode` is optional: absent (null/undefined) -> the threshold-based split
+ * stays (the UNLISTED/no-caps fallback - the existing pins); the four apply
+ * paths always pass the mode (the same value ocModeRefusal receives at the
+ * same site - the persisted ocMode for interactive applies, OC_MODE_ADVANCED
+ * for profile applies; never caps/extendedRanges, the M3-C-E prohibition).
  * @param {Record<string, unknown>} settings
  * @param {Record<string, { units?: string }>} [ranges]
+ * @param {string|null} [mode] OC_MODE_STOCK | OC_MODE_ADVANCED (absent ->
+ *   the historical threshold behavior)
  * @returns {{ driverstore: Record<string, unknown>, extended: Record<string, unknown> }}
  */
-export function splitByRuntime(settings, ranges = null) {
+export function splitByRuntime(settings, ranges = null, mode = null) {
   const driverstore = {};
   const extended = {};
   const isWcUnits = (key) => {
@@ -283,9 +346,15 @@ export function splitByRuntime(settings, ranges = null) {
     if (units === null || units === undefined) return true; // unknown -> historical behavior
     return key === 'powerLimitW' ? units === 'W' : units === 'C';
   };
+  const isWcControl = (key) => key === 'powerLimitW' || key === 'tempLimitC';
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
-    if (key === 'powerLimitW' && value > STD_PL_MAX_W && isWcUnits('powerLimitW')) extended[key] = value;
+    // M17d (Run D): the MODE-BASED routing for the W/C controls - the
+    // V1-call pin. Percent-unit controls (Battlemage) never route extended
+    // in either mode (the M2D rule - the units check is the gate).
+    if (mode === OC_MODE_ADVANCED && isWcControl(key) && isWcUnits(key)) extended[key] = value;
+    else if (mode === OC_MODE_STOCK && isWcControl(key) && isWcUnits(key)) driverstore[key] = value;
+    else if (key === 'powerLimitW' && value > STD_PL_MAX_W && isWcUnits('powerLimitW')) extended[key] = value;
     else if (key === 'tempLimitC' && value > STD_TL_MAX_C && isWcUnits('tempLimitC')) extended[key] = value;
     else driverstore[key] = value;
   }
@@ -350,14 +419,17 @@ export function isMomentaryLieCandidate(per) {
  *   delayedVerifyMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
  *   ranges?: Record<string, { units?: string }> | null, // M2D: unit-aware split
+ *   mode?: string | null, // M17d (Run D): OC_MODE_STOCK | OC_MODE_ADVANCED -
+ *                         // the V1-call pin (splitByRuntime's mode routing);
+ *                         // absent -> the historical threshold split
  * }} deps
  * @returns {Promise<{
  *   result: { ok: boolean, perControl: Record<string, { ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean, silentNoop?: boolean }> },
  *   attempts: number,
  * }>}
  */
-export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null }) {
-  const { driverstore, extended } = splitByRuntime(settings, ranges);
+export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null }) {
+  const { driverstore, extended } = splitByRuntime(settings, ranges, mode);
   const perControl = {};
 
   if (Object.keys(driverstore).length > 0) {
@@ -390,10 +462,34 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
   if (Object.keys(extended).length > 0) {
     log(`[apply] extended controls: [${Object.keys(extended).join(', ')}] via the bundled 2023 IGCL runtime`);
     for (const [key, value] of Object.entries(extended)) {
-      const per = key === 'powerLimitW'
-        ? await oldIgcl.setPowerLimitW(value)
-        : await oldIgcl.setTempLimitC(value);
+      // M17d (step-4 N2): a NULL oldIgcl must never throw (the advanced-
+      // mode + null-oldIgcl construct would TypeError on setPowerLimitW,
+      // surfacing as 'apply threw: ...') - the honest per-control
+      // 'unsupported' refusal, the same shape the runtime itself reports
+      // when it cannot load.
+      let per;
+      if (oldIgcl) {
+        per = key === 'powerLimitW'
+          ? await oldIgcl.setPowerLimitW(value)
+          : await oldIgcl.setTempLimitC(value);
+      } else {
+        per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
+      }
       perControl[key] = per;
+    }
+    // M17d (Run E): the V1-path G2 mirror - the DriverStore runtime's own
+    // applySettings clears the stale in-memory waiver flag when a write
+    // answers waiver-not-set (igcl-backend.js + the mock mirror), but the
+    // bundled 2023 runtime is a SEPARATE adapter whose waiver-not-set
+    // answers never touched the backend flag. Without this routed-level
+    // mirror the renderer's fresh-caps re-prompt (M4-D F5) is dead on every
+    // V1-routed apply - the driver truth stays hidden behind a stale
+    // "accepted" caps flag. restoreWaiverState(false) NEVER accepts
+    // anything - it only clears the stale flag (re-acceptance still runs
+    // through the explicit waiver-accept path).
+    if (Object.values(perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
+      log('[apply] extended-path waiver-not-set - clearing the stale in-memory waiver flag (the V1-path G2 mirror)');
+      try { await backend.restoreWaiverState(deviceId, false); } catch { /* best effort */ }
     }
   }
 
@@ -417,10 +513,14 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
  *   log?: (s: string) => void,
  *   delayedVerifyMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
+ *   ocMode?: string | null, // M17d (Run D): the OC mode the apply runs under
+ *                           // (the same value the caller's ocModeRefusal
+ *                           // received) - threaded into splitByRuntime via
+ *                           // applySettingsRouted (the V1-call pin)
  * }} deps
  * @returns {Promise<{ result: { ok: boolean, perControl: Record<string, unknown> }, state: object | null }>}
  */
-export async function executeApply({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep }) {
+export async function executeApply({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null }) {
   const caps = await backend.getCapabilities(deviceId);
   // M3-C step-5 F1: advanced mode + a NOT-capable 2023 runtime (the
   // future-driver degradation) -> refuse extended values BEFORE the clamp,
@@ -456,7 +556,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
       ? clampAndSnap(value, range)
       : value;
   }
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges });
+  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   return { result: out.result, state };

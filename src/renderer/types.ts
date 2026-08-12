@@ -336,6 +336,19 @@ export interface SysInfo {
   videoControllers: VideoControllerInfo[];
 }
 
+/**
+ * M17d (round-1 S2): the vendor-lane STATIC-INFO payload (vendor-info:get) -
+ * the no-Intel dashboard VRAM/Compute rows' source. vramBytes = the vendor
+ * adapter's total-VRAM (NVML memory total primary; the OS controller bytes
+ * stay the renderer-side fallback; ADL exposes none -> null - honest);
+ * computeCores = the compute-core count (NVML numGpuCores; null when the
+ * vendor lane has no source - honest '-'). Nulls never lie.
+ */
+export interface VendorDeviceInfo {
+  vramBytes: number | null;
+  computeCores: number | null;
+}
+
 export interface ThrottleFlags {
   power?: boolean;
   temp?: boolean;

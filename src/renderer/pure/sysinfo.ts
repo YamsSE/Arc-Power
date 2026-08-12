@@ -57,6 +57,11 @@ export function gbValue(bytes: number | null | undefined): string {
  * M4J (B): the Mainboard manufacturer short-map - Win32_BaseBoard reports
  * the full legal names; the row renders the short brands. Unknown
  * manufacturers pass through unchanged (never a wrong claim).
+ * M17d: the LOOKUP matches by TOKEN (mainboardShortManufacturer) - the
+ * legal names vary ('Micro-Star International' vs 'Micro-Star International
+ * Co., Ltd.'), so the map's keys double as the match tokens; the exact-key
+ * pins stay green (the map itself is unchanged - the token match is the
+ * lookup layer on top).
  */
 export const MAINBOARD_SHORT_MANUFACTURER: Record<string, string> = Object.freeze({
   'ASUSTeK COMPUTER INC.': 'ASUSTeK',
@@ -64,6 +69,29 @@ export const MAINBOARD_SHORT_MANUFACTURER: Record<string, string> = Object.freez
   'Micro-Star International': 'MSI',
   'MSI': 'MSI',
 });
+
+/**
+ * M17d: the TOKEN-based mainboard short-map lookup - the manufacturer is
+ * matched against the map keys case-insensitively (a CONTAINS match, the
+ * first key wins); unknown -> null (the caller falls back to the raw
+ * manufacturer). The token match makes the legal-name variants resolve:
+ * 'Micro-Star International Co., Ltd.' contains 'Micro-Star International'
+ * -> 'MSI' (the user's exact case - the pre-M17d exact-key lookup missed
+ * it); 'Gigabyte Technology Co., Ltd.' -> 'Gigabyte'. The map order matters
+ * ('Micro-Star International' before 'MSI' - a longer token never matches
+ * a shorter one's suffix). Garbage -> null.
+ * @param {unknown} manufacturer the raw Win32_BaseBoard Manufacturer
+ * @returns {string | null}
+ */
+export function mainboardShortManufacturer(manufacturer: unknown): string | null {
+  const s = typeof manufacturer === 'string' ? manufacturer.trim() : '';
+  if (s.length === 0) return null;
+  const lower = s.toLowerCase();
+  for (const key of Object.keys(MAINBOARD_SHORT_MANUFACTURER)) {
+    if (lower.includes(key.toLowerCase())) return MAINBOARD_SHORT_MANUFACTURER[key];
+  }
+  return null;
+}
 
 /**
  * M4J (B): the Mainboard row label - "ASUSTeK MAXIMUS VII RANGER" (short
@@ -75,13 +103,15 @@ export const MAINBOARD_SHORT_MANUFACTURER: Record<string, string> = Object.freez
  * (case-insensitive, token-aligned - 'asus ' or the exact product), so
  * the label never doubles the brand. The short manufacturer alone when
  * the product is absent; '-' when neither exists.
+ * M17d: the short-map lookup is TOKEN-based (mainboardShortManufacturer) -
+ * 'Micro-Star International Co., Ltd.' -> 'MSI' (the user's exact case).
  */
 export function mainboardRow(sysinfo: SysInfo | null): string {
   const bb = sysinfo?.baseboard;
   const manufacturer = typeof bb?.manufacturer === 'string' && bb.manufacturer.length > 0 ? bb.manufacturer : null;
   const product = typeof bb?.product === 'string' && bb.product.length > 0 ? bb.product : null;
   if (!manufacturer && !product) return '-';
-  const short = manufacturer ? (MAINBOARD_SHORT_MANUFACTURER[manufacturer] ?? manufacturer) : null;
+  const short = manufacturer ? (mainboardShortManufacturer(manufacturer) ?? manufacturer) : null;
   if (!short) return product ?? '-';
   if (!product) return short;
   const suffix = product.trim();
@@ -252,10 +282,13 @@ export function isRealGpuController(c: { name?: string | null; pnpDeviceId?: str
  * for a model-less device name). Null when the payload has no usable
  * controller (degraded sysinfo / nothing but basic adapters / DisplayLink
  * docks). Pure, DOM-free, node-testable.
+ * M17d (round-1 S2): the payload carries pnpDeviceId too - the no-Intel
+ * Board-partner row decodes the AIB from the controller's SUBSYS through
+ * pure/aib.ts aibOfPnpDeviceId (works for ANY GPU).
  * @param {SysInfo | null} sysinfo
- * @returns {{ name: string, vramBytes: number | null } | null}
+ * @returns {{ name: string, vramBytes: number | null, pnpDeviceId: string | null } | null}
  */
-export function primaryVideoController(sysinfo: SysInfo | null): { name: string; vramBytes: number | null } | null {
+export function primaryVideoController(sysinfo: SysInfo | null): { name: string; vramBytes: number | null; pnpDeviceId: string | null } | null {
   const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
   const primary = controllers.find((c) => c.name && isRealGpuController(c));
   if (!primary?.name) return null;
@@ -263,6 +296,9 @@ export function primaryVideoController(sysinfo: SysInfo | null): { name: string;
     name: primary.name,
     vramBytes: typeof primary.vramBytes === 'number' && Number.isFinite(primary.vramBytes) && primary.vramBytes > 0
       ? primary.vramBytes
+      : null,
+    pnpDeviceId: typeof primary.pnpDeviceId === 'string' && primary.pnpDeviceId.length > 0
+      ? primary.pnpDeviceId
       : null,
   };
 }

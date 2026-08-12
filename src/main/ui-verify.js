@@ -68,9 +68,9 @@
 //      slider value.
 //  12. M3-C-D/E extended variant (RID_MOCK_EXTENDED_RANGES=1, mock default
 //      OC mode = advanced): the power slider max is 315 W and the temp
-//      slider max 90 C (M17c step-4 N1 - the mock mirrors the device-limits
-//      table, the listed a770's advanced TL is the documented 90, never the
-//      fixture's raw 115); setting PL 300 and applying SKIPS the per-apply
+//      slider max 115 C (M17d FLIP (round-3 N3) - the a770's ADVANCED TL is
+//      the restored KMD ceiling 115, the M17c listed-row 90 cap is removed);
+//      setting PL 300 and applying SKIPS the per-apply
 //      confirm (double-dialog decision - the mode-enable confirm already
 //      warned) and the read-back sticks at 300 W; restored to 210 W after.
 //  12b. M3-C-E stock variant (RID_MOCK_STOCK_MODE=1): sliders pinned to the
@@ -253,10 +253,10 @@ async function bootWaiverStep(win, js, waitFor) {
   // b580/pro-b50 -> "12GB GDDR6" (fold r2.2: the pro-b50 token is covered),
   // arc-igpu -> plain (no VRAM).
   const fsId = process.env.RID_MOCK_FEATURESET;
-  // M17c: the a750 featureset (8 GiB - the ASRock Challenger config) joins
-  // the suffix table.
+  // M17c/M17d: the a750 featuresets (8 GiB - the ASRock Challenger + the
+  // Acer AIB variant configs) join the suffix table.
   const expectedSuffix = fsId === 'b580' || fsId === 'pro-b50' ? '12GB GDDR6'
-    : fsId === 'a750' ? '8GB GDDR6'
+    : (fsId === 'a750' || fsId === 'acer-a750') ? '8GB GDDR6'
     : fsId === 'arc-igpu' ? null
     : '16GB GDDR6';
   const pinDeviceLine = async () => {
@@ -717,6 +717,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // the pill renders on EVERY device as in 1.0.3.
   const vramFreqUi = (await backend.getCapabilities(0)).controls?.vramFreqOffset === true;
   step('m4j-vramfreq-ui', `M4J (D): this session's device ${vramFreqUi ? 'carries' : 'LACKS'} vramFreqOffset - the Advanced SECTION ${vramFreqUi ? 'renders (the VRAM clock editor)' : 'is GONE (Alchemist - only the bottom expert section is removed; the OC-mode pill stays)'}`);
+  // M17d (Run D): whether THIS session's device carries the gpuLock control
+  // - the key for the standalone Fixed Clock / Voltage Lock card (a770/
+  // a750/acer-a750 yes; b580/arc-igpu/pro-b50 no).
+  const gpuLockUi = (await backend.getCapabilities(0)).controls?.gpuLock === true;
+  step('m17d-gpulock-ui', `M17d (Run D): this session's device ${gpuLockUi ? 'carries' : 'LACKS'} gpuLock - the Fixed Clock / Voltage Lock card ${gpuLockUi ? 'renders' : 'is absent'}`);
 
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard GPU card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) -
@@ -831,20 +836,21 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
     fail('Xe cores / shader units line missing');
   }
-  // M17c: the Board partner row BELOW the Device row - '<AIB vendor>
+  // M17c/M17d: the Board partner row BELOW the Device row - '<AIB vendor>
   // (<model>)' from the caps AIB fields (the a770 mock's 0x1849/0x6001
-  // pairing decodes ASRock / Phantom Gaming 8GB - the dev-box pin).
+  // pairing decodes ASRock / Phantom Gaming - M17d FLIP: the model drops
+  // the trailing VRAM-amount token, the user's exact request).
   if (!(await waitFor(win, `(() => {
     const card = document.querySelector('.card-grid .device-card');
     const kvs = Array.from(card?.querySelectorAll('.kv') ?? []);
     const gpuIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'GPU');
     const aibIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Board partner');
     const aibRow = kvs[aibIdx];
-    return aibIdx === gpuIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'ASRock (Phantom Gaming 8GB)';
+    return aibIdx === gpuIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'ASRock (Phantom Gaming)';
   })()`, 5000))) {
-    fail(`M17c: the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'ASRock (Phantom Gaming 8GB)' directly below the Device row)`);
+    fail(`M17c: the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'ASRock (Phantom Gaming)' directly below the Device row)`);
   }
-  step('m17c-board-partner', 'M17c: the Board partner row renders directly below the Device row - ASRock (Phantom Gaming 8GB) (the 0x1849/0x6001 decode)');
+  step('m17c-board-partner', 'M17c/M17d: the Board partner row renders directly below the Device row - ASRock (Phantom Gaming) (the 0x1849/0x6001 decode, the VRAM amount stripped)');
   // The waiver status row lives in the HEALTH card (below), not on the
   // device card: no 'OC waiver' text in any device-card kv row.
   if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Status card)');
@@ -1792,11 +1798,23 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // the read-back still reports the old value). After the successful apply
   // the chip must show 'Applied' and the button must hide against the
   // APPLIED reference, even though the driver still reads 210.
+  // M17d (Run D - the V1-call pin): in the mock's ADVANCED default mode the
+  // W/C controls route through the V1 (extended) setters, so the lag must
+  // be simulated on BOTH paths - the driverstore wrap (freq/volt) AND the
+  // extendedApply wrap (the PL/TL writes the split routes to the mock old
+  // runtime).
   const realApply = backend.applySettings.bind(backend);
   backend.applySettings = async (d, s) => {
     const before = backend._state.powerLimitW;
     const res = await realApply(d, s);
     backend._state.powerLimitW = before; // the read-back lags
+    return res;
+  };
+  const realExtended = backend.extendedApply.bind(backend);
+  backend.extendedApply = async (control, value) => {
+    const before = backend._state[control];
+    const res = await realExtended(control, value);
+    backend._state[control] = before; // the read-back lags
     return res;
   };
   await setSlider(220);
@@ -1826,6 +1844,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // Restore the real backend and re-render the OC page fresh (values snap
   // back to the 210 W read-back; the applied reference is per-page state).
   backend.applySettings = realApply;
+  backend.extendedApply = realExtended;
   await js(`location.hash = '#/dashboard'`);
   await gotoOverclocking();
   if (!(await floatingHidden())) fail('floating Apply visible on a clean re-render');
@@ -1920,7 +1939,22 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // An io-failed powerLimit apply fails INSTANTLY and the toast is the plain
   // driver message + code (M2C-C: the IGS-naming wording is REMOVED - the
   // real gate was elevation, docs §8c).
+  // M17d (Run D - the V1-call pin): in the mock's ADVANCED default mode the
+  // W/C applies route the V1 (extended) setters, whose mock path has no
+  // failure injection - the io-failed is injected on the EXTENDED path here
+  // (the driverstore-path injectFail cannot reach an advanced-mode W/C
+  // apply anymore). The same wrap covers the one-shot section below: it
+  // fails powerLimitW until `shotInjected` flips, then passes through.
   backend.injectFail('powerLimitW', 'io-failed');
+  const realExtIo = backend.extendedApply.bind(backend);
+  let shotInjected = false;
+  backend.extendedApply = async (control, value) => {
+    if (control === 'powerLimitW' && !shotInjected) {
+      shotInjected = true;
+      return { ok: false, errorCode: 'io-failed', readBackEqual: false, message: 'IGCL io-failed' };
+    }
+    return realExtIo(control, value);
+  };
   await setSlider(220);
   await clearToasts();
   await clickApply();
@@ -1928,16 +1962,24 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     fail('io-failed error toast missing (instant apply)');
   }
   const refusalMsg = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
-  if (!/refused the change/.test(refusalMsg)) fail(`refusal toast is not the plain message: '${refusalMsg}'`);
+  // M17d (Run D): the refusal now surfaces from the V1 (extended) path -
+  // the bundled runtime's OWN message is the per-control text (the
+  // applyFailureText preference: the message wins; the driverstore-path
+  // 'refused the change' composition lives in applyOnce and no longer sees
+  // advanced-mode W/C applies). The honest asserts stay: the error code is
+  // in the toast, the obsolete IGS wording is gone, no retry note.
+  if (!/io-failed/.test(refusalMsg)) fail(`refusal toast is missing the error code: '${refusalMsg}'`);
   if (/Intel Graphics Software/.test(refusalMsg)) fail(`M2C-C: refusal toast still names IGS (obsolete wording): '${refusalMsg}'`);
-  if (!/\(io-failed\)/.test(refusalMsg)) fail(`M2C-C: refusal toast is missing the error code: '${refusalMsg}'`);
   if (await js(`!!document.querySelector('.toast-warn')`)) fail('instant apply must NOT show a retry note');
   // The "Applying - retry N/9" surface is gone: the button never shows it.
   const btnLabel = await js(`document.querySelector('.floating-apply')?.textContent ?? ''`);
   if (btnLabel.includes('retry')) fail(`floating Apply shows a retry label: '${btnLabel}'`);
   // A one-shot io-failed backend (would succeed on a retry) must STILL
-  // fail instantly - no retry attempt ever happens.
-  backend.injectFail('powerLimitW', 'io-failed', true);
+  // fail instantly - no retry attempt ever happens. Re-arm the one-shot
+  // extended-path wrap (the persistent section above consumed its shot) and
+  // apply again: the flow must NOT retry (a retry would succeed on the
+  // re-armed pass-through and toast success).
+  shotInjected = false;
   await clearToasts();
   await clickApply();
   if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 10000))) {
@@ -1955,6 +1997,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('recovery apply did not succeed');
   const recovered = await js(`window.arcPower.getCurrentSettings(0)`);
   if (Math.abs(recovered.powerLimitW - 220) > 1e-6) fail(`recovery did not apply 220 W: ${recovered.powerLimitW}`);
+  backend.extendedApply = realExtIo;
   await clearToasts();
   await setSlider(210);
   await clickApply();
@@ -2097,12 +2140,72 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (await js(`!!document.querySelector('.advanced-card')`)) {
       fail('M4J (D): the Advanced section is still rendered on a device without vramFreqOffset (Alchemist)');
     }
-    if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-      fail('M4J (D): the gpuLock editor is still rendered on Alchemist (the section died with it)');
+    // M17d (Run D - the FLIP): the Fixed Clock / Voltage Lock card RETURNS
+    // as a STANDALONE Tuning-page card (the user's request; NOT the dead
+    // M4-J section). The M4-J editor-absence assert flips ONLY where
+    // caps.controls.gpuLock is true - the a770/a750/acer-a750 sessions
+    // render the card now; arc-igpu/pro-b50 (no gpuLock control) stay
+    // absent (their lock-card absence is by construction - the card is
+    // caps.controls.gpuLock-gated; the b580 absence pins stay untouched).
+    if (gpuLockUi) {
+      if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
+        fail('M17d (Run D): the Fixed Clock / Voltage Lock card is missing on a gpuLock-capable session');
+      }
+    } else {
+      if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
+        fail('M17d (Run D): the Fixed Clock / Voltage Lock card is rendered without caps.controls.gpuLock');
+      }
     }
-    step('m4j-advanced-absent', 'M4J (D): the Advanced section + the gpuLock editor are ABSENT on Alchemist (only the bottom expert section is gone - the OC-mode pill stays)');
+    step('m4j-advanced-absent', 'M4J (D) + M17d (Run D): the Advanced section is ABSENT on Alchemist (the OC-mode pill stays); the standalone Fixed Clock / Voltage Lock card renders on gpuLock-capable sessions only');
   }
   await clearToasts();
+
+  // --- M17d (Run D): the standalone Fixed Clock / Voltage Lock card round
+  // --- trip (the user's request) - type a pair, apply, verify the mock
+  // --- lock state + the card read-out, reset to dynamic (0,0), verify the
+  // --- state cleared. -----------------------------------------------
+  if (gpuLockUi) {
+    const lockInitial = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+    if (!lockInitial.includes('Dynamic (unlocked)')) {
+      fail(`M17d: the lock read-out starts at '${lockInitial}' (expected 'Lock: Dynamic (unlocked)' - the a770 mock starts unlocked)`);
+    }
+    // Type a pair (1.0 V / 2600 MHz) and apply through the card's Apply
+    // button - the real apply-settings channel with the gpuLock control.
+    await js(`(() => {
+      const card = document.querySelector('.gpu-lock-editor');
+      if (!card) return;
+      const v = card.querySelector('input[data-lock-field="voltageV"]');
+      const f = card.querySelector('input[data-lock-field="freqMhz"]');
+      v.value = '1.0';
+      f.value = '2600';
+      Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
+    })()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 1 && s.gpuLock.freqMhz === 2600))`, 8000))) {
+      fail(`M17d: the gpuLock apply did not land in the mock state (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)})`);
+    }
+    const lockReadout = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+    if (!lockReadout.includes('1 V / 2600 MHz')) {
+      fail(`M17d: the lock read-out is '${lockReadout}' (expected 'Lock: 1 V / 2600 MHz' - the card shows the driver state)`);
+    }
+    await clearToasts();
+    // Reset to Dynamic: the (0,0) unlock pair - apply it and verify the
+    // mock state cleared + the read-out returns to Dynamic.
+    await js(`(() => {
+      const card = document.querySelector('.gpu-lock-editor');
+      if (!card) return;
+      Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Reset to Dynamic').click();
+      Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
+    })()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 0 && s.gpuLock.freqMhz === 0))`, 8000))) {
+      fail(`M17d: the reset-to-dynamic apply did not clear the mock lock state (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)})`);
+    }
+    const lockUnlocked = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+    if (!lockUnlocked.includes('Dynamic (unlocked)')) {
+      fail(`M17d: the lock read-out is '${lockUnlocked}' after the reset (expected 'Dynamic (unlocked)')`);
+    }
+    step('m17d-gpulock', 'M17d (Run D): the Fixed Clock / Voltage Lock card - 1.0 V / 2600 MHz apply lands (mock state + read-out verified), Reset to Dynamic clears the lock (0,0)');
+    await clearToasts();
+  }
 
   // Restore: Offset mode + freq 0 + volt 0 - the later sections expect the
   // a770 baseline (the freq card must never be left in Clock mode, and the
@@ -2121,9 +2224,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 
   // --- 5c. M3-C-D/E extended + stock variants. ------------------------------
   // RID_MOCK_EXTENDED_RANGES=1 (mock default OC mode = advanced): full slider
-  // range (315 W / 90 C - M17c step-4 N1: the mock mirrors the device-limits
-  // table, so the listed a770's advanced TL is the documented 90 C, never
-  // the fixture's raw 115), the extended apply SKIPS the per-apply confirm
+  // range (315 W / 115 C - M17d FLIP (round-3 N3): the a770's ADVANCED shape
+  // restores the KMD ceiling 115, the M17c listed-row 90 cap is removed;
+  // the fixture's raw 115 passes the finalize now), the extended apply
+  // SKIPS the per-apply confirm
   // (the mode-enable confirm already warned - double-dialog decision);
   // optional RID_MOCK_WORKER_APPLY=1 adds the elevation toast on top.
   // RID_MOCK_STOCK_MODE=1: stock mode - sliders pinned to the standard
@@ -2142,12 +2246,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     })()`);
 
     // The extended ranges are exposed: PL slider max 315 W; the TL slider
-    // max is the M17c listed-row cap 90 C (step-4 N1 - the mock mirrors the
-    // device-limits table; the (90, 115] window is never offered).
+    // max is the M17d restored 115 C (the a770 ADVANCED shape - the
+    // app-verified KMD ceiling; the M17c listed-row 90 cap is removed).
     const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
     if (plMax !== '315') fail(`M3-C-D: power slider max is '${plMax}' (expected 315 - live-verified ceiling)`);
     const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
-    if (tlMax !== '90') fail(`M3-C-D: temp slider max is '${tlMax}' (expected 90 - the M17c listed-row cap)`);
+    if (tlMax !== '115') fail(`M3-C-D: temp slider max is '${tlMax}' (expected 115 - M17d: the restored a770 advanced TL)`);
     // The mode toggle renders with Advanced active (mock default advanced).
     const advBtn = await js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === 'Advanced')?.classList.contains('active')`);
     if (!advBtn) fail('M3-C-E: the OC-mode toggle does not show Advanced active (mock default)');
@@ -2188,8 +2292,20 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     // a DIRECT above-limit request REFUSES with the mode message - never
     // clamps, never a confirm dialog (the mock default is advanced; this
     // variant flipped it to stock via RID_MOCK_STOCK_MODE=1).
+    // M17d (Run C, item 0c + the 2026-08-12 probe verdicts): the a750/acer
+    // stock-mode pins - the STOCK shape's per-AIB PL ceilings (a750/ASRock
+    // 216 W, acer-a750 216 W - the probe-pinned Acer stock: the DriverStore
+    // props max 216, the 235 BiFrost documented row REFUTED as a stock
+    // value on the Acer card/driver; the a770-default stays 252) + a direct
+    // above-ceiling apply REFUSES with the mode message (the round-2 S8
+    // class: the per-control toast shows the mode text, NEVER the generic
+    // 'clamps' text - item 0b). The featureset id is read HERE (the
+    // bootWaiverStep-scoped fsId is not visible in runUiVerify).
+    const verifyFsId = process.env.RID_MOCK_FEATURESET;
+    const isA750Fs = verifyFsId === 'a750' || verifyFsId === 'acer-a750';
+    const stockPlMax = isA750Fs ? '216' : '252';
     const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
-    if (plMax !== '252') fail(`M3-C-E stock: power slider max is '${plMax}' (expected 252 - standard limit)`);
+    if (plMax !== stockPlMax) fail(`M3-C-E stock: power slider max is '${plMax}' (expected ${stockPlMax} - ${isA750Fs ? (verifyFsId === 'acer-a750' ? 'the probe-pinned Acer stock 216 W (the 2026-08-12 verdict)' : 'the a750 stock 216 W (the ASRock ceiling)') : 'standard limit'})`);
     const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
     if (tlMax !== '90') fail(`M3-C-E stock: temp slider max is '${tlMax}' (expected 90)`);
     const stockBtn = await js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === 'Stock')?.classList.contains('active')`);
@@ -2199,18 +2315,31 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     }
     step('stock-ranges', `stock mode: PL slider max ${plMax} W, TL slider max ${tlMax} C, no extendedRanges flag`);
 
-    // A direct 300 W apply (bypasses the slider - the UI cannot produce it)
-    // must REFUSE with the mode message, never clamp to 252 and never show
-    // a confirm dialog.
-    const refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: 300 })`);
-    if (refusal.result.ok !== false) fail('M3-C-E stock: a 300 W apply in stock mode did not refuse');
+    // A direct above-ceiling apply (bypasses the slider - the UI cannot
+    // produce it) must REFUSE with the mode message, never clamp and never
+    // show a confirm dialog. M17d (item 0c + the 2026-08-12 verdicts): the
+    // a750/acer pins - a value one W above the per-AIB stock ceiling
+    // (217 on the a750 AND the acer - both stock caps are the probe-pinned
+    // 216 / 300 on the a770-default).
+    const refusalW = isA750Fs ? 217 : 300;
+    const refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: ${refusalW} })`);
+    if (refusal.result.ok !== false) fail(`M3-C-E stock: a ${refusalW} W apply in stock mode did not refuse`);
     const per = refusal.result.perControl.powerLimitW;
     if (!per || per.ok !== false) fail('M3-C-E stock: the refusal is not per-control: ' + JSON.stringify(refusal.result.perControl));
     if (!/Advanced OC Mode/.test(per.message ?? '')) fail(`M3-C-E stock: refusal message is '${per?.message}' (expected the mode message)`);
+    // M17d (item 0b): the TOAST contract - a gate refusal's per-control
+    // MESSAGE wins over the errorCode mapping (the shared applyFailureText
+    // preference - the 'clamps' lie never surfaces for a refusal). The OC
+    // slider UI is gate-bounded by construction (a gate refusal cannot fire
+    // from the OC page - the toast path for it is unit-pinned in
+    // pure-errors.test.ts), and the MAPPED-text fallback for a
+    // driver-shaped out-of-range is pinned end-to-end by the fan-fail-toast
+    // step. The refusal envelope above carries the gate message itself.
     const stateAfter = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(stateAfter.powerLimitW - 210) > 1e-6) fail(`M3-C-E stock: the refusal changed the device state: ${stateAfter.powerLimitW} (must stay 210)`);
+    const stockBaseline = isA750Fs ? 190 : 210;
+    if (Math.abs(stateAfter.powerLimitW - stockBaseline) > 1e-6) fail(`M3-C-E stock: the refusal changed the device state: ${stateAfter.powerLimitW} (must stay ${stockBaseline})`);
     if (await js(`!!document.querySelector('.modal')`)) fail('M3-C-E stock: a dead-end confirm dialog appeared (refusal + toast only)');
-    step('stock-refusal', `stock mode: 300 W refused with the mode message, device untouched at 210 W, no dialog`);
+    step('stock-refusal', `stock mode: ${refusalW} W refused with the mode message (the per-control message - never the 'clamps' errorCode mapping - the applyFailureText-pinned toast contract), device untouched at ${stockBaseline} W, no dialog`);
     await clearToasts();
   }
 
@@ -2290,9 +2419,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     fail('M2D: featureset dropdown missing in mock mode');
   }
   const fsOptions = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
-  // M17c: the a750 featureset joined the distribution (5 options).
-  if (fsOptions.length !== 5) fail(`M2D: dropdown lists ${fsOptions.length} featuresets (expected 5)`);
-  for (const want of ['a750', 'a770', 'b580', 'pro-b50', 'arc-igpu']) {
+  // M17c/M17d: the a750 + the Acer AIB variant joined the distribution
+  // (6 options).
+  if (fsOptions.length !== 6) fail(`M2D: dropdown lists ${fsOptions.length} featuresets (expected 6)`);
+  for (const want of ['a750', 'a770', 'acer-a750', 'b580', 'pro-b50', 'arc-igpu']) {
     if (!fsOptions.includes(want)) fail(`M2D: dropdown options are '${fsOptions.join(',')}' (missing '${want}')`);
   }
   const fsSelected = await js(`document.querySelector('.featureset-select').value`);
@@ -3350,7 +3480,25 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   //    reads the store (no auto re-set - the failure surfaces).
   await store.saveSettings({ ...(await store.loadSettings()), waiverAccepted: false });
   // 3. One-shot driver waiver loss on the profile apply.
+  // M17d (Run D - the V1-call pin): the profile load apply is advanced-
+  // gated, so its 210 W routes the V1 (extended) setters - the one-shot
+  // waiver-not-set is injected on the extended path (the driverstore-path
+  // injectFail cannot reach an advanced-mode W/C apply anymore).
   backend.injectFail('powerLimitW', 'waiver-not-set', true);
+  const realExtWns = backend.extendedApply.bind(backend);
+  let wnsInjected = false;
+  backend.extendedApply = async (control, value) => {
+    if (control === 'powerLimitW' && !wnsInjected) {
+      wnsInjected = true;
+      // G2 mirror: the mock's applySettings reconciles the in-memory waiver
+      // flag on a driver waiver-not-set (getCapabilities then reports
+      // unaccepted and the next apply re-shows the dialog) - the extended-
+      // path wrap must mirror it (the V1 path bypasses applySettings).
+      backend._reconcileWaiver({ perControl: { powerLimitW: { errorCode: 'waiver-not-set' } } }, 0);
+      return { ok: false, errorCode: 'waiver-not-set', readBackEqual: false, message: 'waiver not set' };
+    }
+    return realExtWns(control, value);
+  };
   await clearToasts();
   await clickRowButton('ui-verify profile', 'Load');
   // 4. No gate dialog; the apply answers waiver-not-set and the renderer
@@ -3386,6 +3534,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (await js(`!!document.querySelector('.modal')`)) fail('M4-D: the profile load re-prompted after a successful retry (the counter must reset)');
   step('m4d-profiles-retry', `M4-D: profile load hit waiver-not-set (never-accepted store) -> ONE auto re-prompt -> accept -> the retry landed (${retriedLoad.powerLimitW} W / ${retriedLoad.gpuFreqOffsetMhz} MHz read back, 'Profile loaded' info, no error toast); a second load shows no dialog (counter reset)`);
   await clearToasts();
+  backend.extendedApply = realExtWns;
 
   // No-op load: create a copy of the CURRENT state, load it -> silent.
   await js(`document.querySelector('.profile-create').click()`);
@@ -4507,6 +4656,11 @@ export async function runFeaturesetVerify(win, fsId) {
   const js = (code) => win.webContents.executeJavaScript(code);
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
   const noOc = fsId === 'pro-b50' || fsId === 'arc-igpu';
+  // M17d (Run C, item 0c): the stock-mode flag - the a750/acer STOCK-mode
+  // pins (the stock slider + the >max refusal) run under the
+  // RID_MOCK_STOCK_MODE=1 combos of this function (the main flow's
+  // stockMode const is scoped to the OTHER verify function).
+  const stockMode = process.env.RID_MOCK_STOCK_MODE === '1';
   // M4-D2 (§7/§8): the old Overclocking + Fan pages are the Tuning page -
   // same gotoView pattern as the default flow.
   const gotoView = async (viewLabel) => {
@@ -4539,8 +4693,9 @@ export async function runFeaturesetVerify(win, fsId) {
   if (!(await waitFor(win, `!!document.querySelector('.badge-mock')`))) fail('mock badge missing');
   if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) fail('featureset dropdown missing in mock mode');
   const options = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
-  // M17c: the a750 featureset joined the distribution (5 files).
-  if (options.length !== 5) fail(`dropdown lists ${options.length} featuresets (expected 5)`);
+  // M17c/M17d: the a750 + the Acer AIB variant joined the distribution
+  // (6 files).
+  if (options.length !== 6) fail(`dropdown lists ${options.length} featuresets (expected 6)`);
   const selected = await js(`document.querySelector('.featureset-select').value`);
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
@@ -4612,14 +4767,18 @@ export async function runFeaturesetVerify(win, fsId) {
   if (waiverClickable === (noOc || bootAccepted)) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${noOc || bootAccepted ? 'not clickable' : 'clickable'} - clickable only while unaccepted on an OC-capable device)`);
   step('health-card', `GPU Status card: 5 rows '${rowLabels}'; waiver row 'OC waiver - ${waiverExpected}' (${noOc || bootAccepted ? 'green, no click action' : 'red, clickable'})`);
 
-  // M17c: the Board partner row per featureset (the dashboard device card).
-  // a750 -> 'ASRock' (subsys vendor 0x1849 + the FIXTURE-ONLY variant id
-  // 0x0A75 - step-4 N7: the a750 mock never reuses the A770's observed
-  // 0x6001, so the model decodes null and the row is vendor-only);
+  // M17c/M17d: the Board partner row per featureset (the dashboard device
+  // card). a750 -> 'ASRock' (subsys vendor 0x1849 + the FIXTURE-ONLY
+  // variant id 0x0A75 - step-4 N7: the a750 mock never reuses the A770's
+  // observed 0x6001, so the model decodes null and the row is vendor-only);
+  // acer-a750 -> 'Acer (Predator BiFrost)' (subsys vendor 0x1025 + the
+  // LIVE-PINNED 0xB102 variant - the 2026-08-12 probe, pciSubsysId 45314 -
+  // the model decodes and the row renders vendor + model);
   // b580 -> 'Intel (Limited Edition)' (subsys 0x8086, no variant - vendor
   // only); arc-igpu -> the honest grey '-' (no subsystem fields - the
   // unknown fallback pin); pro-b50 -> '-' (no subsystem fields either).
   const aibExpected = fsId === 'a750' ? 'ASRock'
+    : fsId === 'acer-a750' ? 'Acer (Predator BiFrost)'
     : fsId === 'b580' ? 'Intel (Limited Edition)'
     : '-';
   if (!(await waitFor(win, `(() => {
@@ -4649,8 +4808,15 @@ export async function runFeaturesetVerify(win, fsId) {
     if (!floatingHidden) fail('floating Apply visible on a no-OC device');
     step('oc-none', `'${fsId}': 0 OC cards, no-OC note, no floating Apply`);
   } else {
-    if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length === 4`, 8000))) {
-      fail(`expected 4 OC cards on '${fsId}', got ${await js(`document.querySelectorAll('.oc-card').length`)}; page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 300)`)}'`);
+    // M17d (Run D): the total card count - the 4 slider cards PLUS the
+    // standalone Fixed Clock / Voltage Lock card on the gpuLock-capable
+    // fixtures (a750/acer-a750; the count FLIPS 4 -> 5 there) - stays 4 on
+    // b580 (percent units, no gpuLock control -> no lock card). arc-igpu /
+    // pro-b50 are the no-OC branch above (0 cards).
+    const lockCard = (await js(`window.arcPower.getCapabilities(0)`)).controls?.gpuLock === true;
+    const expectedCards = 4 + (lockCard ? 1 : 0);
+    if (!(await waitFor(win, `document.querySelectorAll('.oc-card, .gpu-lock-editor').length === ${expectedCards}`, 8000))) {
+      fail(`expected ${expectedCards} OC cards on '${fsId}' (${lockCard ? 'the gpuLock card included' : 'no gpuLock card - b580 stays at 4'}), got ${await js(`document.querySelectorAll('.oc-card, .gpu-lock-editor').length`)}; page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 300)`)}'`);
     }
     const plRange = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-meta .oc-range')?.textContent ?? ''`);
     const plValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
@@ -4695,40 +4861,125 @@ export async function runFeaturesetVerify(win, fsId) {
       const vramMeta = await js(`document.querySelector('.vram-editor-card .oc-meta .oc-range')?.textContent ?? ''`);
       if (!vramMeta.includes('Gbps')) fail(`M4J (D): the VRAM editor meta line does not show the Gbps units: '${vramMeta}'`);
       step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), Advanced = VRAM clock editor (0..3 Gbps step 0.1)`);
-    } else if (fsId === 'a750') {
-      // M17c (round-1 N2): the a750 slider maxes are AUTOMATED here (the
-      // user-hardware-only pin becomes a mock variant): the volt slider max
-      // is 0.285 - NOT clamped to 0.234 (the global clamp is gone, the
-      // driver props pass through) - and the PL slider max is 216 (the
-      // ASRock Challenger documented ceiling). The table's PL-cap arithmetic
-      // is covered by the pure table unit tests, NOT by this variant (the
-      // fixture already encodes the final ranges - the reviewer note).
+    } else if (fsId === 'a750' || fsId === 'acer-a750') {
+      // M17c/M17d (round-1 N2 + round-1 S1): the a750 slider maxes are
+      // AUTOMATED here (the user-hardware-only pin becomes a mock variant;
+      // the acer-a750 variant runs the same checks - identical ranges, the
+      // Acer AIB decode):
+      // the volt slider max is the driver props - 0.285 on the a750 / 0.288
+      // on the acer-a750 (the 2026-08-12 probe: the Acer card's props max
+      // 0.288 V - NOT clamped to 0.234, the global clamp is gone) - and the
+      // PL slider max is 270 in the mock's ADVANCED default mode (M17d
+      // FLIP: the a750 ADVANCED ceiling is the probe-verified 270 W KMD
+      // ceiling; the stock 216 is the STOCK-mode slider). M17d (Run C,
+      // item 0c): the RID_MOCK_STOCK_MODE=1 combos pin the STOCK slider
+      // instead - a750 AND acer-a750 216 W (the probe-pinned Acer stock:
+      // the 2026-08-12 verdict, the 235 BiFrost documented row refuted as
+      // a stock value on the Acer card) - and the advanced apply/refusal
+      // pins are guarded off (a stock-mode 250 W apply REFUSES, covered by
+      // the stock-refusal pin in the stock variant section above). M17d
+      // (2026-08-12): the ADVANCED TL slider max is the probe-verified 115
+      // (the mock's extended.tlMax rides both a750 fixtures). The table's
+      // cap arithmetic is covered by the pure table unit tests, NOT by this
+      // variant (the fixture already encodes the final ranges - the
+      // reviewer note).
       const a750VoltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
-      if (a750VoltMax !== '0.285') fail(`M17c: the a750 volt slider max is '${a750VoltMax}' (expected 0.285 - the driver props pass through, NOT clamped to 0.234)`);
+      const a750VoltExpected = fsId === 'acer-a750' ? '0.288' : '0.285';
+      if (a750VoltMax !== a750VoltExpected) fail(`M17c: the ${fsId} volt slider max is '${a750VoltMax}' (expected ${a750VoltExpected} - the driver props pass through${fsId === 'acer-a750' ? '; the 2026-08-12 probe: the Acer card props max 0.288 V' : ''}, NOT clamped to 0.234)`);
       const a750VoltStep = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('step')`);
       if (a750VoltStep !== '0.001') fail(`M17c: the a750 volt slider step is '${a750VoltStep}' (expected 0.001)`);
       const a750PlMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
-      if (a750PlMax !== '216') fail(`M17c: the a750 PL slider max is '${a750PlMax}' (expected 216 - the ASRock Challenger documented ceiling)`);
+      const a750StockPl = '216'; // the a750 AND the acer-a750 stock ceiling - the ASRock 216 + the probe-pinned Acer 216 (the 2026-08-12 verdict)
+      if (stockMode) {
+        if (a750PlMax !== a750StockPl) fail(`M17d (0c): the ${fsId} STOCK-mode PL slider max is '${a750PlMax}' (expected 216 - ${fsId === 'acer-a750' ? 'the probe-pinned Acer stock ceiling (the 2026-08-12 verdict: the DriverStore props max 216, the 235 BiFrost documented row refuted)' : 'the a750 216 W ASRock stock ceiling'})`);
+      } else {
+        if (a750PlMax !== '270') fail(`M17d: the a750 PL slider max is '${a750PlMax}' (expected 270 - the probe-verified KMD ceiling, the ADVANCED default mode)`);
+      }
       const a750PlValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
       if (a750PlValue.trim() !== '190 W') fail(`M17c: the a750 PL readout is '${a750PlValue}' (expected '190 W' - the stock default)`);
-      // The a750 mock's listed-card gate: a value in (216, 315] must REFUSE
-      // with the ceiling class (never a silent clamp) - the device-scoped
-      // ocModeRefusal pin.
-      const refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: 250 })`);
-      if (refusal.result.ok !== false || refusal.ocModeRefused !== true) {
-        fail(`M17c: the a750 listed-card PL 250 apply must REFUSE (ocModeRefused, got ${JSON.stringify(refusal.result)})`);
+      // M17d (Run D): the standalone Fixed Clock / Voltage Lock card
+      // renders on the gpuLock-capable a750/acer-a750 fixtures (the plan's
+      // count 4 -> 5 flip; the mock starts unlocked).
+      if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
+        fail(`M17d (Run D): the ${fsId} lock card is missing (caps.controls.gpuLock is true there)`);
       }
-      const per = refusal.result.perControl?.powerLimitW;
-      if (!per || per.ok !== false || per.errorCode !== 'out-of-range') {
-        fail(`M17c: the a750 refusal must be the ceiling class per-control 'out-of-range' (got ${JSON.stringify(per)})`);
+      const lockLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+      if (!lockLine.includes('Dynamic (unlocked)')) {
+        fail(`M17d (Run D): the ${fsId} lock read-out is '${lockLine}' (expected 'Lock: Dynamic (unlocked)' - the mock starts unlocked)`);
       }
-      const a750State = await js(`window.arcPower.getCurrentSettings(0)`);
-      if (Math.abs(a750State.powerLimitW - 190) > 1e-6) {
-        fail(`M17c: the a750 refusal must never clamp into the device state (got ${a750State.powerLimitW})`);
+      if (!stockMode) {
+        // M17d (2026-08-12 probe verdict): the ADVANCED TL slider max is
+        // the probe-verified 115 C (the mock's extended.tlMax rides both
+        // a750 fixtures - the M17c "A750 advanced TL 90" pin INVERTS; the
+        // 2026-08-12 app-path probe applied 100 AND 115 C).
+        const a750TlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
+        if (a750TlMax !== '115') fail(`M17d: the ${fsId} ADVANCED TL slider max is '${a750TlMax}' (expected 115 - the probe-verified A750 advanced TL, 100 AND 115 C applied via the app path)`);
+        // M17d FLIP (round-3 N3): the a750 listed-card ADVANCED gate - a
+        // 250 W apply SUCCEEDS in advanced mode (the 270 KMD ceiling - the
+        // M17c "refuses with the ceiling class" pin INVERTS); a value ABOVE
+        // the 270 ceiling (271) must REFUSE with the ceiling class (never a
+        // silent clamp) - the device-scoped ocModeRefusal pin.
+        const applied = await js(`window.arcPower.applySettings(0, { powerLimitW: 250 })`);
+        if (applied.result.ok !== true || applied.ocModeRefused !== undefined) {
+          fail(`M17d: the a750 listed-card PL 250 apply must SUCCEED in advanced mode (got ${JSON.stringify(applied.result)})`);
+        }
+        const a750State = await js(`window.arcPower.getCurrentSettings(0)`);
+        if (Math.abs(a750State.powerLimitW - 250) > 1e-6) {
+          fail(`M17d: the a750 250 W apply must land (got ${a750State.powerLimitW})`);
+        }
+        const refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: 271 })`);
+        if (refusal.result.ok !== false || refusal.ocModeRefused !== true) {
+          fail(`M17d: the a750 listed-card PL 271 apply must REFUSE (ocModeRefused, got ${JSON.stringify(refusal.result)})`);
+        }
+        const per = refusal.result.perControl?.powerLimitW;
+        if (!per || per.ok !== false || per.errorCode !== 'out-of-range') {
+          fail(`M17d: the a750 refusal must be the ceiling class per-control 'out-of-range' (got ${JSON.stringify(per)})`);
+        }
+        const a750After = await js(`window.arcPower.getCurrentSettings(0)`);
+        if (Math.abs(a750After.powerLimitW - 250) > 1e-6) {
+          fail(`M17d: the a750 refusal must never clamp into the device state (got ${a750After.powerLimitW})`);
+        }
+        // Restore the stock baseline for the later steps.
+        await js(`window.arcPower.applySettings(0, { powerLimitW: 190 })`);
+        step('oc-a750', `a750: volt slider max ${a750VoltMax} V (NOT clamped to 0.234), step ${a750VoltStep}, PL slider max ${a750PlMax} W (the 270 KMD ceiling), readout '${a750PlValue.trim()}', a 250 W apply SUCCEEDS in advanced mode (lands 250 W), a >270 W (271) apply REFUSES with the ceiling class (device untouched)`);
+      } else {
+        // M17d (Run C, item 0c + the 2026-08-12 probe verdicts): the
+        // STOCK-mode UX pin - a value ONE W above the per-AIB stock ceiling
+        // (217 - both the a750 AND the acer-a750 stock caps are the
+        // probe-pinned 216) REFUSES with the MODE message (never clamps,
+        // never the generic 'clamps' text - the round-2 S8 class); the
+        // device state stays untouched. The per-control TOAST contract
+        // (the message winning) is the applyFailureText-pinned preference -
+        // see the item-0b note below.
+        const a750RefusalW = 217;
+        const a750Refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: ${a750RefusalW} })`);
+        if (a750Refusal.result.ok !== false || a750Refusal.ocModeRefused !== true) {
+          fail(`M17d (0c): the ${fsId} stock-mode PL ${a750RefusalW} apply must REFUSE (ocModeRefused, got ${JSON.stringify(a750Refusal.result)})`);
+        }
+        const a750Per = a750Refusal.result.perControl?.powerLimitW;
+        if (!a750Per || a750Per.ok !== false || a750Per.errorCode !== 'out-of-range') {
+          fail(`M17d (0c): the ${fsId} refusal must be the ceiling class per-control 'out-of-range' (got ${JSON.stringify(a750Per)})`);
+        }
+        if (!/Advanced OC Mode/.test(a750Per.message ?? '')) {
+          fail(`M17d (0c): the ${fsId} refusal message is '${a750Per?.message}' (expected the mode message - never the generic 'clamps' text)`);
+        }
+        const a750After2 = await js(`window.arcPower.getCurrentSettings(0)`);
+        if (Math.abs(a750After2.powerLimitW - 190) > 1e-6) {
+          fail(`M17d (0c): the ${fsId} stock refusal must never clamp into the device state (got ${a750After2.powerLimitW})`);
+        }
+        // M17d (item 0b): the TOAST contract is pinned as follows - the OC
+        // slider UI is bounded to the gate ceiling BY CONSTRUCTION, so a
+        // gate refusal can never fire from the OC page (the toast path for
+        // it exists: applyFailureText - the per-control message wins, unit-
+        // pinned in pure-errors.test.ts); the MAPPED-text fallback for a
+        // DRIVER-shaped out-of-range refusal is pinned end-to-end through
+        // the real UI by the fan-fail-toast step ('outside the range' for a
+        // message-less driver failure). The envelope above carries the gate
+        // message itself.
+        step('oc-a750-stock', `${fsId}: STOCK mode - volt slider max ${a750VoltMax} V (the unclamp rides both modes), PL slider max ${a750PlMax} W (${fsId === 'acer-a750' ? 'the probe-pinned Acer 216 W stock ceiling (the 2026-08-12 verdict)' : 'the 216 W ASRock ceiling'}), readout '${a750PlValue.trim()}', a >max (${a750RefusalW} W) apply REFUSES with the mode message (device untouched at 190 W) - the toast contract is applyFailureText-pinned`);
       }
-      step('oc-a750', `a750: volt slider max ${a750VoltMax} V (NOT clamped to 0.234), step ${a750VoltStep}, PL slider max ${a750PlMax} W, readout '${a750PlValue.trim()}', a (216, 315] apply REFUSES with the ceiling class (device untouched at 190 W)`);
     } else {
-      step('oc-generic', `'${fsId}': ${cards} OC cards render`);
+      step('oc-generic', `'${fsId}': ${expectedCards} OC cards render`);
     }
   }
   // M4-A review F2: the OC page renders NO waiver status (the row lives only
@@ -4810,10 +5061,13 @@ export async function runFeaturesetVerify(win, fsId) {
   // its FULL extended range in advanced mode (the a770 featureset carries
   // extendedRanges + the mock default mode is advanced) - the caps-level
   // vramFreqOffset gate is gone, as in 1.0.3.
-  if (a770Caps.ranges.powerLimitW.units !== 'W' || a770Caps.ranges.powerLimitW.max !== 315) {
-    fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)} (expected the a770 extended 315 W in advanced mode)`);
+  // M17d (Run C): the RID_MOCK_STOCK_MODE=1 combos report the a770 STOCK
+  // shape instead (252 W - no extendedRanges in a stock session).
+  const expectedSwapPlMax = stockMode ? 252 : 315;
+  if (a770Caps.ranges.powerLimitW.units !== 'W' || a770Caps.ranges.powerLimitW.max !== expectedSwapPlMax) {
+    fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)} (expected the a770 ${expectedSwapPlMax} W ${stockMode ? 'stock' : 'extended in advanced mode'} surface)`);
   }
-  step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W (the a770 extended surface)`);
+  step('swap-a770', `swap -> a770: OC re-rendered '210 W', PL range max ${a770Caps.ranges.powerLimitW.max} W (the a770 ${stockMode ? 'stock' : 'extended'} surface)`);
   // M2D: the swap payload carries the featureset driver date - the HEALTH
   // card's driver row (the GPU card's Driver version row is REMOVED -
   // M4-H) must show its own registry date even when the boot featureset
@@ -4828,7 +5082,7 @@ export async function runFeaturesetVerify(win, fsId) {
   // M17c: the a750 swap-back restores the W-unit surface (190 W readout).
   const backOk = fsId === 'b580'
     ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '100 %'`)
-    : fsId === 'a750'
+    : (fsId === 'a750' || fsId === 'acer-a750')
       ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`)
       : await waitFor(win, `document.querySelectorAll('.oc-card').length === 0`);
   if (!backOk) fail(`swap back to '${fsId}' did not restore its surface`);
@@ -4936,25 +5190,36 @@ export async function runFeaturesetVerify(win, fsId) {
 // 1.0.1 - the no-intel variant (RID_MOCK_NO_INTEL=1)
 // ---------------------------------------------------------------------------
 //
-// The AMD-machine test round pinned end to end against the MOCK (the
-// no-Intel session: listDevices [] + health igclLoaded false + the AMD
-// sysinfo fixture + the no-device telemetry push). The runFeaturesetVerify
-// SHAPE, diverging BEFORE bootWaiverStep - the no-device boot NEVER prompts
-// (caps/state are skipped), so no waiver modal may appear anywhere:
+// The no-Intel machine test round pinned end to end against the MOCK (the
+// no-Intel session: listDevices [] + health igclLoaded false + the sysinfo
+// fixture + the no-device telemetry push). M17d (Run B): run WITH
+// RID_MOCK_VENDOR=nvml too - the sysinfo fixture then serves the GTX
+// 980-class NVIDIA controller (SUBSYS_36811458 -> Gigabyte, 4 GiB VRAM,
+// the resolved ReBAR verdict) and the vendor-lane fixture adapter feeds
+// the live clocks + the deviceInfo() seam (the run WITHOUT the vendor knob
+// fails loudly here: the live-clocks/Compute/Board-partner pins would read
+// the honest '-'/unknown). The runFeaturesetVerify SHAPE, diverging BEFORE
+// bootWaiverStep - the no-device boot NEVER prompts (caps/state are
+// skipped), so no waiver modal may appear anywhere:
 //   1. shell renders (sidebar + brand + mock badge) and the featureset
 //      dropdown is HIDDEN (m5: the swap would store caps/state into the
 //      no-Intel store);
-//   2. the header shows the AMD name + 'Non supported GPU' (n10: the
-//      version line is replaced on no-Intel);
-//   3. the health rows read 'No Intel Driver Found' (warn) + the AMD name
-//      (warn) - NEVER the raw IGCL/error text (body-wide pin);
+//   2. the header shows the NVIDIA GTX 980 name + 'Non supported GPU'
+//      (n10: the version line is replaced on no-Intel);
+//   3. the health rows read 'No Intel Driver Found' (warn) + the GTX 980
+//      name (warn) - NEVER the raw IGCL/error text (body-wide pin);
 //   4. the CPU & Memory card renders the mock CPU fixture + the LIVE freq
 //      half ('/ @ 4.3 GHz' from the no-device telemetry push);
-//   5. the GPU card shows the AMD name + the 'Non supported GPU' note with
-//      the caps/state rows at '-';
-//   6. monitoring: the CPU utilization/temperature + GPU-memory tiles get
-//      the mock sys-stats values (the no-device push); the GPU device tiles
-//      honestly stay '-' (m6: the dashboard readout is all '-' by design);
+//   5. the GPU card shows the GTX 980 name + the 'Non supported GPU' note
+//      with the REAL rows: Board partner 'Gigabyte' (the PNP SUBSYS
+//      decode - the M17c round-1-N3 absence pin INVERTS), Driver version,
+//      Compute '2048 Cores' (the deviceInfo() seam), the LIVE Clocks
+//      ('1965 MHz Core / 7010 MHz Memory' - the vendor lane sample), VRAM
+//      '4GB' (the NVML total primary) + the ReBAR pill (real);
+//   6. monitoring: the CPU utilization/temperature tiles get the mock
+//      sys-stats values (the no-device push); the GPU device tiles go LIVE
+//      from the vendor lane (core/mem clocks, VRAM used, VramTemp, temp,
+//      power) with the OS Util counter still winning the Util tile;
 //   7. the Tuning page shows 'No GPU available.' - NEVER the caps-loading
 //      text (the deviceId-null branch must win over the caps guard);
 //   8. NO waiver modal and NO toast anywhere in the session (the no-toast
@@ -5044,13 +5309,12 @@ export async function runNoIntelVerify(win) {
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
   step('shell', `shell rendered; brand '${brand.trim()}'`);
 
-  // --- 2. the header: the AMD name + 'Non supported GPU' (n10) --------------
-  // The header GPU name is the BOOT-LANDING signal: the noIntel flag + the
-  // OS GPU land together at the END of the no-Intel boot (S1 - the flag is
-  // set after telemetryStart(null)), so the dropdown-hide + health rows
-  // below are asserted only AFTER this lands.
-  if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === 'AMD Radeon RX 7600'`, 10000))) {
-    fail(`1.0.1: the header GPU name is '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' (expected the OS GPU 'AMD Radeon RX 7600')`);
+  // --- 2. the header: the NVIDIA name + 'Non supported GPU' (n10) ----------
+  // M17d (Run B): the no-intel+nvml variant serves the GTX 980-class
+  // fixture (RID_MOCK_NO_INTEL=1 + RID_MOCK_VENDOR=nvml) - the OS GPU is
+  // the NVIDIA part now (the previous AMD RX 7600 pins INVERT).
+  if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === 'NVIDIA GeForce GTX 980'`, 10000))) {
+    fail(`M17d: the header GPU name is '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' (expected the OS GPU 'NVIDIA GeForce GTX 980' - the GTX 980-class fixture)`);
   }
   const gpuMeta = await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`);
   if (gpuMeta.trim() !== 'Non supported GPU') {
@@ -5063,7 +5327,7 @@ export async function runNoIntelVerify(win) {
     fail('1.0.1 (m5): the featureset dropdown must be HIDDEN on the no-Intel path (a swap would store caps/state into the no-Intel store)');
   }
   if (!(await js(`!!document.querySelector('.badge-mock')`))) fail('mock badge missing (the backend kind is still honest)');
-  step('header', `header: 'AMD Radeon RX 7600' + 'Non supported GPU' (the version line is replaced on no-Intel - n10); dropdown hidden (m5), mock badge kept`);
+  step('header', `header: 'NVIDIA GeForce GTX 980' + 'Non supported GPU' (the version line is replaced on no-Intel - n10; the M17d GTX 980-class fixture); dropdown hidden (m5), mock badge kept`);
 
   // --- 3. the health rows: honest no-Intel texts, NEVER the raw errors ------
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`, 10000))) {
@@ -5081,8 +5345,8 @@ export async function runNoIntelVerify(win) {
   const driverDot = await js(`document.querySelector('.health-card .health-row[data-row="driver"] .status-dot')?.className ?? ''`);
   if (!/status-warn/.test(driverDot)) fail(`1.0.1: the driver row dot is '${driverDot}' (expected warn)`);
   const deviceDetail = await js(`document.querySelector('.health-card .health-row[data-row="device"] .health-row-detail')?.textContent ?? ''`);
-  if (deviceDetail.trim() !== 'AMD Radeon RX 7600') {
-    fail(`1.0.1: the device row reads '${deviceDetail}' (expected the OS GPU name 'AMD Radeon RX 7600')`);
+  if (deviceDetail.trim() !== 'NVIDIA GeForce GTX 980') {
+    fail(`M17d: the device row reads '${deviceDetail}' (expected the OS GPU name 'NVIDIA GeForce GTX 980' - the GTX 980-class fixture)`);
   }
   const deviceDot = await js(`document.querySelector('.health-card .health-row[data-row="device"] .status-dot')?.className ?? ''`);
   if (!/status-warn/.test(deviceDot)) fail(`1.0.1: the device row dot is '${deviceDot}' (expected warn)`);
@@ -5091,7 +5355,7 @@ export async function runNoIntelVerify(win) {
   if (body.includes('IGCL')) fail('1.0.1: the raw IGCL text is still rendered somewhere');
   if (body.includes('DLL not found')) fail('1.0.1: the raw DLL error text is still rendered somewhere');
   if (body.includes('No Intel Arc GPU detected')) fail('1.0.1: the old boot-error line is still rendered');
-  step('health', `health card: driver 'No Intel Driver Found' (warn), device 'AMD Radeon RX 7600' (warn); no IGCL/error text anywhere`);
+  step('health', `health card: driver 'No Intel Driver Found' (warn), device 'NVIDIA GeForce GTX 980' (warn); no IGCL/error text anywhere`);
 
   // --- 4. the CPU & Memory card renders (the sysinfo fixture) ---------------
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid > .card')).some((c) => (c.querySelector('.card-title')?.textContent ?? '') === 'CPU & Memory')`, 5000))) {
@@ -5118,60 +5382,97 @@ export async function runNoIntelVerify(win) {
   }
   step('cpu-card', `CPU & Memory card renders: '${rows['CPU']}', '20 Cores / 28 Threads / @ 4.3 GHz' (live from the no-device push), '${rows['Memory']}', Mainboard '${rows['Mainboard']}' (Cache row removed)`);
 
-  // --- 5. the GPU card (M4-H + M4-I): title 'GPU' + the OS GPU in the 'GPU'
-  // --- kv row, 'Non supported GPU' note, and the REAL rows the OS has:
-  // --- Driver version (NEW videoControllers driverVersion field - works on
-  // --- ANY GPU), Compute '-', Clocks '- MHz Core / - MHz Memory', VRAM
-  // --- (size + type-when-known), ReBAR pill REAL (the OS pnputil/allocated
-  // --- sources are GPU-agnostic). NOTE: this REVERSES the M4-H pin that
-  // --- asserted the driver row's ABSENCE - the inversion is explicit.
+  // --- 5. the GPU card (M4-H + M4-I + M17d): title 'GPU' + the OS GPU in
+  // --- the 'GPU' kv row, 'Non supported GPU' note, and the REAL rows the
+  // --- OS + the vendor lane have: Board partner (the PNP SUBSYS decode -
+  // --- 'Gigabyte' for SUBSYS_36811458 - works for ANY GPU), Driver version
+  // --- (the videoControllers driverVersion field), Compute (the
+  // --- deviceInfo() core count - '2048 Cores'), Clocks LIVE (the vendor
+  // --- lane sample - '1965 MHz Core / 7010 MHz Memory'), VRAM (the
+  // --- deviceInfo() NVML total - '4GB'), ReBAR pill REAL (the OS
+  // --- pnputil/allocated sources are GPU-agnostic). NOTE: this REVERSES
+  // --- the M4-H pin that asserted the driver row's ABSENCE, the M17c
+  // --- round-1-N3 pin that asserted the Board-partner row's ABSENCE on the
+  // --- no-Intel branch AND the M4-I static '-' Compute/Clocks pins - the
+  // --- inversions are explicit (the M17d no-Intel rows are real).
   const gpuCardTitle = await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`);
   if (gpuCardTitle.trim() !== 'GPU') fail(`M4-H: the GPU card title is '${gpuCardTitle}' (expected 'GPU' - the name lives in the kv row)`);
   const gpuNameKv = await js(`document.querySelector('.device-card .kv[data-label="GPU"]')?.textContent ?? ''`);
-  if (gpuNameKv.trim() !== 'AMD Radeon RX 7600') fail(`M4-H: the GPU card name row is '${gpuNameKv}' (expected the OS GPU name 'AMD Radeon RX 7600')`);
+  if (gpuNameKv.trim() !== 'NVIDIA GeForce GTX 980') fail(`M17d: the GPU card name row is '${gpuNameKv}' (expected the OS GPU name 'NVIDIA GeForce GTX 980' - the GTX 980-class fixture)`);
+  // M17d: the Board-partner row BELOW the GPU row - the controller
+  // PNPDeviceID SUBSYS decode (SUBSYS_36811458 -> subsys vendor 0x1458 =
+  // Gigabyte) - the round-1-N3 absence pin is INVERTED.
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.card-grid .device-card');
+    const kvs = Array.from(card?.querySelectorAll('.kv') ?? []);
+    const gpuIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'GPU');
+    const aibIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Board partner');
+    const aibRow = kvs[aibIdx];
+    return aibIdx === gpuIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'Gigabyte';
+  })()`, 10000))) {
+    fail(`M17d: the no-Intel Board partner row is '${await js(`document.querySelector('.device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'Gigabyte' directly below the GPU row - the SUBSYS_36811458 -> 0x1458 decode)`);
+  }
   const driverRowKv = await js(`document.querySelector('.device-card .kv[data-label="Driver version"]')?.textContent ?? ''`);
-  if (!driverRowKv.includes('31.0.12027.9001')) {
-    fail(`M4-I (D3): the no-Intel Driver version row is '${driverRowKv}' (expected the controller driverVersion '31.0.12027.9001' - the M4-H absence pin is REVERSED)`);
+  if (!driverRowKv.includes('31.0.15.6262')) {
+    fail(`M4-I (D3): the no-Intel Driver version row is '${driverRowKv}' (expected the controller driverVersion '31.0.15.6262' - the M4-H absence pin is REVERSED)`);
+  }
+  // M17d: the Compute row - the deviceInfo() core count ('2048 Cores' from
+  // the nvml fixture's numCores - the honest '-' only when the lane has no
+  // source).
+  const computeRowKv = await js(`document.querySelector('.device-card .kv[data-label="Compute"]')?.textContent ?? ''`);
+  if (computeRowKv.trim() !== '2048 Cores') {
+    fail(`M17d: the no-Intel Compute row is '${computeRowKv}' (expected '2048 Cores' - the NVML numGpuCores via the deviceInfo() seam)`);
   }
   const vramRowKv = await js(`document.querySelector('.device-card .kv[data-label="VRAM"]')?.textContent ?? ''`);
-  if (vramRowKv.trim() !== '8GB') {
-    fail(`M4-I (D3): the no-Intel VRAM row is '${vramRowKv}' (expected '8GB' - size + type-when-known; the type table is Intel-only, an AMD part shows the size)`);
+  if (vramRowKv.trim() !== '4GB') {
+    fail(`M17d: the no-Intel VRAM row is '${vramRowKv}' (expected '4GB' - the deviceInfo() NVML total primary, 4 GiB on the GTX 980-class)`);
+  }
+  // M17d: the Clocks row goes LIVE from the vendor lane sample (the static
+  // '- MHz Core / - MHz Memory' is replaced on ticks - the M4-I pin
+  // INVERTS to the live values).
+  if (!(await waitFor(win, `(document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? '').trim() === '1965 MHz Core / 7010 MHz Memory'`, 8000))) {
+    fail(`M17d: the no-Intel Clocks row is '${await js(`document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? ''`)}' (expected the LIVE vendor lane '1965 MHz Core / 7010 MHz Memory' - NVML clock graphics + NVML_CLOCK_MEM)`);
   }
   if (!(await waitFor(win, `(() => {
     const pill = document.querySelector('.device-card .rebar-pill');
     return !!pill && pill.textContent === 'ReBAR off' && pill.className.includes('status-error');
   })()`, 5000))) {
-    fail(`M4-I (D3): the no-Intel ReBAR pill must be REAL (the AMD fixture rebarActive false -> red 'ReBAR off'): '${await js(`document.querySelector('.device-card .rebar-pill')?.textContent ?? ''`)}'`);
+    fail(`M4-I (D3): the no-Intel ReBAR pill must be REAL (the GTX 980-class fixture rebarActive false -> red 'ReBAR off'): '${await js(`document.querySelector('.device-card .rebar-pill')?.textContent ?? ''`)}'`);
   }
   const gpuCardText = await js(`document.querySelector('.device-card')?.textContent ?? ''`);
   if (!gpuCardText.includes('Non supported GPU')) fail('1.0.1: the GPU card is missing the "Non supported GPU" note');
-  // M17c (round-1 N3): the no-Intel branch renders NO Device row - so the
-  // Board partner row is ABSENT there too (the AIB decode is Intel-caps
-  // data; the no-Intel card shows the OS GPU instead).
-  if (await js(`!!document.querySelector('.device-card .kv[data-label="Board partner"]')`)) {
-    fail('M17c: the Board partner row must be ABSENT on the no-Intel branch (no Device row there)');
-  }
-  step('gpu-card', `GPU card: title 'GPU', name row 'AMD Radeon RX 7600', Driver version row '${driverRowKv.trim()}' (M4-I - the M4-H absence pin is REVERSED), VRAM '${vramRowKv.trim()}', ReBAR 'ReBAR off' (real), 'Non supported GPU' note, NO Board partner row (round-1 N3)`);
+  step('gpu-card', `GPU card: title 'GPU', name row 'NVIDIA GeForce GTX 980', Board partner 'Gigabyte' below the GPU row (the SUBSYS_36811458 -> 0x1458 decode - the round-1-N3 absence pin REVERSED), Driver version row '${driverRowKv.trim()}', Compute '${computeRowKv.trim()}', Clocks live '1965 MHz Core / 7010 MHz Memory', VRAM '${vramRowKv.trim()}' (the NVML total), ReBAR 'ReBAR off' (real), 'Non supported GPU' note`);
 
   // M7b (fix 1): the no-Intel sysinfo FIXTURE carries a 'Microsoft Basic
   // Display Adapter' FIRST + a DisplayLink dock (the fixture path bypasses
   // the parse - createMockSysinfo applies isRealGpuController itself). The
   // header / health device row / GPU card pins above already show the real
-  // AMD part; THIS pin proves the PAYLOAD never carries the non-GPU
+  // NVIDIA part; THIS pin proves the PAYLOAD never carries the non-GPU
   // devices - a first-controller Basic Display Adapter must never win the
   // GPU card / health row / header name.
   const sysinfoPayload = await js(`window.arcPower.sysinfo()`);
   const payloadControllers = Array.isArray(sysinfoPayload?.videoControllers) ? sysinfoPayload.videoControllers : [];
-  if (payloadControllers.length !== 1 || payloadControllers[0].name !== 'AMD Radeon RX 7600') {
-    fail(`M7b: the no-Intel sysinfo payload must carry ONLY the real AMD part (got ${JSON.stringify(payloadControllers.map((c) => c.name))} - the Basic Display Adapter + DisplayLink must be filtered)`);
+  if (payloadControllers.length !== 1 || payloadControllers[0].name !== 'NVIDIA GeForce GTX 980') {
+    fail(`M7b: the no-Intel sysinfo payload must carry ONLY the real NVIDIA part (got ${JSON.stringify(payloadControllers.map((c) => c.name))} - the Basic Display Adapter + DisplayLink must be filtered)`);
   }
-  step('m7b-gpu-filter', `M7b: the no-Intel sysinfo payload carries ONLY 'AMD Radeon RX 7600' (the Basic Display Adapter FIRST + DisplayLink were filtered by isRealGpuController - they never win the GPU card / health row / header name)`);
+  // M17d (round-1 S2): the payload's controller carries pnpDeviceId (the
+  // Board-partner SUBSYS decode source for ANY GPU).
+  if (payloadControllers[0].pnpDeviceId !== 'PCI\\VEN_10DE&DEV_13C2&SUBSYS_36811458&REV_A1') {
+    fail(`M17d: the no-Intel controller payload must carry the PNPDeviceID (got ${JSON.stringify(payloadControllers[0].pnpDeviceId)} - the Board-partner decode source)`);
+  }
+  step('m7b-gpu-filter', `M7b: the no-Intel sysinfo payload carries ONLY 'NVIDIA GeForce GTX 980' (the Basic Display Adapter FIRST + DisplayLink were filtered by isRealGpuController) + the pnpDeviceId rides along (the M17d SUBSYS decode source)`);
 
-  // --- 6. monitoring: the OS-level tiles get the mock sys-stats values ------
+  // --- 6. monitoring: the OS-level tiles + the LIVE vendor readouts -------
   // M4M (B): the two groups are SCOPED lookups (both carry Temperature-like
   // labels); the CPU group's 'Util' replaces the old 'CPU utilization'
   // label, and the CPU 'Temperature' tile reads cpuTempC (the 'CPU
   // temperature' label is gone).
+  // M17d (Run B): the vendor lane (RID_MOCK_VENDOR=nvml) fills the GPU
+  // device tiles - Core clock '1965' + Memory clock '7010' (the live
+  // clocks), VramTemp '58' (the NVML field-values read), Temperature '62',
+  // Power '152.4', Fan '1240' - and the VRAM tile reads the NVML used-VRAM
+  // (4 GiB -> '4.3' GB, the gbValue format). The M4-I '-' static pins
+  // INVERT.
   await js(`location.hash = '#/monitoring'`);
   await sleep(250);
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('#mon-readout-cpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Util')?.querySelector('.stat-value')?.textContent === '42'`, 8000))) {
@@ -5185,15 +5486,20 @@ export async function runNoIntelVerify(win) {
   if (cpu['Temperature'] !== '61' && cpu['Temperature'] !== '62') {
     fail(`1.0.1: the CPU Temperature tile is '${cpu['Temperature']}' (expected 61|62 - the varying mock)`);
   }
-  // M4N (B): the labels are 'VRAM' (GB - the M4M MiB tile's replacement)
-  // and 'Util' (the M4M 'Utilization' rename) - the per-group fromEntries
-  // are label-keyed, so the order is irrelevant here.
-  if (gpu['VRAM'] !== '3.0') fail(`1.0.1: the VRAM tile is '${gpu['VRAM']}' (expected '3.0' GB from 2971324416 bytes)`);
-  if (gpu['Core clock'] !== '-') fail(`1.0.1: the core-clock tile is '${gpu['Core clock']}' (expected '-' - the GPU device tiles stay honest)`);
+  // M17d: the VRAM tile reads the NVML used-VRAM now (4 GiB -> '4.3' GB -
+  // the M4M '3.0' sys-stats pin INVERTS; the vendor readouts win the
+  // composition).
+  if (gpu['VRAM'] !== '4.3') fail(`M17d: the VRAM tile is '${gpu['VRAM']}' (expected '4.3' GB from the NVML used-VRAM 4294967296 bytes)`);
+  if (gpu['Core clock'] !== '1965') fail(`M17d: the core-clock tile is '${gpu['Core clock']}' (expected '1965' - the LIVE NVML clock graphics; the M4-I '-' pin INVERTS)`);
+  if (gpu['Memory clock'] !== '7010') fail(`M17d: the memory-clock tile is '${gpu['Memory clock']}' (expected '7010' - the LIVE NVML_CLOCK_MEM)`);
+  if (gpu['VramTemp'] !== '58') fail(`M17d: the VRAM-temp tile is '${gpu['VramTemp']}' (expected '58' - the NVML_FI_DEV_MEMORY_TEMP field-values read)`);
+  if (gpu['Temperature'] !== '62') fail(`M17d: the GPU temperature tile is '${gpu['Temperature']}' (expected '62' - the NVML temp)`);
+  if (gpu['Power'] !== '152.4') fail(`M17d: the GPU power tile is '${gpu['Power']}' (expected '152.4' - the NVML mW->W readout)`);
   // M4-I (D4): the Util tile reads `gpuUtilPct ?? utilPct` - on no-Intel the
-  // OS GPUEngine counter (the mock's fixed 42) is the only source.
+  // OS GPUEngine counter (the mock's fixed 42) is the only source (the
+  // NVML util is utilPct - the OS counter wins the ??:).
   if (gpu['Util'] !== '42') fail(`1.0.1/M4-I: the monitoring Util tile is '${gpu['Util']}' (expected 42 - gpuUtilPct from the no-device sys-stats push)`);
-  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C, VRAM 3.0 GB, GPU Util 42 % (M4-I: gpuUtilPct ?? utilPct); GPU device tiles '-'`);
+  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C; GPU tiles LIVE from the vendor lane - Core clock 1965, Memory clock 7010, VRAM 4.3 GB (the NVML used-VRAM), VramTemp 58, Temperature 62, Power 152.4 W, Util 42 % (M4-I: gpuUtilPct ?? utilPct)`);
 
   // --- 7. the Tuning page: 'No GPU available.', never the caps-loading text --
   // deviceId is null on no-Intel: the page must present the honest no-device

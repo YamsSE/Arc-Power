@@ -75,6 +75,7 @@ for (const [name, expected] of Object.entries(ADL_EXPECTED_SIZES)) {
  *   initError: () => string | null,
  *   init: () => void,
  *   sample: () => Promise<object | null>,
+ *   deviceInfo: () => { vramBytes: number | null, computeCores: number | null },
  *   close: () => void,
  * }}
  */
@@ -172,12 +173,24 @@ export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) 
     state = { available: false, error: null, fn: null, adapterIndex: -1 };
   }
 
+  /**
+   * M17d: the STATIC-INFO seam mirror - ADL exposes NO total-VRAM field and
+   * no compute-core count, so both stay honest nulls (the no-Intel card's
+   * VRAM row falls back to the OS controller bytes; the Compute row shows
+   * the honest '-' on AMD). Never throws.
+   * @returns {{ vramBytes: null, computeCores: null }}
+   */
+  function deviceInfo() {
+    return { vramBytes: null, computeCores: null };
+  }
+
   return {
     vendor: 'amd',
     available: () => state.available,
     initError: () => state.error,
     init,
     sample,
+    deviceInfo,
     close,
   };
 }

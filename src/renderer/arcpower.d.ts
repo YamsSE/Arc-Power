@@ -28,6 +28,7 @@ import type {
   StartupGetState,
   SysInfo,
   TelemetrySample,
+  VendorDeviceInfo,
 } from './types.ts';
 
 export interface ArcPowerApi {
@@ -77,6 +78,11 @@ export interface ArcPowerApi {
   /** M4-D: the CIM system info (CPU/RAM/video controllers) - the dashboard
    *  CPU card + the real-GPU VRAM suffix source. */
   sysinfo(): Promise<SysInfo>;
+  /** M17d (round-1 S2): the vendor-lane static info - the no-Intel
+   *  dashboard VRAM/Compute rows' source ({ vramBytes, computeCores } - the
+   *  NVML total + core count; honest nulls when no vendor adapter resolves:
+   *  no lane / absent DLL / a vendor without the field - ADL). */
+  vendorInfo(): Promise<VendorDeviceInfo>;
   /** M4-D: integrated-title-bar window controls (no payload). */
   windowMinimize(): Promise<void>;
   windowMaximizeToggle(): Promise<void>;

@@ -13,6 +13,8 @@
 
 import koffi from 'koffi';
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 export const CTL_INIT_FLAG_USE_LEVEL_ZERO = 0x00000001;
@@ -512,7 +514,59 @@ for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
 // DLL discovery
 // ---------------------------------------------------------------------------
 
-export function findIgclDll() {
+// M17d (Run E): the stable-path cache file (the app data-dir pattern -
+// %APPDATA%\ArcPower, the same dir the profile store uses). The cache
+// records { driverVersion, path } - the active-driver-version-matched
+// runtime path. On the next launch the version is re-read (cheap) and
+// compared: a match + an existing DLL skips the DriverStore scan entirely; a
+// mismatch (driver update) re-scans. The cache is advisory - a corrupt
+// read or a failed write never breaks the scan path.
+export const IGCL_DLL_CACHE_FILENAME = 'igcl-dll-cache.json';
+
+export function igclDllCacheFile() {
+  const dir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(dir, 'ArcPower', IGCL_DLL_CACHE_FILENAME);
+}
+
+function readIgclDllCache(cacheFile) {
+  try {
+    const raw = fs.readFileSync(cacheFile, 'utf8');
+    const data = JSON.parse(raw);
+    if (data && typeof data.driverVersion === 'string' && typeof data.path === 'string') {
+      return { driverVersion: data.driverVersion, path: data.path };
+    }
+  } catch {
+    // missing / corrupt / unreadable -> a miss (the scan re-runs)
+  }
+  return null;
+}
+
+function writeIgclDllCache(cacheFile, entry) {
+  try {
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify(entry));
+  } catch {
+    // a failed cache write never breaks the scan path
+  }
+}
+
+/**
+ * Locate the DriverStore IGCL runtime DLL. M17d (Run E): a stable-path
+ * cache keyed on the active driver version - `{ driverVersion, path }` in
+ * the app data dir; a hit (version match + the DLL still exists) returns
+ * the cached path WITHOUT the DriverStore walk; a mismatch re-scans and
+ * re-caches. The version re-validation itself is the cheap per-subkey reg
+ * read (activeDriverVersion) - the old `reg query /s` recursive dump was
+ * the measured ~1.5 s of every boot (see pipeline/startup-boot-before.md).
+ * @param {{
+ *   store?: string,                       // DriverStore FileRepository dir (tests)
+ *   cacheFile?: string,                   // the cache file path (tests)
+ *   activeDriverVersion?: () => string|null, // the version re-validation source (tests)
+ *   scanCounter?: { scans: number, hits: number }, // the regression pin (tests)
+ * }} [opts]
+ * @returns {string|null}
+ */
+export function findIgclDll(opts = {}) {
   // Loader (ControlLib.dll, System32) enforces a UID whitelist (registered
   // Intel UIDs only - an invented UID is rejected with
   // CTL_RESULT_ERROR_UNKNOWN_APPLICATION_UID). The runtime
@@ -530,7 +584,22 @@ export function findIgclDll() {
   //   3. env IGCL_DLL_PATH, then System32 ControlLib.dll (loader - init will
   //      fail with a clear "unregistered UID" error), then System32
   //      IntelControlLib.dll (runtime), then the IGS dir.
-  const store = 'C:\\Windows\\System32\\DriverStore\\FileRepository';
+  const store = opts.store ?? 'C:\\Windows\\System32\\DriverStore\\FileRepository';
+  const cacheFile = opts.cacheFile ?? igclDllCacheFile();
+  const activeOf = opts.activeDriverVersion ?? activeDriverVersion;
+  const scanCounter = opts.scanCounter ?? null;
+
+  const active = activeOf();
+  if (active) {
+    // The cache hit: same active driver version + the cached DLL still on
+    // disk -> the scan is skipped (the fs-walk counter pin).
+    const hit = readIgclDllCache(cacheFile);
+    if (hit && hit.driverVersion === active && typeof hit.path === 'string' && requireFSSync(hit.path)) {
+      if (scanCounter) scanCounter.hits += 1;
+      return hit.path;
+    }
+  }
+  if (scanCounter) scanCounter.scans += 1;
   const candidates = [];
   try {
     if (fs.statSync(store).isDirectory()) {
@@ -550,10 +619,14 @@ export function findIgclDll() {
     // DriverStore may be inaccessible to the current user; fall through.
   }
   if (candidates.length > 0) {
-    const active = activeDriverVersion();
     if (active) {
       const match = candidates.find((c) => c.driverVer === active);
-      if (match) return match.path;
+      if (match) {
+        // The ACTIVE-version match is the deterministic selection - cache it
+        // for the next launch (the re-validation is the cheap version read).
+        writeIgclDllCache(cacheFile, { driverVersion: active, path: match.path });
+        return match.path;
+      }
     }
     candidates.sort((a, b) => b.mtime - a.mtime || (a.dir < b.dir ? -1 : 1));
     return candidates[0].path;
@@ -590,6 +663,15 @@ function activeDriverVersion() {
   // Driver version of the currently active display driver, from the display
   // class key (readable by standard users). Fails soft (null) on any error.
   //
+  // M17d (Run E): the TARGETED reads - `reg query <class key>` lists the
+  // 000N adapter blocks (~15 ms) + ONE `/v` value query per needed value
+  // per block (~15 ms each). The old approaches were measured on the dev
+  // box: `reg query <key> /s` = ~1.5 s (a ~146 KB recursive dump) and
+  // `reg query <000N>` (all values) = ~1.3 s (the block's value set is
+  // huge - binary device parameters). The /v-targeted reads are ~60 ms
+  // total and were the profile's #2 stage fix (see
+  // pipeline/startup-boot-before.md); the same blocks, the same selection.
+  //
   // Selection order (avoids the iGPU-vs-dGPU trap on multi-GPU boxes, where
   // "last Intel block" can be the integrated adapter's subkey):
   //   1. Intel blocks whose DriverDesc names a discrete GPU (Intel's discrete
@@ -600,21 +682,25 @@ function activeDriverVersion() {
   //   3. otherwise the last block (any vendor).
   try {
     const key = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}';
-    const out = execFileSync('reg', ['query', key, '/s'], { encoding: 'utf8', windowsHide: true });
-    let block = null;
+    const listing = execFileSync('reg', ['query', key], { encoding: 'utf8', windowsHide: true });
     const blocks = [];
-    for (const line of out.split(/\r?\n/)) {
-      if (/^HKEY_LOCAL_MACHINE\\/.test(line)) {
-        block = { desc: '', version: null, matchingId: '' };
-        blocks.push(block);
-      } else if (block) {
-        const d = line.match(/DriverDesc\s+REG_SZ\s+(.+)/);
-        if (d) block.desc = d[1].trim();
-        const v = line.match(/DriverVersion\s+REG_SZ\s+(\S+)/);
-        if (v) block.version = v[1];
-        const m = line.match(/MatchingDeviceId\s+REG_SZ\s+(.+)/);
-        if (m) block.matchingId = m[1].trim();
+    for (const line of listing.split(/\r?\n/)) {
+      const m = line.match(/^HKEY_LOCAL_MACHINE\\.*\\Class\\\{[^}]+\}\\(\d{4})$/);
+      if (!m) continue;
+      const sub = `${key}\\${m[1]}`;
+      const block = { desc: '', version: null, matchingId: '' };
+      for (const [name, field] of [['DriverDesc', 'desc'], ['DriverVersion', 'version'], ['MatchingDeviceId', 'matchingId']]) {
+        try {
+          const out = execFileSync('reg', ['query', sub, '/v', name], { encoding: 'utf8', windowsHide: true });
+          const line2 = out.split(/\r?\n/).find((l) => l.includes(`REG_SZ`));
+          const value = line2 ? line2.replace(/^.*REG_SZ\s+/, '').trim() : '';
+          if (name === 'DriverVersion') block[field] = value || null;
+          else block[field] = value;
+        } catch {
+          // a missing value / denied block just contributes nothing
+        }
       }
+      blocks.push(block);
     }
     const intel = blocks.filter((b) => b.version && /intel/i.test(b.desc));
     const discrete = intel.filter((b) => isDiscreteGpu(b));

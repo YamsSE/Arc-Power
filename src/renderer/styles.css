@@ -1123,8 +1123,58 @@ select {
 .expert-status { font-size: 12px; }
 
 /* --------------------- M4J: VRAM clock editor (Advanced section) ---------- */
-/* The M4-B gpuLock editor styles are REMOVED with the editor (the Advanced
-   section holds the VRAM clock editor only). */
+/* M17d (Run D): the gpuLock card styles RETURN with the standalone Fixed
+   Clock / Voltage Lock card (the M4-B editor styles were removed with the
+   M4-J reshuffle). */
+
+.gpu-lock-editor {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+}
+
+.gpu-lock-editor .card-title { font-size: 13.5px; margin-bottom: 2px; }
+
+.gpu-lock-fields {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.gpu-lock-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.gpu-lock-field input {
+  width: 130px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.gpu-lock-field input:focus { outline: none; border-color: var(--accent); }
+
+.gpu-lock-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.gpu-lock-current {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
 
 .vram-editor-card {
   margin-top: 12px;

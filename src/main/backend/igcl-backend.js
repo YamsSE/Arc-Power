@@ -829,16 +829,19 @@ export class IgclBackend {
         // M4-E: the pin is a C-UNIT rule - percent-unit ranges (Battlemage:
         // temp limit as %, max 100) are not DriverStore °C limits and must
         // pass through untouched (their max IS the honest ceiling).
-        // M17c: the pre-device-limits F3 pin stays as the DRIVERSTORE-floor
-        // (the stock-mode ceiling); the device-scoped table application
-        // (_finalizeCaps) re-caps a listed card's ADVANCED TL at the
-        // documented 90 C ceiling - the (90, 115] window is never offered on
-        // a listed card (round-3 N3).
+        // M17c/M17d: the pre-device-limits F3 pin stays as the DRIVERSTORE-
+        // floor (the stock-mode ceiling); the device-scoped table application
+        // (_finalizeCaps) applies the ACTIVE shape's TL ceiling - the A750's
+        // advanced TL is the probe-verified 115 (the 2026-08-12 app-path
+        // probe: 100 AND 115 C applied), the A770's advanced TL is
+        // the restored 115 (the app-verified KMD ceiling - the M17c row cap
+        // at 90 is REMOVED, the round-3-N3 rule flipped).
         if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C' && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
           caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
         }
         // M17c: the GLOBAL M15 volt pin is GONE (the global 0.234 clamp
-        // wrongly capped the A750's 0.285). The A770-scoped pin (the same
+        // wrongly capped the A750's 0.288 - the 2026-08-12 probe: props max
+        // 0.288 V step 0.005). The A770-scoped pin (the same
         // both-directions probe-ceiling semantics, keyed on caps.pciDeviceId)
         // now lives in the pure device-limits table and is applied by
         // _finalizeCaps AFTER the extended-ranges block below.
@@ -1017,13 +1020,22 @@ export class IgclBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    const limits = deviceLimitsOf(identity);
+    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the finalize selects
+    // the ADVANCED shape when caps.extendedRanges is true (the extended
+    // 2023-runtime path is active) and the STOCK shape otherwise - NOT the
+    // same row in both modes. The advanced shape carries the per-card KMD
+    // ceilings (A770 315/115 - the M17c TL cap at 90 REMOVED; A750 270/115 -
+    // the TL 115 probe-verified 2026-08-12: 100 AND 115 C applied via the
+    // app path, the KMD ceiling class the same as the A770's); the stock
+    // shape the per-AIB maxes + the TL 90 caps (the round-3-N3 rule FLIPS
+    // to "listed-row advanced ceiling = the app-verified KMD ceiling").
+    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
       // (stock 252/90, extended 315/115 - never null, never the wrong
-      // shape); a LISTED card's row is the documented ceiling in BOTH
-      // modes (the extended maxes of the props/2023 runtime are capped
-      // down to it - round-2 S8).
+      // shape); a LISTED card's row is the ACTIVE shape (stock or
+      // advanced) - the extended maxes of the props/2023 runtime are
+      // capped down to the listed shape's ceilings.
       const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;

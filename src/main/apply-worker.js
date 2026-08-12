@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
-import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -210,9 +210,14 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
           aibModel: req.limitsKey.aibModel ?? null,
         }
       : null;
-    const refusal = req.profileApply === true
-      ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges, limitsKey ?? caps)
-      : ocModeRefusal(req.ocMode, settings, caps.ranges, limitsKey ?? caps);
+    // M17d (Run D): the APPLY MODE is the same value ocModeRefusal receives
+    // (the request's ocMode for interactive applies, OC_MODE_ADVANCED for
+    // profile applies - a profile applies as saved) and the same value
+    // threaded into executeApply -> splitByRuntime (the V1-call pin: an
+    // advanced-mode PL/TL apply must route through the bundled 2023
+    // runtime's V1 setters, never fall through to the DriverStore path).
+    const applyMode = req.profileApply === true ? OC_MODE_ADVANCED : (req.ocMode === OC_MODE_ADVANCED ? OC_MODE_ADVANCED : OC_MODE_STOCK);
+    const refusal = ocModeRefusal(applyMode, settings, caps.ranges, limitsKey ?? caps);
     if (refusal) {
       log(`[apply-worker] oc-mode refusal: ${refusal.message} (${refusal.controls.join(', ')})`);
       // M3-C review F2: the refusal carries the FRESH device state, never
@@ -233,7 +238,19 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // caps.extendedRanges is a capability refusal - not the caps-keyed mode
     // gate the plan forbids. The refusal never touches the GPU and carries
     // the fresh state.
-    const unavailable = extendedUnavailableRefusal(settings, caps);
+    // M17d (step-4 N1): the in-range profileApply W/C refusal mirror - a
+    // profile apply is advanced-gated, so its W/C values route through the
+    // bundled 2023 runtime (V1) REGARDLESS of value. On a not-capable
+    // runtime an IN-RANGE value (e.g. 240 W) must refuse with the same
+    // capability refusal class the parents emit (apply-on-boot.js /
+    // ipc-core.js - never the per-control 'unsupported' the V1 setter
+    // answers, which the parent classifies as a failed apply, not the
+    // refusal class).
+    let unavailable = extendedUnavailableRefusal(settings, caps);
+    if (!unavailable && req.profileApply === true && caps.extendedRanges !== true) {
+      const wc = wcUnitControls(settings, caps.ranges);
+      if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
+    }
     if (unavailable) {
       log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
       let state = null;
@@ -242,7 +259,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       return 0;
     }
     const clamped = clampSettings(settings, caps.ranges);
-    const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log });
+    const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log, ocMode: applyMode });
     // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
     // round-3 N1): the attempted values of the 'out-of-range' per-control
     // results - the parent's session refused-ceiling store records from

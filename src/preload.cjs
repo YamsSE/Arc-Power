@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld('arcPower', {
   startupGet: () => ipcRenderer.invoke('startup-get'),
   startupSet: (enabled) => ipcRenderer.invoke('startup-set', enabled),
   sysinfo: () => ipcRenderer.invoke('sysinfo:get'),
+  // M17d: the vendor-lane static info ({ vramBytes, computeCores } - the
+  // no-Intel dashboard VRAM/Compute rows' source; honest nulls when no
+  // vendor adapter resolves). No payload.
+  vendorInfo: () => ipcRenderer.invoke('vendor-info:get'),
   // M4-D: the integrated-title-bar window controls (no payload - the
   // channels assert it in main).
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),

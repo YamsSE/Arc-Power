@@ -321,9 +321,16 @@ export function createApplyRunner({
         // stock mode would otherwise refuse via executeApply's safety net
         // (caps.extendedRanges is false in stock mode). Only present when
         // true (no undefined own-keys in the executor request).
+        // M17d (Run D): the ocMode rides too - the executor passes it into
+        // executeApply -> splitByRuntime (the V1-call pin). The callers
+        // already pass the EFFECTIVE mode (the persisted ocMode for
+        // interactive applies, OC_MODE_ADVANCED for profile applies). Only
+        // present when the caller passed one (no undefined own-keys in the
+        // executor request - the old request-shape pins stay green).
         const out = await inProcess.apply({
           deviceId,
           settings,
+          ...(ocMode !== undefined && ocMode !== null ? { ocMode } : {}),
           ...(profileApply === true ? { profileApply: true } : {}),
         });
         return { worker: false, ...out };

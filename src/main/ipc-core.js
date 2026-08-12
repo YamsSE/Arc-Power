@@ -33,7 +33,7 @@ import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
-import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
@@ -326,6 +326,44 @@ export async function seedWaiverState(backend, store) {
 }
 
 /**
+ * M17d (Run E): the once-per-driver-version gate for probeWaiverState. The
+ * elevated boot probe is a driver round trip (caps + settings + a
+ * value-neutral PL write) that exists to catch a waiver the DRIVER lost
+ * (reinstall / IGS reset - both tied to the driver version). After the
+ * FIRST boot on a given driver version the probe has verified the store -
+ * re-running it on every boot is redundant. The gate: the persisted
+ * `waiverProbedDriverVersion` (settings.json) vs the CURRENT driver version
+ * (backend.health - the IGCL raw version, stable per driver, changes on a
+ * driver update). A mismatch (absent / unknown / changed) means the probe is
+ * DUE; an unknown current version never skips (the safe side - an
+ * unverifiable state re-probes).
+ * @param {import('./backend/backend.interface.js').IOCBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ * @returns {Promise<{ due: boolean, key: string | null }>}
+ */
+export async function waiverProbeDue(backend, store) {
+  let current = null;
+  try {
+    const h = await backend.health();
+    current = h && typeof h.driverVersion === 'string' && h.driverVersion ? h.driverVersion : null;
+  } catch {
+    current = null;
+  }
+  if (current === null) {
+    // the driver version is unreadable - never skip the probe on an unknown
+    return { due: true, key: null };
+  }
+  let persisted = null;
+  try {
+    const s = await store.loadSettings();
+    persisted = typeof s.waiverProbedDriverVersion === 'string' ? s.waiverProbedDriverVersion : null;
+  } catch {
+    persisted = null;
+  }
+  return { due: persisted !== current, key: current };
+}
+
+/**
  * M4-D: boot-time driver-truth probe for the REAL path. A persisted
  * `waiverAccepted: true` can be STALE - the driver-side waiver
  * (ctlOverclockWaiverSet) can be lost (reinstall, IGS reset) while
@@ -470,7 +508,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
- *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; null in mock/tests - the determinism seam like foregroundApi)
+ *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; M17d: wraps the pm-service + sidecar SOURCE CHAIN; null in mock/tests - the determinism seam like foregroundApi)
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe; the two telemetry emit sites compose its result into the pushed sample)
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }> },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample)
@@ -814,7 +852,7 @@ export function createIpcHandlers({
         recordRefusals(out.result);
         return out;
       }
-      const out = await executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } });
+      const out = await executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode });
       recordRefusals(out.result);
       return out;
     };
@@ -972,9 +1010,15 @@ export function createIpcHandlers({
         // ocModeRefusal limits-key resolves from the pure device-limits
         // table (the listed rows' ceilings for listed cards, the default
         // row for unlisted - never caps.ranges).
-        const refusal = opts?.profileApply === true
-          ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges, caps)
-          : ocModeRefusal(ocMode, settings, caps.ranges, caps);
+        // M17d (Run D): the GATE MODE is the mode the whole apply runs
+        // under - the same value ocModeRefusal receives and the same value
+        // threaded into splitByRuntime (via runApply -> executeApply -> the
+        // V1-call pin): the persisted ocMode for interactive applies,
+        // OC_MODE_ADVANCED for profile applies (a saved profile applies as
+        // saved - the advanced-gated split routes its W/C values through
+        // the V1 runtime, per the 2026-08-12 A750 probe verdict).
+        const gateMode = opts?.profileApply === true ? OC_MODE_ADVANCED : ocMode;
+        const refusal = ocModeRefusal(gateMode, settings, caps.ranges, caps);
         if (refusal) {
           // M3-C review F2: the refusal envelope carries the FRESH device
           // state (getCurrentSettings is cheap - the refusal never touched
@@ -1003,7 +1047,18 @@ export function createIpcHandlers({
         if (opts?.profileApply === true && oldIgcl?.isCapable) {
           unavailableCaps = { ...caps, extendedRanges: await oldIgcl.isCapable() };
         }
-        const unavailable = extendedUnavailableRefusal(settings, unavailableCaps);
+        let unavailable = extendedUnavailableRefusal(settings, unavailableCaps);
+        if (!unavailable && opts?.profileApply === true && unavailableCaps.extendedRanges !== true) {
+          // M17d (Run D - the V1-call pin): a profile apply is advanced-
+          // gated, so its W/C values route through the bundled 2023 runtime
+          // (V1) REGARDLESS of value (the mode-based split). On a driver
+          // where that runtime cannot load, an IN-RANGE profile W/C value
+          // must refuse with the same capability refusal (the same class as
+          // apply-on-boot - never the per-control-failure defaults restore,
+          // never a fall-through to the V2 setter the pin forbids).
+          const wc = wcUnitControls(settings, caps.ranges);
+          if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
+        }
         if (unavailable) {
           let state = null;
           try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
@@ -1027,7 +1082,7 @@ export function createIpcHandlers({
         // driver waiver + retries ONCE when the driver answers waiver-not-set
         // while the persisted acceptance is true (the consent stands - never
         // a dialog, never a dead-end, never a persisted false).
-        return runApply({ deviceId, settings: clamped, caps, ocMode, profileApply: opts?.profileApply === true });
+        return runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true });
       },
 
       'reset-to-defaults': async (deviceId) => {
@@ -1121,6 +1176,34 @@ export function createIpcHandlers({
         if (svc) {
           await svc.stop();
           telemetry.delete(deviceId);
+        }
+      },
+
+      // M17d (round-1 S2): the vendor-lane STATIC-INFO read - the no-Intel
+      // dashboard VRAM/Compute rows' source ({ vramBytes, computeCores } -
+      // the NVML total + core count; honest nulls when the lane has no
+      // source: no vendor adapter, an absent DLL, or a vendor without the
+      // field - ADL). Starts the lane if needed (the same lazy resolution
+      // the no-device telemetry hook uses - idempotent). Never throws: a
+      // lane failure degrades to the honest nulls (the renderer then falls
+      // back to the OS controller bytes / the '-' rows).
+      'vendor-info:get': async (...args) => {
+        assertNoPayload(args, 'vendor-info:get');
+        try {
+          const lane = await vendorTelemetry.start();
+          if (!lane || typeof lane.deviceInfo !== 'function') {
+            return { vramBytes: null, computeCores: null };
+          }
+          const info = await lane.deviceInfo();
+          const vramBytes = typeof info?.vramBytes === 'number' && Number.isFinite(info.vramBytes) && info.vramBytes > 0
+            ? Math.floor(info.vramBytes)
+            : null;
+          const computeCores = typeof info?.computeCores === 'number' && Number.isFinite(info.computeCores) && info.computeCores > 0
+            ? Math.floor(info.computeCores)
+            : null;
+          return { vramBytes, computeCores };
+        } catch {
+          return { vramBytes: null, computeCores: null };
         }
       },
 
@@ -1332,7 +1415,19 @@ export function createIpcHandlers({
         const laneSample = presentMonLane ? await presentMonLane.poll(deviceId) : null;
         const sample = laneSample !== null ? laneSample : await fpsAdapter.poll(deviceId);
         if (sample === null || typeof sample !== 'object') return null;
-        const api = sample.api ?? (await foregroundApi.detect());
+        // M10a: the foreground-window Graphics-API badge composition. The
+        // sample's own api field wins, otherwise the injected detector
+        // answers (the DEFAULT is the null-returning detector - the
+        // determinism seam; the real koffi probe runs only in the product
+        // path).
+        // M17d (Run C, item 1e): the PresentMon-service CLASS corroboration
+        // - when the module scan yields null, the lane's presentRuntime
+        // class ('dxgi'/'d3d9'/'other' - the PM_GRAPHICS_RUNTIME class the
+        // overlay labels DXGI/D3D9/Other) answers through the SAME api
+        // field; a module-scan verdict ALWAYS wins (the fine grain stays
+        // module-derived). Absent presentRuntime -> null (the overlay row
+        // stays empty - the honest degrade).
+        const api = sample.api ?? (await foregroundApi.detect()) ?? (typeof sample.presentRuntime === 'string' ? sample.presentRuntime : null);
         return { ...sample, api };
       },
 

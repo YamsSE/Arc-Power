@@ -32,7 +32,7 @@ import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
-import { errorMessage, CONTROL_LABELS } from '../pure/errors.ts';
+import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { chipState } from '../pure/chip.ts';
 import {
   FRAME_GEN_OPTIONS,
@@ -521,7 +521,9 @@ async function apply(ctx: PageContext, only?: string) {
         (applied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
       } else {
-        toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
+        // M17d (item 0b): the shared applyFailureText preference - the
+        // per-control message wins, the errorCode mapping is the fallback.
+        toast('error', `${CONTROL_LABELS[key] ?? key} failed`, applyFailureText(per, key));
       }
     }
     refreshAll();

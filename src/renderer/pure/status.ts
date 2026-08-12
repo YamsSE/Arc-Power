@@ -26,7 +26,7 @@
 // The legacy health-only level mapping (healthLevel) stays for the header
 // test contract.
 
-import type { Capabilities, DeviceInfo, DeviceState, HealthReport, SysInfo, TelemetrySample } from '../types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, HealthReport, SysInfo, TelemetrySample, VendorDeviceInfo } from '../types.ts';
 import { decodeDriverVersion, formatDriverDate } from './driver.ts';
 
 export type HealthLevel = 'ok' | 'warn' | 'error' | 'unknown';
@@ -332,7 +332,10 @@ export interface DashboardSig {
    *  (the GPU card re-renders when they land at the end of the no-Intel
    *  boot). */
   noIntel: boolean;
-  osGpu: { name: string; vramBytes: number | null } | null;
+  osGpu: { name: string; vramBytes: number | null; pnpDeviceId: string | null } | null;
+  /** M17d: the vendor-lane static info (the no-Intel VRAM/Compute rows'
+   *  source) - a status slot (the GPU card re-renders when it lands). */
+  vendorInfo: VendorDeviceInfo | null;
   /** M16: the device's current read-back - the OC status row's stock-state
    *  source (an apply from ANY path refreshes the store state, so the row
    *  flips Overclock Applied / No Overclock Applied on the re-render). */
@@ -354,5 +357,6 @@ export function dashboardNeedsFullRender(prev: DashboardSig | null, next: Dashbo
     || prev.sysinfo !== next.sysinfo
     || prev.noIntel !== next.noIntel
     || prev.osGpu !== next.osGpu
+    || prev.vendorInfo !== next.vendorInfo
     || prev.state !== next.state;
 }

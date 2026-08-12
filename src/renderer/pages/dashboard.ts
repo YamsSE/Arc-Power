@@ -23,6 +23,7 @@ import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue, ghzFreq } from '../pure/sysinfo.ts';
+import { aibOfPnpDeviceId } from '../pure/aib.ts';
 import { stripVramSuffix } from '../pure/device.ts';
 import type { TelemetrySample } from '../types.ts';
 
@@ -51,6 +52,18 @@ function boardPartnerText(caps: { aibVendor?: string | null; aibModel?: string |
   if (!vendor) return '-';
   const model = caps?.aibModel;
   return model ? `${vendor} (${model})` : vendor;
+}
+
+/** M17d: the no-Intel Clocks row text - LIVE from the vendor lane sample
+ *  (NVML clock graphics = gpuClockMhz + NVML_CLOCK_MEM = memClockMhz) once a
+ *  tick reports; the honest static '- MHz Core / - MHz Memory' before the
+ *  first tick / when the lane has no source. */
+function noIntelClocksText(sample: TelemetrySample | null): string {
+  const core = sample?.gpuClockMhz;
+  const mem = sample?.memClockMhz;
+  const coreText = typeof core === 'number' && Number.isFinite(core) ? core : '-';
+  const memText = typeof mem === 'number' && Number.isFinite(mem) ? mem : '-';
+  return `${coreText} MHz Core / ${memText} MHz Memory`;
 }
 
 function statValue(v: number | null | undefined, decimals = 0): string {
@@ -104,6 +117,9 @@ function currentSig(ctx: PageContext): DashboardSig {
     sysinfo: s.sysinfo,
     noIntel: s.noIntel,
     osGpu: s.osGpu,
+    // M17d: the vendor-lane static info (the no-Intel VRAM/Compute rows'
+    // source) - a status slot (the GPU card re-renders when it lands).
+    vendorInfo: s.vendorInfo,
     // M16: the device read-back - the OC status row's stock-state source
     // (an apply from any path refreshes the store state, so the row flips
     // on the re-render).
@@ -197,6 +213,9 @@ export const dashboardPage: Page = {
     const osController = s.sysinfo?.videoControllers
       .find((c) => c.name && s.osGpu?.name && c.name === s.osGpu.name)
       ?? s.sysinfo?.videoControllers[0] ?? null;
+    // M17d: the no-Intel Board-partner decode - the controller's PNPDeviceID
+    // SUBSYS through pure/aib.ts (works for ANY GPU); null -> the honest '-'.
+    const osAib = aibOfPnpDeviceId(osController?.pnpDeviceId ?? s.osGpu?.pnpDeviceId);
     const rebar = rebarState(matchedController);
     const osRebar = rebarState(osController);
     const sysRows = cpuCardRows(s.sysinfo);
@@ -272,23 +291,42 @@ export const dashboardPage: Page = {
           ]),
           ...(s.noIntel
             ? [
-                // M4-I (D3): the no-Intel branch renders the REAL rows the
-                // OS has: Driver version (the NEW videoControllers
-                // driverVersion field - works on any GPU), Compute '-',
-                // Clocks '- MHz Core / - MHz Memory' (honest - no OS clock
-                // source on any GPU), VRAM (size + type-when-known - the
-                // type table is Intel-only, so an AMD part shows the size
-                // only), ReBAR pill REAL (the OS pnputil/allocated sources
-                // are GPU-agnostic). The 'Non supported GPU' note stays.
-                // NOTE: this REVERSES the M4-H pin that asserted the driver
-                // row's ABSENCE (ui-verify.js ~3852) - the inversion is
-                // explicit.
+                // M4-I (D3)/M17d: the no-Intel branch renders the REAL rows
+                // the OS + the vendor lane have: Driver version (the NEW
+                // videoControllers driverVersion field - works on any GPU),
+                // the Board-partner row BELOW the GPU row (the controller
+                // PNPDeviceID SUBSYS decode through pure/aib.ts
+                // aibOfPnpDeviceId - works for ANY GPU; '<vendor>
+                // (<model-stripped>)'; unknown -> the honest grey '-'),
+                // Compute '<n> Cores' (deviceInfo().computeCores - the NVML
+                // core count; honest '-' when the lane has no source),
+                // Clocks LIVE (the vendor lane's memClockMhz + gpuClockMhz
+                // replace the static '- MHz Core / - MHz Memory' on ticks),
+                // VRAM (deviceInfo().vramBytes - the NVML total primary -
+                // with the OS controller bytes as the fallback), ReBAR pill
+                // REAL (the OS pnputil/allocated sources are GPU-agnostic).
+                // The 'Non supported GPU' note stays. NOTE: this REVERSES
+                // the M4-H pin that asserted the driver row's ABSENCE AND
+                // the M17c round-1-N3 pin that asserted the Board-partner
+                // row's ABSENCE on the no-Intel branch - the inversions are
+                // explicit (the M17d no-Intel rows are real, not placeholders).
                 el('div', { class: 'card-body kv-grid' }, [
                   el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: s.osGpu?.name ?? '-' })]),
+                  el('div', { class: 'kv', 'data-label': 'Board partner' }, [
+                    el('span', {
+                      class: osAib ? undefined : 'text-unknown',
+                      text: osAib ? (osAib.model ? `${osAib.vendor} (${osAib.model})` : osAib.vendor) : '-',
+                    }),
+                  ]),
                   el('div', { class: 'kv', 'data-label': 'Driver version' }, [el('span', { text: osController?.driverVersion ?? '-' })]),
-                  el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: '-' })]),
-                  el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { text: '- MHz Core / - MHz Memory' })]),
-                  el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(s.osGpu?.vramBytes, null) })]),
+                  el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', {
+                    class: typeof s.vendorInfo?.computeCores === 'number' && s.vendorInfo.computeCores > 0 ? undefined : 'text-unknown',
+                    text: typeof s.vendorInfo?.computeCores === 'number' && Number.isFinite(s.vendorInfo.computeCores) && s.vendorInfo.computeCores > 0
+                      ? `${s.vendorInfo.computeCores} Cores`
+                      : '-',
+                  })]),
+                  el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { class: 'kv-clocks', text: noIntelClocksText(s.latestSample) })]),
+                  el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(s.vendorInfo?.vramBytes ?? s.osGpu?.vramBytes, null) })]),
                   el('div', { class: 'kv kv-rebar' }, [
                     el('span', { class: `chip rebar-pill status-${osRebar.level}`, text: osRebar.label }),
                   ]),
@@ -301,8 +339,10 @@ export const dashboardPage: Page = {
                 // M17c: the Board partner row BELOW the Device row -
                 // '<AIB vendor> (<model>)' from the caps AIB fields
                 // (aibVendor/aibModel - the pure/aib.ts decode); unknown
-                // (both null) -> the honest grey '-' (text-unknown). ABSENT
-                // on the no-Intel branch (no Device row there - round-1 N3).
+                // (both null) -> the honest grey '-' (text-unknown).
+                // M17d: the no-Intel branch has its OWN Board-partner row
+                // (the PNP SUBSYS decode - the round-1-N3 absence note is
+                // INVERTED; see the no-Intel branch below).
                 el('div', { class: 'kv', 'data-label': 'Board partner' }, [
                   el('span', {
                     class: s.caps?.aibVendor ? undefined : 'text-unknown',
@@ -379,15 +419,24 @@ export const dashboardPage: Page = {
     }
     // M2C-B B8 (M4-D update): the device-card COMBINED clocks row
     // tracks the latest sample in place (the card itself only re-renders
-    // on status changes). 1.0.1 no-Intel round: skipped on the no-device
-    // path - the row is the static honest '-' (no IGCL device to track).
+    // on status changes). M17d: the no-Intel branch is wired the same way -
+    // the vendor lane's sample (NVML clock graphics = gpuClockMhz +
+    // NVML_CLOCK_MEM = memClockMhz) replaces the static '- MHz Core / -
+    // MHz Memory' on ticks (the pre-M17d noIntel flag skipped the row).
     const clocksValue = container.querySelector<HTMLElement>('.card-grid .kv[data-label="Clocks"] span');
-    if (clocksValue && !ctx.store.get().noIntel) {
+    if (clocksValue) {
       const live = ctx.store.get();
-      const dev = live.devices.find((d) => d.id === live.deviceId) ?? null;
       const mem = live.latestSample?.memClockMhz;
-      const core = dev?.graphicsClockMHz;
-      clocksValue.textContent = `${core !== undefined ? core : '--'} MHz Core / ${mem !== undefined ? mem : '--'} MHz Memory`;
+      if (live.noIntel) {
+        const core = live.latestSample?.gpuClockMhz;
+        const coreText = typeof core === 'number' && Number.isFinite(core) ? core : '-';
+        const memText = typeof mem === 'number' && Number.isFinite(mem) ? mem : '-';
+        clocksValue.textContent = `${coreText} MHz Core / ${memText} MHz Memory`;
+      } else {
+        const dev = live.devices.find((d) => d.id === live.deviceId) ?? null;
+        const core = dev?.graphicsClockMHz;
+        clocksValue.textContent = `${core !== undefined ? core : '--'} MHz Core / ${mem !== undefined ? mem : '--'} MHz Memory`;
+      }
     }
     // M4-D2 (§6): the CPU card's "Cores / clock" LIVE half (the current
     // frequency, GHz always) tracks the telemetry tick in place - same
