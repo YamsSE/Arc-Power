@@ -20,7 +20,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale } from './ipc-core.js';
@@ -31,6 +31,7 @@ import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createDxgiFpsAdapter } from './fps-dxgi.js';
+import { createPresentMonFpsSource, createPresentMonLane } from './fps-etw.js';
 import { createForegroundApiDetector } from './foreground-api.js';
 import { createMemoryUtilDetector } from './memory-util.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
@@ -454,8 +455,16 @@ async function main() {
   // with no .videoControllers), so the real-path VRAM lookup ALWAYS
   // returned null (the device never gained "8GB GDDR6").
   let cached = null;
+  // M17c: the laptop-sysinfo ui-verify knob (RID_MOCK_LAPTOP=1) - the mock
+  // sysinfo fixture gains the PORTABLE shape (the MSI Claw: 'Micro-Star
+  // International Co., Ltd.' + a portable chassis) AND the backend's
+  // laptopInfoOf provider serves it, so the caps AIB decode takes the
+  // laptop branch end to end (the 'MSI (<model>)' Dashboard entry).
+  const laptopFixture = process.env.RID_MOCK_LAPTOP === '1'
+    ? { laptop: { manufacturer: 'Micro-Star International Co., Ltd.', model: 'Claw 8 AI+', pcSystemType: 2, chassisTypes: [10] } }
+    : {};
   if (mock) {
-    sysinfo = createMockSysinfo();
+    sysinfo = createMockSysinfo(laptopFixture);
   } else if (applyProfileId) {
     // M4-D review F3 (logon latency): the --apply-profile flow is TRAY-ONLY -
     // the VRAM name suffix is never displayed there, so the PowerShell CIM
@@ -513,9 +522,21 @@ async function main() {
           // the lookup ALWAYS returned null on the real path and the A770
           // never gained its "8GB GDDR6" suffix.
           vramBytesOf: (device) => vramBytesOfDevice(device, cached),
+          // M17c: the laptop sysinfo provider - the CACHED CIM laptop
+          // fields (Win32_ComputerSystem Manufacturer/Model/PCSystemType +
+          // Win32_SystemEnclosure ChassisTypes), the vramBytesOf injection
+          // pattern; the caps AIB decode's laptop branch consumes them
+          // lazily ONCE (a desktop's non-portable shape -> the subsystem
+          // decode stays authoritative).
+          laptopInfoOf: () => (cached && cached.laptop ? cached.laptop : null),
         }
       : {},
-    mock: mockOpts,
+    // M17c: the mock mirrors the laptop provider shape (the mock caps
+    // decode's laptop branch; the mock fixture's laptop field rides the
+    // caps through the constructor opt in tests / the Run-B verify knob -
+    // RID_MOCK_LAPTOP=1 serves the portable fixture to BOTH the sysinfo
+    // payload and the caps AIB decode).
+    mock: { ...mockOpts, laptopInfoOf: () => (cached && cached.laptop ? cached.laptop : (Object.keys(laptopFixture).length > 0 ? laptopFixture.laptop : null)) },
   });
   // M2C-C: the bundled 2023 IGCL runtime adapter (extended-range writes).
   // Mock mode (incl. --ui-verify) uses the mock adapter - the real DLL is
@@ -1482,6 +1503,34 @@ async function main() {
         bootApplyLog: async () => mockBootApplyLog.slice(),
       }
     : null;
+  // M17c: the ETW/PresentMon FPS lane - the PREFERRED FPS source in the
+  // product path (the game's per-frame present rate via the dxgkrnl ETW
+  // stream; the packaged app runs elevated, which ETW realtime sessions
+  // require - the dev run degrades to the DXGI fallback honestly). THE
+  // DETERMINISM SEAM (the foregroundApi pattern): the lane exists ONLY in
+  // the non-mock path - mock/ui-verify never spawn the sidecar or probe
+  // the foreground. The lane is LAZY: the sidecar spawns on the first
+  // fps-poll (no capture before anything asks for FPS); the retarget
+  // check runs per poll (getForegroundWindow + GetWindowThreadProcessId -
+  // the cheap foreground-api probe ops). ownPids = the main process + the
+  // windows' renderer processes - the lane never measures the app itself
+  // (the foreground over Arc Power keeps the last game target instead).
+  let presentMonLane = null;
+  if (!mock) {
+    presentMonLane = createPresentMonLane({
+      source: createPresentMonFpsSource({}),
+      resolveForegroundPid: async () => await foregroundApi.detectPid(),
+      isOwnPid: async (pid) => {
+        const own = new Set([process.pid]);
+        for (const w of [win, overlayHandle?.getWindow?.()]) {
+          if (w && !w.isDestroyed()) {
+            try { own.add(w.webContents.getOSProcessId()); } catch { /* best effort */ }
+          }
+        }
+        return own.has(pid);
+      },
+    });
+  }
   // Whitelisted IPC + telemetry ownership; the renderer drives everything.
   // --ui-verify never creates a tray, so rebuildTray guards the null ref.
   let trayRebuilds = 0;
@@ -1543,6 +1592,7 @@ async function main() {
     registryCatalog,
     registryApply,
     fpsAdapter,
+    presentMonLane,
     foregroundApi,
     memoryUtil,
     sysStats,
@@ -1588,6 +1638,12 @@ async function main() {
       // reduced flow (no waiver boot step: the no-device boot never prompts)
       // pinning the whole no-Intel behavior end to end.
       await runNoIntelVerify(win);
+    } else if (process.env.RID_MOCK_LAPTOP === '1') {
+      // M17c: the laptop-sysinfo variant - the mock sysinfo fixture +
+      // the caps AIB decode both serve the PORTABLE shape (the MSI Claw):
+      // the Dashboard Board partner row reads 'MSI (Claw 8 AI+)' (the
+      // laptop-manufacturer branch, round-3 N2).
+      await runLaptopSysinfoVerify(win);
     } else if (fsVariant && fsVariant !== 'a770') {
       await runFeaturesetVerify(win, fsVariant);
     } else if (process.env.RID_MOCK_TWEAKS_APPLY === '1') {

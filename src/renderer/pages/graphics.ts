@@ -101,7 +101,11 @@ const chipNodes = new Map<string, HTMLElement>();
 const chipApplyNodes = new Map<string, HTMLButtonElement>();
 const valueNodes = new Map<string, HTMLElement>();
 const sliderNodes = new Map<string, HTMLInputElement>();
-const toggleNodes = new Map<string, HTMLInputElement>();
+// M17c: the FPS-limiter slider-ROW (slider + value text) - the whole row
+// hides when the limiter is OFF (the "30 FPS" text bug: the value text
+// used to stay visible while only the slider hid).
+const sliderRowNodes = new Map<string, HTMLElement>();
+const toggleNodes = new Map<string, HTMLSelectElement>();
 const selectNodes = new Map<string, HTMLSelectElement>();
 let viewContainer: HTMLElement | null = null;
 
@@ -115,6 +119,7 @@ function resetPageState() {
   chipApplyNodes.clear();
   valueNodes.clear();
   sliderNodes.clear();
+  sliderRowNodes.clear();
   toggleNodes.clear();
   selectNodes.clear();
   viewContainer = null;
@@ -357,20 +362,26 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     }
     const range = frameLimitRange(state);
     const fl = draft.frameLimit ?? { enabled: false, value: range.default };
-    const toggle = el('input', {
-      type: 'checkbox',
-      class: 'settings-checkbox graphics-toggle',
+    // M17c (user request): the ON/OFF checkbox becomes a DROPDOWN with
+    // Off / On options - Off = { enabled: false, value }, On =
+    // { enabled: true, value } + the slider-row appears. The
+    // draft.frameLimit { enabled, value } shape is UNCHANGED (the
+    // apply/verify/state paths untouched).
+    const toggle = el('select', {
+      class: 'graphics-select graphics-toggle graphics-fps-select',
       dataset: { graphicsToggle: 'frameLimit' },
-      checked: fl.enabled,
       onchange: (e: Event) => {
-        const on = (e.target as HTMLInputElement).checked;
+        const on = (e.target as HTMLSelectElement).value === 'on';
         draft.frameLimit = { enabled: on, value: on ? clampFrameLimitValue(fl.value, range) : fl.value };
-        const slider = sliderNodes.get('frameLimit');
-        if (slider) slider.hidden = !on;
+        const row = sliderRowNodes.get('frameLimit');
+        if (row) row.hidden = !on;
         refreshChip('frameLimit');
         updateFloating();
       },
-    });
+    }, [
+      el('option', { value: 'off', text: 'FPS Limit Off', selected: !fl.enabled }),
+      el('option', { value: 'on', text: 'FPS Limit On', selected: fl.enabled }),
+    ]);
     toggleNodes.set('frameLimit', toggle);
     const slider = el('input', {
       type: 'range',
@@ -379,7 +390,6 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       max: range.max,
       step: range.step,
       value: clampFrameLimitValue(fl.value, range),
-      hidden: !fl.enabled,
       oninput: (e: Event) => {
         const raw = Number((e.target as HTMLInputElement).value);
         const v = clampFrameLimitValue(raw, range);
@@ -393,18 +403,17 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     sliderNodes.set('frameLimit', slider);
     const valueNode = el('span', { class: 'graphics-fps-value', text: `${clampFrameLimitValue(fl.value, range)} FPS` });
     valueNodes.set('frameLimit', valueNode);
+    // The whole slider-row (slider + the '30 FPS' value text) hides when
+    // the limiter is OFF - the reported bug was the value text staying
+    // visible while only the slider hid.
+    const sliderRow = el('div', { class: 'graphics-fps-slider-row', hidden: !fl.enabled }, [slider, valueNode]);
+    sliderRowNodes.set('frameLimit', sliderRow);
     const card = el('section', { class: 'card graphics-card', dataset: { control: 'frameLimit' } }, [
       el('h2', { class: 'card-title', text: CARD_TITLES.frameLimit }),
       el('p', { class: 'card-note', text: CARD_NOTES.frameLimit }),
       el('div', { class: 'graphics-fps-row' }, [
-        el('label', { class: 'graphics-toggle-label' }, [
-          toggle,
-          el('span', { text: 'Limit the frame rate' }),
-        ]),
-        el('div', { class: 'graphics-fps-slider-row' }, [
-          slider,
-          valueNode,
-        ]),
+        el('div', { class: 'graphics-control' }, [toggle]),
+        sliderRow,
       ]),
       el('div', { class: 'graphics-card-actions' }, [
         el('span', { class: 'chip oc-chip-status', hidden: true }),
@@ -423,12 +432,15 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
           class: 'btn btn-ghost btn-sm',
           text: 'Reset to default',
           onClick: () => {
+            // M17c: the reset mirrors the Off state - the select flips to
+            // Off and the WHOLE slider-row hides (the value text included).
             draft.frameLimit = { enabled: false, value: range.default };
             const t = toggleNodes.get('frameLimit');
-            if (t) t.checked = false;
+            if (t) t.value = 'off';
+            const row = sliderRowNodes.get('frameLimit');
+            if (row) row.hidden = true;
             const sl = sliderNodes.get('frameLimit');
             if (sl) {
-              sl.hidden = true;
               sl.value = String(range.default);
             }
             const vn = valueNodes.get('frameLimit');

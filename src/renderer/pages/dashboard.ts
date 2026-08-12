@@ -44,6 +44,15 @@ function statTileNode(t: { label: string; value: string; unit: string }): HTMLEl
   ]);
 }
 
+/** M17c: the Board partner row value - '<AIB vendor> (<model>)' from the
+ *  caps AIB fields; unknown (both null) -> '-' (the honest grey). */
+function boardPartnerText(caps: { aibVendor?: string | null; aibModel?: string | null } | null | undefined): string {
+  const vendor = caps?.aibVendor;
+  if (!vendor) return '-';
+  const model = caps?.aibModel;
+  return model ? `${vendor} (${model})` : vendor;
+}
+
 function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
 }
@@ -289,6 +298,17 @@ export const dashboardPage: Page = {
             : device
               ? [el('div', { class: 'card-body kv-grid' }, [
                 el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: device.name })]),
+                // M17c: the Board partner row BELOW the Device row -
+                // '<AIB vendor> (<model>)' from the caps AIB fields
+                // (aibVendor/aibModel - the pure/aib.ts decode); unknown
+                // (both null) -> the honest grey '-' (text-unknown). ABSENT
+                // on the no-Intel branch (no Device row there - round-1 N3).
+                el('div', { class: 'kv', 'data-label': 'Board partner' }, [
+                  el('span', {
+                    class: s.caps?.aibVendor ? undefined : 'text-unknown',
+                    text: boardPartnerText(s.caps),
+                  }),
+                ]),
                 // M2b-B: no PCI ID, no persistent waiver status.
                 device.numXeCores > 0
                   ? el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}` })])

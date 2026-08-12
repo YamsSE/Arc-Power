@@ -82,6 +82,14 @@ export interface Capabilities {
   /** M2C-C: the bundled 2023 IGCL runtime loaded - PL/TL ranges are extended
    *  (max 315 W / 115 C) and applies above the DriverStore clamp route to it. */
   extendedRanges?: boolean;
+  /** M17c: the APPENDED AIB-identity fields (absent -> null). The backend
+   *  decodes them from the IGCL subsystem fields (pci_subsys_vendor_id /
+   *  pci_subsys_id) at enumeration + the laptop-manufacturer branch from the
+   *  sysinfo laptop fields; the renderer's device-scoped pins + the
+   *  Dashboard AIB row key on them. */
+  pciDeviceId?: string | null;
+  aibVendor?: string | null;
+  aibModel?: string | null;
 }
 
 export interface PerControlResult {
@@ -129,6 +137,13 @@ export interface DeviceInfo {
    *  supplies it) - the renderer's VRAM row never re-derives it. Null when
    *  unknown (the row shows the size only). */
   memType?: string | null;
+  /** M17c: the IGCL subsystem fields (ctl_device_adapter_properties_t
+   *  pci_subsys_vendor_id / pci_subsys_id - the PNP SUBSYS_ fields) carried
+   *  on the device payload (the mock mirrors the real backend). The AIB
+   *  decode keys on them; the caps response carries the DECODED fields.
+   *  Absent/null when unknown. */
+  pciSubsysVendorId?: number | null;
+  pciSubsysId?: number | null;
 }
 
 export interface HealthReport {

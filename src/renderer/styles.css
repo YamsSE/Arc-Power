@@ -29,6 +29,12 @@
      the fan editor input fell back to the default white background (a live
      bug). Defined per theme; Dark Steel keeps a slightly darker inset. */
   --bg-panel: #0d1017;
+  /* M17c (user request): the shared CONTROL surface token - DARKER than
+     --bg-inset so dropdowns/checkboxes/buttons read as interactive
+     controls, not information text. Applied to the selects, the checkboxes
+     (appearance:none + the accent checkmark) and the non-primary .btn;
+     hover states preserved (border-color accent). */
+  --control-bg: #0a0d13;
 }
 
 /* ------------------------------------------------------------------ themes
@@ -60,6 +66,7 @@
   --danger: #ef4444;
   --shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
   --bg-panel: #070b16;
+  --control-bg: #131a28;
 }
 
 [data-theme="light"] {
@@ -85,6 +92,7 @@
   --danger: #b91c1c;
   --shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
   --bg-panel: #ffffff;
+  --control-bg: #dce2ea;
 }
 
 /* The brand gradient on light: the ice end stop (#7ee0ff) disappears on
@@ -701,10 +709,13 @@ html, body {
 }
 .badge-mock { background: rgba(76, 194, 255, 0.15); color: var(--accent); border: 1px solid rgba(76, 194, 255, 0.4); }
 
-/* M2D: mock-only device featureset dropdown (header, mock badge area). */
+/* M2D: mock-only device featureset dropdown (header, mock badge area).
+   M17c: the accent-tinted background becomes the shared --control-bg token
+   (the dropdown reads as an interactive control, not info text); the
+   accent border + hover stay. */
 .featureset-select {
   appearance: none;
-  background: rgba(76, 194, 255, 0.08);
+  background: var(--control-bg);
   color: var(--accent);
   border: 1px solid rgba(76, 194, 255, 0.35);
   border-radius: 999px;
@@ -718,10 +729,11 @@ html, body {
 .featureset-select option { background: var(--bg-panel); color: var(--text); }
 
 /* M4-F: the compact GPU selector - styled exactly like the featureset
-   dropdown (the Dashboard GPU card header + the Tuning oc-mode row). */
+   dropdown (the Dashboard GPU card header + the Tuning oc-mode row).
+   M17c: the shared --control-bg token (see .featureset-select). */
 .device-select {
   appearance: none;
-  background: rgba(76, 194, 255, 0.08);
+  background: var(--control-bg);
   color: var(--accent);
   border: 1px solid rgba(76, 194, 255, 0.35);
   border-radius: 999px;
@@ -733,6 +745,15 @@ html, body {
 }
 .device-select:hover { border-color: var(--accent); }
 .device-select option { background: var(--bg-panel); color: var(--text); }
+
+/* M17c: the GENERIC select rule - any select element without its own
+   background gets the shared control surface (the .featureset-select /
+   .device-select / .graphics-select class rules override this by
+   specificity; a stray unstyled select never falls back to the UA white). */
+select {
+  background: var(--control-bg);
+  color: var(--text);
+}
 
 /* M4-F: the Dashboard GPU card header row - the card title LEFT, the
    device selector RIGHT (hidden entirely with <= 1 device).
@@ -755,7 +776,10 @@ html, body {
 .btn {
   appearance: none;
   border: 1px solid var(--border-strong);
-  background: var(--bg-inset);
+  /* M17c: the shared control surface (the user request) - the non-primary
+     .btn reads as an interactive control; .btn-primary/.btn-danger override
+     the background and stay unchanged. */
+  background: var(--control-bg);
   color: var(--text);
   border-radius: var(--radius-sm);
   padding: 8px 16px;
@@ -770,8 +794,11 @@ html, body {
 .btn-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); font-weight: 650; }
 .btn-primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
 
+/* M17c: the ghost button keeps its transparent surface (it is a text
+   button, not a filled control); the hover gains the shared control
+   background (was --bg-inset). */
 .btn-ghost { background: transparent; }
-.btn-ghost:hover:not(:disabled) { background: var(--bg-inset); }
+.btn-ghost:hover:not(:disabled) { background: var(--control-bg); }
 
 .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 650; }
 .btn-danger:hover:not(:disabled) { background: #dc2626; border-color: #dc2626; }
@@ -1408,9 +1435,12 @@ html, body {
    which OVERRODE the UA stylesheet's [hidden] { display: none } and
    rendered an empty pill next to "Reset to default" while pristine. The
    hidden attribute must win for both the status chip and the per-card
-   Apply button. */
+   Apply button. M17c: the FPS slider-row sets an explicit display (flex)
+   the same way - the Off state must hide the WHOLE row (slider + the
+   "30 FPS" value text), so the attribute-level rule covers it too. */
 .oc-chip-status[hidden],
-.oc-chip-apply[hidden] { display: none; }
+.oc-chip-apply[hidden],
+.graphics-fps-slider-row[hidden] { display: none; }
 
 /* M9: the per-card Apply button (the chip state machine) - the small-chip
    shape with the accent border (the .chip-btn hover keeps it). */
@@ -1432,7 +1462,8 @@ html, body {
 .graphics-control { margin-top: 8px; }
 .graphics-select {
   appearance: none;
-  background: var(--bg-inset);
+  /* M17c: the shared control surface (the user request). */
+  background: var(--control-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
@@ -1598,7 +1629,40 @@ html, body {
 .settings-card .card-title { margin-bottom: 8px; }
 .settings-row { display: flex; align-items: center; gap: 8px; }
 .settings-state { margin-top: 8px; }
-.settings-checkbox { accent-color: var(--accent-strong); width: 15px; height: 15px; }
+/* M17c (user request): the settings checkboxes are restyled as real
+   controls - appearance:none + the shared --control-bg surface + a border,
+   with the accent checkmark drawn via the :checked state (a border-rotated
+   pseudo-element - no font dependency). accent-color stays as the fallback
+   for engines that ignore appearance:none. Hover preserved (border-color
+   accent). */
+.settings-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  accent-color: var(--accent-strong);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--control-bg);
+  display: inline-grid;
+  place-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.settings-checkbox:hover { border-color: var(--accent); }
+.settings-checkbox:checked {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+.settings-checkbox:checked::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid var(--on-accent);
+  border-bottom: 2px solid var(--on-accent);
+  transform: rotate(-45deg) translate(0.5px, -1px);
+}
 
 /* 1.0.1 Themes: the Settings Theme card - 3 swatches
    (button[data-theme-option="dark|midnight|light"]). The color chips are
@@ -1705,7 +1769,8 @@ html, body {
   padding: 4px 8px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
-  background: var(--bg-inset);
+  /* M17c: the shared control surface (the user request). */
+  background: var(--control-bg);
   color: var(--text);
   font-family: inherit;
   font-size: 13px;

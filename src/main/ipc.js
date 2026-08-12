@@ -32,6 +32,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   registryCatalog?: ReturnType<typeof createRegistryCatalog>,
  *   registryApply?: ReturnType<typeof createRegistryApply>,
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> },
+ *   presentMonLane?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (main.js wires the real lane in the product path)
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
  *   sysStats?: { sample: () => Promise<unknown> },
@@ -49,7 +50,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {} }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {} }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -61,6 +62,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     registryCatalog,
     registryApply,
     fpsAdapter,
+    presentMonLane,
     foregroundApi,
     memoryUtil,
     sysStats,
@@ -92,7 +94,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, (_event, ...args) => fn(...args));
   }
-  const stopFps = () => fpsAdapter.stop?.().catch(() => {});
+  // M17c: the teardown kills the PresentMon sidecar too (no orphaned ETW
+  // session / child process on app exit).
+  const stopFps = () => Promise.all([
+    fpsAdapter.stop?.().catch(() => {}),
+    presentMonLane?.stop?.().catch(() => {}),
+  ]);
   return async () => {
     await stopAllTelemetry();
     await stopFps();

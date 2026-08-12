@@ -190,9 +190,29 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // never silently clamp to 315 (the worker's caps max IS 315, so the
     // flagless skip would clamp silently - the forbidden class).
     const caps = await backend.getCapabilities(deviceId);
+    // M17c: the DEVICE-SCOPED gate thresholds - the caps carry the device
+    // identity (pciDeviceId/aibVendor/aibModel - resolved from the
+    // worker's OWN post-M17c caps enumeration, round-2 N7), which the
+    // ocModeRefusal limits-key resolves from the pure device-limits table
+    // (the listed rows' ceilings for listed cards, the default row for
+    // unlisted - never caps.ranges).
+    // M17c (step-4 N6): the request MAY carry the PARENT-RESOLVED
+    // limits-key (req.limitsKey - the parent's finalized caps AIB fields,
+    // laptop branch included). The worker's own caps decode the subsystem
+    // only, so on a laptop the parent's thresholds could diverge (the
+    // portable branch overrides the decode parent-side); the parent's
+    // limits-key makes the worker's gate match the user-facing surface.
+    // Absent -> the worker's own caps (the historical behavior).
+    const limitsKey = req.limitsKey && typeof req.limitsKey === 'object'
+      ? {
+          pciDeviceId: req.limitsKey.pciDeviceId ?? null,
+          aibVendor: req.limitsKey.aibVendor ?? null,
+          aibModel: req.limitsKey.aibModel ?? null,
+        }
+      : null;
     const refusal = req.profileApply === true
-      ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges)
-      : ocModeRefusal(req.ocMode, settings, caps.ranges);
+      ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges, limitsKey ?? caps)
+      : ocModeRefusal(req.ocMode, settings, caps.ranges, limitsKey ?? caps);
     if (refusal) {
       log(`[apply-worker] oc-mode refusal: ${refusal.message} (${refusal.controls.join(', ')})`);
       // M3-C review F2: the refusal carries the FRESH device state, never
@@ -223,7 +243,28 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     }
     const clamped = clampSettings(settings, caps.ranges);
     const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log });
-    await finish({ ok: out.result.ok, perControl: out.result.perControl, state: out.state });
+    // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
+    // round-3 N1): the attempted values of the 'out-of-range' per-control
+    // results - the parent's session refused-ceiling store records from
+    // them (the worker's own store evaporates; the parent's caps are the
+    // ones the renderer sees). The parent clamps with ITS caps, the worker
+    // with ITS OWN - so the envelope carries the values the worker ACTUALLY
+    // attempted, never a guess. Emitted only when non-empty (the old
+    // envelope shape pins stay green; an absent `refused` falls back to
+    // the parent's attempted settings).
+    const refused = {};
+    for (const [control, per] of Object.entries(out.result.perControl)) {
+      if (per?.ok === false && per?.errorCode === 'out-of-range'
+        && typeof clamped[control] === 'number' && Number.isFinite(clamped[control])) {
+        refused[control] = clamped[control];
+      }
+    }
+    await finish({
+      ok: out.result.ok,
+      perControl: out.result.perControl,
+      state: out.state,
+      ...(Object.keys(refused).length > 0 ? { refused } : {}),
+    });
     return 0;
   } catch (err) {
     log(`[apply-worker] FAILED: ${err.message}`);

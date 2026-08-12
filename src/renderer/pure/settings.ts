@@ -8,6 +8,7 @@
 
 import type { Capabilities, DeviceState, FanMode, RangeInfo, Settings } from '../types.ts';
 import { MAX_CURVE_POINTS } from './curve.ts';
+import { A770_PCI_DEVICE_ID, deviceLimitsOf } from './device-limits.ts';
 
 // F3 PT clamp (M2C-A): the driver setter refuses temp limits above 90 C
 // (0x44000005); the exposed max is pinned here on top of the backend clamp so
@@ -62,6 +63,16 @@ export const VOLT_OFFSET_STEP_V = 0.001;
  * M15 (F4-fix): the STEP is pinned to VOLT_OFFSET_STEP_V (0.001) with the
  * max - the driver's 0.005 step puts 0.234 OFF-GRID, so the slider would
  * max at 0.230; the finer step makes the real ceiling reachable + readable.
+ * M17c: the M15 volt pin becomes A770-SCOPED (probe evidence: 0.235 refused
+ * on THIS driver - the ceiling is card-specific). Keyed on caps.pciDeviceId:
+ * the A770 (0x56A0) exposes max = min(degraded ceiling, 0.234) - the pin
+ * NEVER RAISES a value (a session refused-ceiling store degrade below 0.234
+ * is preserved); other V-unit cards (the A750's 0.285 driver props) keep
+ * their driver props untouched - the global 0.234 clamp is gone. The step
+ * stays pinned to 0.001 on the A770 (the 0.234 ceiling is reachable). A
+ * call WITHOUT the caps key keeps the legacy M15 both-directions behavior
+ * (the pre-M17c pins - the product call sites always pass caps via
+ * cardSliderRange).
  */
 export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
   if (!range) return range;
@@ -71,9 +82,28 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
   if (key === 'tempLimitC' && range.units === 'C' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
     return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
   }
-  if (key === 'gpuVoltOffsetV' && range.units === 'V'
-    && (range.max !== VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V)) {
-    return { ...range, max: VOLT_OFFSET_MAX_V, step: VOLT_OFFSET_STEP_V };
+  if (key === 'gpuVoltOffsetV' && range.units === 'V') {
+    const deviceId = caps?.pciDeviceId;
+    if (deviceId === A770_PCI_DEVICE_ID) {
+      // M17c: the A770-scoped pin - max = min(degraded ceiling, 0.234),
+      // NEVER a raise (a session-store degrade below 0.234 is preserved);
+      // the step is pinned to 0.001 so the 0.234 ceiling is reachable.
+      if (range.max > VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V) {
+        return { ...range, max: Math.min(range.max, VOLT_OFFSET_MAX_V), step: VOLT_OFFSET_STEP_V };
+      }
+      return range; // already legal - the pass-through identity pins stay green
+    }
+    if (deviceId === undefined || deviceId === null) {
+      // Legacy M15 (no caps key / an old payload without pciDeviceId): the
+      // both-directions 0.234 pin stays (the pre-M17c renderer behavior).
+      if (range.max !== VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V) {
+        return { ...range, max: VOLT_OFFSET_MAX_V, step: VOLT_OFFSET_STEP_V };
+      }
+      return range;
+    }
+    // M17c: a known non-A770 device (the A750's 0.285 driver props) keeps
+    // its driver props - the global 0.234 clamp is gone.
+    return range;
   }
   return range;
 }
@@ -87,6 +117,10 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
  * would have silently widened the slider, removing the UI half of the M2C-A
  * F3 guard. Undefined (unknown control / no caps) -> undefined; the callers
  * guard before use.
+ * M17c: the CAPS KEY always flows through here (the tuning.ts call sites
+ * pass the full caps) - the device-scoped A770 volt pin keys on
+ * caps.pciDeviceId, so the A750's driver props (0.285) pass through and the
+ * A770 ceiling stays 0.234.
  */
 export function cardSliderRange(caps: Capabilities | null | undefined, key: string): RangeInfo | undefined {
   return clampExposedRange(caps?.ranges[key], key, caps ?? undefined);
@@ -115,12 +149,27 @@ export function advancedUiVisible(caps: Capabilities | null | undefined): boolea
  * M2D: the extended-range concept is W/C-only - when the device caps are
  * known, percent-unit ranges (Battlemage mock: volt/PL/TL as %) never count
  * as extended (e.g. a 100% temp limit is not 100 C).
+ * M17c: the thresholds feed from the SAME device-scoped limits table the
+ * main-side gate uses (requiresExtendedRangeConfirm feeds from the same
+ * table - round-2 S8): a LISTED card's confirm threshold = its listed row's
+ * max (the a750 ASRock's 216 W PL / the 90 C TL caps), the default
+ * 252/90 for unlisted cards. Keyed on the caps identity
+ * (pciDeviceId/aibVendor/aibModel) - never caps.ranges.
  */
 export function requiresExtendedRangeConfirm(settings: Settings, caps?: Capabilities): boolean {
   const plRange = caps?.ranges?.powerLimitW;
   const tlRange = caps?.ranges?.tempLimitC;
-  return (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W && (!plRange || plRange.units === 'W'))
-    || (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C && (!tlRange || tlRange.units === 'C'));
+  // M17c: the device identity (the caps fields - optional on Capabilities,
+  // the limits table accepts them) - never caps.ranges.
+  const limits = deviceLimitsOf({
+    pciDeviceId: caps?.pciDeviceId ?? null,
+    aibVendor: caps?.aibVendor ?? null,
+    aibModel: caps?.aibModel ?? null,
+  });
+  const plMax = limits?.powerLimitW?.max ?? STD_PL_MAX_W;
+  const tlMax = limits?.tempLimitC?.max ?? STD_TL_MAX_C;
+  return (typeof settings.powerLimitW === 'number' && settings.powerLimitW > plMax && (!plRange || plRange.units === 'W'))
+    || (typeof settings.tempLimitC === 'number' && settings.tempLimitC > tlMax && (!tlRange || tlRange.units === 'C'));
 }
 
 const SCALAR_KEYS = new Set([

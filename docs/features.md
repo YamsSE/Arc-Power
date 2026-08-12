@@ -61,11 +61,14 @@ Quick access and apply-on-startup controls without opening the window.
 
 ## Overlay and monitoring accuracy
 
-- **FPS** - the displayed frame rate is a 400-600 ms window of the DXGI
-  presentation sampler (previously a laggy 1-second average); the AVG FPS
-  stat is the last 10 seconds of frames. On the windowed desktop the count
-  tracks the display refresh rate, not the game's render rate - the honest
-  limit of the unelevated DXGI path.
+- **FPS** - the preferred source is the per-process present stream
+  (PresentMon ETW events, pinned v2.5.1 sidecar): the foreground game's own
+  present rate, exact per frame. When the ETW lane is inactive (no
+  foreground program, or the sidecar unavailable - e.g. the unelevated dev
+  run) the reading falls back to the DXGI desktop presentation sampler (a
+  400-600 ms window; on the windowed desktop the count tracks the display
+  refresh rate, not the game's render rate - the honest limit of the
+  fallback tier). The AVG FPS stat is the last 10 seconds of frames.
 - **API badge** - the foreground graphics API is detected from the process's
   loaded modules: Vulkan and OpenGL-with-a-vendor-ICD rank above DirectX, a
   bare system OpenGL falls through to DirectX, and launcher-owned windows

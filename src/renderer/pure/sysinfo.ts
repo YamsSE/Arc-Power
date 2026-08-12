@@ -67,21 +67,34 @@ export const MAINBOARD_SHORT_MANUFACTURER: Record<string, string> = Object.freez
 
 /**
  * M4J (B): the Mainboard row label - "ASUSTeK MAXIMUS VII RANGER" (short
- * manufacturer + product); the Product ALONE when the manufacturer is
- * unknown (not in the short-map) / absent; the short manufacturer alone
- * when the product is absent; '-' when neither exists.
+ * manufacturer + product). M17c (user request): the manufacturer ALWAYS
+ * leads - the short-map where known, the RAW manufacturer pass-through
+ * otherwise (no more product-only rows - a bare product reads as an
+ * un-attributed board); AND the dedupe rule: a product that repeats the
+ * manufacturer ("Asus Asus XXXXX") drops the LEADING duplicate
+ * (case-insensitive, token-aligned - 'asus ' or the exact product), so
+ * the label never doubles the brand. The short manufacturer alone when
+ * the product is absent; '-' when neither exists.
  */
 export function mainboardRow(sysinfo: SysInfo | null): string {
   const bb = sysinfo?.baseboard;
   const manufacturer = typeof bb?.manufacturer === 'string' && bb.manufacturer.length > 0 ? bb.manufacturer : null;
   const product = typeof bb?.product === 'string' && bb.product.length > 0 ? bb.product : null;
   if (!manufacturer && !product) return '-';
-  // Unknown manufacturers are NOT passed through here - the plan: the
-  // Product alone when the manufacturer is unknown (a full legal name
-  // before a bare product would read as a wrong brand claim).
-  const short = manufacturer ? (MAINBOARD_SHORT_MANUFACTURER[manufacturer] ?? null) : null;
+  const short = manufacturer ? (MAINBOARD_SHORT_MANUFACTURER[manufacturer] ?? manufacturer) : null;
   if (!short) return product ?? '-';
-  return product ? `${short} ${product}` : short;
+  if (!product) return short;
+  const suffix = product.trim();
+  // M17c (user): the leading-duplicate drop - the product starts with the
+  // manufacturer (any case) and the NEXT character is a non-alphanumeric
+  // boundary (or the product IS the manufacturer) -> strip the duplicate.
+  const head = suffix.slice(0, short.length);
+  const boundary = suffix.length === short.length ? '' : suffix[short.length] ?? '';
+  if (head.toLowerCase() === short.toLowerCase() && !/[A-Za-z0-9]/.test(boundary)) {
+    const rest = suffix.slice(short.length).trim();
+    return rest.length > 0 ? `${short} ${rest}` : short;
+  }
+  return `${short} ${suffix}`;
 }
 
 /**

@@ -20,6 +20,19 @@ import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFan
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
+// M17c: the pure AIB decode (aibOf + the laptop branch) - the SAME decode
+// the real backend runs in getCapabilities (the renderer TS imports fine
+// under the packaged Electron - Node 22.21 type stripping).
+import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
+// M17c: the per-device limits table - the MOCK mirrors the real backend's
+// getCapabilities finalize (step-4 N1): the table's listed rows cap the
+// advanced ranges (the a770's advanced TL 115 -> the documented 90) so the
+// mock slider never offers a window the real caps refuse.
+import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
+// M17c: the session refused-ceiling store (the mock mirrors the real
+// backend's parent-side merge - getCapabilities merges the store so the
+// mock-refusal fixture exercises the same merge the renderer sees).
+import { createRefusedCeilingStore, mergeIntoRanges, recordRefusalEnvelope } from './refused-ceilings.js';
 
 // M8 (the Graphics tab): the mock's graphics fixture - mirrors the
 // M8 checkpoint-1 probe record (pipeline/live-3d-feature.md, the A770
@@ -96,13 +109,17 @@ export class MockBackend {
  *   multiDevice?: boolean,             // M4-F: emit device ids 0 AND 1 (device 1 =
    *                                      // the arc-igpu line) - the RID_MOCK_MULTI_DEVICE=1
    *                                      // ui-verify knob; tests pass the flag directly
-  *  graphicsUnsupported?: boolean,    // M8: overlay - the WHOLE graphics surface
-  *                                      // degrades to the supported-all-false state
-  *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1, the
-  *                                      // RID_MOCK_FAN_READONLY pattern); the
-  *                                      // multi-device iGPU (device 1) degrades
-  *                                      // regardless
-  * }} opts
+   *  graphicsUnsupported?: boolean,  // M8: overlay - the WHOLE graphics surface
+   *                                      // degrades to the supported-all-false state
+   *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1, the
+   *                                      // RID_MOCK_FAN_READONLY pattern); the
+   *                                      // multi-device iGPU (device 1) degrades
+   *                                      // regardless
+   *   laptopInfoOf?: () => object|null,  // M17c: the laptop sysinfo provider
+   *                                      // (the real backend's vramBytesOf-style
+   *                                      // injection - the caps AIB decode's
+   *                                      // laptop branch mirrors it)
+   * }} opts
    */
   constructor(opts = {}) {
     this.kind = 'mock';
@@ -148,6 +165,17 @@ export class MockBackend {
     // supported-all-false state. The multi-device iGPU (device 1) degrades
     // regardless (honest - an iGPU exposes no 3D-feature overrides).
     this._graphicsUnsupported = opts.graphicsUnsupported === true || process.env.RID_MOCK_GRAPHICS_UNSUPPORTED === '1';
+    // M17c: the laptop sysinfo provider (the caps AIB decode's laptop
+    // branch - mirrors the real backend's injection).
+    this._laptopInfoOf = typeof opts.laptopInfoOf === 'function' ? opts.laptopInfoOf : null;
+    // M17c: the iGPU temperature-fallback parity knob (RID_MOCK_SENSOR_TEMP
+    // _FALLBACK=1): sampleRawTelemetry simulates an ABSENT telemetry
+    // temperature item and supplies tempC from the mock "sensor" source -
+    // the real backend's ctlTemperatureGetState fallback mirror.
+    this._sensorTempFallback = opts.sensorTempFallback === true || process.env.RID_MOCK_SENSOR_TEMP_FALLBACK === '1';
+    // M17c: the session refused-ceiling store (the real backend's
+    // parent-side merge mirror - getCapabilities merges it).
+    this._refusedCeilings = createRefusedCeilingStore();
     // Devices > 0 live here; device 0 is the legacy single-device fields
     // (_device/_caps/_state/_tick/_energyStepJ/_waiverAccepted/
     // _telemetryCbs - the pre-M4-F mock, pinned directly by tests).
@@ -308,6 +336,19 @@ export class MockBackend {
     // M2C-C: the bundled-2023-runtime flag - the UI exposes the extended
     // maxes only when it is set AND the OC mode is advanced (M3-C-E).
     if (extended && this._ocMode === 'advanced') caps.extendedRanges = true;
+    // M17c: the AIB-identity fields - the SAME decode the real backend
+    // runs in getCapabilities (pure/aib.ts from the fixture subsystem
+    // fields + the injected laptopInfoOf provider - the mock mirrors the
+    // laptop branch too, so the mock-refusal/verify sessions exercise the
+    // same payload the renderer sees). Absent fixture fields -> null.
+    caps.pciDeviceId = typeof fs.pciDeviceId === 'string' ? fs.pciDeviceId : null;
+    const laptopInfo = this._laptopInfoOf ? this._laptopInfoOf() : null;
+    const laptopDecoded = laptopInfo ? laptopAibOf(laptopInfo) : null;
+    const subsysVendor = typeof fs.pciSubsysVendorId === 'number' ? fs.pciSubsysVendorId : null;
+    const subsysId = typeof fs.pciSubsysId === 'number' ? fs.pciSubsysId : null;
+    const aib = laptopDecoded ?? aibOf(subsysVendor, subsysId);
+    caps.aibVendor = aib?.vendor ?? null;
+    caps.aibModel = aib?.model ?? null;
     return caps;
   }
 
@@ -369,6 +410,11 @@ export class MockBackend {
       numXeCores: fs.numXeCores,
       vramBytes: fs.vramBytes ?? null,
       memType: fs.memType ?? null,
+      // M17c: the IGCL subsystem fields ride the DEVICE payload (the mock
+      // mirrors the real backend's _ensureDevices - the AIB decode keys on
+      // them). Null when the fixture carries none (the honest unknown).
+      pciSubsysVendorId: typeof fs.pciSubsysVendorId === 'number' ? fs.pciSubsysVendorId : null,
+      pciSubsysId: typeof fs.pciSubsysId === 'number' ? fs.pciSubsysId : null,
     };
   }
 
@@ -549,11 +595,96 @@ export class MockBackend {
     };
   }
 
+  /**
+   * M17c (step-4 N1): the DEVICE-LIMITS table application - the mock
+   * mirrors the real backend's _finalizeCaps table section (the same pure
+   * table, the same row resolution + units guard + min-cap + step rules).
+   * The real backend caps the listed A770's advanced TL at the documented
+   * 90 C - the mock must expose the SAME ranges or the mock slider offers
+   * a (90, 115] window the real caps refuse. MUTATES caps.ranges in place
+   * (deterministic + idempotent - a re-finalize is a no-op); the caller
+   * passes the fresh per-read clone.
+   * @param {number} deviceId
+   * @param {object} caps the per-read caps clone (carries the AIB fields)
+   */
+  _finalizeCaps(deviceId, caps) {
+    const identity = {
+      pciDeviceId: caps.pciDeviceId ?? null,
+      aibVendor: caps.aibVendor ?? null,
+      aibModel: caps.aibModel ?? null,
+    };
+    const limits = deviceLimitsOf(identity);
+    if (limits) {
+      // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
+      // (stock 252/90, extended 315/115); a LISTED card's row is the
+      // documented ceiling in BOTH modes (round-2 S8).
+      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
+      for (const [canonical, override] of Object.entries(row)) {
+        if (canonical === 'listed') continue;
+        const range = caps.ranges[canonical];
+        if (!range) continue;
+        // The M4-E units rule: the table speaks W/V/C - percent-unit
+        // ranges (Battlemage) are never touched.
+        if (canonical === 'powerLimitW' && range.units !== 'W') continue;
+        if (canonical === 'tempLimitC' && range.units !== 'C') continue;
+        if (canonical === 'gpuVoltOffsetV' && range.units !== 'V') continue;
+        let next = range;
+        if (typeof override.max === 'number') {
+          if (canonical === 'gpuVoltOffsetV') {
+            // The volt maxes are the M15 probe-ceiling PINS (both
+            // directions); the store merge below is the only downward force.
+            next = { ...next, max: override.max };
+          } else {
+            next = { ...next, max: Math.min(range.max, override.max) };
+          }
+          if (typeof range.default === 'number' && Number.isFinite(range.default)) {
+            next = { ...next, default: Math.min(range.default, next.max) };
+          }
+        }
+        if (typeof override.step === 'number' && Number.isFinite(override.step)) {
+          next = { ...next, step: override.step };
+        }
+        if (next !== range) caps.ranges[canonical] = next;
+      }
+    }
+  }
+
   async getCapabilities(deviceId = 0) {
     const e = this._entry(deviceId);
     const caps = JSON.parse(JSON.stringify(e.caps));
     caps.waiverAccepted = e.waiverAccepted;
+    // M17c: the session refused-ceiling store merge + the DEVICE-LIMITS
+    // table - the mock mirrors the real backend's getCapabilities finalize
+    // (table first, THEN the store merge - the same order the real
+    // _finalizeCaps runs; a store-degraded ceiling is never re-raised by
+    // the table). Step-4 N1: the table mirror closes the mock gap where
+    // the listed a770 advanced TL 115 stayed exposed while the real caps
+    // cap it at the documented 90 - the mock-refusal/verify sessions now
+    // exercise the same final ranges the renderer sees. The mock
+    // featuresets still encode the per-card BASE ranges (the fixture's
+    // driver-props truth); the table + the store ride on top like the real
+    // backend's caps.
+    this._finalizeCaps(deviceId, caps);
+    caps.ranges = mergeIntoRanges(this._refusedCeilings, deviceId, caps.ranges);
     return caps;
+  }
+
+  /**
+   * M17c: the SHARED refusal recording (the real backend's
+   * recordApplyRefusals mirror - the ipc-core/apply-on-boot apply paths
+   * feed it; the next getCapabilities read merges the degraded ceiling).
+   * @param {number} deviceId
+   * @param {{ perControl?: object }} result the apply result envelope
+   * @param {object|null|undefined} settings the ATTEMPTED settings
+   */
+  recordApplyRefusals(deviceId, result, settings) {
+    if (!result || typeof result !== 'object' || !result.perControl) return;
+    const entry = deviceId === undefined || deviceId === null || deviceId === 0
+      ? { caps: this._caps }
+      : this._extraDevices.get(deviceId);
+    if (!entry) return;
+    const ranges = entry.caps?.ranges ?? null;
+    recordRefusalEnvelope(this._refusedCeilings, deviceId, result.perControl, settings, ranges);
   }
 
   async getCurrentSettings(deviceId = 0) {
@@ -857,11 +988,18 @@ export class MockBackend {
     // igcl backend emits it (activity-counter delta); the mock never did,
     // so the dashboard GPU-util tile would read '-' in verify. Fixed value
     // (same on every device - the pins pin the value, not a ramp).
+    // M17c: the iGPU temperature-fallback parity - under the
+    // RID_MOCK_SENSOR_TEMP_FALLBACK knob the telemetry temperature ITEM is
+    // ABSENT (the unsupported-item shape the real fallback exists for) and
+    // tempC comes from the mock "sensor" source (the ctlTemperatureGetState
+    // mirror) instead.
+    const sensorFallback = this._sensorTempFallback;
+    const itemTempC = sensorFallback ? undefined : tel.tempCBase + (tick % 30);
     const sample = {
       t: tBase + tick * this._intervalS,
       gpuClockMhz: tel.gpuClockBaseMhz + tick * 100,
       memClockMhz: tel.memClockMhz,
-      tempC: tel.tempCBase + (tick % 30),
+      tempC: itemTempC,
       vramTempC: tel.tempCBase + 8 + (tick % 10),
       gpuVoltageV: 0.652,
       gpuEnergyJ: 395809.938172 + tick * energyStepJ,
@@ -875,6 +1013,12 @@ export class MockBackend {
         util: false,
       },
     };
+    if (sensorFallback) {
+      // The mock sensor source: the same tempCBase ramp from a DIFFERENT
+      // offset (the sensor read ≠ the telemetry item - the pin proves the
+      // fallback path supplied the value).
+      sample.tempC = tel.tempCBase + 2;
+    }
     for (const cb of e.telemetryCbs) { try { cb(sample); } catch { /* ignore */ } }
     return sample;
   }

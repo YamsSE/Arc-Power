@@ -66,7 +66,14 @@ export function buildSysinfoScript() {
   return [
     '$ErrorActionPreference = \'SilentlyContinue\'',
     '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,Manufacturer',
-    '$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory',
+    // M17c: the computerSystem query gains Manufacturer/Model/PCSystemType
+    // (the laptop-branch AIB source - the Win32_ComputerSystem fields the
+    // mobile-board decode keys on; PCSystemType 2 = the portable code).
+    '$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory,Manufacturer,Model,PCSystemType',
+    // M17c: the chassis query - Win32_SystemEnclosure ChassisTypes (the
+    // SECOND portable-form-factor signal: the chassis codes 8/9/10/14/30/
+    // 31/32 - the pinned rule lives in pure/aib.ts).
+    '$enc = Get-CimInstance Win32_SystemEnclosure | Select-Object -First 1 ChassisTypes',
     // M4-H: the memory row also reads SMBIOSMemoryType (the Type-17 code -
     // 24 = DDR3, 34 = DDR5 on the mock; the parse maps it, anything unknown
     // is omitted).
@@ -99,7 +106,7 @@ export function buildSysinfoScript() {
     '$dma = @(Get-CimInstance Win32_DeviceMemoryAddress | Select-Object StartingAddress,EndingAddress)',
     '$alloc = @(Get-CimInstance Win32_AllocatedResource)',
     '$barRes = @(foreach ($v in $vga) { $max = 0; foreach ($r in $alloc) { if ("$($r.Dependent)" -match "Win32_VideoController \\(DeviceID = ""$($v.DeviceID)""\\)" -and "$($r.Antecedent)" -match \'StartingAddress = (\\d+)\') { $start = [Convert]::ToInt64($Matches[1]); $e = @($dma | Where-Object { [Convert]::ToInt64($_.StartingAddress) -eq $start })[0]; if ($e) { $sz = [Convert]::ToInt64($e.EndingAddress) - $start + 1; if ($sz -gt $max) { $max = $sz } } } }; [pscustomobject]@{ PNPDeviceID = $v.PNPDeviceID; MaxBarBytes = $max } })',
-    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
+    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; systemEnclosure = $enc; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
 }
 
@@ -679,8 +686,12 @@ export function applyAllocatedBar(controllers, allocatedBar) {
  * Parse the PowerShell JSON output into the canonical sysinfo shape. Any
  * missing/unparseable piece degrades per-field (null / empty array) - the
  * query result is a best-effort read, never a boot blocker.
+ * M17c: the payload gains the `laptop` field (the laptop-branch AIB source):
+ * Win32_ComputerSystem Manufacturer/Model/PCSystemType + Win32_SystemEnclosure
+ * ChassisTypes - consumed lazily ONCE by the backend's caps decode (the
+ * portable-form-factor rule lives in pure/aib.ts).
  * @param {string} stdout
- * @returns {{ cpu: object, ram: object, videoControllers: object[] }}
+ * @returns {{ cpu: object, ram: object, baseboard: object, videoControllers: object[], laptop: object }}
  */
 export function parseCimOutput(stdout) {
   let raw = null;
@@ -689,10 +700,11 @@ export function parseCimOutput(stdout) {
   } catch {
     // Garbage output (UAC prompt interleaved, PS 2 vs 5 quirks) degrades to
     // the fallback shape's empties - the caller decides whether to fall back.
-    return { cpu: {}, ram: {}, baseboard: {}, videoControllers: [] };
+    return { cpu: {}, ram: {}, baseboard: {}, videoControllers: [], laptop: { manufacturer: null, model: null, pcSystemType: null, chassisTypes: [] } };
   }
   const cpuRaw = raw && typeof raw === 'object' ? raw.cpu : null;
   const csRaw = raw && typeof raw === 'object' ? raw.computerSystem : null;
+  const encRaw = raw && typeof raw === 'object' ? raw.systemEnclosure : null;
   const memRaw = raw && typeof raw === 'object' ? raw.physicalMemory : null;
   const bbRaw = raw && typeof raw === 'object' ? raw.baseboard : null;
   const vgaRaw = Array.isArray(raw?.videoControllers) ? raw.videoControllers : [];
@@ -738,6 +750,18 @@ export function parseCimOutput(stdout) {
     // the pure ramMemoryType mapping in the renderer derives the label).
     memoryType: num(memRaw?.SMBIOSMemoryType),
   };
+  // M17c: the laptop-branch fields - Win32_ComputerSystem Manufacturer /
+  // Model / PCSystemType + Win32_SystemEnclosure ChassisTypes. Missing
+  // classes degrade per-field (null / []) - a desktop's systemEnclosure
+  // row may be absent on stripped systems; the backend's laptopAibOf then
+  // sees a non-portable shape and the subsystem decode stays authoritative.
+  const chassisRaw = Array.isArray(encRaw?.ChassisTypes) ? encRaw.ChassisTypes : [];
+  const laptop = {
+    manufacturer: typeof csRaw?.Manufacturer === 'string' && csRaw.Manufacturer ? csRaw.Manufacturer : null,
+    model: typeof csRaw?.Model === 'string' && csRaw.Model ? csRaw.Model : null,
+    pcSystemType: typeof csRaw?.PCSystemType === 'number' && Number.isFinite(csRaw.PCSystemType) ? csRaw.PCSystemType : null,
+    chassisTypes: chassisRaw.filter((t) => typeof t === 'number' && Number.isFinite(t)).map((t) => Math.floor(t)),
+  };
   const controllers = applyAllocatedBar(
     applyRegistryMemory(
       vgaRaw
@@ -766,7 +790,7 @@ export function parseCimOutput(stdout) {
   const videoControllers = controllers
     .map(({ _pnputilBarBytes, ...rest }) => rest)
     .filter(isRealGpuController);
-  return { cpu, ram, baseboard, videoControllers };
+  return { cpu, ram, baseboard, laptop, videoControllers };
 }
 
 /**
@@ -785,6 +809,10 @@ export function fallbackSysinfo() {
     cpu,
     ram: { totalBytes: os.totalmem(), speedMhz: null, manufacturer: null, memoryType: null },
     baseboard: { manufacturer: null, product: null },
+    // M17c: the os.cpus() fallback has no laptop source - the honest
+    // non-portable shape (the backend's laptopAibOf returns null and the
+    // subsystem decode stays authoritative).
+    laptop: { manufacturer: null, model: null, pcSystemType: null, chassisTypes: [] },
     videoControllers: [],
   };
 }
@@ -838,6 +866,15 @@ export async function collectSysinfo(deps = {}) {
         baseboard: {
           manufacturer: parsed.baseboard?.manufacturer ?? null,
           product: parsed.baseboard?.product ?? null,
+        },
+        // M17c: the laptop fields ride the cached payload (the backend's
+        // caps decode consumes them lazily ONCE - the laptopInfoOf provider
+        // reads this cache, the vramBytesOf pattern).
+        laptop: {
+          manufacturer: parsed.laptop?.manufacturer ?? null,
+          model: parsed.laptop?.model ?? null,
+          pcSystemType: parsed.laptop?.pcSystemType ?? null,
+          chassisTypes: Array.isArray(parsed.laptop?.chassisTypes) ? parsed.laptop.chassisTypes : [],
         },
         videoControllers: parsed.videoControllers ?? [],
       };
@@ -962,7 +999,11 @@ export function vramBytesOfDevice(device, sysinfo) {
  * label). M4J (B): the fixture drops the l1-l4 cache fields (the Cache row
  * is REMOVED) and gains the baseboard (the Mainboard row - the ASUSTeK-style
  * value the pins assert).
- * @param {{ cpu?: object, ram?: object, videoControllers?: object[] }} [overrides]
+ * M17c: the fixture gains the `laptop` field (the laptop-branch AIB source -
+ * the desktop shape by default: pcSystemType 3 + a tower chassis, so the
+ * mock's caps AIB decode stays on the subsystem fields; the laptop ui-verify
+ * fixture overrides it via `overrides.laptop`).
+ * @param {{ cpu?: object, ram?: object, videoControllers?: object[], laptop?: object }} [overrides]
  */
 export function createMockSysinfo(overrides = {}) {
   const noIntel = process.env.RID_MOCK_NO_INTEL === '1';
@@ -1037,6 +1078,18 @@ export function createMockSysinfo(overrides = {}) {
         manufacturer: 'ASUSTeK COMPUTER INC.',
         product: 'MAXIMUS VII RANGER',
         ...(overrides.baseboard ?? {}),
+      },
+      // M17c: the laptop fields - the DESKTOP shape by default (pcSystemType
+      // 3 + a tower chassis 7: NOT portable - the caps AIB decode stays on
+      // the subsystem fields); the laptop ui-verify fixture overrides it
+      // ('Micro-Star International Co., Ltd.' + a portable chassis -> the
+      // 'MSI (<model>)' Dashboard entry).
+      laptop: {
+        manufacturer: 'ASUSTeK COMPUTER INC.',
+        model: 'MAXIMUS VII RANGER',
+        pcSystemType: 3,
+        chassisTypes: [7],
+        ...(overrides.laptop ?? {}),
       },
       videoControllers: fixtureControllers.filter(isRealGpuController),
     }),

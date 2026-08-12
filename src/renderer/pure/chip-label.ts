@@ -19,6 +19,9 @@
 //   @, clock tokens like 3.30GHz), split the remaining tokens on
 //   non-alphanumerics, join with spaces -
 //   'Intel(R) Core(TM) i7-5775C CPU @ 3.30GHz' -> 'i7 5775C'.
+//   M17c: the Ryzen collapse runs FIRST - 'AMD Ryzen 5 3600' -> 'R5 3600'
+//   (Ryzen 3/5/7/9 + the model token collapse to R<N>); Threadripper /
+//   Athlon / non-Ryzen AMD names fall through unchanged.
 //
 // Fallback: an empty/unknown name resolves null - the caller keeps the
 // stock 'CPU '/'GPU ' prefix (never an invented label).
@@ -68,17 +71,44 @@ export function chipLabelGpu(name: unknown): string | null {
 }
 
 /**
+ * M17c: the Ryzen collapse - 'AMD Ryzen 5 3600' -> 'R5 3600'. A Ryzen name
+ * (case-insensitive) whose tier token is one of 3/5/7/9 collapses to
+ * 'R<tier> <model>' (the model = the token after the tier - '5800X3D',
+ * '7950X', ...). The tier must be a REAL Ryzen tier digit - 'AMD Ryzen
+ * Threadripper 3990X' (the next token is not a tier) stays unchanged, and
+ * Athlon/other AMD parts never match (no 'Ryzen' token). The model token
+ * keeps the INPUT casing (like the general cut-down). Empty -> null.
+ * @param {unknown} name the raw CPU name
+ * @returns {string | null}
+ */
+export function chipLabelRyzen(name: unknown): string | null {
+  const s = typeof name === 'string' ? name.trim() : '';
+  if (s.length === 0) return null;
+  const m = s.match(/\bRyzen\s+([3579])\s+(\S+)/i);
+  if (!m) return null;
+  return `R${m[1]} ${m[2]}`;
+}
+
+/**
  * M17b: the CPU chip-name cut-down. Drops the vendor/legal/tail tokens
  * (Intel, AMD, Core, (R), (TM), CPU, @, clock tokens like '3.30GHz'),
  * splits the remaining tokens on non-alphanumerics and joins them with
  * spaces ('i7-5775C' -> 'i7 5775C'). Empty/unknown -> null (the caller
  * keeps the stock 'CPU ' prefix).
+ * M17c: the Ryzen collapse runs FIRST - an 'AMD Ryzen <3|5|7|9> <model>'
+ * name resolves 'R<N> <model>' directly ('AMD Ryzen 5 3600' -> 'R5 3600';
+ * the tier + model tokens collapse to the R<N> prefix); Threadripper /
+ * Athlon / non-Ryzen AMD names fall through to the general cut-down
+ * unchanged.
  * @param name the sysinfo CPU name
  * @returns {string | null}
  */
 export function chipLabelCpu(name: unknown): string | null {
   const s = typeof name === 'string' ? name.trim() : '';
   if (s.length === 0) return null;
+  // M17c: the Ryzen collapse ('AMD Ryzen 5 3600' -> 'R5 3600').
+  const ryzen = chipLabelRyzen(s);
+  if (ryzen !== null) return ryzen;
   // The clock token is dropped BEFORE the tokenizer split - '3.30GHz'
   // would otherwise leak three tokens ('3', '30', 'GHz') into the label.
   const withoutClocks = s.split(/\s+/).filter((t) => !CLOCK_TOKEN_RE.test(t)).join(' ');

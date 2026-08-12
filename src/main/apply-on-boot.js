@@ -32,7 +32,13 @@
 // non-elevated instance fails honestly per control.
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-import { executeApply, ocModeRefusal, extendedUnavailableRefusal, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, OC_MODE_ADVANCED } from './apply-routing.js';
+// M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
+// in-process executeApply clamps profile.settings against
+// extendedRangesFor(caps) internally; the recording must use the SAME
+// clamped values (the worker import pattern - no cycle: ipc-core never
+// imports apply-on-boot).
+import { clampSettings } from './ipc-core.js';
 
 /** Any per-control result carrying the waiver-not-set driver answer. */
 const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
@@ -159,7 +165,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // class the codebase forbids). The refusal classification is unchanged: a
   // config refusal reports the reason ONLY and never runs the reset-to-
   // defaults fallback (fallbackApplied stays undefined).
-  const refusal = ocModeRefusal(OC_MODE_ADVANCED, profile.settings, caps.ranges);
+  // M17c: the DEVICE-SCOPED gate thresholds - the caps carry the device
+  // identity (pciDeviceId/aibVendor/aibModel), which the ocModeRefusal
+  // limits-key resolves from the pure device-limits table (the listed
+  // rows' ceilings for listed cards, the default row for unlisted - never
+  // caps.ranges). A listed-card profile value in (216, 315] (or
+  // (90, 115] TL) REFUSES with the ceiling class - never a silent clamp
+  // down to the card's ceiling via caps.ranges (round-2 S8).
+  const refusal = ocModeRefusal(OC_MODE_ADVANCED, profile.settings, caps.ranges, caps);
   if (refusal) {
     log(`[apply-on-boot] ceiling refusal (${refusal.mode}): ${refusal.message} (${refusal.controls.join(', ')}) - nothing applied, NO defaults restore`);
     return { applied: false, reason: refusal.message, ocModeRefused: true };
@@ -194,6 +207,28 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // the M4-D boot probe that restores the driver waiver runs only in the
   // window path, so the logon/tray apply must honor the permanent consent
   // itself instead of restoring defaults over a stale driver waiver.
+  // M17c (round-3 N1): EVERY attempt records into the session
+  // refused-ceiling store via the backend's SHARED recording helper (the
+  // same store the window path feeds - the packaged EXE applies in-process
+  // here). The attempted-settings source: the worker envelope's `refused`
+  // map, else the CLAMPED profile settings (step-4 N2 - executeApply
+  // clamps profile.settings against extendedRangesFor(caps) internally, so
+  // a hand-edited profile value above the caps max must record the CLAMPED
+  // value the driver actually saw - a raw pre-clamp value would snap the
+  // store at (pre-clamp - step) and mergeIntoRanges would no-op, and the
+  // refused value would never degrade). Gate refusals (ocModeRefused /
+  // extendedUnavailable) never record (config refusals, not driver
+  // ceiling refusals).
+  const recordRefusals = (result) => {
+    if (!result || typeof result !== 'object') return;
+    if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
+    try {
+      const attempted = result.refused ?? clampSettings(profile.settings, extendedRangesFor(caps));
+      backend.recordApplyRefusals?.(deviceId_, result, attempted);
+    } catch {
+      // a store failure must never break the apply flow
+    }
+  };
   const attempt = async (waiverAccepted) => {
     if (applyRunner?.needsWorker?.()) {
       // S2: the runner request carries the device-side waiver state so the
@@ -203,21 +238,30 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // profileApply:true so the worker skips the STOCK gate (the profile
       // is the user's own deliberate state) while keeping the ceiling
       // refusal (>315 W never silently clamps).
-      return applyRunner.apply({
+      const out = await applyRunner.apply({
         deviceId: deviceId_,
         settings: profile.settings,
         profileName: profile.name,
         waiverAccepted,
         ocMode: settings.ocMode,
         profileApply: true,
+        // M17c (step-4 N6): the parent-resolved limits-key rides the worker
+        // request - the worker's gate thresholds must match the parent's
+        // (the worker's own caps decode the subsystem only; the parent's
+        // finalized caps carry the laptop branch).
+        limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
       });
+      recordRefusals(out.result);
+      return out;
     }
     // M4O: opts.profileApply:true - executeApply clamps against the
     // driver's TRUE limits (extendedRangesFor) instead of the mode-gated
     // caps.ranges (stock max 252 would silently reduce a saved 300 W
     // profile) and keys its safety-net capability refusal on the runtime
     // probe (oldIgcl.isCapable) instead of caps.extendedRanges.
-    return executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true } });
+    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true } });
+    recordRefusals(out.result);
+    return out;
   };
   let result;
   let state = null;

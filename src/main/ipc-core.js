@@ -36,6 +36,10 @@ import { createMockSysStats } from './sys-stats.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS } from './store/profile-store.js';
+// M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
+// koffi, hook = the no-device telemetry path, mock fixtures under
+// RID_MOCK_VENDOR).
+import { createVendorTelemetry } from './vendor-telemetry/vendor-telemetry.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -466,6 +470,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
+ *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; null in mock/tests - the determinism seam like foregroundApi)
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe; the two telemetry emit sites compose its result into the pushed sample)
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }> },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample)
@@ -554,6 +559,14 @@ export function createIpcHandlers({
   // product path. On this machine the real adapter may also degrade to
   // null (DXGI unavailable), so mock and product agree on 'unavailable'.
   fpsAdapter = { poll: async () => null },
+  // M17c: the ETW/PresentMon lane - the PREFERRED FPS source when it has a
+  // fresh sample (the game's own present rate via the dxgkrnl ETW stream);
+  // the fps-poll handler consults it FIRST and falls back to fpsAdapter
+  // (the DXGI desktop-presentation tier) when the lane is idle/absent.
+  // THE DETERMINISM SEAM (the foregroundApi pattern): the DEFAULT is null
+  // (tests + mock/ui-verify never run the sidecar or the foreground-pid
+  // probe); main.js wires the real lane ONLY in the non-mock product path.
+  presentMonLane = null,
   // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
   // badge). The DEFAULT is the null-returning detector (tests + mock/
   // ui-verify NEVER run the real koffi probe - the determinism seam:
@@ -597,6 +610,13 @@ export function createIpcHandlers({
   // a no-op; main.js applies the geometry/visibility/hotkey + sends
   // 'overlay:settings' DIRECTLY to the overlay window.
   onOverlaySettings = async () => {},
+  // M17c: the vendor-telemetry lane (non-Intel GPU readouts - the
+  // no-device telemetry path's hook). The DEFAULT resolves the NVML/ADL
+  // adapter from the sysinfo controller vendor (RID_MOCK_VENDOR=nvml|adl
+  // substitutes the fixture adapter for tests/ui-verify); an absent DLL
+  // degrades to the null adapter - honest no vendor readouts, never a
+  // crash.
+  vendorTelemetry = createVendorTelemetry({ sysinfo }),
 }) {
   // M3-A/M3-B mock defaults: the read + apply mock adapters share ONE mock
   // registry state (in-memory; never touches the real registry), so a mock
@@ -633,14 +653,37 @@ export function createIpcHandlers({
    */
   const startNullTelemetry = async () => {
     if (telemetry.has(NULL_DEVICE_KEY)) return;
+    // M17c: the vendor-telemetry lane - the no-device path hook. When the
+    // ACTIVE device is non-Intel, the sysinfo controller vendor selects
+    // the first available of [NVML, ADL] matching it; the adapter's
+    // readouts (gpuClockMhz/tempC/utilPct/powerW/gpuMemUsedBytes/fanRpm -
+    // the TelemetrySample shape) compose into the pushed sample, so the
+    // overlay/monitoring render stays unchanged. Absent DLL / no vendor ->
+    // null adapter (the honest '-' per field - never a crash).
+    let vendor = null;
+    try {
+      vendor = await vendorTelemetry.start();
+    } catch {
+      vendor = null; // a lane failure must never break the no-device timer
+    }
     const timer = setInterval(() => {
       void (async () => {
         try {
           const extra = await sysStats.sample();
+          let vendorSample = null;
+          try {
+            vendorSample = vendor ? await vendor.sample() : null;
+          } catch {
+            vendorSample = null; // a vendor read failure skips this tick's readouts
+          }
           emit('telemetry:sample', {
             t: Date.now(),
             ...extra,
-            memoryUsedBytes: extra.memoryUsedBytes ?? (await memoryUtil.detect()),
+            // M17c: the vendor readouts win over the WMI sys-stats (the
+            // NVML used-VRAM is the better source on NVIDIA) - the device
+            // path's { ...extra, ...sample } precedence mirror.
+            ...(vendorSample ?? {}),
+            memoryUsedBytes: vendorSample?.gpuMemUsedBytes ?? extra.memoryUsedBytes ?? (await memoryUtil.detect()),
           });
         } catch {
           // a stats failure must never break the timer (skip this tick)
@@ -648,7 +691,10 @@ export function createIpcHandlers({
       })();
     }, 500);
     telemetry.set(NULL_DEVICE_KEY, {
-      stop: async () => clearInterval(timer),
+      stop: async () => {
+        clearInterval(timer);
+        try { await vendor?.close?.(); } catch { /* best effort */ }
+      },
     });
   };
 
@@ -715,21 +761,62 @@ export function createIpcHandlers({
    * M4O: a profileApply carries the flag through BOTH branches - the
    * worker request gains it (the worker skips the stock gate) and the
    * in-process executeApply clamps against the driver's TRUE limits.
+   * M17c (round-3 N1): EVERY attempt records into the session
+   * refused-ceiling store via the backend's SHARED recording helper
+   * (recordApplyRefusals - never a throw). The attempted settings source:
+   * the WORKER envelope's `refused` map (the worker's own clamped values -
+   * the parent's pre-delegation clamp may differ from the worker's caps),
+   * else the parent's clamped `settings` (the in-process path - the value
+   * executeApply actually attempted). GATE refusals (ocModeRefused /
+   * extendedUnavailable - config refusals, NOT driver ceiling refusals)
+   * never record - the store must only degrade on a driver 'out-of-range'.
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
    */
   const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
+    const recordRefusals = (result) => {
+      if (!result || typeof result !== 'object') return;
+      if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
+      try {
+        // M17c (step-4 N2): record the CLAMPED attempted values - the value
+        // the driver actually saw. The apply-settings handler already
+        // pre-clamps `settings` with the same ranges, so this re-clamp is
+        // idempotent for today's callers; it makes the recording contract
+        // self-contained (a direct runApply caller can never record a
+        // pre-clamp value whose snap lands above the caps max and no-ops in
+        // mergeIntoRanges).
+        const attempted = result.refused
+          ?? clampSettings(settings, profileApply === true ? extendedRangesFor(caps) : caps.ranges);
+        backend.recordApplyRefusals?.(deviceId, result, attempted);
+      } catch {
+        // a store failure must never break the apply flow
+      }
+    };
     const attempt = async (waiverAccepted) => {
       if (applyRunner?.needsWorker?.()) {
-        const out = await applyRunner.apply({ deviceId, settings, waiverAccepted, ocMode, profileApply });
+        // M17c (step-4 N6): the parent-resolved limits-key rides the worker
+        // request - the worker's gate thresholds must match the parent's
+        // (the worker's own caps decode the subsystem only; on a laptop the
+        // parent's portable branch could differ).
+        const out = await applyRunner.apply({
+          deviceId,
+          settings,
+          waiverAccepted,
+          ocMode,
+          profileApply,
+          limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
+        });
         // S2 G2 mirror: when the driver lost the waiver, the worker's
         // per-control results carry waiver-not-set. Clear the parent-side
         // in-memory flag so getCapabilities reports unaccepted and the
         // dialog re-shows - the wedge (stale-true parent flag with failing
         // applies) must never happen.
         if (hasWaiverNotSet(out.result)) await backend.restoreWaiverState(deviceId, false);
+        recordRefusals(out.result);
         return out;
       }
-      return executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } });
+      const out = await executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply } });
+      recordRefusals(out.result);
+      return out;
     };
     const first = await attempt(caps.waiverAccepted === true);
     if (!hasWaiverNotSet(first.result)) {
@@ -880,9 +967,14 @@ export function createIpcHandlers({
         // mode still gates the slider applies.
         const ocMode = (await store.loadSettings()).ocMode;
         const caps = await backend.getCapabilities(deviceId);
+        // M17c: the device-scoped gate thresholds - the caps carry the
+        // device identity (pciDeviceId/aibVendor/aibModel), which the
+        // ocModeRefusal limits-key resolves from the pure device-limits
+        // table (the listed rows' ceilings for listed cards, the default
+        // row for unlisted - never caps.ranges).
         const refusal = opts?.profileApply === true
-          ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges)
-          : ocModeRefusal(ocMode, settings, caps.ranges);
+          ? ocModeRefusal(OC_MODE_ADVANCED, settings, caps.ranges, caps)
+          : ocModeRefusal(ocMode, settings, caps.ranges, caps);
         if (refusal) {
           // M3-C review F2: the refusal envelope carries the FRESH device
           // state (getCurrentSettings is cheap - the refusal never touched
@@ -1224,6 +1316,12 @@ export function createIpcHandlers({
       // default adapter is the mock (always null); the product path injects
       // the real DXGI adapter, which itself degrades to null when DXGI is
       // unavailable. Never throws.
+      // M17c: the ETW/PresentMon lane is the PREFERRED source when it has a
+      // fresh sample (the game's per-frame present rate - RTSS-class
+      // accuracy); the DXGI adapter remains the fallback tier (the
+      // desktop-presentation rate) when the lane is idle/absent. The lane
+      // is null in mock/tests - the composition is a no-op there and every
+      // existing pin stays green.
       // M10a: the sample COMPOSES the foreground-window Graphics-API badge -
       // the fpsAdapter's own api field (the RID_MOCK_API=1 mock fixture)
       // wins, otherwise the injected detector answers (the DEFAULT is the
@@ -1231,7 +1329,8 @@ export function createIpcHandlers({
       // probe runs only in the product path).
       'fps-poll': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        const sample = await fpsAdapter.poll(deviceId);
+        const laneSample = presentMonLane ? await presentMonLane.poll(deviceId) : null;
+        const sample = laneSample !== null ? laneSample : await fpsAdapter.poll(deviceId);
         if (sample === null || typeof sample !== 'object') return null;
         const api = sample.api ?? (await foregroundApi.detect());
         return { ...sample, api };

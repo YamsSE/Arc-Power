@@ -2,9 +2,11 @@
 // telemetry IPC push + one rolling Canvas graph per segment (core clock,
 // temperature, power, utilization, fan) with a 60 s window. Each segment is
 // COLLAPSIBLE (header row + chevron; collapsed by default except the first).
-// FPS comes from the fps-poll IPC channel (the DXGI frame-statistics /
-// output-duplication adapter); when no frame statistics are being reported
-// the page shows "FPS unavailable" gracefully - never an error.
+// FPS comes from the fps-poll IPC channel (the ETW/PresentMon lane first -
+// the foreground program's per-frame present stream; the DXGI
+// frame-statistics / output-duplication adapter as the fallback); when no
+// present data is being captured the page shows "FPS unavailable"
+// gracefully - never an error.
 //
 // M4M (B): the live readout is TWO labeled groups like the dashboard - the
 // CPU group (the dashboard CPU tiles verbatim) ABOVE the GPU group (the
@@ -39,7 +41,11 @@ const FPS_POLL_MS = 1000;
 const DRAW_MAX_POINTS = 240;
 // M4-D2 (plan-review M5): the PresentMon mention is gone - the FPS source is
 // the DXGI frame-statistics/duplication adapter; unavailable -> honest '-'.
-const FPS_UNAVAILABLE_NOTE = 'FPS unavailable - no frame statistics are being reported on this machine.';
+// M17c: the preferred source is the ETW/PresentMon lane (the foreground
+// program's per-frame present stream); the DXGI desktop-presentation tier
+// is the fallback. The unavailable note covers BOTH sources being silent
+// (the 'FPS unavailable' ui-verify prefix is pinned).
+const FPS_UNAVAILABLE_NOTE = 'FPS unavailable - no present data is being captured for the foreground program.';
 const FPS_CHECKING_NOTE = 'Checking FPS…';
 
 interface SegmentDef {

@@ -32,8 +32,20 @@ import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
   GRAPHICS_LOW_LATENCY_OPTIONS,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, VOLT_OFFSET_MAX_V, VOLT_OFFSET_STEP_V, vramMemTypeOfName } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName } from './units.js';
 import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
+// M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
+// imports fine under the packaged Electron (Node 22.21 - type stripping is
+// default since 22.18); the pure module carries no runtime TS-only features.
+import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
+// M17c: the per-device limits table (the listed rows + the default row) -
+// applied main-side in getCapabilities AFTER the driver-props loop. The
+// renderer TS imports fine under the packaged Electron (see aib.ts).
+import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
+// M17c: the session refused-ceiling store (parent-side merge + the shared
+// recording helper - run B wires the store into getCapabilities + the
+// apply paths; the pure module ships the primitives).
+import { createRefusedCeilingStore, mergeIntoRanges, recordRefusalEnvelope } from './refused-ceilings.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -89,6 +101,13 @@ export class IgclBackend {
    *   vramBytesOf?: (device: object) => number|null,  // M4-D: VRAM source for
    *                                   // the display-name suffix (the sysinfo
    *                                   // cache in main.js; null = plain name)
+   *   laptopInfoOf?: () => object|null,  // M17c: the laptop sysinfo provider
+   *                                   // ({ manufacturer, model, pcSystemType,
+   *                                   // chassisTypes } from the CIM query -
+   *                                   // the cached sysinfo in main.js; null
+   *                                   // on desktops) - the getCapabilities
+   *                                   // AIB decode's laptop branch feeds on
+   *                                   // it (the vramBytesOf injection pattern)
    * }} opts
    */
   constructor(opts = {}) {
@@ -103,6 +122,10 @@ export class IgclBackend {
     // is available at enumeration time; setVramBytesOf re-formats an already
     // enumerated device list).
     this._vramBytesOf = typeof opts.vramBytesOf === 'function' ? opts.vramBytesOf : null;
+    // M17c: the laptop sysinfo provider (the cached CIM laptop fields) - the
+    // vramBytesOf injection pattern; null on desktops (the subsystem decode
+    // then stays authoritative).
+    this._laptopInfoOf = typeof opts.laptopInfoOf === 'function' ? opts.laptopInfoOf : null;
     this._ocMode = opts.ocMode === 'advanced' ? 'advanced' : 'stock';
     this._apiHandle = null;
     this._levelZeroOk = false;
@@ -127,6 +150,22 @@ export class IgclBackend {
     // supported-feature table from ctlGetSupported3DCapabilities - stable
     // per driver/device; the VALUES are never cached, every read is fresh).
     this._graphicsCapsCache = new Map();
+    // M17c: the session refused-ceiling store (Map<deviceId, Map<control,
+    // ceiling>>). The PARENT-side recording: the parent's getCapabilities
+    // merges it (both the cache-hit and cold paths); the WORKER's own store
+    // is useless (module state evaporates), so the parent records from the
+    // worker's result envelope (recordApplyRefusals).
+    this._refusedCeilings = createRefusedCeilingStore();
+    // M17c: per-device flags for the ONCE-PER-SESSION temperature-sensor
+    // degrade note (the N4-style honest note must not spam every tick).
+    this._tempSensorDegradeNoted = new Set();
+    // M17c (step-5 N2): the per-device NO-SENSOR verdict latch - a device
+    // whose temperature fallback probe failed (no sensor / enum failure /
+    // read failure) is marked so the native churn (enum probe + fill +
+    // per-sensor ctlTemperatureGetProperties + state read) stops after the
+    // FIRST failed probe instead of re-running every 500 ms telemetry tick;
+    // a device that HAS a sensor is never latched and keeps reading.
+    this._tempSensorNoSensor = new Set();
   }
 
   /**
@@ -298,6 +337,14 @@ export class IgclBackend {
         graphicsClockMHz: p.Frequency,
         numXeCores: p.num_xe_cores,
         vramBytes: null,
+        // M17c: the ALREADY-BOUND IGCL subsystem fields (igcl-bindings.js:
+        // 217-218 - pci_subsys_vendor_id / pci_subsys_id, a 1:1 mapping to
+        // the PNP SUBSYS_60011849 fields, exact per device). Carried on the
+        // device payload (listDevices + the caps decode); the pure/aib.ts
+        // decode keys on them - NO CIM/name-match dependency. Null when the
+        // struct reports 0 (the iGPU / unknown-board shape).
+        pciSubsysVendorId: p.pci_subsys_vendor_id || null,
+        pciSubsysId: p.pci_subsys_id || null,
         // M4-I (S1): the memory type is derived ONCE from the token table
         // (vramMemTypeOfName - A-series + B-series = GDDR6, unknown ->
         // null) and CARRIED on the device payload (DeviceInfo + caps); the
@@ -335,8 +382,8 @@ export class IgclBackend {
 
   async listDevices() {
     const devices = await this._ensureDevices();
-    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType }) => ({
-      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType,
+    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId }) => ({
+      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId,
     }));
   }
 
@@ -715,9 +762,12 @@ export class IgclBackend {
       // waiverAccepted is live state, not a static capability - refresh it
       // so a later setWaiverAccepted() is reflected without re-reading IGCL.
       // Return a copy: callers must never be able to poison the cache.
+      // M17c: the device-scoped limits table + the session refused-ceiling
+      // store merge run AFTER the cache read on BOTH paths (the store is
+      // session state - the merge must never be cached into the caps).
       const out = structuredClone(cached);
       out.waiverAccepted = this._waiverAccepted.get(deviceId) ?? false;
-      return out;
+      return this._finalizeCaps(deviceId, out, this._devices?.[deviceId] ?? null);
     }
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);
@@ -779,29 +829,19 @@ export class IgclBackend {
         // M4-E: the pin is a C-UNIT rule - percent-unit ranges (Battlemage:
         // temp limit as %, max 100) are not DriverStore °C limits and must
         // pass through untouched (their max IS the honest ceiling).
+        // M17c: the pre-device-limits F3 pin stays as the DRIVERSTORE-floor
+        // (the stock-mode ceiling); the device-scoped table application
+        // (_finalizeCaps) re-caps a listed card's ADVANCED TL at the
+        // documented 90 C ceiling - the (90, 115] window is never offered on
+        // a listed card (round-3 N3).
         if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C' && caps.ranges.tempLimitC.max > TEMP_LIMIT_MAX_C) {
           caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
         }
-        // M15 (F4): the voltage-OFFSET exposed-max pin - the LIVE probe
-        // (2026-08-11, pipeline/live-volt-max-probe.mjs) shows the driver
-        // accepts 0.234 V (raw ctlOverclockGpuMaxVoltageOffsetSetV2(0.234) ->
-        // SUCCESS, read-back 0.234) and refuses 0.235 with 0x44000002, but
-        // the props may under-report the grid-aligned 0.230 - so the EXPOSED
-        // V-unit max is pinned to VOLT_OFFSET_MAX_V in BOTH directions (a
-        // driver that ever drifts above 0.234 is clamped back; a driver
-        // reporting 0.230 is raised to the real ceiling). M4-E rule:
-        // percent-unit ranges (Battlemage) pass through untouched.
-        // M15 (F4-fix): the STEP is pinned to VOLT_OFFSET_STEP_V (0.001) with
-        // the max - the driver's 0.005 step puts 0.234 OFF-GRID (the slider
-        // maxed at 0.230); the finer step lets the slider reach + display the
-        // real ceiling (the driver accepts any value up to it).
-        if (caps.ranges.gpuVoltOffsetV && caps.ranges.gpuVoltOffsetV.units === 'V') {
-          caps.ranges.gpuVoltOffsetV = {
-            ...caps.ranges.gpuVoltOffsetV,
-            max: VOLT_OFFSET_MAX_V,
-            step: VOLT_OFFSET_STEP_V,
-          };
-        }
+        // M17c: the GLOBAL M15 volt pin is GONE (the global 0.234 clamp
+        // wrongly capped the A750's 0.285). The A770-scoped pin (the same
+        // both-directions probe-ceiling semantics, keyed on caps.pciDeviceId)
+        // now lives in the pure device-limits table and is applied by
+        // _finalizeCaps AFTER the extended-ranges block below.
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
         // this driver AND the OC mode is advanced (M3-C-E), report the FULL
         // range (PL max 315 W - live-verified ceiling, TL max 115 C - min/default stay
@@ -847,6 +887,24 @@ export class IgclBackend {
     // the apply-time waiver gate on such devices (the driver's per-control
     // 'unsupported' refusals stay the honest floor).
     caps.overclockingSupported = Object.values(caps.controls).some(Boolean);
+
+    // M17c: the AIB-identity fields - the DECODE happens HERE via pure/aib.ts
+    // (the subsystem fields ride the device payload from _ensureDevices -
+    // pci_subsys_vendor_id / pci_subsys_id, the PNP SUBSYS_ mapping, exact
+    // per device). The LAPTOP BRANCH (user request) overrides the subsystem
+    // decode when the system is portable: the injected laptopInfoOf provider
+    // (the cached CIM laptop shape from main.js - manufacturer/model/
+    // pcSystemType/chassisTypes, the vramBytesOf injection pattern) feeds
+    // laptopAibOf; a non-portable system returns null there and the
+    // subsystem decode stays authoritative. Unknown subsystem vendor ->
+    // null (the honest '-' - the Dashboard AIB row renders it). These are
+    // APPENDED caps fields (absent -> null).
+    caps.pciDeviceId = dev.pciDeviceId ?? null;
+    const laptopInfo = this._laptopInfoOf ? this._laptopInfoOf() : null;
+    const laptopDecoded = laptopInfo ? laptopAibOf(laptopInfo) : null;
+    const aib = laptopDecoded ?? aibOf(dev.pciSubsysVendorId, dev.pciSubsysId);
+    caps.aibVendor = aib?.vendor ?? null;
+    caps.aibModel = aib?.model ?? null;
 
     // --- Fan ---
     const fanHandles = await this._fanHandlesOf(deviceId);
@@ -914,7 +972,114 @@ export class IgclBackend {
     }
 
     this._caps.set(deviceId, caps);
-    return structuredClone(caps);
+    const finalized = this._finalizeCaps(deviceId, caps, dev);
+    // M17c (step-4 N4): the CACHE holds the FINALIZED caps of the cold
+    // read - the driver-props truth + the AIB fields + the device-limits
+    // table + the session-store merge AS OF THAT READ (the finalize above
+    // mutates the cached object in place). That is safe because the
+    // finalize is DETERMINISTIC + IDEMPOTENT: the table application is a
+    // pure min-cap/step/unclamp per control (a re-finalize on the cache-hit
+    // path is a no-op) and the session-store merge re-runs on EVERY
+    // returned copy (line 1044) - the merge is monotone (only ever
+    // lower), so a refusal recorded AFTER the cold read still degrades the
+    // next read and nothing re-raises a degraded ceiling.
+    return structuredClone(finalized);
+  }
+
+  /**
+   * M17c: the device-scoped caps finalize - runs AFTER the cache read on
+   * BOTH getCapabilities paths (the cache-hit path and the cold path):
+   *   1. the per-device limits table (pure/device-limits.ts): the listed
+   *      rows' per-control { max, step } overrides (the A770 volt 0.234 +
+   *      step 0.001, the per-AIB PL ceilings, the TL 90 caps, the A750
+   *      unclamp) + the default row for UNLISTED cards (252/90 stock,
+   *      315/115 extended - today's pins exactly, so no stock-mode gap
+   *      opens between the slider and the apply gates). Driver props stay
+   *      the runtime authority; the table only caps to documented ceilings
+   *      (PL/TL maxes apply as min-caps) - EXCEPT the volt maxes, which
+   *      are the LIVE-PROBE ceiling pins (the M15 both-directions
+   *      semantics scoped to the A770: a props under-report of 0.230 is
+   *      raised to the 0.234 ceiling; the session store merge below can
+   *      still degrade it). Percent-unit ranges (Battlemage) are never
+   *      touched (the M4-E rule).
+   *   2. the session refused-ceiling store merge (mergeIntoRanges -
+   *      NEVER raises; a refused apply's degraded ceiling caps the max +
+   *      default).
+   * @param {number} deviceId
+   * @param {object} caps the (cloned) caps to finalize
+   * @param {object|null} dev the device payload (the AIB fields fallback)
+   * @returns {object} the finalized caps (the input mutated - callers pass
+   *   a fresh clone)
+   */
+  _finalizeCaps(deviceId, caps, dev) {
+    const identity = {
+      pciDeviceId: caps.pciDeviceId ?? dev?.pciDeviceId ?? null,
+      aibVendor: caps.aibVendor ?? null,
+      aibModel: caps.aibModel ?? null,
+    };
+    const limits = deviceLimitsOf(identity);
+    if (limits) {
+      // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
+      // (stock 252/90, extended 315/115 - never null, never the wrong
+      // shape); a LISTED card's row is the documented ceiling in BOTH
+      // modes (the extended maxes of the props/2023 runtime are capped
+      // down to it - round-2 S8).
+      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
+      for (const [canonical, override] of Object.entries(row)) {
+        if (canonical === 'listed') continue;
+        const range = caps.ranges[canonical];
+        if (!range) continue;
+        // The M4-E units rule: the table speaks W/V/C - percent-unit
+        // ranges (Battlemage) are never touched (their max IS the ceiling).
+        if (canonical === 'powerLimitW' && range.units !== 'W') continue;
+        if (canonical === 'tempLimitC' && range.units !== 'C') continue;
+        if (canonical === 'gpuVoltOffsetV' && range.units !== 'V') continue;
+        let next = range;
+        if (typeof override.max === 'number') {
+          if (canonical === 'gpuVoltOffsetV') {
+            // The volt maxes are the M15 probe-ceiling PINS (both
+            // directions - the props may under-report the grid-aligned
+            // 0.230); the store merge below is the only downward force.
+            next = { ...next, max: override.max };
+          } else {
+            next = { ...next, max: Math.min(range.max, override.max) };
+          }
+          if (typeof range.default === 'number' && Number.isFinite(range.default)) {
+            next = { ...next, default: Math.min(range.default, next.max) };
+          }
+        }
+        if (typeof override.step === 'number' && Number.isFinite(override.step)) {
+          next = { ...next, step: override.step };
+        }
+        if (next !== range) caps.ranges[canonical] = next;
+      }
+    }
+    caps.ranges = mergeIntoRanges(this._refusedCeilings, deviceId, caps.ranges);
+    return caps;
+  }
+
+  /**
+   * M17c: the SHARED refusal recording (the parent-side apply paths feed
+   * it - recordRefusalEnvelope walks the per-control result map + the
+   * attempted settings and snaps the exposed ceiling DOWN one step per
+   * 'out-of-range' refusal; monotone - only ever lowered). Both feeding
+   * paths use it:
+   *   (a) the WORKER result envelope (the parent-merge - the envelope's
+   *       `refused` map = the attempted values of the refused controls);
+   *   (b) the IN-PROCESS perControl result + the attempted settings (the
+   *       always-elevated packaged EXE applies in-process).
+   * The ranges (step/min for the snap) come from the cached caps - absent
+   * per-control ranges skip that control. Garbage envelopes are no-ops
+   * (never a throw, never an invented degrade).
+   * @param {number} deviceId
+   * @param {{ perControl?: object }} result the apply result envelope
+   * @param {object|null|undefined} settings the ATTEMPTED settings (the
+   *   values the driver refused - the store never guesses)
+   */
+  recordApplyRefusals(deviceId, result, settings) {
+    if (!result || typeof result !== 'object' || !result.perControl) return;
+    const ranges = this._caps.get(deviceId)?.ranges ?? null;
+    recordRefusalEnvelope(this._refusedCeilings, deviceId, result.perControl, settings, ranges);
   }
 
   _canonicalUnitName(units) {
@@ -1838,6 +2003,29 @@ export class IgclBackend {
       if (sample[k] === undefined || sample[k] === null) delete sample[k];
     }
 
+    // M17c (the iGPU temperature fallback): when the telemetry item is
+    // ABSENT (unsupported - the gpuCurrentTemperature item can be missing
+    // on integrated adapters / driver builds), fall back to the
+    // temperature-sensor API (ctlEnumTemperatureSensors +
+    // ctlTemperatureGetState - the igcl_api.h temperature surface). The
+    // honest '-' stays when the driver reports no sensor (the N4-style
+    // once-per-session degrade note - the 32.0.101.8860 regression
+    // precedent). M17c (step-5 N2): the NO-SENSOR verdict latches per
+    // device - a failed probe (no sensor / enum / read failure) is marked
+    // so the fallback does NOT re-enumerate + re-scan sensor properties
+    // on every 500 ms tick (the native churn stops after the first failed
+    // probe); a device that HAS a sensor keeps reading every tick.
+    if (sample.tempC === undefined) {
+      const sensorTemp = this._tempSensorNoSensor.has(deviceId)
+        ? undefined
+        : this._temperatureSensorTempC(dev, deviceId);
+      if (sensorTemp !== undefined) {
+        sample.tempC = sensorTemp;
+      } else {
+        this._tempSensorNoSensor.add(deviceId);
+      }
+    }
+
     // M3-C-L: utilization from the IGCL activity counters over timestamp
     // deltas - the DOCUMENTED sample-delta method (igcl_api.h
     // §ctl_power_telemetry_t): globalActivityCounter / renderComputeActivity-
@@ -1881,6 +2069,77 @@ export class IgclBackend {
     const util = (dc / dt) * 100;
     if (!Number.isFinite(util)) return undefined;
     return Math.min(100, Math.max(0, util));
+  }
+
+  /**
+   * M17c: the iGPU temperature fallback source - the IGCL temperature-
+   * sensor API (ctlEnumTemperatureSensors handle-array enumeration +
+   * ctlTemperatureGetState, which returns the current temperature in
+   * degrees C via a double* - the igcl_api.h contract, NOT a state struct;
+   * see igcl-bindings.js). PREFERS the GPU-domain sensor (type 1), falls
+   * back to the first enumerated sensor. EVERYTHING null-safe:
+   * - unbound symbols -> undefined (the sample keeps the honest absent
+   *   tempC);
+   * - a failed enumeration -> undefined;
+   * - zero sensors -> undefined + the ONCE-PER-SESSION N4-style degrade
+   *   note (the 32.0.101.8860 regression precedent: a driver build that
+   *   reports no sensor must not spam every telemetry tick);
+   * - a failed read -> undefined.
+   * @param {object} dev the device payload (handle)
+   * @param {number} deviceId for the once-per-session note flag
+   * @returns {number | undefined} the current GPU temperature in C
+   */
+  _temperatureSensorTempC(dev, deviceId) {
+    const lib = this._libOrThrow();
+    if (this._isUnavailable(lib.ctlEnumTemperatureSensors) || this._isUnavailable(lib.ctlTemperatureGetState)) {
+      return undefined;
+    }
+    const noteNoSensor = (extra) => {
+      if (this._tempSensorDegradeNoted.has(deviceId)) return;
+      this._tempSensorDegradeNoted.add(deviceId);
+      console.warn(`[igcl-backend] temperature fallback: ${extra} on device ${deviceId} - the GPU temp row stays '-' (the 32.0.101.8860 no-sensor regression precedent)`);
+    };
+    try {
+      // Phase 1: the count probe (the ctlEnumerateDevices pattern). The
+      // handles pointer is [optional] in the header - pass a dummy buffer
+      // (null-pointer handling varies across koffi versions).
+      const countBuf = koffi.alloc('uint32', 1);
+      koffi.encode(countBuf, 0, 'uint32', 0);
+      const probeBuf = koffi.alloc('uint8', 8);
+      let result = lib.ctlEnumTemperatureSensors(dev.handle, countBuf, probeBuf);
+      if (result !== CTL_RESULT.SUCCESS) return undefined;
+      const count = koffi.decode(countBuf, 0, 'uint32') | 0;
+      if (count === 0) {
+        noteNoSensor('ctlEnumTemperatureSensors reports no sensor');
+        return undefined;
+      }
+      // Phase 2: the fill - a raw handle array (8 bytes per handle).
+      const handlesBuf = koffi.alloc('uint8', count * 8);
+      result = lib.ctlEnumTemperatureSensors(dev.handle, countBuf, handlesBuf);
+      if (result !== CTL_RESULT.SUCCESS) return undefined;
+      // Prefer the GPU-domain sensor (type 1); fall back to the first.
+      let pick = -1;
+      if (!this._isUnavailable(lib.ctlTemperatureGetProperties)) {
+        for (let i = 0; i < count; i++) {
+          const propBuf = koffi.alloc('ctl_temp_properties_t', 1);
+          koffi.encode(propBuf, 'ctl_temp_properties_t', { Size: koffi.sizeof('ctl_temp_properties_t'), Version: 0 });
+          const handle = koffi.decode(handlesBuf, i * 8, 'void*');
+          if (lib.ctlTemperatureGetProperties(handle, propBuf) === CTL_RESULT.SUCCESS) {
+            const props = koffi.decode(propBuf, 'ctl_temp_properties_t');
+            if (props.type === 1) { pick = i; break; } // CTL_TEMP_SENSORS_GPU
+          }
+        }
+      }
+      if (pick < 0 && count > 0) pick = 0;
+      const sensorHandle = koffi.decode(handlesBuf, pick * 8, 'void*');
+      const tempBuf = koffi.alloc('double', 1);
+      result = lib.ctlTemperatureGetState(sensorHandle, tempBuf);
+      if (result !== CTL_RESULT.SUCCESS) return undefined;
+      const temp = koffi.decode(tempBuf, 0, 'double');
+      return typeof temp === 'number' && Number.isFinite(temp) ? temp : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   _emitTelemetry(deviceId, sample) {

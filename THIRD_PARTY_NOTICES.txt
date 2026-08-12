@@ -147,3 +147,47 @@ https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt]
 - The installer may be redistributed unmodified (its own usage text
   states: "This installer can be redistributed unmodified.").
 
+## PresentMon - PresentMon64.exe (the ETW/FPS sidecar)
+
+- Component: `src/main/backend/presentmon/PresentMon64.exe` (the official
+  console capture binary of PresentMon v2.5.1 - the asset
+  PresentMon-2.5.1-x64.exe, renamed for the app bundle).
+- License: MIT (reproduced below; the license file is bundled verbatim
+  next to the binary as `src/main/backend/presentmon/LICENSE`).
+- Source: https://github.com/GameTechDev/PresentMon (tag v2.5.1).
+- Release URL: https://github.com/GameTechDev/PresentMon/releases/tag/v2.5.1
+- SHA-256: 9BEC3083069F58F911E6A512F4806DB51A27BD096103087BC1D05EF54C80A191
+  (matches the digest GitHub publishes for the release asset).
+- Purpose: the per-process FPS lane (M17c) - it consumes the dxgkrnl ETW
+  present-event stream (`--process_id <pid> --output_stdout
+  --qpc_time_ms`) and emits per-frame CSV for the foreground game, so the
+  overlay reads the GAME's present rate instead of the refresh-bound
+  desktop. Spawned per foreground pid; killed on app exit/retarget; runs
+  only in the elevated packaged app (ETW realtime sessions need admin).
+  The CSV-parse consumer is a pure module (src/renderer/pure/
+  presentmon-csv.ts); the sidecar spawn/wiring lives in src/main/fps-etw.js.
+
+```
+MIT License
+
+Copyright (C) 2017-2024 Intel Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom
+the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE SOFTWARE.
+```
+

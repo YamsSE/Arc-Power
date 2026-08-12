@@ -361,7 +361,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // which tracks the DISPLAY REFRESH RATE, not the game's render
       // rate - and the displayed window is the last 400-600 ms (no 1 s-lagged
       // average). Documented here so the limit is never silent.
-      el('p', { class: 'card-note overlay-note', text: 'FPS comes from the graphics-driver frame statistics (DXGI) - exact in exclusive fullscreen; on a windowed or borderless program the reading follows the DISPLAY refresh rate (the per-display presented-frame count, last 400-600 ms), not the game\'s render rate. The frametime line is derived from the frame rate when per-frame timing is unavailable. Unavailable readings show "-".' }),
+      // M17c (the ETW lane): the preferred source is now the per-process
+      // present stream (PresentMon ETW events - the game's own present
+      // rate); the DXGI desktop-presentation reading is the FALLBACK tier
+      // when the lane is inactive (no foreground program / the sidecar is
+      // unavailable, e.g. the unelevated dev run).
+      el('p', { class: 'card-note overlay-note', text: 'FPS comes from the per-process present stream (PresentMon ETW) of the foreground program when the ETW lane is active - the game\'s own present rate, not the display rate. When the lane is inactive (no foreground program, or the sidecar unavailable) the reading falls back to the graphics-driver desktop presentation statistics (DXGI) - which follow the DISPLAY refresh rate on windowed or borderless programs (the per-display presented-frame count, last 400-600 ms), not the game\'s render rate. The frametime line is derived from the frame rate when per-frame timing is unavailable. Unavailable readings show "-".' }),
     ]);
 
     clear(root);

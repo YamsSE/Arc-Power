@@ -165,6 +165,16 @@ export function validateFeatureset(raw, expectedId) {
   if (fs.hasFan && tel.fanRpm === null) {
     throw new Error(`featureset '${fs.id}': telemetry.fanRpm must be an array when hasFan is true`);
   }
+
+  // M17c: the IGCL subsystem fields (the AIB decode source - the struct
+  // fields are uint16s). Optional - null/absent = the honest unknown (the
+  // caps aibVendor/aibModel then decode to null).
+  for (const key of ['pciSubsysVendorId', 'pciSubsysId']) {
+    const v = fs[key];
+    if (v !== undefined && v !== null && (!Number.isInteger(v) || v < 0 || v > 0xffff)) {
+      throw new Error(`featureset '${fs.id}': ${key} must be a non-negative 16-bit integer or null`);
+    }
+  }
   return fs;
 }
 

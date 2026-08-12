@@ -14,18 +14,23 @@
 //     LIST_MODULES_ALL) -> the module list;
 //   GetModuleBaseNameW per module -> the module base names.
 // The API match (module names, case-insensitive) with the precedence
-//   vulkan-1.dll > opengl32.dll (WITH a vendor ICD) > d3d12.dll > d3d11.dll
+//   opengl32.dll (WITH a vendor ICD) > vulkan-1.dll > d3d12.dll > d3d11.dll
 //   > d3d10.dll > d3d9.dll
 // -> the canonical ids 'vulkan' | 'dx12' | 'dx11' | 'dx10' | 'dx9' | 'opengl'.
-// M17b (the precedence reorder): opengl32.dll is the ONLY conditional
-// entry - it wins ONLY when a vendor ICD is loaded (nvoglv64/32.dll,
-// atiogl64/32.dll, amdxc64.dll, ig9icd64/32.dll - the Minecraft/LWJGL
-// shape); a BARE opengl32 (the GDI-generic loader, no ICD) FALLS THROUGH
-// to the remaining d3d precedence (d3d12 > d3d11 > d3d10 > d3d9), so a
-// Chromium/Electron process (incl. Arc Power's own window) that loads
-// opengl32 without an ICD still reads dx11 and a Java/OpenGL game with
-// d3d12 loaded transitively reads opengl - the d3d12-first misread is
-// fixed.
+// M17c (the precedence reorder - the user's Minecraft OGL finding): the
+// ICD-corroborated opengl rule moves ABOVE vulkan-1. LWJGL preloads
+// vulkan-1.dll EVEN on the OpenGL path (GLFW's Vulkan probe), while the
+// real GL context loads the vendor ICD - so 'vulkan-1.dll presence' is NOT
+// a Vulkan signal and the M17b rank (vulkan-1 first) misread Minecraft OGL
+// as Vulkan. opengl32.dll is the ONLY conditional entry - it wins ONLY
+// when a vendor ICD is loaded (nvoglv64/32.dll, atiogl64/32.dll,
+// amdxc64.dll, ig9icd64/32.dll - the Minecraft/LWJGL shape); a BARE
+// opengl32 (the GDI-generic loader, no ICD) FALLS THROUGH to the remaining
+// precedence (vulkan-1 > d3d12 > d3d11 > d3d10 > d3d9), so the GLFW-vulkan
+// shape (GLFW loads opengl32.dll but no GL ICD without a GL context) still
+// reads 'vulkan', and a Chromium/Electron process (incl. Arc Power's own
+// window) that loads opengl32 without an ICD still reads dx11. The ICD
+// only loads when a real GL context exists - the strongest loaded signal.
 // dxgi.dll is loaded by ALL of them and is NOT a discriminator; d3d11 is
 // loaded by Chromium too - the overlay over a browser honestly reports DX11.
 // M10b (findings): vulkan-1.dll sits FIRST because it is ONLY loaded
@@ -101,14 +106,23 @@ export const GRAPHICS_API_IDS = ['dx12', 'vulkan', 'dx11', 'dx10', 'dx9', 'openg
 // (no vendor ICD) falls through to the d3d chain below, so Chromium with
 // opengl32 loaded still reads dx11. The d3d chain itself is unchanged:
 // d3d12 > d3d11 > d3d10 > d3d9.
+// M17c (the precedence reorder - the user's Minecraft OGL finding): the
+// ICD-corroborated opengl rule moves ABOVE vulkan-1. LWJGL preloads
+// vulkan-1.dll EVEN on the OpenGL path (GLFW's Vulkan probe) while the
+// real GL context loads the vendor ICD - 'vulkan-1.dll presence' is NOT a
+// Vulkan signal, and the M17b rank misread Minecraft OGL as Vulkan. The
+// CONDITIONAL opengl rule stays (a bare opengl32 falls through to
+// vulkan-1 > the d3d chain - the GLFW-vulkan shape still reads 'vulkan');
+// the ICD only loads when a real GL context exists - the strongest loaded
+// signal.
 // HEURISTIC LIMIT: the loaded-module scan cannot distinguish the ACTIVE
 // renderer when a process loads several API DLLs (a D3D12 game that also
 // loaded vulkan-1 reports Vulkan, and vice versa) - the precedence picks
 // the strongest loaded signal, it never invents a module the process did
 // not load.
 const API_MODULE_PRECEDENCE = [
+  ['opengl', 'opengl32.dll'], // M17c: FIRST - CONDITIONAL (wins only with a vendor ICD)
   ['vulkan', 'vulkan-1.dll'],
-  ['opengl', 'opengl32.dll'], // M17b: CONDITIONAL - wins only with a vendor ICD
   ['dx12', 'd3d12.dll'],
   ['dx11', 'd3d11.dll'],
   ['dx10', 'd3d10.dll'],
@@ -185,19 +199,22 @@ export function normalizeModuleNames(modules) {
 }
 
 /**
- * The pure match (M17b: the ICD-corroborated precedence reorder).
- * Precedence: vulkan-1 > opengl32 (WITH a vendor ICD) > d3d12 > d3d11 >
- * d3d10 > d3d9. vulkan-1.dll stays on top (only Vulkan processes load it);
- * opengl32 wins ONLY when a vendor ICD is loaded (nvoglv64/32.dll,
- * atiogl64/32.dll, amdxc64.dll, ig9icd64/32.dll - the Minecraft/LWJGL
- * shape) - a BARE opengl32 (the GDI-generic loader, no ICD) FALLS THROUGH
- * to the remaining d3d precedence (d3d12 > d3d11 > d3d10 > d3d9), so
- * Chromium/Electron with opengl32 loaded still reads dx11 and an
- * OpenGL-with-d3d12-loaded process reads opengl (the d3d12-first misread
- * is fixed). The ICD check reads the module names (they ARE loaded
- * modules of the process); the optional icdNames parameter is the explicit
- * hook for run B's { name, path } probe pairs (normalized to names before
- * the call). null when nothing matches - the caller renders no api field.
+ * The pure match (M17c: the ICD-corroborated precedence reorder).
+ * Precedence: opengl32 (WITH a vendor ICD) > vulkan-1 > d3d12 > d3d11 >
+ * d3d10 > d3d9. opengl32.dll sits FIRST but CONDITIONALLY - it wins ONLY
+ * when a vendor ICD is loaded (nvoglv64/32.dll, atiogl64/32.dll,
+ * amdxc64.dll, ig9icd64/32.dll - the Minecraft/LWJGL shape: LWJGL preloads
+ * vulkan-1.dll even on the OpenGL path while the real GL context loads the
+ * vendor ICD, so 'vulkan-1.dll presence' is NOT a Vulkan signal) - a BARE
+ * opengl32 (the GDI-generic loader, no ICD) FALLS THROUGH to vulkan-1 >
+ * the d3d precedence (the GLFW-vulkan shape: GLFW loads opengl32.dll but
+ * no GL ICD without a GL context -> 'vulkan'), so Chromium/Electron with
+ * opengl32 loaded still reads dx11 and an OpenGL-with-vulkan-1-loaded
+ * process reads opengl (the vulkan-first misread of Minecraft OGL is
+ * fixed). The ICD check reads the module names (they ARE loaded modules of
+ * the process); the optional icdNames parameter is the explicit hook for
+ * run B's { name, path } probe pairs (normalized to names before the
+ * call). null when nothing matches - the caller renders no api field.
  * Unit-tested directly (the cheap-oracle seam).
  * @param {unknown} moduleNames the module base names (e.g. from
  *   GetModuleBaseNameW) - garbage/absent -> null
@@ -341,7 +358,25 @@ export function createForegroundApiDetector(deps = {}) {
     }
   };
 
-  return { detect };
+  /**
+   * M17c: the foreground window's PROCESS ID (the ETW lane's
+   * --process_id target). The same probe chain as detect() minus the
+   * module scan - GetForegroundWindow + GetWindowThreadProcessId only.
+   * Every failure resolves to null (no foreground window /
+   * GetWindowThreadProcessId failed / any koffi error) - NEVER throws.
+   * @returns {Promise<number | null>} the pid or null
+   */
+  const detectPid = async () => {
+    try {
+      const hwnd = probe('getForegroundWindow');
+      if (!hwnd) return null; // no foreground window
+      return probe('getWindowThreadProcessId', hwnd);
+    } catch {
+      return null; // ANY koffi error resolves to the honest null
+    }
+  };
+
+  return { detect, detectPid };
 }
 
 /**

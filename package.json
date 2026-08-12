@@ -31,6 +31,8 @@
                                 "src/main/backend/AMDFamily17.bin",
                                 "src/main/backend/COPYING",
                                 "src/main/backend/PawnIO_setup.exe",
+                                "src/main/backend/presentmon/PresentMon64.exe",
+                                "src/main/backend/presentmon/LICENSE",
                                 "THIRD_PARTY_NOTICES.txt",
                                 "LICENSE",
                                 "package.json"
@@ -38,7 +40,8 @@
                   "asarUnpack":  [
                                      "node_modules/koffi/**",
                                      "src/main/backend/igcl2023/**",
-                                     "src/main/backend/PawnIO_setup.exe"
+                                     "src/main/backend/PawnIO_setup.exe",
+                                     "src/main/backend/presentmon/**"
                                  ],
                   "win":  {
                               "target":  [

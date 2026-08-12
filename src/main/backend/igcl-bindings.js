@@ -445,6 +445,21 @@ const ctl_3d_feature_getset_t = koffi.struct('ctl_3d_feature_getset_t', {
   pCustomValue: 'void*',          // @48
 }); // 56 bytes, align 8
 
+// M17c (the iGPU temperature fallback): the temperature-sensor surface
+// (igcl_api.h v1.1). ctlEnumTemperatureSensors enumerates per-sensor
+// HANDLES (the count-then-fill pattern of ctlEnumerateDevices);
+// ctlTemperatureGetProperties reads the sensor type
+// (ctl_temp_sensors_t: GLOBAL 0 / GPU 1 / MEMORY 2 - the max-across-
+// sensors types); ctlTemperatureGetState returns the CURRENT temperature
+// in degrees C via a double* (NOT a struct - the plan's "state struct"
+// name is wrong vs the actual header; the double is the whole contract).
+const ctl_temp_properties_t = koffi.struct('ctl_temp_properties_t', {
+  Size: 'uint32',                 // @0
+  Version: 'uint8',               // @4
+  type: 'int32',                  // @8  (ctl_temp_sensors_t)
+  maxTemperature: 'double',       // @16 (degrees C)
+}); // 24 bytes, align 8
+
 // ---------------------------------------------------------------------------
 // Layout assertions (sizes computed by hand from the C headers; any mismatch
 // means koffi laid out a struct differently than MSVC did)
@@ -480,6 +495,10 @@ const EXPECTED_SIZES = {
   ctl_3d_feature_caps_t: 24,
   ctl_3d_feature_details_t: 72,
   ctl_3d_feature_getset_t: 56,
+  // M17c (the iGPU temperature fallback): ctl_temp_properties_t 24 bytes
+  // (Size@0 u32, Version@4 u8, type@8 i32, maxTemperature@16 double - MSVC
+  // x64, align 8).
+  ctl_temp_properties_t: 24,
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -707,6 +726,15 @@ export function loadIgcl(dllPath) {
   // the OC surface stays untouched.
   bind('ctlGetSupported3DCapabilities', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlGetSet3DFeature', 'ctl_result_t', ['void*', 'void*']);
+
+  // M17c (the iGPU temperature fallback): the temperature-sensor surface.
+  // ctlEnumTemperatureSensors fills a handle ARRAY (the ctlEnumerateDevices
+  // pattern - count-then-fill); ctlTemperatureGetState returns the current
+  // temperature via a double* (degrees C). A driver runtime may omit the
+  // symbols - bind() records the gap and the fallback degrades honestly.
+  bind('ctlEnumTemperatureSensors', 'ctl_result_t', ['void*', 'uint32*', 'void**']);
+  bind('ctlTemperatureGetProperties', 'ctl_result_t', ['void*', 'ctl_temp_properties_t*']);
+  bind('ctlTemperatureGetState', 'ctl_result_t', ['void*', 'double*']);
 
   return fn;
 }

@@ -305,9 +305,15 @@ export function createApplyRunner({
      * Run one apply. Returns the {result, state} envelope the renderer
      * expects, or throws APPLY_CANCELED_ERROR when the UAC prompt was
      * canceled/denied.
-     * @param {{ deviceId: number, settings: object, profileName?: string, waiverAccepted?: boolean, ocMode?: 'stock'|'advanced', profileApply?: boolean }} req
+     * @param {{ deviceId: number, settings: object, profileName?: string, waiverAccepted?: boolean, ocMode?: 'stock'|'advanced', profileApply?: boolean, limitsKey?: { pciDeviceId?: string|null, aibVendor?: string|null, aibModel?: string|null } | null }} req
+     *   limitsKey: M17c (step-4 N6) - the PARENT-RESOLVED device identity
+     *   (the parent's finalized caps AIB fields, laptop branch included).
+     *   The worker's own caps decode the subsystem only, so on a laptop the
+     *   parent's deviceGateThresholds could diverge from the worker's; the
+     *   parent's limits-key makes the worker's gate thresholds MATCH the
+     *   user-facing ones. Only present when the caller resolved one.
      */
-    async apply({ deviceId, settings, profileName, waiverAccepted, ocMode, profileApply }) {
+    async apply({ deviceId, settings, profileName, waiverAccepted, ocMode, profileApply, limitsKey }) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
         // M4O (NEW): the IN-PROCESS branch forwards profileApply too - the
@@ -330,6 +336,9 @@ export function createApplyRunner({
       // M4O: the parent-side profileApply rides too - the worker skips the
       // STOCK gate for profile applies (the ceiling refusal stays). Only
       // present when true (no undefined own-keys in the request file).
+      // M17c (step-4 N6): the parent-resolved limitsKey rides too - the
+      // worker's gate thresholds must match the parent's (the laptop
+      // branch). Only present when the caller resolved one.
       const { result } = await runWorker({
         requestId: randomUUID(),
         op: 'apply',
@@ -339,10 +348,23 @@ export function createApplyRunner({
         waiverAccepted,
         ocMode,
         ...(profileApply === true ? { profileApply: true } : {}),
+        ...(limitsKey && typeof limitsKey === 'object' ? { limitsKey } : {}),
       });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);
-      return { worker: true, result: { ok: result.ok === true, perControl: result.perControl ?? {} }, state: result.state ?? null };
+      // M17c: the worker's result envelope gains the REFUSED VALUES (the
+      // attempted values of the 'out-of-range' per-control results) - the
+      // parent's session refused-ceiling store records from them. Only
+      // present when the worker emitted them (no undefined own-keys).
+      return {
+        worker: true,
+        result: {
+          ok: result.ok === true,
+          perControl: result.perControl ?? {},
+          ...(result.refused && typeof result.refused === 'object' ? { refused: result.refused } : {}),
+        },
+        state: result.state ?? null,
+      };
     },
     /**
      * Accept the warranty waiver (elevated - the driver-side waiver write

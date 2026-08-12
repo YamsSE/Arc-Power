@@ -68,7 +68,9 @@
 //      slider value.
 //  12. M3-C-D/E extended variant (RID_MOCK_EXTENDED_RANGES=1, mock default
 //      OC mode = advanced): the power slider max is 315 W and the temp
-//      slider max 115 C; setting PL 300 and applying SKIPS the per-apply
+//      slider max 90 C (M17c step-4 N1 - the mock mirrors the device-limits
+//      table, the listed a770's advanced TL is the documented 90, never the
+//      fixture's raw 115); setting PL 300 and applying SKIPS the per-apply
 //      confirm (double-dialog decision - the mode-enable confirm already
 //      warned) and the read-back sticks at 300 W; restored to 210 W after.
 //  12b. M3-C-E stock variant (RID_MOCK_STOCK_MODE=1): sliders pinned to the
@@ -251,7 +253,10 @@ async function bootWaiverStep(win, js, waitFor) {
   // b580/pro-b50 -> "12GB GDDR6" (fold r2.2: the pro-b50 token is covered),
   // arc-igpu -> plain (no VRAM).
   const fsId = process.env.RID_MOCK_FEATURESET;
+  // M17c: the a750 featureset (8 GiB - the ASRock Challenger config) joins
+  // the suffix table.
   const expectedSuffix = fsId === 'b580' || fsId === 'pro-b50' ? '12GB GDDR6'
+    : fsId === 'a750' ? '8GB GDDR6'
     : fsId === 'arc-igpu' ? null
     : '16GB GDDR6';
   const pinDeviceLine = async () => {
@@ -757,6 +762,54 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   step('themes-boot', `1.0.1: boot theme '${bootTheme}' on <html> + computed --bg ${bootBg} (applied from the persisted envelope, equal-specificity ordering safe)`);
 
+  // M17c (user request): the shared --control-bg token renders on the
+  // interactive controls - the M8-style computed-style pins for a select
+  // (.featureset-select - always present in mock mode), a plain non-primary
+  // .btn (the Tweaks Refresh button - the only non-ghost/non-primary .btn
+  // in the app) and a checkbox (.settings-checkbox) in BOTH themes (the
+  // Settings theme chips flip the session; the dark state is restored for
+  // the later pins).
+  const expectControlBg = async (sel, theme) => {
+    const bg = await js(`getComputedStyle(document.querySelector('${sel}')).backgroundColor`);
+    const want = theme === 'light' ? 'rgb(220, 226, 234)' : 'rgb(10, 13, 19)';
+    if (bg !== want) {
+      fail(`M17c: the computed background of ${sel} is '${bg}' (expected the --control-bg token '${want}' in the ${theme} theme)`);
+    }
+  };
+  const clickThemeChip = (theme) => js(`(() => { const b = Array.from(document.querySelectorAll('button.theme-option')).find((x) => x.dataset.themeOption === '${theme}'); if (b) b.click(); return !!b; })()`);
+  await expectControlBg('.featureset-select', 'dark');
+  await js(`location.hash = '#/tweaks'`);
+  await sleep(250);
+  await expectControlBg('.tweak-refresh', 'dark');
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  await expectControlBg('.settings-checkbox[data-setting="startMinimized"]', 'dark');
+  // Flip to light: the theme chip applies + persists immediately.
+  if (!(await js(`!!document.querySelector('button.theme-option[data-theme-option="light"]')`))) {
+    fail('M17c: the Settings page theme chips are missing');
+  }
+  await clickThemeChip('light');
+  if (!(await waitFor(win, `document.documentElement.dataset.theme === 'light'`, 5000))) {
+    fail('M17c: the light theme flip did not land (the theme chip must apply immediately)');
+  }
+  await expectControlBg('.settings-checkbox[data-setting="startMinimized"]', 'light');
+  await js(`location.hash = '#/dashboard'`);
+  await sleep(250);
+  await expectControlBg('.featureset-select', 'light');
+  await js(`location.hash = '#/tweaks'`);
+  await sleep(250);
+  await expectControlBg('.tweak-refresh', 'light');
+  // Restore the dark session (the later pins expect the boot theme).
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  await clickThemeChip('dark');
+  if (!(await waitFor(win, `document.documentElement.dataset.theme === 'dark'`, 5000))) {
+    fail('M17c: the dark theme restore did not land');
+  }
+  await js(`location.hash = '#/dashboard'`);
+  await sleep(250);
+  step('m17c-control-bg', 'M17c: the --control-bg token renders on a select + a plain .btn + a checkbox in BOTH themes (the dark/light computed-style pins)');
+
   // M4-H (C1): the GPU card - title 'GPU', the device name in a 'GPU' kv
   // row under it (the CPU-card layout mirrored: title, then the 'CPU' kv
   // row - the GPU card mirrors that with a 'GPU' row), NO Driver version
@@ -778,6 +831,20 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
     fail('Xe cores / shader units line missing');
   }
+  // M17c: the Board partner row BELOW the Device row - '<AIB vendor>
+  // (<model>)' from the caps AIB fields (the a770 mock's 0x1849/0x6001
+  // pairing decodes ASRock / Phantom Gaming 8GB - the dev-box pin).
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.card-grid .device-card');
+    const kvs = Array.from(card?.querySelectorAll('.kv') ?? []);
+    const gpuIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'GPU');
+    const aibIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Board partner');
+    const aibRow = kvs[aibIdx];
+    return aibIdx === gpuIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'ASRock (Phantom Gaming 8GB)';
+  })()`, 5000))) {
+    fail(`M17c: the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'ASRock (Phantom Gaming 8GB)' directly below the Device row)`);
+  }
+  step('m17c-board-partner', 'M17c: the Board partner row renders directly below the Device row - ASRock (Phantom Gaming 8GB) (the 0x1849/0x6001 decode)');
   // The waiver status row lives in the HEALTH card (below), not on the
   // device card: no 'OC waiver' text in any device-card kv row.
   if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Status card)');
@@ -2054,7 +2121,9 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 
   // --- 5c. M3-C-D/E extended + stock variants. ------------------------------
   // RID_MOCK_EXTENDED_RANGES=1 (mock default OC mode = advanced): full slider
-  // range (315 W / 115 C), the extended apply SKIPS the per-apply confirm
+  // range (315 W / 90 C - M17c step-4 N1: the mock mirrors the device-limits
+  // table, so the listed a770's advanced TL is the documented 90 C, never
+  // the fixture's raw 115), the extended apply SKIPS the per-apply confirm
   // (the mode-enable confirm already warned - double-dialog decision);
   // optional RID_MOCK_WORKER_APPLY=1 adds the elevation toast on top.
   // RID_MOCK_STOCK_MODE=1: stock mode - sliders pinned to the standard
@@ -2072,11 +2141,13 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
       return card.querySelector('.oc-value').textContent;
     })()`);
 
-    // The extended ranges are exposed: slider maxes 315 W / 115 C.
+    // The extended ranges are exposed: PL slider max 315 W; the TL slider
+    // max is the M17c listed-row cap 90 C (step-4 N1 - the mock mirrors the
+    // device-limits table; the (90, 115] window is never offered).
     const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
     if (plMax !== '315') fail(`M3-C-D: power slider max is '${plMax}' (expected 315 - live-verified ceiling)`);
     const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
-    if (tlMax !== '115') fail(`M3-C-D: temp slider max is '${tlMax}' (expected 115)`);
+    if (tlMax !== '90') fail(`M3-C-D: temp slider max is '${tlMax}' (expected 90 - the M17c listed-row cap)`);
     // The mode toggle renders with Advanced active (mock default advanced).
     const advBtn = await js(`Array.from(document.querySelectorAll('.oc-mode-btn')).find((b) => b.textContent.trim() === 'Advanced')?.classList.contains('active')`);
     if (!advBtn) fail('M3-C-E: the OC-mode toggle does not show Advanced active (mock default)');
@@ -2219,8 +2290,9 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     fail('M2D: featureset dropdown missing in mock mode');
   }
   const fsOptions = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
-  if (fsOptions.length !== 4) fail(`M2D: dropdown lists ${fsOptions.length} featuresets (expected 4)`);
-  for (const want of ['a770', 'b580', 'pro-b50', 'arc-igpu']) {
+  // M17c: the a750 featureset joined the distribution (5 options).
+  if (fsOptions.length !== 5) fail(`M2D: dropdown lists ${fsOptions.length} featuresets (expected 5)`);
+  for (const want of ['a750', 'a770', 'b580', 'pro-b50', 'arc-igpu']) {
     if (!fsOptions.includes(want)) fail(`M2D: dropdown options are '${fsOptions.join(',')}' (missing '${want}')`);
   }
   const fsSelected = await js(`document.querySelector('.featureset-select').value`);
@@ -4137,24 +4209,35 @@ export async function runGraphicsVerify(win, backend) {
   if (await js(`document.body.textContent.includes('Unapplied')`)) fail('M9: the "Unapplied" chip text must not exist anywhere in the DOM');
   step('m9-fixture', `M9: dropdowns show the fixture (fg '${fv.fg}', flip '${fv.flip}', ll '${fv.ll}'); options are driver-gated (no speed-frame in ${flipOptions}, the FULL on-boost list in ${llOptions}); the Apply stays hidden while clean; pristine cards carry only the hidden chip`);
 
-  // --- 3. the FPS toggle: OFF -> no slider; ON -> the range-driven slider ---
+  // --- 3. the FPS dropdown: Off -> the WHOLE slider-row hides (the value
+  // --- text included - the M17c "30 FPS" text bug); On -> both appear ---
   const fpsToggle = `${cardSel('frameLimit')} .graphics-toggle`;
   const fpsSlider = `${cardSel('frameLimit')} .graphics-slider`;
-  if (!(await js(`!!document.querySelector('${fpsToggle}') && !document.querySelector('${fpsToggle}').checked`))) {
-    fail('M8: the FPS toggle must start OFF (the fixture frameLimit.enabled=false)');
+  const fpsSliderRow = `${cardSel('frameLimit')} .graphics-fps-slider-row`;
+  // M17c: the ON/OFF checkbox became a DROPDOWN ('FPS Limit Off' / 'FPS
+  // Limit On' - the user's exact wording; no label text next to it) - the
+  // draft { enabled, value } shape is UNCHANGED.
+  if (!(await js(`(() => { const s = document.querySelector('${fpsToggle}'); return !!s && s.tagName === 'SELECT' && s.value === 'off' && JSON.stringify(Array.from(s.options).map((o) => o.value)) === '["off","on"]' && Array.from(s.options).every((o) => o.textContent.trim().startsWith('FPS Limit')); })()`))) {
+    fail('M17c: the FPS limiter must render as a "FPS Limit Off"/"FPS Limit On" dropdown (the checkbox is gone), starting at Off');
   }
-  if (!(await js(`!!document.querySelector('${fpsSlider}') && document.querySelector('${fpsSlider}').hidden`))) {
-    fail('M8: the FPS slider must be HIDDEN while the toggle is OFF');
+  if (!(await js(`(() => { const r = document.querySelector('${fpsSliderRow}'); return !!r && r.hidden; })()`))) {
+    fail('M17c: the FPS slider-row (slider AND value text) must be HIDDEN while the limiter is OFF');
   }
-  await js(`(() => { const t = document.querySelector('${fpsToggle}'); t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  if (!(await waitFor(win, `(() => { const s = document.querySelector('${fpsSlider}'); return !!s && !s.hidden && s.min === '30' && s.max === '300' && s.step === '1'; })()`, 5000))) {
-    fail(`M8: the FPS toggle ON did not reveal the range-driven slider (min/max/step ${await js(`(() => { const s = document.querySelector('${fpsSlider}'); return s ? s.min + '/' + s.max + '/' + s.step : 'no-slider'; })()`)} - expected 30/300/1 from the mock range)`);
+  if (!(await js(`(() => { const v = document.querySelector('${cardSel('frameLimit')} .graphics-fps-value'); return !!v && v.offsetParent === null; })()`))) {
+    fail('M17c: the "30 FPS" value text must NOT be visible while the limiter is OFF (the whole row hides)');
   }
-  // The toggle change dirtied the draft -> the floating Apply appears.
+  await js(`(() => { const s = document.querySelector('${fpsToggle}'); s.value = 'on'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  if (!(await waitFor(win, `(() => { const r = document.querySelector('${fpsSliderRow}'); const s = document.querySelector('${fpsSlider}'); return !!r && !r.hidden && !!s && !s.hidden && s.min === '30' && s.max === '300' && s.step === '1'; })()`, 5000))) {
+    fail(`M17c: the FPS dropdown ON did not reveal the slider-row with the range-driven slider (min/max/step ${await js(`(() => { const s = document.querySelector('${fpsSlider}'); return s ? s.min + '/' + s.max + '/' + s.step : 'no-slider'; })()`)} - expected 30/300/1 from the mock range)`);
+  }
+  if (!(await js(`(() => { const v = document.querySelector('${cardSel('frameLimit')} .graphics-fps-value'); return !!v && v.offsetParent !== null && (v.textContent ?? '').endsWith(' FPS'); })()`))) {
+    fail('M17c: the FPS value text must be visible again while the limiter is ON');
+  }
+  // The dropdown change dirtied the draft -> the floating Apply appears.
   if (!(await waitFor(win, `!!document.querySelector('.floating-apply') && !document.querySelector('.floating-apply').hidden`, 5000))) {
-    fail('M8: the FPS toggle ON must dirty the draft (the floating Apply appears)');
+    fail('M17c: the FPS dropdown ON must dirty the draft (the floating Apply appears)');
   }
-  step('m8-fps-toggle', 'M8: FPS toggle OFF -> no slider; ON -> the range-driven slider (30/300/1) appears + the draft is dirty (Apply shows)');
+  step('m8-fps-toggle', 'M17c: FPS limiter dropdown ("FPS Limit Off"/"FPS Limit On", no label text) - Off hides the WHOLE slider-row (slider + the value text); On reveals the range-driven slider (30/300/1) + the value text + the dirty Apply');
 
   // --- 4. a change -> the dirty Apply appears; Apply -> the round trip ------
   await js(`(() => {
@@ -4322,6 +4405,41 @@ export async function runGraphicsVerify(win, backend) {
   }
   step('m9-on-boost', 'M9: the On + Boost round trip - the Low Latency dropdown offered on-boost (the full list on every driver), the per-card apply landed it in the mock driver (chip Applied), restored to off');
 
+  // --- 5c. M17c: the FPS Reset-to-default mirrors the OFF state ------------
+  // The reset flips the dropdown to Off, hides the WHOLE slider-row and
+  // restores { enabled: false, value: 60 } - the apply payload shape is
+  // byte-identical to the pre-M17c reset (the { enabled, value } contract).
+  await js(`(() => {
+    const card = document.querySelector('${cardSel('frameLimit')}');
+    const btn = Array.from(card.querySelectorAll('.btn')).find((b) => (b.textContent ?? '').includes('Reset'));
+    btn.click();
+  })()`);
+  if (!(await waitFor(win, `(() => {
+    const s = document.querySelector('${fpsToggle}');
+    const r = document.querySelector('${fpsSliderRow}');
+    return !!s && s.value === 'off' && !!r && r.hidden;
+  })()`, 5000))) {
+    fail('M17c: the FPS Reset-to-default must flip the dropdown to Off AND hide the whole slider-row');
+  }
+  // The reset draft is dirty vs the applied 144 FPS -> the floating Apply
+  // appears; its payload is the byte-identical { enabled, value } shape.
+  await clearToasts();
+  if (!(await waitFor(win, `!!document.querySelector('.floating-apply') && !document.querySelector('.floating-apply').hidden`, 5000))) {
+    fail('M17c: the FPS reset draft must be dirty (the floating Apply appears)');
+  }
+  await js(`document.querySelector('.floating-apply')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) {
+    fail('M17c: the FPS reset apply did not land');
+  }
+  const resetDriver = await js(`window.arcPower.graphicsGet(0)`);
+  if (!resetDriver.values.frameLimit || resetDriver.values.frameLimit.enabled !== false) {
+    fail(`M17c: the FPS reset apply must write { enabled:false } (got ${JSON.stringify(resetDriver.values.frameLimit)})`);
+  }
+  if (resetDriver.values.frameLimit.value !== 60) {
+    fail(`M17c: the FPS reset must restore the fixture default value 60 (got ${JSON.stringify(resetDriver.values.frameLimit)})`);
+  }
+  step('m17c-fps-reset', 'M17c: FPS Reset-to-default mirrors the Off state - dropdown Off, slider-row hidden, the apply writes { enabled:false, value:60 } (the shape is byte-identical)');
+
   // --- 6. the multi-device degrade (RID_MOCK_MULTI_DEVICE=1) -----------------
   if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
     const IGPU_NAME = 'Mock Arc iGPU (fixture)';
@@ -4421,7 +4539,8 @@ export async function runFeaturesetVerify(win, fsId) {
   if (!(await waitFor(win, `!!document.querySelector('.badge-mock')`))) fail('mock badge missing');
   if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) fail('featureset dropdown missing in mock mode');
   const options = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
-  if (options.length !== 4) fail(`dropdown lists ${options.length} featuresets (expected 4)`);
+  // M17c: the a750 featureset joined the distribution (5 files).
+  if (options.length !== 5) fail(`dropdown lists ${options.length} featuresets (expected 5)`);
   const selected = await js(`document.querySelector('.featureset-select').value`);
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
@@ -4493,6 +4612,28 @@ export async function runFeaturesetVerify(win, fsId) {
   if (waiverClickable === (noOc || bootAccepted)) fail(`M4-A: waiver row clickability is '${waiverClickable}' (expected ${noOc || bootAccepted ? 'not clickable' : 'clickable'} - clickable only while unaccepted on an OC-capable device)`);
   step('health-card', `GPU Status card: 5 rows '${rowLabels}'; waiver row 'OC waiver - ${waiverExpected}' (${noOc || bootAccepted ? 'green, no click action' : 'red, clickable'})`);
 
+  // M17c: the Board partner row per featureset (the dashboard device card).
+  // a750 -> 'ASRock' (subsys vendor 0x1849 + the FIXTURE-ONLY variant id
+  // 0x0A75 - step-4 N7: the a750 mock never reuses the A770's observed
+  // 0x6001, so the model decodes null and the row is vendor-only);
+  // b580 -> 'Intel (Limited Edition)' (subsys 0x8086, no variant - vendor
+  // only); arc-igpu -> the honest grey '-' (no subsystem fields - the
+  // unknown fallback pin); pro-b50 -> '-' (no subsystem fields either).
+  const aibExpected = fsId === 'a750' ? 'ASRock'
+    : fsId === 'b580' ? 'Intel (Limited Edition)'
+    : '-';
+  if (!(await waitFor(win, `(() => {
+    const row = Array.from(document.querySelectorAll('.card-grid .device-card .kv'))
+      .find((k) => (k.getAttribute('data-label') ?? '') === 'Board partner');
+    return row && (row.textContent ?? '').trim() === '${aibExpected}';
+  })()`, 5000))) {
+    fail(`M17c ('${fsId}'): the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected '${aibExpected}')`);
+  }
+  if (aibExpected === '-' && !(await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"] span')?.classList.contains('text-unknown')`))) {
+    fail(`M17c ('${fsId}'): the unknown Board partner '-' must render the honest grey (text-unknown)`);
+  }
+  step('board-partner', `M17c ('${fsId}'): Board partner row '${aibExpected}' (${aibExpected === '-' ? 'the honest grey unknown fallback' : 'the caps AIB decode'})`);
+
   // --- tuning surface per featureset (M4-D2: #/overclocking -> #/tuning) ---
   await gotoOverclocking();
 
@@ -4554,6 +4695,38 @@ export async function runFeaturesetVerify(win, fsId) {
       const vramMeta = await js(`document.querySelector('.vram-editor-card .oc-meta .oc-range')?.textContent ?? ''`);
       if (!vramMeta.includes('Gbps')) fail(`M4J (D): the VRAM editor meta line does not show the Gbps units: '${vramMeta}'`);
       step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), Advanced = VRAM clock editor (0..3 Gbps step 0.1)`);
+    } else if (fsId === 'a750') {
+      // M17c (round-1 N2): the a750 slider maxes are AUTOMATED here (the
+      // user-hardware-only pin becomes a mock variant): the volt slider max
+      // is 0.285 - NOT clamped to 0.234 (the global clamp is gone, the
+      // driver props pass through) - and the PL slider max is 216 (the
+      // ASRock Challenger documented ceiling). The table's PL-cap arithmetic
+      // is covered by the pure table unit tests, NOT by this variant (the
+      // fixture already encodes the final ranges - the reviewer note).
+      const a750VoltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
+      if (a750VoltMax !== '0.285') fail(`M17c: the a750 volt slider max is '${a750VoltMax}' (expected 0.285 - the driver props pass through, NOT clamped to 0.234)`);
+      const a750VoltStep = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('step')`);
+      if (a750VoltStep !== '0.001') fail(`M17c: the a750 volt slider step is '${a750VoltStep}' (expected 0.001)`);
+      const a750PlMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
+      if (a750PlMax !== '216') fail(`M17c: the a750 PL slider max is '${a750PlMax}' (expected 216 - the ASRock Challenger documented ceiling)`);
+      const a750PlValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
+      if (a750PlValue.trim() !== '190 W') fail(`M17c: the a750 PL readout is '${a750PlValue}' (expected '190 W' - the stock default)`);
+      // The a750 mock's listed-card gate: a value in (216, 315] must REFUSE
+      // with the ceiling class (never a silent clamp) - the device-scoped
+      // ocModeRefusal pin.
+      const refusal = await js(`window.arcPower.applySettings(0, { powerLimitW: 250 })`);
+      if (refusal.result.ok !== false || refusal.ocModeRefused !== true) {
+        fail(`M17c: the a750 listed-card PL 250 apply must REFUSE (ocModeRefused, got ${JSON.stringify(refusal.result)})`);
+      }
+      const per = refusal.result.perControl?.powerLimitW;
+      if (!per || per.ok !== false || per.errorCode !== 'out-of-range') {
+        fail(`M17c: the a750 refusal must be the ceiling class per-control 'out-of-range' (got ${JSON.stringify(per)})`);
+      }
+      const a750State = await js(`window.arcPower.getCurrentSettings(0)`);
+      if (Math.abs(a750State.powerLimitW - 190) > 1e-6) {
+        fail(`M17c: the a750 refusal must never clamp into the device state (got ${a750State.powerLimitW})`);
+      }
+      step('oc-a750', `a750: volt slider max ${a750VoltMax} V (NOT clamped to 0.234), step ${a750VoltStep}, PL slider max ${a750PlMax} W, readout '${a750PlValue.trim()}', a (216, 315] apply REFUSES with the ceiling class (device untouched at 190 W)`);
     } else {
       step('oc-generic', `'${fsId}': ${cards} OC cards render`);
     }
@@ -4652,9 +4825,12 @@ export async function runFeaturesetVerify(win, fsId) {
   if (!a770Row.includes('Jul 05, 2026')) fail(`swap to a770: driver date missing on the health row: '${a770Row}'`);
   await gotoOverclocking();
   await swapTo(fsId);
+  // M17c: the a750 swap-back restores the W-unit surface (190 W readout).
   const backOk = fsId === 'b580'
     ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '100 %'`)
-    : await waitFor(win, `document.querySelectorAll('.oc-card').length === 0`);
+    : fsId === 'a750'
+      ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`)
+      : await waitFor(win, `document.querySelectorAll('.oc-card').length === 0`);
   if (!backOk) fail(`swap back to '${fsId}' did not restore its surface`);
   if (fsId === 'b580') {
     // M2D: the unverified b580 swap must clear the a770 date, not pair it
@@ -4787,6 +4963,64 @@ export async function runFeaturesetVerify(win, fsId) {
 //   9. the close-to-tray REAL close probe - the LAST step.
 
 /**
+ * M17c (round-3 N2): the laptop-sysinfo variant (RID_MOCK_LAPTOP=1) - the
+ * mock sysinfo fixture + the caps AIB decode BOTH serve the PORTABLE shape
+ * (the MSI Claw: 'Micro-Star International Co., Ltd.' + a portable
+ * chassis): the Dashboard Board partner row reads 'MSI (Claw 8 AI+)' (the
+ * laptop-manufacturer branch - the subsystem decode is overridden on
+ * portable systems). The close-to-tray probe is the LAST step.
+ * @param {import('electron').BrowserWindow} win
+ */
+export async function runLaptopSysinfoVerify(win) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+
+  // --- 1. shell + the shared waiver boot step -------------------------------
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected)');
+  }
+  await bootWaiverStep(win, js, waitFor);
+  step('waiver-boot', 'boot waiver prompt handled (cancelled - the unaccepted session)');
+
+  // --- 2. the Board partner row reads the LAPTOP MANUFACTURER ---------------
+  // The laptop branch overrides the subsystem decode on portable systems:
+  // aibVendor = the CLEANED manufacturer (Micro-Star -> MSI), aibModel =
+  // the system Model (Claw 8 AI+).
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.card-grid .device-card');
+    const kvs = Array.from(card?.querySelectorAll('.kv') ?? []);
+    const gpuIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'GPU');
+    const aibIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Board partner');
+    const aibRow = kvs[aibIdx];
+    return aibIdx === gpuIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'MSI (Claw 8 AI+)';
+  })()`, 10000))) {
+    fail(`M17c: the laptop Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'MSI (Claw 8 AI+)' - the cleaned laptop manufacturer + model)`);
+  }
+  // The caps payload carries the laptop-branch identity (the same payload
+  // the device-limits table + the renderer pin key on).
+  const caps = await js(`window.arcPower.getCapabilities(0)`);
+  if (caps.aibVendor !== 'MSI' || caps.aibModel !== 'Claw 8 AI+') {
+    fail(`M17c: the laptop caps AIB fields are ${JSON.stringify({ aibVendor: caps.aibVendor, aibModel: caps.aibModel })} (expected 'MSI' / 'Claw 8 AI+')`);
+  }
+  step('laptop-board-partner', `Board partner row 'MSI (Claw 8 AI+)' (the laptop-manufacturer branch - the cleaned MSI + the system Model; caps carry the same identity)`);
+
+  // --- 3. the close-to-tray REAL close probe - the LAST step ----------------
+  await runCloseToTrayProbe(win);
+
+  console.log('\nUI VERIFY OK (laptop-sysinfo)\n' + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+/**
  * @param {import('electron').BrowserWindow} win
  */
 export async function runNoIntelVerify(win) {
@@ -4911,7 +5145,13 @@ export async function runNoIntelVerify(win) {
   }
   const gpuCardText = await js(`document.querySelector('.device-card')?.textContent ?? ''`);
   if (!gpuCardText.includes('Non supported GPU')) fail('1.0.1: the GPU card is missing the "Non supported GPU" note');
-  step('gpu-card', `GPU card: title 'GPU', name row 'AMD Radeon RX 7600', Driver version row '${driverRowKv.trim()}' (M4-I - the M4-H absence pin is REVERSED), VRAM '${vramRowKv.trim()}', ReBAR 'ReBAR off' (real), 'Non supported GPU' note`);
+  // M17c (round-1 N3): the no-Intel branch renders NO Device row - so the
+  // Board partner row is ABSENT there too (the AIB decode is Intel-caps
+  // data; the no-Intel card shows the OS GPU instead).
+  if (await js(`!!document.querySelector('.device-card .kv[data-label="Board partner"]')`)) {
+    fail('M17c: the Board partner row must be ABSENT on the no-Intel branch (no Device row there)');
+  }
+  step('gpu-card', `GPU card: title 'GPU', name row 'AMD Radeon RX 7600', Driver version row '${driverRowKv.trim()}' (M4-I - the M4-H absence pin is REVERSED), VRAM '${vramRowKv.trim()}', ReBAR 'ReBAR off' (real), 'Non supported GPU' note, NO Board partner row (round-1 N3)`);
 
   // M7b (fix 1): the no-Intel sysinfo FIXTURE carries a 'Microsoft Basic
   // Display Adapter' FIRST + a DisplayLink dock (the fixture path bypasses

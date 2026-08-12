@@ -18,9 +18,51 @@
 import { applyOnce } from './apply-once.js';
 import { clampAndSnap, nearlyEqual } from './backend/units.js';
 import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from './old-igcl.js';
+// M17c: the per-device limits table (the listed rows + the default row).
+// The renderer TS imports fine under the packaged Electron (Node 22.21
+// type stripping); the pure module carries no runtime TS-only features.
+import { deviceLimitsOf } from '../renderer/pure/device-limits.ts';
 
 export const STD_PL_MAX_W = 252;
 export const STD_TL_MAX_C = 90;
+
+/**
+ * M17c: resolve the DEVICE-SCOPED gate thresholds from the pure limits
+ * table. A LISTED card's thresholds come from its LISTED row (the per-AIB
+ * PL ceilings 216/228/235 W + the TL 90 C caps - BOTH modes, so a listed
+ * card's advanced ceiling is never the default 315/115 - round-2 S8); a
+ * control with NO override in the listed row keeps today's thresholds (the
+ * ASRock A770 keeps 252/315 - the "dev-box card keeps 252/315" rule). An
+ * UNLISTED card gets the DEFAULT row (252/90 stock, 315/115 advanced -
+ * today's pins exactly). Null/garbage identity -> the default row. THE
+ * M3-C-E PROHIBITION: the thresholds come from the PURE TABLE, never from
+ * caps.ranges (a caps-keyed gate would silently clamp on the worker side).
+ * @param {unknown} limitsKey the device identity - the caps object (the
+ *   pciDeviceId/aibVendor/aibModel fields) or null (the default row)
+ * @param {boolean} advanced whether the ADVANCED (extended) ceiling applies
+ * @returns {{ plMax: number, tlMax: number }}
+ */
+export function deviceGateThresholds(limitsKey, advanced) {
+  const identity = limitsKey && typeof limitsKey === 'object'
+    ? {
+        pciDeviceId: limitsKey.pciDeviceId ?? null,
+        aibVendor: limitsKey.aibVendor ?? null,
+        aibModel: limitsKey.aibModel ?? null,
+      }
+    : null;
+  const limits = deviceLimitsOf(identity);
+  if (!limits || !limits.listed) {
+    return advanced
+      ? { plMax: EXTENDED_PL_MAX_W, tlMax: EXTENDED_TL_MAX_C }
+      : { plMax: STD_PL_MAX_W, tlMax: STD_TL_MAX_C };
+  }
+  return {
+    plMax: typeof limits.powerLimitW?.max === 'number' ? limits.powerLimitW.max
+      : (advanced ? EXTENDED_PL_MAX_W : STD_PL_MAX_W),
+    tlMax: typeof limits.tempLimitC?.max === 'number' ? limits.tempLimitC.max
+      : (advanced ? EXTENDED_TL_MAX_C : STD_TL_MAX_C),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // M3-C-E - the OC-mode gate (STOCK | ADVANCED), ONE shared pure function.
@@ -84,16 +126,27 @@ export const OC_CEILING_REFUSAL_MSG =
  * property identical on both sides of the worker boundary (never the
  * extendedRanges flag - the caps-keyed mode gate the plan forbids stays
  * forbidden). Unknown ranges keep the historical threshold behavior.
+ * M17c (round-2 S8): the thresholds become DEVICE-SCOPED from the pure
+ * limits table (`limitsKey` - the caps object; the call sites always pass
+ * the caps they already read). A LISTED card's thresholds come from its
+ * LISTED row (per-AIB PL 216/228/235 W, TL 90 C - in BOTH modes, so a
+ * profile/boot/tray apply of a value in (216, 315] on a listed card must
+ * REFUSE with the ceiling class, never silently clamp down to the card's
+ * ceiling via caps.ranges); the DEFAULT row (252/315) is only for unlisted
+ * cards. PRE-CLAMP and non-caps-keyed: the thresholds come from the pure
+ * table, never caps.ranges (the M3-C-E prohibition).
  * @param {string} ocMode 'stock' | 'advanced'
  * @param {Record<string, unknown>} settings
  * @param {Record<string, { units?: string }>} [ranges]
+ * @param {{ pciDeviceId?: string|null, aibVendor?: string|null, aibModel?: string|null }|null} [limitsKey]
+ *   M17c: the device identity (the caps object - the device-limits table
+ *   keys on it); null/absent -> the default row (today's thresholds).
  * @returns {{ mode: string, controls: string[], message: string } | null}
  */
-export function ocModeRefusal(ocMode, settings, ranges = null) {
+export function ocModeRefusal(ocMode, settings, ranges = null, limitsKey = null) {
   if (!settings || typeof settings !== 'object') return null;
   const mode = ocMode === OC_MODE_ADVANCED ? OC_MODE_ADVANCED : OC_MODE_STOCK;
-  const plMax = mode === OC_MODE_ADVANCED ? EXTENDED_PL_MAX_W : STD_PL_MAX_W;
-  const tlMax = mode === OC_MODE_ADVANCED ? EXTENDED_TL_MAX_C : STD_TL_MAX_C;
+  const { plMax, tlMax } = deviceGateThresholds(limitsKey, mode === OC_MODE_ADVANCED);
   const isWcUnits = (key) => {
     const units = ranges?.[key]?.units ?? null;
     if (units === null || units === undefined) return true; // unknown -> historical behavior
