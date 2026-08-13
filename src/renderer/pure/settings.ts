@@ -74,6 +74,11 @@ export const VOLT_OFFSET_STEP_V = 0.001;
  * call WITHOUT the caps key keeps the legacy M15 both-directions behavior
  * (the pre-M17c pins - the product call sites always pass caps via
  * cardSliderRange).
+ * M17g (the global 0.001 V step - the user's fix): the STEP pin becomes
+ * GLOBAL for V-unit ranges - EVERY V-unit device's gpuVoltOffsetV range
+ * exposes step 0.001 (the driver's 0.005 grid puts the real ceiling
+ * off-grid on every card) while the 0.234 MAX stays A770-scoped (the M15
+ * probe evidence; other cards keep their driver maxes).
  */
 export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
   if (!range) return range;
@@ -102,9 +107,17 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
       }
       return range;
     }
-    // M17c: a known non-A770 device (the A750's 0.288 driver props - the
-    // 2026-08-12 probe) keeps its driver props - the global 0.234 clamp is
-    // gone.
+    // M17g (the global 0.001 V step - the user's fix): a KNOWN non-A770
+    // V-unit device (the A750's 0.288 driver props - the 2026-08-12 probe)
+    // keeps its driver MAX untouched, but the STEP is pinned to 0.001 for
+    // EVERY V-unit range - the driver's 0.005 grid puts the real ceiling
+    // OFF-GRID on every V-unit card, so the slider could never reach the
+    // props max (the same hazard the A770 pin fixed). The 0.234 MAX stays
+    // A770-scoped (the M15 probe evidence). A step already 0.001 passes
+    // through untouched (the pass-through identity pins stay green).
+    if (range.step !== VOLT_OFFSET_STEP_V) {
+      return { ...range, step: VOLT_OFFSET_STEP_V };
+    }
     return range;
   }
   return range;

@@ -40,7 +40,8 @@ export interface Settings {
   overlayChipNames?: boolean;
   /** M17e: the persisted overlay telemetry push cadence (ms - the
    *  Overlay Settings polling-rate slider; the telemetry-service default
-   *  500, the slider range 100-2000). APPENDED - the OC apply surface
+   *  400 - M17g: the stock polling rate FLIPS 500 -> 400, the slider range
+   *  100-2000). APPENDED - the OC apply surface
    *  never reads it; it mirrors the settings.json field. */
   overlayPollMs?: number;
 }
@@ -137,6 +138,21 @@ export interface PerControlResult {
 export interface ApplyResult {
   ok: boolean;
   perControl: Record<string, PerControlResult>;
+  /** M17g: the PL2 note - the apply's burst-domain verdict riding the
+   *  envelope next to perControl. Emitted (non-null) on EVERY W-unit
+   *  powerLimitW apply in BOTH modes:
+   *   - STOCK: { landed: true, valueW } - the primary V2 write's verdict
+   *     (both limits landed per the stock-path behavior; perControl
+   *     already verified the write);
+   *   - ADVANCED: the V2 companion verdict - landed, or refused above the
+   *     DriverStore ceiling ({ landed: false, ceilingW, valueW } - the
+   *     burst stays at its CURRENT value, the sustained (PL1) limit is
+   *     set).
+   *  Null when the payload carried no W-unit powerLimitW (or the write
+   *  failed - nothing to note). The Tuning PL card's '(set)' session state
+   *  feeds from it. Absent/omitted on the worker envelope when null (the
+   *  old envelope-shape pins stay green). */
+  pl2Note?: { landed: boolean; ceilingW?: number; valueW?: number } | null;
 }
 
 export interface ApplyResponse {
@@ -481,8 +497,9 @@ export interface OverlaySettings {
    *  the renderer fetches + applies the chip names only when this is on). */
   overlayChipNames: boolean;
   /** M17e: the overlay telemetry push cadence (ms - the overlay:settings
-   *  payload field; absent on old pushes -> 500 = the telemetry-service
-   *  default. The cadence itself is owned main-side (ipc-core's
+   *  payload field; absent on old pushes -> 400 = the telemetry-service
+   *  default - M17g: the stock polling rate FLIPS 500 -> 400. The cadence
+   *  itself is owned main-side (ipc-core's
    *  startTelemetry + the live restart); the payload carries it so the
    *  renderer + the verify pins know the setting end-to-end). */
   overlayPollMs: number;
@@ -533,8 +550,9 @@ export interface ProfileSettingsState {
   /** M6: the overlay text color (absent on old files -> '#ffffff' - the
    *  stock white; same absent-field mechanism, NO schema bump). */
   overlayColor: string;
-  /** M6: the enabled overlay stat ids (absent on old files -> the FULL set -
-   *  the stock overlay; same absent-field mechanism, NO schema bump). */
+  /** M6: the enabled overlay stat ids (M17g: absent on old files -> the
+   *  DEFAULT set - the user's 11 ON / the others OFF, the M6 full-set
+   *  default FLIPS; same absent-field mechanism, NO schema bump). */
   overlayStats: string[];
   /** M7b (fix 4): the overlay background box (absent on old files -> off /
    *  black / 0.5 opacity - the same absent-field mechanism, NO schema
@@ -547,8 +565,9 @@ export interface ProfileSettingsState {
    *  stock 'CPU '/'GPU ' prefixes; same absent-field mechanism, NO schema
    *  bump). The Overlay Settings page's chip-name checkbox persists this. */
   overlayChipNames: boolean;
-  /** M17e: the overlay telemetry push cadence - absent on old files -> 500
-   *  (the telemetry-service default; same absent-field mechanism, NO
+  /** M17e: the overlay telemetry push cadence - absent on old files -> 400
+   *  (the telemetry-service default - M17g: the stock polling rate FLIPS
+   *  500 -> 400; same absent-field mechanism, NO
    *  schema bump). The Overlay Settings page's polling-rate slider
    *  persists this. */
   overlayPollMs: number;

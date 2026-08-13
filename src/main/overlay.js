@@ -78,6 +78,15 @@ const OVERLAY_STAT_IDS = [
   'memory-util', 'gpu-util', 'gpu-clock', 'gpu-voltage',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime',
 ];
+// M17g (the user's stock overlay settings): the DEFAULT overlayStats set -
+// the user's 11 ON / the others OFF (the same default the store +
+// renderer/pure/overlay.ts carry - keep the three in lockstep). The
+// normalize's absent/garbage fallback (the store always normalizes, so
+// this fires only for direct callers without a stats field).
+const OVERLAY_STATS_DEFAULT = [
+  'fps', 'api', 'cpu-util', 'cpu-temp', 'cpu-power',
+  'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'frametime',
+];
 // M6: the stock overlay text color (white - the M5 pre-color default).
 const OVERLAY_COLOR_DEFAULT = '#ffffff';
 // M7b: the overlay background box - black at 0.5 opacity (the defaults
@@ -103,10 +112,11 @@ function normalizeSettings(raw = {}) {
     : 'O';
   // M6: the text color (a /^#[0-9a-fA-F]{6}$/ hex - the stock white
   // default) + the enabled stats (known ids, deduped; absent/garbage ->
-  // the FULL set - the stock overlay). M16 (B1): this normalize is the
-  // FILTER-only mirror - the persisted one-time upgrade of old lists (the
-  // M15 -> M16 stat ids) runs in the store's v2 -> v3 migration, so a
-  // stat the user just unchecked is never resurrected here.
+  // the DEFAULT set - M17g: the user's 11 ON / the others OFF, the same
+  // default the store + the renderer pure mirror carry). M16 (B1): this
+  // normalize is the FILTER-only mirror - the persisted one-time upgrade of
+  // old lists (the M15 -> M16 stat ids) runs in the store's v2 -> v3
+  // migration, so a stat the user just unchecked is never resurrected here.
   const color = typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color)
     ? raw.color
     : OVERLAY_COLOR_DEFAULT;
@@ -118,7 +128,7 @@ function normalizeSettings(raw = {}) {
   const bgOpacity = typeof raw.overlayBgOpacity === 'number' && Number.isFinite(raw.overlayBgOpacity)
     ? Math.min(1, Math.max(0, raw.overlayBgOpacity))
     : OVERLAY_BG_OPACITY_DEFAULT;
-  let stats = OVERLAY_STAT_IDS;
+  let stats = OVERLAY_STATS_DEFAULT;
   if (Array.isArray(raw.stats)) {
     const seen = new Set();
     stats = [];
@@ -144,14 +154,14 @@ function normalizeSettings(raw = {}) {
     // renderer can fetch + apply the chip names).
     overlayChipNames: raw.overlayChipNames === true,
     // M17e: the overlay polling-rate - clamped to the 100-2000 ms range,
-    // 500 ms when absent/garbage (the telemetry-service default; the
-    // payload carries it so the renderer/verify know the cadence - the
-    // cadence itself is owned by ipc-core's startTelemetry + the live
-    // restart).
+    // 400 ms when absent/garbage (M17g: the stock polling rate FLIPS 500 ->
+    // 400 - the telemetry-service default; the payload carries it so the
+    // renderer/verify know the cadence - the cadence itself is owned by
+    // ipc-core's startTelemetry + the live restart).
     overlayPollMs: typeof raw.overlayPollMs === 'number'
       && Number.isFinite(raw.overlayPollMs)
       ? Math.min(2000, Math.max(100, Math.round(raw.overlayPollMs)))
-      : 500,
+      : 400,
   };
 }
 

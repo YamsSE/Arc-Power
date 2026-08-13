@@ -283,6 +283,12 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       perControl: out.result.perControl,
       state: out.state,
       ...(Object.keys(refused).length > 0 ? { refused } : {}),
+      // M17g (round-3 S1): the pl2Note rides the worker envelope the same
+      // way as `refused` - ABSENT when null (the old envelope-shape pins
+      // stay green). The parent's elevated-apply normalization forwards it
+      // into the renderer envelope - without the forwarding the real
+      // worker path would silently show '-' on the PL card.
+      ...(out.result.pl2Note ? { pl2Note: out.result.pl2Note } : {}),
     });
     return 0;
   } catch (err) {

@@ -132,8 +132,9 @@ api.onOverlaySettings((settings) => {
   );
   const backdrop = document.getElementById('overlay-backdrop');
   if (backdrop) backdrop.classList.toggle('visible', s.overlayBgEnabled === true);
-  // M6: the enabled stats - an absent value means the FULL set (the stock
-  // overlay; overlayLines normalizes).
+  // M6: the enabled stats - an absent value means the DEFAULT set (M17g:
+  // the user's 11 ON / the others OFF - the M6 full-set default FLIPS;
+  // overlayLines normalizes).
   stats = s.stats;
   // M17b (2c): the chip-name row labels flag - on -> the boot-derived
   // labels replace the stock 'CPU '/'GPU ' prefixes (null labels degrade
@@ -251,8 +252,9 @@ async function bootFpsLoop(): Promise<void> {
 }
 
 /** M17f: the FPS-poll cadence (ms) - the overlayPollMs slider value; null
- *  until the first settings push -> the renderer's clamp default 500 ms
- *  (clampOverlayPollMs(null) - the real default, never a hardcoded copy).
+ *  until the first settings push -> the renderer's clamp default 400 ms
+ *  (M17g: the stock polling rate FLIPS 500 -> 400; clampOverlayPollMs(null)
+ *  - the real default, never a hardcoded copy).
  *  The settings handler calls applyFpsPollMs which re-arms the loop. */
 let fpsPollMs: number | null = null;
 /** The FPS-poll interval id (null = not armed). */

@@ -2559,6 +2559,57 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     }
     await clearToasts();
     step('extended-restore', `extended baseline restored to 210 W (the PL2 read-out follows: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}')`);
+
+    // M17g - the pl2Note envelope + the V2-companion recording (the
+    // PL2-on-advanced fix). The apply response rides the note for EVERY
+    // W-unit powerLimitW apply in BOTH modes; the mock records the
+    // companion's V2 write (advanced-only by the same gate - a stock apply
+    // never records).
+    // (a) an ADVANCED in-range apply (220 W): the V2 companion lands
+    // (220 <= the a770 DriverStore ceiling 252) -> pl2Note { landed: true,
+    // valueW: 220 }.
+    const v2Before = backend._v2CompanionCalls.length;
+    const pl2Landed = await js(`window.arcPower.applySettings(0, { powerLimitW: 220 })`);
+    if (pl2Landed.result.ok !== true) fail(`M17g: the 220 W advanced apply failed: ${JSON.stringify(pl2Landed.result)}`);
+    if (JSON.stringify(pl2Landed.result.pl2Note) !== JSON.stringify({ landed: true, valueW: 220 })) {
+      fail(`M17g: the landed pl2Note is '${JSON.stringify(pl2Landed.result.pl2Note)}' (expected { landed: true, valueW: 220 } - the V2 companion landed)`);
+    }
+    // (b) an ADVANCED above-ceiling apply (300 W): the V1 write lands, the
+    // V2 companion REFUSES above the 252 DriverStore ceiling (the
+    // 0x44000004 class - the plan's '300 W on the A770' example) -> the
+    // ceiling note rides the envelope, never a failed apply.
+    const pl2Refused = await js(`window.arcPower.applySettings(0, { powerLimitW: 300 })`);
+    if (pl2Refused.result.ok !== true) fail(`M17g: the refused companion must never fail the apply: ${JSON.stringify(pl2Refused.result)}`);
+    if (JSON.stringify(pl2Refused.result.pl2Note) !== JSON.stringify({ landed: false, ceilingW: 252, valueW: 300 })) {
+      fail(`M17g: the refused pl2Note is '${JSON.stringify(pl2Refused.result.pl2Note)}' (expected { landed: false, ceilingW: 252, valueW: 300 } - the a770 DriverStore ceiling)`);
+    }
+    const a770After300 = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(a770After300.powerLimitW - 300) > 1e-6) fail(`M17g: the V1 write must still land 300 W (got ${a770After300.powerLimitW})`);
+    // (c) the recording: the two applies above fired the companion twice
+    // (220, 300) - an advanced W-unit apply records, the values ride the
+    // mock's deterministic recording surface.
+    if (backend._v2CompanionCalls.length !== v2Before + 2) {
+      fail(`M17g: the V2 companion recording is '${JSON.stringify(backend._v2CompanionCalls)}' (expected ${v2Before} + 2 calls - the advanced-only recording gate)`);
+    }
+    if (backend._v2CompanionCalls[backend._v2CompanionCalls.length - 2] !== 220 || backend._v2CompanionCalls[backend._v2CompanionCalls.length - 1] !== 300) {
+      fail(`M17g: the recorded companion values are wrong: ${JSON.stringify(backend._v2CompanionCalls.slice(v2Before))}`);
+    }
+    // (d) the worker-apply variant: the pl2Note survived the runner
+    // forwarding (the real worker boundary is pinned by the unit tests;
+    // the fake runner rides the same envelope end-to-end).
+    if (workerApply) {
+      if (!pl2Refused.result.pl2Note || pl2Refused.result.pl2Note.landed !== false) {
+        fail(`M17g: the worker-path envelope lost the pl2Note: ${JSON.stringify(pl2Refused.result.pl2Note)}`);
+      }
+      step('m17g-pl2note-worker', `M17g: the worker-apply envelope carried the refused pl2Note ${JSON.stringify(pl2Refused.result.pl2Note)} (the forwarding survived)`);
+    }
+    step('m17g-pl2note', `M17g: the pl2Note envelope - landed ${JSON.stringify(pl2Landed.result.pl2Note)} / refused ${JSON.stringify(pl2Refused.result.pl2Note)} (never a failed apply; the V1 read-back stays canonical); the V2 companion recording advanced by 2 (${JSON.stringify(backend._v2CompanionCalls.slice(v2Before))})`);
+    // Restore the deterministic 210 W baseline for the later steps.
+    await js(`window.arcPower.applySettings(0, { powerLimitW: 210 })`);
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 5000))) {
+      fail('M17g: the 210 W baseline restore did not re-render the PL readout');
+    }
+    await clearToasts();
   } else if (stockMode) {
     // M3-C-E stock variant: the sliders stay within the standard limits and
     // a DIRECT above-limit request REFUSES with the mode message - never
@@ -4925,7 +4976,7 @@ export async function runGraphicsVerify(win, backend) {
  * @param {import('electron').BrowserWindow} win
  * @param {string} fsId the RID_MOCK_FEATURESET value driving this run
  */
-export async function runFeaturesetVerify(win, fsId) {
+export async function runFeaturesetVerify(win, fsId, backend = null) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -5125,6 +5176,18 @@ export async function runFeaturesetVerify(win, fsId) {
         fail(`M17f: the b580 PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected the honest 'PL1 - / PL2 -' on a percent-unit device)`);
       }
       step('m17f-pl2-b580', `M17f: the b580 (percent-unit) power-limit card shows the honest 'PL1 - / PL2 -' sysman read-out (the percent fixture never masquerades as W)`);
+      // M17g: the percent-unit apply never emits the pl2Note (the units
+      // gate) - the envelope carries null, so the '(set)' render can never
+      // appear on the b580.
+      const b580Pl2Env = await js(`window.arcPower.applySettings(0, { powerLimitW: 120 })`);
+      if (b580Pl2Env.result.ok !== true) fail(`M17g: the b580 120 % apply failed: ${JSON.stringify(b580Pl2Env.result)}`);
+      if (b580Pl2Env.result.pl2Note !== null) {
+        fail(`M17g: the b580 pl2Note is '${JSON.stringify(b580Pl2Env.result.pl2Note)}' (expected null - the percent units gate)`);
+      }
+      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 - / PL2 -'`, 5000))) {
+        fail(`M17g: the b580 read-out after a percent apply is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected the honest 'PL1 - / PL2 -' - no note, no sysman)`);
+      }
+      step('m17g-pl2note-b580', `M17g: the b580 percent apply never emits the pl2Note (${JSON.stringify(b580Pl2Env.result.pl2Note)} - the units gate); the 'PL1 - / PL2 -' pin stays green`);
       const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
       if (plMax !== '150') fail(`b580 PL slider max is '${plMax}' (expected 150)`);
       // M4-B: the b580 freq range mirrors into the negative half-plane too
@@ -5218,6 +5281,19 @@ export async function runFeaturesetVerify(win, fsId) {
       if (!lockLine.includes('Dynamic (unlocked)')) {
         fail(`M17d/M17e: the ${fsId} lock read-out is '${lockLine}' (expected 'Lock: Dynamic (unlocked)' - the mock starts unlocked)`);
       }
+      // M17g (run C - the run-B a750 fix): the a750/acer-a750 featureset
+      // store is UNACCEPTED (the boot prompt cancelled; the M17d-era pins
+      // apply via the direct preload API - no waiver gate). The M17f
+      // freshness pins are the FIRST RENDERER applies in this flow - the
+      // renderer's waiver gate shows the dialog and ABORTS the apply on
+      // a non-click. Accept it through the REAL user flow (the default
+      // flow's btn-danger pattern) so the apply lands; an already-
+      // accepted session (no modal) passes through untouched.
+      const a750AcceptWaiverIfShown = async () => {
+        if (!(await waitFor(win, `!!document.querySelector('.modal button.btn-danger')`, 3000))) return;
+        await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+        await sleep(400);
+      };
       if (!stockMode) {
         // M17d (2026-08-12 probe verdict): the ADVANCED TL slider max is
         // the probe-verified 115 C (the mock's extended.tlMax rides both
@@ -5233,6 +5309,13 @@ export async function runFeaturesetVerify(win, fsId) {
         const applied = await js(`window.arcPower.applySettings(0, { powerLimitW: 250 })`);
         if (applied.result.ok !== true || applied.ocModeRefused !== undefined) {
           fail(`M17d: the a750 listed-card PL 250 apply must SUCCEED in advanced mode (got ${JSON.stringify(applied.result)})`);
+        }
+        // M17g (the plan's '250 W on the Acer A750' example): the V1 write
+        // lands 250, the V2 companion REFUSES above the per-AIB DriverStore
+        // ceiling (216 - the 2026-08-12 probe verdict) - the ceiling note
+        // rides the envelope, never a failed apply.
+        if (JSON.stringify(applied.result.pl2Note) !== JSON.stringify({ landed: false, ceilingW: 216, valueW: 250 })) {
+          fail(`M17g: the ${fsId} 250 W pl2Note is '${JSON.stringify(applied.result.pl2Note)}' (expected { landed: false, ceilingW: 216, valueW: 250 } - the probe-pinned DriverStore ceiling)`);
         }
         const a750State = await js(`window.arcPower.getCurrentSettings(0)`);
         if (Math.abs(a750State.powerLimitW - 250) > 1e-6) {
@@ -5266,6 +5349,7 @@ export async function runFeaturesetVerify(win, fsId) {
         const a750ClickApply = () => js(`(() => { const b = document.querySelector('.floating-apply'); if (b && !b.hidden) { b.click(); return true; } return false; })()`);
         await a750SetSlider(200);
         if (!(await a750ClickApply())) fail(`M17f (N4): the floating Apply did not appear for the ${fsId} PL2-freshness apply`);
+        await a750AcceptWaiverIfShown();
         if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 200 W / PL2 200 W'`, 5000))) {
           fail(`M17f (N4): the ${fsId} PL2 read-out did not refresh after the UI apply: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 200 W / PL2 200 W' - the per-apply freshness)`);
         }
@@ -5315,6 +5399,7 @@ export async function runFeaturesetVerify(win, fsId) {
         const a750StockClickApply = () => js(`(() => { const b = document.querySelector('.floating-apply'); if (b && !b.hidden) { b.click(); return true; } return false; })()`);
         await a750StockSetSlider(200);
         if (!(await a750StockClickApply())) fail(`M17f (N4): the floating Apply did not appear for the ${fsId} stock-mode PL2-freshness apply`);
+        await a750AcceptWaiverIfShown();
         if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 200 W / PL2 200 W'`, 5000))) {
           fail(`M17f (N4): the ${fsId} STOCK-mode PL2 read-out did not refresh after the UI apply: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 200 W / PL2 200 W')`);
         }
@@ -5324,6 +5409,21 @@ export async function runFeaturesetVerify(win, fsId) {
           fail(`M17f (N4): the ${fsId} STOCK-mode PL2 read-out did not follow the baseline restore: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 190 W / PL2 190 W')`);
         }
         step('m17f-pl2-a750-fresh-stock', `M17f (N4): the ${fsId} STOCK-mode PL2 read-out refreshed PER-APPLY - 'PL1 200 W / PL2 200 W' after the 200 W UI apply, back to 'PL1 190 W / PL2 190 W' on the restore`);
+        // M17g: the STOCK apply's pl2Note = the primary V2 write's verdict
+        // ({ landed: true, valueW }) - a stock apply feeds '(set)' too (the
+        // user's 'stock applies both' observation) - and the companion
+        // never fired (the mock records nothing in stock mode by the
+        // advanced-only gate).
+        const stockPl2Env = await js(`window.arcPower.applySettings(0, { powerLimitW: 200 })`);
+        if (stockPl2Env.result.ok !== true) fail(`M17g: the ${fsId} stock 200 W apply failed: ${JSON.stringify(stockPl2Env.result)}`);
+        if (JSON.stringify(stockPl2Env.result.pl2Note) !== JSON.stringify({ landed: true, valueW: 200 })) {
+          fail(`M17g: the ${fsId} STOCK pl2Note is '${JSON.stringify(stockPl2Env.result.pl2Note)}' (expected { landed: true, valueW: 200 } - the primary V2 write's verdict)`);
+        }
+        if (backend._v2CompanionCalls.length !== 0) {
+          fail(`M17g: a stock apply must never record the companion (got ${JSON.stringify(backend._v2CompanionCalls)})`);
+        }
+        await js(`window.arcPower.applySettings(0, { powerLimitW: 190 })`);
+        step('m17g-pl2note-stock', `M17g: the ${fsId} STOCK pl2Note = { landed: true, valueW: 200 } (the primary V2 write's verdict - a stock apply feeds '(set)' too); the companion never recorded (${JSON.stringify(backend._v2CompanionCalls)})`);
         // M17d (item 0b): the TOAST contract is pinned as follows - the OC
         // slider UI is bounded to the gate ceiling BY CONSTRUCTION, so a
         // gate refusal can never fire from the OC page (the toast path for
@@ -6641,6 +6741,128 @@ export async function runTrayApplyVerify(win, backend, store, getTrayProbe) {
 //       so the next overlay run boots deterministically.
 
 /**
+ * M17g: the RID_MOCK_NO_SYSMAN=1 variant - the sysman layer is ABSENT
+ * (main.js wires sysmanPowerLimits null under the knob). Pins the honest
+ * '-' read-out at boot (nothing applied in the session), the envelope-fed
+ * '(set)' marker on the power-limit card (the session state fed ONLY from
+ * the apply envelope's pl2Note), the refused-ceiling sentence (the V2
+ * companion refusal above the DriverStore ceiling), and the V2 companion's
+ * recorded calls (the advanced-only recording gate).
+ * @param {import('electron').BrowserWindow} win the MAIN window
+ * @param {import('./backend/mock-backend.js').MockBackend} backend the
+ *   session mock backend (its _v2CompanionCalls is the recording surface)
+ */
+export async function runNoSysmanVerify(win, backend) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+  const sysmanLine = () => `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim()`;
+  const plLine = async () => js(`${sysmanLine()}`);
+  const setPlSlider = (value) => js(`(() => {
+    const card = document.querySelector('.oc-card[data-control="powerLimitW"]');
+    const input = card.querySelector('input[type="range"]');
+    input.value = '${value}';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return card.querySelector('.oc-value').textContent;
+  })()`);
+  const clickFloatingApply = () => js(`(() => { const b = document.querySelector('.floating-apply'); if (b && !b.hidden) { b.click(); return true; } return false; })()`);
+  const PL2_SET = '(set)';
+  // M17g (the run-C a750 fold's discipline, applied to THIS variant): the
+  // no-sysman store is UNACCEPTED (the variant never handles the boot
+  // prompt - it navigates straight to the Tuning page, and the body-level
+  // #modal-root prompt persists across the navigation). The three UI
+  // applies below are the FIRST RENDERER applies in this flow - the
+  // renderer's apply-time waiver gate (tuning.ts:1235-1242 - ensureWaiver
+  // shows the modal and returns 'cancelled' on a non-click) would ABORT
+  // the apply. Accept the pending prompt through the REAL user flow (the
+  // default flow's btn-danger pattern) so the session caps flip accepted
+  // and the applies land; an already-accepted session (no modal) passes
+  // through untouched - the same harness-only discipline as the a750 flow
+  // (ui-verify.js:5292-5296), never a product change.
+  const noSysmanAcceptWaiverIfShown = async () => {
+    if (!(await waitFor(win, `!!document.querySelector('.modal button.btn-danger')`, 3000))) return;
+    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    await sleep(400);
+  };
+
+  // --- boot: the shell + the Tuning page -------------------------------------
+  if (!(await waitFor(win, `!!document.querySelector('.badge-mock')`, 15000))) fail('mock badge missing');
+  if (!(await waitFor(win, `location.hash = '#/tuning'`, 5000) && await waitFor(win, `document.querySelectorAll('.oc-card').length >= 4`, 10000))) {
+    fail(`M17g (no-sysman): the Tuning page did not render its cards (${await js(`document.querySelectorAll('.oc-card').length`)} cards)`);
+  }
+  await sleep(300);
+  // (a) the boot one-shot: NOTHING applied in the session + the sysman
+  // absent -> the honest 'PL1 - / PL2 -'.
+  if (!(await waitFor(win, `${sysmanLine()} === 'PL1 - / PL2 -'`, 5000))) {
+    fail(`M17g (no-sysman): the boot PL line is '${await plLine()}' (expected the honest 'PL1 - / PL2 -' - nothing applied + no sysman)`);
+  }
+  step('m17g-nosysman-boot', `M17g (no-sysman): the boot PL line is '${await plLine()}' (the honest '-' - nothing applied in the session + the sysman absent)`);
+
+  // (b) the envelope: an advanced W-unit apply rides the pl2Note even with
+  // the sysman absent (the note is the apply-side verdict).
+  const landed = await js(`window.arcPower.applySettings(0, { powerLimitW: 220 })`);
+  if (landed.result.ok !== true) fail(`M17g (no-sysman): the 220 W apply failed: ${JSON.stringify(landed.result)}`);
+  if (JSON.stringify(landed.result.pl2Note) !== JSON.stringify({ landed: true, valueW: 220 })) {
+    fail(`M17g (no-sysman): the landed pl2Note is '${JSON.stringify(landed.result.pl2Note)}' (expected { landed: true, valueW: 220 })`);
+  }
+  // (c) the '(set)' render: a UI apply feeds the session state from the
+  // envelope - the card line shows the last-applied value marked '(set)'.
+  await setPlSlider(220);
+  await noSysmanAcceptWaiverIfShown();
+  if (!(await clickFloatingApply())) fail('M17g (no-sysman): the floating Apply did not appear for the 220 W apply');
+  if (!(await waitFor(win, `${sysmanLine()} === 'PL1 220 W / PL2 220 W ${PL2_SET}'`, 5000))) {
+    fail(`M17g (no-sysman): the PL line after the 220 W apply is '${await plLine()}' (expected 'PL1 220 W / PL2 220 W ${PL2_SET}' - the envelope-fed session state)`);
+  }
+  step('m17g-nosysman-set', `M17g (no-sysman): the 220 W apply fed the '(set)' render - '${await plLine()}' (the session state fed ONLY from the pl2Note)`);
+
+  // (d) the refused ceiling sentence: the V2 companion refuses above the
+  // a770 DriverStore ceiling (252) - the honest sentence appends to the
+  // '(set)' line (the round-1 N4 wording).
+  backend.injectFail('powerLimitW', 'out-of-range');
+  const refused = await js(`window.arcPower.applySettings(0, { powerLimitW: 250 })`);
+  if (refused.result.ok !== true) fail(`M17g (no-sysman): the refused companion must never fail the apply: ${JSON.stringify(refused.result)}`);
+  if (JSON.stringify(refused.result.pl2Note) !== JSON.stringify({ landed: false, ceilingW: 252, valueW: 250 })) {
+    fail(`M17g (no-sysman): the refused pl2Note is '${JSON.stringify(refused.result.pl2Note)}' (expected { landed: false, ceilingW: 252, valueW: 250 })`);
+  }
+  await setPlSlider(250);
+  await noSysmanAcceptWaiverIfShown();
+  if (!(await clickFloatingApply())) fail('M17g (no-sysman): the floating Apply did not appear for the 250 W apply');
+  const ceilingSentence = 'PL1 250 W / PL2 250 W (set) - the burst limit (PL2) stays at its CURRENT value - the V2 setter refuses above the driver ceiling (252 W) - the sustained limit (PL1) is set';
+  if (!(await waitFor(win, `${sysmanLine()} === '${ceilingSentence}'`, 5000))) {
+    fail(`M17g (no-sysman): the refused PL line is '${await plLine()}' (expected '${ceilingSentence}')`);
+  }
+  backend.injectFail('powerLimitW', null);
+  step('m17g-nosysman-refused', `M17g (no-sysman): the refused companion rendered the ceiling sentence - '${await plLine()}' (the round-1 N4 wording, never a failed apply)`);
+
+  // (e) the recording: the four W-unit applies above fired the companion
+  // (220 direct + 220 UI + 250 direct + 250 UI) - the advanced-only
+  // recording gate.
+  if (JSON.stringify(backend._v2CompanionCalls) !== JSON.stringify([220, 220, 250, 250])) {
+    fail(`M17g (no-sysman): the recorded companion calls are '${JSON.stringify(backend._v2CompanionCalls)}' (expected [220, 220, 250, 250])`);
+  }
+  step('m17g-nosysman-recorded', `M17g (no-sysman): the V2 companion recorded ${JSON.stringify(backend._v2CompanionCalls)} (the advanced-only gate - a stock apply never records)`);
+
+  // (f) restore the deterministic 210 W baseline (the '(set)' line follows).
+  await setPlSlider(210);
+  await noSysmanAcceptWaiverIfShown();
+  if (!(await clickFloatingApply())) fail('M17g (no-sysman): the floating Apply did not appear for the baseline restore');
+  if (!(await waitFor(win, `${sysmanLine()} === 'PL1 210 W / PL2 210 W ${PL2_SET}'`, 5000))) {
+    fail(`M17g (no-sysman): the restored PL line is '${await plLine()}' (expected 'PL1 210 W / PL2 210 W ${PL2_SET}')`);
+  }
+  await clearToasts();
+  step('m17g-nosysman-restore', `M17g (no-sysman): the baseline restored to 210 W - the '(set)' line follows ('${await plLine()}')`);
+  app.exit(0);
+}
+
+/**
  * @param {import('electron').BrowserWindow} win the MAIN window
  * @param {{ getWindow: () => import('electron').BrowserWindow | null, getState: () => object, toggle: () => Promise<void>, setHotkeyRegistered: (flag: boolean) => void }} overlayHandle
  *   the overlay handle created by main.js under RID_MOCK_OVERLAY=1
@@ -6690,8 +6912,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU 42%')`, 15000))) {
     fail(`M5: the overlay CPU line lacks 'CPU 42%': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('4.3 GHz')`, 5000))) {
-    fail(`M5: the overlay CPU line lacks '4.3 GHz': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  // M17g: cpu-clock is OFF by default (the user's 11) - the boot CPU line
+  // must NOT carry the frequency field.
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('4.3 GHz') === false`, 5000))) {
+    fail(`M17g: the boot CPU line still carries the clock field (cpu-clock is OFF by default): '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
   if (!(await waitFor(overlayWin, `/61°C|62°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 5000))) {
     fail(`M5: the overlay CPU line lacks the 61°C|62°C temp: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
@@ -6707,27 +6931,28 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // M16 (amended 2026-08-11): the MEM-CLOCK field LEFT the GPU row (it
   // leads the VRAM row now) and the GPU VOLTAGE is a FIELD INSIDE the GPU
   // row (between the temp and the power fields) - the standalone Voltage
-  // row is GONE. The GPU line is Util / Core clock / Temp / Voltage /
-  // Power / Fan: 'GPU 42%  <clock> MHz  <temp>°C  0.652 V  38.8 W  1030
-  // RPM' (the mock's gpuVoltageV 0.652 - volts keep 3 decimals).
-  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+ MHz  \\d+°C  0\\.652 V  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
-    fail(`M16: the overlay GPU line does not match the pinned pattern (Util / Core clock / Temp / Voltage 0.652 V / Power / Fan): '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  // row is GONE. M17g: the stock overlay stats = the user's 11 - the GPU
+  // row's clock/voltage/fan fields are OFF by default, so the boot line is
+  // 'GPU 42%  <temp>°C  38.8 W' (Util / Temp / Power - the M17b chips
+  // section turns the other fields on + off).
+  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+°C  38\\.8 W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
+    fail(`M17g: the overlay GPU line does not match the default-set pattern (Util / Temp / Power - the clock/voltage/fan fields are OFF by default): '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
   // M16: the standalone Voltage row is REMOVED - the #overlay-voltage div
   // must not exist (the voltage is a GPU-row field now).
   if (await ojs(`!!document.getElementById('overlay-voltage')`)) {
     fail('M16: the standalone #overlay-voltage row still exists (the GPU voltage must be a field INSIDE the GPU row - the row div was removed)');
   }
-  // M7a/M12: the FPS row carries the percentile + AVG stats - the full
-  // pinned line: 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
-  // under RID_MOCK_FPS=1 (the mock fixture 58/52/42/58 at main.js) /
-  // 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -' without it (the
-  // 0.1% Low honest '-' degrade - the 300-frame floor).
+  // M7a/M12: the FPS row carries the percentile + AVG stats - the FULL
+  // pinned line is 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
+  // under RID_MOCK_FPS=1 ONLY when those stats are ON. M17g: the stock
+  // overlay stats = the user's 11 (fps ON, the percentile stats OFF by
+  // default) - the BOOT line is the plain frame rate ('FPS 60' with the
+  // mock fps / 'FPS -' without it; the percentile round trips below turn
+  // the stats on and back).
   // M13: the api field LEFT this row - the fpsLine NEVER carries a badge
   // (the standalone API row pins below cover the mockApi shape).
-  const fpsPin = mockFps
-    ? 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
-    : 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -';
+  const fpsPin = mockFps ? 'FPS 60' : 'FPS -';
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 10000))) {
     fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
@@ -6762,13 +6987,22 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM 12.4 GB'`, 10000))) {
     fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected 'RAM 12.4 GB' - the sysStats fixture's memoryUsedBytes)`);
   }
-  // M16: the VRAM row carries 'MemClock;VRAM;VramTEMP' - the mock's
-  // memClockMhz 2187, gpuMemUsedBytes 2971324416 ('3.0 GB') and the
-  // vramTempC ramp (tempCBase + 8 + tick%10 -> 44..53°C - pattern-matched).
-  if (!(await waitFor(overlayWin, `/VRAM 2187 MHz  3\\.0 GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 10000))) {
-    fail(`M16: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM 2187 MHz  3.0 GB  <temp>°C' - MemClock;VRAM;VramTEMP)`);
+  // M16: the VRAM row's mem-clock + vram-temp fields are OFF by default
+  // (M17g - the user's 11) - the boot row is the gpu-vram field only.
+  if (!(await waitFor(overlayWin, `/VRAM 3\\.0 GB/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 10000))) {
+    fail(`M17g: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM 3.0 GB' - gpu-vram only, the mem-clock + vram-temp fields are OFF by default)`);
   }
-  step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'; memory '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'; gpu matches the pinned pattern (Util / Core clock / Temp / Voltage 0.652 V / Power / Fan - the voltage rides INSIDE the GPU row, no #overlay-voltage row); vram '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (MemClock;VRAM;VramTEMP); api '${apiPin}' (row order: vram -> api -> frametime strip); fps '${fpsPin}'`);
+  step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (M17g: no clock field - cpu-clock OFF by default); memory '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'; gpu matches the default-set pattern (Util / Temp / Power - the clock/voltage/fan fields are OFF by default); vram '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (gpu-vram only); api '${apiPin}' (row order: vram -> api -> frametime strip); fps '${fpsPin}' (the percentile stats are OFF by default)`);
+  // M17g (the boot overlay payload pin - the absent-default surface): the
+  // PERSISTED overlayStats at boot = the user's 11 ON (fps, api, cpu-util,
+  // cpu-temp, cpu-power, memory-util, gpu-util, gpu-temp, gpu-power,
+  // gpu-vram, frametime) / the others OFF - the M6 full-set absent default
+  // FLIPS end-to-end (the store default -> the pushed payload -> the
+  // rendered lines above).
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => JSON.stringify(e.settings.overlayStats) === ${JSON.stringify(JSON.stringify(['fps', 'api', 'cpu-util', 'cpu-temp', 'cpu-power', 'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'frametime']))})`, 5000))) {
+    fail(`M17g: the boot persisted overlayStats is '${await js(`window.arcPower.profilesList().then((e) => JSON.stringify(e.settings.overlayStats))`)}' (expected the user's 11 ON / the others OFF - the full-set default FLIPS)`);
+  }
+  step('m17g-overlay-defaults-boot', `M17g: the boot overlayStats = the user's 11 ON / the others OFF (${await js(`window.arcPower.profilesList().then((e) => JSON.stringify(e.settings.overlayStats))`)} - the M6 full-set absent default FLIPS)`);
   // M6: the stock color applies at boot (the seeded white) - the
   // --overlay-color CSS var drives the line color (the renderer applies
   // the pushed hex via CSSOM; the var fallback is the stock white).
@@ -6982,11 +7216,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === true)`, 5000))) {
     fail('M17b: toggling the chip-names checkbox did not persist overlayChipNames=true');
   }
-  if (!(await waitFor(overlayWin, `/^A770 42%  \\d+ MHz  \\d+°C  0\\.652 V  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
-    fail(`M17b: the overlay GPU row label is not the mock-derived 'A770': '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}' (expected 'A770 42%  <clock> MHz  <temp>°C  0.652 V  38.8 W  1030 RPM' - the field order unchanged)`);
+  if (!(await waitFor(overlayWin, `/^A770 42%  \\d+°C  38\\.8 W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: the overlay GPU row label is not the mock-derived 'A770': '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}' (expected 'A770 42%  <temp>°C  38.8 W' - the M17g default-set fields, the field order unchanged)`);
   }
-  if (!(await waitFor(overlayWin, `/^i7 14700K 42%  4\\.3 GHz/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
-    fail(`M17b: the overlay CPU row label is not the mock-derived 'i7 14700K': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (expected 'i7 14700K 42%  4.3 GHz ...' - the field order unchanged)`);
+  if (!(await waitFor(overlayWin, `/^i7 14700K 42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: the overlay CPU row label is not the mock-derived 'i7 14700K': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (expected 'i7 14700K 42%  <temp>°C ...' - the M17g default-set fields)`);
   }
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('GPU ') === false && (document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU ') === false`, 5000))) {
     fail('M17b: the chip labels must REPLACE the stock prefixes (no doubling)');
@@ -6996,27 +7230,28 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === false)`, 5000))) {
     fail('M17b: re-toggling the chip-names checkbox did not persist overlayChipNames=false');
   }
-  if (!(await waitFor(overlayWin, `/^GPU 42%  \\d+ MHz  \\d+°C  0\\.652 V  38\\.8 W  1030 RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+  if (!(await waitFor(overlayWin, `/^GPU 42%  \\d+°C  38\\.8 W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
     fail(`M17b: re-toggling did not restore the stock 'GPU ' prefix: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
-  if (!(await waitFor(overlayWin, `/^CPU 42%  4\\.3 GHz/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
+  if (!(await waitFor(overlayWin, `/^CPU 42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
     fail(`M17b: re-toggling did not restore the stock 'CPU ' prefix: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
   step('m17b-chipnames-off', 'the chip-names toggle OFF: the stock CPU / GPU prefixes return (byte-identical)');
 
   // (m17e-pollms) M17e (the user addition - "current 500 ms is a bit
-  // slow"): the POLLING-RATE slider on the General card + the persisted
+  // slow" - M17g: the stock polling rate is now 400 ms): the POLLING-RATE
+  // slider on the General card + the persisted
   // payload + the FAST-RATE pin. (a) the slider exists with the pinned
-  // range (100-2000 ms, step 50) + the 500 default value label; (b) the
+  // range (100-2000 ms, step 50) + the 400 default value label; (b) the
   // boot payload carried the default (the overlay's documentElement
-  // dataset.overlayPollMs reads '500'); (c) sliding it to 100 persists
+  // dataset.overlayPollMs reads '400'); (c) sliding it to 100 persists
   // overlayPollMs=100 AND pushes the payload (the dataset flips to '100')
   // AND the telemetry push RESTARTS at the fast cadence (the
   // dataset.telemetryTicks counter advances >= 2 over a ~500 ms window -
   // the old 500 ms cadence would advance 0-1) AND the overlay FPS poll
   // re-arms at the fast cadence (m17f-fps-fastrate: the fpsPolls dev-probe
   // counter advances >= 2 over ~350 ms - the overlay's own fps loop reads
-  // at the slider cadence); (d) restored to 500 so the session stays
+  // at the slider cadence); (d) restored to 400 so the session stays
   // deterministic.
   if (!(await waitFor(win, `!!document.querySelector('.settings-poll-ms-slider')`, 5000))) {
     fail('M17e: the polling-rate slider is missing on the Overlay General card');
@@ -7026,11 +7261,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   const pollMax = await js(`${pollSlider}?.getAttribute('max')`);
   const pollStep = await js(`${pollSlider}?.getAttribute('step')`);
   const pollValue = await js(`${pollSlider}?.value`);
-  if (pollMin !== '100' || pollMax !== '2000' || pollStep !== '50' || pollValue !== '500') {
-    fail(`M17e: the polling-rate slider is ${pollMin}..${pollMax} step ${pollStep} value ${pollValue} (expected 100..2000 step 50 value 500)`);
+  if (pollMin !== '100' || pollMax !== '2000' || pollStep !== '50' || pollValue !== '400') {
+    fail(`M17e: the polling-rate slider is ${pollMin}..${pollMax} step ${pollStep} value ${pollValue} (expected 100..2000 step 50 value 400 - M17g: the stock polling rate FLIPS 500 -> 400)`);
   }
-  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayPollMs === '500'`, 5000))) {
-    fail(`M17e: the boot overlay:settings payload carried '${await ojs(`document.documentElement.dataset.overlayPollMs ?? ''`)}' (expected '500' - the default cadence)`);
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayPollMs === '400'`, 5000))) {
+    fail(`M17e: the boot overlay:settings payload carried '${await ojs(`document.documentElement.dataset.overlayPollMs ?? ''`)}' (expected '400' - the default cadence)`);
   }
   // Slide to 100 via the UI (input + change - the onchange saves).
   await js(`(() => {
@@ -7065,23 +7300,34 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (fpsPollsAfter - fpsPollsBefore < 2) {
     fail(`M17f: the overlay FPS poll did not honor the 100 ms setting (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms - expected >= 2 at the re-armed cadence)`);
   }
-  step('m17e-pollms', `M17e: the polling-rate slider (${pollMin}..${pollMax} step ${pollStep}, default 500) - sliding to 100 persisted overlayPollMs=100 + pushed the payload (dataset '100') + the push restarted at the fast cadence (${ticksBefore} -> ${ticksAfter} telemetry ticks over ~500 ms) + the FPS poll re-armed (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms)`);
-  // Restore the 500 default (the later sections expect the seeded shape).
+  step('m17e-pollms', `M17e: the polling-rate slider (${pollMin}..${pollMax} step ${pollStep}, default 400 - M17g: the stock polling rate FLIPS 500 -> 400) - sliding to 100 persisted overlayPollMs=100 + pushed the payload (dataset '100') + the push restarted at the fast cadence (${ticksBefore} -> ${ticksAfter} telemetry ticks over ~500 ms) + the FPS poll re-armed (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms)`);
+  // Restore the 400 default (the later sections expect the seeded shape).
   await js(`(() => {
     const s = document.querySelector('.settings-poll-ms-slider');
-    s.value = '500';
+    s.value = '400';
     s.dispatchEvent(new Event('input', { bubbles: true }));
     s.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayPollMs === 500)`, 5000))) {
-    fail('M17e: restoring the polling-rate slider did not persist overlayPollMs=500');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayPollMs === 400)`, 5000))) {
+    fail('M17e: restoring the polling-rate slider did not persist overlayPollMs=400');
   }
   await sleep(150);
 
   // (f3) M6: the stat tickboxes round-trip through profiles-settings-save.
-  // Unchecking gpu-fan trims the persisted overlayStats AND the overlay
-  // gpuLine loses the RPM field (a stat off -> its field vanishes); the
-  // re-check restores both.
+  // M17g: the stock overlay stats = the user's 11 - the OFF-by-default
+  // stats (gpu-fan, the percentile pairs, gpu-voltage, gpu-vram-temp,
+  // gpu-mem-clock) must be turned ON first for the round trips that pin
+  // their fields.
+  const ensureStatOn = async (id) => {
+    const on = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('${id}'))`);
+    if (!on) {
+      await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="${id}"]'); if (b) b.click(); })()`);
+      if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('${id}'))`, 5000))) {
+        fail(`M17g: turning the ${id} tickbox on did not persist`);
+      }
+    }
+  };
+  await ensureStatOn('gpu-fan');
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-fan"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-fan') === false)`, 5000))) {
     fail('M6: unchecking the gpu-fan tickbox did not persist overlayStats without gpu-fan');
@@ -7100,30 +7346,46 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
 
   // (f3b) M7a: the two new FPS-row stats - the 1% Low / 99% FPS tickboxes
   // round-trip like gpu-fan: unchecking BOTH reverts the fps line to the
-  // plain frame-rate + AVG / 0.1% Low fields (the fields vanish with their
-  // stats), re-checking restores the full pinned line.
+  // plain frame-rate (the fields vanish with their stats), re-checking
+  // restores the full pinned line. M17g: the percentile stats are OFF by
+  // default - the round trip turns them ON first.
   // M13: the Graphics-API row is an INDEPENDENT line - the fpsPin above
   // carries no badge and the api row pins are separate (the percentile
   // uncheck never touches them).
+  await ensureStatOn('fps-1pct-low');
+  await ensureStatOn('fps-99pct');
+  const fullPctPin = mockFps ? 'FPS 60  1% Low 52  99% FPS 58' : 'FPS -  1% Low -  99% FPS -';
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fullPctPin}'`, 5000))) {
+    fail(`M7a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fullPctPin}' after turning the percentile stats on)`);
+  }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
-  const plainFpsPin = mockFps ? 'FPS 60  AVG 58  0.1% Low 42' : 'FPS -  AVG -  0.1% Low -';
+  const plainFpsPin = mockFps ? 'FPS 60' : 'FPS -';
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-1pct-low') === false && e.settings.overlayStats.includes('fps-99pct') === false)`, 5000))) {
     fail('M7a: unchecking the 1% Low / 99% FPS tickboxes did not persist overlayStats without them');
   }
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${plainFpsPin}'`, 5000))) {
-    fail(`M7a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${plainFpsPin}' after unchecking both new stats)`);
+    fail(`M7a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${plainFpsPin}' after unchecking both stats)`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 5000))) {
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fullPctPin}'`, 5000))) {
     fail(`M7a: the overlay FPS line did not regain the percentile fields after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
   }
-  step('m7a-fps-stats-tickbox', `the 1% Low / 99% FPS tickbox round trip: uncheck both -> the fps line reverts to '${plainFpsPin}'; re-check -> '${fpsPin}' again`);
+  step('m7a-fps-stats-tickbox', `the 1% Low / 99% FPS tickbox round trip (turned ON first - OFF by default under M17g): uncheck both -> the fps line reverts to '${plainFpsPin}'; re-check -> '${fullPctPin}' again`);
 
   // (f3b2) M12: the AVG / 0.1% Low tickboxes round-trip like the 1% Low /
   // 99% FPS pair - unchecking BOTH drops the two fields (the 1% Low /
   // 99% FPS fields stay), re-checking restores the full pinned line.
+  // M17g: the AVG / 0.1% Low stats are OFF by default too.
+  await ensureStatOn('fps-avg');
+  await ensureStatOn('fps-01pct-low');
+  const avg01Pin = mockFps
+    ? 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
+    : 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -';
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${avg01Pin}'`, 5000))) {
+    fail(`M12: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${avg01Pin}' after turning the AVG / 0.1% Low stats on)`);
+  }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-avg"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-01pct-low"]'); if (b) b.click(); })()`);
   const noAvg01Pin = mockFps
@@ -7137,10 +7399,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-avg"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-01pct-low"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 5000))) {
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${avg01Pin}'`, 5000))) {
     fail(`M12: the overlay FPS line did not regain the AVG / 0.1% Low fields after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
   }
-  step('m12-avg01-fps-stats-tickbox', `the AVG / 0.1% Low tickbox round trip: uncheck both -> the fps line reverts to '${noAvg01Pin}'; re-check -> '${fpsPin}' again`);
+  step('m12-avg01-fps-stats-tickbox', `the AVG / 0.1% Low tickbox round trip (turned ON first - OFF by default under M17g): uncheck both -> the fps line reverts to '${noAvg01Pin}'; re-check -> '${avg01Pin}' again`);
 
   // (f3c) M13: the Graphics-API stat - the api tickbox round-trips the
   // Memory/VRAM row pattern now: unchecking it EMPTIES the API row ('' -
@@ -7211,7 +7473,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // (f3e) M16: the VRAM-row stats - the gpu-vram tickbox round-trips the
   // same way, but the row does NOT empty (the mem-clock + the VRAM-temp
   // fields stay - the row is MemClock;VRAM;VramTEMP): unchecking drops
-  // only the '3.0 GB' field, re-checking restores the full row.
+  // only the '3.0 GB' field, re-checking restores the full row. M17g: the
+  // mem-clock + vram-temp stats are OFF by default - turned ON first.
+  await ensureStatOn('gpu-mem-clock');
+  await ensureStatOn('gpu-vram-temp');
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-vram') === false)`, 5000))) {
     fail('M12: unchecking the VRAM tickbox did not persist overlayStats without gpu-vram');
@@ -7228,7 +7493,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // (f3f) M16 (nit 9b): the GPU-voltage stat - a GPU-row FIELD (between the
   // temp and the power fields), so unchecking it drops ONLY the '0.652 V'
   // field from the GPU line (the row itself stays), re-checking restores
-  // the full pinned line.
+  // the full pinned line. M17g: the clock + fan fields are OFF by default
+  // too - turned ON first so the full-row pins stay meaningful.
+  await ensureStatOn('gpu-clock');
+  await ensureStatOn('gpu-fan');
+  await ensureStatOn('gpu-voltage');
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-voltage"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-voltage') === false)`, 5000))) {
     fail('M16: unchecking the GPU Voltage tickbox did not persist overlayStats without gpu-voltage');
@@ -7247,7 +7516,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
 
   // (f3g) M16 (nit 9b): the VRAM-temp stat - the trailing field of the VRAM
   // row: unchecking drops the '<temp>°C' tail (MemClock;VRAM remain),
-  // re-checking restores the full row.
+  // re-checking restores the full row. M17g: the mem-clock field is OFF by
+  // default too - turned ON first (the gpu-vram round trip above already
+  // turned both on - the ensure is idempotent).
+  await ensureStatOn('gpu-mem-clock');
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram-temp"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-vram-temp') === false)`, 5000))) {
     fail('M16: unchecking the VRAM temp tickbox did not persist overlayStats without gpu-vram-temp');

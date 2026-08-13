@@ -441,6 +441,70 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
 }
 
 /**
+ * M17g: THE V2 COMPANION (the PL2-on-advanced fix - the 180 W mystery
+ * resolution). The DriverStore V2 setter (the STOCK path) writes BOTH
+ * package limits (PL1 + PL2 - the user's observation); the bundled
+ * 2023-runtime V1 setter (the ADVANCED path - the V1-call pin) writes PL1
+ * ONLY, so an advanced-mode apply leaves the burst (PL2) domain at its
+ * stock level and the enforced draw follows PL2 (the A750 'draw stays
+ * 180 W' class). The companion issues ONE best-effort V2 write of the
+ * same value through the SAME applyOnce the driverstore block uses - the
+ * driver's own acceptance is the gate (NO pre-check against caps.ranges:
+ * the advanced caps show the KMD ceiling 315/270, never the DriverStore
+ * acceptance 252/216 - a pre-check would be vacuous).
+ *
+ * BEST-EFFORT by contract (the sysman-companion precedent): the V1
+ * read-back stays the CANONICAL verification - the companion NEVER fails
+ * the apply and NEVER touches perControl. The verdicts:
+ *   - ok -> the burst domain follows per the stock-path behavior;
+ *   - refused (0x44000004 -> the canonical 'out-of-range' class - the
+ *     value above the DriverStore ceiling) -> the PL2-PINNED NOTE (round-1
+ *     N4 wording) - the V1 write still applied the sustained (PL1) limit;
+ *   - any other failure (io-failed / silent-noop) -> best-effort log only;
+ *     the SILENT-NOOP case is UNDETECTABLE via IGCL (PL2 is invisible to
+ *     IGCL - the M17f premise) - the movement verdict stays the sysman
+ *     read-back where the layer works, documented.
+ * @param {{
+ *   backend: import('./backend/backend.interface.js').IOCBackend,
+ *   deviceId: number,
+ *   requestedW: number,
+ *   opts?: Record<string, unknown>,
+ *   log?: (s: string) => void,
+ *   limitsKey?: { pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null,
+ * }} deps
+ * @returns {Promise<{ landed: boolean, ceilingW?: number }>} the verdict
+ *   the pl2Note rides on (the ceiling only when the write was REFUSED)
+ */
+export async function runV2Companion({ backend, deviceId, requestedW, opts = {}, log = () => {}, limitsKey = null }) {
+  // The DriverStore ceiling for the note: the device-limits STOCK row's PL
+  // max (the per-AIB documented ceiling - A750 ASRock/Acer 216, A770 LE
+  // 228) with the 252 default for unlisted cards (the same source the
+  // stock slider exposes - the note never invents a ceiling).
+  const ceilingW = deviceLimitsOf(limitsKey ?? null, { advanced: false })?.powerLimitW?.max ?? STD_PL_MAX_W;
+  try {
+    const out = await applyOnce({ backend, deviceId, settings: { powerLimitW: requestedW }, opts, log });
+    const per = out.result.perControl?.powerLimitW;
+    if (per?.ok === true && per.readBackEqual !== false) {
+      log(`[apply] V2 companion: the PL2 burst write landed (the burst domain follows per the stock-path behavior)`);
+      return { landed: true };
+    }
+    if (per?.ok === false && per?.errorCode === 'out-of-range') {
+      // 0x44000004 class - the value above the DriverStore ceiling (e.g.
+      // 300 W on the A770, 250 W on the Acer A750). The PL2-PINNED NOTE
+      // (round-1 N4): never a failed apply - the V1 read-back stays the
+      // canonical verification; the sustained (PL1) limit IS set.
+      log(`[apply] V2 companion: REFUSED - the burst limit (PL2) stays at its CURRENT value - the V2 setter refuses above the driver ceiling (${ceilingW} W) - the sustained limit (PL1) is set`);
+      return { landed: false, ceilingW };
+    }
+    log(`[apply] V2 companion: failed (${per?.errorCode ?? per?.message ?? 'unknown'}) - best-effort only, the V1 read-back stays the canonical verification (the burst may not have moved; the movement verdict stays the sysman read-back where the layer works)`);
+    return { landed: false };
+  } catch (err) {
+    log(`[apply] V2 companion: threw (${err instanceof Error ? err.message : String(err)}) - best-effort only, the V1 read-back stays the canonical verification`);
+    return { landed: false };
+  }
+}
+
+/**
  * A failed per-control result can be a non-persisting write (the momentary
  * lie) rather than a real refusal: the shape is SUCCESS from the setter with
  * a read-back mismatch (silentNoop) or a generic io-failed read-back
@@ -486,13 +550,14 @@ export function isMomentaryLieCandidate(per) {
  *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion
  *                         // consumer (src/main/sysman/power-limits.js) -
  *                         // runs AFTER the IGCL PL write; best-effort
+ *   limitsKey?: { pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null, // M17g: the caps identity for the V2 companion's ceiling note (the device-limits STOCK row's PL max - the DriverStore ceiling; absent -> the 252 default)
  * }} deps
  * @returns {Promise<{
- *   result: { ok: boolean, perControl: Record<string, { ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean, silentNoop?: boolean }> },
+ *   result: { ok: boolean, perControl: Record<string, { ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean, silentNoop?: boolean }>, pl2Note: { landed: boolean, ceilingW?: number, valueW?: number } | null },
  *   attempts: number,
  * }>}
  */
-export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null }) {
+export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
   const { driverstore, extended } = splitByRuntime(settings, ranges, mode);
   const perControl = {};
 
@@ -557,6 +622,48 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
     }
   }
 
+  // M17g: THE V2 COMPANION + the pl2Note (the PL2-on-advanced fix + the
+  // PL1/PL2 read-out's tracking source). After BOTH routed blocks have
+  // run + verified, the companion issues ONE best-effort V2 write of the
+  // same value so the burst (PL2) domain follows the advanced-mode apply
+  // (the V1 write sets PL1 only - the 180 W mystery). The pl2Note rides
+  // the envelope for EVERY W-unit powerLimitW apply in BOTH modes:
+  //   - STOCK: the primary V2 write's verdict is the note ('landed: true' -
+  //     both limits landed per the stock-path behavior; the perControl
+  //     ok already verified it). The companion NEVER fires in stock mode
+  //     (the driverstore block itself wrote the value - a perControl-only
+  //     gate would fire a REDUNDANT second V2 write on every stock apply);
+  //   - ADVANCED: the companion verdict (landed / refused -> the ceiling
+  //     note with ceilingW = the DriverStore ceiling).
+  // The emission gate is precise: ONLY when `typeof settings.powerLimitW
+  // === 'number'` AND the units gate holds (the mirror of the sysman gate
+  // below - the b580 percent device never emits) AND the IGCL write
+  // verified (a failed PL1 write never lands a companion write that leaves
+  // the pair inconsistent, and never feeds a dishonest '(set)').
+  // THE ORDER IS PINNED: the V2 companion runs FIRST, the M17f sysman
+  // companion SECOND (both best-effort, both write the same burst value;
+  // the sysman's sustained write is idempotent with the V1 write - either
+  // order is correct, one is pinned so the implementer never invents a
+  // dependency).
+  const plUnits = ranges?.powerLimitW?.units;
+  const wUnits = plUnits === undefined || plUnits === 'W';
+  let pl2Note = null;
+  if (typeof settings.powerLimitW === 'number' && wUnits && perControl.powerLimitW?.ok === true) {
+    if (extended.powerLimitW !== undefined) {
+      // ADVANCED: the V2 companion (the gate rides ALL FOUR apply paths
+      // for free: in-process runApply, the elevated worker, boot,
+      // profile). POWERLIMIT-ONLY - tempLimitC never rides the companion.
+      // The note is built in the PINNED shape order ({ landed, ceilingW?,
+      // valueW } - round-2 N2) so the envelope pins can deepEqual it.
+      const verdict = await runV2Companion({ backend, deviceId, requestedW: settings.powerLimitW, opts, log, limitsKey });
+      pl2Note = { landed: verdict.landed, ...(verdict.ceilingW !== undefined ? { ceilingW: verdict.ceilingW } : {}), valueW: settings.powerLimitW };
+    } else {
+      // STOCK: the primary V2 write's verdict (the perControl ok already
+      // verified it - both limits landed per the stock-path behavior).
+      pl2Note = { landed: true, valueW: settings.powerLimitW };
+    }
+  }
+
   // M17f: THE SYSMAN COMPANION - after BOTH routed paths (the driverstore
   // V2 write + the extended V1 write) have run + verified, sync the PL2
   // burst domain. Gated on the IGCL power-limit control's VERIFIED result:
@@ -572,7 +679,6 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
   // zesPowerSetLimits that could lower the enforced limit below stock
   // while the verdict logs 'verified'. SKIP when the units are DEFINED and
   // NOT 'W'; the IGCL write itself still verifies via its read-back.
-  const plUnits = ranges?.powerLimitW?.units;
   if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits
     && (plUnits === undefined || plUnits === 'W')) {
     await runSysmanCompanion({ sysmanPowerLimits, requestedW: settings.powerLimitW, log });
@@ -583,7 +689,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
   const ok = Object.keys(perControl).length === 0
     ? true
     : Object.values(perControl).every((p) => p.ok === true);
-  return { result: { ok, perControl }, attempts: 1 };
+  return { result: { ok, perControl, pl2Note }, attempts: 1 };
 }
 
 /**
@@ -645,7 +751,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
       ? clampAndSnap(value, range)
       : value;
   }
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits });
+  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   return { result: out.result, state };

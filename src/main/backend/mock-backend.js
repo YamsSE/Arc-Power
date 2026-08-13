@@ -183,6 +183,14 @@ export class MockBackend {
     // M17c: the session refused-ceiling store (the real backend's
     // parent-side merge mirror - getCapabilities merges it).
     this._refusedCeilings = createRefusedCeilingStore();
+    // M17g: the V2-COMPANION-CALL RECORDING (the deterministic pin
+    // surface for the PL2-on-advanced companion - the sysman mock's calls
+    // recording pattern): every applySettings call carrying a W-unit
+    // powerLimitW in an ADVANCED session IS the companion write (the
+    // routed split never sends PL to the driverstore block in advanced
+    // mode - the V1 path owns it; a stock-mode apply never records by the
+    // same gate). Session-level, never reset by a featureset swap.
+    this._v2CompanionCalls = [];
     // Devices > 0 live here; device 0 is the legacy single-device fields
     // (_device/_caps/_state/_tick/_energyStepJ/_waiverAccepted/
     // _telemetryCbs - the pre-M4-F mock, pinned directly by tests).
@@ -845,6 +853,20 @@ export class MockBackend {
       settings = out;
     }
 
+    // M17g: the V2-companion recording (the deterministic pin surface) -
+    // in an ADVANCED session every applySettings call carrying a W-unit
+    // powerLimitW IS the V2 companion write (the routed split sends PL to
+    // the bundled-2023-runtime V1 path in advanced mode, never the
+    // driverstore block; a STOCK-mode apply never records by the same
+    // gate). Units-aware: the percent-unit b580 never records (the units
+    // gate in apply-routing skips the companion there too).
+    const plUnits = caps.ranges.powerLimitW?.units;
+    if (this._ocMode === 'advanced'
+      && settings.powerLimitW !== undefined
+      && (plUnits === undefined || plUnits === 'W')) {
+      this._v2CompanionCalls.push(settings.powerLimitW);
+    }
+
     const applyScalar = (control, canonicalName, value) => {
       if (value === null || value === undefined) return;
       if (!caps.controls[control]) {
@@ -859,6 +881,34 @@ export class MockBackend {
         return;
       }
       const range = caps.ranges[canonicalName];
+      // M17g: the V2/DriverStore acceptance ceiling (the PL2-on-advanced
+      // mock parity - the 0x44000004 refusal class). The DriverStore path
+      // itself accepts only up to the FIXTURE's stock props max (252 a770 /
+      // 216 a750 - the same values the M17d probes pinned: the DriverStore
+      // path refuses 228/235/250 with 0x44000004 on the Acer A750). The
+      // gate is MODE-INDEPENDENT because the DRIVER's acceptance is
+      // mode-independent: the app's session mode only changes the app-side
+      // exposed max (the V1/KMD ceiling), never what the V2 setter accepts.
+      // The V2 companion is the ONLY backend PL writer above the stock
+      // ceiling - the routed split sends advanced PL to the V1 path (never
+      // the driverstore block) and the stock-mode execute path pre-clamps
+      // at the app-side ceiling, so the gate models the driver's own
+      // refusal exactly where the mock needs it.
+      // Test-only corner (honest direction): a DIRECT backend.applySettings
+      // call in a stock session with a value above the stock ceiling
+      // REFUSES here while the real IgclBackend.applySettings clamps to the
+      // stock caps and reports ok - no product path reaches the backend
+      // un-clamped (stock applies are pre-gated + executeApply-clamped), so
+      // the mock's refusal is the honest direction (the M4O 'never silently
+      // reduce a saved profile' intent).
+      if (canonicalName === 'powerLimitW' && range && range.units === 'W') {
+        const stockMax = this._featureset.ranges.powerLimitW?.max;
+        if (typeof stockMax === 'number' && Number.isFinite(stockMax) && value > stockMax) {
+          result.perControl[canonicalName] = { ok: false, errorCode: 'out-of-range', message: `the V2/DriverStore path refuses above the driver ceiling (${stockMax} W)` };
+          result.ok = false;
+          return;
+        }
+      }
       const clamped = opts.snapToStep === false
         ? Math.min(range.max, Math.max(range.min, Number.isFinite(value) ? value : range.min))
         : clampAndSnap(value, range);

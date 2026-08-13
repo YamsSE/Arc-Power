@@ -31,7 +31,8 @@ const OVERLAY_SCALE_MAX = 2.0;
 // list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
 // src/renderer/pure/overlay.ts and the envelope validation in
 // src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
-// files -> the FULL set (the stock overlay shows everything); a garbage
+// files -> the M17g DEFAULT set (the user's 11 ON / the others OFF - the
+// M6 full-set default FLIPS); a garbage
 // value degrades to the full set at the STORE.
 // M7a: 'fps-1pct-low' + 'fps-99pct' (the 1% Low / 99% FPS row stats) ride
 // the list right after the M12 AVG / 0.1% Low pair (ipc-core imports this
@@ -55,6 +56,18 @@ const OVERLAY_STAT_IDS = [
   'memory-util', 'gpu-util', 'gpu-clock', 'gpu-voltage',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime',
 ];
+// M17g (the user's stock overlay settings): the DEFAULT overlayStats set -
+// the user's 11 ON (fps, api, cpu-util, cpu-temp, cpu-power, memory-util,
+// gpu-util, gpu-temp, gpu-power, gpu-vram, frametime) / the OTHERS OFF.
+// Absent on old settings files -> this set (the M6 full-set default FLIPS);
+// a garbage value degrades to it at the STORE. The lockstep owner of the
+// constant is renderer/pure/overlay.ts (keep both in lockstep); the renderer
+// mirror's normalizeOverlayStats (:210-211) + overlay-settings.ts + types.ts
+// ride the same default.
+const OVERLAY_STATS_DEFAULT = [
+  'fps', 'api', 'cpu-util', 'cpu-temp', 'cpu-power',
+  'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'frametime',
+];
 // M6: the stock overlay text color (white - the M5 pre-color default).
 const OVERLAY_COLOR_DEFAULT = '#ffffff';
 // M7b: the overlay background box (the Appearance card's Background
@@ -64,14 +77,15 @@ const OVERLAY_BG_COLOR_DEFAULT = '#000000';
 const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range + default (100-2000 ms, step 50, default
-// 500 - the telemetry-service default). The persisted-truth owner; the
-// renderer slider (overlay-settings.ts) + the ipc-core patch validation
-// mirror the clamp. Absent on old files -> 500; garbage degrades to 500.
-const OVERLAY_POLL_MS_DEFAULT = 500;
+// 400 - M17g: the user's stock polling rate FLIPS 500 -> 400). The
+// persisted-truth owner; the renderer slider (overlay-settings.ts) + the
+// ipc-core patch validation mirror the clamp. Absent on old files -> 400;
+// garbage degrades to 400.
+const OVERLAY_POLL_MS_DEFAULT = 400;
 const OVERLAY_POLL_MS_MIN = 100;
 const OVERLAY_POLL_MS_MAX = 2000;
 
-export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT };
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -91,15 +105,17 @@ function clampOverlayBgOpacity(v) {
 }
 
 /** M17e: clamp the overlay polling rate to the slider's 100-2000 ms range
- *  (garbage degrades to the 500 ms default - the same clamp semantics as
- *  the scale slider; the slider cannot produce an out-of-range value). */
+ *  (garbage degrades to the 400 ms default - M17g: the stock polling rate
+ *  FLIPS 500 -> 400; the same clamp semantics as the scale slider; the
+ *  slider cannot produce an out-of-range value). */
 function clampOverlayPollMs(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
   return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
 }
 
 /** M6: normalize a raw overlayStats value - an array of KNOWN ids, deduped
- *  (order preserved); absent/garbage -> the FULL set (the stock default).
+ *  (order preserved); absent/garbage -> the DEFAULT set (M17g: the user's
+ *  11 ON / the others OFF - the M6 full-set default FLIPS).
  *  The store mirror of the renderer's normalizeOverlayStats.
  *  M16 (B1): this normalize is deliberately FILTER-ONLY - the one-time
  *  upgrade of PERSISTED pre-M16 lists (gaining 'gpu-voltage' +
@@ -108,7 +124,7 @@ function clampOverlayPollMs(v) {
  *  (the tickbox round trip). A file at v3 already carries the user's
  *  choices; the migration ran exactly once. */
 function normalizeOverlayStats(v) {
-  if (!Array.isArray(v)) return [...OVERLAY_STAT_IDS];
+  if (!Array.isArray(v)) return [...OVERLAY_STATS_DEFAULT];
   const seen = new Set();
   const out = [];
   for (const id of v) {
@@ -259,7 +275,7 @@ export class ProfileStore {
    * M17b: overlayChipNames (the chip-name row labels) rides it too (off =
    * the stock 'CPU '/'GPU ' prefixes when absent).
    * M17e: overlayPollMs (the overlay telemetry push cadence) rides it too
-   * (500 ms when absent).
+   * (400 ms when absent).
    * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number }>}
    */
   async loadSettings() {
@@ -305,14 +321,14 @@ export class ProfileStore {
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
         // absent-field mechanism, NO schema bump).
         // M6: the color defaults to the stock white '#ffffff' and the stats
-        // to the FULL set (the stock overlay shows everything) - same
-        // absent-field mechanism.
+        // to the M17g DEFAULT set (the user's 11 ON / the others OFF - the
+        // M6 full-set default FLIPS) - same absent-field mechanism.
         overlayEnabled: false,
         overlayHotkeyLetter: 'O',
         overlayPosition: 'top-left',
         overlayScale: 1.0,
         overlayColor: OVERLAY_COLOR_DEFAULT,
-        overlayStats: [...OVERLAY_STAT_IDS],
+        overlayStats: [...OVERLAY_STATS_DEFAULT],
         // M7b: the background box - absent -> off, black, 0.5 opacity (the
         // same absent-field mechanism, NO schema bump).
         overlayBgEnabled: false,
@@ -322,7 +338,7 @@ export class ProfileStore {
         // 'CPU '/'GPU ' prefixes; the same absent-field mechanism, NO
         // schema bump - the overlay renderer reads the pushed setting).
         overlayChipNames: false,
-        // M17e: the overlay polling-rate - absent -> 500 ms (the same
+        // M17e: the overlay polling-rate - absent -> 400 ms (the same
         // absent-field mechanism; the telemetry-service default).
         overlayPollMs: OVERLAY_POLL_MS_DEFAULT,
       };
@@ -372,7 +388,8 @@ export class ProfileStore {
         ? data.overlayColor
         : OVERLAY_COLOR_DEFAULT,
       // M6: the enabled stat ids - known ids only, deduped; absent/garbage
-      // degrades to the FULL set (the stock overlay).
+      // degrades to the M17g DEFAULT set (the user's 11 ON / the others
+      // OFF - the M6 full-set default FLIPS).
       overlayStats: normalizeOverlayStats(data.overlayStats),
       // M7b: the background box - enabled off / black / 0.5 opacity when
       // absent; a garbage value degrades to the default - never a crash.
@@ -386,8 +403,8 @@ export class ProfileStore {
       // stock 'CPU '/'GPU ' prefixes; a garbage value degrades to false -
       // never a crash).
       overlayChipNames: data.overlayChipNames === true,
-      // M17e: the overlay polling-rate - absent on old files -> 500 ms (the
-      // telemetry-service default; a garbage value degrades to 500 - never
+      // M17e: the overlay polling-rate - absent on old files -> 400 ms (the
+      // telemetry-service default; a garbage value degrades to 400 - never
       // a crash, never an out-of-range cadence).
       overlayPollMs: clampOverlayPollMs(data.overlayPollMs),
     };
@@ -450,7 +467,7 @@ export class ProfileStore {
       // M17e: the overlay polling-rate - clamped to the 100-2000 ms range
       // on save like the scale/opacity (the channel validates first; the
       // store fallback covers direct callers - an absent/garbage value
-      // persists as the 500 ms default).
+      // persists as the 400 ms default).
       overlayPollMs: clampOverlayPollMs(settings.overlayPollMs),
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write - the

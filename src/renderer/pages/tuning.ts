@@ -69,6 +69,7 @@ import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffG
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
+import { formatPlReadout } from '../pure/pl-readout.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
@@ -158,6 +159,11 @@ let appliedLock: { voltageV: number; freqMhz: number } | null = null;
 // (boot); the element text is 'PL1 210 W / PL2 210 W' when the layer
 // answers, the honest 'PL1 - / PL2 -' when absent.
 let sysmanLimitsNode: HTMLElement | null = null;
+// M17g: the PER-DEVICE SESSION-tracked last-applied PL2 - fed ONLY from
+// the apply envelope's pl2Note (the '(set)' fallback when the sysman layer
+// is absent; the boot one-shot + the profile/tray applies never feed it -
+// they show the sysman read or '-'; session-scoped, never persisted).
+const pl2SetByDevice = new Map<number, { valueW: number; ceilingW?: number }>();
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
 // M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
@@ -219,19 +225,22 @@ function refreshChip(key: string) {
 }
 
 /** M17f: format the sysman limits read-out - 'PL1 210 W / PL2 210 W' when
- *  the layer answers, the honest 'PL1 - / PL2 -' when absent/garbage. */
-function formatSysmanLimits(limits: PowerLimitsRead | null): string {
-  if (!limits || !Number.isFinite(limits.sustainedW) || !Number.isFinite(limits.burstW)) {
-    return 'PL1 - / PL2 -';
-  }
-  return `PL1 ${Math.round(limits.sustainedW)} W / PL2 ${Math.round(limits.burstW)} W`;
+ *  the layer answers, the honest 'PL1 - / PL2 -' when absent/garbage.
+ *  M17g: the read-out falls back to the session-tracked '(set)' value
+ *  (the apply envelope's pl2Note) when the sysman layer is absent - the
+ *  PL2 line shows the last-applied value marked '(set)' (with the honest
+ *  ceiling sentence when the V2 companion was refused), '-' only when
+ *  NOTHING was applied in the session AND the sysman is absent. */
+function formatSysmanLimits(limits: PowerLimitsRead | null, set: { valueW: number; ceilingW?: number } | undefined, enforcedW: number | null | undefined): string {
+  return formatPlReadout(limits, set, enforcedW);
 }
 
 /** M17f: refresh the power-limit card's PL2 read-out from the sysman layer
  *  (per-apply + the boot one-shot; a failure keeps the honest '-' line).
  *  M17f (step-4 N2): DEVICE-SCOPED - the deviceId threads into the read
  *  (the domain is per-device; a null deviceId = no device - nothing to
- *  read). */
+ *  read). M17g: the '(set)' fallback rides the per-device session state
+ *  (fed ONLY from the apply envelope's pl2Note). */
 async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
   if (!sysmanLimitsNode || deviceId === null) return;
   let limits: PowerLimitsRead | null = null;
@@ -240,7 +249,10 @@ async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
   } catch {
     limits = null;
   }
-  sysmanLimitsNode.textContent = formatSysmanLimits(limits);
+  const enforced = typeof currentState?.powerLimitW === 'number' && Number.isFinite(currentState.powerLimitW)
+    ? (currentState.powerLimitW as number)
+    : null;
+  sysmanLimitsNode.textContent = formatSysmanLimits(limits, pl2SetByDevice.get(deviceId), enforced);
 }
 
 /** M17d (Run D): refresh the gpuLock card's current-driver-lock read-out
@@ -1327,9 +1339,22 @@ export const tuningPage: Page = {
         refreshLockReadout();
         refreshLockEditor();
         updateFloating();
+        // M17g: the PL2 '(set)' session state - fed ONLY from the apply
+        // envelope's pl2Note (the note fires on EVERY W-unit powerLimitW
+        // apply in both modes; a payload without powerLimitW never emits).
+        // Per-device (a device switch keeps its own entry); the boot
+        // one-shot + the profile/tray applies never feed it - they show
+        // the sysman read or '-'.
+        if (result.pl2Note && typeof result.pl2Note.valueW === 'number') {
+          pl2SetByDevice.set(deviceId, {
+            valueW: result.pl2Note.valueW,
+            ...(typeof result.pl2Note.ceilingW === 'number' ? { ceilingW: result.pl2Note.ceilingW } : {}),
+          });
+        }
         // M17f: the PL2 read-out freshness = per-apply - refresh the sysman
         // line after every apply (the power limit may have moved the burst
-        // domain via the companion sync).
+        // domain via the companion sync; the '(set)' fallback re-renders
+        // from the session state just fed).
         void refreshSysmanLimits(deviceId);
         if (!result.ok) {
           // The waiver may have been lost on the device (e.g. driver reset).

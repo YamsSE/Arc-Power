@@ -48,10 +48,11 @@ export const OVERLAY_SCALE_MAX = 2.0;
 
 /** M17e: the overlay polling-rate slider's range + default (the
  *  telemetry-service default; mirrored in profile-store.js + ipc-core.js -
- *  keep the three in lockstep). */
+ *  keep the three in lockstep). M17g: the DEFAULT FLIPS 500 -> 400 (the
+ *  user's stock polling rate). */
 export const OVERLAY_POLL_MS_MIN = 100;
 export const OVERLAY_POLL_MS_MAX = 2000;
-export const OVERLAY_POLL_MS_DEFAULT = 500;
+export const OVERLAY_POLL_MS_DEFAULT = 400;
 
 /**
  * M6/M7a: the canonical overlay stat ids (the persisted-truth owner is
@@ -81,6 +82,18 @@ export const OVERLAY_STAT_IDS: readonly string[] = [
   'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
   'memory-util', 'gpu-util', 'gpu-clock', 'gpu-voltage',
   'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime',
+];
+
+/** M17g (the user's stock overlay settings): the DEFAULT overlayStats set -
+ *  the user's 11 ON (fps, api, cpu-util, cpu-temp, cpu-power, memory-util,
+ *  gpu-util, gpu-temp, gpu-power, gpu-vram, frametime) / the OTHERS OFF.
+ *  The renderer mirror of the store's OVERLAY_STATS_DEFAULT (the
+ *  persisted-truth owner is profile-store.js - keep both in lockstep);
+ *  absent/garbage overlayStats degrades to this set (the M6 full-set
+ *  default FLIPS). */
+export const OVERLAY_STATS_DEFAULT: readonly string[] = [
+  'fps', 'api', 'cpu-util', 'cpu-temp', 'cpu-power',
+  'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'frametime',
 ];
 
 /** M6: the Overlay Settings page's tickbox labels (one per stat id). */
@@ -139,8 +152,10 @@ export function clampOverlayBgOpacity(v: unknown): number {
 }
 
 /** M17e: clamp the overlay polling-rate to the slider's 100-2000 ms range
- *  (garbage degrades to the 500 ms default - the renderer mirror of the
- *  store/ipc-core clamps). */
+ *  (garbage degrades to the 400 ms default - M17g: the default FLIPS 500 ->
+ *  400; the renderer mirror of the store/ipc-core clamps - a garbage
+ *  overlayPollMs must degrade to 400 in BOTH the store and the renderer,
+ *  never a 500/400 split). */
 export function clampOverlayPollMs(v: unknown): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
   return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
@@ -198,8 +213,9 @@ export function apiLabelOf(v: unknown): string | null {
 
 /**
  * M6: normalize a raw overlayStats value - an array of KNOWN ids, deduped
- * (order preserved); absent/garbage -> the FULL set (the default - the
- * stock overlay shows everything). The renderer mirror of the main-side
+ * (order preserved); absent/garbage -> the DEFAULT set (M17g: the user's
+ * 11 ON / the others OFF - the M6 full-set default FLIPS; the stock
+ * overlay now shows the user's set). The renderer mirror of the main-side
  * normalize (profile-store.js owns the persisted truth).
  * M16 (B1): this mirror deliberately does NOT union the ids the canonical
  * list gained in M16 onto a trimmed array - the overlay renders whatever
@@ -208,7 +224,7 @@ export function apiLabelOf(v: unknown): string | null {
  * M16 migration) lives in the store's v2 -> v3 schema migration.
  */
 export function normalizeOverlayStats(v: unknown): string[] {
-  if (!Array.isArray(v)) return [...OVERLAY_STAT_IDS];
+  if (!Array.isArray(v)) return [...OVERLAY_STATS_DEFAULT];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const id of v) {
@@ -301,7 +317,8 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
 /**
  * Build the overlay lines from one telemetry sample + the latest FPS (the
  * 1 s fps-poll result) + the ENABLED stats (M6 - an absent stats value
- * means the FULL set, the stock overlay) + the latest percentile stats
+ * means the DEFAULT set - M17g: the user's 11 ON / the others OFF, the M6
+ * full-set default FLIPS) + the latest percentile stats
  * (M7a/M12 - the low1Pct / low01Pct / avgFps / p99 numbers from the same
  * fps poll, null until the sampler's frame floors) + the api id + the RAM
  * utilization. Every enabled field degrades honestly to '-':

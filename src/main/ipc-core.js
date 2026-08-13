@@ -35,7 +35,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_POLL_MS_DEFAULT } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
 // koffi, hook = the no-device telemetry path, mock fixtures under
 // RID_MOCK_VENDOR).
@@ -62,7 +62,8 @@ const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range (mirrored in profile-store.js +
-// overlay-settings.ts; the telemetry-service default is 500 ms).
+// overlay-settings.ts; the telemetry-service default is 400 ms - M17g:
+// the stock polling rate FLIPS 500 -> 400).
 const OVERLAY_POLL_MS_MIN = 100;
 const OVERLAY_POLL_MS_MAX = 2000;
 // M8: the frame-limit clamp fallback (30-300-1-60 - the probe-recorded
@@ -203,7 +204,8 @@ export function clampOverlayBgOpacity(v) {
 /**
  * M17e (the user addition - the overlay polling-rate slider): clamp the
  * telemetry push cadence to the slider's 100-2000 ms range (garbage
- * degrades to the 500 ms default - the telemetry-service default; the
+ * degrades to the 400 ms default - M17g: the stock polling rate FLIPS 500
+ * -> 400; the telemetry-service default; the
  * same clamp semantics as the scale; the slider cannot produce an
  * out-of-range value).
  * @param {unknown} v
@@ -217,7 +219,9 @@ export function clampOverlayPollMs(v) {
 /**
  * M6: normalize a raw overlayStats patch value - an array of KNOWN stat
  * ids, deduped (order preserved); unknown ids are DROPPED, absent/garbage
- * degrades to the FULL set (the stock overlay). Never rejects - the
+ * degrades to the DEFAULT set (M17g: the user's 11 ON / the others OFF -
+ * the M6 full-set default FLIPS; the same default the store carries).
+ * Never rejects - the
  * tickboxes can only produce known ids, and a partial garbage value must
  * not fail the whole save.
  * M16 (B1): the SAVE-path normalize is deliberately FILTER-ONLY - the
@@ -229,7 +233,7 @@ export function clampOverlayPollMs(v) {
  * @returns {string[]}
  */
 export function normalizeOverlayStats(v) {
-  if (!Array.isArray(v)) return [...OVERLAY_STAT_IDS];
+  if (!Array.isArray(v)) return [...OVERLAY_STATS_DEFAULT];
   const seen = new Set();
   const out = [];
   for (const id of v) {
@@ -529,8 +533,8 @@ export async function resolveBootDeviceId(backend, store) {
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
  *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; M17d: wraps the pm-service + sidecar SOURCE CHAIN; null in mock/tests - the determinism seam like foregroundApi)
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
- *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe; the two telemetry emit sites compose its result into the pushed sample)
- *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }> },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample)
+ *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
+ *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle).
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -705,15 +709,23 @@ export function createIpcHandlers({
    * telemetry fields are absent, so the GPU tiles/readouts honestly stay
    * '-' while the CPU util/temp + GPU-memory tiles go live. Same cadence
    * as the device TelemetryService (the overlay polling-rate - the
-   * store's overlayPollMs, default 500 ms - M17e round-2 N3); the
+   * store's overlayPollMs, default 400 ms - M17g: the stock polling rate
+   * FLIPS 500 -> 400; M17e round-2 N3); the
    * boot-level log-to-file subscription consumes the same telemetry:sample
    * push, so log-file logging works for free.
-   * M14: the sample COMPOSES the used-RAM-bytes field here too - the
-   * no-Intel machine must get the Memory row as well. The fixture-wins
-   * shape (the M10a `sample.api ?? detect()` pattern): the sysStats
-   * fixture's memoryUsedBytes (12400000000) wins, otherwise the injected
-   * detector answers (the DEFAULT is the null-returning detector - the
-   * determinism seam).
+   * M14: the sample CARRIES the used-RAM-bytes field from the sysStats
+   * adapter's FAST lane (the M17g move - the emit-site composition is
+   * replaced by the fast-lane field; the fixture's memoryUsedBytes
+   * 12400000000 rides the push while the null-returning mock detector
+   * stays unrun). The M17c vendor used-VRAM still wins over it (the
+   * device-wins precedence - the NVML used-VRAM is the better source on
+   * NVIDIA).
+   * M17g: the push samples the FAST lane per tick (ms-fast native reads,
+   * never PowerShell) and emits IMMEDIATELY with the merged cache
+   * (fast ?? slow); the slow PowerShell query is NEVER awaited inline -
+   * the slow lane runs on the adapter's own background timer
+   * (startSlowLane/stopSlowLane, tied to the telemetry session
+   * lifecycle - stopped with stopAllTelemetry).
    */
   const startNullTelemetry = async () => {
     if (telemetry.has(NULL_DEVICE_KEY)) return;
@@ -744,7 +756,12 @@ export function createIpcHandlers({
     const timer = setInterval(() => {
       void (async () => {
         try {
-          const extra = await sysStats.sample();
+          // M17g: the push decoupling - the handler samples the FAST lane
+          // per tick (ms-fast: GetSystemTimes/MSR/GlobalMemoryStatusEx -
+          // never PowerShell) and emits IMMEDIATELY with the merged cache
+          // (fast ?? slow); the slow CIM query is NEVER awaited inline
+          // (it runs on the adapter's startSlowLane background timer).
+          const extra = await sysStats.sampleFast();
           let vendorSample = null;
           try {
             vendorSample = vendor ? await vendor.sample() : null;
@@ -758,13 +775,22 @@ export function createIpcHandlers({
             // NVML used-VRAM is the better source on NVIDIA) - the device
             // path's { ...extra, ...sample } precedence mirror.
             ...(vendorSample ?? {}),
-            memoryUsedBytes: vendorSample?.gpuMemUsedBytes ?? extra.memoryUsedBytes ?? (await memoryUtil.detect()),
+            // M17g: the memoryUsedBytes composition MOVED into the fast
+            // lane (the sysStats adapter's sampleFast carries the field);
+            // the vendor's used-VRAM still wins (the device-wins
+            // precedence stays as today).
+            memoryUsedBytes: vendorSample?.gpuMemUsedBytes ?? extra.memoryUsedBytes,
           });
         } catch {
           // a stats failure must never break the timer (skip this tick)
         }
       })();
     }, pollMs);
+    // M17g: the slow lane starts WITH the no-device session (the
+    // background PowerShell cadence refreshing the remaining OS-counter
+    // fields; stopped with stopAllTelemetry - the idempotent start in the
+    // adapter keeps one timer across the telemetry sessions).
+    try { await sysStats.startSlowLane?.(); } catch { /* best effort */ }
     telemetry.set(NULL_DEVICE_KEY, {
       stop: async () => {
         clearInterval(timer);
@@ -776,7 +802,8 @@ export function createIpcHandlers({
   const startTelemetry = async (deviceId) => {
     if (telemetry.has(deviceId)) return;
     // M17e (round-2 N4, the overlay polling-rate slider): the telemetry
-    // DEFAULT is 500 ms (telemetry-service.js) - the overlay's tick reads
+    // DEFAULT is 400 ms (M17g: the stock polling rate FLIPS 500 -> 400;
+    // telemetry-service.js) - the overlay's tick reads
     // pollMs ONCE at svc.start() (a change RESTARTS the push with the new
     // interval - the live-restart reaction in profiles-settings-save).
     let pollMs = OVERLAY_POLL_MS_DEFAULT;
@@ -788,24 +815,30 @@ export function createIpcHandlers({
     }
     const svc = new TelemetryService(backend, deviceId, { pollMs });
     // M4-D2: the pushed sample carries the system stats (CPU util/freq/
-    // temp + GPU memory) - OS-formatted counters sampled once per tick by
-    // the injected sysStats adapter (one PowerShell query per tick - no
-    // extra polling latency). The mock adapter returns fixed values; the
-    // real adapter degrades per-field to null (honest '-' in the UI).
+    // temp + GPU memory) - the injected sysStats adapter. M17g: the push
+    // handler samples the FAST lane per tick (ms-fast native reads:
+    // GetSystemTimes / MSR / GlobalMemoryStatusEx - NEVER the slow
+    // PowerShell query) and emits IMMEDIATELY with the merged cache
+    // (fast ?? slow); the slow CIM query runs DECOUPLED on the adapter's
+    // own background timer (startSlowLane below), refreshing the
+    // remaining OS-counter fields (gpuMemUsedBytes/gpuUtilPct/cpuFreqMhz
+    // + the MSR-less WMI temp/power fallbacks) into the shared cache.
+    // The mock adapter returns fixed values; the real adapter degrades
+    // per-field to null (honest '-' in the UI).
     // M4-I (D2 - merge precedence): the DEVICE telemetry wins -
     // { ...extra, ...sample } - DEFENSIVE: today the field sets share zero
     // keys (N1), but an injected colliding field must never let an OS
     // stat overwrite the device's IGCL reading (igcl-wins; pinned by the
     // injected-collision unit test).
-    // M14: the sample COMPOSES the used-RAM-bytes field - the fixture-wins
-    // shape (the M10a `sample.api ?? detect()` pattern): the sysStats
-    // fixture's memoryUsedBytes (12400000000) wins, otherwise the injected
-    // detector answers (the DEFAULT is the null-returning detector - the
-    // determinism seam; the real koffi probe runs only in the product path).
+    // M14/M17g: the sample CARRIES the used-RAM-bytes field from the
+    // sysStats adapter's FAST lane (the M17g move - the emit-site
+    // composition is replaced by the fast-lane field; the fixture's
+    // memoryUsedBytes 12400000000 rides the push while the null-returning
+    // mock detector stays unrun).
     svc.onSample(async (sample) => {
       let extra = {};
       try {
-        extra = await sysStats.sample();
+        extra = await sysStats.sampleFast();
       } catch {
         // a stats failure must never break the telemetry push
         extra = {};
@@ -813,11 +846,14 @@ export function createIpcHandlers({
       emit('telemetry:sample', {
         ...extra,
         ...sample,
-        memoryUsedBytes: extra.memoryUsedBytes ?? (await memoryUtil.detect()),
       });
     });
     svc.onPollError(() => { /* stale readouts recover on the next tick */ });
     await svc.start();
+    // M17g: the slow lane starts WITH the telemetry session (the
+    // background PowerShell cadence; the idempotent start in the adapter
+    // keeps ONE timer across the sessions - stopped with stopAllTelemetry).
+    try { await sysStats.startSlowLane?.(); } catch { /* best effort */ }
     telemetry.set(deviceId, svc);
   };
 
@@ -826,6 +862,11 @@ export function createIpcHandlers({
       try { await svc.stop(); } catch { /* best effort */ }
     }
     telemetry.clear();
+    // M17g: the slow lane is tied to the telemetry session lifecycle -
+    // stopped with stopAllTelemetry (the background PowerShell cadence
+    // must not outlive the last push; an in-flight query finishes on its
+    // own - no new tick starts).
+    try { await sysStats.stopSlowLane?.(); } catch { /* best effort */ }
   };
 
   const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
@@ -1681,8 +1722,8 @@ export function createIpcHandlers({
             : patch.overlayChipNames === true,
           // M17e: the overlay polling-rate - CLAMPED to the slider's
           // 100-2000 ms range (never rejected - the slider cannot produce
-          // an out-of-range value; a garbage patch degrades to the 500 ms
-          // default).
+          // an out-of-range value; a garbage patch degrades to the 400 ms
+          // default - M17g: the stock polling rate FLIPS 500 -> 400).
           overlayPollMs: patch.overlayPollMs === undefined
             ? cur.overlayPollMs
             : clampOverlayPollMs(patch.overlayPollMs),

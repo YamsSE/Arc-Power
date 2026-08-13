@@ -35,7 +35,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   presentMonLane?: { poll: (deviceId: number) => Promise<unknown>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (main.js wires the real lane in the product path)
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the real koffi probe; the DEFAULT is the null-returning detector - mock/ui-verify never run it)
- *   sysStats?: { sample: () => Promise<unknown> },
+ *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle).
  *   monitorLog?: { append: (sample: object) => Promise<unknown> },
  *   rebuildTray?: () => Promise<unknown>,
  *   oldIgcl?: object,

@@ -20,11 +20,11 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
-import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS } from './store/profile-store.js';
+import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT } from './store/profile-store.js';
 import { createOverlayWindow } from './overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
@@ -671,9 +671,12 @@ async function main() {
   // to the honest null + the '-' read-out, never a boot-time cost); the
   // MOCK seam answers the fixture limits through the backend (the applied
   // powerLimitW for both domains - the deterministic ui-verify read-out)
-  // and never touches the DLL.
+  // and never touches the DLL. M17g: RID_MOCK_NO_SYSMAN=1 knocks the mock
+  // seam OUT entirely (sysmanPowerLimits null) - the ui-verify variant
+  // pins the honest '-' read-out + the envelope-fed '(set)' render on the
+  // power-limit card.
   const sysmanPowerLimits = mock
-    ? createMockSysmanPowerLimits({ backend })
+    ? (process.env.RID_MOCK_NO_SYSMAN === '1' ? null : createMockSysmanPowerLimits({ backend }))
     : createSysmanPowerLimits({});
   // M2C-C elevation probe: real detection in the product path; ui-verify
   // knobs let the mock report elevated (RID_MOCK_ELEVATED=1) so the
@@ -808,6 +811,9 @@ async function main() {
     // M6: the color + the stats reset the same way (the new pins change
     // them mid-run - a crashed run must never bleed a non-white color or a
     // trimmed stat set into the next overlay variant).
+    // M17g: the stats reset to the DEFAULT set now (the user's 11 ON / the
+    // others OFF - the M6 full-set default FLIPS; the overlay variant's
+    // boot pins + the round trips are deterministic against it).
     // M7b: the background box resets the same way (the new pins toggle it
     // mid-run - a crashed run must never bleed a visible box / non-black
     // color / non-0.5 opacity into the next overlay variant).
@@ -821,7 +827,7 @@ async function main() {
         overlayPosition: overlayOn ? 'top-left' : cur.overlayPosition,
         overlayScale: overlayOn ? 1 : cur.overlayScale,
         overlayColor: overlayOn ? '#ffffff' : cur.overlayColor,
-        overlayStats: overlayOn ? OVERLAY_STAT_IDS : cur.overlayStats,
+        overlayStats: overlayOn ? OVERLAY_STATS_DEFAULT : cur.overlayStats,
         overlayBgEnabled: overlayOn ? false : cur.overlayBgEnabled,
         overlayBgColor: overlayOn ? '#000000' : cur.overlayBgColor,
         overlayBgOpacity: overlayOn ? 0.5 : cur.overlayBgOpacity,
@@ -1459,6 +1465,12 @@ async function main() {
       onMsrDegrade: (text) => {
         console.log(`[sys-stats] ${text}`);
       },
+      // M17g: the RAM detector (GlobalMemoryStatusEx - native) - the FAST
+      // lane's memoryUsedBytes source (the M17g move: the emit-site
+      // composition is replaced by the fast-lane field; undefined in mock
+      // mode - the createSysStats null-returning default keeps the
+      // determinism seam, and the mock adapter is used there anyway).
+      memoryUtil,
     });
   }
 
@@ -1630,11 +1642,12 @@ async function main() {
       // M17e: the overlay polling-rate - forwarded like the rest (the
       // payload carries it so the ui-verify pins + the overlay renderer
       // know the cadence; ipc-core's startTelemetry + the live restart are
-      // the cadence owners; garbage degrades to the 500 ms default).
+      // the cadence owners; garbage degrades to the 400 ms default - M17g:
+      // the stock polling rate FLIPS 500 -> 400).
       overlayPollMs: typeof settings.overlayPollMs === 'number'
         && Number.isFinite(settings.overlayPollMs)
         ? Math.min(2000, Math.max(100, Math.round(settings.overlayPollMs)))
-        : 500,
+        : 400,
     });
   };
   if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {
@@ -1874,7 +1887,14 @@ async function main() {
       // laptop-manufacturer branch, round-3 N2).
       await runLaptopSysinfoVerify(win);
     } else if (fsVariant && fsVariant !== 'a770') {
-      await runFeaturesetVerify(win, fsVariant);
+      await runFeaturesetVerify(win, fsVariant, backend);
+    } else if (process.env.RID_MOCK_NO_SYSMAN === '1') {
+      // M17g: the no-sysman variant - the sysman layer is ABSENT (the
+      // main.js sysman wiring is null under the knob) - pins the honest
+      // '-' read-out at boot, the envelope-fed '(set)' marker + the
+      // refused-ceiling sentence on the power-limit card, and the V2
+      // companion's recorded calls (the advanced-only recording gate).
+      await runNoSysmanVerify(win, backend);
     } else if (process.env.RID_MOCK_TWEAKS_APPLY === '1') {
       // M3-B tweaks-apply variant: drives the full apply flow (mock adapter,
       // no elevation) - enable/disable/revert round trips, per-step toasts,

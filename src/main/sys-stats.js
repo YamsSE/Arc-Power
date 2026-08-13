@@ -76,9 +76,33 @@
 // FROZEN_TEMP=1 knob returning a CONSTANT (the shared frozenDrop then
 // reports '-' - the verifiable Z97-static-zone shape) and a RID_MOCK_
 // NO_POWER_METER=1 knob (cpuPowerW null - the honest no-metering shape).
+//
+// M17g (the CPU fast lane - the measured 3.7 s query is the root cause of
+// the CPU fields ignoring the overlay polling-rate slider): the adapter
+// SPLITS into two lanes. The FAST lane (sampleFast) reads the per-tick
+// NATIVE fields - cpuUtilPct via kernel32 GetSystemTimes deltas (koffi,
+// the memory-util test-harness pattern; the FIRST sample is null - a
+// delta needs two reads), cpuTempC + cpuPowerW via the EXISTING MSR/
+// PawnIO reads (native - they must not wait behind the query) and
+// memoryUsedBytes via the EXISTING GlobalMemoryStatusEx detector - never
+// blocks, never spawns PowerShell. The SLOW lane (sampleSlow) is the
+// existing PowerShell CIM query (unchanged semantics; the inflight guard
+// stays) refreshing the remaining OS-counter fields (gpuMemUsedBytes /
+// gpuUtilPct / cpuFreqMhz + the MSR-less WMI temp/power fallbacks) into
+// the shared cache, on its own background timer (startSlowLane - the
+// honest wording: a 2.5 s timer whose EFFECTIVE refresh is the query
+// duration, ~3.7 s on this box; the inflight guard prevents overlap). The
+// merged cache is FAST ?? SLOW - the fast native value wins per field over
+// the cached slow value; the telemetry push samples the fast lane per
+// tick and emits IMMEDIATELY (never awaits the query). The once-per-
+// session MSR degrade notes (fireMsrDegrade/fireMsrPowerDegrade) MOVE
+// WITH the MSR reads to the fast lane (a degrade must still fire, never
+// lost in the move); the frozenDrop window STAYS with the slow-lane WMI
+// temp fallbacks (the MSR reading is live - the drop never applies to it).
 
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import koffi from 'koffi';
 
 const execFile = promisify(nodeExecFile);
 
@@ -288,6 +312,107 @@ export function gpuUtilPctOf(rows, luid) {
   return Math.min(100, sum);
 }
 
+// ---------------------------------------------------------------------------
+// M17g - the GetSystemTimes CPU-utilization reader (kernel32 via koffi)
+// ---------------------------------------------------------------------------
+
+// The FILETIME layout (Windows SDK winbase.h): two DWORDs - dwLowDateTime@0
+// + dwHighDateTime@4 - one 64-bit count of 100-ns intervals since
+// 1601-01-01, 8 bytes total. GetSystemTimes(idle, kernel, user) writes
+// three of them; the kernel time INCLUDES the idle time.
+export const FILETIME_SIZE = 8;
+export const CPU_UTIL_IDLE_OFF = 0;
+export const CPU_UTIL_KERNEL_OFF = 8;
+export const CPU_UTIL_USER_OFF = 16;
+
+// M17g: the SLOW-lane background cadence - a 2.5 s timer whose EFFECTIVE
+// refresh is the query duration (~3.7 s on this box: PowerShell startup +
+// the CIM classes). The inflight guard prevents overlap, so a query longer
+// than the cadence skips the intermediate ticks - the honest wording: the
+// slow-lane fields refresh at the query duration, never the timer.
+export const SLOW_LANE_CADENCE_MS = 2500;
+
+/**
+ * M17g: the GetSystemTimes CPU-utilization reader (kernel32 via koffi -
+ * the memory-util test-harness pattern: the koffi load sits behind the
+ * injectable deps.load seam, so the success path + the failure degrades
+ * are unit-testable without the real kernel32, and the scripted FILETIME
+ * deltas come back EXACTLY).
+ *
+ * The delta math: over the window between two reads,
+ *   busy  = (kernel - idle) + user   (the non-idle time)
+ *   total = kernel + user
+ *   util% = busy / total x 100
+ * The FIRST read is null - a delta needs two reads (the honest '-' for
+ * one tick). The deltas are computed in BigInt and converted to Number
+ * AFTER the subtraction: the absolute FILETIME values are ~1.3e17 (far
+ * above Number.MAX_SAFE_INTEGER 9.0e15), but a sub-second delta is small
+ * and exact. Any failure path (load failure, a bad func, the call
+ * returning FALSE, any koffi error, a zero-length window, an impossible
+ * busy ratio) degrades to null - NEVER a throw (the fps-dxgi pattern).
+ * @param {{
+ *   load?: (name: string) => object,   // injectable koffi load (tests)
+ * }} [deps]
+ */
+export function createCpuUtilReader(deps = {}) {
+  const load = deps.load ?? ((name) => koffi.load(name));
+  // The koffi func resolves LAZILY on the first read() (the
+  // foreground-api probe pattern - a failed load degrades, never throws).
+  let getSystemTimes = null;
+  // The last successful read's FILETIMEs (BigInt - the delta baseline);
+  // null until the first successful read (the baseline tick).
+  let prev = null;
+  const funcOf = () => {
+    if (getSystemTimes !== null) return getSystemTimes;
+    getSystemTimes = load('kernel32.dll').func('GetSystemTimes', 'int32', ['void*', 'void*', 'void*']);
+    return getSystemTimes;
+  };
+
+  /**
+   * The CPU utilization percent over the window since the previous
+   * successful read - or null on the FIRST read (a delta needs two
+   * reads) and on ANY failure (the honest degrade, NEVER a throw).
+   * @returns {Promise<number | null>} 0..100 or null
+   */
+  const read = async () => {
+    try {
+      const fn = funcOf();
+      // ONE 24-byte buffer holding the three FILETIMEs (idle@0,
+      // kernel@8, user@16 - the CPU_UTIL_*_OFF layout); the kernel and
+      // user pointers are the buffer's base + their offsets (koffi
+      // address arithmetic - the same single-buffer style as the
+      // memory-util MEMORYSTATUSEX; each FILETIME must be its own
+      // pointer, kernel32 writes at the start of each).
+      const buf = koffi.alloc('uint8', FILETIME_SIZE * 3);
+      const base = koffi.address(buf);
+      const ok = fn(buf, base + BigInt(CPU_UTIL_KERNEL_OFF), base + BigInt(CPU_UTIL_USER_OFF));
+      if (!ok) return null; // GetSystemTimes returned FALSE
+      const idle = koffi.decode(buf, CPU_UTIL_IDLE_OFF, 'uint64');
+      const kernel = koffi.decode(buf, CPU_UTIL_KERNEL_OFF, 'uint64');
+      const user = koffi.decode(buf, CPU_UTIL_USER_OFF, 'uint64');
+      if (prev === null) {
+        prev = { idle, kernel, user };
+        return null; // the baseline - a delta needs two reads
+      }
+      const idleDelta = idle - prev.idle;
+      const kernelDelta = kernel - prev.kernel;
+      const userDelta = user - prev.user;
+      prev = { idle, kernel, user };
+      const total = Number(kernelDelta + userDelta);
+      if (!(total > 0)) return null; // a zero-length window degrades
+      const busy = Number(kernelDelta - idleDelta + userDelta);
+      // An impossible busy ratio (outside [0, total] - a broken counter)
+      // degrades honestly, never a fake util (the memory-util pattern).
+      if (busy < 0 || busy > total) return null;
+      return (busy / total) * 100;
+    } catch {
+      return null; // ANY koffi error resolves to the honest null
+    }
+  };
+
+  return { read };
+}
+
 /**
  * The real adapter. `luidOf` resolves the backend device's LUID through
  * the DXGI display enumeration link (fps-dxgi.js GetDesc1 - matched by
@@ -321,6 +446,20 @@ export function gpuUtilPctOf(rows, luid) {
  *     powerStatus?: () => string,   // M17b: the per-field power status
  *   } | null,
  *   onMsrDegrade?: (text: string) => void,  // M4L: once-per-session degrade note
+ *   memoryUtil?: { detect: () => Promise<number | null> },  // M17g: the RAM
+ *                                  // detector (GlobalMemoryStatusEx - the
+ *                                  // EXISTING native path; the fast lane's
+ *                                  // memoryUsedBytes source). The DEFAULT is
+ *                                  // the null-returning detector (the
+ *                                  // determinism seam); main.js wires the
+ *                                  // real detector in the product path.
+ *   cpuUtilReader?: { read: () => Promise<number | null> },  // M17g: the
+ *                                  // GetSystemTimes reader; the DEFAULT is
+ *                                  // createCpuUtilReader({ load: deps.load })
+ *   load?: (name: string) => object,  // M17g: the injectable koffi load
+ *                                  // (the cpu-util reader's test-harness seam)
+ *   setInterval?: typeof setInterval,   // M17g: the slow-lane timer seam
+ *   clearInterval?: typeof clearInterval,  // (injectable - the tests)
  * }} [deps]
  */
 export function createSysStats(deps = {}) {
@@ -329,7 +468,26 @@ export function createSysStats(deps = {}) {
   const deviceIdHex = deps.deviceIdHex ?? null;
   const msrReader = deps.msrReader ?? null;
   const onMsrDegrade = deps.onMsrDegrade ?? null;
+  // M17g: the RAM detector (GlobalMemoryStatusEx - native). The DEFAULT is
+  // the null-returning detector (the determinism seam); main.js wires the
+  // real detector in the product path. The fast lane composes its result
+  // into the pushed sample - the ipc-core emit-site composition is gone.
+  const memoryUtil = deps.memoryUtil ?? { detect: async () => null };
+  // M17g: the GetSystemTimes reader (kernel32 via koffi - the memory-util
+  // pattern). The koffi load sits behind the injectable deps.load seam
+  // (tests); an injected reader substitutes entirely (deps.cpuUtilReader -
+  // the fast-lane merge tests).
+  const cpuUtilReader = deps.cpuUtilReader ?? createCpuUtilReader({ load: deps.load });
+  // M17g: the slow-lane background timer seam (injectable for the tests -
+  // the default is the Node globals).
+  const setIntervalFn = deps.setInterval ?? setInterval;
+  const clearIntervalFn = deps.clearInterval ?? clearInterval;
   let maxClockMhz = null; // cached Win32_Processor MaxClockSpeed
+  // M17g: the SHARED inflight guard - ONE PowerShell query at a time across
+  // BOTH entry points: the legacy sample() delegate's inline seed AND
+  // sampleSlow() (a sample() seed in flight makes a slow-lane tick serve
+  // the stale cache, and a slow-lane query in flight makes sample() skip
+  // its seed - both serve the cache instead of doubling the query).
   let inflight = null;
   // M4-I (C1): the rolling thermal window (last 5 samples) for the shared
   // frozenDrop - the Z97 static board zone trips it ('-' - no real CPU-temp
@@ -340,7 +498,16 @@ export function createSysStats(deps = {}) {
   // path may degrade while temp keeps working; the AMD named status must
   // reach the log on the power path alone).
   let msrPowerDegradeFired = false;
-  let last = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
+  // M17g: the shared FAST??SLOW cache - the slow lane's fields, seeded by
+  // sampleSlow (the PowerShell query). sampleFast merges its fresh native
+  // reads over it (the fast value wins per field; the slow value shows
+  // through while a fast field is null - the first GetSystemTimes sample
+  // or an MSR-less machine).
+  let laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
+  // M17g: the slow-lane background timer handle (one per adapter - the
+  // telemetry sessions share it) + the tick-overlap guard.
+  let slowHandle = null;
+  let slowInflight = false;
 
   // M4L (B4): the once-per-session MSR degrade note - fired when the MSR
   // provider reports an unavailable state (device absent, install failed,
@@ -367,18 +534,70 @@ export function createSysStats(deps = {}) {
     onMsrDegrade(`CPU wattage unavailable: ${detail} (the RAPL power path - temp may keep working)`);
   };
 
-  return {
+  let adapter = null; // M17g: the self-reference - slowTick drives the lane methods
+
+  // The legacy sample() return: the merged sample in the PRE-M17g
+  // six-field shape (the fast lane's memoryUsedBytes stays on sampleFast -
+  // the legacy entry point keeps its old contract; the pre-M17g test pins
+  // deepEqual this exact shape). The query-derived fields (util/freq/GPU)
+  // ride from the seeded laneCache - the fast lane's GetSystemTimes never
+  // existed in the legacy contract, so a legacy caller gets the OLD slow
+  // single-query semantics; the MSR-first temp/power override matches the
+  // old sample()'s inline MSR reads (sampleFast owns them + the degrade
+  // notes - nothing duplicated here).
+  const legacyMerged = async () => {
+    const m = await adapter.sampleFast();
+    return {
+      cpuUtilPct: laneCache.cpuUtilPct,
+      cpuTempC: m.cpuTempC,
+      cpuFreqMhz: laneCache.cpuFreqMhz,
+      gpuMemUsedBytes: laneCache.gpuMemUsedBytes,
+      cpuPowerW: m.cpuPowerW,
+      gpuUtilPct: laneCache.gpuUtilPct,
+    };
+  };
+
+  return (adapter = {
     /**
-     * Compute the four stats from the FORMATTED per-tick sample (single
-     * samples - no cross-tick delta state; fix round 2 removed the raw
-     * rolling deltas, which were garbage on the live machine).
-     * Never throws: every failure degrades to null per-field (and the
-     * previous result is served while a query is in flight - at most one
-     * PowerShell at a time).
-     * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null, cpuPowerW: number | null }>}
+     * LEGACY - the pre-M17g single-query entry point, retained as a
+     * DELEGATE over the lanes (the drift hazard is gone: the MSR reads +
+     * the once-per-session degrade notes live in sampleFast ALONE - the
+     * fast lane owns them, nothing is duplicated here). The semantics
+     * keep the pre-M17g contract: ONE PowerShell query per call - the
+     * delegate seeds the slow lane inline (the SHARED inflight guard
+     * serves the merged cache while any query is in flight) - and the OLD
+     * slow single-query fields: the query-derived util/freq/GPU fields
+     * with the MSR-first temp/power override, and NO memoryUsedBytes (the
+     * fast lane's RAM field stays on sampleFast). The M17g telemetry push
+     * NEVER calls this - it samples sampleFast per tick; the slow-lane
+     * seeding in the product path stays on the background timer + the
+     * immediate seed tick. A caller here gets the OLD slow single-query
+     * cost (the honest legacy contract).
+     * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null, cpuPowerW: number | null, gpuUtilPct: number | null }>}
      */
     async sample() {
-      if (inflight) return last;
+      // The SHARED inflight guard (see the declaration): a query in
+      // flight - the delegate's own seed OR a slow-lane tick - serves the
+      // merged cache, never a second PowerShell.
+      if (inflight) return legacyMerged();
+      await adapter.sampleSlow();
+      return legacyMerged();
+    },
+
+    /**
+     * M17g: the SLOW lane - the existing PowerShell CIM query (unchanged
+     * semantics from the pre-M17g sample(): one query per call; the
+     * inflight guard serves the cached result while a query is in flight
+     * - the guard is SHARED with the legacy sample() delegate, so at
+     * most ONE PowerShell runs at a time across both entry points). The
+     * MSR reads are NOT here anymore - they moved to the fast lane; the
+     * WMI temp fallbacks (with
+     * the shared frozenDrop window) + the PowerMeter power stay here,
+     * seeding the shared cache (the FAST??SLOW merge source).
+     * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null, cpuPowerW: number | null, gpuUtilPct: number | null }>}
+     */
+    async sampleSlow() {
+      if (inflight) return laneCache;
       inflight = true;
       try {
         const { stdout } = await exec(
@@ -389,9 +608,6 @@ export function createSysStats(deps = {}) {
         const raw = parseSysStatsOutput(stdout);
         if (raw.maxClockMhz !== null) maxClockMhz = raw.maxClockMhz;
         // Fix round 2: single samples of the OS-formatted counters.
-        //   cpuUtilPct = "% Processor Time" (already 0..100 - no delta);
-        //   cpuFreqMhz = round(MaxClockSpeed × "% Processor Performance" / 100)
-        //   - on this BCLK-overclocked machine: round(3301 × 130 / 100) = 4291.
         const utilPct = raw.fmtUtil;
         const freqMhz = freqFromPerfPct(raw.fmtPerf, maxClockMhz);
         // GPU memory: the perf-counter instance whose name encodes the
@@ -410,60 +626,143 @@ export function createSysStats(deps = {}) {
             gpuUtil = null;
           }
         }
-        // M4-I (C1)/M4J (C)/M4L (B4): the CPU temperature - the MSR provider
-        // FIRST (the REAL package sensor via PawnIO: TjMax - DTS, bit-31
-        // gated; null on any driver/AV problem), then the TWO WMI sources
-        // with MSAcpi first (the root\wmi ACPI zones; empty on this box ->
-        // the perf counter fallback). The MSR reading is the live sensor -
-        // the frozenDrop NEVER applies to it (only the static WMI zones
-        // must not masquerade as a CPU sensor; the per-field fallback still
-        // trips it on the WMI-sourced value after 5 identical samples).
-        let msrTemp = null;
-        try {
-          msrTemp = msrReader ? await msrReader.packageTempC() : null;
-        } catch {
-          msrTemp = null;
-        }
+        // M4-I (C1)/M4J (C): the WMI CPU temperature (the MSAcpi zones
+        // first, then the perf counter) - the shared frozenDrop window
+        // STAYS with the slow-lane WMI fallbacks (the MSR reading in the
+        // fast lane is live - the drop never applies to it).
         const tempK10 = raw.msaTempK10Max !== null ? raw.msaTempK10Max : raw.tempK10Max;
         const wmiTempC = tempK10 !== null ? tempK10 / 10 : null;
         tempWindow = [...tempWindow, wmiTempC].slice(-5);
-        const tempC = msrTemp !== null ? msrTemp : frozenDrop(tempWindow);
-        // M4-H/M4L (B4): the CPU wattage - the MSR RAPL provider FIRST (the
-        // (dE x 2^-ESU) / dt delta; the first sample calibrates -> null),
-        // then the PowerMeter's formatted 'Power' (watts, single sample);
-        // null when both are unavailable (honest '-').
-        let msrPower = null;
-        try {
-          msrPower = msrReader ? await msrReader.packagePowerW() : null;
-        } catch {
-          msrPower = null;
-        }
-        if (msrReader && msrTemp === null && msrPower === null) fireMsrDegrade();
-        // M17b (N4): the per-field POWER degrade - the named AMD status
-        // reaches the log on the POWER path ALONE (temp may keep working;
-        // a frozen energy counter / MSR refusal must not hide behind a
-        // working temp - the pre-M17b emit only fired when BOTH were null).
-        if (msrReader && msrPower === null) fireMsrPowerDegrade();
-        last = {
+        laneCache = {
           cpuUtilPct: utilPct,
           cpuFreqMhz: freqMhz,
-          cpuTempC: tempC,
+          cpuTempC: frozenDrop(tempWindow),
           gpuMemUsedBytes: gpuBytes,
-          // M4L (B4): the MSR RAPL wattage wins; the PowerMeter fallback.
-          cpuPowerW: msrPower !== null ? msrPower : raw.powerW,
+          // M4-H: the PowerMeter's formatted 'Power' (watts, single
+          // sample); null when the class is absent (honest '-').
+          cpuPowerW: raw.powerW,
           // M4-I (D1): the OS GPU-utilization counter; null when
           // unpopulated (the honest '-').
           gpuUtilPct: gpuUtil,
         };
-        return last;
+        return laneCache;
       } catch {
         // a stats failure degrades honestly - never breaks the tick
-        return last;
+        return laneCache;
       } finally {
         inflight = null;
       }
     },
-  };
+
+    /**
+     * M17g: the FAST native lane - the per-tick native fields:
+     * cpuUtilPct (kernel32 GetSystemTimes deltas - the FIRST sample is
+     * null, a delta needs two reads), cpuTempC + cpuPowerW (the EXISTING
+     * MSR/PawnIO reads - moved out of the slow query flow; they are
+     * native and must not wait behind it) and memoryUsedBytes (the
+     * EXISTING GlobalMemoryStatusEx detector). NEVER blocks, NEVER
+     * spawns PowerShell. The returned sample is the MERGED cache:
+     * FAST ?? SLOW - the fast native value wins per field over the cached
+     * slow value (the cache seeded by sampleSlow); a null fast field (the
+     * first GetSystemTimes sample / an MSR-less machine) honestly shows
+     * the slow value.
+     * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null, cpuPowerW: number | null, gpuUtilPct: number | null, memoryUsedBytes: number | null }>}
+     */
+    async sampleFast() {
+      let util = null;
+      try {
+        util = await cpuUtilReader.read();
+      } catch {
+        util = null;
+      }
+      let msrTemp = null;
+      let msrPower = null;
+      try {
+        msrTemp = msrReader ? await msrReader.packageTempC() : null;
+      } catch {
+        msrTemp = null;
+      }
+      try {
+        msrPower = msrReader ? await msrReader.packagePowerW() : null;
+      } catch {
+        msrPower = null;
+      }
+      // M17g: the once-per-session MSR degrade notes MOVE WITH the MSR
+      // reads to the fast lane - a degrade must still fire, never lost in
+      // the move (the once-flags keep the legacy sample() path + this
+      // lane safe together - at most one note per session).
+      if (msrReader && msrTemp === null && msrPower === null) fireMsrDegrade();
+      // M17b (N4): the per-field POWER degrade - the named AMD status
+      // reaches the log on the POWER path ALONE (temp may keep working).
+      if (msrReader && msrPower === null) fireMsrPowerDegrade();
+      let memBytes = null;
+      try {
+        memBytes = await memoryUtil.detect();
+      } catch {
+        memBytes = null;
+      }
+      return {
+        ...laneCache,
+        cpuUtilPct: util ?? laneCache.cpuUtilPct,
+        cpuTempC: msrTemp ?? laneCache.cpuTempC,
+        cpuPowerW: msrPower ?? laneCache.cpuPowerW,
+        memoryUsedBytes: memBytes,
+      };
+    },
+
+    /**
+     * M17g: start the SLOW-lane background timer (the existing PowerShell
+     * query on its own cadence - the telemetry push NEVER awaits it
+     * inline). The honest wording: a 2.5 s timer whose EFFECTIVE refresh
+     * is the query duration (~3.7 s on this box - PowerShell startup +
+     * the CIM classes); the inflight guard prevents overlap, so a query
+     * longer than the cadence skips the intermediate ticks. Idempotent -
+     * one timer per adapter (multiple telemetry sessions share it). An
+     * immediate first tick seeds the shared cache (never blocks the
+     * caller - the tick runs async).
+     * @param {number} [cadenceMs] the injectable cadence (tests; the
+     *   default is SLOW_LANE_CADENCE_MS)
+     */
+    startSlowLane(cadenceMs = SLOW_LANE_CADENCE_MS) {
+      if (slowHandle !== null) return; // idempotent - one timer per adapter
+      slowHandle = setIntervalFn(() => {
+        void slowTick();
+      }, cadenceMs);
+      // An immediate first tick seeds the shared cache (never blocks the
+      // caller - the tick runs async; the handle is assigned FIRST so the
+      // seed tick passes the stop-guard in slowTick).
+      void slowTick();
+    },
+
+    /**
+     * M17g: stop the slow lane (the telemetry teardown). The in-flight
+     * query (if any) finishes on its own; no new tick starts. Idempotent.
+     */
+    stopSlowLane() {
+      if (slowHandle === null) return;
+      clearIntervalFn(slowHandle);
+      slowHandle = null;
+    },
+  });
+
+  // M17g: one slow-lane tick - the inflight-guard non-overlap: a tick
+  // fired while a query is in flight is SKIPPED (a query longer than the
+  // cadence skips the intermediate ticks - the effective refresh is the
+  // query duration, documented). A tick after stopSlowLane is a no-op
+  // too (the belt-and-braces re-arm guard - the interval itself is
+  // cleared, but a queued tick must never start a query after the stop).
+  async function slowTick() {
+    if (slowHandle === null) return;
+    if (slowInflight) return;
+    slowInflight = true;
+    try {
+      await adapter.sampleSlow();
+    } catch {
+      // sampleSlow never throws - the guard stays for belt-and-braces
+    } finally {
+      slowInflight = false;
+    }
+  }
 }
 
 /**
@@ -479,10 +778,14 @@ export function createSysStats(deps = {}) {
  * shape). The mock also emits a deterministic gpuUtilPct (D1 - the
  * no-Intel util tile reads it; the value matches utilPct 42).
  * M14: the fixture carries a fixed memoryUsedBytes 12400000000 (12.4 GB -
- * DECIMAL - the 'RAM 12.4 GB' ui-verify pin; the fixture-WINS composition:
- * the telemetry emit sites prefer extra.memoryUsedBytes over the injected
- * detector, so the mock value rides the push while the null-returning
- * mock detector stays unrun).
+ * DECIMAL - the 'RAM 12.4 GB' ui-verify pin; the FAST lane carries the
+ * field - the M17g move: the emit-site composition is replaced by the
+ * fast-lane field, and the mock's sampleFast answers the fixture value
+ * directly while the null-returning mock detector stays unrun).
+ * M17g: the mock mirrors the fast + slow lanes - both return the SAME
+ * fixed deterministic values (instant, never a background query), and the
+ * mock NEVER returns a null first sample (unlike the real GetSystemTimes
+ * lane, the fixture needs no baseline tick - the determinism pins stay).
  * @param {{ cpuUtilPct?: number, cpuTempC?: number, cpuFreqMhz?: number, gpuMemUsedBytes?: number, cpuPowerW?: number, gpuUtilPct?: number, memoryUsedBytes?: number }} [overrides]
  */
 export function createMockSysStats(overrides = {}) {
@@ -499,26 +802,39 @@ export function createMockSysStats(overrides = {}) {
     memoryUsedBytes: 12400000000, // M14: the fixed used-RAM fixture (12.4 GB - decimal)
     ...overrides,
   };
+  const sampleOf = () => {
+    // M4-I (C1): 61 on even ticks, 62 on odd - the pins stay LIVE (the
+    // exact-value pins move to 61|62); RID_MOCK_FROZEN_TEMP=1 (or a
+    // numeric cpuTempC override) returns a constant so the shared
+    // frozenDrop trips to null ('-').
+    const rawTemp = typeof overrides.cpuTempC === 'number'
+      ? overrides.cpuTempC
+      : frozen ? 61 : (tick % 2 === 0 ? 61 : 62);
+    tick += 1;
+    tempWindow = [...tempWindow, rawTemp].slice(-5);
+    return {
+      cpuUtilPct: base.cpuUtilPct,
+      cpuTempC: frozenDrop(tempWindow),
+      cpuFreqMhz: base.cpuFreqMhz,
+      gpuMemUsedBytes: base.gpuMemUsedBytes,
+      cpuPowerW: noPowerMeter ? null : base.cpuPowerW,
+      gpuUtilPct: base.gpuUtilPct,
+      memoryUsedBytes: base.memoryUsedBytes,
+    };
+  };
   return {
-    async sample() {
-      // M4-I (C1): 61 on even ticks, 62 on odd - the pins stay LIVE (the
-      // exact-value pins move to 61|62); RID_MOCK_FROZEN_TEMP=1 (or a
-      // numeric cpuTempC override) returns a constant so the shared
-      // frozenDrop trips to null ('-').
-      const rawTemp = typeof overrides.cpuTempC === 'number'
-        ? overrides.cpuTempC
-        : frozen ? 61 : (tick % 2 === 0 ? 61 : 62);
-      tick += 1;
-      tempWindow = [...tempWindow, rawTemp].slice(-5);
-      return {
-        cpuUtilPct: base.cpuUtilPct,
-        cpuTempC: frozenDrop(tempWindow),
-        cpuFreqMhz: base.cpuFreqMhz,
-        gpuMemUsedBytes: base.gpuMemUsedBytes,
-        cpuPowerW: noPowerMeter ? null : base.cpuPowerW,
-        gpuUtilPct: base.gpuUtilPct,
-        memoryUsedBytes: base.memoryUsedBytes,
-      };
-    },
+    // M17g: the fast + slow lanes return the SAME fixed deterministic
+    // values (both instant - the fixture never needs a background
+    // query). The mock NEVER returns a null first sample (the
+    // determinism pins stay - no GetSystemTimes baseline tick here).
+    async sampleFast() { return sampleOf(); },
+    async sampleSlow() { return sampleOf(); },
+    async sample() { return sampleOf(); },
+    // M17g: the mock needs no background slow lane (every call returns
+    // the fixed values instantly) - the lifecycle seam exists for the
+    // telemetry-session parity (the push starts/stops it like the real
+    // adapter; the pins never depend on a timer).
+    startSlowLane() {},
+    stopSlowLane() {},
   };
 }

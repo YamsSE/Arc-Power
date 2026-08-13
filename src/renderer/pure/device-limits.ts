@@ -157,7 +157,14 @@ const A770_ROW_ADVANCED: DeviceLimits = {
  *  - TL 90: oc-corner (the documented A750 TL max). */
 const A750_ROW_STOCK: DeviceLimits = {
   listed: true,
-  gpuVoltOffsetV: { unclamp: true }, // A750: the driver's 0.288 passes through (the 2026-08-12 probe: props max 0.288 V) - the unclamp flag is a DOCUMENTATION MARKER, no consumer (the finalize loops read max/step only; the pass-through works by the absence of a volt max)
+  // M17g (the global 0.001 V step - the user's fix): the A750 STOCK row
+  // gains the 0.001 STEP beside the unclamp marker - the driver's 0.005
+  // grid puts the real 0.288 ceiling OFF-GRID on EVERY V-unit card (the
+  // same off-grid hazard the M15 A770 pin fixed). The driver max 0.288
+  // stays the pass-through (the unclamp flag stays a DOCUMENTATION
+  // MARKER, no consumer - the pass-through works by the ABSENCE of a
+  // volt max).
+  gpuVoltOffsetV: { unclamp: true, step: 0.001 },
   tempLimitC: { max: 90 }, // oc-corner
 };
 
@@ -172,7 +179,9 @@ const A750_ROW_STOCK: DeviceLimits = {
  *  (mode-independent; the driver's 0.288 passes through). */
 const A750_ROW_ADVANCED: DeviceLimits = {
   listed: true,
-  gpuVoltOffsetV: { unclamp: true }, // A750: the driver's 0.288 passes through (the 2026-08-12 probe) - the unclamp flag is a DOCUMENTATION MARKER, no consumer (see ControlLimit)
+  // M17g (the global 0.001 V step): the ADVANCED row rides the same step
+  // pin as the STOCK row - the mode never changes the voltage grid.
+  gpuVoltOffsetV: { unclamp: true, step: 0.001 }, // A750: the driver's 0.288 passes through (the 2026-08-12 probe) - the unclamp flag is a DOCUMENTATION MARKER, no consumer (see ControlLimit)
   powerLimitW: { max: 270 }, // the 2026-08-12 app-path probe (Acer A750): 270 W applied, 280+ refused
   tempLimitC: { max: 115 }, // the 2026-08-12 app-path probe: 100 AND 115 C applied (the A770's 115-class KMD ceiling)
 };
@@ -276,12 +285,17 @@ export function deviceLimitsOf(input: DeviceLimitsInput | null | undefined, opti
  * unlisted card keeps the current behavior - 252 W / 90 C stock, 315 W /
  * 115 C extended (the two shapes the plan pins - the caller asks for stock
  * or extended). Never null.
+ * M17g (the global 0.001 V step): the default row gains `gpuVoltOffsetV:
+ * { step: 0.001 }` with NO max - an UNLISTED V-unit card (A380/A310-class)
+ * gets the 0.001 step with its driver maxes (the off-grid hazard at
+ * device-limits.ts:118 - the driver's 0.005 grid making the real ceiling
+ * unreachable - must NOT reproduce on unlisted cards).
  * @param {boolean} extended true when the extended (2023-runtime) range set
  *   applies
  * @returns {DeviceLimits}
  */
 export function defaultLimitsOf(extended: boolean): DeviceLimits {
   return extended
-    ? { listed: false, powerLimitW: { max: 315 }, tempLimitC: { max: 115 } } // M3-C-D: the live-verified 315 W ceiling
-    : { listed: false, powerLimitW: { max: 252 }, tempLimitC: { max: 90 } };
+    ? { listed: false, powerLimitW: { max: 315 }, tempLimitC: { max: 115 }, gpuVoltOffsetV: { step: 0.001 } } // M3-C-D: the live-verified 315 W ceiling
+    : { listed: false, powerLimitW: { max: 252 }, tempLimitC: { max: 90 }, gpuVoltOffsetV: { step: 0.001 } };
 }

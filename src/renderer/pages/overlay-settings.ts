@@ -37,6 +37,7 @@ import {
   OVERLAY_POSITIONS,
   OVERLAY_POSITION_LABELS,
   OVERLAY_STAT_IDS,
+  OVERLAY_STATS_DEFAULT,
   OVERLAY_STAT_LABELS,
   OVERLAY_COLOR_PRESETS,
   OVERLAY_COLOR_LABELS,
@@ -84,7 +85,8 @@ interface PersistedOverlay {
   // the stock 'CPU '/'GPU ' prefixes.
   chipNames: boolean;
   // M17e (the user addition): the overlay polling-rate (the General card
-  // slider) - the telemetry push cadence in ms (100-2000, 500 the default).
+  // slider) - the telemetry push cadence in ms (100-2000, 400 the default
+  // - M17g: the stock polling rate FLIPS 500 -> 400).
   pollMs: number;
 }
 
@@ -109,14 +111,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       position: isValidOverlayPosition(s.overlayPosition) ? s.overlayPosition : 'top-left',
       scale: clampOverlayScale(s.overlayScale),
       color: isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff',
-      stats: Array.isArray(s.overlayStats) ? s.overlayStats : [...OVERLAY_STAT_IDS],
+      stats: Array.isArray(s.overlayStats) ? s.overlayStats : [...OVERLAY_STATS_DEFAULT],
       // M7b (fix 4): the background box defaults (off / black / 0.5).
       bgEnabled: s.overlayBgEnabled === true,
       bgColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : '#000000',
       bgOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
       // M17b: the chip-name row labels (absent on old files -> false).
       chipNames: s.overlayChipNames === true,
-      // M17e: the polling-rate (absent on old files -> the 500 ms default).
+      // M17e: the polling-rate (absent on old files -> the 400 ms default
+      // - M17g: the stock polling rate FLIPS 500 -> 400).
       pollMs: clampOverlayPollMs(s.overlayPollMs),
     };
   } catch (err) {
@@ -173,7 +176,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           el('span', { text: 'Use chip names (A770, i7 5775C) instead of the CPU / GPU labels' }),
         ]),
       ]),
-      // M17e (the user addition - "current 500 ms is a bit slow"): the
+      // M17e (the user addition - "current 500 ms is a bit slow" - M17g:
+      // the stock polling rate is now 400 ms): the
       // POLLING-RATE slider - the overlay's telemetry push cadence. The
       // scale-slider pattern (a live ms value label; the change saves
       // through profiles-settings-save and main's reaction RESTARTS the

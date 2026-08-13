@@ -363,12 +363,17 @@ export function createApplyRunner({
       // attempted values of the 'out-of-range' per-control results) - the
       // parent's session refused-ceiling store records from them. Only
       // present when the worker emitted them (no undefined own-keys).
+      // M17g (round-3 S1): the worker's pl2Note rides the same way -
+      // present -> forwarded into the renderer envelope (the PL card's
+      // '(set)' session state feeds from it on the real worker path),
+      // absent -> omitted (the old envelope-shape pins stay green).
       return {
         worker: true,
         result: {
           ok: result.ok === true,
           perControl: result.perControl ?? {},
           ...(result.refused && typeof result.refused === 'object' ? { refused: result.refused } : {}),
+          ...(result.pl2Note && typeof result.pl2Note === 'object' ? { pl2Note: result.pl2Note } : {}),
         },
         state: result.state ?? null,
       };

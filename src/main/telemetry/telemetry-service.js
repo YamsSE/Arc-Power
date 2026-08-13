@@ -1,6 +1,7 @@
 // Arc Power - M1 TelemetryService.
 //
-// Owns the poll cadence (default 500 ms; clamped to the 50 ms IGCL rate
+// Owns the poll cadence (default 400 ms - M17g: the stock polling rate
+// FLIPS 500 -> 400; clamped to the 50 ms IGCL rate
 // limit), derives powerW from energy-counter deltas, and keeps a ring
 // buffer of derived samples. Backends expose raw 1:1 samples; this service
 // turns them into TelemetrySample for consumers (M2b IPC push).
@@ -22,7 +23,7 @@ export class TelemetryService {
   constructor(backend, deviceId, opts = {}) {
     this.backend = backend;
     this.deviceId = deviceId;
-    this.pollMs = Math.max(opts.pollMs ?? 500, IGCL_MIN_POLL_MS);
+    this.pollMs = Math.max(opts.pollMs ?? 400, IGCL_MIN_POLL_MS);
     this.ringSize = Math.max(opts.ringSize ?? 300, 2);
     this._ring = [];
     this._lastRaw = null;
