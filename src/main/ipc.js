@@ -47,10 +47,11 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   getOverlayWindow?: () => import('electron').BrowserWindow | null,  // M5: the overlay window (null when absent - the emit null-guards it)
  *   overlayOps?: { getState: () => Promise<unknown>, toggle: () => Promise<unknown> },  // M5: the overlay-window ops (main.js wires the real handle)
  *   onOverlaySettings?: (patch: object) => Promise<unknown>,  // M5: the overlay settings reaction (profiles-settings-save)
+ *   sysmanPowerLimits?: object | null,  // M17f: the sysman power-limits consumer (the PL2 companion + the 'power-limits:read' source)
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {} }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, sysmanPowerLimits = null }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -77,6 +78,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     mock,
     overlayOps,
     onOverlaySettings,
+    sysmanPowerLimits,
     emit: (channel, payload) => {
       // Only push-style channels cross the window boundary; request/response
       // channels return their payload via the invoke promise.

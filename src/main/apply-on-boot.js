@@ -100,7 +100,7 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, deviceId = null, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false }) {
+export async function applyProfile({ backend, store, profileId, deviceId = null, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false, sysmanPowerLimits = null }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
@@ -285,7 +285,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
-    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED });
+    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
     recordRefusals(out.result);
     return out;
   };
@@ -435,13 +435,14 @@ export async function applyProfileOnBoot({ backend, store, profileId, deviceId =
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null }) {
+export async function applyProfileBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null, sysmanPowerLimits = null }) {
   return applyProfile({
     backend, store, profileId, deviceId, log,
     requireOcOnBoot: true,
     oldIgcl,
     applyRunner: null,
     skipDefaultsFallback: true,
+    sysmanPowerLimits,
   });
 }
 
@@ -461,6 +462,7 @@ export async function applyProfileBoot({ backend, store, profileId, deviceId = n
  *   setupTray: () => Promise<{ displayBalloon: (o: { title: string, content: string }) => void }>,
  *   log?: (s: string) => void,
  *   oldIgcl?: object,
+ *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -470,10 +472,10 @@ export async function applyProfileBoot({ backend, store, profileId, deviceId = n
  *   state?: unknown,
  * }>}
  */
-export async function runApplyOnStartup({ backend, store, profileId, deviceId = null, setupTray, log = () => {}, oldIgcl = null }) {
+export async function runApplyOnStartup({ backend, store, profileId, deviceId = null, setupTray, log = () => {}, oldIgcl = null, sysmanPowerLimits = null }) {
   let out;
   try {
-    out = await applyProfileOnBoot({ backend, store, profileId, deviceId, log, oldIgcl });
+    out = await applyProfileOnBoot({ backend, store, profileId, deviceId, log, oldIgcl, sysmanPowerLimits });
   } catch (err) {
     out = { applied: false, reason: err.message };
   }

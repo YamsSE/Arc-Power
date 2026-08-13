@@ -142,7 +142,12 @@ api.onOverlaySettings((settings) => {
   // M17e: the pushed polling-rate - the renderer carries the clamped value
   // on the documentElement dataset (the ui-verify payload pin's surface;
   // the cadence itself is main-side).
-  document.documentElement.dataset.overlayPollMs = String(clampOverlayPollMs(s.overlayPollMs));
+  const pollMs = clampOverlayPollMs(s.overlayPollMs);
+  document.documentElement.dataset.overlayPollMs = String(pollMs);
+  // M17f: the FPS-poll cadence follows the SAME slider - the bootFpsLoop
+  // re-arms its interval when the pushed value changes (the FPS line then
+  // updates at the user's chosen rate, not the stock 1000 ms).
+  applyFpsPollMs(pollMs);
   sizeCanvas();
   render();
 });
@@ -228,25 +233,50 @@ api.onTelemetrySample((sample) => {
   render();
 });
 
-// M3b: the fps poll runs on its OWN 1 s loop (the overlay keeps working
-// when the main window is closed-to-tray - no dependency on the Monitoring
+// M3b: the fps poll runs on its OWN loop (the overlay keeps working when
+// the main window is closed-to-tray - no dependency on the Monitoring
 // page). The deviceId resolves via device-get at boot; the poll is SKIPPED
 // when it is null (the no-Intel / fresh-store case - api.fpsPoll rejects on
 // null via assertValidDeviceId) and the fps line honestly stays '-'.
+// M17f: the cadence follows the overlayPollMs slider - ONE module-level
+// interval, re-armed by the settings handler when the pushed value changes.
 async function bootFpsLoop(): Promise<void> {
-  let deviceId: number | null = null;
   try {
     const d = await api.deviceGet();
-    deviceId = typeof d?.deviceId === 'number' && d.deviceId >= 0 ? d.deviceId : null;
+    fpsDeviceId = typeof d?.deviceId === 'number' && d.deviceId >= 0 ? d.deviceId : null;
   } catch {
-    deviceId = null;
+    fpsDeviceId = null;
   }
-  if (deviceId === null) return;
-  window.setInterval(() => {
+  armFpsLoop();
+}
+
+/** M17f: the FPS-poll cadence (ms) - the overlayPollMs slider value; null
+ *  until the first settings push -> the renderer's clamp default 500 ms
+ *  (clampOverlayPollMs(null) - the real default, never a hardcoded copy).
+ *  The settings handler calls applyFpsPollMs which re-arms the loop. */
+let fpsPollMs: number | null = null;
+/** The FPS-poll interval id (null = not armed). */
+let fpsInterval: number | null = null;
+/** The resolved FPS-poll device id (null until bootFpsLoop's device-get
+ *  resolves - the arm stays a no-op until then). */
+let fpsDeviceId: number | null = null;
+
+/** M17f: (re-)arm the FPS-poll interval with the CURRENT cadence - the
+ *  single arm path (boot + every settings push). The loop's interval
+ *  callback reads the module-level fpsPollMs at arm time; the handler
+ *  re-arms it via clearInterval + setInterval, never a second loop. */
+function armFpsLoop(): void {
+  if (fpsInterval !== null) {
+    window.clearInterval(fpsInterval);
+    fpsInterval = null;
+  }
+  if (fpsDeviceId === null) return;
+  const pollMs = clampOverlayPollMs(fpsPollMs);
+  fpsInterval = window.setInterval(() => {
     void (async () => {
       let sample: FpsSample | null = null;
       try {
-        sample = await api.fpsPoll(deviceId);
+        sample = await api.fpsPoll(fpsDeviceId as number);
       } catch {
         sample = null;
       }
@@ -283,7 +313,17 @@ async function bootFpsLoop(): Promise<void> {
       }
       render();
     })();
-  }, 1000);
+  }, pollMs);
+}
+
+/** M17f: re-arm the FPS-poll interval when the pushed overlayPollMs changes
+ *  (called from the settings handler - the SAME slider drives the telemetry
+ *  push cadence AND the FPS poll). An unchanged value never re-arms (the
+ *  duplicate-loop cautionary example - ONE loop, ONE interval). */
+function applyFpsPollMs(ms: number): void {
+  if (fpsPollMs === ms) return;
+  fpsPollMs = ms;
+  armFpsLoop();
 }
 
 void bootFpsLoop();

@@ -13,6 +13,11 @@ contextBridge.exposeInMainWorld('arcPower', {
   deviceSet: (deviceId) => ipcRenderer.invoke('device-set', deviceId),
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
   getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
+  // M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the
+  // sysman layer answers, null when absent - the power-limit card's PL2
+  // line). M17f (step-4 N2): DEVICE-SCOPED like every read channel (the
+  // domain is per-device).
+  powerLimitsRead: (deviceId) => ipcRenderer.invoke('power-limits:read', deviceId),
   // M8 (the Graphics tab): the 3D-feature surface - the page's ONLY IPC
   // surface (the dedicated graphics apply path - NOT the OC apply-routing
   // machinery: 3D features have no OC waiver).

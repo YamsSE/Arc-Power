@@ -474,6 +474,30 @@ export function clampGpuLock(
 }
 
 /**
+ * M17f (round-5): format the lock editor's RANGE LINE - the per-GPU lock
+ * bounds the card will enforce, resolved EXACTLY like clampGpuLock (the
+ * same per-side DOCUMENTED fallback fills the absent sides: voltMax ->
+ * GPU_LOCK_VOLT_MAX_V, freqMax -> GPU_LOCK_FREQ_MAX_MHZ, mins -> 0; the
+ * negative mins floor at 0). The caps.lockRange live values render when
+ * present; the documented fallback text when absent (the same fallback the
+ * clamp uses - the display never claims a range the clamp would not
+ * enforce); the honest 'Range: -' when no range RESOLVES (a non-positive
+ * max or an inverted min>max - the clamp would clamp into nonsense, so no
+ * range is claimed).
+ */
+export function formatLockRange(lockRange?: Partial<LockRange> | null): string {
+  const range = lockRange ?? {};
+  const voltMin = Math.max(0, Number.isFinite(range.voltMin) ? (range.voltMin as number) : 0);
+  const voltMax = Number.isFinite(range.voltMax) ? (range.voltMax as number) : GPU_LOCK_VOLT_MAX_V;
+  const freqMin = Math.max(0, Number.isFinite(range.freqMin) ? (range.freqMin as number) : 0);
+  const freqMax = Number.isFinite(range.freqMax) ? (range.freqMax as number) : GPU_LOCK_FREQ_MAX_MHZ;
+  if (voltMin > voltMax || freqMin > freqMax || voltMax <= 0 || freqMax <= 0) {
+    return 'Range: -';
+  }
+  return `Range: ${voltMin} - ${voltMax} V / ${freqMin} - ${freqMax} MHz`;
+}
+
+/**
  * M4-B step-5 F3: parse the gpuLock editor inputs. Empty / whitespace-only
  * fields are rejected BEFORE numeric conversion - `Number('') === 0` and the
  * 0 V / 0 MHz pair is the legal UNLOCK, so a cleared field (or a number

@@ -161,6 +161,11 @@ export interface PmPollResult {
    *  null when not queried / garbage / a <= 0 rate (a 0 AVG is the
    *  service's dry-window answer - the lane's dry signal). */
   displayedFps: number | null;
+  /** M17f: the DISPLAYED_FPS NEWEST_POINT value - the INSTANT display rate
+   *  (the newest frame's rate, no windowing) - the accuracy lever: at a
+   *  fast overlay poll the displayed fps follows the newest frame instead
+   *  of the ~500 ms AVG. null when not queried / garbage / <= 0. */
+  displayedFpsNewest: number | null;
   /** The Present() call-rate fps (the PRESENTED_FPS metric). */
   presentedFps: number | null;
   /** The API class of the newest frame (PM_GRAPHICS_RUNTIME - UNKNOWN /
@@ -211,7 +216,7 @@ export function pmReadPollBlob(elements: unknown, blob: unknown): PmPollResult |
     return Number.isFinite(v) ? v : null;
   };
 
-  const out: PmPollResult = { displayedFps: null, presentedFps: null, presentRuntime: null, presentMode: null };
+  const out: PmPollResult = { displayedFps: null, displayedFpsNewest: null, presentedFps: null, presentRuntime: null, presentMode: null };
   let tracked = 0;
   for (const raw of elements) {
     if (!raw || typeof raw !== 'object') continue;
@@ -220,7 +225,14 @@ export function pmReadPollBlob(elements: unknown, blob: unknown): PmPollResult |
     switch (e.metric) {
       case PM_METRIC.DISPLAYED_FPS: {
         const v = readDouble(e);
-        if (v !== null) { out.displayedFps = v; tracked++; }
+        if (v !== null) {
+          // M17f: the stat distinguishes the windowed AVG from the instant
+          // NEWEST_POINT (the accuracy lever) - the NEWEST_POINT wins the
+          // lane's displayed-fps selection, the AVG stays the fallback.
+          if (e.stat === PM_STAT.NEWEST_POINT) out.displayedFpsNewest = v;
+          else out.displayedFps = v;
+          tracked++;
+        }
         break;
       }
       case PM_METRIC.PRESENTED_FPS: {

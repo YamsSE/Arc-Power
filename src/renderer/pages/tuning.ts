@@ -68,7 +68,7 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
@@ -79,7 +79,7 @@ import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
 import { newProfileId, promptModal, settingsFromState } from './profiles.ts';
-import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings } from '../types.ts';
+import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, PowerLimitsRead } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
 // there); this page re-exports them so the import surface stays local.
@@ -152,6 +152,12 @@ let lockApplyBtn: HTMLButtonElement | null = null;
 // reference for the lock editor's dirty judgment - the B5 pattern: the chip
 // clears even while the driver read-back lags).
 let appliedLock: { voltageV: number; freqMhz: number } | null = null;
+// M17f: the power-limit card's sysman PL1/PL2 read-out line - the
+// Level Zero Sysman layer's sustained (PL1) + burst (PL2) limits. The
+// freshness = per-apply (the apply paths re-fetch) + one-shot at render
+// (boot); the element text is 'PL1 210 W / PL2 210 W' when the layer
+// answers, the honest 'PL1 - / PL2 -' when absent.
+let sysmanLimitsNode: HTMLElement | null = null;
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
 // M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
@@ -168,7 +174,10 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   lastRenderedCaps = caps;
   renderCaps = caps;
   applying = false;
-  lockMode = false;
+  // M17f (step-4 N1): `lockMode` is NOT reset here - it is the same
+  // module-level session state as `view` (the fan sub-view survives a
+  // full re-render too). A caps-change re-render mid-Lock-mode must keep
+  // the mode; renderView re-applies the presentation from it.
   appliedLock = null;
   cards.clear();
   valueNodes.clear();
@@ -178,6 +187,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   chipApplyNodes.clear();
   lockCurrentNode = null;
   lockApplyBtn = null;
+  sysmanLimitsNode = null;
   applyBtn = null;
   viewContainer = null;
 }
@@ -206,6 +216,31 @@ function refreshChip(key: string) {
   }
   const btn = chipApplyNodes.get(key);
   if (btn) btn.hidden = state !== 'dirty';
+}
+
+/** M17f: format the sysman limits read-out - 'PL1 210 W / PL2 210 W' when
+ *  the layer answers, the honest 'PL1 - / PL2 -' when absent/garbage. */
+function formatSysmanLimits(limits: PowerLimitsRead | null): string {
+  if (!limits || !Number.isFinite(limits.sustainedW) || !Number.isFinite(limits.burstW)) {
+    return 'PL1 - / PL2 -';
+  }
+  return `PL1 ${Math.round(limits.sustainedW)} W / PL2 ${Math.round(limits.burstW)} W`;
+}
+
+/** M17f: refresh the power-limit card's PL2 read-out from the sysman layer
+ *  (per-apply + the boot one-shot; a failure keeps the honest '-' line).
+ *  M17f (step-4 N2): DEVICE-SCOPED - the deviceId threads into the read
+ *  (the domain is per-device; a null deviceId = no device - nothing to
+ *  read). */
+async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
+  if (!sysmanLimitsNode || deviceId === null) return;
+  let limits: PowerLimitsRead | null = null;
+  try {
+    limits = await api.powerLimitsRead(deviceId);
+  } catch {
+    limits = null;
+  }
+  sysmanLimitsNode.textContent = formatSysmanLimits(limits);
 }
 
 /** M17d (Run D): refresh the gpuLock card's current-driver-lock read-out
@@ -510,6 +545,7 @@ export const tuningPage: Page = {
             refreshCard('gpuFreqOffsetMhz');
             refreshCard('gpuVoltOffsetV');
             updateFloating();
+            void refreshSysmanLimits(deviceId);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
@@ -527,10 +563,11 @@ export const tuningPage: Page = {
         lockEditorEl = el('div', { class: 'gpu-lock-editor', hidden: !lockMode }, [
           el('p', {
             class: 'card-note',
-            // M17e (S4/N7): the NEW rule note - the M17d 'the driver decides'
-            // note is replaced (the atomic applies make the interplay the
-            // app's contract, not the driver's).
-            text: 'Lock the GPU to a voltage/frequency pair. The pair 0 V / 0 MHz unlocks (dynamic). The lock apply zeroes the offsets; the offset apply unlocks - only GPU Lock or Core Offset & Voltage works at a time (Power Limit and Temp Limit are independent).',
+            // M17f (the round-1/round-3 fold - the user's SIMPLIFIED
+            // description): the M17e-era long text is REPLACED by the
+            // pinned short version (the exact wording asserted by the
+            // ui-verify pin).
+            text: 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz returns to automatic. Setting a lock clears the core and voltage offsets; setting offsets clears the lock.',
           }),
           el('div', { class: 'gpu-lock-fields' }, [
             el('label', { class: 'gpu-lock-field' }, [
@@ -542,6 +579,18 @@ export const tuningPage: Page = {
               lockFreqInput,
             ]),
           ]),
+          // M17f (the round-5 fold - the user addition): the lock editor
+          // DISPLAYS ITS RANGE - the per-GPU bounds from caps.lockRange
+          // (the live values; the DOCUMENTED fallback text when the range
+          // is absent - the same fallback the clamp uses; the honest
+          // 'Range: -' when no range resolves). The inputs' max attrs
+          // bind the same range (the clamp already enforces - the display
+          // makes the range visible before an apply); the format follows
+          // the .oc-range meta-line pattern.
+          el('div', {
+            class: 'gpu-lock-range',
+            text: formatLockRange(caps.lockRange),
+          }),
           el('div', { class: 'gpu-lock-actions' }, [
             lockApplyBtn,
             el('button', {
@@ -608,6 +657,17 @@ export const tuningPage: Page = {
         // only (single line; the freed space makes the tab more compact).
         el('div', { class: 'oc-meta' }, [
           el('span', { class: 'oc-range', text: `${sliderRange.min} – ${sliderRange.max} ${sliderRange.units} · step ${sliderRange.step}` }),
+          // M17f: the power-limit card's sysman PL1/PL2 read-out line - the
+          // Level Zero Sysman layer's limits when it answers, the honest
+          // 'PL1 - / PL2 -' when absent (the burst/PL2 domain is invisible
+          // to IGCL - the sysman layer is the read-out's source).
+          ...(key === 'powerLimitW'
+            ? [el('span', {
+                class: 'oc-sysman-limits',
+                text: 'PL1 - / PL2 -',
+                title: 'The sustained (PL1) + burst (PL2) power limits reported by the Level Zero Sysman layer',
+              })]
+            : []),
         ]),
         // M17e (Run B): the gpuLock editor NESTED inside the freq card (the
         // M17d standalone card is folded in; visible ONLY in Lock mode).
@@ -656,19 +716,30 @@ export const tuningPage: Page = {
       return card;
     };
 
-    // M17e (Run B): flip the freq card between Offset and Lock presentation.
-    // Switching to Lock resets the freq/volt offsets to 0 IN THE DRAFT (the
-    // mutual-exclusion rule) + prefills the editor from the driver's current
-    // lock (or (0,0)); switching back drafts the lock (0,0) (never applied).
-    const setLockMode = (mode: 'offset' | 'lock') => {
-      if (lockMode === (mode === 'lock')) return;
-      lockMode = mode === 'lock';
+    // M17f (step-4 N1): the Lock-mode PRESENTATION re-applier - SHARED by
+    // setLockMode (the runtime toggle) and renderView (a full re-render
+    // rebuilds the surface from the CURRENT module-level lockMode - the
+    // volt card + the offset slider hidden + the 'GPU Lock' title flip).
+    // The M17f card-replacement toggle's three effects + the Lock-mode
+    // draft semantics live here so a re-render mid-Lock-mode can never
+    // leave the mixed editor+slider surface with the reverted title.
+    const applyLockPresentation = (): void => {
       const card = cards.get('gpuFreqOffsetMhz');
-      card?.querySelectorAll<HTMLButtonElement>('.oc-lock-mode-btn').forEach((b) => {
-        b.classList.toggle('active', b.dataset.lockMode === mode);
-      });
       const editor = card?.querySelector<HTMLElement>('.gpu-lock-editor');
       if (editor) editor.hidden = !lockMode;
+      // M17f: the CARD-REPLACEMENT toggle - the offset slider row + the
+      // whole voltage-offset card are DISPLAYED ONLY in Offset mode.
+      const sliderRow = card?.querySelector<HTMLElement>('.oc-slider-row');
+      if (sliderRow) sliderRow.hidden = lockMode;
+      const voltCard = cards.get('gpuVoltOffsetV');
+      if (voltCard) voltCard.hidden = lockMode;
+      // M17f (round-3 N4): the card TITLE flips with the mode - a
+      // CARD-TITLE ELEMENT MUTATION, never CONTROL_LABELS (shared by the
+      // toasts + the profiles page - it must not change).
+      const titleNode = card?.querySelector<HTMLElement>('.card-title');
+      if (titleNode) {
+        titleNode.textContent = lockMode ? 'GPU Lock' : (CONTROL_LABELS['gpuFreqOffsetMhz'] ?? 'Core clock');
+      }
       if (lockMode) {
         // Lock mode: the offsets draft 0 (the user's rule - only GPU Lock
         // OR Core Offset & Voltage works at a time).
@@ -688,6 +759,27 @@ export const tuningPage: Page = {
         if (lockVoltageInput) lockVoltageInput.value = '0';
         if (lockFreqInput) lockFreqInput.value = '0';
       }
+    };
+
+    // M17e (Run B): flip the freq card between Offset and Lock presentation.
+    // Switching to Lock resets the freq/volt offsets to 0 IN THE DRAFT (the
+    // mutual-exclusion rule) + prefills the editor from the driver's current
+    // lock (or (0,0)); switching back drafts the lock (0,0) (never applied).
+    // M17f (the USER ADDITION - the card-REPLACEMENT toggle): Lock mode
+    // REPLACES the card content - the Core-Offset SLIDER row is hidden and
+    // the separate Voltage-Offset CARD is NOT DISPLAYED AT ALL (the Core
+    // Clock card shows EITHER the offset sliders OR the lock editor); the
+    // card TITLE flips to 'GPU Lock' in Lock mode and stays 'Core clock'
+    // (lowercase c - CONTROL_LABELS, shared by the toasts + profiles, is
+    // never changed) in Offset mode.
+    const setLockMode = (mode: 'offset' | 'lock') => {
+      if (lockMode === (mode === 'lock')) return;
+      lockMode = mode === 'lock';
+      const card = cards.get('gpuFreqOffsetMhz');
+      card?.querySelectorAll<HTMLButtonElement>('.oc-lock-mode-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.lockMode === mode);
+      });
+      applyLockPresentation();
       refreshLockEditor();
       refreshLockReadout();
       updateFloating();
@@ -1080,9 +1172,19 @@ export const tuningPage: Page = {
       ];
       viewContainer.append(...body);
       lockCurrentNode = viewContainer.querySelector<HTMLElement>('.gpu-lock-current');
+      // M17f: the power-limit card's sysman read-out - the boot one-shot
+      // fetch (per-apply refreshes happen in the apply paths).
+      sysmanLimitsNode = viewContainer.querySelector<HTMLElement>('.oc-sysman-limits');
+      // M17f (step-4 N1): a FULL RE-RENDER (caps change - an OC-mode
+      // toggle / featureset swap / device switch) must re-apply the Lock
+      // presentation from the CURRENT lockMode - the volt card + the
+      // offset slider hidden + the 'GPU Lock' title + the drafts/prefill
+      // (the module-level lockMode survives resetPageState).
+      applyLockPresentation();
       refreshLockReadout();
       refreshLockEditor();
       updateFloating();
+      void refreshSysmanLimits(ctx.store.get().deviceId);
     };
 
     // M9: `only` - the per-card apply path: the SAME machinery (waiver
@@ -1225,6 +1327,10 @@ export const tuningPage: Page = {
         refreshLockReadout();
         refreshLockEditor();
         updateFloating();
+        // M17f: the PL2 read-out freshness = per-apply - refresh the sysman
+        // line after every apply (the power limit may have moved the burst
+        // domain via the companion sync).
+        void refreshSysmanLimits(deviceId);
         if (!result.ok) {
           // The waiver may have been lost on the device (e.g. driver reset).
           const freshCaps = await api.getCapabilities(deviceId);

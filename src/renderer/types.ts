@@ -186,6 +186,18 @@ export interface HealthReport {
 }
 
 /**
+ * M17f: the sysman power-limit read-out (the 'power-limits:read' channel) -
+ * the sustained (PL1) + burst (PL2) + peak limits in W when the Level Zero
+ * Sysman layer answers; null when it is absent (the honest '-' on the
+ * power-limit card).
+ */
+export interface PowerLimitsRead {
+  sustainedW: number;
+  burstW: number;
+  peakW: number;
+}
+
+/**
  * The last OC apply outcome (M3-A "OC working" health row). Recorded by the
  * overclocking/fan/profiles pages after every apply attempt - honest: the
  * row reads 'never applied' until the first attempt, then ok/failed.

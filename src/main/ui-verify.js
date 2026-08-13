@@ -1280,6 +1280,19 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (Object.keys(igpuCaps.ranges ?? {}).length !== 0 || Object.values(igpuCaps.controls ?? {}).some(Boolean)) {
       fail(`M4-F: device-1 caps are not the telemetry-only surface: ${JSON.stringify({ ranges: igpuCaps.ranges, controls: igpuCaps.controls })}`);
     }
+    // M17f (step-4 N2): the sysman PL2 read is DEVICE-SCOPED - device 1
+    // (the telemetry-only iGPU, no power-limit control) answers the honest
+    // null while device 0 mirrors its OWN fixture (the hardcoded-device-0
+    // bug masked the iGPU's '-' with the a770's 210 W pair).
+    const igpuLimits = await js(`window.arcPower.powerLimitsRead(1)`);
+    if (igpuLimits !== null) {
+      fail(`M17f (N2): the sysman read on device 1 answers ${JSON.stringify(igpuLimits)} (expected null - the iGPU has no power-limit control; the read must be device-scoped, never device-0's fixture mirror)`);
+    }
+    const a770Limits = await js(`window.arcPower.powerLimitsRead(0)`);
+    if (a770Limits === null || a770Limits.sustainedW !== 210 || a770Limits.burstW !== 210) {
+      fail(`M17f (N2): the sysman read on device 0 answers ${JSON.stringify(a770Limits)} (expected the a770 210 W fixture mirror - the read keys on the requested device)`);
+    }
+    step('m17f-pl2-device-scoped', `M17f (N2): the sysman PL2 read is device-scoped - device 1 null (no power-limit control), device 0 the a770 210 W mirror`);
     if (!(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 1)`, 8000))) {
       fail(`M4-F: the switch did not persist deviceId=1 (deviceGet=${JSON.stringify(await js(`window.arcPower.deviceGet()`))})`);
     }
@@ -1422,6 +1435,15 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length >= 4`))) {
     fail('expected >= 4 overclocking cards (mock A770 matrix)');
   }
+  // M17f: the sysman PL2 read-out - the power-limit card's PL1/PL2 line
+  // (the burst domain is invisible to IGCL - the sysman layer is the
+  // read-out's source). The mock seam answers the FIXTURE values: the
+  // a770's stock default 210 W for both domains at boot (the deterministic
+  // one-shot fetch).
+  if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 210 W / PL2 210 W'`, 5000))) {
+    fail(`M17f: the power-limit card PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 210 W / PL2 210 W' - the sysman fixture mirror at boot)`);
+  }
+  step('m17f-pl2-boot', `M17f: the power-limit card shows the sysman PL1/PL2 read-out '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' at boot (the one-shot fetch)`);
   // M4-D2 (§8): the page title is 'Tuning' and the view toggle exists at the
   // SAME height as the Stock/Advanced pill (getBoundingClientRect top
   // equality - pinned). M4J clarification: the OC pill renders on EVERY
@@ -1526,8 +1548,8 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // --- name in every mode - the Offset|Lock toggle is the input
   // --- presentation, not the name) + floating Apply ----------------------
   const freqTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-  if (freqTitle.trim() !== 'Core clock') fail(`freq offset card title is '${freqTitle}' (expected 'Core clock' - the M4-B name in every mode)`);
-  step('label', `freq card title '${freqTitle.trim()}' (the M4-B 'Core clock' name - the M17e Offset|Lock toggle is the presentation, not the name)`);
+  if (freqTitle.trim() !== 'Core clock') fail(`freq offset card title is '${freqTitle}' (expected 'Core clock' - the M4-B name in the default Offset mode; M17f: it flips to 'GPU Lock' in Lock mode only)`);
+  step('label', `freq card title '${freqTitle.trim()}' (the M4-B 'Core clock' name in Offset mode - M17f: the title flips to 'GPU Lock' in Lock mode)`);
 
   const floatingHidden = () => js(`(() => { const b = document.querySelector('.floating-apply'); return !b || b.hidden === true; })()`);
   const setSlider = async (value) => {
@@ -1757,6 +1779,13 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     fail(`M3-C-F: driver readout is '${driverAfterApply}' after the apply (expected the fresh 220 W)`);
   }
   step('oc-fresh-driver', `M3-C-F: driver readout updated in place to '${driverAfterApply.trim()}' (no navigation)`);
+  // M17f: the PL2 read-out freshness = PER-APPLY - the sysman line
+  // re-fetches after the apply (the mock seam mirrors the backend state,
+  // so the burst follows the sustained to 220 W).
+  if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 220 W / PL2 220 W'`, 5000))) {
+    fail(`M17f: the PL2 read-out did not refresh after the apply: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 220 W / PL2 220 W' - the per-apply freshness)`);
+  }
+  step('m17f-pl2-fresh', `M17f: the PL2 read-out refreshed after the apply to '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (per-apply)`);
 
   // --- 3b. M2b-B no-op suppression: the payload carries all 4 controls, but
   // --- only power changed -> EXACTLY one success toast (the no-ops stay
@@ -2130,23 +2159,34 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
       fail('M17e: the Offset|Lock segmented toggle is missing on the freq card (gpuLock-capable session)');
     }
     const lockTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-    if (lockTitle.trim() !== 'Core clock') fail(`M17e: the freq card title is '${lockTitle}' (must stay 'Core clock' - the toggle changes the input presentation, never the name)`);
+    if (lockTitle.trim() !== 'Core clock') fail(`M17e: the freq card title is '${lockTitle}' (must stay 'Core clock' in the default Offset mode - M17f: it flips to 'GPU Lock' in Lock mode)`);
     // The editor is NESTED inside the freq card (the M17d standalone card
     // is folded in) + HIDDEN in Offset mode.
     const editorNested = await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .gpu-lock-editor')`);
     if (!editorNested) fail('M17e: the gpuLock editor is not nested inside the freq card (it must render INSIDE the card in Lock mode)');
     const editorHiddenOffset = await js(`document.querySelector('.gpu-lock-editor')?.hidden === true`);
     if (!editorHiddenOffset) fail('M17e: the lock editor must be HIDDEN in Offset mode (hidden attribute)');
-    // The lockRange bounds ride the inputs (the a770/a750 documented-class
-    // caps.lockRange row: 0..1.5 V / 0..5000 MHz).
+    // The lockRange bounds ride the inputs (the A770's probe-pinned
+    // caps.lockRange row - the M17f fold: voltMax 1.1 V live-verified
+    // 2026-08-13, 1150+ refused 0x44000002; freqMax 5000 documented, >=
+    // 3000 live-verified).
     const lockVoltMax = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.getAttribute('max')`);
     const lockFreqMax = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="freqMhz"]')?.getAttribute('max')`);
-    if (lockVoltMax !== '1.5' || lockFreqMax !== '5000') {
-      fail(`M17e: the lock editor bounds are '${lockVoltMax}' V / '${lockFreqMax}' MHz (expected the caps.lockRange 1.5 / 5000 - the documented-class row)`);
+    if (lockVoltMax !== '1.1' || lockFreqMax !== '5000') {
+      fail(`M17e: the lock editor bounds are '${lockVoltMax}' V / '${lockFreqMax}' MHz (expected the caps.lockRange 1.1 / 5000 - the A770 probe-pinned row)`);
     }
     // Switch to Lock: the offsets draft 0 (the mutual-exclusion rule) + the
     // editor prefills from the driver lock (the a770 mock starts unlocked ->
     // (0,0)) + the editor appears + the floating apply is FORCE-HIDDEN.
+    // M17f (the USER ADDITION - the card-REPLACEMENT toggle): Lock mode
+    // REPLACES the card content - the Core-Offset SLIDER row + the WHOLE
+    // separate Voltage-Offset CARD are NOT DISPLAYED AT ALL, the card TITLE
+    // flips to 'GPU Lock', and the description is the pinned short text.
+    // The M17e 0-draft pin DIED with the replacement (the volt card's
+    // .oc-value no longer exists in Lock mode) - the new pins assert the
+    // absence + the title flip + the description instead (the draft-0
+    // semantics survive via the atomic payloads below: the lock apply lands
+    // with the offsets 0).
     await js(`Array.from(document.querySelectorAll('.oc-lock-mode-btn')).find((b) => b.textContent.trim() === 'Lock')?.click()`);
     await sleep(150);
     const lockVoltDraft = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.value`);
@@ -2154,19 +2194,68 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (lockVoltDraft !== '0' || lockFreqDraft !== '0') {
       fail(`M17e: the Lock-mode prefill is '${lockVoltDraft}' V / '${lockFreqDraft}' MHz (expected 0 / 0 - the driver lock (0,0) or the (0,0) fallback)`);
     }
-    const freqDraftLock = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-value')?.textContent ?? ''`);
-    const voltDraftLock = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] .oc-value')?.textContent ?? ''`);
-    if (freqDraftLock.trim() !== '0 MHz' || voltDraftLock.trim() !== '0.000 V') {
-      fail(`M17e: switching to Lock must draft the offsets 0 (got freq '${freqDraftLock.trim()}' / volt '${voltDraftLock.trim()}')`);
+    const voltCardHiddenLock = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]')?.hidden === true`);
+    if (!voltCardHiddenLock) fail('M17f: the Voltage offset card must NOT be displayed in Lock mode (the card-replacement toggle)');
+    const freqSliderHiddenLock = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-slider-row')?.hidden === true`);
+    if (!freqSliderHiddenLock) fail('M17f: the Core-Offset slider must NOT be displayed in Lock mode (the card-replacement toggle)');
+    const lockTitleFlipped = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
+    if (lockTitleFlipped.trim() !== 'GPU Lock') fail(`M17f: the card title must flip to 'GPU Lock' in Lock mode (got '${lockTitleFlipped}')`);
+    const lockNoteText = await js(`document.querySelector('.gpu-lock-editor .card-note')?.textContent ?? ''`);
+    if (lockNoteText.trim() !== 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz returns to automatic. Setting a lock clears the core and voltage offsets; setting offsets clears the lock.') {
+      fail(`M17f: the lock description is '${lockNoteText}' (expected the pinned short text)`);
+    }
+    // M17f (the round-5 fold - the user addition): the lock editor
+    // DISPLAYS ITS RANGE - the caps.lockRange live bounds rendered on the
+    // card (the .oc-range meta-line pattern; the inputs' max attrs bind the
+    // same range - pinned above; the documented fallback text renders when
+    // the range is absent, the honest 'Range: -' when none resolves - both
+    // pinned at the pure level).
+    const lockRangeText = await js(`document.querySelector('.gpu-lock-editor .gpu-lock-range')?.textContent ?? ''`);
+    if (lockRangeText !== 'Range: 0 - 1.1 V / 0 - 5000 MHz') {
+      fail(`M17f: the lock range line is '${lockRangeText}' (expected 'Range: 0 - 1.1 V / 0 - 5000 MHz' - the caps.lockRange live bounds on the a770 mock)`);
     }
     const editorHiddenLock = await js(`document.querySelector('.gpu-lock-editor')?.hidden === false`);
     if (!editorHiddenLock) fail('M17e: the lock editor must be VISIBLE in Lock mode');
     if (!(await floatingHidden())) fail('M17e: the floating Apply must be FORCE-HIDDEN in Lock mode');
-    // A slider drag in Lock mode must NOT re-enable the floating button
-    // (round-2 N5).
-    await setFreqSlider(100);
-    if (!(await floatingHidden())) fail('M17e: a slider drag in Lock mode re-enabled the floating Apply (must stay force-hidden)');
-    await setFreqSlider(0);
+    // M17f (the DYING-pin flip): the M17e slider-drag pin DIED - the offset
+    // slider no longer EXISTS in Lock mode (the card-replacement toggle), so
+    // a drag cannot re-enable the floating button. The replacement asserts
+    // the slider row stays hidden + the floating apply stays force-hidden.
+    if (await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-slider-row')?.hidden === false`)) {
+      fail('M17f: the offset slider row must stay hidden in Lock mode');
+    }
+    if (!(await floatingHidden())) fail('M17f: the floating Apply must stay FORCE-HIDDEN in Lock mode (no slider exists to dirty it)');
+    // M17f (step-4 N1): a FULL RE-RENDER mid-Lock-mode must rebuild the
+    // Lock presentation from the CURRENT lockMode state - the featureset
+    // swap round trip is the mock's deterministic caps change (the swap
+    // re-renders the whole page - the OC-mode toggle / device switch /
+    // swap class of re-render). The old bug: resetPageState zeroed
+    // lockMode, so the re-render left the mixed editor+slider surface
+    // with the reverted 'Core clock' title.
+    const lockSwapTo = (id) => js(`(() => {
+      const s = document.querySelector('.featureset-select');
+      s.value = '${id}';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await lockSwapTo('a750');
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`, 8000))) {
+      fail(`M17f (N1): the swap to a750 did not re-render (PL readout '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' - expected '190 W')`);
+    }
+    await lockSwapTo('a770');
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 8000))) {
+      fail(`M17f (N1): the swap back to a770 did not re-render (PL readout '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' - expected '210 W')`);
+    }
+    // The re-rendered surface must be the FULL Lock presentation: the
+    // editor visible + the volt card + the offset slider hidden + the
+    // 'GPU Lock' title (the pre-fix state mixed the editor with the
+    // sliders and reverted the title).
+    if (!(await waitFor(win, `(document.querySelector('.gpu-lock-editor')?.hidden === false) && (document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]')?.hidden === true) && (document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-slider-row')?.hidden === true) && ((document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? '').trim() === 'GPU Lock')`, 5000))) {
+      fail(`M17f (N1): the full re-render mid-Lock-mode did not rebuild the Lock presentation (editorHidden=${await js(`document.querySelector('.gpu-lock-editor')?.hidden`)} voltCardHidden=${await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]')?.hidden`)} sliderHidden=${await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-slider-row')?.hidden`)} title='${await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`)}')`);
+    }
+    const relockDraft = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.value`);
+    if (relockDraft !== '0') fail(`M17f (N1): the re-render prefill is '${relockDraft}' V (expected '0' - the driver lock (0,0) prefill on the re-rendered editor)`);
+    if (!(await floatingHidden())) fail('M17f (N1): the floating Apply must stay FORCE-HIDDEN after the re-render (still Lock mode)');
+    step('m17f-lock-render', `M17f (N1): a full re-render mid-Lock-mode (a750 swap round trip) keeps the Lock presentation - editor visible, volt card + offset slider hidden, title 'GPU Lock', prefill (0,0), floating apply force-hidden`);
     await sleep(100);
     // The lock editor's DIRTY semantics: the Apply enables only when the
     // typed pair differs from the driver lock (the pristine (0,0) prefill
@@ -2195,24 +2284,25 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (!lockReadoutM17e.includes('1 V / 2600 MHz')) fail(`M17e: the lock read-out is '${lockReadoutM17e}' (expected 'Lock: 1 V / 2600 MHz')`);
     await clearToasts();
     // An out-of-range typed pair clamps to caps.lockRange (the renderer
-    // clamp mirror + the backend clamp - 9.9 V -> 1.5 V, the documented
-    // voltMax; the (0,0) unlock stays reachable via the S2 bypass).
+    // clamp mirror + the backend clamp - 9.9 V -> 1.1 V, the A770's
+    // probe-pinned voltMax; the (0,0) unlock stays reachable via the S2
+    // bypass).
     await js(`(() => {
       const v = document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]');
       v.value = '9.9';
       v.dispatchEvent(new Event('input', { bubbles: true }));
       Array.from(document.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
     })()`);
-    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 1.5 && s.gpuLock.freqMhz === 2600))`, 8000))) {
-      fail(`M17e: the lockRange clamp did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - expected the 1.5 V voltMax)`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 1.1 && s.gpuLock.freqMhz === 2600))`, 8000))) {
+      fail(`M17e: the lockRange clamp did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - expected the 1.1 V voltMax)`);
     }
     // M17e (round-2 N2): the editor inputs re-sync to the APPLIED pair -
     // the typed 9.9 must never lie next to the honest read-out (the driver
-    // received 1.5 V), and the re-synced editor reads pristine (the Apply
+    // received 1.1 V), and the re-synced editor reads pristine (the Apply
     // button disables again - typed == applied).
     const lockVoltResync = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.value`);
-    if (lockVoltResync !== '1.5') {
-      fail(`M17e (N2): after the clamped apply the voltage input must re-sync to the APPLIED pair (got '${lockVoltResync}', expected '1.5' - the typed 9.9 must never lie next to the honest read-out)`);
+    if (lockVoltResync !== '1.1') {
+      fail(`M17e (N2): after the clamped apply the voltage input must re-sync to the APPLIED pair (got '${lockVoltResync}', expected '1.1' - the typed 9.9 must never lie next to the honest read-out)`);
     }
     const lockFreqResync = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="freqMhz"]')?.value`);
     if (lockFreqResync !== '2600') {
@@ -2231,9 +2321,21 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (lockVoltBack !== '0' || lockFreqBack !== '0') {
       fail(`M17e: switching back to Offset must draft the lock (0,0) (got '${lockVoltBack}' / '${lockFreqBack}')`);
     }
-    const lockStillHeld = await js(`window.arcPower.getCurrentSettings(0).then((s) => s.gpuLock && s.gpuLock.voltageV === 1.5 && s.gpuLock.freqMhz === 2600)`);
+    const lockStillHeld = await js(`window.arcPower.getCurrentSettings(0).then((s) => s.gpuLock && s.gpuLock.voltageV === 1.1 && s.gpuLock.freqMhz === 2600)`);
     if (!lockStillHeld) fail('M17e: the Offset-mode switch must DRAFT the (0,0) pair - never apply it (the driver lock must stay)');
     if (await js(`document.querySelector('.gpu-lock-editor')?.hidden === false`)) fail('M17e: the lock editor must hide again in Offset mode');
+    // M17f: the card-replacement toggle's flip-back - the Offset mode
+    // RESTORES the card content: the title back to 'Core clock' (lowercase
+    // c - CONTROL_LABELS, never changed), the offset slider row + the
+    // voltage-offset card displayed again.
+    const offsetTitleRestored = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
+    if (offsetTitleRestored.trim() !== 'Core clock') fail(`M17f: the card title must flip back to 'Core clock' in Offset mode (got '${offsetTitleRestored}')`);
+    if (await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-slider-row')?.hidden === true`)) {
+      fail('M17f: the offset slider row must be displayed again in Offset mode');
+    }
+    if (await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]')?.hidden === true`)) {
+      fail('M17f: the Voltage offset card must be displayed again in Offset mode');
+    }
     if (!(await floatingHidden())) fail('M17e: the floating Apply must stay hidden after the mode flip back (the offsets drafted 0 - nothing dirty)');
     // The ATOMIC UNLOCK: drag the freq offset to 100 while the driver
     // still holds the lock -> the per-card chip apply carries the (0,0)
@@ -2243,7 +2345,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.gpuLock && s.gpuLock.voltageV === 0 && s.gpuLock.freqMhz === 0 && s.gpuFreqOffsetMhz === 100)`, 8000))) {
       fail(`M17e: the atomic UNLOCK apply did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - the offset apply while locked must clear the driver lock first)`);
     }
-    step('m17e-lock-toggle', `M17e: Offset|Lock toggle - Lock drafts the offsets 0 + prefills (0,0) + shows the nested editor + force-hides the floating apply (a slider drag stays hidden); the atomic LOCK lands (1 V / 2600 MHz + the offsets 0); the 9.9 V clamp lands (1.5 V); Offset drafts (0,0) without applying; the atomic UNLOCK lands (offset 100 + the driver lock cleared); bounds ${lockVoltMax} V / ${lockFreqMax} MHz from caps.lockRange`);
+    step('m17e-lock-toggle', `M17e/M17f: Offset|Lock toggle - Lock drafts the offsets 0 + prefills (0,0) + REPLACES the card content (the offset slider row + the Voltage offset card NOT displayed - the card-replacement toggle) + flips the title to 'GPU Lock' + shows the new pinned description + the range line reads the caps.lockRange bounds ('Range: 0 - 1.1 V / 0 - 5000 MHz') + force-hides the floating apply; the atomic LOCK lands (1 V / 2600 MHz + the offsets 0); the 9.9 V clamp lands (1.1 V); Offset drafts (0,0) without applying + restores the 'Core clock' title + the volt card + the slider; the atomic UNLOCK lands (offset 100 + the driver lock cleared); bounds ${lockVoltMax} V / ${lockFreqMax} MHz from caps.lockRange`);
     await clearToasts();
   } else {
     // b580-like sessions (no gpuLock control): the offset card renders with
@@ -2254,7 +2356,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
       fail('M17e: the gpuLock editor is rendered on a session without gpuLock support');
     }
-    step('m17e-lock-toggle', 'M17e: no gpuLock support -> the freq card renders the OFFSET card with NO Offset|Lock toggle + NO lock editor (the b580 shape)');
+    if (await js(`!!document.querySelector('.gpu-lock-range')`)) {
+      fail('M17f: the lock range line is rendered on a session without gpuLock support (no lock editor -> no range line - the honest absence)');
+    }
+    step('m17e-lock-toggle', 'M17e: no gpuLock support -> the freq card renders the OFFSET card with NO Offset|Lock toggle + NO lock editor + NO lock range line (the b580 shape)');
   }
   await clearToasts();
 
@@ -2434,7 +2539,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     // M3-C-F: the driver readout shows the fresh 300 W without navigating.
     const extDriver = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-driver-value')?.textContent ?? ''`);
     if (!extDriver.includes('300')) fail(`M3-C-F: extended driver readout is '${extDriver}' (expected 300)`);
-    step('extended-apply', `extended apply (300 W) applied with NO per-apply confirm, read-back ${extendedState.powerLimitW} W, driver readout '${extDriver.trim()}'`);
+    // M17f: the PL2 read-out follows the extended apply too (the fixture
+    // mirror answers the fresh 300 W for both domains).
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 300 W / PL2 300 W'`, 5000))) {
+      fail(`M17f: the PL2 read-out did not refresh after the EXTENDED apply: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 300 W / PL2 300 W')`);
+    }
+    step('extended-apply', `extended apply (300 W) applied with NO per-apply confirm, read-back ${extendedState.powerLimitW} W, driver readout '${extDriver.trim()}', PL2 read-out '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}'`);
     await clearToasts();
 
     // Restore the standard baseline for the later steps.
@@ -2443,8 +2553,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('extended baseline restore (210 W) did not apply');
     const baseline = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(baseline.powerLimitW - 210) > 1e-6) fail(`extended baseline is not 210 W: ${baseline.powerLimitW}`);
+    // M17f: the PL2 read-out follows the restore (back to the 210 W pair).
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 210 W / PL2 210 W'`, 5000))) {
+      fail(`M17f: the PL2 read-out did not follow the baseline restore: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 210 W / PL2 210 W')`);
+    }
     await clearToasts();
-    step('extended-restore', 'extended baseline restored to 210 W');
+    step('extended-restore', `extended baseline restored to 210 W (the PL2 read-out follows: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}')`);
   } else if (stockMode) {
     // M3-C-E stock variant: the sliders stay within the standard limits and
     // a DIRECT above-limit request REFUSES with the mode message - never
@@ -2615,6 +2729,9 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // clock editor (vramFreqOffset native there).
   if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
     fail('M17e: the gpuLock editor is still rendered on the b580 surface (no gpuLock control - the editor must be absent)');
+  }
+  if (await js(`!!document.querySelector('.gpu-lock-range')`)) {
+    fail('M17f: the lock range line is still rendered on the b580 surface (no gpuLock control - no lock editor -> no range line)');
   }
   if (await js(`!!document.querySelector('.oc-lock-mode-toggle')`)) {
     fail('M17e: the Offset|Lock toggle is rendered on the b580 surface (no gpuLock control - the offset card must have NO toggle)');
@@ -4971,7 +5088,12 @@ export async function runFeaturesetVerify(win, fsId) {
     }
     const floatingHidden = await js(`(() => { const b = document.querySelector('.floating-apply'); return !b || b.hidden === true; })()`);
     if (!floatingHidden) fail('floating Apply visible on a no-OC device');
-    step('oc-none', `'${fsId}': 0 OC cards, no-OC note, no floating Apply`);
+    // M17f (the round-5 fold): no lock editor -> no lock RANGE line either
+    // (the honest absence on the no-lock sessions - arc-igpu/pro-b50).
+    if (await js(`!!document.querySelector('.gpu-lock-range')`)) {
+      fail(`M17f ('${fsId}'): the lock range line is rendered on a session without gpuLock support (no lock editor -> no range line)`);
+    }
+    step('oc-none', `'${fsId}': 0 OC cards, no-OC note, no floating Apply, no lock range line`);
   } else {
     // M17d (Run D)/M17e (Run B - N2): the OC-CARD count - the selector is
     // '.oc-card' ONLY (the ', .gpu-lock-editor' term is DROPPED: the editor
@@ -4996,6 +5118,13 @@ export async function runFeaturesetVerify(win, fsId) {
     if (fsId === 'b580') {
       if (!plRange.includes('%')) fail(`b580 PL range does not show % units: '${plRange}'`);
       if (plValue.trim() !== '100 %') fail(`b580 PL readout is '${plValue}' (expected '100 %')`);
+      // M17f: the sysman PL2 read-out on a PERCENT-UNIT device - the honest
+      // '-' (the real sysman layer reads watts regardless of the IGCL
+      // units, and the percent fixture value must never masquerade as W).
+      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 - / PL2 -'`, 5000))) {
+        fail(`M17f: the b580 PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected the honest 'PL1 - / PL2 -' on a percent-unit device)`);
+      }
+      step('m17f-pl2-b580', `M17f: the b580 (percent-unit) power-limit card shows the honest 'PL1 - / PL2 -' sysman read-out (the percent fixture never masquerades as W)`);
       const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
       if (plMax !== '150') fail(`b580 PL slider max is '${plMax}' (expected 150)`);
       // M4-B: the b580 freq range mirrors into the negative half-plane too
@@ -5021,6 +5150,9 @@ export async function runFeaturesetVerify(win, fsId) {
       if (adv.includes('Unsupported on this GPU')) fail('M4-D: b580 advanced still renders "Unsupported on this GPU" rows (removed entirely)');
       if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
         fail('M17e: the gpuLock editor is rendered on b580 (no gpuLock control - the freq card has no toggle/editor)');
+      }
+      if (await js(`!!document.querySelector('.gpu-lock-range')`)) {
+        fail('M17f: the lock range line is rendered on b580 (no gpuLock control -> no lock editor -> no range line)');
       }
       if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
         fail('M4J (D): the VRAM clock editor card is missing on b580');
@@ -5070,6 +5202,12 @@ export async function runFeaturesetVerify(win, fsId) {
       }
       const a750PlValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
       if (a750PlValue.trim() !== '190 W') fail(`M17c: the a750 PL readout is '${a750PlValue}' (expected '190 W' - the stock default)`);
+      // M17f: the sysman PL2 read-out on the a750/acer-a750 - the fixture
+      // mirror answers the stock default 190 W for both domains at boot.
+      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 190 W / PL2 190 W'`, 5000))) {
+        fail(`M17f: the ${fsId} PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 190 W / PL2 190 W' - the fixture mirror at boot)`);
+      }
+      step('m17f-pl2-a750-boot', `M17f: the ${fsId} power-limit card shows the sysman read-out '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' at boot`);
       // M17d (Run D)/M17e (Run B): the gpuLock editor renders NESTED inside
       // the freq card on the gpuLock-capable a750/acer-a750 fixtures (the
       // M17d standalone card is folded in; the mock starts unlocked).
@@ -5114,6 +5252,29 @@ export async function runFeaturesetVerify(win, fsId) {
         }
         // Restore the stock baseline for the later steps.
         await js(`window.arcPower.applySettings(0, { powerLimitW: 190 })`);
+        // M17f (step-4 N4): the PL2 read-out freshness = PER-APPLY on the
+        // a750/acer-a750 fixtures too (the boot pin above is the one-shot;
+        // the a770 default flow pins the same freshness) - a UI apply
+        // re-fetches the sysman line after every apply.
+        const a750SetSlider = (value) => js(`(() => {
+          const card = document.querySelector('.oc-card[data-control="powerLimitW"]');
+          const input = card.querySelector('input[type="range"]');
+          input.value = '${value}';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return card.querySelector('.oc-value').textContent;
+        })()`);
+        const a750ClickApply = () => js(`(() => { const b = document.querySelector('.floating-apply'); if (b && !b.hidden) { b.click(); return true; } return false; })()`);
+        await a750SetSlider(200);
+        if (!(await a750ClickApply())) fail(`M17f (N4): the floating Apply did not appear for the ${fsId} PL2-freshness apply`);
+        if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 200 W / PL2 200 W'`, 5000))) {
+          fail(`M17f (N4): the ${fsId} PL2 read-out did not refresh after the UI apply: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 200 W / PL2 200 W' - the per-apply freshness)`);
+        }
+        await a750SetSlider(190);
+        if (!(await a750ClickApply())) fail(`M17f (N4): the floating Apply did not reappear for the ${fsId} baseline restore`);
+        if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 190 W / PL2 190 W'`, 5000))) {
+          fail(`M17f (N4): the ${fsId} PL2 read-out did not follow the baseline restore: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 190 W / PL2 190 W')`);
+        }
+        step('m17f-pl2-a750-fresh', `M17f (N4): the ${fsId} PL2 read-out refreshed PER-APPLY - 'PL1 200 W / PL2 200 W' after the 200 W UI apply, back to 'PL1 190 W / PL2 190 W' on the restore`);
         step('oc-a750', `a750: volt slider max ${a750VoltMax} V (NOT clamped to 0.234), step ${a750VoltStep}, PL slider max ${a750PlMax} W (the 270 KMD ceiling), readout '${a750PlValue.trim()}', a 250 W apply SUCCEEDS in advanced mode (lands 250 W), a >270 W (271) apply REFUSES with the ceiling class (device untouched)`);
       } else {
         // M17d (Run C, item 0c + the 2026-08-12 probe verdicts): the
@@ -5140,6 +5301,29 @@ export async function runFeaturesetVerify(win, fsId) {
         if (Math.abs(a750After2.powerLimitW - 190) > 1e-6) {
           fail(`M17d (0c): the ${fsId} stock refusal must never clamp into the device state (got ${a750After2.powerLimitW})`);
         }
+        // M17f (step-4 N4): the STOCK-mode per-apply freshness - a 200 W
+        // UI apply (within the 216 W stock ceiling) refreshes the sysman
+        // PL2 line + the restore follows (the per-apply freshness is
+        // pinned on the stock variant of these fixtures too).
+        const a750StockSetSlider = (value) => js(`(() => {
+          const card = document.querySelector('.oc-card[data-control="powerLimitW"]');
+          const input = card.querySelector('input[type="range"]');
+          input.value = '${value}';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return card.querySelector('.oc-value').textContent;
+        })()`);
+        const a750StockClickApply = () => js(`(() => { const b = document.querySelector('.floating-apply'); if (b && !b.hidden) { b.click(); return true; } return false; })()`);
+        await a750StockSetSlider(200);
+        if (!(await a750StockClickApply())) fail(`M17f (N4): the floating Apply did not appear for the ${fsId} stock-mode PL2-freshness apply`);
+        if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 200 W / PL2 200 W'`, 5000))) {
+          fail(`M17f (N4): the ${fsId} STOCK-mode PL2 read-out did not refresh after the UI apply: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 200 W / PL2 200 W')`);
+        }
+        await a750StockSetSlider(190);
+        if (!(await a750StockClickApply())) fail(`M17f (N4): the floating Apply did not reappear for the ${fsId} stock-mode baseline restore`);
+        if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 190 W / PL2 190 W'`, 5000))) {
+          fail(`M17f (N4): the ${fsId} STOCK-mode PL2 read-out did not follow the baseline restore: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 190 W / PL2 190 W')`);
+        }
+        step('m17f-pl2-a750-fresh-stock', `M17f (N4): the ${fsId} STOCK-mode PL2 read-out refreshed PER-APPLY - 'PL1 200 W / PL2 200 W' after the 200 W UI apply, back to 'PL1 190 W / PL2 190 W' on the restore`);
         // M17d (item 0b): the TOAST contract is pinned as follows - the OC
         // slider UI is bounded to the gate ceiling BY CONSTRUCTION, so a
         // gate refusal can never fire from the OC page (the toast path for
@@ -6463,8 +6647,10 @@ export async function runTrayApplyVerify(win, backend, store, getTrayProbe) {
  * @param {import('./store/profile-store.js').ProfileStore} store the session store
  * @param {{ registrations: string[], failRegister: boolean }} hotkeyProbe
  *   the injected counting hotkey probe (never a real registration)
+ * @param {() => number} [getFpsPolls] dev probe: fps-poll invocations (the
+ *   M17f fast-rate pin - the overlay's own fps loop counts through it)
  */
-export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
+export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, getFpsPolls = () => 0) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -6827,8 +7013,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   // overlayPollMs=100 AND pushes the payload (the dataset flips to '100')
   // AND the telemetry push RESTARTS at the fast cadence (the
   // dataset.telemetryTicks counter advances >= 2 over a ~500 ms window -
-  // the old 500 ms cadence would advance 0-1); (d) restored to 500 so the
-  // session stays deterministic.
+  // the old 500 ms cadence would advance 0-1) AND the overlay FPS poll
+  // re-arms at the fast cadence (m17f-fps-fastrate: the fpsPolls dev-probe
+  // counter advances >= 2 over ~350 ms - the overlay's own fps loop reads
+  // at the slider cadence); (d) restored to 500 so the session stays
+  // deterministic.
   if (!(await waitFor(win, `!!document.querySelector('.settings-poll-ms-slider')`, 5000))) {
     fail('M17e: the polling-rate slider is missing on the Overlay General card');
   }
@@ -6864,7 +7053,19 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
   if (ticksAfter - ticksBefore < 2) {
     fail(`M17e: the telemetry push did not honor the 100 ms setting (${ticksBefore} -> ${ticksAfter} ticks over ~500 ms - expected >= 2 at the restarted cadence)`);
   }
-  step('m17e-pollms', `M17e: the polling-rate slider (${pollMin}..${pollMax} step ${pollStep}, default 500) - sliding to 100 persisted overlayPollMs=100 + pushed the payload (dataset '100') + the push restarted at the fast cadence (${ticksBefore} -> ${ticksAfter} telemetry ticks over ~500 ms)`);
+  // (m17f-fps-fastrate) M17f: the FPS-poll cadence follows the SAME slider -
+  // the overlay's fps loop re-armed at the 100 ms cadence. The assertable
+  // surface is the main-side fpsPolls dev-probe counter (the mock/ui-verify
+  // path has no present lane - the fps content is null, the counter is the
+  // poll count). At 100 ms the counter advances >= 2 over ~350 ms; the old
+  // 1000 ms cadence would advance 0-1 (the pre-M17f fixed cadence).
+  const fpsPollsBefore = getFpsPolls();
+  await sleep(350);
+  const fpsPollsAfter = getFpsPolls();
+  if (fpsPollsAfter - fpsPollsBefore < 2) {
+    fail(`M17f: the overlay FPS poll did not honor the 100 ms setting (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms - expected >= 2 at the re-armed cadence)`);
+  }
+  step('m17e-pollms', `M17e: the polling-rate slider (${pollMin}..${pollMax} step ${pollStep}, default 500) - sliding to 100 persisted overlayPollMs=100 + pushed the payload (dataset '100') + the push restarted at the fast cadence (${ticksBefore} -> ${ticksAfter} telemetry ticks over ~500 ms) + the FPS poll re-armed (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms)`);
   // Restore the 500 default (the later sections expect the seeded shape).
   await js(`(() => {
     const s = document.querySelector('.settings-poll-ms-slider');

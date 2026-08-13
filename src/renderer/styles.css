@@ -1186,6 +1186,17 @@ select {
   color: var(--text-muted);
 }
 
+/* M17f (the round-5 fold): the lock editor's RANGE line - the per-GPU
+   gpuLock bounds from caps.lockRange (the .oc-range meta-line pattern:
+   muted mono text; the live values / the documented fallback / the
+   honest 'Range: -'). */
+.gpu-lock-range {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
 .vram-editor-card {
   margin-top: 12px;
   padding: 12px 14px;
@@ -1484,7 +1495,11 @@ select {
 .oc-card-head { margin-bottom: 4px; }
 .oc-card .card-title { font-size: 13.5px; }
 .oc-slider-row { gap: 12px; min-height: 26px; }
-.oc-meta { margin-top: 2px; }
+.oc-meta { margin-top: 2px; display: flex; align-items: baseline; gap: 12px; }
+/* M17f: the power-limit card's sysman PL1/PL2 read-out line (the Level
+   Zero Sysman layer's sustained + burst limits - the PL2 domain is
+   invisible to IGCL). */
+.oc-sysman-limits { font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
 .oc-card-actions { margin-top: 4px; gap: 8px; }
 .oc-value { font-size: 13.5px; min-width: 76px; }
 .oc-driver { font-size: 12px; }
@@ -1500,7 +1515,12 @@ select {
    "30 FPS" value text), so the attribute-level rule covers it too. */
 .oc-chip-status[hidden],
 .oc-chip-apply[hidden],
-.graphics-fps-slider-row[hidden] { display: none; }
+.graphics-fps-slider-row[hidden],
+/* M17f: the card-replacement toggle - the Core Clock card's OFFSET SLIDER
+   row sets an explicit display (flex) like the chips - the hidden
+   attribute must hide it in Lock mode (the offset sliders are NOT
+   displayed; the lock editor replaces them). */
+.oc-slider-row[hidden] { display: none; }
 
 /* M9: the per-card Apply button (the chip state machine) - the small-chip
    shape with the accent border (the .chip-btn hover keeps it). */

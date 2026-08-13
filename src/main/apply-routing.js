@@ -380,6 +380,67 @@ export function requiresExtendedRange(settings, ranges = null) {
 }
 
 /**
+ * M17f: the SYSMAN COMPANION - runs AFTER the IGCL power-limit write
+ * (driverstore V2 or the bundled-2023-runtime V1 - both route through
+ * applySettingsRouted). The IGCL powerLimit control writes the SUSTAINED
+ * (PL1) limit only; the burst/boost (PL2) limit is a separate domain. The
+ * companion syncs the pair (sustained = the requested value TOO -
+ * idempotent with the IGCL PL1 write - plus burst = the requested value)
+ * through the injectable sysman consumer (src/main/sysman/power-limits.js).
+ *
+ * BEST-EFFORT by contract (the plan's round-1 N5 fold): the IGCL read-back
+ * stays the CANONICAL verification - a sysman failure NEVER fails the
+ * apply when the IGCL write verified. The verdicts surface in the log:
+ *   - refused / ERROR_NOT_AVAILABLE -> the KMD-ARBITRATION note (the GPU
+ *     under overclocking blocks the sysman power-limit write - the M2b
+ *     2026-08-05 experiment's ERROR_NOT_AVAILABLE class);
+ *   - accepted-but-no-movement -> the FIRMWARE-PINNED note (the write was
+ *     accepted but the burst read-back did not move - the A750 'draw stays
+ *     180 W' class);
+ *   - moved -> the sync verified (PL1 + PL2 both land on the request).
+ * @param {{
+ *   sysmanPowerLimits?: { setLimits: (l: { sustainedW: number, burstW: number }) => Promise<{ ok: boolean, errorCode?: string, message?: string }>, readLimits?: () => Promise<{ burstW?: number | null } | null> } | null,
+ *   requestedW: number,
+ *   log?: (s: string) => void,
+ * }} deps
+ * @returns {Promise<void>} never throws
+ */
+export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {} }) {
+  if (!sysmanPowerLimits) return;
+  let res;
+  try {
+    res = await sysmanPowerLimits.setLimits({ sustainedW: requestedW, burstW: requestedW });
+  } catch (err) {
+    log(`[apply] sysman companion: threw (${err instanceof Error ? err.message : String(err)}) - best-effort only, the IGCL read-back stays the canonical verification`);
+    return;
+  }
+  if (!res || res.ok !== true) {
+    const msg = res?.message ?? res?.errorCode ?? 'unknown';
+    const refused = res?.errorCode === 'ERROR_NOT_AVAILABLE'
+      || (typeof msg === 'string' && msg.includes('NOT_AVAILABLE'));
+    log(refused
+      ? `[apply] sysman companion: REFUSED (${msg}) - the KMD-arbitration note (the GPU under overclocking blocks the sysman power-limit write); the IGCL read-back stays the canonical verification`
+      : `[apply] sysman companion: failed (${msg}) - best-effort only, the IGCL read-back stays the canonical verification`);
+    return;
+  }
+  // The movement verdict: re-read the burst - accepted-but-no-movement is
+  // the firmware-pinned note (a DIFFERENT honest outcome from a refusal).
+  let moved = false;
+  try {
+    const after = await sysmanPowerLimits.readLimits?.();
+    moved = after !== null && after !== undefined
+      && typeof after.burstW === 'number' && Math.abs(after.burstW - requestedW) <= 1;
+  } catch {
+    moved = false;
+  }
+  if (moved) {
+    log(`[apply] sysman companion: PL1 + PL2 = ${requestedW} W (the burst read-back verified - the PL2 sync landed)`);
+  } else {
+    log(`[apply] sysman companion: the write was ACCEPTED but the burst read-back did not move - the firmware-pinned note (the KMD enforces its own budget); the IGCL read-back stays the canonical verification`);
+  }
+}
+
+/**
  * A failed per-control result can be a non-persisting write (the momentary
  * lie) rather than a real refusal: the shape is SUCCESS from the setter with
  * a read-back mismatch (silentNoop) or a generic io-failed read-back
@@ -422,13 +483,16 @@ export function isMomentaryLieCandidate(per) {
  *   mode?: string | null, // M17d (Run D): OC_MODE_STOCK | OC_MODE_ADVANCED -
  *                         // the V1-call pin (splitByRuntime's mode routing);
  *                         // absent -> the historical threshold split
+ *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion
+ *                         // consumer (src/main/sysman/power-limits.js) -
+ *                         // runs AFTER the IGCL PL write; best-effort
  * }} deps
  * @returns {Promise<{
  *   result: { ok: boolean, perControl: Record<string, { ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean, silentNoop?: boolean }> },
  *   attempts: number,
  * }>}
  */
-export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null }) {
+export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null }) {
   const { driverstore, extended } = splitByRuntime(settings, ranges, mode);
   const perControl = {};
 
@@ -493,6 +557,29 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
     }
   }
 
+  // M17f: THE SYSMAN COMPANION - after BOTH routed paths (the driverstore
+  // V2 write + the extended V1 write) have run + verified, sync the PL2
+  // burst domain. Gated on the IGCL power-limit control's VERIFIED result:
+  // a failed PL1 write must never land a sysman burst write that leaves the
+  // pair inconsistent (burst = the request while sustained stayed). The
+  // companion is best-effort - it never touches perControl (the IGCL
+  // read-back stays the canonical verification; a sysman failure is logged,
+  // never a failed apply).
+  // M17f (step-4 S1): the companion is UNITS-GATED on the REAL path too
+  // (the mock seam's percent gate mirrors this) - the sysman layer reads +
+  // writes WATTS regardless of the IGCL units, so a PERCENT-unit PL apply
+  // (Battlemage: the '100 %' slider) must NEVER land a 100 W absolute
+  // zesPowerSetLimits that could lower the enforced limit below stock
+  // while the verdict logs 'verified'. SKIP when the units are DEFINED and
+  // NOT 'W'; the IGCL write itself still verifies via its read-back.
+  const plUnits = ranges?.powerLimitW?.units;
+  if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits
+    && (plUnits === undefined || plUnits === 'W')) {
+    await runSysmanCompanion({ sysmanPowerLimits, requestedW: settings.powerLimitW, log });
+  } else if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits && plUnits !== 'W') {
+    log(`[apply] sysman companion: SKIPPED - the powerLimitW units are '${plUnits}' (the sysman layer is W-only; the percent apply stays IGCL-verified)`);
+  }
+
   const ok = Object.keys(perControl).length === 0
     ? true
     : Object.values(perControl).every((p) => p.ok === true);
@@ -517,10 +604,12 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
  *                           // (the same value the caller's ocModeRefusal
  *                           // received) - threaded into splitByRuntime via
  *                           // applySettingsRouted (the V1-call pin)
+ *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion
+ *                           // consumer - forwarded to applySettingsRouted
  * }} deps
  * @returns {Promise<{ result: { ok: boolean, perControl: Record<string, unknown> }, state: object | null }>}
  */
-export async function executeApply({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null }) {
+export async function executeApply({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null, sysmanPowerLimits = null }) {
   const caps = await backend.getCapabilities(deviceId);
   // M3-C step-5 F1: advanced mode + a NOT-capable 2023 runtime (the
   // future-driver degradation) -> refuse extended values BEFORE the clamp,
@@ -556,7 +645,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
       ? clampAndSnap(value, range)
       : value;
   }
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode });
+  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   return { result: out.result, state };

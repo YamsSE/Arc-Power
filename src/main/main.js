@@ -52,6 +52,11 @@ import { executeApply } from './apply-routing.js';
 import { runApplyWorker } from './apply-worker.js';
 import { createApplyRunner } from './elevated-apply.js';
 import { createMockOldIgcl } from './backend/mock-backend.js';
+// M17f: the sysman power-limits consumer (the PL2 companion + the
+// 'power-limits:read' source). The REAL adapter lazily loads ze_loader.dll;
+// the MOCK seam (mock/ui-verify) answers the fixture limits through the
+// backend and never touches the DLL.
+import { createSysmanPowerLimits, createMockSysmanPowerLimits } from './sysman/power-limits.js';
 // M17d (Run E): the --profile-boot stage-timing harness (env-gated; a no-op
 // in product runs - see profile-boot.js).
 import { markProfileBoot, bootProfilingEnabled, profileElapsedMs } from './profile-boot.js';
@@ -260,17 +265,22 @@ async function main() {
     // clamp here would silently cap extended values in advanced sessions:
     // exactly the forbidden behavior).
     const workerOldIgcl = new OldIgcl();
+    const workerBackend = createBackend({
+      kind: 'igcl',
+      igcl: {
+        extended: { isCapable: () => workerOldIgcl.isCapable() },
+        ocMode: 'advanced',
+      },
+    });
     const code = await runApplyWorker({
       reqPath: workerReqFile,
       outPath: workerOutFile,
-      backend: createBackend({
-        kind: 'igcl',
-        igcl: {
-          extended: { isCapable: () => workerOldIgcl.isCapable() },
-          ocMode: 'advanced',
-        },
-      }),
+      backend: workerBackend,
       oldIgcl: workerOldIgcl,
+      // M17f: the worker is the ELEVATED apply process - the sysman
+      // companion runs here (the ze_loader power write needs the same
+      // elevation the IGCL write does).
+      sysmanPowerLimits: createSysmanPowerLimits({}),
       log: (s) => console.log(`[apply-worker] ${s}`),
     });
     app.exit(code);
@@ -330,6 +340,12 @@ async function main() {
           profileId,
           deviceId: bootDeviceId,
           oldIgcl: mock ? createMockOldIgcl(bootBackend) : bootOldIgcl,
+          // M17f: the boot apply runs ELEVATED (the logon task) - the
+          // sysman companion syncs the PL2 burst there too (the mock seam
+          // in mock mode).
+          sysmanPowerLimits: mock
+            ? createMockSysmanPowerLimits({ backend: bootBackend })
+            : createSysmanPowerLimits({}),
           log: (s) => console.log(`[boot-apply] ${s}`),
         }),
         setupTray: () => setupTray({
@@ -649,6 +665,16 @@ async function main() {
   // probe (above) can consult it - the extended ranges are wired into
   // getCapabilities on hardware, never dead code.
   const oldIgcl = mock ? createMockOldIgcl(backend) : realOldIgcl;
+  // M17f: the sysman power-limits consumer - the PL2 companion + the
+  // 'power-limits:read' source. The REAL adapter lazily resolves
+  // ze_loader.dll on the FIRST read/set (a missing loader/domain degrades
+  // to the honest null + the '-' read-out, never a boot-time cost); the
+  // MOCK seam answers the fixture limits through the backend (the applied
+  // powerLimitW for both domains - the deterministic ui-verify read-out)
+  // and never touches the DLL.
+  const sysmanPowerLimits = mock
+    ? createMockSysmanPowerLimits({ backend })
+    : createSysmanPowerLimits({});
   // M2C-C elevation probe: real detection in the product path; ui-verify
   // knobs let the mock report elevated (RID_MOCK_ELEVATED=1) so the
   // elevated-in-app UI state is verifiable without elevation. Declared HERE
@@ -703,7 +729,9 @@ async function main() {
     // (which is pinned advanced).
     applyRunner = {
       needsWorker: () => true,
-      apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode }),
+      // M17f: the fake worker carries the sysman companion too (the real
+      // elevated worker wires it - the mock mirrors the apply core).
+      apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }),
       waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
       reset: async (deviceId) => {
         await backend.resetToDefaults(deviceId);
@@ -1151,6 +1179,9 @@ async function main() {
       profileId: applyProfileId,
       deviceId: applyDeviceId,
       oldIgcl: bootOldIgcl,
+      // M17f: the logon apply is ELEVATED (the /rl highest task) - the
+      // sysman companion runs there too.
+      sysmanPowerLimits: mock ? createMockSysmanPowerLimits({ backend }) : createSysmanPowerLimits({}),
       setupTray: () => setupTray({ getWindow: () => null, backend, store, oldIgcl: bootOldIgcl, applyRunner: null }),
       log: (s) => console.log(s),
     });
@@ -1808,6 +1839,9 @@ async function main() {
     // null when no boot apply ran this session).
     bootApplyOutcome: () => bootApplyOutcome,
     mock: mockCtl,
+    // M17f: the sysman power-limits consumer (the PL2 companion + the
+    // 'power-limits:read' source).
+    sysmanPowerLimits,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach
@@ -1888,7 +1922,7 @@ async function main() {
       // api field LEFT the FPS row).
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
       await runGraphicsVerify(win, backend);
-      await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe);
+      await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe, () => fpsPolls);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides

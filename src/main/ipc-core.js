@@ -667,6 +667,12 @@ export function createIpcHandlers({
   // a no-op; main.js applies the geometry/visibility/hotkey + sends
   // 'overlay:settings' DIRECTLY to the overlay window.
   onOverlaySettings = async () => {},
+  // M17f: the sysman power-limits consumer (src/main/sysman/power-limits.js)
+  // - the PL2 companion + the 'power-limits:read' channel source. The
+  // DEFAULT is null (tests/mock degrade to the honest '-' read-out + no
+  // companion); main.js wires the REAL adapter in the product path and the
+  // MOCK seam in mock/ui-verify mode.
+  sysmanPowerLimits = null,
   // M17c: the vendor-telemetry lane (non-Intel GPU readouts - the
   // no-device telemetry path's hook). The DEFAULT resolves the NVML/ADL
   // adapter from the sysinfo controller vendor (RID_MOCK_VENDOR=nvml|adl
@@ -894,7 +900,7 @@ export function createIpcHandlers({
         recordRefusals(out.result);
         return out;
       }
-      const out = await executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode });
+      const out = await executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode, sysmanPowerLimits });
       recordRefusals(out.result);
       return out;
     };
@@ -978,6 +984,23 @@ export function createIpcHandlers({
       'get-current-settings': async (deviceId) => {
         assertValidDeviceId(deviceId);
         return backend.getCurrentSettings(deviceId);
+      },
+
+      // M17f: the sysman PL2 read-out source - { sustainedW, burstW, peakW }
+      // when the sysman layer answers, null when it is absent (the honest
+      // '-' on the power-limit card). Never throws (the consumer is
+      // defensive; the renderer degrades to the '-' line on null/error).
+      // M17f (step-4 N2): DEVICE-SCOPED - the deviceId threads into the
+      // read (the domain is per-device; the mock keys on it - the
+      // multi-device read-out mismatch fix).
+      'power-limits:read': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        if (!sysmanPowerLimits) return null;
+        try {
+          return await sysmanPowerLimits.readLimits(deviceId);
+        } catch {
+          return null;
+        }
       },
 
       // M8 (the Graphics tab): the 3D-feature surface. 'graphics:get' is the

@@ -66,10 +66,12 @@ export async function findStaleSiblingToken(dir, requestId, now = Date.now()) {
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   oldIgcl: object,
  *   log?: (s: string) => void,
+ *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion -
+ *   // null -> no companion (tests); main.js wires the real adapter
  * }} deps
  * @returns {Promise<number>} process exit code (0 = result written)
  */
-export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log = () => {} }) {
+export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log = () => {}, sysmanPowerLimits = null }) {
   let req;
   try {
     const raw = await fs.promises.readFile(reqPath, 'utf8');
@@ -259,7 +261,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       return 0;
     }
     const clamped = clampSettings(settings, caps.ranges);
-    const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log, ocMode: applyMode });
+    const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log, ocMode: applyMode, sysmanPowerLimits });
     // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
     // round-3 N1): the attempted values of the 'out-of-range' per-control
     // results - the parent's session refused-ceiling store records from

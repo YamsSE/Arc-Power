@@ -34,23 +34,35 @@ const DOCUMENTED_CLASS: LockRange = Object.freeze({
   freqMax: 5000,
 });
 
+/** The A770's LIVE-PINNED lock range (2026-08-13 boundary probe,
+ *  pipeline/live-gpulock-boundary.mjs, driver 0x00200000006522a0 - the user's
+ *  (1.2 V, 2400 MHz) refusal was the trigger): the voltage sweep at 2400 MHz
+ *  sticks 950/1000/1050/1100 mV and REFUSES 1150+ (0x44000002 -
+ *  VOLTAGE_OUTSIDE_RANGE) -> the real voltMax is 1.1 V, NOT the documented
+ *  1.5 V; the frequency sweep at 1100 mV sticks 2400/2500/2600/2700/2800/
+ *  2900/3000 MHz (the sweep ceiling - the documented 5000 MHz is UNVERIFIED
+ *  above 3000, kept as the documented-class ceiling with the honest note). */
+const A770_LIVE: LockRange = Object.freeze({
+  voltMin: 0,
+  voltMax: 1.1, // probe-pinned: 1150 mV refused 0x44000002 on this driver
+  freqMin: 0,
+  freqMax: 5000, // documented-class; >= 3000 MHz live-verified (the sweep ceiling)
+});
+
 /** The listed rows (documented entries only; sources in the comments).
  *  Keyed on the canonical '0x0000xxxx' caps/DeviceInfo rendering like the
  *  device-limits table. */
 const LISTED_ROWS: Record<string, LockRange> = {
-  // The A770: 0x56A0 (the dev-box card). The probe-3 live evidence
-  // (2026-08-13, pipeline/live-gpulock-probe3.mjs, driver
-  // 0x00200000006522a0): ctlOverclockGetProperties reports BOTH
-  // gpuVFCurveVoltageLimit and gpuVFCurveFrequencyLimit as bSupported:false
-  // + zeros - the driver exposes NO lock range, so the row carries the
-  // documented-class bounds (the clamp then behaves exactly like the global
-  // fallback). The row EXISTS so the caps plumbing + the renderer resolve
-  // the same bounds for the listed card without special-casing.
-  [A770_PCI_DEVICE_ID]: DOCUMENTED_CLASS,
+  // The A770: 0x56A0 (the dev-box card). The boundary probe (2026-08-13)
+  // pinned the REAL acceptance: voltMax 1.1 V (1150+ refused), freqMax >=
+  // 3000 (the documented 5000 kept). The props report no VF limits
+  // (probe-3: bSupported:false) so this row IS the A770's lock range.
+  [A770_PCI_DEVICE_ID]: A770_LIVE,
   // The A750: 0x56A1. No gpuVFCurve-limit documentation exists in the
   // research corpus (arc-limits-research.md has no lock/VF-curve bounds) -
   // the documented-class row (the app's documented absolute lock bounds).
-  // A future A750 live probe can pin real values here.
+  // A future A750 live probe (the Acer tester's machine) can pin real
+  // values here - the A770's 1.1 V is NOT assumed for the A750.
   [A750_PCI_DEVICE_ID]: DOCUMENTED_CLASS,
 };
 

@@ -4,9 +4,11 @@
 // driver/IGS-shipped middleware - see pipeline/fps-igs-research.md). The
 // service owns ONE ETW session for ALL processes; the client opens a
 // session, pmStartTrackingProcess(pid) (a pipe message - CHEAP, no new ETW
-// session), registers a dynamic query (DISPLAYED_FPS AVG ~500 ms window +
-// PRESENTED_FPS AVG + PRESENT_RUNTIME NEWEST_POINT - the run-A pure layout
-// module's enums + PM_QUERY_ELEMENT math), polls per cadence tick, and
+// session), registers a dynamic query (DISPLAYED_FPS NEWEST_POINT + AVG
+// ~500 ms window + PRESENTED_FPS AVG + PRESENT_RUNTIME NEWEST_POINT - the
+// run-A pure layout module's enums + PM_QUERY_ELEMENT math; M17f: the
+// sample's fps = the instant NEWEST_POINT with the windowed AVG as the
+// fallback), polls per cadence tick, and
 // feeds the SAME fps-percentiles ring the M17c sidecar lane uses.
 //
 // The composition seam (round-1 S3): this source implements the SAME
@@ -244,7 +246,12 @@ export function createPmFpsSource(deps = {}) {
       }
       if (typeof pm.registerDynamicQuery === 'function') {
         queryElements = pmQueryElements([
-          { metric: PM_METRIC.DISPLAYED_FPS, stat: PM_STAT.AVG }, // the display-cadence fps (what IGS shows)
+          // M17f: the INSTANT display rate (PM_STAT_NEWEST_POINT - the
+          // newest frame's value, no windowing - the accuracy lever: the
+          // sample's fps = newest ?? avg). Registered FIRST so the blob's
+          // first value slot is the preferred rate.
+          { metric: PM_METRIC.DISPLAYED_FPS, stat: PM_STAT.NEWEST_POINT },
+          { metric: PM_METRIC.DISPLAYED_FPS, stat: PM_STAT.AVG }, // the display-cadence fps (what IGS shows) - the fallback
           { metric: PM_METRIC.PRESENTED_FPS, stat: PM_STAT.AVG }, // the Present() call-rate fps
           { metric: PM_METRIC.PRESENT_RUNTIME, stat: PM_STAT.NEWEST_POINT }, // the API class (the badge corroboration)
         ]);
@@ -377,12 +384,19 @@ export function createPmFpsSource(deps = {}) {
       hardFailures = 0; // any successful poll resets the streak
       if (!(poll.numSwapChains > 0)) return; // no data for the pid - keep lastGood unstamped
       const decoded = pmReadPollBlob(queryElements.elements, poll.bytes);
-      if (decoded === null || decoded.displayedFps === null) return; // a garbage blob / a <= 0 fps (the dry-window answer) - keep lastGood unstamped
+      // M17f: the sample's fps = the DISPLAYED_FPS NEWEST_POINT (the
+      // instant display rate) with the AVG as the fallback. The DRY gate
+      // follows the preference: (newest ?? avg) === null -> a garbage blob
+      // / a <= 0 fps (the dry-window answer) - keep lastGood unstamped.
+      // A NEWEST-present / AVG-null blob PASSES the gate (the preferred
+      // value is real even when the windowed AVG is dry).
+      const fps = decoded === null ? null : (decoded.displayedFpsNewest ?? decoded.displayedFps);
+      if (decoded === null || fps === null) return;
       const at = now();
       const runtime = presentRuntimeIdOf(decoded.presentRuntime);
-      const sample = { fps: decoded.displayedFps, presentRuntime: runtime, at };
+      const sample = { fps, presentRuntime: runtime, at };
       lastGood = sample;
-      const ftMs = 1000 / decoded.displayedFps;
+      const ftMs = 1000 / fps;
       const frames = Math.max(1, Math.round(PM_CADENCE_MS / ftMs));
       ring = pushRing(ring, { tMs: at, ftMs, frames }, RING_MAX);
       if (sampleCb) {

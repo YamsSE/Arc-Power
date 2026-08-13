@@ -21,6 +21,7 @@ import type {
   Profile,
   ProfilesEnvelope,
   ProfileSettingsState,
+  PowerLimitsRead,
   RegistryCatalogResponse,
   RegistryApplyResponse,
   ResetResponse,
@@ -41,6 +42,11 @@ export interface ArcPowerApi {
   deviceSet(deviceId: number): Promise<{ deviceId: number | null }>;
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
+  /** M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the
+   *  sysman layer answers, null when absent - the power-limit card's PL2
+   *  line; never throws). M17f (step-4 N2): DEVICE-SCOPED like every read
+   *  channel - the domain is per-device. */
+  powerLimitsRead(deviceId: number): Promise<PowerLimitsRead | null>;
   /** M8 (the Graphics tab): the 3D-feature read (never throws - the
    *  all-false/null state is the honest "not supported on this GPU" degrade).
    *  NEVER called with a null deviceId - the no-Intel page guard renders
