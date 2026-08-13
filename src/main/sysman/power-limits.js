@@ -13,12 +13,16 @@
 // throw (the apply path treats a sysman failure as best-effort).
 
 import koffi from 'koffi';
-import { findZeLoaderDll, loadSysman, zeOk, describeZeResult } from './sysman-bindings.js';
+import { findZeLoaderDll, loadSysman, zeOk, describeZeResult, enumerateHandles } from './sysman-bindings.js';
 
+// M17h: the enum binding joins the REQUIRED exports - the domain resolution
+// is enum-FIRST (see ensure() below), so a loader without the enum symbol
+// must degrade honestly (the missing-exports reason), never throw.
 const REQUIRED_EXPORTS = [
   'zeInit', 'zeDriverGet', 'zeDeviceGet',
   'zesInit', 'zesDriverGet', 'zesDeviceGet',
-  'zesDeviceGetCardPowerDomain', 'zesPowerGetLimits', 'zesPowerSetLimits',
+  'zesDeviceEnumPowerDomains', 'zesDeviceGetCardPowerDomain',
+  'zesPowerGetLimits', 'zesPowerSetLimits',
 ];
 
 const W = (powerMw) => Math.round((powerMw / 1000) * 10) / 10;
@@ -117,10 +121,47 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       r = lib.zesDeviceGet(zesDriver, zesCountBuf, zesDevBuf);
       if (!zeOk(r)) throw new Error(`zesDeviceGet fill: ${describeZeResult(r)}`);
 
-      const pwrBuf = koffi.alloc('void*', 1);
-      r = lib.zesDeviceGetCardPowerDomain(koffi.decode(zesDevBuf, 0, 'void*'), pwrBuf);
-      if (!zeOk(r)) throw new Error(`zesDeviceGetCardPowerDomain: ${describeZeResult(r)}`);
-      const pwrHandle = koffi.decode(pwrBuf, 0, 'void*');
+      // M17h THE DOMAIN-RESOLUTION FIX (the root cause of the dev-box
+      // 'PL1 - / PL2 -' + the companion degrade): the power domain resolves
+      // via zesDeviceEnumPowerDomains FIRST (the two-step count+fill - the
+      // enumerateHandles helper, sysman-bindings.js - the general spec'd
+      // contract; the dev A770: SUCCESS count 1, the domain reads the
+      // limits) with zesDeviceGetCardPowerDomain as the FALLBACK when the
+      // enum yields NO USABLE domain (count 0, an enum error, OR the
+      // enumerated handle FAILS a one-shot zesPowerGetLimits probe at
+      // ensure()-time - the Acer box's getter path is PROVEN-GOOD today
+      // while its enum behavior is unknown, so the fallback fires on 'no
+      // usable domain from the enum', never only on the enum call failing).
+      const zesDev = koffi.decode(zesDevBuf, 0, 'void*');
+      const en = enumerateHandles((countBuf, arr) => lib.zesDeviceEnumPowerDomains(zesDev, countBuf, arr));
+      let pwrHandle = null;
+      let enumVerdict = null;
+      if (!zeOk(en.result)) {
+        enumVerdict = `zesDeviceEnumPowerDomains: ${describeZeResult(en.result)}`;
+      } else if (en.handles.length === 0) {
+        enumVerdict = 'zesDeviceEnumPowerDomains yielded no domains (count 0)';
+      } else {
+        // The one-shot probe: the FIRST enumerated handle that reads the
+        // limits is the usable domain; every handle failing the probe
+        // means the enum yielded NO usable domain (the round-1 S2 trigger).
+        for (const candidate of en.handles) {
+          const sb = koffi.alloc('zes_power_sustained_limit_t', 1);
+          const bb = koffi.alloc('zes_power_burst_limit_t', 1);
+          const pb = koffi.alloc('zes_power_peak_limit_t', 1);
+          if (zeOk(lib.zesPowerGetLimits(candidate, sb, bb, pb))) { pwrHandle = candidate; break; }
+        }
+        if (pwrHandle === null) enumVerdict = 'the enumerated power domains failed the one-shot zesPowerGetLimits probe';
+      }
+      if (pwrHandle === null) {
+        // The getter fallback (the M17f consumer's original call).
+        const pwrBuf = koffi.alloc('void*', 1);
+        r = lib.zesDeviceGetCardPowerDomain(zesDev, pwrBuf);
+        if (zeOk(r)) {
+          pwrHandle = koffi.decode(pwrBuf, 0, 'void*');
+        } else {
+          throw new Error(`no usable power domain: ${enumVerdict}; fallback zesDeviceGetCardPowerDomain: ${describeZeResult(r)}`);
+        }
+      }
       ready = { lib, pwrHandle };
       return ready;
     } catch (err) {
