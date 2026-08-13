@@ -32,6 +32,10 @@ import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
 // the round-3-N3 rule flipped) so the mock
 // slider never offers a window the real caps refuse.
 import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
+// M17e: the listed-card lockRange fallback table (the mock mirrors the real
+// backend's caps-level fallback when the fixture carries no lockRange row
+// on a gpuLock-capable device).
+import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 // M17c: the session refused-ceiling store (the mock mirrors the real
 // backend's parent-side merge - getCapabilities merges the store so the
 // mock-refusal fixture exercises the same merge the renderer sees).
@@ -345,6 +349,19 @@ export class MockBackend {
     // laptop branch too, so the mock-refusal/verify sessions exercise the
     // same payload the renderer sees). Absent fixture fields -> null.
     caps.pciDeviceId = typeof fs.pciDeviceId === 'string' ? fs.pciDeviceId : null;
+    // M17e: the per-GPU gpuLock bounds (the caps.lockRange payload - the
+    // fixture row when present; ABSENT otherwise, exactly like the real
+    // backend whose driver reports no range - the renderer's documented
+    // fallback covers it). Mirror the real backend's LISTED-CARD fallback
+    // (pure/lock-ranges.ts) when the fixture carries no row on a
+    // gpuLock-capable device - the drift guard keeps mock caps == real caps
+    // for the same card.
+    if (fs.lockRange) {
+      caps.lockRange = fs.lockRange;
+    } else if (controls.gpuLock === true && typeof caps.pciDeviceId === 'string') {
+      const listed = lockRangeOf(caps.pciDeviceId);
+      if (listed) caps.lockRange = listed;
+    }
     const laptopInfo = this._laptopInfoOf ? this._laptopInfoOf() : null;
     const laptopDecoded = laptopInfo ? laptopAibOf(laptopInfo) : null;
     const subsysVendor = typeof fs.pciSubsysVendorId === 'number' ? fs.pciSubsysVendorId : null;
@@ -425,6 +442,7 @@ export class MockBackend {
     const state = {
       gpuLock: fs.supportedControls.includes('gpuLock') ? { voltageV: 0, freqMhz: 0 } : null,
       vfCurve: null,
+      vfCurveUnits: null,
       fanMode: null,
       fanCurve: null,
       fixedFanPct: null,
@@ -808,6 +826,25 @@ export class MockBackend {
     const state = e.state;
     const result = { ok: true, perControl: {} };
 
+    // M17e (round-1 S1b, mock parity): mirror IgclBackend's UNIVERSAL
+    // lock-vs-offset normalization - a non-zero gpuLock forces the carried
+    // freq/volt offsets to 0 (a legacy/hand-edited profile with lock +
+    // non-zero offsets ends at lock + offsets 0; PL/TL untouched). The mock
+    // has no IN_VOLTAGE_LOCKED_MODE, but its final STATE must equal the real
+    // backend's - the drift guard.
+    // M17e (round-2 S1, mock parity): the zeroed offset keys are ADDED
+    // UNCONDITIONALLY - a LOCK-ONLY payload (no offset keys carried) must
+    // STILL zero the driver's offsets (the real backend writes the two
+    // zero-offset applies before the lock; the mock mirrors the final
+    // state: lock + offsets 0).
+    if (settings.gpuLock
+      && !(settings.gpuLock.voltageV === 0 && settings.gpuLock.freqMhz === 0)) {
+      const out = { ...settings };
+      out.gpuFreqOffsetMhz = 0;
+      out.gpuVoltOffsetV = 0;
+      settings = out;
+    }
+
     const applyScalar = (control, canonicalName, value) => {
       if (value === null || value === undefined) return;
       if (!caps.controls[control]) {
@@ -841,8 +878,10 @@ export class MockBackend {
         result.perControl.gpuLock = { ok: false, errorCode: 'unsupported', message: 'GPU lock not supported on this device' };
         result.ok = false;
       } else {
-        // Mirror IgclBackend.applyLock: clamp to the documented lock bounds.
-        state.gpuLock = clampGpuLock(settings.gpuLock);
+        // Mirror IgclBackend.applyLock: clamp to the per-device lockRange
+        // when the caps carry one, else the documented lock bounds (the
+        // (0,0) unlock pair always passes unclamped).
+        state.gpuLock = clampGpuLock(settings.gpuLock, caps.lockRange);
         result.perControl.gpuLock = { ok: true, readBackEqual: true };
       }
     }
@@ -852,12 +891,22 @@ export class MockBackend {
         result.perControl.vfCurve = { ok: false, errorCode: 'unsupported', message: 'custom VF curve not supported on this device' };
         result.ok = false;
       } else {
-        // M2D (b580 featureset): vfCurve R/W - store a sanitized copy (the
-        // driver curve table cap), mirroring the driver accepting the write.
-        state.vfCurve = settings.vfCurve
-          .slice(0, MAX_VF_POINTS)
-          .map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
-        result.perControl.vfCurve = { ok: true, readBackEqual: true };
+        // M17e (N9, mock parity): mirror IgclBackend's non-integer-volts
+        // gate - the real ctl_voltage_frequency_point_t.Voltage is a uint32
+        // (a fractional volt truncates to 0), so the mock refuses the same
+        // payloads the real backend refuses (the drift guard).
+        const nonInteger = settings.vfCurve.filter((p) => !Number.isInteger(p.voltageV));
+        if (nonInteger.length > 0) {
+          result.perControl.vfCurve = { ok: false, errorCode: 'out-of-range', message: 'VF curve voltages must be whole volts - the ctl_voltage_frequency_point_t.Voltage field is a uint32 (a fractional volt would truncate to 0) and its unit is unverified on this device' };
+          result.ok = false;
+        } else {
+          // M2D (b580 featureset): vfCurve R/W - store a sanitized copy (the
+          // driver curve table cap), mirroring the driver accepting the write.
+          state.vfCurve = settings.vfCurve
+            .slice(0, MAX_VF_POINTS)
+            .map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
+          result.perControl.vfCurve = { ok: true, readBackEqual: true };
+        }
       }
     }
 

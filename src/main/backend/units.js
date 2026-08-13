@@ -183,20 +183,45 @@ export const VOLT_OFFSET_MAX_V = 0.234;
 export const VOLT_OFFSET_STEP_V = 0.001;
 
 /**
- * Clamp a gpuLock pair to the DOCUMENTED ABSOLUTE bounds before it reaches
- * the driver (M4-B: the lock pair is an absolute VF point, not an offset -
- * the voltage bound is the absolute ceiling GPU_LOCK_VOLT_MAX_V, floor 0
- * ("don't touch voltage"), NEVER the gpuVoltOffsetV offset range):
- *   - voltageV -> [0, GPU_LOCK_VOLT_MAX_V];
- *   - freqMhz -> [0, GPU_LOCK_FREQ_MAX_MHZ].
- * Shared by every apply path (igcl-backend, mock-backend, ipc-core).
+ * Clamp a gpuLock pair before it reaches the driver:
+ *   - the (0,0) unlock pair ALWAYS passes unclamped (M17e round-1 S2: the
+ *     dynamic/unlock convention must survive a range whose voltMin/freqMin
+ *     are positive - a positive voltMin must never clamp the unlock);
+ *   - M17e round-2 N4: the PER-SIDE zero pass-through - a 0 side means
+ *     "don't touch" that dimension (the S2 rationale, per side): a
+ *     (0 V, 2400 MHz) pair with a positive voltMin stays 0 V and a
+ *     (0.9 V, 0 MHz) pair with a positive freqMin stays 0 MHz - a
+ *     positive min must never resurrect a "don't touch" side;
+ *   - a non-zero pair clamps to the lockRange when one is supplied (the
+ *     per-device bounds: [max(0, voltMin ?? 0), voltMax ?? GPU_LOCK_VOLT_MAX_V]
+ *     volts / [freqMin ?? 0, freqMax ?? GPU_LOCK_FREQ_MAX_MHZ] MHz - the
+ *     documented fallback values fill the absent range sides);
+ *   - no lockRange -> the DOCUMENTED ABSOLUTE bounds (M4-B: the lock pair
+ *     is an absolute VF point, not an offset - the voltage bound is the
+ *     absolute ceiling GPU_LOCK_VOLT_MAX_V, floor 0 ("don't touch
+ *     voltage"), NEVER the gpuVoltOffsetV offset range).
+ * Shared by every apply path (igcl-backend + mock-backend pass their caps'
+ * lockRange; ipc-core clampSettings has no caps and keeps the documented
+ * fallback - the worker/boot paths clamp via the backend + the main-side
+ * normalization).
  * @param {{ voltageV: number, freqMhz: number }} lock
+ * @param {{ voltMin?: number, voltMax?: number, freqMin?: number, freqMax?: number } | null | undefined} [lockRange]
+ *   the per-device lock bounds in canonical units (absent -> the documented
+ *   fallback bounds)
  * @returns {{ voltageV: number, freqMhz: number }}
  */
-export function clampGpuLock(lock) {
+export function clampGpuLock(lock, lockRange) {
+  if (lock.voltageV === 0 && lock.freqMhz === 0) {
+    return { voltageV: 0, freqMhz: 0 }; // the (0,0) unlock bypass (S2)
+  }
+  const range = lockRange ?? {};
+  const voltMin = Math.max(0, Number.isFinite(range.voltMin) ? range.voltMin : 0);
+  const voltMax = Number.isFinite(range.voltMax) ? range.voltMax : GPU_LOCK_VOLT_MAX_V;
+  const freqMin = Math.max(0, Number.isFinite(range.freqMin) ? range.freqMin : 0);
+  const freqMax = Number.isFinite(range.freqMax) ? range.freqMax : GPU_LOCK_FREQ_MAX_MHZ;
   return {
-    voltageV: Math.min(Math.max(0, lock.voltageV), GPU_LOCK_VOLT_MAX_V),
-    freqMhz: Math.min(Math.max(0, lock.freqMhz), GPU_LOCK_FREQ_MAX_MHZ),
+    voltageV: lock.voltageV === 0 ? 0 : Math.min(Math.max(voltMin, lock.voltageV), voltMax),
+    freqMhz: lock.freqMhz === 0 ? 0 : Math.min(Math.max(freqMin, lock.freqMhz), freqMax),
   };
 }
 

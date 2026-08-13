@@ -62,8 +62,16 @@ const OVERLAY_COLOR_DEFAULT = '#ffffff';
 // translucent box behind the HUD); garbage degrades to these at the STORE.
 const OVERLAY_BG_COLOR_DEFAULT = '#000000';
 const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
+// M17e (the user addition - the overlay polling-rate slider): the
+// telemetry push cadence range + default (100-2000 ms, step 50, default
+// 500 - the telemetry-service default). The persisted-truth owner; the
+// renderer slider (overlay-settings.ts) + the ipc-core patch validation
+// mirror the clamp. Absent on old files -> 500; garbage degrades to 500.
+const OVERLAY_POLL_MS_DEFAULT = 500;
+const OVERLAY_POLL_MS_MIN = 100;
+const OVERLAY_POLL_MS_MAX = 2000;
 
-export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_COLOR_DEFAULT };
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -80,6 +88,14 @@ function clampOverlayScale(v) {
 function clampOverlayBgOpacity(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_BG_OPACITY_DEFAULT;
   return Math.min(1, Math.max(0, n));
+}
+
+/** M17e: clamp the overlay polling rate to the slider's 100-2000 ms range
+ *  (garbage degrades to the 500 ms default - the same clamp semantics as
+ *  the scale slider; the slider cannot produce an out-of-range value). */
+function clampOverlayPollMs(v) {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
+  return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
 }
 
 /** M6: normalize a raw overlayStats value - an array of KNOWN ids, deduped
@@ -242,7 +258,9 @@ export class ProfileStore {
    * box) ride it too (off / #000000 / 0.5 when absent).
    * M17b: overlayChipNames (the chip-name row labels) rides it too (off =
    * the stock 'CPU '/'GPU ' prefixes when absent).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean }>}
+   * M17e: overlayPollMs (the overlay telemetry push cadence) rides it too
+   * (500 ms when absent).
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -304,6 +322,9 @@ export class ProfileStore {
         // 'CPU '/'GPU ' prefixes; the same absent-field mechanism, NO
         // schema bump - the overlay renderer reads the pushed setting).
         overlayChipNames: false,
+        // M17e: the overlay polling-rate - absent -> 500 ms (the same
+        // absent-field mechanism; the telemetry-service default).
+        overlayPollMs: OVERLAY_POLL_MS_DEFAULT,
       };
     }
     return {
@@ -365,11 +386,15 @@ export class ProfileStore {
       // stock 'CPU '/'GPU ' prefixes; a garbage value degrades to false -
       // never a crash).
       overlayChipNames: data.overlayChipNames === true,
+      // M17e: the overlay polling-rate - absent on old files -> 500 ms (the
+      // telemetry-service default; a garbage value degrades to 500 - never
+      // a crash, never an out-of-range cadence).
+      overlayPollMs: clampOverlayPollMs(data.overlayPollMs),
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -422,6 +447,11 @@ export class ProfileStore {
       // (the channel validates first; the store fallback covers direct
       // callers - an absent/garbage value persists as false).
       overlayChipNames: settings.overlayChipNames === true,
+      // M17e: the overlay polling-rate - clamped to the 100-2000 ms range
+      // on save like the scale/opacity (the channel validates first; the
+      // store fallback covers direct callers - an absent/garbage value
+      // persists as the 500 ms default).
+      overlayPollMs: clampOverlayPollMs(settings.overlayPollMs),
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.

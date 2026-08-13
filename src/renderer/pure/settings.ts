@@ -6,7 +6,7 @@
 // authoritative gate; this module keeps the UI honest before it ever sends a
 // payload, and builds the payload from slider state.
 
-import type { Capabilities, DeviceState, FanMode, RangeInfo, Settings } from '../types.ts';
+import type { Capabilities, DeviceState, FanMode, LockRange, RangeInfo, Settings } from '../types.ts';
 import { MAX_CURVE_POINTS } from './curve.ts';
 import { A770_PCI_DEVICE_ID, deviceLimitsOf } from './device-limits.ts';
 
@@ -435,6 +435,45 @@ export const GPU_LOCK_VOLT_MAX_V = 1.5;
 export const GPU_LOCK_FREQ_MAX_MHZ = 5000;
 
 /**
+ * M17e: the renderer mirror of the main-side clampGpuLock (units.js) - the
+ * SAME (0,0)-bypass + per-side zero pass-through + lockRange-aware
+ * semantics, so the UI's local clamp never disagrees with what main will
+ * do:
+ *   - the (0,0) unlock pair ALWAYS passes unclamped (round-1 S2: a positive
+ *     voltMin must never clamp the unlock);
+ *   - the PER-SIDE zero pass-through (round-2 N4): a 0 side means "don't
+ *     touch" that dimension - a (0 V, 2400 MHz) pair with a positive
+ *     voltMin stays 0 V and a (0.9 V, 0 MHz) pair with a positive freqMin
+ *     stays 0 MHz (a positive min must never resurrect a "don't touch"
+ *     side);
+ *   - a non-zero pair clamps to [max(0, voltMin ?? 0), voltMax ?? 1.5] V /
+ *     [freqMin ?? 0, freqMax ?? 5000] MHz (the documented fallback fills
+ *     the absent range sides).
+ * Main stays the authoritative gate (the backend applyLock passes its
+ * caps.lockRange); this mirror keeps the card/toast honest.
+ * @param lock the typed pair (canonical volts)
+ * @param lockRange the caps.lockRange (optional - the documented fallback
+ *   when absent)
+ */
+export function clampGpuLock(
+  lock: { voltageV: number; freqMhz: number },
+  lockRange?: Partial<LockRange> | null,
+): { voltageV: number; freqMhz: number } {
+  if (lock.voltageV === 0 && lock.freqMhz === 0) {
+    return { voltageV: 0, freqMhz: 0 }; // the (0,0) unlock bypass (S2)
+  }
+  const range = lockRange ?? {};
+  const voltMin = Math.max(0, Number.isFinite(range.voltMin) ? (range.voltMin as number) : 0);
+  const voltMax = Number.isFinite(range.voltMax) ? (range.voltMax as number) : GPU_LOCK_VOLT_MAX_V;
+  const freqMin = Math.max(0, Number.isFinite(range.freqMin) ? (range.freqMin as number) : 0);
+  const freqMax = Number.isFinite(range.freqMax) ? (range.freqMax as number) : GPU_LOCK_FREQ_MAX_MHZ;
+  return {
+    voltageV: lock.voltageV === 0 ? 0 : Math.min(Math.max(voltMin, lock.voltageV), voltMax),
+    freqMhz: lock.freqMhz === 0 ? 0 : Math.min(Math.max(freqMin, lock.freqMhz), freqMax),
+  };
+}
+
+/**
  * M4-B step-5 F3: parse the gpuLock editor inputs. Empty / whitespace-only
  * fields are rejected BEFORE numeric conversion - `Number('') === 0` and the
  * 0 V / 0 MHz pair is the legal UNLOCK, so a cleared field (or a number
@@ -470,17 +509,15 @@ export function formatLockPair(pair: { voltageV: number; freqMhz: number } | nul
  * clamps the typed pair before the write, so the driver received the
  * CLAMPED values - the toast must show the read-back pair when the fresh
  * envelope carried one (honesty: toast == the 'Applied:' line), else the
- * locally clamped pair (same bounds as main's clampGpuLock) so a
- * null/degraded envelope still cannot re-print an out-of-bounds typed
- * value.
+ * locally clamped pair (the same bounds as main's clampGpuLock - the
+ * lockRange-aware mirror, M17e) so a null/degraded envelope still cannot
+ * re-print an out-of-bounds typed value.
  */
 export function gpuLockToastPair(
   typed: { voltageV: number; freqMhz: number },
   freshLock: { voltageV: number; freqMhz: number } | null | undefined,
+  lockRange?: Partial<LockRange> | null,
 ): { voltageV: number; freqMhz: number } {
   if (freshLock) return freshLock;
-  return {
-    voltageV: Math.min(Math.max(0, typed.voltageV), GPU_LOCK_VOLT_MAX_V),
-    freqMhz: Math.min(Math.max(0, typed.freqMhz), GPU_LOCK_FREQ_MAX_MHZ),
-  };
+  return clampGpuLock(typed, lockRange);
 }

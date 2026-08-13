@@ -46,6 +46,13 @@ export const OVERLAY_POSITION_LABELS: Record<OverlayPosition, string> = {
 export const OVERLAY_SCALE_MIN = 0.5;
 export const OVERLAY_SCALE_MAX = 2.0;
 
+/** M17e: the overlay polling-rate slider's range + default (the
+ *  telemetry-service default; mirrored in profile-store.js + ipc-core.js -
+ *  keep the three in lockstep). */
+export const OVERLAY_POLL_MS_MIN = 100;
+export const OVERLAY_POLL_MS_MAX = 2000;
+export const OVERLAY_POLL_MS_DEFAULT = 500;
+
 /**
  * M6/M7a: the canonical overlay stat ids (the persisted-truth owner is
  * profile-store.js; this is the renderer mirror - keep both in lockstep
@@ -129,6 +136,14 @@ export const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 export function clampOverlayBgOpacity(v: unknown): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_BG_OPACITY_DEFAULT;
   return Math.min(1, Math.max(0, n));
+}
+
+/** M17e: clamp the overlay polling-rate to the slider's 100-2000 ms range
+ *  (garbage degrades to the 500 ms default - the renderer mirror of the
+ *  store/ipc-core clamps). */
+export function clampOverlayPollMs(v: unknown): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
+  return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
 }
 
 /** M6: the preset swatch labels (one per preset hex). */

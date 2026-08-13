@@ -33,7 +33,7 @@
 // and the number - a stat off hides them together.
 
 import { api } from './ipc.ts';
-import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, OVERLAY_BG_COLOR_DEFAULT } from './pure/overlay.ts';
+import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT } from './pure/overlay.ts';
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
@@ -83,6 +83,9 @@ let gpuChipLabel: string | null = null;
 // M6-amd2: the latest derived frame time (the value line below the strip;
 // null -> the honest '-').
 let latestFrameTime: number | null = null;
+// M17e: the telemetry push counter (the fast-rate pin's mocked-push-cadence
+// surface - the ui-verify counts the pushed samples over a window).
+let telemetryTicks = 0;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
@@ -136,6 +139,10 @@ api.onOverlaySettings((settings) => {
   // labels replace the stock 'CPU '/'GPU ' prefixes (null labels degrade
   // to the stock prefixes inside overlayLines).
   chipNamesEnabled = s.overlayChipNames === true;
+  // M17e: the pushed polling-rate - the renderer carries the clamped value
+  // on the documentElement dataset (the ui-verify payload pin's surface;
+  // the cadence itself is main-side).
+  document.documentElement.dataset.overlayPollMs = String(clampOverlayPollMs(s.overlayPollMs));
   sizeCanvas();
   render();
 });
@@ -215,6 +222,8 @@ function draw(): void {
 // stat lines. The overlay relies on the MAIN window's telemetry session -
 // it keeps working while the main window is closed-to-tray (hidden, alive).
 api.onTelemetrySample((sample) => {
+  telemetryTicks += 1;
+  document.documentElement.dataset.telemetryTicks = String(telemetryTicks);
   latestSample = sample;
   render();
 });

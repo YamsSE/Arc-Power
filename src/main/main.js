@@ -159,6 +159,22 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
 // toggle handler so 'a tray click shows the hidden window' is assertable.
 let trayRef = null;
 async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, createTrayImpl = createTray }) {
+  // M17e (the user addition): the SHOW-WINDOW action - restores a
+  // minimized window + focuses it; shows + focuses a hidden one. Shared by
+  // the menu toggle's show branch and the tray DOUBLE-CLICK (the user's
+  // request: double-clicking the tray icon opens the app - the left-click
+  // single click behavior is unchanged, the context menu owns the toggle).
+  const showMainWindow = () => {
+    const win = getWindow();
+    if (!win) return;
+    if (win.isMinimized()) {
+      win.restore();
+      win.focus();
+    } else {
+      win.show();
+      win.focus();
+    }
+  };
   const menuTemplate = async () => {
     let hasActiveProfile = false;
     try {
@@ -187,8 +203,7 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, crea
         } else if (action === 'hide') {
           win.hide();
         } else {
-          win.show();
-          win.focus();
+          showMainWindow();
         }
       },
       onApplyProfile: () => trayApplyActiveProfile({
@@ -211,6 +226,12 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, crea
   };
   const tray = createTrayImpl({ tray: Tray, nativeImage, Menu, template: await menuTemplate() });
   trayRef = tray;
+  // M17e: the tray DOUBLE-CLICK shows/focuses the main window (the user's
+  // request). Electron's Tray emits 'double-click' on Windows; the
+  // ui-verify probe's .on records the handler so the wiring is assertable.
+  if (typeof tray.on === 'function') {
+    tray.on('double-click', showMainWindow);
+  }
   // Rebuild the menu when the active profile changes (M2b-B calls this via
   // the window; for now the boot-time state is enough).
   tray.rebuildMenu = async () => { tray.setContextMenu(Menu.buildFromTemplate(await menuTemplate())); };
@@ -1222,11 +1243,18 @@ async function main() {
     // tray-apply ui-verify pin drives it (main-side apply -> pushed
     // device:state-updated -> the dashboard OC row flips in place).
     applyHandler: null,
+    // M17e: the DOUBLE-CLICK handler - setupTray registers it via
+    // tray.on('double-click') (the REAL Tray's event); the probe's .on
+    // records it so the verify pin can assert the wiring + fire it.
+    doubleClickHandler: null,
     probe: {
       setContextMenu: () => {},
       setToolTip: () => {},
       displayBalloon: () => {},
       isDestroyed: () => false,
+      on: (event, handler) => {
+        if (event === 'double-click') trayProbe.doubleClickHandler = typeof handler === 'function' ? handler : null;
+      },
     },
   };
   const createTrayProbe = ({ template }) => {
@@ -1568,6 +1596,14 @@ async function main() {
       // (a required-but-insufficient owner set would silently ship a dead
       // feature; the overlay.js normalize is the final gate for garbage).
       overlayChipNames: settings.overlayChipNames === true,
+      // M17e: the overlay polling-rate - forwarded like the rest (the
+      // payload carries it so the ui-verify pins + the overlay renderer
+      // know the cadence; ipc-core's startTelemetry + the live restart are
+      // the cadence owners; garbage degrades to the 500 ms default).
+      overlayPollMs: typeof settings.overlayPollMs === 'number'
+        && Number.isFinite(settings.overlayPollMs)
+        ? Math.min(2000, Math.max(100, Math.round(settings.overlayPollMs)))
+        : 500,
     });
   };
   if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {

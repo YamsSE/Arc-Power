@@ -38,6 +38,11 @@ export interface Settings {
    *  the spread-save shapes stay type-complete). Absent -> false (the
    *  stock 'CPU '/'GPU ' prefixes). */
   overlayChipNames?: boolean;
+  /** M17e: the persisted overlay telemetry push cadence (ms - the
+   *  Overlay Settings polling-rate slider; the telemetry-service default
+   *  500, the slider range 100-2000). APPENDED - the OC apply surface
+   *  never reads it; it mirrors the settings.json field. */
+  overlayPollMs?: number;
 }
 
 /** Read-back of the device's current state (all supported controls resolved). */
@@ -50,6 +55,13 @@ export interface DeviceState {
   vramVoltOffsetV: number | null;
   gpuLock: { voltageV: number; freqMhz: number } | null;
   vfCurve: Array<{ voltageV: number; freqMhz: number }> | null;
+  /** M17e (N9): the VF-curve read-back UNITS status. The real backend
+   *  surfaces the raw uint32 Voltage into `vfCurve` (the header documents
+   *  no unit for it - the lock API's mV-vs-V lie is the suspicion, but NO
+   *  blind conversion) + sets this token until a vfCurve-capable device
+   *  probe pins the scale. Null/absent = the units are the canonical volts
+   *  shape (the mock's stored curve). */
+  vfCurveUnits?: string | null;
   fanMode: FanMode | null;
   fanCurve: Array<{ t: number; speedPct: number }> | null;
   fixedFanPct: number | null;
@@ -61,6 +73,20 @@ export interface RangeInfo {
   step: number;
   default: number;
   units: string;
+}
+
+/** M17e: the per-device gpuLock bounds (the caps.lockRange payload) in
+ *  CANONICAL units - the min/max the lock editor + the clamp consume.
+ *  Absent when the driver reports no lock range (the documented fallback
+ *  bounds apply then). Derived from ctl_oc_properties_t
+ *  gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit THROUGH the units
+ *  decode (igclToCanonical - never a raw pass: the fields carry a units
+ *  int32 with the same mV hazard the lock API proved). */
+export interface LockRange {
+  voltMin: number;
+  voltMax: number;
+  freqMin: number;
+  freqMax: number;
 }
 
 export interface Capabilities {
@@ -90,6 +116,11 @@ export interface Capabilities {
   pciDeviceId?: string | null;
   aibVendor?: string | null;
   aibModel?: string | null;
+  /** M17e: the per-device gpuLock bounds (the props-derived canonical
+   *  values; absent -> the documented fallback bounds + the pure
+   *  lock-ranges table). The card inputs + the renderer clamp consume it;
+   *  main's applyLock is the authoritative clamp. */
+  lockRange?: LockRange;
 }
 
 export interface PerControlResult {
@@ -437,6 +468,12 @@ export interface OverlaySettings {
    *  (absent on old pushes -> false = the stock 'CPU '/'GPU ' prefixes;
    *  the renderer fetches + applies the chip names only when this is on). */
   overlayChipNames: boolean;
+  /** M17e: the overlay telemetry push cadence (ms - the overlay:settings
+   *  payload field; absent on old pushes -> 500 = the telemetry-service
+   *  default. The cadence itself is owned main-side (ipc-core's
+   *  startTelemetry + the live restart); the payload carries it so the
+   *  renderer + the verify pins know the setting end-to-end). */
+  overlayPollMs: number;
 }
 
 /** M5: the overlay:get-state envelope (the Settings card + the verify read it). */
@@ -498,6 +535,11 @@ export interface ProfileSettingsState {
    *  stock 'CPU '/'GPU ' prefixes; same absent-field mechanism, NO schema
    *  bump). The Overlay Settings page's chip-name checkbox persists this. */
   overlayChipNames: boolean;
+  /** M17e: the overlay telemetry push cadence - absent on old files -> 500
+   *  (the telemetry-service default; same absent-field mechanism, NO
+   *  schema bump). The Overlay Settings page's polling-rate slider
+   *  persists this. */
+  overlayPollMs: number;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

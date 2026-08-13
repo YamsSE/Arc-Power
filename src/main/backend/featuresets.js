@@ -175,6 +175,27 @@ export function validateFeatureset(raw, expectedId) {
       throw new Error(`featureset '${fs.id}': ${key} must be a non-negative 16-bit integer or null`);
     }
   }
+
+  // M17e: the per-GPU gpuLock bounds fallback row (the caps.lockRange
+  // shape - CANONICAL units, never the raw props values). Optional: absent
+  // on devices with no gpuLock control (b580/arc-igpu/pro-b50) and on any
+  // card whose range is unknown (the renderer's pure lock-ranges table +
+  // the documented fallback cover those). When present, all four bounds
+  // must be finite + the min/max pairs consistent.
+  if (fs.lockRange !== undefined && fs.lockRange !== null) {
+    const lr = fs.lockRange;
+    if (typeof lr !== 'object' || lr === null || Array.isArray(lr)) {
+      throw new Error(`featureset '${fs.id}': lockRange must be an object or null`);
+    }
+    for (const field of ['voltMin', 'voltMax', 'freqMin', 'freqMax']) {
+      if (!isFiniteNumber(lr[field])) {
+        throw new Error(`featureset '${fs.id}': lockRange.${field} must be a finite number`);
+      }
+    }
+    if (lr.voltMin > lr.voltMax || lr.freqMin > lr.freqMax) {
+      throw new Error(`featureset '${fs.id}': lockRange must satisfy voltMin<=voltMax and freqMin<=freqMax`);
+    }
+  }
   return fs;
 }
 

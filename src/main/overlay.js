@@ -143,6 +143,15 @@ function normalizeSettings(raw = {}) {
     // 'CPU '/'GPU ' prefixes; the payload carries the flag so the overlay
     // renderer can fetch + apply the chip names).
     overlayChipNames: raw.overlayChipNames === true,
+    // M17e: the overlay polling-rate - clamped to the 100-2000 ms range,
+    // 500 ms when absent/garbage (the telemetry-service default; the
+    // payload carries it so the renderer/verify know the cadence - the
+    // cadence itself is owned by ipc-core's startTelemetry + the live
+    // restart).
+    overlayPollMs: typeof raw.overlayPollMs === 'number'
+      && Number.isFinite(raw.overlayPollMs)
+      ? Math.min(2000, Math.max(100, Math.round(raw.overlayPollMs)))
+      : 500,
   };
 }
 
@@ -286,6 +295,9 @@ export function createOverlayWindow({ getOverlaySettings }) {
     // main.js applyOverlaySettings MUST forward it - the overlay.js
     // normalize is the final gate).
     overlayChipNames: applied.overlayChipNames,
+    // M17e: the polling-rate rides the same push (the main.js forwarding +
+    // the normalize clamp are the final gates for garbage).
+    overlayPollMs: applied.overlayPollMs,
   });
 
   return {

@@ -40,10 +40,13 @@ import {
   OVERLAY_STAT_LABELS,
   OVERLAY_COLOR_PRESETS,
   OVERLAY_COLOR_LABELS,
+  OVERLAY_POLL_MS_MIN,
+  OVERLAY_POLL_MS_MAX,
   isValidOverlayPosition,
   isValidOverlayColor,
   clampOverlayScale,
   clampOverlayBgOpacity,
+  clampOverlayPollMs,
 } from '../pure/overlay.ts';
 import type { OverlayPosition, OverlayState } from '../types.ts';
 
@@ -80,6 +83,9 @@ interface PersistedOverlay {
   // M17b: the chip-name row labels (the General card checkbox) - off =
   // the stock 'CPU '/'GPU ' prefixes.
   chipNames: boolean;
+  // M17e (the user addition): the overlay polling-rate (the General card
+  // slider) - the telemetry push cadence in ms (100-2000, 500 the default).
+  pollMs: number;
 }
 
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
@@ -110,6 +116,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       bgOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
       // M17b: the chip-name row labels (absent on old files -> false).
       chipNames: s.overlayChipNames === true,
+      // M17e: the polling-rate (absent on old files -> the 500 ms default).
+      pollMs: clampOverlayPollMs(s.overlayPollMs),
     };
   } catch (err) {
     clear(root);
@@ -128,6 +136,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const render = (): void => {
+    // M17e: the polling-rate slider's live value label (declared before the
+    // General card - the scale-slider pattern).
+    const pollMsValue = el('span', { class: 'settings-poll-ms-value', text: `${persisted.pollMs} ms` });
     // --- General card (M6-amd3): the enable TOGGLE - moved here from the
     // Settings page (the Settings card is button-only now). The
     // .settings-checkbox[data-setting="overlayEnabled"] class + dataset
@@ -161,6 +172,30 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           }),
           el('span', { text: 'Use chip names (A770, i7 5775C) instead of the CPU / GPU labels' }),
         ]),
+      ]),
+      // M17e (the user addition - "current 500 ms is a bit slow"): the
+      // POLLING-RATE slider - the overlay's telemetry push cadence. The
+      // scale-slider pattern (a live ms value label; the change saves
+      // through profiles-settings-save and main's reaction RESTARTS the
+      // telemetry push with the new interval - a live change, never a
+      // next-boot-only one).
+      el('div', { class: 'settings-row overlay-poll-ms-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Refresh rate' }),
+        el('input', {
+          type: 'range',
+          class: 'settings-poll-ms-slider',
+          dataset: { setting: 'overlayPollMs' },
+          min: String(OVERLAY_POLL_MS_MIN),
+          max: String(OVERLAY_POLL_MS_MAX),
+          step: '50',
+          value: String(persisted.pollMs),
+          oninput: (ev: Event) => {
+            const v = Number((ev.target as HTMLInputElement).value);
+            pollMsValue.textContent = `${v} ms`;
+          },
+          onchange: (ev: Event) => void onPollMsChange(Number((ev.target as HTMLInputElement).value)),
+        }),
+        pollMsValue,
       ]),
     ]);
 
@@ -403,6 +438,27 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     } catch (err) {
       toast('error', 'Chip names could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = persisted.chipNames;
+      return;
+    }
+  };
+
+  // M17e (the user addition): the polling-rate slider - the same
+  // profiles-settings-save pattern as the scale/opacity handlers (the
+  // clamped value + the honest error revert; main's reaction restarts the
+  // telemetry push with the new interval - the live restart).
+  const onPollMsChange = async (ms: number): Promise<void> => {
+    const clamped = clampOverlayPollMs(ms);
+    if (clamped === persisted.pollMs) return;
+    const slider = root.querySelector<HTMLInputElement>('.settings-poll-ms-slider');
+    const label = root.querySelector<HTMLElement>('.settings-poll-ms-value');
+    try {
+      await api.profilesSettingsSave({ overlayPollMs: clamped });
+      persisted.pollMs = clamped;
+      toast('success', 'Overlay refresh rate changed', `The overlay reads every ${clamped} ms now.`);
+    } catch (err) {
+      toast('error', 'Overlay refresh rate could not be changed', err instanceof Error ? err.message : String(err));
+      if (slider) slider.value = String(persisted.pollMs);
+      if (label) label.textContent = `${persisted.pollMs} ms`;
       return;
     }
   };

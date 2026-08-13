@@ -1075,7 +1075,7 @@ select {
   color: var(--on-accent);
 }
 
-/* --------------------------- M4-B: freq-card Offset/Clock toggle ---------- */
+/* --------------------- M4-B freq-card toggle / M17e Offset|Lock ----------- */
 
 .oc-freq-mode-row {
   display: flex;
@@ -1084,7 +1084,15 @@ select {
 
 .oc-freq-mode-toggle { margin: 0; }
 
+/* M17e (Run B): the Offset|Lock toggle reuses the same pill (the M4-B
+   Offset/Clock toggle died with the Clock mode - the offset presentation
+   is the only mode; the Lock mode renders the gpuLock editor INSIDE the
+   freq card). */
+.oc-lock-mode-toggle { margin: 0; }
+
 .oc-freq-mode-btn { padding: 4px 12px; font-size: 12px; }
+
+.oc-lock-mode-btn { padding: 4px 12px; font-size: 12px; }
 
 .oc-meta {
   display: flex;
@@ -1125,7 +1133,9 @@ select {
 /* --------------------- M4J: VRAM clock editor (Advanced section) ---------- */
 /* M17d (Run D): the gpuLock card styles RETURN with the standalone Fixed
    Clock / Voltage Lock card (the M4-B editor styles were removed with the
-   M4-J reshuffle). */
+   M4-J reshuffle). M17e (Run B): the editor now renders NESTED inside the
+   freq card's Lock mode - the border/box styles still read as an editor
+   panel inside the card. */
 
 .gpu-lock-editor {
   margin-top: 12px;

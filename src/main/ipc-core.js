@@ -35,7 +35,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_POLL_MS_DEFAULT } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
 // koffi, hook = the no-device telemetry path, mock fixtures under
 // RID_MOCK_VENDOR).
@@ -60,6 +60,11 @@ const RESET_VERIFY_EPS = 1e-6;
 // M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
+// M17e (the user addition - the overlay polling-rate slider): the
+// telemetry push cadence range (mirrored in profile-store.js +
+// overlay-settings.ts; the telemetry-service default is 500 ms).
+const OVERLAY_POLL_MS_MIN = 100;
+const OVERLAY_POLL_MS_MAX = 2000;
 // M8: the frame-limit clamp fallback (30-300-1-60 - the probe-recorded
 // driver range; the fallback only applies when the device reports no range,
 // so the clamp can never offer an un-appliable value).
@@ -193,6 +198,20 @@ export function validateOverlayBgColor(v) {
 export function clampOverlayBgOpacity(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 0.5;
   return Math.min(1, Math.max(0, n));
+}
+
+/**
+ * M17e (the user addition - the overlay polling-rate slider): clamp the
+ * telemetry push cadence to the slider's 100-2000 ms range (garbage
+ * degrades to the 500 ms default - the telemetry-service default; the
+ * same clamp semantics as the scale; the slider cannot produce an
+ * out-of-range value).
+ * @param {unknown} v
+ * @returns {number}
+ */
+export function clampOverlayPollMs(v) {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
+  return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
 }
 
 /**
@@ -678,10 +697,11 @@ export function createIpcHandlers({
    * timer pushing sys-stats-ONLY samples (t: Date.now() + the 4 sys-stats
    * fields, all OS-level counters that work on ANY GPU). The device
    * telemetry fields are absent, so the GPU tiles/readouts honestly stay
-   * '-' while the CPU util/temp + GPU-memory tiles go live. Same 500 ms
-   * cadence as the device TelemetryService; the boot-level log-to-file
-   * subscription consumes the same telemetry:sample push, so log-file logging
-   * works for free.
+   * '-' while the CPU util/temp + GPU-memory tiles go live. Same cadence
+   * as the device TelemetryService (the overlay polling-rate - the
+   * store's overlayPollMs, default 500 ms - M17e round-2 N3); the
+   * boot-level log-to-file subscription consumes the same telemetry:sample
+   * push, so log-file logging works for free.
    * M14: the sample COMPOSES the used-RAM-bytes field here too - the
    * no-Intel machine must get the Memory row as well. The fixture-wins
    * shape (the M10a `sample.api ?? detect()` pattern): the sysStats
@@ -691,6 +711,17 @@ export function createIpcHandlers({
    */
   const startNullTelemetry = async () => {
     if (telemetry.has(NULL_DEVICE_KEY)) return;
+    // M17e (round-2 N3): the no-Intel lane honors the overlay polling-rate
+    // slider too - the SAME store read as startTelemetry (the pollMs is
+    // read ONCE at start; a change RESTARTS the null push with the new
+    // interval via the live-restart reaction below).
+    let pollMs = OVERLAY_POLL_MS_DEFAULT;
+    try {
+      const s = await store.loadSettings();
+      pollMs = clampOverlayPollMs(s.overlayPollMs);
+    } catch {
+      // a store read failure keeps the default cadence
+    }
     // M17c: the vendor-telemetry lane - the no-device path hook. When the
     // ACTIVE device is non-Intel, the sysinfo controller vendor selects
     // the first available of [NVML, ADL] matching it; the adapter's
@@ -727,7 +758,7 @@ export function createIpcHandlers({
           // a stats failure must never break the timer (skip this tick)
         }
       })();
-    }, 500);
+    }, pollMs);
     telemetry.set(NULL_DEVICE_KEY, {
       stop: async () => {
         clearInterval(timer);
@@ -738,7 +769,18 @@ export function createIpcHandlers({
 
   const startTelemetry = async (deviceId) => {
     if (telemetry.has(deviceId)) return;
-    const svc = new TelemetryService(backend, deviceId);
+    // M17e (round-2 N4, the overlay polling-rate slider): the telemetry
+    // DEFAULT is 500 ms (telemetry-service.js) - the overlay's tick reads
+    // pollMs ONCE at svc.start() (a change RESTARTS the push with the new
+    // interval - the live-restart reaction in profiles-settings-save).
+    let pollMs = OVERLAY_POLL_MS_DEFAULT;
+    try {
+      const s = await store.loadSettings();
+      pollMs = clampOverlayPollMs(s.overlayPollMs);
+    } catch {
+      // a store read failure keeps the default cadence
+    }
+    const svc = new TelemetryService(backend, deviceId, { pollMs });
     // M4-D2: the pushed sample carries the system stats (CPU util/freq/
     // temp + GPU memory) - OS-formatted counters sampled once per tick by
     // the injected sysStats adapter (one PowerShell query per tick - no
@@ -1614,6 +1656,13 @@ export function createIpcHandlers({
           overlayChipNames: patch.overlayChipNames === undefined
             ? cur.overlayChipNames
             : patch.overlayChipNames === true,
+          // M17e: the overlay polling-rate - CLAMPED to the slider's
+          // 100-2000 ms range (never rejected - the slider cannot produce
+          // an out-of-range value; a garbage patch degrades to the 500 ms
+          // default).
+          overlayPollMs: patch.overlayPollMs === undefined
+            ? cur.overlayPollMs
+            : clampOverlayPollMs(patch.overlayPollMs),
         };
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
@@ -1643,7 +1692,7 @@ export function createIpcHandlers({
         // overlay never re-renders (the box would only appear on the next
         // boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames']) {
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {
@@ -1651,6 +1700,32 @@ export function createIpcHandlers({
             await onOverlaySettings(overlayChanged);
           } catch (err) {
             console.log(`[overlay] settings reaction failed: ${err.message}`);
+          }
+        }
+        // M17e (round-2 N4, the overlay polling-rate slider): the LIVE
+        // RESTART - the device telemetry push reads pollMs ONCE at
+        // svc.start(), so a change must stop + restart the push with the
+        // new interval (never a next-boot-only change - the user's
+        // complaint was the 500 ms cadence). Best effort: a failure leaves
+        // the push on the old cadence (the next boot applies the new one).
+        // M17e (round-2 N3): the restart loop includes the NULL_DEVICE_KEY
+        // entry - its telemetry-map entry carries a stop, so the no-Intel
+        // lane honors a changed overlayPollMs too (the device lane already
+        // did; the null lane never read the value before - the slider was
+        // dead on the GTX 980 box).
+        if (overlayChanged.overlayPollMs !== undefined) {
+          const ids = [...telemetry.entries()]
+            .filter(([, svc]) => typeof svc.stop === 'function')
+            .map(([id]) => id);
+          for (const id of ids) {
+            try { await telemetry.get(id).stop(); } catch { /* best effort */ }
+            telemetry.delete(id);
+          }
+          for (const id of ids) {
+            try {
+              if (id === NULL_DEVICE_KEY) await startNullTelemetry();
+              else await startTelemetry(id);
+            } catch { /* best effort */ }
           }
         }
         return next;

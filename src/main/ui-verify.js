@@ -6,9 +6,11 @@
 //      "Arc Power" text with the small blue accent bar BELOW it (
 //      preferred variant - no logo image);
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
-//       1.0.0 Beta" (app:version IPC + the display suffix - the IPC
+//       1.0.1" (app:version IPC + the display suffix - the IPC
 //       keeps the bare semver; M5: displayVersion renders ' Beta' for the
-//       -beta.x line) - the driver version + date live in the
+//       -beta.x line, nothing for a stable - M17e round-2 N1: the pinned
+//       text is EXACTLY 'Arc Power Ver. 1.0.1' - no Beta) - the driver
+//       version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
 //       is 'GPU' with the name in a 'GPU' kv row - the Driver version row
@@ -30,9 +32,9 @@
 //      flex row with the Stock/Advanced pill LEFT and the "Tuning | Fan
 //      Curve" view pill RIGHT (same height - the pills' getBoundingClientRect
 //      tops are pinned equal); M2b-B: the freq card title is the M4-B 'Core
-//      clock' name (the Offset/Clock toggle is the input presentation, not
-//      the name), the floating Apply is hidden when clean and appears when
-//      dirty;
+//      clock' name (the M17e Offset|Lock toggle is the input presentation,
+//      not the name), the floating Apply is hidden when clean and appears
+//      when dirty (force-hidden in Lock mode);
 //   3. first Apply shows the warranty-waiver dialog; Accept persists the
 //      waiver; the apply succeeds and the state read-back refreshes; the
 //      per-control toast count is exactly 1 (the other three controls are
@@ -123,20 +125,24 @@
 //      G2 self-heal: after a waiver-not-set failure the store flag flips
 //      back to unaccepted (row red again) and the NEXT apply re-shows the
 //      dialog (the "fan applies fail without a prompt" bug).
-//  20. M4-B: (a) the dashboard health row is renamed "OC status" (was "OC
+//  20. M4-B/M17e: (a) the dashboard health row is renamed "OC status" (was "OC
 //      working"; M16: the row now shows the STOCK-STATE verdict); (b) the
 //      freq offset ranges mirror into the negative half
 //      (a770 -300..300) - the slider reaches the negative half, applies and
-//      reads back -100 MHz; (c) the freq card's Offset/Clock toggle: Clock
-//      mode slides over base+[min,max] (2100 + -300..300 = 1800..2400 MHz),
-//      the readout + driver line show the ABSOLUTE clock, and an apply
-//      stores the converted offset (2050 -> -50); (d) M4J clarification: the
-//      gpuLock editor + the vfCurve/vramVoltOffset expert rows are REMOVED -
+//      reads back -100 MHz; (c) M17e: the M4-B Offset/Clock toggle DIES
+//      with the Clock mode (the pure/clock.ts helpers were removed) - the
+//      freq card's toggle is Offset|Lock: Lock mode renders the gpuLock
+//      editor INSIDE the card (the M17d standalone card is folded in), the
+//      mode switch resets the other side IN THE DRAFT, the lock apply is
+//      the ATOMIC payload (offsets 0 ride along), the offset apply carries
+//      the (0,0) unlock, the floating apply is force-hidden in Lock mode,
+//      the editor bounds come from caps.lockRange; (d) M4J clarification:
+//      the vfCurve/vramVoltOffset expert rows are REMOVED -
 //      the Advanced section renders ONLY on vramFreqOffset devices (b580 =
 //      the VRAM clock editor) and is GONE on Alchemist (the OC-mode pill
 //      stays on every device); (e) the b580 variant pins the mirrored freq
 //      range (-500..500) + volt % range (-100..100) with percent units
-//      intact + the VRAM-OC editor round trip.
+//      intact + the VRAM-OC editor round trip + the NO-TOGGLE offset card.
 //  21. M4-B: the Advanced OC Mode warning is a ONCE-only gate - the
 //      disclaimer shows ONLY on the first Stock->Advanced toggle (Cancel
 //      keeps stock; it re-asks until Enable), the acceptance is PERSISTED
@@ -330,7 +336,7 @@ export class UiVerifyFailure extends Error {}
  *   instead of performing the real BrowserWindow ops) - run 2 pins the
  *   integrated title-bar buttons through this.
  */
-export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null, applyHandler: null })) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null, applyHandler: null, doubleClickHandler: null })) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -389,6 +395,29 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('m4j-tray-start', `M4J (G): start-minimized session - window created HIDDEN (tray-only, show:false), the tray existed BEFORE the window (menu builds ${probe.builds}), a tray click (recorded toggle handler) showed it (isVisible() true)`);
   } else {
     step('m4j-tray-start', 'M4J (G): tray-start probe SKIPPED (RID_MOCK_START_MINIMIZED not set - the window opens normally)');
+  }
+
+  // --- 0b. M17e: the tray DOUBLE-CLICK opens the app (every variant) ------
+  // The user's request: double-clicking the tray icon shows/focuses the
+  // main window (the same show-window action the menu toggle's show branch
+  // performs). The pin: (a) the injected tray probe recorded the
+  // 'double-click' handler (setupTray wired tray.on('double-click') - the
+  // probe's .on records it), (b) firing it on a HIDDEN window shows it
+  // (the real show path - restore-if-minimized + show + focus), (c) the
+  // left-click single-click behavior is untouched (the toggle handler
+  // above is a separate recorded handler).
+  {
+    const probe = getTrayProbe();
+    if (typeof probe.doubleClickHandler !== 'function') {
+      fail('M17e: the tray probe did not record the double-click handler (setupTray must wire tray.on(\'double-click\') to the show-window action)');
+    }
+    win.hide();
+    await sleep(200);
+    if (win.isVisible()) fail('M17e: the window did not hide before the double-click probe');
+    probe.doubleClickHandler();
+    await sleep(400);
+    if (!win.isVisible()) fail('M17e: a tray double-click did not show the hidden window (the show-window path must fire)');
+    step('m17e-tray-dblclick', `M17e: the tray 'double-click' handler is wired (recorded ${typeof probe.doubleClickHandler === 'function' ? 'function' : 'none'}) + firing it on the hidden window restored it (isVisible() true) - the single-click toggle stays the menu's`);
   }
 
   // --- 1. shell renders -----------------------------------------------------
@@ -717,11 +746,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // the pill renders on EVERY device as in 1.0.3.
   const vramFreqUi = (await backend.getCapabilities(0)).controls?.vramFreqOffset === true;
   step('m4j-vramfreq-ui', `M4J (D): this session's device ${vramFreqUi ? 'carries' : 'LACKS'} vramFreqOffset - the Advanced SECTION ${vramFreqUi ? 'renders (the VRAM clock editor)' : 'is GONE (Alchemist - only the bottom expert section is removed; the OC-mode pill stays)'}`);
-  // M17d (Run D): whether THIS session's device carries the gpuLock control
-  // - the key for the standalone Fixed Clock / Voltage Lock card (a770/
-  // a750/acer-a750 yes; b580/arc-igpu/pro-b50 no).
+  // M17d (Run D)/M17e (Run B): whether THIS session's device carries the
+  // gpuLock control - the key for the nested gpuLock editor + the Offset|Lock
+  // toggle on the freq card (a770/a750/acer-a750 yes; b580/arc-igpu/pro-b50
+  // no - the offset-only card).
   const gpuLockUi = (await backend.getCapabilities(0)).controls?.gpuLock === true;
-  step('m17d-gpulock-ui', `M17d (Run D): this session's device ${gpuLockUi ? 'carries' : 'LACKS'} gpuLock - the Fixed Clock / Voltage Lock card ${gpuLockUi ? 'renders' : 'is absent'}`);
+  step('m17d-gpulock-ui', `M17d/M17e: this session's device ${gpuLockUi ? 'carries' : 'LACKS'} gpuLock - the Offset|Lock toggle + the nested lock editor ${gpuLockUi ? 'render' : 'are absent (offset-only card)'}`);
 
   // --- 1b. M2C-B B3 header version line + B2/B8 dashboard GPU card ------
   // B3: the line below the GPU name is the APP version (app:version IPC) -
@@ -731,9 +761,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // -beta.x tag of a prerelease version and appends ' Alpha' to a bare
   // semver - the OLD scheme). M11: the version is the 1.0 RELEASE and the
   // "Alpha" naming scheme is gone - the display is the plain
-  // 'Arc Power Ver. 1.0.0'.
-if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0'`))) {
-fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0')`);
+  // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
+  // text is EXACTLY 'Arc Power Ver. 1.0.1' (NO Beta; the suffix logic
+  // keeps the Beta line only for -beta.x versions).
+if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1'`))) {
+fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -1472,8 +1504,9 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // --- 2b. off-grid driver readout (RID_MOCK_OFFGRID_FREQ_MHZ knob) -------
   const offGridFreq = process.env.RID_MOCK_OFFGRID_FREQ_MHZ;
   if (offGridFreq !== undefined) {
-    // The freq card renders in the offset/clock mode by default (the M4-B
-    // presentation) - the off-grid pins read the MHz DRIVER readout.
+    // The freq card renders in the OFFSET presentation (the only mode -
+    // the M4-B Clock mode + the Offset/Clock toggle DIE in M17e) - the
+    // off-grid pins read the MHz DRIVER readout.
     await sleep(150);
     const expected = String(Number(offGridFreq));
     if (!(await waitFor(win, `(() => {
@@ -1490,11 +1523,11 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
 
   // --- 2c. M2b-B tuning UX: the freq card TITLE (the M4-B 'Core clock'
-  // --- name in every mode - the Offset/Clock toggle is the input
+  // --- name in every mode - the Offset|Lock toggle is the input
   // --- presentation, not the name) + floating Apply ----------------------
   const freqTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
   if (freqTitle.trim() !== 'Core clock') fail(`freq offset card title is '${freqTitle}' (expected 'Core clock' - the M4-B name in every mode)`);
-  step('label', `freq card title '${freqTitle.trim()}' (the M4-B 'Core clock' name - the Offset/Clock toggle is the presentation, not the name)`);
+  step('label', `freq card title '${freqTitle.trim()}' (the M4-B 'Core clock' name - the M17e Offset|Lock toggle is the presentation, not the name)`);
 
   const floatingHidden = () => js(`(() => { const b = document.querySelector('.floating-apply'); return !b || b.hidden === true; })()`);
   const setSlider = async (value) => {
@@ -2081,38 +2114,148 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   step('m4b-negative-volt', `M4-B: volt range ${voltMin}..${voltMax} V, slider -0.05 -> readout '${voltReadout.trim()}', apply -> read-back ${negVoltState.gpuVoltOffsetV} V`);
   await clearToasts();
 
-  // (2) Offset/Clock toggle: Clock mode slides over base+[min,max] (a770
-  // base 2100 -> 1800..2400), the readout shows the ABSOLUTE clock, and an
-  // apply stores the CONVERTED offset (target - base).
-  if (!(await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-toggle')`))) {
-    fail('M4-B: the Offset/Clock segmented toggle is missing on the freq card');
+  // (2) M17e (Run B): the Offset|Lock toggle round trip - the M4-B
+  // Offset/Clock toggle DIED with the Clock mode (the pure/clock.ts
+  // helpers were removed; the offset presentation is the ONLY freq
+  // presentation). The toggle is Offset|Lock; Lock mode renders the
+  // gpuLock editor INSIDE the freq card; the mode switch resets the other
+  // side IN THE DRAFT; the lock apply is the ATOMIC payload (the offsets
+  // zero ride along); the offset apply carries the (0,0) unlock; the
+  // floating apply is FORCE-HIDDEN in Lock mode; the editor bounds come
+  // from caps.lockRange. gpuLock-capable sessions (a770/a750/acer-a750)
+  // run the full round trip; b580-like sessions (no gpuLock control) pin
+  // the NO-TOGGLE offset card.
+  if (gpuLockUi) {
+    if (!(await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-lock-mode-toggle')`))) {
+      fail('M17e: the Offset|Lock segmented toggle is missing on the freq card (gpuLock-capable session)');
+    }
+    const lockTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
+    if (lockTitle.trim() !== 'Core clock') fail(`M17e: the freq card title is '${lockTitle}' (must stay 'Core clock' - the toggle changes the input presentation, never the name)`);
+    // The editor is NESTED inside the freq card (the M17d standalone card
+    // is folded in) + HIDDEN in Offset mode.
+    const editorNested = await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .gpu-lock-editor')`);
+    if (!editorNested) fail('M17e: the gpuLock editor is not nested inside the freq card (it must render INSIDE the card in Lock mode)');
+    const editorHiddenOffset = await js(`document.querySelector('.gpu-lock-editor')?.hidden === true`);
+    if (!editorHiddenOffset) fail('M17e: the lock editor must be HIDDEN in Offset mode (hidden attribute)');
+    // The lockRange bounds ride the inputs (the a770/a750 documented-class
+    // caps.lockRange row: 0..1.5 V / 0..5000 MHz).
+    const lockVoltMax = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.getAttribute('max')`);
+    const lockFreqMax = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="freqMhz"]')?.getAttribute('max')`);
+    if (lockVoltMax !== '1.5' || lockFreqMax !== '5000') {
+      fail(`M17e: the lock editor bounds are '${lockVoltMax}' V / '${lockFreqMax}' MHz (expected the caps.lockRange 1.5 / 5000 - the documented-class row)`);
+    }
+    // Switch to Lock: the offsets draft 0 (the mutual-exclusion rule) + the
+    // editor prefills from the driver lock (the a770 mock starts unlocked ->
+    // (0,0)) + the editor appears + the floating apply is FORCE-HIDDEN.
+    await js(`Array.from(document.querySelectorAll('.oc-lock-mode-btn')).find((b) => b.textContent.trim() === 'Lock')?.click()`);
+    await sleep(150);
+    const lockVoltDraft = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.value`);
+    const lockFreqDraft = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="freqMhz"]')?.value`);
+    if (lockVoltDraft !== '0' || lockFreqDraft !== '0') {
+      fail(`M17e: the Lock-mode prefill is '${lockVoltDraft}' V / '${lockFreqDraft}' MHz (expected 0 / 0 - the driver lock (0,0) or the (0,0) fallback)`);
+    }
+    const freqDraftLock = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-value')?.textContent ?? ''`);
+    const voltDraftLock = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] .oc-value')?.textContent ?? ''`);
+    if (freqDraftLock.trim() !== '0 MHz' || voltDraftLock.trim() !== '0.000 V') {
+      fail(`M17e: switching to Lock must draft the offsets 0 (got freq '${freqDraftLock.trim()}' / volt '${voltDraftLock.trim()}')`);
+    }
+    const editorHiddenLock = await js(`document.querySelector('.gpu-lock-editor')?.hidden === false`);
+    if (!editorHiddenLock) fail('M17e: the lock editor must be VISIBLE in Lock mode');
+    if (!(await floatingHidden())) fail('M17e: the floating Apply must be FORCE-HIDDEN in Lock mode');
+    // A slider drag in Lock mode must NOT re-enable the floating button
+    // (round-2 N5).
+    await setFreqSlider(100);
+    if (!(await floatingHidden())) fail('M17e: a slider drag in Lock mode re-enabled the floating Apply (must stay force-hidden)');
+    await setFreqSlider(0);
+    await sleep(100);
+    // The lock editor's DIRTY semantics: the Apply enables only when the
+    // typed pair differs from the driver lock (the pristine (0,0) prefill
+    // matches the unlocked driver -> disabled).
+    const pristineDisabled = await js(`Array.from(document.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply')?.disabled === true`);
+    if (!pristineDisabled) fail('M17e: the lock editor Apply must be DISABLED while the typed pair equals the driver lock (pristine)');
+    // Type a pair (1.0 V / 2600 MHz) + apply through the editor's Apply -
+    // the ATOMIC LOCK payload { gpuLock, gpuFreqOffsetMhz: 0,
+    // gpuVoltOffsetV: 0 } - the driver state shows the lock AND the
+    // offsets 0.
+    await js(`(() => {
+      const card = document.querySelector('.gpu-lock-editor');
+      if (!card) return;
+      const v = card.querySelector('input[data-lock-field="voltageV"]');
+      const f = card.querySelector('input[data-lock-field="freqMhz"]');
+      v.value = '1.0';
+      f.value = '2600';
+      v.dispatchEvent(new Event('input', { bubbles: true }));
+      f.dispatchEvent(new Event('input', { bubbles: true }));
+      Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
+    })()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 1 && s.gpuLock.freqMhz === 2600 && s.gpuFreqOffsetMhz === 0 && s.gpuVoltOffsetV === 0))`, 8000))) {
+      fail(`M17e: the atomic LOCK apply did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - the driver must show the lock + the offsets 0)`);
+    }
+    const lockReadoutM17e = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+    if (!lockReadoutM17e.includes('1 V / 2600 MHz')) fail(`M17e: the lock read-out is '${lockReadoutM17e}' (expected 'Lock: 1 V / 2600 MHz')`);
+    await clearToasts();
+    // An out-of-range typed pair clamps to caps.lockRange (the renderer
+    // clamp mirror + the backend clamp - 9.9 V -> 1.5 V, the documented
+    // voltMax; the (0,0) unlock stays reachable via the S2 bypass).
+    await js(`(() => {
+      const v = document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]');
+      v.value = '9.9';
+      v.dispatchEvent(new Event('input', { bubbles: true }));
+      Array.from(document.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
+    })()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 1.5 && s.gpuLock.freqMhz === 2600))`, 8000))) {
+      fail(`M17e: the lockRange clamp did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - expected the 1.5 V voltMax)`);
+    }
+    // M17e (round-2 N2): the editor inputs re-sync to the APPLIED pair -
+    // the typed 9.9 must never lie next to the honest read-out (the driver
+    // received 1.5 V), and the re-synced editor reads pristine (the Apply
+    // button disables again - typed == applied).
+    const lockVoltResync = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.value`);
+    if (lockVoltResync !== '1.5') {
+      fail(`M17e (N2): after the clamped apply the voltage input must re-sync to the APPLIED pair (got '${lockVoltResync}', expected '1.5' - the typed 9.9 must never lie next to the honest read-out)`);
+    }
+    const lockFreqResync = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="freqMhz"]')?.value`);
+    if (lockFreqResync !== '2600') {
+      fail(`M17e (N2): after the clamped apply the freq input must re-sync to the applied 2600 (got '${lockFreqResync}')`);
+    }
+    const resyncPristine = await js(`Array.from(document.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply')?.disabled === true`);
+    if (!resyncPristine) fail('M17e (N2): after the re-sync the editor must read pristine (the Apply button disabled - typed == applied)');
+    await clearToasts();
+    // Switch back to Offset: the lock DRAFTS (0,0) (never applied - the
+    // driver still holds the lock) + the editor hides + the floating apply
+    // stays hidden (the offsets are 0).
+    await js(`Array.from(document.querySelectorAll('.oc-lock-mode-btn')).find((b) => b.textContent.trim() === 'Offset')?.click()`);
+    await sleep(150);
+    const lockVoltBack = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]')?.value`);
+    const lockFreqBack = await js(`document.querySelector('.gpu-lock-editor input[data-lock-field="freqMhz"]')?.value`);
+    if (lockVoltBack !== '0' || lockFreqBack !== '0') {
+      fail(`M17e: switching back to Offset must draft the lock (0,0) (got '${lockVoltBack}' / '${lockFreqBack}')`);
+    }
+    const lockStillHeld = await js(`window.arcPower.getCurrentSettings(0).then((s) => s.gpuLock && s.gpuLock.voltageV === 1.5 && s.gpuLock.freqMhz === 2600)`);
+    if (!lockStillHeld) fail('M17e: the Offset-mode switch must DRAFT the (0,0) pair - never apply it (the driver lock must stay)');
+    if (await js(`document.querySelector('.gpu-lock-editor')?.hidden === false`)) fail('M17e: the lock editor must hide again in Offset mode');
+    if (!(await floatingHidden())) fail('M17e: the floating Apply must stay hidden after the mode flip back (the offsets drafted 0 - nothing dirty)');
+    // The ATOMIC UNLOCK: drag the freq offset to 100 while the driver
+    // still holds the lock -> the per-card chip apply carries the (0,0)
+    // unlock -> the driver lock clears + the offset lands.
+    await setFreqSlider(100);
+    await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.click()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.gpuLock && s.gpuLock.voltageV === 0 && s.gpuLock.freqMhz === 0 && s.gpuFreqOffsetMhz === 100)`, 8000))) {
+      fail(`M17e: the atomic UNLOCK apply did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - the offset apply while locked must clear the driver lock first)`);
+    }
+    step('m17e-lock-toggle', `M17e: Offset|Lock toggle - Lock drafts the offsets 0 + prefills (0,0) + shows the nested editor + force-hides the floating apply (a slider drag stays hidden); the atomic LOCK lands (1 V / 2600 MHz + the offsets 0); the 9.9 V clamp lands (1.5 V); Offset drafts (0,0) without applying; the atomic UNLOCK lands (offset 100 + the driver lock cleared); bounds ${lockVoltMax} V / ${lockFreqMax} MHz from caps.lockRange`);
+    await clearToasts();
+  } else {
+    // b580-like sessions (no gpuLock control): the offset card renders with
+    // NO toggle + NO editor (the no-lock shape - the plan's b580 pin).
+    if (await js(`!!document.querySelector('.oc-lock-mode-toggle')`)) {
+      fail('M17e: the Offset|Lock toggle is rendered on a session without gpuLock support (must be offset-only)');
+    }
+    if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
+      fail('M17e: the gpuLock editor is rendered on a session without gpuLock support');
+    }
+    step('m17e-lock-toggle', 'M17e: no gpuLock support -> the freq card renders the OFFSET card with NO Offset|Lock toggle + NO lock editor (the b580 shape)');
   }
-  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Clock')?.click()`);
-  await sleep(150);
-  // M4-B: the CARD NAME is 'Core clock' in BOTH modes - the toggle
-  // changes the input presentation, never the name.
-  const clockTitle = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
-  if (clockTitle.trim() !== 'Core clock') fail(`M4-B: the freq card title is '${clockTitle}' in Clock mode (must stay 'Core clock')`);
-  const clockMin = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('min')`);
-  const clockMax = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]')?.getAttribute('max')`);
-  if (clockMin !== '1800' || clockMax !== '2400') fail(`M4-B: Clock-mode slider range is '${clockMin}'..'${clockMax}' (expected 1800..2400 = base 2100 + -300..300)`);
-  // M4-B step-5 F2: the .oc-range meta caption under the slider must follow
-  // the mode - in Clock mode it describes the ABSOLUTE-clock range (the
-  // pre-fix caption stayed on the OFFSET range the card was built with).
-  const clockCaption = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-meta .oc-range')?.textContent ?? ''`);
-  if (!clockCaption.includes('1800') || !clockCaption.includes('2400') || clockCaption.includes('-300')) {
-    fail(`M4-B: Clock-mode range caption is '${clockCaption}' (expected the 1800..2400 MHz absolute-clock range - the stale offset caption must not survive the mode flip)`);
-  }
-  const clockReadout = await setFreqSlider(2050);
-  if (clockReadout.trim() !== '2050 MHz') fail(`M4-B: Clock-mode readout is '${clockReadout}' (expected '2050 MHz' - the absolute clock)`);
-  await clearToasts();
-  await clickApply();
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: clock-mode apply success toast missing');
-  const clockState = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (Math.abs(clockState.gpuFreqOffsetMhz + 50) > 1e-6) fail(`M4-B: clock-mode apply stored the wrong offset: ${clockState.gpuFreqOffsetMhz} (expected -50 = 2050 - 2100)`);
-  const clockDriver = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-driver-value')?.textContent ?? ''`);
-  if (!clockDriver.includes('2050')) fail(`M4-B: Clock-mode driver readout is '${clockDriver}' (expected the absolute 2050 MHz)`);
-  step('m4b-clock', `M4-B: Clock mode range ${clockMin}..${clockMax} MHz, slider 2050 -> readout '${clockReadout.trim()}', apply -> offset ${clockState.gpuFreqOffsetMhz} MHz, driver '${clockDriver.trim()}'`);
   await clearToasts();
 
   // (3) M4J (D) + clarification: the Advanced section renders ONLY on
@@ -2140,37 +2283,42 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (await js(`!!document.querySelector('.advanced-card')`)) {
       fail('M4J (D): the Advanced section is still rendered on a device without vramFreqOffset (Alchemist)');
     }
-    // M17d (Run D - the FLIP): the Fixed Clock / Voltage Lock card RETURNS
-    // as a STANDALONE Tuning-page card (the user's request; NOT the dead
-    // M4-J section). The M4-J editor-absence assert flips ONLY where
-    // caps.controls.gpuLock is true - the a770/a750/acer-a750 sessions
-    // render the card now; arc-igpu/pro-b50 (no gpuLock control) stay
-    // absent (their lock-card absence is by construction - the card is
-    // caps.controls.gpuLock-gated; the b580 absence pins stay untouched).
+    // M17d (Run D)/M17e (Run B - the flip): the gpuLock editor lives
+    // INSIDE the freq card (the M17d STANDALONE card is folded in - NOT
+    // the dead M4-J section). The M4-J editor-absence assert flips ONLY
+    // where caps.controls.gpuLock is true - the a770/a750/acer-a750
+    // sessions render the nested editor now; arc-igpu/pro-b50 (no gpuLock
+    // control) stay absent (their absence is by construction - the editor
+    // is caps.controls.gpuLock-gated; the b580 absence pins stay).
     if (gpuLockUi) {
       if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
-        fail('M17d (Run D): the Fixed Clock / Voltage Lock card is missing on a gpuLock-capable session');
+        fail('M17d/M17e: the gpuLock editor is missing on a gpuLock-capable session');
       }
     } else {
       if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-        fail('M17d (Run D): the Fixed Clock / Voltage Lock card is rendered without caps.controls.gpuLock');
+        fail('M17d/M17e: the gpuLock editor is rendered without caps.controls.gpuLock');
       }
     }
-    step('m4j-advanced-absent', 'M4J (D) + M17d (Run D): the Advanced section is ABSENT on Alchemist (the OC-mode pill stays); the standalone Fixed Clock / Voltage Lock card renders on gpuLock-capable sessions only');
+    step('m4j-advanced-absent', 'M4J (D) + M17d (Run D) + M17e (Run B): the Advanced section is ABSENT on Alchemist (the OC-mode pill stays); the gpuLock editor renders NESTED inside the freq card on gpuLock-capable sessions only');
   }
   await clearToasts();
 
-  // --- M17d (Run D): the standalone Fixed Clock / Voltage Lock card round
-  // --- trip (the user's request) - type a pair, apply, verify the mock
-  // --- lock state + the card read-out, reset to dynamic (0,0), verify the
-  // --- state cleared. -----------------------------------------------
+  // --- M17d (Run D)/M17e (Run B): the gpuLock editor round trip - the
+  // --- editor is now NESTED inside the freq card's Lock mode (the M17d
+  // --- standalone card is folded in - the .gpu-lock-editor +
+  // --- .gpu-lock-actions selectors survive the move). Type a pair, apply,
+  // --- verify the mock lock state + the read-out, reset to dynamic (0,0),
+  // --- verify the state cleared. -----------------------------------------
   if (gpuLockUi) {
     const lockInitial = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
     if (!lockInitial.includes('Dynamic (unlocked)')) {
       fail(`M17d: the lock read-out starts at '${lockInitial}' (expected 'Lock: Dynamic (unlocked)' - the a770 mock starts unlocked)`);
     }
-    // Type a pair (1.0 V / 2600 MHz) and apply through the card's Apply
+    // Type a pair (1.0 V / 2600 MHz) and apply through the editor's Apply
     // button - the real apply-settings channel with the gpuLock control.
+    // M17e: the input events are DISPATCHED (the editor's dirty semantics
+    // enable the Apply only when the typed pair differs from the driver
+    // lock - a raw .value set would leave the button disabled).
     await js(`(() => {
       const card = document.querySelector('.gpu-lock-editor');
       if (!card) return;
@@ -2178,6 +2326,8 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
       const f = card.querySelector('input[data-lock-field="freqMhz"]');
       v.value = '1.0';
       f.value = '2600';
+      v.dispatchEvent(new Event('input', { bubbles: true }));
+      f.dispatchEvent(new Event('input', { bubbles: true }));
       Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
     })()`);
     if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 1 && s.gpuLock.freqMhz === 2600))`, 8000))) {
@@ -2208,19 +2358,27 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
 
   // Restore: Offset mode + freq 0 + volt 0 - the later sections expect the
-  // a770 baseline (the freq card must never be left in Clock mode, and the
-  // volt slider must never be left in the negative half-plane).
-  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-freq-mode-btn')).find((b) => b.textContent.trim() === 'Offset')?.click()`);
+  // a770 baseline (the freq card must never be left in Lock mode, and the
+  // volt slider must never be left in the negative half-plane). The M4-B
+  // restore-Offset click DIES with the Offset/Clock toggle - the M17e
+  // Offset|Lock toggle's Offset button restores the mode instead. M17e:
+  // the baseline may ALREADY be clean (the atomic lock zeroes the offsets
+  // + the atomic unlock rides the payloads) - the floating apply is
+  // clicked only when visible (a hidden-button click would be a no-op).
+  await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-lock-mode-btn')).find((b) => b.textContent.trim() === 'Offset')?.click()`);
   await sleep(150);
   await setVoltSlider(0);
   await setFreqSlider(0);
-  await clickApply();
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: freq/volt baseline restore did not apply');
+  if (!(await floatingHidden())) {
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: freq/volt baseline restore did not apply');
+    await clearToasts();
+  }
   const freqRestored = await js(`window.arcPower.getCurrentSettings(0)`);
   if (Math.abs(freqRestored.gpuFreqOffsetMhz) > 1e-6) fail(`M4-B: freq baseline not restored: ${freqRestored.gpuFreqOffsetMhz}`);
   if (Math.abs(freqRestored.gpuVoltOffsetV) > 1e-6) fail(`M4-B: volt baseline not restored: ${freqRestored.gpuVoltOffsetV}`);
   await clearToasts();
-  step('m4b-restore', `M4-B: back to Offset mode, freq baseline restored (${freqRestored.gpuFreqOffsetMhz} MHz), volt baseline restored (${freqRestored.gpuVoltOffsetV} V), gpuLock unlocked`);
+  step('m4b-restore', `M4-B/M17e: back to Offset mode, freq baseline restored (${freqRestored.gpuFreqOffsetMhz} MHz), volt baseline restored (${freqRestored.gpuVoltOffsetV} V), gpuLock unlocked`);
 
   // --- 5c. M3-C-D/E extended + stock variants. ------------------------------
   // RID_MOCK_EXTENDED_RANGES=1 (mock default OC mode = advanced): full slider
@@ -2451,11 +2609,15 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (b580Caps.controls.gpuLock === true || b580Caps.controls.vfCurve !== true) {
     fail(`M2D swap: b580 control set wrong: ${JSON.stringify(b580Caps.controls)}`);
   }
-  // M4-B/M4J (D): no gpuLock editor anywhere (removed with the M4J
-  // reshuffle) - and on the b580 swap the Advanced section holds the VRAM
+  // M4-B/M4J (D)/M17e: no gpuLock editor anywhere on the b580 surface (no
+  // gpuLock control -> the freq card has NO Offset|Lock toggle + NO nested
+  // editor) - and on the b580 swap the Advanced section holds the VRAM
   // clock editor (vramFreqOffset native there).
   if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-    fail('M4-B/M4J: the gpuLock editor is still rendered (removed - the section holds the VRAM editor only)');
+    fail('M17e: the gpuLock editor is still rendered on the b580 surface (no gpuLock control - the editor must be absent)');
+  }
+  if (await js(`!!document.querySelector('.oc-lock-mode-toggle')`)) {
+    fail('M17e: the Offset|Lock toggle is rendered on the b580 surface (no gpuLock control - the offset card must have NO toggle)');
   }
   if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
     fail('M4J (D): the VRAM clock editor is missing on the b580 swap (vramFreqOffset native)');
@@ -3835,9 +3997,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   await sleep(250);
   // Version row (app:version via the header line's display format). M9: the
   // 1.1.1 base bump ('Arc Power Ver. 1.1.1 Alpha'); M10a: the 1.2.0 bump;
-// M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone).
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.0'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.0')`);
+// M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
+// (round-2 N1): the 1.0.1 bump joins the flips - the Settings row is the
+// exact 'Arc Power Ver. 1.0.1' text (the M4-D row shares the header's
+// display format).
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -3899,7 +4064,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.0`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.1`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -4808,15 +4973,23 @@ export async function runFeaturesetVerify(win, fsId) {
     if (!floatingHidden) fail('floating Apply visible on a no-OC device');
     step('oc-none', `'${fsId}': 0 OC cards, no-OC note, no floating Apply`);
   } else {
-    // M17d (Run D): the total card count - the 4 slider cards PLUS the
-    // standalone Fixed Clock / Voltage Lock card on the gpuLock-capable
-    // fixtures (a750/acer-a750; the count FLIPS 4 -> 5 there) - stays 4 on
-    // b580 (percent units, no gpuLock control -> no lock card). arc-igpu /
-    // pro-b50 are the no-OC branch above (0 cards).
+    // M17d (Run D)/M17e (Run B - N2): the OC-CARD count - the selector is
+    // '.oc-card' ONLY (the ', .gpu-lock-editor' term is DROPPED: the editor
+    // is NESTED inside the freq card now, so the union selector would
+    // still match it and the count stays 4+1=5 - the pin asserts the 4
+    // slider cards exactly; the nested editor is covered by the
+    // .gpu-lock-editor presence pins). b580 stays 4 (percent units, no
+    // gpuLock control -> no toggle/editor). arc-igpu / pro-b50 are the
+    // no-OC branch above (0 cards).
     const lockCard = (await js(`window.arcPower.getCapabilities(0)`)).controls?.gpuLock === true;
-    const expectedCards = 4 + (lockCard ? 1 : 0);
-    if (!(await waitFor(win, `document.querySelectorAll('.oc-card, .gpu-lock-editor').length === ${expectedCards}`, 8000))) {
-      fail(`expected ${expectedCards} OC cards on '${fsId}' (${lockCard ? 'the gpuLock card included' : 'no gpuLock card - b580 stays at 4'}), got ${await js(`document.querySelectorAll('.oc-card, .gpu-lock-editor').length`)}; page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 300)`)}'`);
+    if (lockCard) {
+      if (!(await waitFor(win, `!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .gpu-lock-editor')`, 8000))) {
+        fail(`M17e: the gpuLock editor is not nested inside the freq card on '${fsId}' (gpuLock-capable)`);
+      }
+    }
+    const expectedCards = 4;
+    if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length === ${expectedCards}`, 8000))) {
+      fail(`expected ${expectedCards} OC cards on '${fsId}' (the slider cards - the lock editor is nested inside the freq card, never counted separately), got ${await js(`document.querySelectorAll('.oc-card').length`)}; page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 300)`)}'`);
     }
     const plRange = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-meta .oc-range')?.textContent ?? ''`);
     const plValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
@@ -4847,7 +5020,7 @@ export async function runFeaturesetVerify(win, fsId) {
       }
       if (adv.includes('Unsupported on this GPU')) fail('M4-D: b580 advanced still renders "Unsupported on this GPU" rows (removed entirely)');
       if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-        fail('M4-B/M4J: the gpuLock editor is rendered on b580 (removed with the reshuffle)');
+        fail('M17e: the gpuLock editor is rendered on b580 (no gpuLock control - the freq card has no toggle/editor)');
       }
       if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
         fail('M4J (D): the VRAM clock editor card is missing on b580');
@@ -4897,15 +5070,15 @@ export async function runFeaturesetVerify(win, fsId) {
       }
       const a750PlValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
       if (a750PlValue.trim() !== '190 W') fail(`M17c: the a750 PL readout is '${a750PlValue}' (expected '190 W' - the stock default)`);
-      // M17d (Run D): the standalone Fixed Clock / Voltage Lock card
-      // renders on the gpuLock-capable a750/acer-a750 fixtures (the plan's
-      // count 4 -> 5 flip; the mock starts unlocked).
-      if (await js(`!!document.querySelector('.gpu-lock-editor')`) === false) {
-        fail(`M17d (Run D): the ${fsId} lock card is missing (caps.controls.gpuLock is true there)`);
+      // M17d (Run D)/M17e (Run B): the gpuLock editor renders NESTED inside
+      // the freq card on the gpuLock-capable a750/acer-a750 fixtures (the
+      // M17d standalone card is folded in; the mock starts unlocked).
+      if (await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .gpu-lock-editor')`) === false) {
+        fail(`M17d/M17e: the ${fsId} lock editor is missing (caps.controls.gpuLock is true there)`);
       }
       const lockLine = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
       if (!lockLine.includes('Dynamic (unlocked)')) {
-        fail(`M17d (Run D): the ${fsId} lock read-out is '${lockLine}' (expected 'Lock: Dynamic (unlocked)' - the mock starts unlocked)`);
+        fail(`M17d/M17e: the ${fsId} lock read-out is '${lockLine}' (expected 'Lock: Dynamic (unlocked)' - the mock starts unlocked)`);
       }
       if (!stockMode) {
         // M17d (2026-08-12 probe verdict): the ADVANCED TL slider max is
@@ -6644,6 +6817,65 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe) {
     fail(`M17b: re-toggling did not restore the stock 'CPU ' prefix: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
   step('m17b-chipnames-off', 'the chip-names toggle OFF: the stock CPU / GPU prefixes return (byte-identical)');
+
+  // (m17e-pollms) M17e (the user addition - "current 500 ms is a bit
+  // slow"): the POLLING-RATE slider on the General card + the persisted
+  // payload + the FAST-RATE pin. (a) the slider exists with the pinned
+  // range (100-2000 ms, step 50) + the 500 default value label; (b) the
+  // boot payload carried the default (the overlay's documentElement
+  // dataset.overlayPollMs reads '500'); (c) sliding it to 100 persists
+  // overlayPollMs=100 AND pushes the payload (the dataset flips to '100')
+  // AND the telemetry push RESTARTS at the fast cadence (the
+  // dataset.telemetryTicks counter advances >= 2 over a ~500 ms window -
+  // the old 500 ms cadence would advance 0-1); (d) restored to 500 so the
+  // session stays deterministic.
+  if (!(await waitFor(win, `!!document.querySelector('.settings-poll-ms-slider')`, 5000))) {
+    fail('M17e: the polling-rate slider is missing on the Overlay General card');
+  }
+  const pollSlider = `document.querySelector('.settings-poll-ms-slider')`;
+  const pollMin = await js(`${pollSlider}?.getAttribute('min')`);
+  const pollMax = await js(`${pollSlider}?.getAttribute('max')`);
+  const pollStep = await js(`${pollSlider}?.getAttribute('step')`);
+  const pollValue = await js(`${pollSlider}?.value`);
+  if (pollMin !== '100' || pollMax !== '2000' || pollStep !== '50' || pollValue !== '500') {
+    fail(`M17e: the polling-rate slider is ${pollMin}..${pollMax} step ${pollStep} value ${pollValue} (expected 100..2000 step 50 value 500)`);
+  }
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayPollMs === '500'`, 5000))) {
+    fail(`M17e: the boot overlay:settings payload carried '${await ojs(`document.documentElement.dataset.overlayPollMs ?? ''`)}' (expected '500' - the default cadence)`);
+  }
+  // Slide to 100 via the UI (input + change - the onchange saves).
+  await js(`(() => {
+    const s = document.querySelector('.settings-poll-ms-slider');
+    s.value = '100';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayPollMs === 100)`, 5000))) {
+    fail('M17e: the polling-rate slider did not persist overlayPollMs=100');
+  }
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayPollMs === '100'`, 5000))) {
+    fail(`M17e: the payload after the slider change is '${await ojs(`document.documentElement.dataset.overlayPollMs ?? ''`)}' (expected '100' - main's reaction must push the new cadence)`);
+  }
+  // The FAST-RATE pin: the telemetry push honors the 100 ms setting (the
+  // live restart - the counter advances at the fast cadence).
+  const ticksBefore = Number(await ojs(`document.documentElement.dataset.telemetryTicks ?? '0'`));
+  await sleep(500);
+  const ticksAfter = Number(await ojs(`document.documentElement.dataset.telemetryTicks ?? '0'`));
+  if (ticksAfter - ticksBefore < 2) {
+    fail(`M17e: the telemetry push did not honor the 100 ms setting (${ticksBefore} -> ${ticksAfter} ticks over ~500 ms - expected >= 2 at the restarted cadence)`);
+  }
+  step('m17e-pollms', `M17e: the polling-rate slider (${pollMin}..${pollMax} step ${pollStep}, default 500) - sliding to 100 persisted overlayPollMs=100 + pushed the payload (dataset '100') + the push restarted at the fast cadence (${ticksBefore} -> ${ticksAfter} telemetry ticks over ~500 ms)`);
+  // Restore the 500 default (the later sections expect the seeded shape).
+  await js(`(() => {
+    const s = document.querySelector('.settings-poll-ms-slider');
+    s.value = '500';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayPollMs === 500)`, 5000))) {
+    fail('M17e: restoring the polling-rate slider did not persist overlayPollMs=500');
+  }
+  await sleep(150);
 
   // (f3) M6: the stat tickboxes round-trip through profiles-settings-save.
   // Unchecking gpu-fan trims the persisted overlayStats AND the overlay

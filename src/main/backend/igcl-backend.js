@@ -42,6 +42,11 @@ import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
 // applied main-side in getCapabilities AFTER the driver-props loop. The
 // renderer TS imports fine under the packaged Electron (see aib.ts).
 import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
+// M17e: the listed-card lockRange fallback table (the pure module - the
+// a770/a750 documented-class rows; the caps-level fallback when the driver
+// props do not report the VF-curve limits; the live A770 driver answers
+// bSupported:false - the probe-3 evidence).
+import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -880,7 +885,38 @@ export class IgclBackend {
         // vfCurve: supported only when the read path answers (on Alchemist it
         // errors with DATA_READ - report unsupported so the UI hides it).
         caps.controls.vfCurve = this._vfCurveReadable(dev.handle);
+        // M17e (round-1 S3): the per-device gpuLock bounds - derived from the
+        // props' gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit (the
+        // bounds the custom-VF-curve validation references) THROUGH the units
+        // decode (igclToCanonical - never a raw pass: the fields carry a
+        // units int32 with the same mV hazard the lock API proved). Both
+        // limits must be reported supported + sane; otherwise lockRange stays
+        // ABSENT and the listed-card fallback below + the documented bounds
+        // apply (the live A770 driver answers bSupported:false - the probe-3
+        // evidence, 2026-08-13).
+        const vfVolt = props.gpuVFCurveVoltageLimit;
+        const vfFreq = props.gpuVFCurveFrequencyLimit;
+        if (vfVolt && vfFreq && vfVolt.bSupported && vfFreq.bSupported
+          && Number.isFinite(vfVolt.min) && Number.isFinite(vfVolt.max)
+          && Number.isFinite(vfFreq.min) && Number.isFinite(vfFreq.max)) {
+          caps.lockRange = {
+            voltMin: Math.max(0, igclToCanonical(vfVolt.min, vfVolt.units)),
+            voltMax: igclToCanonical(vfVolt.max, vfVolt.units),
+            freqMin: Math.max(0, igclToCanonical(vfFreq.min, vfFreq.units)),
+            freqMax: igclToCanonical(vfFreq.max, vfFreq.units),
+          };
+        }
       }
+    }
+    // M17e (the user addition + round-2 N3): the LISTED-CARD fallback table
+    // (pure/lock-ranges.ts - the a770/a750 documented-class rows) fills the
+    // caps.lockRange when the driver props did not report the limits (or the
+    // whole props read failed) on a gpuLock-capable device; b580/arc-igpu/
+    // pro-b50 have no gpuLock control at all - no lockRange (the clamps +
+    // the renderer fall back to the documented absolute bounds).
+    if (caps.controls.gpuLock === true && !caps.lockRange) {
+      const listed = lockRangeOf(dev.pciDeviceId ?? null);
+      if (listed) caps.lockRange = listed;
     }
     // M17 (B50-class): OC-locked devices (Arc B50 / Arc Pro B50 and friends)
     // have NO overclocking surface - ctlOverclockGetProperties fails (or
@@ -1140,6 +1176,7 @@ export class IgclBackend {
     const state = {
       powerLimitW: null, gpuVoltOffsetV: null, gpuFreqOffsetMhz: null, tempLimitC: null,
       vramFreqOffsetGts: null, vramVoltOffsetV: null, gpuLock: null, vfCurve: null,
+      vfCurveUnits: null,
       fanMode: null, fanCurve: null, fixedFanPct: null,
     };
 
@@ -1168,7 +1205,9 @@ export class IgclBackend {
       const result = lib.ctlOverclockGpuLockGet(dev.handle, lockBuf);
       if (result === CTL_RESULT.SUCCESS) {
         const lock = koffi.decode(lockBuf, 'ctl_oc_vf_pair_t');
-        state.gpuLock = { voltageV: lock.Voltage, freqMhz: lock.Frequency };
+        // M17e: the lock read-back is MILLIVOLTS (probe 2, 2026-08-12) -
+        // convert to the canonical volts shape (0,0 = dynamic).
+        state.gpuLock = { voltageV: lock.Voltage / 1000, freqMhz: lock.Frequency };
       }
     }
 
@@ -1186,7 +1225,19 @@ export class IgclBackend {
           state.vfCurve = [];
           for (let i = 0; i < num; i++) {
             const pt = koffi.decode(curveBuf, i * sz, 'ctl_voltage_frequency_point_t');
+            // M17e (round-1 N9): ctl_voltage_frequency_point_t.Voltage is a
+            // uint32 and the IGCL header documents NO unit for it - the
+            // struct comment-free field cannot hold volts (volts are
+            // untenable in a uint32), and the lock API's mV-vs-V lie (probe
+            // 2: the @brief says mV while the pair struct says Volts) is
+            // the strongest signal the sibling VF struct is the same
+            // contract. But NO blind conversion: the RAW uint32 is surfaced
+            // into the canonical voltageV field + the named status records
+            // the unverified units until a vfCurve-capable device probe
+            // (Battlemage) pins the scale. Live impact today is zero - the
+            // A770's curve read answers ERROR_DATA_READ (Alchemist).
             state.vfCurve.push({ voltageV: pt.Voltage, freqMhz: pt.Frequency });
+            state.vfCurveUnits = 'vf-curve-units-unverified';
           }
         }
       }
@@ -1547,6 +1598,34 @@ export class IgclBackend {
     const units = await this._ocUnitsOf(deviceId);
     const result = { ok: true, perControl: {} };
 
+    // M17e (round-1 S1b): the UNIVERSAL lock-vs-offset normalization - a
+    // NON-ZERO gpuLock forces the freq/volt offsets to 0 in EVERY apply
+    // path (the elevated worker, boot, tray, --apply-profile all route
+    // through this method). The driver's lock and offset families fight
+    // (CTL_RESULT_ERROR_CORE_OVERCLOCK_IN_VOLTAGE_LOCKED_MODE refuses
+    // offset writes while locked), so the atomic-lock contract is that a
+    // lock zeroes the offsets; a legacy/hand-edited profile whose lock
+    // rides with non-zero offsets gets normalized here (the pinned
+    // behavior: the driver state ends at the lock + the offsets 0). Power
+    // Limit + Temp Limit are NEVER touched (the user's rule - they never
+    // ride the lock payload and are never reset by a lock apply).
+    // M17e (round-2 S1): the zeroed offset keys are ADDED UNCONDITIONALLY -
+    // a LOCK-ONLY payload (no offset keys carried - a legacy/hand-edited
+    // profile or a direct apply-settings of { gpuLock } only) must STILL
+    // write the zero offsets (the offsets-first write-order branch below
+    // then writes them): skipping the absent keys would leave the driver
+    // holding non-zero offsets when the lock lands - the exact
+    // lock-vs-offset fight the atomic design targets. The zeroed offsets'
+    // per-control entries land too (the driver state ends at lock +
+    // offsets 0 - the pinned behavior).
+    if (settings.gpuLock
+      && !(settings.gpuLock.voltageV === 0 && settings.gpuLock.freqMhz === 0)) {
+      const out = { ...settings };
+      out.gpuFreqOffsetMhz = 0;
+      out.gpuVoltOffsetV = 0;
+      settings = out;
+    }
+
     const fail = (control, errorCode, message) => {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
@@ -1622,9 +1701,26 @@ export class IgclBackend {
         return;
       }
       // Never assume the caller's pair is in range (backend contract): the
-      // lock pair has no capability range, so clamp to the documented bounds.
-      const bounded = clampGpuLock(lock);
-      const pair = { Size: koffi.sizeof('ctl_oc_vf_pair_t'), Version: 0, Voltage: bounded.voltageV, Frequency: bounded.freqMhz };
+      // lock pair has no capability range, so clamp to the per-device
+      // lockRange when the caps carry one (the M17e props-derived bounds),
+      // else the documented absolute bounds (the (0,0) unlock always passes
+      // unclamped - a positive voltMin must never clamp the unlock).
+      const bounded = clampGpuLock(lock, caps.lockRange);
+      // M17e (2026-08-12 live probe, probe 2): ctlOverclockGpuLockSet is
+      // MILLIVOLTS despite the struct comment - the header contradicts
+      // itself (ctl_oc_vf_pair_t says 'in Volts'; the ctlOverclockGpuLockSet
+      // @brief says 'Locks the GPU voltage for Overclocking in mV'). The
+      // probe proved it: (0.95 V, 2400 MHz) -> VOLTAGE_OUTSIDE_RANGE (the
+      // driver read 0.95 mV), (950 mV, 2400 MHz) -> SUCCESS + read-back
+      // (950, 2400) stuck. The canonical settings shape stays VOLTS; the
+      // mV conversion happens ONLY at this native boundary (and the
+      // read-back converts back). M17e step-4 finding 2: the write is
+      // ROUNDED to the integer-mV grid (Math.round) - a fractional-mV
+      // write (0.9505 V -> 950.5 mV) never reaches the driver (either
+      // refused or truncated into a confusing read-back mismatch); the
+      // read-back compare below stays against `bounded.voltageV`, so a
+      // real 1-mV driver discrepancy remains flagged.
+      const pair = { Size: koffi.sizeof('ctl_oc_vf_pair_t'), Version: 0, Voltage: Math.round(bounded.voltageV * 1000), Frequency: bounded.freqMhz };
       const setResult = lib.ctlOverclockGpuLockSet(dev.handle, pair);
       if (setResult !== CTL_RESULT.SUCCESS) {
         fail('gpuLock', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
@@ -1639,8 +1735,9 @@ export class IgclBackend {
         message = `set succeeded but read-back failed (${describeResult(getResult)})`;
       } else {
         const got = koffi.decode(lockBuf, 'ctl_oc_vf_pair_t');
-        readBackEqual = nearlyEqual(got.Voltage, bounded.voltageV) && nearlyEqual(got.Frequency, bounded.freqMhz);
-        message = readBackEqual ? undefined : `read-back ${got.Voltage}V/${got.Frequency}MHz != requested`;
+        // The read-back is mV too - convert back to the canonical volts.
+        readBackEqual = nearlyEqual(got.Voltage / 1000, bounded.voltageV) && nearlyEqual(got.Frequency, bounded.freqMhz);
+        message = readBackEqual ? undefined : `read-back ${got.Voltage}mV/${got.Frequency}MHz != requested ${bounded.voltageV}V/${bounded.freqMhz}MHz`;
       }
       result.perControl.gpuLock = {
         ok: readBackEqual,
@@ -1830,12 +1927,42 @@ export class IgclBackend {
     };
 
     await applyScalar('powerLimit', 'powerLimitW', 'powerLimit', settings.powerLimitW);
-    await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
-    await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
     await applyScalar('tempLimit', 'tempLimitC', 'tempLimit', settings.tempLimitC);
     await applyScalar('vramFreqOffset', 'vramFreqOffsetGts', 'vramFreqOffset', settings.vramFreqOffsetGts);
     await applyScalar('vramVoltOffset', 'vramVoltOffsetV', 'vramVoltOffset', settings.vramVoltOffsetV);
-    await applyLock(settings.gpuLock);
+
+    // M17e (round-1 S1a): the LOCK/OFFSET WRITE ORDER. The driver's lock
+    // and offset families genuinely fight (IN_VOLTAGE_LOCKED_MODE refuses
+    // offset writes while a lock is set), so the order depends on the
+    // payload the caller composed (pinned by the call-order tests on the
+    // fake lib's calls.sets):
+    //   - a NON-ZERO lock (the atomic lock - the normalization zeroed any
+    //     carried offsets): the zero-offset writes FIRST, then the lock -
+    //     the driver must not still sit in offset mode when the lock lands;
+    //   - a (0,0) unlock + non-zero offsets (the atomic unlock): the
+    //     UNLOCK FIRST, then the offsets - a locked driver refuses the
+    //     offset writes before the unlock;
+    //   - neither (offsets only, or a lone lock/unlock): the historical
+    //     order (offsets then lock).
+    const hasLockPair = settings.gpuLock !== undefined && settings.gpuLock !== null;
+    const lockIsUnlock = !hasLockPair || (settings.gpuLock.voltageV === 0 && settings.gpuLock.freqMhz === 0);
+    const hasOffsetWrites = (settings.gpuVoltOffsetV !== undefined && settings.gpuVoltOffsetV !== null)
+      || (settings.gpuFreqOffsetMhz !== undefined && settings.gpuFreqOffsetMhz !== null);
+    if (!lockIsUnlock) {
+      // The non-zero lock: zero-offset writes first, then the lock.
+      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
+      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
+      await applyLock(settings.gpuLock);
+    } else if (hasLockPair && hasOffsetWrites) {
+      // The (0,0) unlock + offsets: the unlock first, then the offsets.
+      await applyLock(settings.gpuLock);
+      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
+      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
+    } else {
+      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
+      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
+      if (hasLockPair) await applyLock(settings.gpuLock);
+    }
     await applyFan();
 
     // vfCurve write path (Battlemage; not exercised in M1 on Alchemist).
@@ -1843,53 +1970,67 @@ export class IgclBackend {
       if (!caps.controls.vfCurve || this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve)) {
         fail('vfCurve', 'unsupported', 'custom VF curve not supported on this device');
       } else {
-        const points = settings.vfCurve.map((p) => ({ Voltage: p.voltageV, Frequency: p.freqMhz }));
-        const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, points);
-        if (setResult !== CTL_RESULT.SUCCESS) {
-          fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+        // M17e (round-1 N9): ctl_voltage_frequency_point_t.Voltage is a
+        // uint32 - a fractional volt (0.9) encodes into it by TRUNCATION
+        // (~0): a uint32 truncation must NEVER silently write 0. The scale
+        // is unverified (the same mV-vs-V hazard the lock API proved), so
+        // the honest gate refuses non-INTEGER volts - integer volts are the
+        // only values representable in the field regardless of the scale.
+        const nonInteger = settings.vfCurve.filter((p) => !Number.isInteger(p.voltageV));
+        if (nonInteger.length > 0) {
+          fail('vfCurve', 'out-of-range', `VF curve voltages must be whole volts - the ctl_voltage_frequency_point_t.Voltage field is a uint32 (a fractional volt would truncate to 0) and its unit is unverified on this device`);
         } else {
-          // Read-back verification (plan §5): re-read the curve and compare
-          // point-by-point before reporting readBackEqual.
-          let v;
-          if (this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
-            v = { ok: false, message: 'VF curve write succeeded but read-back (ctlOverclockReadVFCurve) is unavailable' };
+          const points = settings.vfCurve.map((p) => ({ Voltage: p.voltageV, Frequency: p.freqMhz }));
+          const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, points);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
-            const numBuf = koffi.alloc('uint32', 1);
-            koffi.encode(numBuf, 'uint32', 0);
-            let res = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, null);
-            const num = koffi.decode(numBuf, 'uint32');
-            if (res !== CTL_RESULT.SUCCESS) {
-              v = { ok: false, message: `VF curve write succeeded but read-back failed (${describeResult(res)})` };
-            } else if (num !== points.length) {
-              v = { ok: false, message: `VF curve read-back ${num} points != requested ${points.length}` };
+            // Read-back verification (plan §5): re-read the curve and compare
+            // point-by-point before reporting readBackEqual.
+            let v;
+            if (this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
+              v = { ok: false, message: 'VF curve write succeeded but read-back (ctlOverclockReadVFCurve) is unavailable' };
             } else {
-              const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
-              res = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, curveBuf);
+              const numBuf = koffi.alloc('uint32', 1);
+              koffi.encode(numBuf, 'uint32', 0);
+              let res = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, null);
+              const num = koffi.decode(numBuf, 'uint32');
               if (res !== CTL_RESULT.SUCCESS) {
-                v = { ok: false, message: `VF curve read-back failed (${describeResult(res)})` };
+                v = { ok: false, message: `VF curve write succeeded but read-back failed (${describeResult(res)})` };
+              } else if (num !== points.length) {
+                v = { ok: false, message: `VF curve read-back ${num} points != requested ${points.length}` };
               } else {
-                const sz = koffi.sizeof('ctl_voltage_frequency_point_t');
-                v = { ok: true };
-                for (let i = 0; i < num; i++) {
-                  const pt = koffi.decode(curveBuf, i * sz, 'ctl_voltage_frequency_point_t');
-                  const want = points[i];
-                  if (!nearlyEqual(pt.Voltage, want.Voltage, 1e-6) || !nearlyEqual(pt.Frequency, want.Frequency, 1e-6)) {
-                    v = { ok: false, message: `VF curve point ${i} read-back ${pt.Voltage}V/${pt.Frequency}MHz != requested ${want.Voltage}V/${want.Frequency}MHz` };
-                    break;
+                const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
+                res = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, curveBuf);
+                if (res !== CTL_RESULT.SUCCESS) {
+                  v = { ok: false, message: `VF curve read-back failed (${describeResult(res)})` };
+                } else {
+                  const sz = koffi.sizeof('ctl_voltage_frequency_point_t');
+                  v = { ok: true };
+                  for (let i = 0; i < num; i++) {
+                    const pt = koffi.decode(curveBuf, i * sz, 'ctl_voltage_frequency_point_t');
+                    const want = points[i];
+                    // M17e (finding 4): the raw uint32 is NEVER labeled as V
+                    // (the units are unverified - N9) - the message labels the
+                    // read-back honestly as the raw field value.
+                    if (!nearlyEqual(pt.Voltage, want.Voltage, 1e-6) || !nearlyEqual(pt.Frequency, want.Frequency, 1e-6)) {
+                      v = { ok: false, message: `VF curve point ${i} read-back ${pt.Voltage} (raw uint32, units unverified) / ${pt.Frequency} MHz != requested ${want.Voltage} V / ${want.Frequency} MHz` };
+                      break;
+                    }
                   }
                 }
               }
             }
+            result.perControl.vfCurve = {
+              ok: v.ok,
+              readBackEqual: v.ok,
+              errorCode: v.ok ? undefined : 'io-failed',
+              message: v.message,
+              // F3 silent no-op: SUCCESS from the write with a mismatch on re-read.
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !v.ok,
+            };
+            if (!v.ok) result.ok = false;
           }
-          result.perControl.vfCurve = {
-            ok: v.ok,
-            readBackEqual: v.ok,
-            errorCode: v.ok ? undefined : 'io-failed',
-            message: v.message,
-            // F3 silent no-op: SUCCESS from the write with a mismatch on re-read.
-            silentNoop: setResult === CTL_RESULT.SUCCESS && !v.ok,
-          };
-          if (!v.ok) result.ok = false;
         }
       }
     }
