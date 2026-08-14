@@ -1,4 +1,4 @@
-// Arc Power - M17i/M17j the sysman-helper modes: the dedicated IGCL-free
+// Arc Power - M17i/M17m the sysman-helper modes: the dedicated IGCL-free
 // process for the sysman power-limits consumer. The measured root cause
 // (plan M17i): the consumer's zesInit fails with ERROR_UNINITIALIZED ONLY
 // when the IGCL is loaded inside an ELECTRON process - the packaged app
@@ -7,7 +7,12 @@
 // loads ONLY the consumer (NO backend, NO OldIgcl, NO IGCL - the
 // bare-context zesInit path, proven by the M17i diagnostic ladder).
 //
-// TWO forms share this module:
+// TWO forms share this module (the M17j/M17l PERSISTENT stdin form
+// `--sysman-helper-persist` was REMOVED in M17m run B - the detached pipe
+// form supersedes it: the helper's ze context must OUTLIVE the app
+// sessions, because a FRESH ze init fails for 12-20+ min after an IGCL
+// write elsewhere while an EXISTING context writes through the window
+// instantly):
 //
 // 1. The M17i ONE-SHOT form (`--sysman-helper <reqFile> <outFile>`): the
 //    parent's proxy (helper-proxy.js) writes the request + the
@@ -31,33 +36,40 @@
 //        could not be honored at all (unreadable / unknown op / stale
 //        token).
 //
-// 2. The M17j PERSISTENT form (`--sysman-helper-persist`, no req/out
-//    args): the ze init happens ONCE at start with a RETRY-UNTIL-READY
-//    loop (~2 s backoff - the M17j arbitration window: a FRESH ze init
-//    fails for 8+ s after an IGCL write elsewhere, while an EXISTING
-//    context writes fine; the window eventually closes, so the helper
-//    retries until the init lands). Once ready, it serves JSON-LINE
-//    requests from stdin and answers JSON-LINE responses on stdout:
-//      req:  { id, op: 'read' } | { id, op: 'set', sustainedW, burstW }
-//      resp: { id, ok: true, sustainedW?, burstW?, peakW? } |
-//            { id, ok: false, errorCode?, message? } (the errorCode/message
-//            ride VERBATIM - the refused-class taxonomy at apply-routing.js
-//            keys on the exact codes)
-//    and exits on stdin EOF. THE LOG CHANNEL IS PINNED (round-1 S1):
-//    log() -> STDERR (the default log is console.error) - stdout carries
-//    ONLY the JSON-line responses. THE READY SEMANTICS (the round-1 S2
-//    buffered-until-ready half; the kill-on-timeout half lives in the
-//    proxy - the helper is never killed for a request timeout):
-//    requests are BUFFERED until the init completes (no handshake marker
-//    needed) - the proxy's request timeout covers the wait. On stdin EOF
-//    the helper exits 0 (a buffer already being served drains first; an
-//    EOF during the init retry exits immediately - the parent is gone).
+// 2. The M17m PIPE form (`--sysman-helper-pipe`, no args): the DETACHED
+//    machine-level helper. The same IGCL-free consumer + the same
+//    retry-until-ready ze init, but the transport is a Windows NAMED PIPE
+//    (\\.\pipe\arcpower-sysman, node's net) and the lifecycle is detached:
+//    a client disconnect NEVER exits the helper (the M17l stdin-EOF exit
+//    is NOT in this mode) - the in-flight dispatch completes, the
+//    connection's buffered queue is dropped. It exits only on the IDLE
+//    TIMEOUT (round-2 S1: the timer is ARMED ONLY WHILE NO CONNECTION IS
+//    OPEN - cancelled on every connection-open, re-armed at the full
+//    value on every connection-close; a HELD-OPEN connection keeps the
+//    helper alive INDEFINITELY; the constant is HELPER-SIDE + injectable,
+//    RID_SYSMAN_HELPER_IDLE_MS, default 60 min) or on the BIND CONFLICT
+//    (a second helper's EADDRINUSE -> exit 0 - the existing helper is
+//    alive). THE PER-CONNECTION READY SEMANTICS (round-1 S1): the ze init
+//    is GLOBAL (once); a NEW connection to an already-ready helper
+//    receives { type: 'ready' } as its FIRST line, immediately; a
+//    connection to an initializing helper has its requests BUFFERED
+//    PER-CONNECTION and receives the ready line when the global init
+//    lands (before its buffered responses); the ready line is sent AT
+//    MOST ONCE PER CONNECTION. THE DISPATCH IS GLOBALLY SERIALIZED (the
+//    single ze context - the inFlight serialization of the stdin form
+//    carries over); the responses route to the requesting connection
+//    ({ id } per-connection routing). THE HELPER'S OWN LOG FILE (round-1
+//    S3): %TEMP%\arcpower-sysman-helper.log - the init-retry lines + the
+//    ready/response events + the PID + the init timestamp (the
+//    same-helper assertion surface), non-throwing.
 //
 // Electron-free: the consumer is INJECTED (the seam that makes the whole
 // contract testable under plain node --test - main.js wires the real
 // createSysmanPowerLimits({})).
 
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { findStaleSiblingToken } from '../apply-worker.js';
@@ -70,9 +82,68 @@ import { findStaleSiblingToken } from '../apply-worker.js';
 export const INIT_RETRY_BACKOFF_MS = 2000;
 
 /**
+ * M17m the named-pipe transport: \\.\pipe\arcpower-sysman (node's net).
+ * The detached helper's listening endpoint - the app's proxy connects
+ * here, and the helper's ze context (init'd when the machine was idle)
+ * outlives the app sessions (the M17m premise: an EXISTING context
+ * writes through the 12-20+ min arbitration window; a FRESH init cannot).
+ */
+export const SYSMAN_PIPE_NAME = '\\\\.\\pipe\\arcpower-sysman';
+
+/**
+ * M17m the idle-timeout constant (round-2 S1): the helper exits after
+ * HELPER_IDLE_MS without any open connection. THE IDLE TIMER IS ARMED
+ * ONLY WHILE NO CONNECTION IS OPEN: cancelled on every connection-open,
+ * (re)armed at the full value on every connection-close; a HELD-OPEN
+ * connection keeps the helper alive INDEFINITELY (the 'no connection'
+ * exit condition means ZERO open connections, never zero open/close
+ * events - a timer firing mid-session would exit the helper inside an
+ * open arbitration window). The constant is HELPER-SIDE + injectable:
+ * the env override RID_SYSMAN_HELPER_IDLE_MS (round-1 S4).
+ */
+export const HELPER_IDLE_MS = 60 * 60 * 1000;
+export const HELPER_IDLE_MS_ENV = 'RID_SYSMAN_HELPER_IDLE_MS';
+
+/**
+ * M17m the helper's own log file (round-1 S3): %TEMP%\
+ * arcpower-sysman-helper.log. The diagnostic channel moves INTO the
+ * helper (the proxy-side stderr capture dies with the stdin model in run
+ * B); the log carries the init-retry lines + the ready/response events +
+ * the PID + the init timestamp - the same-helper assertion surface
+ * (round-1 S4: the PID + the initTs are UNCHANGED across the app
+ * sessions).
+ */
+export function defaultHelperLogFilePath() {
+  return path.join(os.tmpdir(), 'arcpower-sysman-helper.log');
+}
+
+/**
+ * M17m the helper's log writer: a NON-THROWING append-only file writer.
+ * Every line: `[<pid>] <ISO timestamp> <message>` - the PID + the
+ * timestamp prefix make the file the same-helper assertion surface.
+ */
+export function createSysmanHelperLogFileWriter(logFilePath = defaultHelperLogFilePath()) {
+  return (message) => {
+    try {
+      fs.appendFileSync(logFilePath, `[${process.pid}] ${new Date().toISOString()} ${message}\n`, 'utf8');
+    } catch {
+      // The log is best-effort - never throw (round-1 S3: non-throwing).
+    }
+  };
+}
+
+/** The RID_SYSMAN_HELPER_IDLE_MS env override (round-1 S4), or null. */
+function idleMsFromEnv() {
+  const raw = process.env[HELPER_IDLE_MS_ENV];
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/**
  * The SHARED request dispatch (both forms): the consumer call + the honest
  * result mapping. The one-shot form writes the payload to the out file;
- * the persistent form writes it as a JSON line on stdout - the payload
+ * the pipe form writes it as a JSON line on the connection - the payload
  * shape is IDENTICAL so the proxy's consumer contract never diverges.
  * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown }} req
  * @param {{
@@ -170,8 +241,8 @@ export async function runSysmanHelperMode({ reqPath, outPath, consumer, log = ()
     return 1;
   }
 
-  // The shared dispatch (both helper forms - the M17j persistent mode
-  // reuses the exact same request handling + result mapping).
+  // The shared dispatch (both helper forms - the pipe mode reuses the exact
+  // same request handling + result mapping).
   const { payload, exitCode } = await dispatchRequest(req, consumer, log);
   await writeOut(outPath, payload, id);
   return exitCode;
@@ -190,152 +261,247 @@ async function writeOut(outPath, payload, id) {
 }
 
 /**
- * M17j the PERSISTENT sysman-helper mode: the ze init happens ONCE at
- * start with the RETRY-UNTIL-READY loop (~2 s backoff - the measured
- * arbitration window: a FRESH ze init fails for 8+ s after an IGCL write
- * in another process, while an EXISTING context writes fine; the window
- * eventually closes, so the loop retries until the init lands). Once
- * ready, the helper serves JSON-LINE requests from stdin and answers
- * JSON-LINE responses on stdout, exiting on stdin EOF.
+ * M17m the DETACHED PIPE sysman-helper mode: the machine-level helper
+ * that outlives the app sessions. The same IGCL-free consumer + the same
+ * retry-until-ready ze init as the one-shot form, but the transport is
+ * a Windows named pipe (\\\\.\\pipe\\arcpower-sysman - node's net) and
+ * the lifecycle is detached: a client disconnect NEVER exits the helper
+ * (the M17l stdin-EOF exit was REMOVED in run B along with the stdin
+ * form) - the in-flight dispatch
+ * completes, the connection's buffered queue is dropped. The helper exits
+ * only on the IDLE TIMEOUT (round-2 S1: the timer is ARMED ONLY WHILE NO
+ * CONNECTION IS OPEN - cancelled on every connection-open, re-armed at
+ * the full value on every connection-close; a HELD-OPEN connection keeps
+ * the helper alive INDEFINITELY; the env override
+ * RID_SYSMAN_HELPER_IDLE_MS, default HELPER_IDLE_MS = 60 min) or on the
+ * BIND CONFLICT (a second helper's EADDRINUSE -> exit 0 - the existing
+ * helper is alive, the proxy retries the connect).
  *
- * THE READY SEMANTICS (the round-1 S2 buffered-until-ready half): requests
- * arriving during the init retry are BUFFERED and served once the init
- * completes - no handshake marker; the proxy's request timeout covers the
- * wait. On stdin EOF the
- * helper exits 0 - a buffer already being served drains first; an EOF
- * during the init retry exits immediately (the parent is gone, no one
- * waits for the buffered responses).
+ * THE PER-CONNECTION READY SEMANTICS (round-1 S1): the ze init is GLOBAL
+ * (once - the retry-until-ready loop); a NEW connection to an
+ * already-ready helper receives { type: 'ready' } as its FIRST line,
+ * immediately (the write happens synchronously inside the connection
+ * handler); a connection to an initializing helper has its requests
+ * BUFFERED PER-CONNECTION and receives the ready line when the global
+ * init lands (before its buffered responses); the ready line is sent AT
+ * MOST ONCE PER CONNECTION (the readySent flag per connection). THE
+ * DISPATCH IS GLOBALLY SERIALIZED (the single ze context - the removed
+ * stdin form's inFlight serialization carries over; one dispatch at a time
+ * across ALL connections, FIFO in arrival order); the responses route to
+ * the requesting connection ({ id } per-connection routing).
  *
- * THE LOG CHANNEL IS PINNED (round-1 S1): the default log is
- * console.error (STDERR) - stdout carries ONLY the JSON-line responses
- * (the proxy's reader treats any non-JSON stdout line as a protocol
- * error). The retries are logged via the same channel.
+ * THE HELPER'S OWN LOG FILE (round-1 S3): the default log is a
+ * NON-THROWING append-only writer to %TEMP%\arcpower-sysman-helper.log -
+ * the init-retry lines + the ready/response events + the PID + the init
+ * timestamp (the same-helper assertion surface). The pipe-mode caller
+ * (main.js) pins the consumer's log to the same file.
  *
  * The init retry creates a FRESH consumer per attempt (the real
  * createSysmanPowerLimits LATCHES its degrade - a failed ze init stays
  * unavailable on that instance, so a retry must be a new instance).
- *
- * THE STDIN CHANNEL (measured - the M17j run-A fix): electron CLOSES the
- * JS-level process.stdin at startup (the 'end'/'close' events fire
- * immediately; the piped data is never delivered), while the RAW fd-0
- * handle stays open and readable (proven live: fs.readSync(0) + a fresh
- * fs.createReadStream({ fd: 0 }) deliver the piped lines). The DEFAULT
- * input is therefore a fresh fd-0 ReadStream - under BOTH electron and
- * plain node (the fd-0 read works in either; the injected streams are
- * used by the tests).
- *
- * The function returns IMMEDIATELY - the init loop runs DETACHED and every
- * exit (the EOF exit / a dead stdout pipe) goes through the returned
- * promise, so the EOF exit can never be blocked behind a pending backoff
- * sleep.
  *
  * @param {{
  *   createConsumer: () => {
  *     readLimits: (deviceId?: number) => { sustainedW: number, burstW: number, peakW: number } | null | Promise<...>,
  *     setLimits: ({ sustainedW: number, burstW: number }) => { ok: boolean, errorCode?: string, message?: string } | Promise<...>,
  *   },
- *   log?: (s: string) => void,          // STDERR (default console.error)
+ *   log?: (s: string) => void,          // default: the file writer (round-1 S3)
+ *   logFilePath?: string,               // the helper's log file (default %TEMP%\arcpower-sysman-helper.log)
  *   sleep?: (ms: number) => Promise<void>,  // the injectable backoff sleep
  *   initBackoffMs?: number,             // the ~2 s init-retry interval
- *   stdin?: NodeJS.ReadableStream,      // the JSON-line request source
- *   stdout?: { write: (s: string) => void },  // the JSON-line response sink
+ *   idleMs?: number,                    // the idle timeout (default: the RID override ?? 60 min)
+ *   pipeName?: string,                  // the named pipe (default \\.\pipe\arcpower-sysman)
+ *   netModule?: typeof import('node:net'),  // the injectable net seam
  * }} deps
- * @returns {Promise<number>} process exit code (0 = the EOF exit)
+ * @returns {Promise<number>} process exit code (0 = the idle exit / the
+ *   EADDRINUSE bind-conflict exit; 1 = another listen error)
  */
-export function runSysmanHelperPersistentMode({
+export function runSysmanHelperPipeMode({
   createConsumer,
-  log = (s) => console.error(`[sysman-helper-persist] ${s}`),
+  log,
+  logFilePath,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   initBackoffMs = INIT_RETRY_BACKOFF_MS,
-  stdin = fs.createReadStream('', { fd: 0, autoClose: false }),
-  stdout = process.stdout,
+  idleMs = idleMsFromEnv() ?? HELPER_IDLE_MS,
+  pipeName = SYSMAN_PIPE_NAME,
+  netModule = net,
 }) {
-  const rl = readline.createInterface({ input: stdin });
-  /** @type {Array<{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown }>} */
-  const queue = [];
-  let eof = false;       // stdin EOF seen
-  let consumer = null;   // the READY consumer (null until the init lands)
-  let inFlight = false;  // a dispatch in progress (requests are serialized)
+  const helperLog = log ?? createSysmanHelperLogFileWriter(logFilePath ?? defaultHelperLogFilePath());
+  // The GLOBAL state: the single ze context (init'd once) + the globally
+  // serialized dispatch (one in-flight dispatch at a time across ALL
+  // connections - the removed stdin form's inFlight carries over).
+  let consumer = null;      // the READY consumer (null until the init lands)
+  let initTs = null;        // the init timestamp (the same-helper assertion)
+  let inFlight = false;     // a dispatch in progress (globally serialized)
   let settled = false;
   let resolveExit = () => {};
   const done = new Promise((r) => { resolveExit = r; });
+  /** @type {Map<import('node:net').Socket, { sock: import('node:net').Socket, queue: object[], readySent: boolean }>} */
+  const conns = new Map();
+  let idleTimer = null;
+  let server = null;
 
   const finish = (code) => {
     if (settled) return;
     settled = true;
-    try { rl.close(); } catch { /* best effort */ }
+    try { if (idleTimer) clearTimeout(idleTimer); } catch { /* best effort */ }
+    try { server?.close(); } catch { /* best effort */ }
+    helperLog(`helper exiting (code ${code})`);
     resolveExit(code);
   };
 
-  const maybeExit = () => {
-    if (settled || !eof) return;
-    // The parent is gone (EOF). A buffer already being served drains
-    // first (the responses were requested before the EOF); otherwise exit
-    // now - the init retry's EOF exit is immediate (the round-1 S2 parent-gone half).
-    if (consumer && (queue.length > 0 || inFlight)) return;
-    finish(0);
+  const armIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = null;
+    if (conns.size > 0) return; // a HELD-OPEN connection - never armed
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (conns.size > 0) return; // a connection opened while the timer was pending
+      helperLog(`idle timer fired (${idleMs} ms without connections) - exiting 0`);
+      finish(0);
+    }, idleMs);
+    helperLog(`idle timer armed (${idleMs} ms)`);
   };
 
-  const respond = (id, payload) => {
+  /**
+   * The per-connection response write (the { id } routing). The ready
+   * line and the response shapes never collide: the ready line carries
+   * ONLY 'type'; no response shape carries one.
+   */
+  const respond = (sock, id, payload) => {
     const body = typeof id === 'string' && id !== '' ? { id, ...payload } : payload;
     try {
-      stdout.write(`${JSON.stringify(body)}\n`);
+      sock.write(`${JSON.stringify(body)}\n`);
       return true;
     } catch (err) {
-      // The parent's pipe is gone (it died between the EOF and now) -
-      // nothing more to do.
-      log(`stdout write failed: ${err.message}`);
-      finish(0);
+      helperLog(`response write failed: ${err.message} (the connection is gone)`);
       return false;
     }
   };
 
+  /**
+   * THE PER-CONNECTION READY LINE: { type: 'ready' }, no id, AT MOST ONCE
+   * PER CONNECTION (the readySent flag is set before the write - the
+   * guarantee holds by construction even on a write failure).
+   */
+  const sendReady = (conn) => {
+    if (conn.readySent || settled) return true;
+    conn.readySent = true;
+    try {
+      conn.sock.write(`${JSON.stringify({ type: 'ready' })}\n`);
+      helperLog('ready sent to a connection');
+      return true;
+    } catch (err) {
+      helperLog(`ready write failed: ${err.message} (the connection is gone)`);
+      return false;
+    }
+  };
+
+  /**
+   * The next dispatch entry: the per-connection FIFO scan - the first
+   * connection with a buffered request owns the next dispatch (the GLOBAL
+   * serialization - one ze-context call at a time; the response routes to
+   * the requesting connection).
+   */
+  const nextRequest = () => {
+    for (const conn of conns.values()) {
+      if (conn.queue.length > 0) return { conn, req: conn.queue.shift() };
+    }
+    return null;
+  };
+
   const pump = async () => {
-    while (consumer && queue.length > 0 && !inFlight) {
-      const req = queue.shift();
+    while (!settled && consumer && !inFlight) {
+      const entry = nextRequest();
+      if (!entry) break;
       inFlight = true;
+      const { conn, req } = entry;
       try {
-        const { payload } = await dispatchRequest(req, consumer, log);
-        if (!respond(req?.id, payload)) return;
+        const { payload } = await dispatchRequest(req, consumer, helperLog);
+        const wrote = respond(conn.sock, req?.id, payload);
+        helperLog(`response id=${String(req?.id ?? '<none>')} op=${String(req?.op)} ok=${payload?.ok === true}${wrote ? '' : ' (write failed - the connection is gone)'}`);
       } catch (err) {
         // Defensive - dispatchRequest never throws (every path is caught).
-        if (!respond(req?.id, { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) })) return;
+        respond(conn.sock, req?.id, { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) });
       } finally {
         inFlight = false;
       }
     }
-    maybeExit();
   };
 
-  rl.on('line', (line) => {
-    let req = null;
-    try {
-      req = JSON.parse(line);
-    } catch {
-      req = null;
-    }
-    if (!req || typeof req !== 'object') {
-      // A malformed line: the honest refusal (never occurs from the proxy -
-      // it always writes well-formed JSON lines).
-      respond(null, { ok: false, errorCode: 'invalid-request', message: 'malformed request: expected a JSON line with { id, op }' });
+  server = netModule.createServer((sock) => {
+    if (settled) {
+      sock.destroy();
       return;
     }
-    queue.push(req);
-    pump();
+    const conn = { sock, queue: [], readySent: false };
+    conns.set(sock, conn);
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    helperLog(`connection open (${conns.size} open)`);
+    // THE PER-CONNECTION READY SEMANTICS: a connection to an ALREADY-READY
+    // helper receives the ready line as its FIRST line, IMMEDIATELY (the
+    // write is synchronous inside the connection handler - before any
+    // 'data' event of this socket is delivered); a connection to an
+    // INITIALIZING helper is buffered (its queue) + greeted when the
+    // GLOBAL init lands (the initLoop sweep below).
+    if (consumer) sendReady(conn);
+    const rl = readline.createInterface({ input: sock });
+    rl.on('line', (line) => {
+      if (settled || !conns.has(sock)) return;
+      let req = null;
+      try {
+        req = JSON.parse(line);
+      } catch {
+        req = null;
+      }
+      if (!req || typeof req !== 'object') {
+        // The honest refusal (never occurs from the proxy - it always
+        // writes well-formed JSON lines). The id-less refusal carries
+        // ok/errorCode, never 'type' - the ready-line discrimination is
+        // unambiguous.
+        respond(sock, null, { ok: false, errorCode: 'invalid-request', message: 'malformed request: expected a JSON line with { id, op }' });
+        return;
+      }
+      conn.queue.push(req);
+      helperLog(`request id=${String(req?.id ?? '<none>')} op=${String(req?.op)} (queued)`);
+      pump();
+    });
+    sock.on('close', () => {
+      try { rl.close(); } catch { /* best effort */ }
+      if (conns.delete(sock)) {
+        // A DISCONNECT NEVER EXITS THE HELPER: the in-flight dispatch
+        // (globally) completes - its response write just fails on the dead
+        // socket; the connection's BUFFERED queue is dropped (the conn is
+        // gone from the scan). The idle timer re-arms at the FULL value.
+        helperLog(`connection closed (${conns.size} open)`);
+        armIdleTimer();
+      }
+    });
+    sock.on('error', () => {
+      // The socket error is followed by 'close' - the cleanup above runs.
+    });
   });
 
-  rl.on('close', () => {
-    eof = true;
-    pump();
-    maybeExit();
+  server.on('error', (err) => {
+    // THE BIND CONFLICT: a second helper's listen fails with EADDRINUSE ->
+    // EXIT 0 (the existing helper is alive - the proxy retries the
+    // connect). Any other listen error -> exit 1 (never hang).
+    if (err && err.code === 'EADDRINUSE') {
+      helperLog('listen failed: EADDRINUSE (the existing helper is alive) - exiting 0');
+      finish(0);
+    } else {
+      helperLog(`listen failed: ${err && err.code ? err.code : String(err)} - exiting 1`);
+      finish(1);
+    }
   });
+  server.listen(pipeName);
 
-  // The init-retry loop (DETACHED - see the header note): a fresh
-  // consumer per attempt (the real consumer LATCHES its degrade, so a
-  // retry must be a NEW init attempt). The retries are logged (STDERR -
-  // round-1 S1). An EOF exits immediately (the parent is gone - the
-  // buffered requests are dropped; the proxy's request timeout covers the
-  // wait on its side).
+  // The GLOBAL init-retry loop (DETACHED): a fresh consumer per attempt.
+  // When the init lands, every open connection receives the ready line
+  // NOW (the per-connection ready sweep - before its buffered responses
+  // drain; the sweep precedes the pump). The connections that open later
+  // get it on connect (the consumer is set); the readySent flag makes it
+  // at-most-once per connection.
   const initLoop = async () => {
     let attempt = 0;
     while (!consumer && !settled) {
@@ -346,26 +512,27 @@ export function runSysmanHelperPersistentMode({
         candidate = createConsumer();
         probe = await candidate.readLimits();
       } catch (err) {
-        log(`ze init attempt ${attempt} failed (${err instanceof Error ? err.message : String(err)}) - retrying in ~${initBackoffMs} ms`);
+        helperLog(`ze init attempt ${attempt} failed (${err instanceof Error ? err.message : String(err)}) - retrying in ~${initBackoffMs} ms`);
       }
       if (probe && typeof probe === 'object') {
         consumer = candidate;
-        log(`ze init ready on attempt ${attempt}`);
-        break;
+        initTs = new Date().toISOString();
+        helperLog(`ze init ready on attempt ${attempt} (initTs=${initTs})`);
+        for (const conn of conns.values()) sendReady(conn);
+        pump();
+        return;
       }
       if (probe === null || probe === undefined) {
-        log(`ze init attempt ${attempt} not ready yet (the consumer returned no limits) - retrying in ~${initBackoffMs} ms`);
+        helperLog(`ze init attempt ${attempt} not ready yet (the consumer returned no limits) - retrying in ~${initBackoffMs} ms`);
       }
-      if (eof) break; // the parent is gone - nothing to serve
+      if (settled) return;
       await sleep(initBackoffMs);
     }
-    if (!consumer) {
-      maybeExit();
-      return;
-    }
-    pump();
   };
-  initLoop().catch((err) => log(`the init loop failed: ${err instanceof Error ? err.message : String(err)}`));
+  initLoop().catch((err) => helperLog(`the init loop failed: ${err instanceof Error ? err.message : String(err)}`));
+
+  // THE IDLE TIMER: armed at start (no connection is open yet).
+  armIdleTimer();
 
   return done;
 }

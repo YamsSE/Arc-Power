@@ -12,15 +12,16 @@
 //     the IGCL-free process running the power-limits consumer (no backend,
 //     no OldIgcl - the bare-context zesInit path), spawned directly by the
 //     helper proxy, exits after writing the result file.
-//   electron . --sysman-helper-persist -> M17j PERSISTENT sysman helper:
-//     the same IGCL-free consumer process, but the ze init happens ONCE at
-//     start (the retry-until-ready loop rides out the M17j arbitration
-//     window - a FRESH ze init fails for 8+ s after an IGCL write in
-//     another process, while an EXISTING context writes fine) and the
-//     helper then serves JSON-LINE requests on stdin forever (the proxy's
-//     stdio client), exiting on stdin EOF. NO req/out args - the one-shot
-//     arg-count guard does NOT apply to this branch (the exact indexOf
-//     matching means the two flags never collide).
+//   electron . --sysman-helper-pipe -> M17m DETACHED sysman helper: the
+//     same IGCL-free consumer process, but the transport is the Windows
+//     named pipe \\.\pipe\arcpower-sysman (node's net) and the lifecycle
+//     is DETACHED - a client disconnect NEVER exits the helper (only the
+//     idle timeout does; RID_SYSMAN_HELPER_IDLE_MS, default 60 min), so
+//     its ze context (init'd when the machine was idle) outlives the app
+//     sessions and writes through the 12-20+ min arbitration window. Its
+//     own log file lives at %TEMP%\arcpower-sysman-helper.log. NO args.
+//     (The M17j/M17l PERSISTENT stdin form `--sysman-helper-persist` was
+//     REMOVED in M17m run B - the detached pipe form supersedes it.)
 //
 // The smoke path constructs the backend with allowAutoWaiver: true - the
 // ONLY place product code may do that (developer's own machine, no value
@@ -63,7 +64,11 @@ import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
 import { executeApply } from './apply-routing.js';
 import { runApplyWorker } from './apply-worker.js';
-import { runSysmanHelperMode, runSysmanHelperPersistentMode } from './sysman/helper-mode.js';
+import {
+  runSysmanHelperMode,
+  runSysmanHelperPipeMode,
+  createSysmanHelperLogFileWriter,
+} from './sysman/helper-mode.js';
 // M17i: the helper proxy - the parent-side client of the --sysman-helper
 // mode (the IGCL-free process running the power-limits consumer). The REAL
 // path constructs the proxy instead of the raw consumer everywhere the
@@ -113,10 +118,11 @@ const workerOutFile = applyWorkerIdx >= 0 ? process.argv[applyWorkerIdx + 2] : n
 const sysmanHelperIdx = process.argv.indexOf('--sysman-helper');
 const sysmanHelperReqFile = sysmanHelperIdx >= 0 ? process.argv[sysmanHelperIdx + 1] : null;
 const sysmanHelperOutFile = sysmanHelperIdx >= 0 ? process.argv[sysmanHelperIdx + 2] : null;
-// M17j PERSISTENT sysman-helper mode: `--sysman-helper-persist` (NO req/out
-// args). The exact indexOf element matching means this flag never collides
-// with `--sysman-helper` (round-1 N1).
-const sysmanHelperPersistIdx = process.argv.indexOf('--sysman-helper-persist');
+// M17m DETACHED PIPE sysman-helper mode: `--sysman-helper-pipe` (NO args) -
+// the named-pipe server form (run A ADDED the pipe mode ALONGSIDE the M17l
+// stdin mode; run B REMOVED the stdin mode + its `--sysman-helper-persist`
+// branch + swapped the proxy's spawn arg - no dead-flag window).
+const sysmanHelperPipeIdx = process.argv.indexOf('--sysman-helper-pipe');
 
 function createWindow(backgroundColor = '#0f1116', show = true) {
   const win = new BrowserWindow({
@@ -341,32 +347,35 @@ async function main() {
     return;
   }
 
-  // --- M17j --sysman-helper-persist mode (NO req/out args): -------------
-  // the PERSISTENT form of the sysman helper (M17j). The ze init happens
-  // ONCE at start with the retry-until-ready loop (~2 s backoff) - the
-  // measured arbitration window: a FRESH ze init fails for 8+ s after an
-  // IGCL write in another process, while an EXISTING context writes fine.
-  // Once ready, the helper serves JSON-LINE requests from stdin ({ id, op:
-  // 'read' } | { id, op: 'set', sustainedW, burstW }) with JSON-LINE
-  // responses on stdout ({ id, ok, sustainedW?, burstW?, peakW?,
-  // errorCode?, message? }) and exits on stdin EOF. THE LOG CHANNEL IS
-  // PINNED (round-1 S1): the logs (the init retries) go to STDERR -
-  // console.error - stdout carries ONLY the JSON-line responses. Like the
-  // one-shot branch, it sits BEFORE app.whenReady() and the instance-lock
-  // gate: the helper is a SECOND instance spawned while the UI holds the
-  // lock and must NEVER touch it (single-instance.js untouched). The
-  // one-shot arg-count guard does NOT apply here (the flag takes no args;
-  // the exact indexOf matching means no collision - round-1 N1).
-  if (sysmanHelperPersistIdx >= 0) {
-    const code = await runSysmanHelperPersistentMode({
-      // A fresh consumer per init attempt: the real createSysmanPowerLimits
-      // LATCHES its degrade, so each retry must be a NEW init attempt.
-      // The consumer's log is pinned to STDERR (round-1 S1): its default
-      // is console.log (-> STDOUT), and a failed init attempt's degrade
-      // note would otherwise ride the response channel - the measured
-      // protocol-error in the run-A e2e.
-      createConsumer: () => createSysmanPowerLimits({ log: (s) => console.error(`[sysman] ${s}`) }),
-      log: (s) => console.error(`[sysman-helper-persist] ${s}`),
+  // --- M17m --sysman-helper-pipe mode (NO args): -------------------------
+  // the DETACHED machine-level sysman helper (M17m): the same IGCL-free
+  // consumer process, but the transport is a Windows NAMED PIPE
+  // (\\.\pipe\arcpower-sysman, node's net) and the lifecycle is DETACHED:
+  // a client disconnect NEVER exits the helper - only the idle timeout
+  // (RID_SYSMAN_HELPER_IDLE_MS, default 60 min) does, so the helper's ze
+  // context (init'd when the machine was idle) outlives the app sessions
+  // and writes through any arbitration window (the measured 12-20+ min
+  // class). The per-connection ready semantics + the globally serialized
+  // dispatch + the bind-conflict exit (EADDRINUSE -> 0) live in
+  // runSysmanHelperPipeMode. THE HELPER'S OWN LOG FILE (round-1 S3):
+  // %TEMP%\arcpower-sysman-helper.log carries the init-retry lines + the
+  // ready/response events + the PID + the init timestamp (the
+  // same-helper assertion surface) - the consumer's log is pinned to the
+  // SAME file. Like the one-shot branch, it sits BEFORE app.whenReady()
+  // and therefore BEFORE the instance-lock gate: the helper is a SECOND
+  // instance spawned while the UI holds the lock and must NEVER touch it
+  // (single-instance.js untouched). (Run B: the M17j/M17l PERSISTENT
+  // stdin branch was REMOVED in the same change as the proxy's spawn-arg
+  // swap to this mode - no dead-flag window.)
+  if (sysmanHelperPipeIdx >= 0) {
+    const helperLog = createSysmanHelperLogFileWriter();
+    const code = await runSysmanHelperPipeMode({
+      // A fresh consumer per init attempt (the retry-until-ready loop) -
+      // the real createSysmanPowerLimits LATCHES its degrade, so each
+      // retry must be a NEW init attempt. The consumer's log is pinned to
+      // the helper's OWN log file.
+      createConsumer: () => createSysmanPowerLimits({ log: (s) => helperLog(`[sysman] ${s}`) }),
+      log: (s) => helperLog(s),
     });
     app.exit(code);
     return;

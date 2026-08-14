@@ -163,7 +163,11 @@ let sysmanLimitsNode: HTMLElement | null = null;
 // the apply envelope's pl2Note (the '(set)' fallback when the sysman layer
 // is absent; the boot one-shot + the profile/tray applies never feed it -
 // they show the sysman read or '-'; session-scoped, never persisted).
-const pl2SetByDevice = new Map<number, { valueW: number; ceilingW?: number }>();
+// M17n (round-1 S1): the entry carries the LANDED FLAG (no longer
+// discarded at the feed) - pl-readout.ts branches the sentence on it (the
+// clamp class's value-accurate sentence vs the refused class's kept
+// sentence).
+const pl2SetByDevice = new Map<number, { landed: boolean; valueW: number; ceilingW?: number }>();
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
 // M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
@@ -230,8 +234,11 @@ function refreshChip(key: string) {
  *  (the apply envelope's pl2Note) when the sysman layer is absent - the
  *  PL2 line shows the last-applied value marked '(set)' (with the honest
  *  ceiling sentence when the V2 companion was refused), '-' only when
- *  NOTHING was applied in the session AND the sysman is absent. */
-function formatSysmanLimits(limits: PowerLimitsRead | null, set: { valueW: number; ceilingW?: number } | undefined, enforcedW: number | null | undefined): string {
+ *  NOTHING was applied in the session AND the sysman is absent.
+ *  M17n (round-1 S1): the LANDED FLAG branches the sentence - the clamp
+ *  class (landed + ceilingW) renders the value-accurate sentence, the
+ *  refused class (landed false + ceilingW) keeps its sentence. */
+function formatSysmanLimits(limits: PowerLimitsRead | null, set: { landed?: boolean; valueW: number; ceilingW?: number } | undefined, enforcedW: number | null | undefined): string {
   return formatPlReadout(limits, set, enforcedW);
 }
 
@@ -1345,8 +1352,13 @@ export const tuningPage: Page = {
         // Per-device (a device switch keeps its own entry); the boot
         // one-shot + the profile/tray applies never feed it - they show
         // the sysman read or '-'.
+        // M17n (round-1 S1): the LANDED FLAG rides into the session state
+        // (no longer discarded) - the read-out branches the sentence on it
+        // (the clamp class's value-accurate sentence keyed on valueW; the
+        // refused class keeps its sentence).
         if (result.pl2Note && typeof result.pl2Note.valueW === 'number') {
           pl2SetByDevice.set(deviceId, {
+            landed: result.pl2Note.landed === true,
             valueW: result.pl2Note.valueW,
             ...(typeof result.pl2Note.ceilingW === 'number' ? { ceilingW: result.pl2Note.ceilingW } : {}),
           });

@@ -398,30 +398,132 @@ export function requiresExtendedRange(settings, ranges = null) {
  *     accepted but the burst read-back did not move - the A750 'draw stays
  *     180 W' class);
  *   - moved -> the sync verified (PL1 + PL2 both land on the request).
+ * M17n THE V2-CLAMP FALLBACK (round-1 S6 - the user's original M17h
+ * design returns as the fallback): the sysman set on the INSTANT
+ * 'not-ready' errorCode ONLY (the other failure classes - helper-failed /
+ * io-failed / timeout - keep the M17f log-only contract - they are NOT
+ * instant) triggers THE V2-CLAMP WRITE - applyOnce { powerLimitW:
+ * Math.min(requestedW, ceilingW) } (the driverstore V2 path - no ze - no
+ * window - instant: PL2 = min(requested, the driver max)). THE CLAMP IS
+ * ADVANCED-MODE-GATED (round-1 S2 - clampAdvanced = the V1-call pin's
+ * domain, where the primary write did NOT touch the burst domain; in
+ * STOCK mode the not-ready verdict stays the best-effort log - the
+ * primary write already landed both limits).
+ * M17n ROUND-2 S1 (the live probe caught the PL1 CLOBBER): the V2 write
+ * is the 'both-limits' write - the live read-back after the clamp showed
+ * PL1 252 / PL2 252 (the V1's 300 overwritten) - THE CLAMP BRANCH
+ * RE-APPLIES THE V1 (oldIgcl.setPowerLimitW(requestedW)) AFTER the clamp
+ * so PL1 ends at the REQUESTED value - the final: PL1 = requested + PL2 =
+ * min(requested, ceiling) (the re-V1's burst effect can only keep-or-lower
+ * toward the ceiling - never raises above the clamp's value - the 11:26 +
+ * Arm-B evidence). The re-V1's cost ~400 ms (its own ALWAYS-delayed
+ * verification - the trusted read-back): the not-ready path's total ~800-
+ * 900 ms < the 1 s criterion, measured live - the delayed verification is
+ * KEPT (the implementer decision documented: skipping it would save 400 ms
+ * but the delayed re-read is the only trusted verification - the target
+ * holds with it).
+ * THE CLAMP VERDICT CONTRACT:
+ * ok + verified -> the re-V1 re-applies the request; the re-V1 VERIFIES
+ * too -> { landed: true, ceilingW, valueW: Math.min(requestedW, ceilingW) }
+ * (the pl2Note REPLACES any earlier note - incl. the M17g refused note,
+ * which the clamp's landed note supersedes - the precedence pinned); the
+ * re-V1 FAILS (or oldIgcl is absent) -> the honest { landed: false } (the
+ * clamp may have landed PL2 but PL1 is UNCERTAIN - no '(set)' claim) +
+ * the best-effort log; anything else -> the honest { landed: false } (no
+ * '(set)' claim - PL2 stayed) + the best-effort log. The sysman-READY
+ * case is UNCHANGED ({ landed: true, valueW: requested } - the same shape
+ * the note already carries in the landed paths).
  * @param {{
  *   sysmanPowerLimits?: { setLimits: (l: { sustainedW: number, burstW: number }) => Promise<{ ok: boolean, errorCode?: string, message?: string }>, readLimits?: () => Promise<{ burstW?: number | null } | null> } | null,
  *   requestedW: number,
  *   log?: (s: string) => void,
+ *   backend?: import('./backend/backend.interface.js').IOCBackend | null, // M17n the V2-clamp deps (round-1 S6)
+ *   deviceId?: number,
+ *   limitsKey?: { pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null,
+ *   clampAdvanced?: boolean, // M17n the S2 gate: extended.powerLimitW !== undefined
+ *   oldIgcl?: { setPowerLimitW: (w: number) => Promise<{ ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean }> } | null | undefined, // M17n round-2 S1: the re-V1 seam (the clamp branch re-applies the request AFTER the both-limits V2 write)
  * }} deps
- * @returns {Promise<void>} never throws
+ * @returns {Promise<{ landed: boolean, ceilingW?: number, valueW?: number } | null>}
+ *   M17n the note-or-null for the applySettingsRouted sysman-companion
+ *   block to fold in: null = the M17f log-only classes (the note stays
+ *   untouched); the clamp verdict { landed: true, ceilingW, valueW } /
+ *   { landed: false }; the ready case { landed: true, valueW: requested }
+ *   (the shape the note already carries - a no-op replace). Never throws.
  */
-export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {} }) {
-  if (!sysmanPowerLimits) return;
+export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, limitsKey = null, clampAdvanced = false, oldIgcl = null }) {
+  if (!sysmanPowerLimits) return null;
   let res;
   try {
     res = await sysmanPowerLimits.setLimits({ sustainedW: requestedW, burstW: requestedW });
   } catch (err) {
     log(`[apply] sysman companion: threw (${err instanceof Error ? err.message : String(err)}) - best-effort only, the IGCL read-back stays the canonical verification`);
-    return;
+    return null;
   }
   if (!res || res.ok !== true) {
     const msg = res?.message ?? res?.errorCode ?? 'unknown';
     const refused = res?.errorCode === 'ERROR_NOT_AVAILABLE'
       || (typeof msg === 'string' && msg.includes('NOT_AVAILABLE'));
+    // M17n THE INSTANT 'not-ready' TRIGGER -> THE V2-CLAMP FALLBACK
+    // (round-1 S6): the set answered the proxy's instant not-ready verdict
+    // - the sysman layer is NOT coming up in this session (the user's
+    // measured pattern) - so the apply must NOT wait: the V2 driverstore
+    // write at min(requested, the driver ceiling) lands PL2 = the driver
+    // max instantly (no ze, no window). The clamp is ADVANCED-MODE-GATED
+    // (round-1 S2): the V1 write set PL1 only, so the burst domain needs
+    // the fallback; in STOCK mode the primary V2 write already landed both
+    // limits - the not-ready verdict stays the best-effort log.
+    if (res?.errorCode === 'not-ready' && clampAdvanced && backend) {
+      // The DriverStore ceiling: the device-limits STOCK row's PL max (the
+      // same source runV2Companion uses - 252 a770 / 216 Acer a750 / 228
+      // LE / 252 unlisted).
+      const ceilingW = deviceLimitsOf(limitsKey ?? null, { advanced: false })?.powerLimitW?.max ?? STD_PL_MAX_W;
+      const valueW = Math.min(requestedW, ceilingW);
+      try {
+        const out = await applyOnce({ backend, deviceId, settings: { powerLimitW: valueW }, opts: {}, log });
+        const per = out.result.perControl?.powerLimitW;
+        if (per?.ok === true && per.readBackEqual !== false) {
+          // M17n ROUND-2 S1 (the live probe caught the PL1 CLOBBER): the V2
+          // write above is the 'both-limits' write - it just OVERWROTE PL1
+          // (the V1's requested value) with the clamp value (the live
+          // read-back showed PL1 252 / PL2 252 after the clamp). RE-APPLY
+          // the V1 so PL1 ends at the REQUESTED value: the final = PL1 =
+          // requested + PL2 = min(requested, ceiling). The re-V1 is
+          // IDEMPOTENT with the primary V1 write (same value - its burst
+          // effect can only keep-or-lower toward the ceiling, never raise
+          // above the clamp's value - the 11:26 + Arm-B evidence). The
+          // re-V1's own ALWAYS-delayed verification stays (the only trusted
+          // read-back; its ~400 ms keeps the not-ready path's total ~800-
+          // 900 ms < the 1 s criterion - the elapsed measured live).
+          // The re-V1 FAILURE degrades the note to the honest { landed:
+          // false } - the clamp may have landed PL2 but PL1 is UNCERTAIN
+          // (no '(set)' claim).
+          let reV1;
+          if (oldIgcl && typeof oldIgcl.setPowerLimitW === 'function') {
+            try {
+              reV1 = await oldIgcl.setPowerLimitW(requestedW);
+            } catch (err) {
+              log(`[apply] sysman companion: the V2-CLAMP wrote PL2 = ${valueW} W but the re-V1 (PL1 = ${requestedW} W) threw (${err instanceof Error ? err.message : String(err)}) - PL1 is uncertain - the honest { landed: false } (no '(set)' claim)`);
+              return { landed: false };
+            }
+          }
+          if (reV1?.ok === true && reV1.readBackEqual !== false) {
+            log(`[apply] sysman companion: the helper is NOT ready - THE V2-CLAMP wrote PL2 = ${valueW} W (min(${requestedW} W requested, the ${ceilingW} W driver ceiling)) via the driverstore fallback + the re-V1 re-applied PL1 = ${requestedW} W (the both-limits write overwrote it) - the apply never waited`);
+            return { landed: true, ceilingW, valueW };
+          }
+          log(`[apply] sysman companion: the helper is NOT ready - the V2-CLAMP wrote PL2 = ${valueW} W but the re-V1 (PL1 = ${requestedW} W) did not verify (${reV1?.errorCode ?? reV1?.message ?? (oldIgcl ? 'unknown' : 'no oldIgcl seam')}) - PL1 is uncertain - the honest { landed: false } (no '(set)' claim)`);
+          return { landed: false };
+        }
+        log(`[apply] sysman companion: the helper is NOT ready - the V2-CLAMP write failed (${per?.errorCode ?? per?.message ?? 'unknown'}) - PL2 stayed - best-effort only, the IGCL read-back stays the canonical verification`);
+        return { landed: false };
+      } catch (err) {
+        log(`[apply] sysman companion: the helper is NOT ready - the V2-CLAMP write threw (${err instanceof Error ? err.message : String(err)}) - PL2 stayed - best-effort only, the IGCL read-back stays the canonical verification`);
+        return { landed: false };
+      }
+    }
     log(refused
       ? `[apply] sysman companion: REFUSED (${msg}) - the KMD-arbitration note (the GPU under overclocking blocks the sysman power-limit write); the IGCL read-back stays the canonical verification`
       : `[apply] sysman companion: failed (${msg}) - best-effort only, the IGCL read-back stays the canonical verification`);
-    return;
+    return null;
   }
   // The movement verdict: re-read the burst - accepted-but-no-movement is
   // the firmware-pinned note (a DIFFERENT honest outcome from a refusal).
@@ -435,9 +537,13 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
   }
   if (moved) {
     log(`[apply] sysman companion: PL1 + PL2 = ${requestedW} W (the burst read-back verified - the PL2 sync landed)`);
-  } else {
-    log(`[apply] sysman companion: the write was ACCEPTED but the burst read-back did not move - the firmware-pinned note (the KMD enforces its own budget); the IGCL read-back stays the canonical verification`);
+    // M17n: the sysman-READY case is UNCHANGED ({ landed: true, valueW:
+    // requested } - the same shape the pl2Note already carries in the
+    // landed paths; the fold-in replaces a same-shaped note with itself).
+    return { landed: true, valueW: requestedW };
   }
+  log(`[apply] sysman companion: the write was ACCEPTED but the burst read-back did not move - the firmware-pinned note (the KMD enforces its own budget); the IGCL read-back stays the canonical verification`);
+  return null;
 }
 
 /**
@@ -679,9 +785,32 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
   // zesPowerSetLimits that could lower the enforced limit below stock
   // while the verdict logs 'verified'. SKIP when the units are DEFINED and
   // NOT 'W'; the IGCL write itself still verifies via its read-back.
+  // M17n (round-1 S6): the runSysmanCompanion SIGNATURE EXTENSION - the
+  // clamp deps (backend, deviceId, limitsKey) + the clampAdvanced gate
+  // (the V1-call pin's domain) + the note-or-null return the block folds
+  //   in: the V2-CLAMP verdict (the instant 'not-ready' trigger) REPLACES
+  //   any earlier note - incl. the M17g refused note, which the clamp's
+  //   landed note supersedes (the precedence pinned); the ready case's
+  //   { landed: true, valueW: requested } is the shape the note already
+  //   carries (a no-op replace); null = the M17f log-only classes (the note
+  //   stays untouched).
+  //   M17n ROUND-2 S1: the clamp branch gains the oldIgcl seam - the
+  //   both-limits V2 clamp write overwrites PL1, so the branch RE-APPLIES
+  //   the V1 (oldIgcl.setPowerLimitW(requestedW)) after the clamp; the
+  //   re-V1 failure degrades the note to the honest { landed: false }.
   if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits
     && (plUnits === undefined || plUnits === 'W')) {
-    await runSysmanCompanion({ sysmanPowerLimits, requestedW: settings.powerLimitW, log });
+    const sysmanNote = await runSysmanCompanion({
+      sysmanPowerLimits,
+      requestedW: settings.powerLimitW,
+      log,
+      backend,
+      deviceId,
+      limitsKey,
+      clampAdvanced: extended.powerLimitW !== undefined,
+      oldIgcl,
+    });
+    if (sysmanNote) pl2Note = sysmanNote;
   } else if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits && plUnits !== 'W') {
     log(`[apply] sysman companion: SKIPPED - the powerLimitW units are '${plUnits}' (the sysman layer is W-only; the percent apply stays IGCL-verified)`);
   }

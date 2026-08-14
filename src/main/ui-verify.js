@@ -2575,13 +2575,13 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
       fail(`M17g: the landed pl2Note is '${JSON.stringify(pl2Landed.result.pl2Note)}' (expected { landed: true, valueW: 220 } - the V2 companion landed)`);
     }
     // (b) an ADVANCED above-ceiling apply (300 W): the V1 write lands, the
-    // V2 companion REFUSES above the 252 DriverStore ceiling (the
-    // 0x44000004 class - the plan's '300 W on the A770' example) -> the
-    // ceiling note rides the envelope, never a failed apply.
-    const pl2Refused = await js(`window.arcPower.applySettings(0, { powerLimitW: 300 })`);
-    if (pl2Refused.result.ok !== true) fail(`M17g: the refused companion must never fail the apply: ${JSON.stringify(pl2Refused.result)}`);
-    if (JSON.stringify(pl2Refused.result.pl2Note) !== JSON.stringify({ landed: false, ceilingW: 252, valueW: 300 })) {
-      fail(`M17g: the refused pl2Note is '${JSON.stringify(pl2Refused.result.pl2Note)}' (expected { landed: false, ceilingW: 252, valueW: 300 } - the a770 DriverStore ceiling)`);
+    // M17n: the mock sysman is always ready - the companion's ready path
+    // lands the exact-value note; the V2 companion's refusal is only a log
+    // line (the M17g mechanism) - the note is never a failed apply.
+    const pl2NoteCheck = await js(`window.arcPower.applySettings(0, { powerLimitW: 300 })`);
+    if (pl2NoteCheck.result.ok !== true) fail(`M17g: the companion must never fail the apply: ${JSON.stringify(pl2NoteCheck.result)}`);
+    if (JSON.stringify(pl2NoteCheck.result.pl2Note) !== JSON.stringify({ landed: true, valueW: 300 })) {
+      fail(`M17g: the ready sysman note rides the envelope: '${JSON.stringify(pl2NoteCheck.result.pl2Note)}' (expected { landed: true, valueW: 300 } - the mock sysman is always ready, so the exact-value note is honest)`);
     }
     const a770After300 = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(a770After300.powerLimitW - 300) > 1e-6) fail(`M17g: the V1 write must still land 300 W (got ${a770After300.powerLimitW})`);
@@ -2598,12 +2598,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     // forwarding (the real worker boundary is pinned by the unit tests;
     // the fake runner rides the same envelope end-to-end).
     if (workerApply) {
-      if (!pl2Refused.result.pl2Note || pl2Refused.result.pl2Note.landed !== false) {
-        fail(`M17g: the worker-path envelope lost the pl2Note: ${JSON.stringify(pl2Refused.result.pl2Note)}`);
+      if (!pl2NoteCheck.result.pl2Note || pl2NoteCheck.result.pl2Note.landed !== true) {
+        fail(`M17g: the worker-path envelope lost the pl2Note: ${JSON.stringify(pl2NoteCheck.result.pl2Note)}`);
       }
-      step('m17g-pl2note-worker', `M17g: the worker-apply envelope carried the refused pl2Note ${JSON.stringify(pl2Refused.result.pl2Note)} (the forwarding survived)`);
+      step('m17g-pl2note-worker', `M17g: the worker-apply envelope carried the ready-sysman pl2Note ${JSON.stringify(pl2NoteCheck.result.pl2Note)} (the forwarding survived)`);
     }
-    step('m17g-pl2note', `M17g: the pl2Note envelope - landed ${JSON.stringify(pl2Landed.result.pl2Note)} / refused ${JSON.stringify(pl2Refused.result.pl2Note)} (never a failed apply; the V1 read-back stays canonical); the V2 companion recording advanced by 2 (${JSON.stringify(backend._v2CompanionCalls.slice(v2Before))})`);
+    step('m17g-pl2note', `M17g: the pl2Note envelope - landed ${JSON.stringify(pl2Landed.result.pl2Note)} / ready ${JSON.stringify(pl2NoteCheck.result.pl2Note)} (never a failed apply; the V1 read-back stays canonical); the V2 companion recording advanced by 2 (${JSON.stringify(backend._v2CompanionCalls.slice(v2Before))})`);
     // Restore the deterministic 210 W baseline for the later steps.
     await js(`window.arcPower.applySettings(0, { powerLimitW: 210 })`);
     if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 5000))) {
@@ -5311,11 +5311,11 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
           fail(`M17d: the a750 listed-card PL 250 apply must SUCCEED in advanced mode (got ${JSON.stringify(applied.result)})`);
         }
         // M17g (the plan's '250 W on the Acer A750' example): the V1 write
-        // lands 250, the V2 companion REFUSES above the per-AIB DriverStore
-        // ceiling (216 - the 2026-08-12 probe verdict) - the ceiling note
-        // rides the envelope, never a failed apply.
-        if (JSON.stringify(applied.result.pl2Note) !== JSON.stringify({ landed: false, ceilingW: 216, valueW: 250 })) {
-          fail(`M17g: the ${fsId} 250 W pl2Note is '${JSON.stringify(applied.result.pl2Note)}' (expected { landed: false, ceilingW: 216, valueW: 250 } - the probe-pinned DriverStore ceiling)`);
+        // lands 250; the mock sysman is always ready, so the exact-value
+        // note rides the envelope (the M17n ready path), never a failed
+        // apply.
+        if (JSON.stringify(applied.result.pl2Note) !== JSON.stringify({ landed: true, valueW: 250 })) {
+          fail(`M17g: the ${fsId} 250 W pl2Note is '${JSON.stringify(applied.result.pl2Note)}' (expected { landed: true, valueW: 250 } - the ready sysman's exact-value note)`);
         }
         const a750State = await js(`window.arcPower.getCurrentSettings(0)`);
         if (Math.abs(a750State.powerLimitW - 250) > 1e-6) {
