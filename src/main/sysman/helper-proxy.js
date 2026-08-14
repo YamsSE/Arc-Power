@@ -32,6 +32,17 @@
 //   - the IN-FLIGHT handling (round-1 N3): an unexpected helper exit
 //     mid-request resolves the pending call immediately via the 'exit'
 //     event - never a full timeout - and the next call re-spawns;
+//   - M17k - the EAGER warm(): an idempotent eager-connect (the same
+//     lazy-connect path - the FIFO + the buffered-until-ready semantics
+//     unchanged; the first readLimits/setLimits rides the ready helper), a
+//     warm failure degrades silently (the next call re-attempts as today),
+//     the debug log records it via the EXISTING 'connect' event (round-1
+//     N2 - the warm's connect is indistinguishable from the lazy connect's
+//     event shape, so the verification read is unambiguous), and the
+//     IN-FLIGHT LATCH (round-1 N3): ensureConnected gains a `connecting`
+//     promise latch - a warm() racing the first request's lazy connect (or
+//     a reconnect) NEVER double-spawns (the second spawn would orphan the
+//     first helper, alive until pipe EOF, holding a ze context);
 //   - the failure degrades (spawn fail / connect sweep fail / timeout /
 //     protocol error / unexpected exit) -> readLimits null / setLimits
 //     { ok: false, errorCode: 'helper-failed', message } - the honest
@@ -106,6 +117,14 @@ export function createSysmanHelperProxy({
   let connects = 0;     // connect count (connect vs reconnect event)
   let lastExitAt = 0;   // the reconnect backoff anchor
   let pumping = false;  // the pump re-entrancy guard
+  // M17k (round-1 N3): the IN-FLIGHT connect latch - the connect promise
+  // shared by every concurrent ensureConnected caller (a warm() racing the
+  // first request's lazy connect or a reconnect). Without it the racers
+  // would BOTH pass the `if (child)` check and double-spawn - the second
+  // spawn would orphan the first helper (alive until pipe EOF, holding a
+  // ze context). The latch is cleared in the finally - a failed connect
+  // leaves the next call free to re-attempt.
+  let connecting = null;
 
   // The debug file log (M17i - the packaged app's console is invisible,
   // the proxy's verdicts must be diagnosable on the user's machine):
@@ -210,50 +229,63 @@ export function createSysmanHelperProxy({
    * at the connect - round-1 N2 - never per call; the M17j persistent mode
    * writes no req/tok files, so the sweep is housekeeping for the one-shot
    * leftovers + a crashed parent's orphans). A throwing sweep degrades the
-   * connect (never a throw - the M17i never-throw contract).
+   * connect (never a throw - the M17i never-throw contract). M17k
+   * (round-1 N3): the IN-FLIGHT LATCH - concurrent callers (a warm()
+   * racing the first request's lazy connect, or a reconnect) share ONE
+   * connect promise and NEVER double-spawn; the latch clears in the
+   * finally, so a failed connect leaves the next call free to re-attempt.
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   const ensureConnected = async () => {
     if (child) return { ok: true };
-    if (lastExitAt > 0) {
-      const wait = RECONNECT_BACKOFF_MS - (Date.now() - lastExitAt);
-      if (wait > 0) await sleep(wait);
-    }
-    const dir = tempDir();
-    try {
-      if (!swept) {
-        await sweep(dir);
-        swept = true;
+    if (connecting) return connecting;
+    connecting = (async () => {
+      if (child) return { ok: true }; // a connect landed while we were waiting
+      if (lastExitAt > 0) {
+        const wait = RECONNECT_BACKOFF_MS - (Date.now() - lastExitAt);
+        if (wait > 0) await sleep(wait);
       }
-    } catch (err) {
-      log(`pre-connect sweep failed: ${err.message}`);
-      return { ok: false, reason: `the sysman helper could not be started (the leftover sweep failed: ${err.message})` };
-    }
-    const isReconnect = connects > 0;
-    let proc = null;
+      const dir = tempDir();
+      try {
+        if (!swept) {
+          await sweep(dir);
+          swept = true;
+        }
+      } catch (err) {
+        log(`pre-connect sweep failed: ${err.message}`);
+        return { ok: false, reason: `the sysman helper could not be started (the leftover sweep failed: ${err.message})` };
+      }
+      const isReconnect = connects > 0;
+      let proc = null;
+      try {
+        // The DIRECT spawn - no PowerShell, no -Verb RunAs: the helper
+        // INHERITS the parent token. Dev-tree args `['.', '--sysman-helper-
+        // persist']` with cwd: appPath (the elevated-apply convention - the
+        // '.' avoids the space-in-arg quoting trap); the packaged EXE needs
+        // no app path (round-1 S4). stdio: stdin/stdout pipes (the JSON-line
+        // protocol) + stderr INHERITED (the helper's init-retry logs go to
+        // the parent's console).
+        proc = await spawn(
+          execPath,
+          appPath ? ['.', '--sysman-helper-persist'] : ['--sysman-helper-persist'],
+          appPath ? { cwd: appPath, windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] } : { windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] },
+        );
+      } catch (err) {
+        log(`spawn failed: ${err.message}`);
+        debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', spawnError: err.message });
+        return { ok: false, reason: `the sysman helper could not be spawned (${err.message})` };
+      }
+      connects += 1;
+      debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: proc.pid ?? null, spawnError: null });
+      attachChild(proc);
+      child = proc;
+      return { ok: true };
+    })();
     try {
-      // The DIRECT spawn - no PowerShell, no -Verb RunAs: the helper
-      // INHERITS the parent token. Dev-tree args `['.', '--sysman-helper-
-      // persist']` with cwd: appPath (the elevated-apply convention - the
-      // '.' avoids the space-in-arg quoting trap); the packaged EXE needs
-      // no app path (round-1 S4). stdio: stdin/stdout pipes (the JSON-line
-      // protocol) + stderr INHERITED (the helper's init-retry logs go to
-      // the parent's console).
-      proc = await spawn(
-        execPath,
-        appPath ? ['.', '--sysman-helper-persist'] : ['--sysman-helper-persist'],
-        appPath ? { cwd: appPath, windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] } : { windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] },
-      );
-    } catch (err) {
-      log(`spawn failed: ${err.message}`);
-      debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', spawnError: err.message });
-      return { ok: false, reason: `the sysman helper could not be spawned (${err.message})` };
+      return await connecting;
+    } finally {
+      connecting = null;
     }
-    connects += 1;
-    debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: proc.pid ?? null, spawnError: null });
-    attachChild(proc);
-    child = proc;
-    return { ok: true };
   };
 
   /**
@@ -321,6 +353,28 @@ export function createSysmanHelperProxy({
   });
 
   return {
+    /**
+     * M17k: the idempotent EAGER connect - spawns the persistent helper +
+     * lets its ze init run in the background while the app boots (the
+     * boot-order fix: the helper must spawn + init BEFORE the app's own
+     * IGCL activity - the backend load + the caps probes incl. the
+     * fan-probe WRITES + the renderer's boot caps fetch - opens the M17j
+     * arbitration window, or the init retries INSIDE the window and the
+     * first apply times out). The SAME lazy-connect path (the FIFO + the
+     * buffered-until-ready semantics unchanged - the first
+     * readLimits/setLimits rides the ready helper); a warm failure (spawn
+     * error / sweep failure) degrades SILENTLY - the next call re-attempts
+     * the connect exactly as today. The debug log records the warm via the
+     * EXISTING 'connect' event (round-1 N2 - the warm's connect is
+     * indistinguishable from the lazy connect's event shape, so the
+     * verification read is unambiguous); the in-flight latch (round-1 N3)
+     * makes a warm racing the first request's lazy connect (or a
+     * reconnect) share ONE connect - NEVER a double-spawn. Never throws.
+     * @returns {Promise<void>}
+     */
+    async warm() {
+      await ensureConnected().catch(() => { /* a warm failure degrades silently - the next call re-attempts as today */ });
+    },
     /**
      * M17f (step-4 N2): the deviceId is ACCEPTED for the mock-scoped
      * contract and IGNORED - the consumer is device-agnostic (the real

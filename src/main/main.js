@@ -289,6 +289,20 @@ async function main() {
       app.exit(1);
       return;
     }
+    // M17k: the EARLY warm-up in the worker branch (the same shape as the
+    // window path): the proxy is constructed + WARMED BEFORE the worker's
+    // backend/IGCL creation - the helper spawns while the machine is idle,
+    // so its ze init lands before this process's own IGCL activity (the
+    // worker's backend load) could open the arbitration window; the
+    // worker's first sysman call then rides the ready helper (the
+    // in-flight latch shares one connect with the warm - never a
+    // double-spawn).
+    const workerSysmanLimits = createSysmanHelperProxy({
+      execPath: process.execPath,
+      appPath: process.defaultApp ? app.getAppPath() : null,
+      log: (s) => console.log(`[sysman-helper] ${s}`),
+    });
+    void workerSysmanLimits.warm?.();
     // M2C-C S1: the extended-capability probe is constructed BEFORE the
     // backend and injected - the worker's getCapabilities (its clamp ranges)
     // must report the same extended ranges the UI path does.
@@ -318,12 +332,9 @@ async function main() {
       // DELEGATES to the IGCL-free helper (this process carries the IGCL
       // backend + OldIgcl - the measured zesInit poison combo) through the
       // proxy; the helper inherits the worker's elevation (the direct
-      // spawn, no RunAs).
-      sysmanPowerLimits: createSysmanHelperProxy({
-        execPath: process.execPath,
-        appPath: process.defaultApp ? app.getAppPath() : null,
-        log: (s) => console.log(`[sysman-helper] ${s}`),
-      }),
+      // spawn, no RunAs). M17k: the proxy is the WARMED one above (the
+      // same shape as the window path).
+      sysmanPowerLimits: workerSysmanLimits,
       log: (s) => console.log(`[apply-worker] ${s}`),
     });
     app.exit(code);
@@ -403,6 +414,20 @@ async function main() {
       dir: mock ? path.join(os.tmpdir(), 'arcpower-mock') : undefined,
       ocModeDefault: mock ? 'advanced' : 'stock',
     });
+    // M17k: the EARLY warm-up in the boot-apply branch (the same shape as
+    // the window path): the REAL proxy is constructed + WARMED BEFORE the
+    // backend/IGCL creation - the logon task's helper spawns while the
+    // machine is idle, so its ze init lands before this process's own IGCL
+    // activity (the boot apply's backend load + the waiver-probe writes)
+    // could open the arbitration window; the apply then rides the ready
+    // helper. The MOCK seam stays at the bootSysmanLimits const below (the
+    // mock consumer wraps the backend and can only exist after it).
+    const bootRealSysmanLimits = mock ? null : createSysmanHelperProxy({
+      execPath: process.execPath,
+      appPath: process.defaultApp ? app.getAppPath() : null,
+      log: (s) => console.log(`[sysman-helper] ${s}`),
+    });
+    if (!mock) void bootRealSysmanLimits.warm?.();
     const bootOldIgcl = mock ? null : new OldIgcl();
     const bootBackend = createBackend({
       kind: mock ? 'mock' : 'igcl',
@@ -441,11 +466,7 @@ async function main() {
     // this mode and shared by the apply closure and the tray closure.
     const bootSysmanLimits = mock
       ? createMockSysmanPowerLimits({ backend: bootBackend })
-      : createSysmanHelperProxy({
-          execPath: process.execPath,
-          appPath: process.defaultApp ? app.getAppPath() : null,
-          log: (s) => console.log(`[sysman-helper] ${s}`),
-        });
+      : bootRealSysmanLimits;
     try {
       const out = await runBootApplyMode({
         store: bootStore,
@@ -566,6 +587,26 @@ async function main() {
     });
   }
   markProfileBoot('instance-lock');
+  // M17k: the EARLY helper warm-up (the boot-order fix for the 30-90 s
+  // apply hangs - the M17j debug log: the persistent helper CONNECTED but
+  // every request timed out because its ze init retried INSIDE the
+  // arbitration window the app's own IGCL activity had opened). The REAL
+  // proxy is constructed + WARMED here - AFTER the instance-lock gate (the
+  // second-instance quit path above must NEVER orphan a spawned helper)
+  // and BEFORE the backend/IGCL creation below - so the helper's ze init
+  // lands while the machine is idle (the persist-proof: attempt 1), long
+  // before the backend load + the caps probes (incl. the fan-probe WRITES)
+  // + the renderer's boot caps fetch. warm() is idempotent + never throws:
+  // a failure degrades silently and the first readLimits/setLimits
+  // re-attempts the connect as today. The MOCK seam stays at the
+  // sysmanPowerLimits const below (the mock consumer wraps the backend and
+  // can only exist after it).
+  const realSysmanLimits = mock ? null : createSysmanHelperProxy({
+    execPath: process.execPath,
+    appPath: process.defaultApp ? app.getAppPath() : null,
+    log: (s) => console.log(`[sysman-helper] ${s}`),
+  });
+  if (!mock) void realSysmanLimits.warm?.();
   // --ui-verify runs against MockBackend; the env knobs act as OVERLAYS on
   // the featureset base (mock/featuresets/*.json, RID_MOCK_FEATURESET):
   //   - the a770 featureset base is the real card's TRUE editable fan fixture
@@ -792,11 +833,7 @@ async function main() {
   // power-limit card.
   const sysmanPowerLimits = mock
     ? (process.env.RID_MOCK_NO_SYSMAN === '1' ? null : createMockSysmanPowerLimits({ backend }))
-    : createSysmanHelperProxy({
-        execPath: process.execPath,
-        appPath: process.defaultApp ? app.getAppPath() : null,
-        log: (s) => console.log(`[sysman-helper] ${s}`),
-      });
+    : realSysmanLimits;
   // M2C-C elevation probe: real detection in the product path; ui-verify
   // knobs let the mock report elevated (RID_MOCK_ELEVATED=1) so the
   // elevated-in-app UI state is verifiable without elevation. Declared HERE
@@ -1298,27 +1335,26 @@ async function main() {
     } catch (err) {
       console.log(`[apply-profile] deviceId resolution skipped: ${err.message}`);
     }
-    // M17f/M17i: the logon apply is ELEVATED (the /rl highest task) - the
-    // sysman companion runs there too. M17i: the REAL companion DELEGATES
-    // to the IGCL-free helper through the proxy (this process carries the
-    // IGCL backend - the measured zesInit poison combo); constructed ONCE
-    // for this mode and shared by the apply and the tray closure (a
-    // packaged tray/boot apply must land PL2 too).
-    const applyProfileSysmanLimits = mock
-      ? createMockSysmanPowerLimits({ backend })
-      : createSysmanHelperProxy({
-          execPath: process.execPath,
-          appPath: process.defaultApp ? app.getAppPath() : null,
-          log: (s) => console.log(`[sysman-helper] ${s}`),
-        });
+    // M17f/M17i/M17k: the logon apply is ELEVATED (the /rl highest task) -
+    // the sysman companion runs there too. M17i: the REAL companion
+    // DELEGATES to the IGCL-free helper through the proxy (this process
+    // carries the IGCL backend - the measured zesInit poison combo). M17k:
+    // the branch REUSES the window path's WARMED shared proxy
+    // (sysmanPowerLimits - constructed + warmed above, before the backend
+    // block) - the duplicate construction is DELETED and the flow rides the
+    // warm helper, whose init landed before this branch's waiver-truth
+    // probe write (the apply-profile's PL2 landing is ACTUALLY fixed, not
+    // just warmed). The branch's MOCK flow now honors RID_MOCK_NO_SYSMAN
+    // too (the shared mock branch's knob - a behavior change, recorded +
+    // pinned).
     await runApplyOnStartup({
       backend,
       store,
       profileId: applyProfileId,
       deviceId: applyDeviceId,
       oldIgcl: bootOldIgcl,
-      sysmanPowerLimits: applyProfileSysmanLimits,
-      setupTray: () => setupTray({ getWindow: () => null, backend, store, oldIgcl: bootOldIgcl, applyRunner: null, sysmanPowerLimits: applyProfileSysmanLimits }),
+      sysmanPowerLimits,
+      setupTray: () => setupTray({ getWindow: () => null, backend, store, oldIgcl: bootOldIgcl, applyRunner: null, sysmanPowerLimits }),
       log: (s) => console.log(s),
     });
     return;
