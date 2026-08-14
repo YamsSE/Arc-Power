@@ -2204,6 +2204,13 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (lockNoteText.trim() !== 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz returns to automatic. Setting a lock clears the core and voltage offsets; setting offsets clears the lock.') {
       fail(`M17f: the lock description is '${lockNoteText}' (expected the pinned short text)`);
     }
+    // M17q: the gpuLock power warning - the user's exact wording in the
+    // --danger red (the lock ignores the in-place power limits and can
+    // draw up to 400 W).
+    const lockWarningText = await js(`document.querySelector('.gpu-lock-editor .gpu-lock-warning')?.textContent ?? ''`);
+    if (lockWarningText.trim() !== 'Warning: gpuLock seems to fully ignore in-place Power Limits and CAN draw up to 400W. Only use if you know what you are doing') {
+      fail(`M17q: the gpuLock warning is '${lockWarningText}' (expected the pinned wording)`);
+    }
     // M17f (the round-5 fold - the user addition): the lock editor
     // DISPLAYS ITS RANGE - the caps.lockRange live bounds rendered on the
     // card (the .oc-range meta-line pattern; the inputs' max attrs bind the

@@ -534,7 +534,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; M17d: wraps the pm-service + sidecar SOURCE CHAIN; null in mock/tests - the determinism seam like foregroundApi)
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
- *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle).
+ *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -685,6 +685,27 @@ export function createIpcHandlers({
   // crash.
   vendorTelemetry = createVendorTelemetry({ sysinfo }),
 }) {
+  // M17p: the sysStats by-value capture fix (S4/N1-r2) - THE ONE NORMALIZE
+  // at the top (the plan's unwrap expression): main.js passes a MUTABLE
+  // HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc,
+  // so the adapter is assigned into the holder after this call; a by-value
+  // capture here would freeze null forever). A holder-shaped sysStats is
+  // rebound to a per-access forwarding shim - the five consumption sites
+  // (the no-device + device telemetry pushes + the slow-lane lifecycle)
+  // and the defaults + the plain-adapter tests stay untouched; a plain
+  // adapter passes through unchanged. The shim is null-safe: before the
+  // holder lands (never in practice - telemetry starts after the block),
+  // a call degrades to undefined, which the sites' try/catch swallow.
+  if (sysStats && typeof sysStats === 'object' && 'current' in sysStats) {
+    const holder = sysStats;
+    sysStats = {
+      sample: (...args) => holder.current?.sample?.(...args),
+      sampleFast: (...args) => holder.current?.sampleFast?.(...args),
+      sampleSlow: (...args) => holder.current?.sampleSlow?.(...args),
+      startSlowLane: (...args) => holder.current?.startSlowLane?.(...args),
+      stopSlowLane: (...args) => holder.current?.stopSlowLane?.(...args),
+    };
+  }
   // M3-A/M3-B mock defaults: the read + apply mock adapters share ONE mock
   // registry state (in-memory; never touches the real registry), so a mock
   // apply flips the very next mock read. When either adapter is injected,

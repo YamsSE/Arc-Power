@@ -584,6 +584,10 @@ export const tuningPage: Page = {
         lockFreqInput.addEventListener('input', refreshLockEditor);
         lockEditorEl = el('div', { class: 'gpu-lock-editor', hidden: !lockMode }, [
           el('p', {
+            class: 'gpu-lock-warning',
+            text: 'Warning: gpuLock seems to fully ignore in-place Power Limits and CAN draw up to 400W. Only use if you know what you are doing',
+          }),
+          el('p', {
             class: 'card-note',
             // M17f (the round-1/round-3 fold - the user's SIMPLIFIED
             // description): the M17e-era long text is REPLACED by the

@@ -1145,6 +1145,16 @@ select {
 
 .gpu-lock-editor .card-title { font-size: 13.5px; margin-bottom: 2px; }
 
+/* M17q: the gpuLock power-limit warning - the user's exact wording in the
+   --danger red (the lock ignores the in-place power limits and can draw
+   up to 400 W - the user's live finding). The card-note's size/margin. */
+.gpu-lock-warning {
+  color: var(--danger);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
 .gpu-lock-fields {
   display: flex;
   gap: 14px;

@@ -331,9 +331,28 @@ async function boot() {
   // VRAM source). Fire-and-forget semantics: a failure degrades to null and
   // the card renders '-' rows; when the payload lands AFTER the first render
   // the dashboard sig (sysinfo slot) triggers the re-render.
+  // M17p: the boot order is PINNED - sysinfo:get runs BEFORE
+  // get-capabilities (below): the caps' deviceName comes from the
+  // main-side in-place re-enrichment of the device array (setVramBytesOf
+  // at the sysinfo landing), so firing get-capabilities first would read
+  // the plain pre-enrichment names.
+  // M17p: the devices re-fetch + ONE combined set - the window now opens
+  // BEFORE the sysinfo query lands, so the boot enumeration above (~3 s
+  // earlier) saw PLAIN device names. Re-fetch listDevices now that the CIM
+  // payload landed and set BOTH in ONE store.set - a single set re-renders
+  // once, no plain-name flicker. The no-Intel path is guarded: the
+  // re-fetch there answers [] (harmless - the boot already branched on the
+  // empty list), and a re-fetch failure keeps the boot enumeration.
   try {
     const info = await api.sysinfo();
-    store.set({ sysinfo: info ?? null });
+    let freshDevices = devices;
+    try {
+      freshDevices = await api.listDevices();
+    } catch {
+      // keep the boot enumeration - the devices slot must never regress to
+      // a stale/empty list on a transient re-fetch failure
+    }
+    store.set({ sysinfo: info ?? null, devices: freshDevices });
   } catch {
     store.set({ sysinfo: null });
   }

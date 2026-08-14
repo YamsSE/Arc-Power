@@ -16,6 +16,23 @@
 // from every helper-death trigger (the socket drop + the spawned child's
 // 0/77 exit), one-shot per trigger, capped at 5 consecutive heal-spawn
 // deaths (the recovery is the next warm()).
+// M17o3 THE RUN-AS-NODE HELPER (the LIVE-PROVEN finding on the user's A770,
+// 2026-08-14 - trust it): the packaged helper spawned as the ELECTRON EXE
+// fails its ze init EVERY time (zesInit ERROR_UNINITIALIZED - the measured
+// 3/3 packaged-helper failures at 19:04/19:05/19:34) while a NODE-process
+// init succeeds in the same minutes (5/5 + the RUNASNODE probe: PL1 300
+// PL2 252 read back). The electron binary run with ELECTRON_RUN_AS_NODE=1
+// is a PLAIN NODE process whose ze init works (live-proven end-to-end: the
+// helper-entry ran as RUN-AS-NODE, 'ze init ready on the first attempt',
+// then an ELEVATED app-path apply's sysman set returned {ok:true} + the
+// read-back PL2 300 W - the exact-value path PROVEN end-to-end). THE SPAWN
+// THEREFORE TARGETS THE ELECTRON-FREE helper-entry.js
+// (src/main/sysman/helper-entry.js - the no-electron wiring of the
+// --sysman-helper-pipe branch: it imports NOTHING from 'electron', which
+// the RUN-AS-NODE node cannot destructure) with ELECTRON_RUN_AS_NODE=1 in
+// the merged env, NEVER the electron EXE's own --sysman-helper-pipe branch
+// (which stays only for the direct-invocation parity: the pipeline's
+// live-detached-e2e + the gate harness).
 // The measured root cause (plan M17i): the sysman consumer's zesInit fails
 // with ERROR_UNINITIALIZED ONLY when the IGCL is loaded inside an ELECTRON
 // process, so the consumer must run in a dedicated helper process that loads
@@ -212,6 +229,7 @@ const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
  * @param {{
  *   execPath?: string,             // our executable (default process.execPath)
  *   appPath?: string | null,       // dev-mode electron app dir (null = packaged EXE)
+ *   resourcesPath?: string | null, // M17o3 the packaged resources dir (default process.resourcesPath - electron sets it in the packaged EXE; the injectable test seam)
  *   tempDir?: () => string,        // the shared temp dir (default os.tmpdir)
  *   sweep?: (dir: string) => Promise<number>,  // the ONE-TIME connect sweep
  *   spawnFn?: (cmd: string, args: string[], opts: object) => object, // the spawn seam
@@ -230,6 +248,7 @@ const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
 export function createSysmanHelperProxy({
   execPath = process.execPath,
   appPath = null,
+  resourcesPath = process.resourcesPath, // M17o3 the packaged resources dir (electron sets it; the injectable test seam)
   tempDir = () => os.tmpdir(),
   sweep = sweepStaleWorkerFiles,
   spawnFn = childProcessSpawn,
@@ -511,20 +530,47 @@ export function createSysmanHelperProxy({
    * it; the pipes are IGNORED (the M17l stderr capture dies with the stdin
    * model - the helper's diagnostics live in its OWN log file). The DIRECT
    * spawn - no PowerShell, no -Verb RunAs: the helper INHERITS the parent
-   * token. Dev-tree args `['.', '--sysman-helper-pipe']` with cwd: appPath
-   * (the elevated-apply convention - the '.' avoids the space-in-arg
-   * quoting trap); the packaged EXE needs no app path (round-1 S4).
+   * token.
+   * M17o3 THE RUN-AS-NODE SPAWN SHAPE (the LIVE-PROVEN finding on the
+   * user's A770, 2026-08-14): the target is the ELECTRON-FREE
+   * helper-entry.js (src/main/sysman/helper-entry.js - the no-electron
+   * wiring of the --sysman-helper-pipe branch) with ELECTRON_RUN_AS_NODE=1
+   * in the merged env - NEVER the electron EXE's own --sysman-helper-pipe
+   * branch (the packaged helper spawned as the ELECTRON EXE fails its ze
+   * init EVERY time - zesInit ERROR_UNINITIALIZED, the 3/3 measured -
+   * while a plain NODE process's init succeeds in the same minutes, 5/5 +
+   * the RUNASNODE probe: PL1 300 PL2 252 read back; the electron binary
+   * with ELECTRON_RUN_AS_NODE=1 IS a plain node process, whose ze init
+   * works - the exact-value path proven end-to-end). Dev-tree (appPath
+   * set): the entry is the REAL src file under appPath + cwd: appPath;
+   * packaged (appPath null): the entry is the app.asar's INTERNAL path
+   * under resourcesPath (process.resourcesPath - the electron's node
+   * resolves the .asar paths; the asarUnpacked koffi redirect rides
+   * along). The env merge `{ ...process.env, ELECTRON_RUN_AS_NODE: '1' }`
+   * preserves the parent's env (the RID_* overrides + the elevation
+   * token).
    * M17o2: a HEAL-driven spawn flags the child (proc.healSpawn) - the
    * cap counter counts that flag's deaths (the r2-S2 rule, ANY exit code).
    * @returns {Promise<{ ok: boolean, pid?: number | null, reason?: string }>}
    */
   const spawnDetachedHelper = async ({ healSpawn = false } = {}) => {
     try {
-      const proc = await spawn(
-        execPath,
-        appPath ? ['.', '--sysman-helper-pipe'] : ['--sysman-helper-pipe'],
-        appPath ? { cwd: appPath, detached: true, windowsHide: true, stdio: 'ignore' } : { detached: true, windowsHide: true, stdio: 'ignore' },
-      );
+      // M17o3 the entry path: dev-tree = the real src file (appPath set);
+      // packaged = the app.asar's internal path (appPath null - the
+      // electron's node resolves it). The `?? ''` covers the plain-node
+      // consumers without process.resourcesPath (the tests) - the packaged
+      // EXE always has it set.
+      const entry = appPath
+        ? path.join(appPath, 'src', 'main', 'sysman', 'helper-entry.js')
+        : path.join(resourcesPath ?? '', 'app.asar', 'src', 'main', 'sysman', 'helper-entry.js');
+      const opts = {
+        detached: true,
+        windowsHide: true,
+        stdio: 'ignore',
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, // M17o3: the helper runs as PLAIN NODE, never the electron EXE
+      };
+      if (appPath) opts.cwd = appPath; // the dev-tree cwd stays the app dir
+      const proc = await spawn(execPath, [entry, '--sysman-helper-pipe'], opts);
       if (healSpawn) proc.healSpawn = true; // M17o2 the heal-cap flag (r3-N1)
       attachChild(proc);
       spawnedPid = proc.pid ?? null;

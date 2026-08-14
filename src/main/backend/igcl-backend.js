@@ -21,6 +21,9 @@
 //     (explicit user acceptance - M2a product path).
 
 import koffi from 'koffi';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, CTL_FAN_SPEED_MODE, CTL_FAN_SPEED_UNITS,
   describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem, decodePciProperties,
@@ -61,6 +64,50 @@ const FAN_MODE_CANONICAL = { 0: 'auto', 1: 'fixed', 2: 'curve' };
 // ctl_fan_speed_t.units field needs the numeric code - look it up by name.
 const FAN_UNITS_PERCENT = Number(Object.entries(CTL_FAN_SPEED_UNITS).find(([, n]) => n === 'PERCENT')[0]);
 
+// M17p: the fan-probe PERSISTED cache (the igcl-dll-cache precedent -
+// %APPDATA%\ArcPower, NOT temp which the OS cleans). The in-memory
+// _fanProbeCache is per-process, so the probe (~400-480 ms on this box:
+// the failing write/read-back/restore-retries) re-ran at EVERY boot.
+// SUCCESS-ONLY persistence: only a cached probeOk:true is trusted across
+// boots (the probe verdict is driver/device-bound and stable); a cached
+// failure is NEVER trusted - the verdict flips with the IGS service state,
+// and a persisted failure would lock a transiently-failing machine
+// read-only for a whole driver version (the session cache's re-probe
+// self-heals). Key = driverVersion + deviceId; the file is single-entry
+// (the last successful probe wins - the igcl-dll-cache shape).
+export const FAN_PROBE_CACHE_FILENAME = 'fan-probe-cache.json';
+
+export function fanProbeCacheFile() {
+  const dir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(dir, 'ArcPower', FAN_PROBE_CACHE_FILENAME);
+}
+
+function readFanProbeCache(cacheFile) {
+  try {
+    const raw = fs.readFileSync(cacheFile, 'utf8');
+    const data = JSON.parse(raw);
+    if (data && typeof data.driverVersion === 'string'
+      && typeof data.deviceId === 'number'
+      && typeof data.probeOk === 'boolean'
+      && typeof data.writeAccepted === 'boolean'
+      && typeof data.fixedOk === 'boolean') {
+      return data;
+    }
+  } catch {
+    // missing / corrupt / unreadable -> a miss (the probe re-runs)
+  }
+  return null;
+}
+
+function writeFanProbeCache(cacheFile, entry) {
+  try {
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify(entry));
+  } catch {
+    // a failed cache write never breaks the probe path
+  }
+}
+
 const OC_UNIT_FIELDS = {
   powerLimit: 'powerLimit',
   gpuVoltOffset: 'gpuVoltageOffset',
@@ -99,10 +146,15 @@ export class IgclBackend {
    *   ocMode?: 'stock'|'advanced',    // M3-C-E: which range set getCapabilities
    *                                   // exposes (default 'stock' - the real
    *                                   // product default; mock passes advanced)
-   *   fanProbe?: boolean,             // M3-D: run the reversible fan-capability
-   *                                   // probe on canControl=false devices
-   *                                   // (default true; tests pass false to keep
-   *                                   // read-only fixtures read-only)
+ *   fanProbe?: boolean,             // M3-D: run the reversible fan-capability
+ *                                   // probe on canControl=false devices
+ *                                   // (default true; tests pass false to keep
+ *                                   // read-only fixtures read-only)
+ *   fanProbeCacheFile?: string,     // M17p: the persisted fan-probe cache
+ *                                   // file path (tests inject a temp file;
+ *                                   // the default is %APPDATA%\ArcPower\
+ *                                   // fan-probe-cache.json - the findIgclDll
+ *                                   // opts.cacheFile injection pattern)
    *   vramBytesOf?: (device: object) => number|null,  // M4-D: VRAM source for
    *                                   // the display-name suffix (the sysinfo
    *                                   // cache in main.js; null = plain name)
@@ -151,6 +203,11 @@ export class IgclBackend {
     // same probe, so the whole shape is one promise per device per session.
     this._fanProbeCache = new Map();
     this._fanProbeEnabled = opts.fanProbe !== false;
+    // M17p: the persisted fan-probe cache file (the findIgclDll
+    // opts.cacheFile injection pattern - tests inject a temp file; null =
+    // the default %APPDATA%\ArcPower\fan-probe-cache.json, resolved at the
+    // first probe).
+    this._fanProbeCacheFile = typeof opts.fanProbeCacheFile === 'string' ? opts.fanProbeCacheFile : null;
     // M8 (the Graphics tab): the per-device 3D-feature caps cache (the
     // supported-feature table from ctlGetSupported3DCapabilities - stable
     // per driver/device; the VALUES are never cached, every read is fresh).
@@ -472,14 +529,89 @@ export class IgclBackend {
    * @param {number} [maxPoints]
    * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }>}
    */
-  _probeFanCapability(deviceId, maxPoints) {
+  async _probeFanCapability(deviceId, maxPoints) {
     if (this._fanProbeCache.has(deviceId)) return this._fanProbeCache.get(deviceId);
+    // M17p: the PERSISTED cache - SUCCESS-ONLY trust: a cached
+    // probeOk:true for THIS driverVersion+deviceId skips the probe across
+    // boots (the ~400-480 ms probe cost disappears on probe-SUCCESS
+    // machines); a cached failure is never trusted - the probe re-runs
+    // every boot (the verdict flips with the IGS service state).
+    const cached = await this._cachedFanProbe(deviceId);
+    // The re-check: a CONCURRENT first caller may have landed (and cached
+    // its promise) while this call awaited the persisted-cache read - the
+    // M3-D share-ONE-probe contract must hold (never a double probe).
+    if (this._fanProbeCache.has(deviceId)) return this._fanProbeCache.get(deviceId);
+    if (cached) {
+      const p = Promise.resolve(cached);
+      this._fanProbeCache.set(deviceId, p);
+      return p;
+    }
     const p = this._runFanProbe(deviceId, maxPoints).catch((err) => {
       console.error(`[igcl-backend] fan capability probe threw for device ${deviceId}: ${err.message} - fan stays read-only`);
       return { probeOk: false, writeAccepted: false, fixedOk: false };
     });
     this._fanProbeCache.set(deviceId, p);
+    // M17p: SUCCESS-ONLY persistence - only a verified success is written
+    // (a failure writes nothing and re-probes next boot; the write itself
+    // is best-effort - a cache failure never breaks the probe path).
+    void p.then((result) => {
+      if (result?.probeOk === true) this._persistFanProbeCache(deviceId, result);
+    });
     return p;
+  }
+
+  /**
+   * M17p: the persisted-cache READ (SUCCESS-ONLY). Returns the cached
+   * verdict ONLY when the entry is a probeOk:true success for THIS
+   * device's driverVersion + deviceId (a missing / corrupt / mismatched /
+   * failed entry is a miss - the probe re-runs and re-persists on
+   * success). Never throws (the read is best-effort).
+   * @param {number} deviceId
+   * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean } | null>}
+   */
+  async _cachedFanProbe(deviceId) {
+    try {
+      const devices = await this._ensureDevices();
+      const dev = devices[deviceId];
+      const driverVersion = typeof dev?.driverVersion === 'string' && dev.driverVersion ? dev.driverVersion : null;
+      if (!driverVersion) return null;
+      const cacheFile = this._fanProbeCacheFile ?? fanProbeCacheFile();
+      const entry = readFanProbeCache(cacheFile);
+      if (!entry || entry.probeOk !== true) return null; // SUCCESS-ONLY
+      if (entry.driverVersion !== driverVersion || entry.deviceId !== deviceId) return null; // the key mismatch
+      return { probeOk: true, writeAccepted: entry.writeAccepted === true, fixedOk: entry.fixedOk === true };
+    } catch {
+      return null; // a cache read failure never blocks the probe
+    }
+  }
+
+  /**
+   * M17p: the SUCCESS-ONLY persistence write - { driverVersion, deviceId,
+   * probeOk, writeAccepted, fixedOk } in the single-entry cache file (the
+   * last successful probe wins). A failure writes nothing and never
+   * deletes (the stale entry stays inert - the key check keeps it a miss).
+   * Best-effort: a write failure never breaks the probe path.
+   * @param {number} deviceId
+   * @param {{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }} result
+   * @returns {Promise<void>}
+   */
+  async _persistFanProbeCache(deviceId, result) {
+    try {
+      const devices = await this._ensureDevices();
+      const dev = devices[deviceId];
+      const driverVersion = typeof dev?.driverVersion === 'string' && dev.driverVersion ? dev.driverVersion : null;
+      if (!driverVersion) return;
+      const cacheFile = this._fanProbeCacheFile ?? fanProbeCacheFile();
+      writeFanProbeCache(cacheFile, {
+        driverVersion,
+        deviceId,
+        probeOk: result.probeOk === true,
+        writeAccepted: result.writeAccepted === true,
+        fixedOk: result.fixedOk === true,
+      });
+    } catch {
+      // a failed persistence never breaks the probe path
+    }
   }
 
   /**

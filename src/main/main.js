@@ -24,6 +24,14 @@
 //     stuck; a failed init EXITS 77 and the proxy's HEAL respawns a
 //     fresh helper. Its own log file lives at
 //     %TEMP%\arcpower-sysman-helper.log. NO args.
+//     M17o3 (the live finding, 2026-08-14): the proxy NO LONGER spawns
+//     THIS branch - it spawns the ELECTRON-FREE helper-entry.js
+//     (src/main/sysman/helper-entry.js) with ELECTRON_RUN_AS_NODE=1 (a
+//     PLAIN NODE process - the packaged helper spawned as the ELECTRON
+//     EXE fails its ze init EVERY time, 3/3 measured, while a node
+//     process's init succeeds 5/5 + the RUNASNODE probe). THIS branch
+//     stays for the DIRECT-INVOCATION parity only (the pipeline's
+//     live-detached-e2e + the gate harness still call it).
 //     (The M17j/M17l PERSISTENT stdin form `--sysman-helper-persist` was
 //     REMOVED in M17m run B - the detached pipe form supersedes it.)
 //
@@ -378,6 +386,16 @@ async function main() {
   // (single-instance.js untouched). (Run B: the M17j/M17l PERSISTENT
   // stdin branch was REMOVED in the same change as the proxy's spawn-arg
   // swap to this mode - no dead-flag window.)
+  // M17o3 (the live finding, 2026-08-14): THE PROXY SPAWNS
+  // src/main/sysman/helper-entry.js (the no-electron wiring of THIS
+  // branch) with ELECTRON_RUN_AS_NODE=1 - a PLAIN NODE process, whose ze
+  // init works (5/5 + the RUNASNODE probe: PL1 300 PL2 252 read back),
+  // while the packaged helper spawned as the ELECTRON EXE fails its ze
+  // init EVERY time (zesInit ERROR_UNINITIALIZED - 3/3 measured). THIS
+  // BRANCH therefore stays ONLY for the DIRECT-INVOCATION parity (the
+  // pipeline's live-detached-e2e + the gate harness run
+  // `electron . --sysman-helper-pipe` directly) - the app never reaches
+  // it anymore.
   if (sysmanHelperPipeIdx >= 0) {
     const helperLog = createSysmanHelperLogFileWriter();
     const code = await runSysmanHelperPipeMode({
@@ -1283,19 +1301,23 @@ async function main() {
   // 'RAM 12.4 GB' ui-verify pin).
   const memoryUtil = mock ? undefined : createMemoryUtilDetector();
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory used).
-  // M17d (Run E): the ASSIGNMENT moved AFTER the boot-apply gate (see
-  // below) - this block is the CIM query's first hard await, and the boot
-  // apply (0.5-2.1 s) runs while the CIM query is in flight; the
-  // declarations + the before-quit teardown stay here (the assignment just
-  // happens later, still before createWindow). Mock: fixed deterministic
-  // values. Real: the rolling-delta CIM adapter; its GPU-memory match needs
+  // M17p: the sysStats MUTABLE HOLDER - the sysStats block (the CIM
+  // query's first hard await) now lands AFTER registerIpc (the window +
+  // the IPC surface exist first; the block still awaits the SAME in-flight
+  // sysinfoPromise, so its absolute landing time is unchanged). registerIpc
+  // receives the HOLDER (a by-value capture would freeze null - the block
+  // runs after registration); createIpcHandlers unwraps it per-access via
+  // its ONE normalize line, so the telemetry consumption sites see the
+  // adapter assigned after registration. The declarations + the
+  // before-quit teardown stay here. Mock: fixed deterministic values.
+  // Real: the rolling-delta CIM adapter; its GPU-memory match needs
   // the backend device's LUID - the IGCL bindings expose none, so the DXGI
   // display-enumeration link resolves it (GetDesc1: DeviceId -> LUID),
   // matched against the backend's OWN enumerated PCI id (the exact
   // monitored device - the pre-M17d source was the CIM controller list's
   // first pnpDeviceId, which could name a different adapter on multi-GPU
   // boxes). Unmatched -> null (honest '-').
-  let sysStats = null;
+  const sysStatsHolder = { current: null };
   let msrReader = null;
   // M4-D2: the Monitoring log-to-file writer. RID_MOCK_LOG_DIR redirects
   // the directory (ui-verify); the default is <Documents>\Arc Power.
@@ -1610,64 +1632,6 @@ async function main() {
     bootApplyOutcome = { ok: false, at: Date.now(), detail: `Profile apply failed: ${err.message}` };
   }
   markProfileBoot('boot-apply-gate');
-
-  // M17d (Run E): the sysStats/MSR assignment (MOVED here from its old
-  // pre-tray position). This is the CIM query's FIRST hard await - moving
-  // it after the boot-apply gate lets the apply (0.5-2.1 s on this box)
-  // overlap the in-flight CIM query (the profile's #1 stage) instead of
-  // serializing them. Everything the block consumes (sysinfo, backend,
-  // fpsAdapter) exists by now and nothing between here and createWindow
-  // uses sysStats/msrReader (registerIpc + the before-quit teardown read
-  // them later). The landing re-enriches the enumerated device names
-  // (setVramBytesOf in sysinfoResult) before the window exists, so the
-  // renderer's first listDevices/caps still see the enriched names.
-  if (mock) {
-    sysStats = createMockSysStats();
-  } else {
-    // M4L (B): the PawnIO MSR reader (CPU temp + wattage - the HWiNFO-class
-    // route). Lazy open + module load once per session (the reader's
-    // contract); every read returns null on any error (device absent,
-    // install failed, AV quarantine) - the honest degrade. The install
-    // state is checked by the reader at the first sample (the bundled
-    // official setup runs silently once when the device is absent).
-    // M15 (F2): Win32_Processor.Manufacturer (the CIM payload - awaited at
-    // the sysinfo landing inside this block) selects the module - an AMD
-    // vendor string loads AMDFamily17.bin (SMN temp + the RAPL pair),
-    // anything else the IntelMSR.bin path. The module itself re-checks the
-    // CPUID vendor + family 0x17-0x1A.
-    let deviceIdHex = null;
-    try {
-      const cached = await sysinfo?.get?.();
-      // The GPU-memory match's PCI id now comes from the backend's OWN
-      // enumerated device payload (the exact monitored device), not the
-      // CIM controller list's first pnpDeviceId (a multi-GPU box could
-      // name a different adapter).
-      const devices = await backend.listDevices();
-      const row = devices.find((d) => typeof d?.pciDeviceId === 'string' && /0x[0-9a-fA-F]{6,8}/.test(d.pciDeviceId)) ?? devices[0];
-      const m = typeof row?.pciDeviceId === 'string' ? row.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/) : null;
-      if (m) deviceIdHex = `0x${m[1].toLowerCase()}`;
-      msrReader = createMsrReader({ cpuVendor: cached?.cpu?.manufacturer ?? null });
-    } catch {
-      deviceIdHex = null;
-      msrReader = createMsrReader({ cpuVendor: null });
-    }
-    sysStats = createSysStats({
-      deviceIdHex,
-      luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
-      msrReader,
-      // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
-      // download link included) - logged when the MSR path is unavailable.
-      onMsrDegrade: (text) => {
-        console.log(`[sys-stats] ${text}`);
-      },
-      // M17g: the RAM detector (GlobalMemoryStatusEx - native) - the FAST
-      // lane's memoryUsedBytes source (the M17g move: the emit-site
-      // composition is replaced by the fast-lane field; undefined in mock
-      // mode - the createSysStats null-returning default keeps the
-      // determinism seam, and the mock adapter is used there anyway).
-      memoryUtil,
-    });
-  }
 
   const win = createWindow(windowBackground, !startMinimizedAtBoot);
   windowForInstance = win;
@@ -2029,7 +1993,10 @@ async function main() {
     presentMonLane,
     foregroundApi,
     memoryUtil,
-    sysStats,
+    // M17p: the sysStats MUTABLE HOLDER (never the by-value null - the
+    // sysStats block below lands AFTER registerIpc; createIpcHandlers
+    // unwraps the holder per-access).
+    sysStats: sysStatsHolder,
     monitorLog,
     oldIgcl,
     applyRunner,
@@ -2057,6 +2024,73 @@ async function main() {
       if (uiVerify) trayRebuilds += 1;
     },
   });
+
+  // M17p: the sysStats/MSR assignment (MOVED here from its pre-window
+  // position - the fast-boot reorder: boot-apply gate -> createWindow ->
+  // registerIpc -> THIS block -> the rest). The window AND the IPC surface
+  // exist before the CIM query's first hard await (registerIpc MUST run
+  // before this block - a 3.1-s block between the window and registerIpc
+  // would reject every renderer invoke during boot). The block still
+  // awaits the SAME in-flight sysinfoPromise (fired above), so its
+  // ABSOLUTE landing time is unchanged (~+3.3 s) - only the window no
+  // longer waits for it. Everything the block consumes (sysinfo, backend,
+  // fpsAdapter) exists by now and nothing after registerIpc uses
+  // sysStats/msrReader before this block (the before-quit teardown reads
+  // msrReader at quit). The assignments write the MUTABLE HOLDER
+  // (sysStatsHolder) that registerIpc already received - createIpcHandlers
+  // unwraps it per-access (the by-value capture fix, S4/N1-r2). The
+  // landing re-enriches the enumerated device names (setVramBytesOf in
+  // sysinfoResult); the renderer's FIRST listDevices (right after the
+  // window loads, ~2.9 s before the landing) saw plain names - the app.ts
+  // boot re-fetches devices after sysinfo:get so the header/dashboard/
+  // dropdown get the enriched names.
+  if (mock) {
+    sysStatsHolder.current = createMockSysStats();
+  } else {
+    // M4L (B): the PawnIO MSR reader (CPU temp + wattage - the HWiNFO-class
+    // route). Lazy open + module load once per session (the reader's
+    // contract); every read returns null on any error (device absent,
+    // install failed, AV quarantine) - the honest degrade. The install
+    // state is checked by the reader at the first sample (the bundled
+    // official setup runs silently once when the device is absent).
+    // M15 (F2): Win32_Processor.Manufacturer (the CIM payload - awaited at
+    // the sysinfo landing inside this block) selects the module - an AMD
+    // vendor string loads AMDFamily17.bin (SMN temp + the RAPL pair),
+    // anything else the IntelMSR.bin path. The module itself re-checks the
+    // CPUID vendor + family 0x17-0x1A.
+    let deviceIdHex = null;
+    try {
+      const cached = await sysinfo?.get?.();
+      // The GPU-memory match's PCI id now comes from the backend's OWN
+      // enumerated device payload (the exact monitored device), not the
+      // CIM controller list's first pnpDeviceId (a multi-GPU box could
+      // name a different adapter).
+      const devices = await backend.listDevices();
+      const row = devices.find((d) => typeof d?.pciDeviceId === 'string' && /0x[0-9a-fA-F]{6,8}/.test(d.pciDeviceId)) ?? devices[0];
+      const m = typeof row?.pciDeviceId === 'string' ? row.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/) : null;
+      if (m) deviceIdHex = `0x${m[1].toLowerCase()}`;
+      msrReader = createMsrReader({ cpuVendor: cached?.cpu?.manufacturer ?? null });
+    } catch {
+      deviceIdHex = null;
+      msrReader = createMsrReader({ cpuVendor: null });
+    }
+    sysStatsHolder.current = createSysStats({
+      deviceIdHex,
+      luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
+      msrReader,
+      // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
+      // download link included) - logged when the MSR path is unavailable.
+      onMsrDegrade: (text) => {
+        console.log(`[sys-stats] ${text}`);
+      },
+      // M17g: the RAM detector (GlobalMemoryStatusEx - native) - the FAST
+      // lane's memoryUsedBytes source (the M17g move: the emit-site
+      // composition is replaced by the fast-lane field; undefined in mock
+      // mode - the createSysStats null-returning default keeps the
+      // determinism seam, and the mock adapter is used there anyway).
+      memoryUtil,
+    });
+  }
 
   if (uiVerify) {
     // Dev-only end-to-end check against MockBackend (never hardware). The

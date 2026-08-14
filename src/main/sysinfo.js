@@ -48,18 +48,24 @@ let cached = null;
  * memory row; the Manufacturer is the raw SPD JEDEC hex code, decoded by
  * jedecBrand in the parse; SMBIOSMemoryType is the Type-17 code the
  * dashboard's DDR5-style label derives from), Win32_VideoController
- * (Name/AdapterRAM/PNPDeviceID), the display
- * class registry subkeys' HardwareInformation.qwMemorySize (UInt64 bytes,
- * keyed by MatchingDeviceId), and per video controller - the pnputil
- * resource ranges (the ReBAR check: a functioning Resizable BAR shows a
- * multi-GiB memory BAR) PLUS the Win32_AllocatedResource cross-check
- * (Win32_DeviceMemoryAddress ranges joined to the controller by its
- * Win32_VideoController DeviceID - the second ReBAR source; M4-D2 §3).
- * M4-D2: the PCIe-link property queries are REMOVED (the row was removed -
- * the unpopulated 1/1 pattern made it a permanent '-' on this machine).
- * Serialized to JSON by PowerShell itself (the parse side stays dumb). A
- * missing class on a stripped-down system serializes as null/[] - the
- * parser degrades those honestly.
+ *  (Name/AdapterRAM/PNPDeviceID), the display
+ *  class registry subkeys' HardwareInformation.qwMemorySize (UInt64 bytes,
+ *  keyed by MatchingDeviceId). M17p: the OS ReBAR sources are LIGHTENED -
+ *  the per-controller pnputil resource spawn and the
+ *  Win32_DeviceMemoryAddress/Win32_AllocatedResource cross-check are
+ *  REMOVED from the query (the measured expensive tail of the ~3.1-s
+ *  query). The DRIVER's BAR verdict (ctlPciGetProperties, main.js
+ *  driverReBar) is the documented PRIMARY ReBAR source and now decides
+ *  alone; the OS sources were only the fallback for a null driver verdict
+ *  (that verdict now degrades to null - the renderer's grey pill). The
+ *  JSON shape stays byte-identical: the controller rows still emit
+ *  MaxBarBytes (always 0) and the payload still carries allocatedBar
+ *  (always []) - the parse side is untouched.
+ *  M4-D2: the PCIe-link property queries are REMOVED (the row was removed -
+ *  the unpopulated 1/1 pattern made it a permanent '-' on this machine).
+ *  Serialized to JSON by PowerShell itself (the parse side stays dumb). A
+ *  missing class on a stripped-down system serializes as null/[] - the
+ *  parser degrades those honestly.
  * @returns {string}
  */
 export function buildSysinfoScript() {
@@ -89,31 +95,21 @@ export function buildSysinfoScript() {
     // device card's Driver version row - works on ANY GPU).
     '$vga = @(Get-CimInstance Win32_VideoController | Select-Object DeviceID,Name,AdapterRAM,PNPDeviceID,DriverVersion)',
     '$regMem = @(Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; if ($p.\'HardwareInformation.qwMemorySize\' -and $p.MatchingDeviceId) { [pscustomobject]@{ PNPDeviceID = $p.MatchingDeviceId; MemoryBytes = $p.\'HardwareInformation.qwMemorySize\' } } })',
-    // M4-D2: per-controller ReBAR sources. (a) pnputil memory resources -
-    // the ONE-LINE layout ("Memory Resources: 0x... - 0x...",
-    // live-verified on the A770). M17d (the GTX 980-class fix): the
-    // TWO-LINE layout is matched too - the "Memory Resources:" label on its
-    // own line with the ranges INDENTED on the FOLLOWING lines (the shape
-    // some pnputil builds emit; the pre-M17d per-line -match only caught
-    // the same-line ranges, so a two-line machine reported no pnputil
-    // bytes and the verdict fell to the cross-check alone). The
-    // allocated-resource cross-check stays as the second source.
-    // (b) the allocated-resource
-    // cross-check: Win32_AllocatedResource links each Win32_VideoController
-    // (by its DeviceID "VideoControllerN") to Win32_DeviceMemoryAddress
-    // ranges (by StartingAddress) - 64-bit ranges handled with
-    // [Convert]::ToInt64. M17d (the GTX 980-class fix): the Dependent
-    // reference is matched BOTH ways - the Win32_VideoController shape AND
-    // the Win32_PnPEntity shape (DeviceID = the controller's PNPDeviceID,
-    // equality or prefix - the reference some machines emit; the pre-M17d
-    // match only accepted the VideoController reference, so those rows
-    // never joined). rebarActive = any range >= 1 GiB from EITHER source
-    // (the A770's only range is 16-20 MB below 4 GB -> ReBAR off,
-    // live-verified; no >= 1 GiB window exists anywhere on this machine).
-    '$vga = @($vga | ForEach-Object { $id = $_.PNPDeviceID; $res = & pnputil /enum-devices /instanceid $id /resources /format txt 2>$null; $barMax = 0; $inMemRes = $false; if ($res) { $res | ForEach-Object { if ($_ -match \'^Memory Resources:\\s*0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz }; $inMemRes = $true } elseif ($_ -match \'^Memory Resources:\') { $inMemRes = $true } elseif ($inMemRes -and $_ -match \'^\\s+0x([0-9A-Fa-f]+)\\s*-\\s*0x([0-9A-Fa-f]+)\') { $sz = [Convert]::ToInt64($matches[2],16) - [Convert]::ToInt64($matches[1],16) + 1; if ($sz -gt $barMax) { $barMax = $sz } } elseif ($_ -match \'^[A-Za-z][A-Za-z /]*:\') { $inMemRes = $false } } }; [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $id; DriverVersion = $_.DriverVersion; MaxBarBytes = $barMax } })',
-    '$dma = @(Get-CimInstance Win32_DeviceMemoryAddress | Select-Object StartingAddress,EndingAddress)',
-    '$alloc = @(Get-CimInstance Win32_AllocatedResource)',
-    '$barRes = @(foreach ($v in $vga) { $max = 0; foreach ($r in $alloc) { $dep = "$($r.Dependent)"; $depOk = $dep -match "Win32_VideoController \\(DeviceID = ""$($v.DeviceID)""\\)"; if (-not $depOk -and $dep -match \'Win32_PnPEntity \\(DeviceID\\s*=\\s*"([^"]+)"\\)\') { $pnpRef = $Matches[1]; $depOk = ($pnpRef -eq "$($v.PNPDeviceID)") -or ($pnpRef -like "$($v.PNPDeviceID)*") }; if ($depOk -and "$($r.Antecedent)" -match \'StartingAddress = (\\d+)\') { $start = [Convert]::ToInt64($Matches[1]); $e = @($dma | Where-Object { [Convert]::ToInt64($_.StartingAddress) -eq $start })[0]; if ($e) { $sz = [Convert]::ToInt64($e.EndingAddress) - $start + 1; if ($sz -gt $max) { $max = $sz } } } }; [pscustomobject]@{ PNPDeviceID = $v.PNPDeviceID; MaxBarBytes = $max } })',
+    // M17p: the OS ReBAR sources are LIGHTENED (the measured expensive
+    // tail: the per-controller pnputil subprocess spawn - one per video
+    // controller inside the PS session - plus the
+    // Win32_DeviceMemoryAddress/Win32_AllocatedResource cross-check, the
+    // two CIM queries + the join measuring ~1.5 s of the ~3.1-s query on
+    // this box). The DRIVER's BAR verdict (ctlPciGetProperties - the
+    // documented PRIMARY source, main.js driverReBar) now decides ReBAR
+    // alone; the OS sources were only the fallback for a null driver
+    // verdict - that verdict now degrades to null (the renderer's grey
+    // pill). The JSON shape stays byte-identical: the controller rows
+    // still emit MaxBarBytes (always 0) and the payload still carries
+    // allocatedBar (always []) - the parse side is untouched (a
+    // functioning multi-GiB OS window can no longer flip the verdict).
+    '$vga = @($vga | ForEach-Object { [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $_.PNPDeviceID; DriverVersion = $_.DriverVersion; MaxBarBytes = 0 } })',
+    '$barRes = @()',
     '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; systemEnclosure = $enc; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
 }
