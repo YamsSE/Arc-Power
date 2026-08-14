@@ -12,10 +12,12 @@
 // fresh processes init'd fine in the same minutes; the ze loader's
 // per-process state after a failed init never recovers - a FRESH PROCESS is
 // required per retry). The helper therefore EXITS 77 on a failed init, and
-// THIS proxy HEALS: it schedules an ensureConnected() respawn (~1.5 s later)
+// THIS proxy HEALS: it schedules an ensureConnected() respawn (5 s later)
 // from every helper-death trigger (the socket drop + the spawned child's
-// 0/77 exit), one-shot per trigger, capped at 5 consecutive heal-spawn
-// deaths (the recovery is the next warm()).
+// 0/77 exit), one-shot per trigger; after 30 consecutive heal-spawn deaths
+// the heal CONTINUES at the 30 s backoff cadence (M17o4 - the session
+// recovers whenever the machine quiets; the next warm() returns the fast
+// cadence).
 // M17o3 THE RUN-AS-NODE HELPER (the LIVE-PROVEN finding on the user's A770,
 // 2026-08-14 - trust it): the packaged helper spawned as the ELECTRON EXE
 // fails its ze init EVERY time (zesInit ERROR_UNINITIALIZED - the measured
@@ -50,11 +52,13 @@
 //     race - an existing helper is alive) is a DEBUG-LOG EVENT, NEVER a
 //     socket drop: the child's death surfaces as the socket's 'close' (the
 //     server side gone) - the proxy never tears down a live socket because
-//     its spawned child happened to exit. M17o2 THE HEAL: every socket
-//     drop + the own child's 0/77 exit SCHEDULE an ensureConnected()
-//     respawn (~1.5 s later, unref'd, one-shot) - the fresh-process retry;
-//     the cap (5 consecutive heal-spawn deaths, ANY exit code) stops a
-//     heal loop; the recovery is the next warm();
+//     its spawned child happened to exit. M17o2/M17o4 THE HEAL: every
+//     socket drop + the own child's 0/77 exit SCHEDULE an
+//     ensureConnected() respawn (5 s later, unref'd, one-shot) - the
+//     fresh-process retry; after the cap (30 consecutive heal-spawn
+//     deaths, ANY exit code) the heal CONTINUES at the 30 s backoff
+//     cadence - never a hot heal loop, the session recovers whenever the
+//     machine quiets (the next warm() returns the fast cadence);
 //   - THE CONNECT PATH (round-1 S2) - the warm()'s eager connect: a live
 //     machine-level helper (left by a previous app session) is REUSED with
 //     NO spawn (the M17m reuse shape); when the connect fails (no helper
@@ -96,8 +100,9 @@
 //     zesInit NEVER landed in the user's usage pattern - the in-process
 //     retry was provably permanently stuck, and the M17l 25-min
 //     HELPER_INIT_WAIT_MS horizon made the apply WAIT for it = 'AGES';
-//     M17o2: the fresh-process retry (the HEAL respawn) makes the
-//     not-ready class rare - only the ~1.5 s heal gaps): THE NOT-READY
+//     M17o2/M17o4: the fresh-process retry (the HEAL respawn - the 5 s
+//     fast cadence, the 30 s post-cap backoff) makes the
+//     not-ready class rare - only the heal gaps): THE NOT-READY
 //     CALLS ANSWER INSTANTLY. The parser still
 //     recognizes the helper's { type: 'ready' } line + tracks the ready
 //     state, but NO call ever waits for the ready: the set on a NOT-ready
@@ -197,18 +202,31 @@ export const CONNECT_RETRY_CAP_MS = 30000;
 // unref()d + ONE-SHOT (a failed heal is never re-armed); the fire-time
 // guard is ensureConnected's own socket check + the connecting latch (an
 // over-eager heal is a no-op reconnect).
-export const HELPER_RESPAWN_DELAY_MS = 1500;
-// M17o2 THE HEAL CAP (r2-S2 / r3-N1): consecutiveHealSpawns counts EVERY
-// heal-driven spawn's death regardless of the exit code (a heal-spawn flag
-// on the child + the counter), checked at SCHEDULE time (the one
-// scheduleHeal site). After MAX_CONSECUTIVE_HEAL_SPAWNS consecutive
-// deaths the heals STOP (a heal loop against a permanently dying helper
-// must not respawn forever; the request path stays instant-not-ready
-// meanwhile - the M17n contract untouched). The counter resets on ANY
-// successful socket landing AND on warm() - the post-cap recovery is the
-// next warm() (the next app session; no decay clause - nothing exists to
-// exercise it post-cap).
-export const MAX_CONSECUTIVE_HEAL_SPAWNS = 5;
+// M17o4 THE RECOVERY HORIZON: HELPER_RESPAWN_DELAY_MS is the 5 s FAST
+// cadence (the measured ~7-8 s per death cycle); after the cap the heal
+// CONTINUES at the slow HEAL_BACKOFF_DELAY_MS cadence - the session
+// recovers whenever the machine quiets (the measured quiet horizon
+// ~8 min; the backoff covers everything after the ~3.5-4 min fast
+// cadence's nominal horizon). At the 30 s backoff the next heal fires
+// after the connect-retry latch clears.
+export const HELPER_RESPAWN_DELAY_MS = 5000;
+// M17o2 THE HEAL CAP (r2-S2 / r3-N1) + M17o4 THE POST-CAP BACKOFF:
+// consecutiveHealSpawns counts EVERY heal-driven spawn's death regardless
+// of the exit code (a heal-spawn flag on the child + the counter), checked
+// at SCHEDULE time (the one scheduleHeal site). After
+// MAX_CONSECUTIVE_HEAL_SPAWNS consecutive deaths the heal does NOT stop -
+// it CONTINUES at the slow HEAL_BACKOFF_DELAY_MS cadence (the delay
+// selection at the one scheduleHeal site; the anti-hot-loop property kept
+// - a heal loop against a permanently dying helper must not respawn at
+// the fast cadence; the request path stays instant-not-ready meanwhile -
+// the M17n contract untouched). The counter increments PAST the cap and
+// resets on ANY successful socket landing AND on warm() - the socket-
+// landing reset returns the cadence to fast (the next app session; no
+// decay clause - nothing exists to exercise it post-cap).
+export const MAX_CONSECUTIVE_HEAL_SPAWNS = 30;
+// M17o4 THE POST-CAP BACKOFF DELAY: the heal's slow cadence after the
+// cap (one unref'd timer per trigger - never a hot loop).
+export const HEAL_BACKOFF_DELAY_MS = 30000;
 
 /** The default connect seam: node's net.connect to the named pipe. */
 const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
@@ -239,7 +257,9 @@ const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
  *   readyGraceMs?: number,         // M17n the ready-line grace (default NOT_READY_GRACE_MS - ~100-250 ms)
  *   connectRetryIntervalMs?: number,  // M17m the connect-retry interval (default 500 ms)
  *   connectRetryCapMs?: number,    // M17m the connect-retry cap (default 30 s)
- *   healDelayMs?: number,          // M17o2 the heal respawn delay (default HELPER_RESPAWN_DELAY_MS - 1.5 s; the test seam)
+ *   healDelayMs?: number,          // M17o2 the heal respawn delay (default HELPER_RESPAWN_DELAY_MS - 5 s; the test seam)
+ *   maxConsecutiveHealSpawns?: number,  // M17o4 the heal cap (default MAX_CONSECUTIVE_HEAL_SPAWNS - 30; the test seam - the heals continue at the backoff cadence after it)
+ *   healBackoffDelayMs?: number,   // M17o4 the post-cap backoff delay (default HEAL_BACKOFF_DELAY_MS - 30 s; the test seam)
  *   sleep?: (ms: number) => Promise<void>,  // the retry-interval sleep seam
  *   debugLogPath?: () => string,   // the debug file (default %TEMP%\arcpower-sysman-debug.log)
  *   log?: (s: string) => void,
@@ -259,6 +279,8 @@ export function createSysmanHelperProxy({
   connectRetryIntervalMs = CONNECT_RETRY_INTERVAL_MS,
   connectRetryCapMs = CONNECT_RETRY_CAP_MS,
   healDelayMs = HELPER_RESPAWN_DELAY_MS,
+  maxConsecutiveHealSpawns = MAX_CONSECUTIVE_HEAL_SPAWNS, // M17o4 the heal cap (the backoff engages at >= it)
+  healBackoffDelayMs = HEAL_BACKOFF_DELAY_MS, // M17o4 the post-cap slow cadence
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   debugLogPath = () => path.join(os.tmpdir(), 'arcpower-sysman-debug.log'),
   log = () => {},
@@ -312,13 +334,16 @@ export function createSysmanHelperProxy({
    * ensureConnected(), whose socket-first check + connecting latch make an
    * over-eager heal a no-op reconnect (never a double-spawn). The timer is
    * unref()d + ONE-SHOT (a failed heal is never re-armed - no retry loop
-   * of its own; the next trigger schedules a fresh heal). THE CAP: no
-   * schedule when MAX_CONSECUTIVE_HEAL_SPAWNS consecutive heal-spawn
-   * deaths have been counted (checked here - the one site); the recovery
-   * is the next warm().
+   * of its own; the next trigger schedules a fresh heal).
+   * M17o4 THE POST-CAP BACKOFF: the DELAY SELECTION - once
+   * consecutiveHealSpawns reaches maxConsecutiveHealSpawns (the cap), the
+   * heal CONTINUES at the slow healBackoffDelayMs cadence instead of the
+   * fast healDelayMs (checked here - the one site; the heal NEVER stops:
+   * the horizon guess is removed entirely, the session recovers whenever
+   * the machine quiets; the socket-landing / warm() counter reset returns
+   * the cadence to fast).
    */
   const scheduleHeal = (reason) => {
-    if (consecutiveHealSpawns >= MAX_CONSECUTIVE_HEAL_SPAWNS) return; // post-cap - the next warm() recovers
     if (healTimer) return; // one pending heal (the same death's socket close + child exit land in quick succession)
     healTimer = setTimeout(() => {
       healTimer = null;
@@ -327,7 +352,7 @@ export function createSysmanHelperProxy({
       // double-spawn). A failed heal degrades silently (the not-ready
       // verdicts cover the calls; a later trigger schedules afresh).
       ensureConnected({ healSpawn: true }).catch(() => { /* best effort */ });
-    }, healDelayMs);
+    }, consecutiveHealSpawns >= maxConsecutiveHealSpawns ? healBackoffDelayMs : healDelayMs);
     try { healTimer.unref?.(); } catch { /* best effort */ }
     debugLog({ ts: Date.now(), event: 'heal', reason });
   };
@@ -637,7 +662,7 @@ export function createSysmanHelperProxy({
         }
         if (sock) {
           connects += 1;
-          consecutiveHealSpawns = 0; // M17o2: ANY successful socket landing resets the heal counter
+          consecutiveHealSpawns = 0; // M17o2: ANY successful socket landing resets the heal counter (M17o4: the cadence returns to fast)
           debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: spawnedPid, spawnError: null });
           attachSocket(sock);
           socket = sock;
@@ -796,10 +821,13 @@ export function createSysmanHelperProxy({
      * @returns {Promise<void>}
      */
     async warm() {
-      // M17o2 THE POST-CAP RECOVERY (r3-N1): warm() resets the
-      // consecutive-heal-spawn counter - the next app session's boot warm
-      // restores the heals even after the 5-death cap (stated plainly; no
-      // decay clause - nothing exists to exercise it post-cap).
+      // M17o2/M17o4 THE COUNTER RESET + THE CADENCE RETURN (r3-N1): warm()
+      // resets the consecutive-heal-spawn counter - the next app session's
+      // boot warm restores the FAST heal cadence even after the backoff
+      // phase (the heal itself NEVER stopped - M17o4: after the cap it
+      // continued at the slow cadence; the reset returns it to fast;
+      // stated plainly, no decay clause - nothing exists to exercise it
+      // post-cap).
       consecutiveHealSpawns = 0;
       await ensureConnected().catch(() => { /* a warm failure degrades silently - the not-ready verdicts cover the calls */ });
     },

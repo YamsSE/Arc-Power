@@ -96,17 +96,22 @@ import { findStaleSiblingToken } from '../apply-worker.js';
 export const HELPER_INIT_FAILED_EXIT_CODE = 77;
 
 /**
- * M17o2 THE INTENT FRESHNESS WINDOW (the wall-clock rule replacing the
- * M17o spawnTs comparison): an auto-upgrade intent is consumable iff
- * Date.now() - intent.ts <= INTENT_FRESH_WINDOW_MS (60 s). Covers the
- * heal-spawned helper (its intent survives the respawn delay) while
- * preserving reboot-staleness (a reboot's intent is always older than the
- * window). Accepted residual (N2-r2): if spawns keep failing for > 60 s
- * the intent decays and the pair is lost - the V2-clamp covers PL2
- * meanwhile and the user re-applies; the fresh-init evidence (5/5) makes
- * this a rare corner.
+ * M17o2/M17o4 THE INTENT FRESHNESS WINDOW (the wall-clock rule replacing
+ * the M17o spawnTs comparison): an auto-upgrade intent is consumable iff
+ * Date.now() - intent.ts <= INTENT_FRESH_WINDOW_MS (15 min). M17o4: the
+ * measured ~8-min quiet horizon (the time from the last write to the
+ * recovery-landing init on the user's A770) sits inside it, and the
+ * proxy's heal chain (the 5 s fast cadence + the 30 s post-cap backoff)
+ * keeps the intent consumable across the WHOLE recovery - the pair is
+ * never lost to a long quiet wait. The accepted reboot tradeoff (N2-r2):
+ * a REBOOT inside the window re-applies the user's own requested pair
+ * via a fresh helper - benign, the pair is the user's explicit intent (a
+ * reboot's intent is otherwise always older than the window, so
+ * reboot-staleness is preserved for every older intent; the V2-clamp
+ * covers PL2 meanwhile and the user re-applies - the fresh-init evidence
+ * (5/5) makes the decay corner rare).
  */
-export const INTENT_FRESH_WINDOW_MS = 60000;
+export const INTENT_FRESH_WINDOW_MS = 900000;
 
 /**
  * M17m the named-pipe transport: \\.\pipe\arcpower-sysman (node's net).
@@ -437,14 +442,16 @@ export function runSysmanHelperPipeMode({
    * THIS helper's init lands, the one-shot applies that pair
    * through the SAME internal set dispatch the pipe set uses - PL2 = the
    * exact requested value arrives with no user action and no waiting.
-   * M17o2 FRESHNESS (the WALL-CLOCK WINDOW - the spawnTs rule is REMOVED):
-   * consumable iff Date.now() - intent.ts <= INTENT_FRESH_WINDOW_MS
-   * (60 s). NOT a 30-min cutoff and not a spawn comparison: the 60 s
-   * window covers the heal-spawned helper (the respawn delay) and
-   * preserves reboot-staleness (a reboot's intent is always older than
-   * the window); the fresh-init evidence (5/5) makes the > 60 s decay
-   * corner rare - the V2-clamp covers PL2 meanwhile and the user
-   * re-applies (the N2-r2 accepted residual, stated).
+   * M17o2/M17o4 FRESHNESS (the WALL-CLOCK WINDOW - the spawnTs rule is
+   * REMOVED): consumable iff Date.now() - intent.ts <=
+   * INTENT_FRESH_WINDOW_MS (15 min - the measured ~8-min quiet horizon
+   * sits inside it; the heal's 5 s fast cadence + the 30 s post-cap
+   * backoff keep the pair consumable across the whole recovery). NOT a
+   * 30-min cutoff and not a spawn comparison: the window covers the
+   * heal-spawned helper and preserves reboot-staleness for older intents
+   * (a REBOOT inside the window re-applies the user's own requested pair
+   * via a fresh helper - benign, the pair is the user's explicit intent;
+   * the N2-r2 accepted tradeoff, stated).
    * Parse failure = no intent + a helper-log line - the ready path NEVER
    * crashes on the intent file. The file is DELETED regardless of the
    * apply outcome (one-shot by construction).

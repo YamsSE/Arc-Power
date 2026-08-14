@@ -24,6 +24,28 @@ import { runSysmanHelperPipeMode, createSysmanHelperLogFileWriter } from './help
 
 const helperLog = createSysmanHelperLogFileWriter();
 
+// M17o4 THE EXIT-CRASH PROBE (N3): the user's A770 showed the 0xC0000409
+// crash AFTER the helper's 'helper exiting (code 77)' log line (the
+// packaged helper's failed-init exit). Registered FIRST (the very top of
+// the entry, before the mode runs - the first 'exit' listener) and
+// appending ONE SYNC line via the existing helperLog writer (a sync
+// appendFileSync - legal in 'exit' handlers). The line appears on EVERY
+// exit (0 / 77 / 1 - natural or process.exit), so the read-out is:
+//   - 'exit-handler phase reached' present -> the crash is AFTER the JS
+//     exit-handler phase (the C-level teardown - the koffi/IGCL DLL unload
+//     at process teardown): document + accept;
+//   - MISSING -> the crash is INSIDE the exit-handler phase -> check
+//     BOTH teardown paths: power-limits.js for a koffi teardown (a
+//     koffi.unload / DLL unload) to call BEFORE process.exit AND the
+//     mode-teardown path (helper-mode.js finish() -> resolveExit -> the
+//     entry's process.exit) for anything it leaves armed.
+// process.exit stays: the electron-free entry's only teardown surface
+// (process.exitCode + a natural exit would run MORE teardown - the crash
+// class under investigation).
+process.on('exit', () => {
+  helperLog('exit-handler phase reached');
+});
+
 const code = await runSysmanHelperPipeMode({
   // A fresh consumer per init attempt - the real createSysmanPowerLimits
   // LATCHES its degrade, so each attempt must be a new instance. The
