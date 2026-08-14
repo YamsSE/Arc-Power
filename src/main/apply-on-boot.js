@@ -399,6 +399,10 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
  *   log?: (s: string) => void,
  *   oldIgcl?: object,
  *   applyRunner?: object | null,
+ *   sysmanPowerLimits?: object | null, // M17i: the sysman PL2 companion
+ *                                      // source - threaded through to the
+ *                                      // shared apply (the --apply-profile
+ *                                      // branch's companion must land)
  * }} ctx
  * @returns {Promise<{
  *   applied: boolean,
@@ -408,8 +412,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileOnBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null, applyRunner = null }) {
-  return applyProfile({ backend, store, profileId, deviceId, log, requireOcOnBoot: true, oldIgcl, applyRunner });
+export async function applyProfileOnBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null, applyRunner = null, sysmanPowerLimits = null }) {
+  return applyProfile({ backend, store, profileId, deviceId, log, requireOcOnBoot: true, oldIgcl, applyRunner, sysmanPowerLimits });
 }
 
 /**

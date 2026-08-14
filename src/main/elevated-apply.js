@@ -113,6 +113,15 @@ async function unlinkIfExists(filePath) {
  * fresh token is never touched. Request/result files WITHOUT a token are
  * old-format garbage and are removed once older than the token TTL. Expired
  * tokens are removed even when their request/result files are gone.
+ *
+ * M17i: the sweep covers BOTH file families with the same triple semantics -
+ * the apply-worker family (arcpower-req/out/tok-<id>.json) and the
+ * sysman-helper family (arcpower-sm-req/out/tok-<id>.json). The packaged
+ * app never runs runWorker (its applies are in-process), so the helper
+ * proxy's pre-spawn sweep is the sm- family's only invocation site. The
+ * families are processed separately so a shared id can never collide
+ * across them (an arcpower-req-X live triple must never be judged by an
+ * arcpower-sm-tok-X sibling).
  * @param {string} dir the shared temp dir
  * @param {{ now?: number, tokenTtlMs?: number }} [deps]
  * @returns {Promise<number>} number of files removed
@@ -125,55 +134,71 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
     return 0; // no dir yet - nothing to sweep
   }
   let removed = 0;
-  const reqIds = new Set();
-  const outIds = new Set();
-  for (const f of files) {
-    const m = f.match(/^arcpower-(req|out)-(.+)\.json$/);
-    if (m) (m[1] === 'req' ? reqIds : outIds).add(m[2]);
-  }
-  const ids = new Set([...reqIds, ...outIds]);
-  for (const id of ids) {
-    const tokPath = path.join(dir, `arcpower-tok-${id}.json`);
-    // 'fresh' (live request) | 'stale' (parent gave up) | 'unreadable'
-    // (torn/partial token write) | 'absent' (old-format leftover).
-    let tokState = 'absent';
-    try {
-      const tok = JSON.parse(await fs.promises.readFile(tokPath, 'utf8'));
-      tokState = typeof tok.expiresAt === 'number' && tok.expiresAt < now ? 'stale' : 'fresh';
-    } catch {
-      // The parent always COMPLETES its token write before writing the
-      // request file (runWorker order), so an existing-but-unreadable token
-      // is a torn-write leftover - the parent's apply already failed and no
-      // worker was spawned for it. Treat it as expired-and-removable (N2)
-      // instead of letting it linger forever.
+  // The two file families (see the M17i note above). Each family's triple
+  // logic is identical - only the filename prefixes differ.
+  const families = [
+    { req: 'arcpower-req-', out: 'arcpower-out-', tok: 'arcpower-tok-' },
+    { req: 'arcpower-sm-req-', out: 'arcpower-sm-out-', tok: 'arcpower-sm-tok-' },
+  ];
+  const allTokNames = new Set();
+  for (const family of families) {
+    const reqIds = new Set();
+    const outIds = new Set();
+    const reqRe = new RegExp(`^${family.req}(.+)\\.json$`);
+    const outRe = new RegExp(`^${family.out}(.+)\\.json$`);
+    for (const f of files) {
+      const rm = reqRe.exec(f);
+      if (rm) { reqIds.add(rm[1]); continue; }
+      const om = outRe.exec(f);
+      if (om) outIds.add(om[1]);
+    }
+    const ids = new Set([...reqIds, ...outIds]);
+    for (const id of ids) {
+      const tokPath = path.join(dir, `${family.tok}${id}.json`);
+      allTokNames.add(`${family.tok}${id}`);
+      // 'fresh' (live request) | 'stale' (parent gave up) | 'unreadable'
+      // (torn/partial token write) | 'absent' (old-format leftover).
+      let tokState = 'absent';
       try {
-        await fs.promises.access(tokPath);
-        tokState = 'unreadable';
+        const tok = JSON.parse(await fs.promises.readFile(tokPath, 'utf8'));
+        tokState = typeof tok.expiresAt === 'number' && tok.expiresAt < now ? 'stale' : 'fresh';
       } catch {
-        tokState = 'absent';
-      }
-    }
-    if (tokState === 'stale' || tokState === 'unreadable') {
-      removed += await unlinkIfExists(tokPath);
-      removed += await unlinkIfExists(path.join(dir, `arcpower-req-${id}.json`));
-      removed += await unlinkIfExists(path.join(dir, `arcpower-out-${id}.json`));
-      continue;
-    }
-    if (tokState === 'absent') {
-      // No token: only remove once older than the TTL (a live request
-      // always has a fresh token).
-      for (const f of [`arcpower-req-${id}.json`, `arcpower-out-${id}.json`]) {
+        // The parent always COMPLETES its token write before writing the
+        // request file (runWorker order), so an existing-but-unreadable token
+        // is a torn-write leftover - the parent's apply already failed and no
+        // worker was spawned for it. Treat it as expired-and-removable (N2)
+        // instead of letting it linger forever.
         try {
-          const st = await fs.promises.stat(path.join(dir, f));
-          if (now - st.mtimeMs > tokenTtlMs) removed += await unlinkIfExists(path.join(dir, f));
-        } catch { /* absent - nothing to remove */ }
+          await fs.promises.access(tokPath);
+          tokState = 'unreadable';
+        } catch {
+          tokState = 'absent';
+        }
+      }
+      if (tokState === 'stale' || tokState === 'unreadable') {
+        removed += await unlinkIfExists(tokPath);
+        removed += await unlinkIfExists(path.join(dir, `${family.req}${id}.json`));
+        removed += await unlinkIfExists(path.join(dir, `${family.out}${id}.json`));
+        continue;
+      }
+      if (tokState === 'absent') {
+        // No token: only remove once older than the TTL (a live request
+        // always has a fresh token).
+        for (const f of [`${family.req}${id}.json`, `${family.out}${id}.json`]) {
+          try {
+            const st = await fs.promises.stat(path.join(dir, f));
+            if (now - st.mtimeMs > tokenTtlMs) removed += await unlinkIfExists(path.join(dir, f));
+          } catch { /* absent - nothing to remove */ }
+        }
       }
     }
   }
   // Expired tokens with no matching request/result file.
   for (const f of files) {
-    const m = f.match(/^arcpower-tok-(.+)\.json$/);
-    if (!m || ids.has(m[1])) continue;
+    const m = f.match(/^arcpower(-sm)?-tok-(.+)\.json$/);
+    if (!m) continue;
+    const tokName = m[1] ? `arcpower-sm-tok-${m[2]}.json` : `arcpower-tok-${m[2]}.json`;
+    if (allTokNames.has(tokName)) continue;
     let remove = false;
     try {
       const tok = JSON.parse(await fs.promises.readFile(path.join(dir, f), 'utf8'));

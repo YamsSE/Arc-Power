@@ -39,19 +39,24 @@ export const DEVICE_STATE_UPDATED_CHANNEL = 'device:state-updated';
  *   store: import('./store/profile-store.js').ProfileStore,
  *   oldIgcl?: object | null,
  *   applyRunner?: object | null,
+ *   sysmanPowerLimits?: object | null,  // M17i: the sysman PL2 companion
+ *                                       // source - the tray apply is an
+ *                                       // in-process electron+IGCL apply,
+ *                                       // so main wires the HELPER PROXY
+ *                                       // (the IGCL-free delegation)
  *   getWindow?: () => ({ isDestroyed: () => boolean, webContents: { send: (channel: string, payload: unknown) => void } }) | null,
  *   getTray?: () => ({ isDestroyed: () => boolean, displayBalloon: (o: { title: string, content: string }) => void }) | null,
  *   log?: (s: string) => void,
  * }} deps
  * @returns {Promise<void>}
  */
-export async function trayApplyActiveProfile({ backend, store, oldIgcl = null, applyRunner = null, getWindow = () => null, getTray = () => null, log = console.error }) {
+export async function trayApplyActiveProfile({ backend, store, oldIgcl = null, applyRunner = null, sysmanPowerLimits = null, getWindow = () => null, getTray = () => null, log = console.error }) {
   try {
     const settings = await store.loadSettings();
     // M4-F (S2): the tray apply targets the PERSISTED/SELECTED device
     // (resolved like every other apply - explicit id ?? persisted ?? devices[0]).
     const deviceId = await resolveApplyDeviceId(backend, store, null);
-    const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, deviceId, oldIgcl, applyRunner });
+    const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, deviceId, oldIgcl, applyRunner, sysmanPowerLimits });
     // M16-F1 (D2): push the fresh post-apply read-back to the renderer so
     // the dashboard OC status row (derived from the LIVE driver values)
     // flips in place - a tray apply must never leave the stale pre-apply

@@ -8,6 +8,10 @@
 //     self-worker: hidden (no window/tray), never re-elevates, exits after
 //     writing the result file. Spawned by the non-elevated app via
 //     Start-Process -Verb RunAs (one UAC per apply).
+//   electron . --sysman-helper <reqFile> <outFile> -> M17i sysman helper:
+//     the IGCL-free process running the power-limits consumer (no backend,
+//     no OldIgcl - the bare-context zesInit path), spawned directly by the
+//     helper proxy, exits after writing the result file.
 //
 // The smoke path constructs the backend with allowAutoWaiver: true - the
 // ONLY place product code may do that (developer's own machine, no value
@@ -50,6 +54,14 @@ import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
 import { executeApply } from './apply-routing.js';
 import { runApplyWorker } from './apply-worker.js';
+import { runSysmanHelperMode } from './sysman/helper-mode.js';
+// M17i: the helper proxy - the parent-side client of the --sysman-helper
+// mode (the IGCL-free process running the power-limits consumer). The REAL
+// path constructs the proxy instead of the raw consumer everywhere the
+// consumer would run inside an electron+IGCL process (the M17i measured
+// poison); the raw consumer is constructed ONLY in the --sysman-helper
+// branch itself (the bare context).
+import { createSysmanHelperProxy } from './sysman/helper-proxy.js';
 import { createApplyRunner } from './elevated-apply.js';
 import { createMockOldIgcl } from './backend/mock-backend.js';
 // M17f: the sysman power-limits consumer (the PL2 companion + the
@@ -86,6 +98,12 @@ const applyProfileId = applyProfileIdx >= 0 ? process.argv[applyProfileIdx + 1] 
 const applyWorkerIdx = process.argv.indexOf('--apply-worker');
 const workerReqFile = applyWorkerIdx >= 0 ? process.argv[applyWorkerIdx + 1] : null;
 const workerOutFile = applyWorkerIdx >= 0 ? process.argv[applyWorkerIdx + 2] : null;
+// M17i sysman-helper mode: `--sysman-helper <reqFile> <outFile>` (the
+// IGCL-free process running the power-limits consumer - spawned by the
+// helper proxy, never by a user).
+const sysmanHelperIdx = process.argv.indexOf('--sysman-helper');
+const sysmanHelperReqFile = sysmanHelperIdx >= 0 ? process.argv[sysmanHelperIdx + 1] : null;
+const sysmanHelperOutFile = sysmanHelperIdx >= 0 ? process.argv[sysmanHelperIdx + 2] : null;
 
 function createWindow(backgroundColor = '#0f1116', show = true) {
   const win = new BrowserWindow({
@@ -163,7 +181,7 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
 // probe (the windowOps pattern - no real Tray mid-verify) that records the
 // toggle handler so 'a tray click shows the hidden window' is assertable.
 let trayRef = null;
-async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, createTrayImpl = createTray }) {
+async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysmanPowerLimits = null, createTrayImpl = createTray }) {
   // M17e (the user addition): the SHOW-WINDOW action - restores a
   // minimized window + focuses it; shows + focuses a hidden one. Shared by
   // the menu toggle's show branch and the tray DOUBLE-CLICK (the user's
@@ -216,6 +234,11 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, crea
         store,
         oldIgcl,
         applyRunner,
+        // M17i: the tray apply is an in-process electron+IGCL apply of the
+        // acceptance-1 class - the sysman companion must delegate to the
+        // IGCL-free helper there too (the proxy; null in the mock seam's
+        // no-sysman variant - the honest skip).
+        sysmanPowerLimits,
         // M16-F1 (D2): the renderer state push needs the main window
         // (resolved lazily - the tray can exist before the window in a
         // start-minimized session; a destroyed window never receives).
@@ -277,11 +300,45 @@ async function main() {
       outPath: workerOutFile,
       backend: workerBackend,
       oldIgcl: workerOldIgcl,
-      // M17f: the worker is the ELEVATED apply process - the sysman
-      // companion runs here (the ze_loader power write needs the same
-      // elevation the IGCL write does).
-      sysmanPowerLimits: createSysmanPowerLimits({}),
+      // M17f/M17i: the worker is the ELEVATED apply process - the sysman
+      // companion syncs the PL2 burst there too. M17i: the companion
+      // DELEGATES to the IGCL-free helper (this process carries the IGCL
+      // backend + OldIgcl - the measured zesInit poison combo) through the
+      // proxy; the helper inherits the worker's elevation (the direct
+      // spawn, no RunAs).
+      sysmanPowerLimits: createSysmanHelperProxy({
+        execPath: process.execPath,
+        appPath: process.defaultApp ? app.getAppPath() : null,
+        log: (s) => console.log(`[sysman-helper] ${s}`),
+      }),
       log: (s) => console.log(`[apply-worker] ${s}`),
+    });
+    app.exit(code);
+    return;
+  }
+
+  // --- M17i --sysman-helper mode (`--sysman-helper <req> <out>`): --------
+  // the sysman power-limits consumer in a DEDICATED IGCL-free process (the
+  // M17i measured root cause: the consumer's zesInit fails with
+  // ERROR_UNINITIALIZED ONLY when the IGCL is loaded inside an ELECTRON
+  // process). This branch constructs NO backend and NO OldIgcl - the bare
+  // context, so no IGCL DLL ever loads here. It sits BEFORE app.whenReady()
+  // and therefore BEFORE the instance-lock gate: the helper is a SECOND
+  // instance spawned while the UI holds the lock and must NEVER touch it
+  // (single-instance.js untouched). Gated on the flag INDEX (round-1 N3) -
+  // a bare `--sysman-helper` (zero args) must fail fast at the arg-count
+  // guard below, never fall through to the UI path.
+  if (sysmanHelperIdx >= 0) {
+    if (!sysmanHelperOutFile) {
+      console.error('--sysman-helper requires <reqFile> <outFile>');
+      app.exit(1);
+      return;
+    }
+    const code = await runSysmanHelperMode({
+      reqPath: sysmanHelperReqFile,
+      outPath: sysmanHelperOutFile,
+      consumer: createSysmanPowerLimits({}),
+      log: (s) => console.log(`[sysman-helper] ${s}`),
     });
     app.exit(code);
     return;
@@ -331,6 +388,20 @@ async function main() {
     } catch (err) {
       console.log(`[boot-apply] deviceId resolution skipped: ${err.message}`);
     }
+    // M17f/M17i: the boot apply runs ELEVATED (the logon task) - the
+    // sysman companion syncs the PL2 burst there too (the mock seam
+    // in mock mode). M17i: the REAL companion DELEGATES to the IGCL-free
+    // helper through the proxy (this process carries the IGCL backend +
+    // OldIgcl - the measured zesInit poison combo); the helper inherits the
+    // task's elevation (the direct spawn, no RunAs). Constructed ONCE for
+    // this mode and shared by the apply closure and the tray closure.
+    const bootSysmanLimits = mock
+      ? createMockSysmanPowerLimits({ backend: bootBackend })
+      : createSysmanHelperProxy({
+          execPath: process.execPath,
+          appPath: process.defaultApp ? app.getAppPath() : null,
+          log: (s) => console.log(`[sysman-helper] ${s}`),
+        });
     try {
       const out = await runBootApplyMode({
         store: bootStore,
@@ -340,12 +411,7 @@ async function main() {
           profileId,
           deviceId: bootDeviceId,
           oldIgcl: mock ? createMockOldIgcl(bootBackend) : bootOldIgcl,
-          // M17f: the boot apply runs ELEVATED (the logon task) - the
-          // sysman companion syncs the PL2 burst there too (the mock seam
-          // in mock mode).
-          sysmanPowerLimits: mock
-            ? createMockSysmanPowerLimits({ backend: bootBackend })
-            : createSysmanPowerLimits({}),
+          sysmanPowerLimits: bootSysmanLimits,
           log: (s) => console.log(`[boot-apply] ${s}`),
         }),
         setupTray: () => setupTray({
@@ -354,6 +420,7 @@ async function main() {
           store: bootStore,
           oldIgcl: mock ? createMockOldIgcl(bootBackend) : bootOldIgcl,
           applyRunner: null,
+          sysmanPowerLimits: bootSysmanLimits,
         }),
         log: (s) => console.log(`[boot-apply] ${s}`),
       });
@@ -665,11 +732,15 @@ async function main() {
   // probe (above) can consult it - the extended ranges are wired into
   // getCapabilities on hardware, never dead code.
   const oldIgcl = mock ? createMockOldIgcl(backend) : realOldIgcl;
-  // M17f: the sysman power-limits consumer - the PL2 companion + the
-  // 'power-limits:read' source. The REAL adapter lazily resolves
-  // ze_loader.dll on the FIRST read/set (a missing loader/domain degrades
-  // to the honest null + the '-' read-out, never a boot-time cost); the
-  // MOCK seam answers the fixture limits through the backend (the applied
+  // M17f/M17i: the sysman power-limits source - the PL2 companion + the
+  // 'power-limits:read' channel. M17i: the REAL path is the HELPER PROXY -
+  // the consumer runs in the dedicated IGCL-free `--sysman-helper` process
+  // (this window process carries the IGCL backend + OldIgcl - the measured
+  // zesInit poison combo; the raw consumer would degrade to the honest
+  // null + the '-' read-out here). Constructed ONCE per process and shared
+  // by the window-path boot apply, the tray apply, the IPC apply + the
+  // 'power-limits:read' source. The MOCK seam is UNCHANGED: the mock
+  // consumer answers the fixture limits through the backend (the applied
   // powerLimitW for both domains - the deterministic ui-verify read-out)
   // and never touches the DLL. M17g: RID_MOCK_NO_SYSMAN=1 knocks the mock
   // seam OUT entirely (sysmanPowerLimits null) - the ui-verify variant
@@ -677,7 +748,11 @@ async function main() {
   // power-limit card.
   const sysmanPowerLimits = mock
     ? (process.env.RID_MOCK_NO_SYSMAN === '1' ? null : createMockSysmanPowerLimits({ backend }))
-    : createSysmanPowerLimits({});
+    : createSysmanHelperProxy({
+        execPath: process.execPath,
+        appPath: process.defaultApp ? app.getAppPath() : null,
+        log: (s) => console.log(`[sysman-helper] ${s}`),
+      });
   // M2C-C elevation probe: real detection in the product path; ui-verify
   // knobs let the mock report elevated (RID_MOCK_ELEVATED=1) so the
   // elevated-in-app UI state is verifiable without elevation. Declared HERE
@@ -1179,16 +1254,27 @@ async function main() {
     } catch (err) {
       console.log(`[apply-profile] deviceId resolution skipped: ${err.message}`);
     }
+    // M17f/M17i: the logon apply is ELEVATED (the /rl highest task) - the
+    // sysman companion runs there too. M17i: the REAL companion DELEGATES
+    // to the IGCL-free helper through the proxy (this process carries the
+    // IGCL backend - the measured zesInit poison combo); constructed ONCE
+    // for this mode and shared by the apply and the tray closure (a
+    // packaged tray/boot apply must land PL2 too).
+    const applyProfileSysmanLimits = mock
+      ? createMockSysmanPowerLimits({ backend })
+      : createSysmanHelperProxy({
+          execPath: process.execPath,
+          appPath: process.defaultApp ? app.getAppPath() : null,
+          log: (s) => console.log(`[sysman-helper] ${s}`),
+        });
     await runApplyOnStartup({
       backend,
       store,
       profileId: applyProfileId,
       deviceId: applyDeviceId,
       oldIgcl: bootOldIgcl,
-      // M17f: the logon apply is ELEVATED (the /rl highest task) - the
-      // sysman companion runs there too.
-      sysmanPowerLimits: mock ? createMockSysmanPowerLimits({ backend }) : createSysmanPowerLimits({}),
-      setupTray: () => setupTray({ getWindow: () => null, backend, store, oldIgcl: bootOldIgcl, applyRunner: null }),
+      sysmanPowerLimits: applyProfileSysmanLimits,
+      setupTray: () => setupTray({ getWindow: () => null, backend, store, oldIgcl: bootOldIgcl, applyRunner: null, sysmanPowerLimits: applyProfileSysmanLimits }),
       log: (s) => console.log(s),
     });
     return;
@@ -1312,6 +1398,9 @@ async function main() {
     store,
     oldIgcl,
     applyRunner,
+    // M17i: the window path's ONE proxy (constructed above) - the tray
+    // "Apply active profile" lands PL2 through the IGCL-free helper too.
+    sysmanPowerLimits,
     createTrayImpl: uiVerify ? createTrayProbe : createTray,
   });
   markProfileBoot('tray');
@@ -1375,6 +1464,11 @@ async function main() {
         profileId: bootSettings.activeProfileId,
         deviceId: bootDeviceId,
         oldIgcl,
+        // M17i: the window-path boot apply is an in-process electron+IGCL
+        // apply of the acceptance-1 class - the sysman companion delegates
+        // to the IGCL-free helper through the window path's proxy (the
+        // mock seam in mock mode; null under RID_MOCK_NO_SYSMAN).
+        sysmanPowerLimits,
         log: (s) => console.log(s),
       });
       if (mock) recordBootApply(bootSettings.activeProfileId, out);

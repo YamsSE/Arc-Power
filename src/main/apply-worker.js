@@ -33,9 +33,12 @@ import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefu
  * @param {string} dir request-file directory
  * @param {string | null} requestId this request's id (null = no correlation)
  * @param {number} [now]
+ * @param {string} [tokenPrefix] token filename prefix (M17i: the sysman
+ *   helper's tokens are `arcpower-sm-tok-<id>.json` - the same guard, the
+ *   sm- family)
  * @returns {Promise<string | null>} the stale token's path, or null
  */
-export async function findStaleSiblingToken(dir, requestId, now = Date.now()) {
+export async function findStaleSiblingToken(dir, requestId, now = Date.now(), tokenPrefix = 'arcpower-tok-') {
   let files;
   try {
     files = await fs.promises.readdir(dir);
@@ -43,7 +46,7 @@ export async function findStaleSiblingToken(dir, requestId, now = Date.now()) {
     return null; // no dir - nothing to judge
   }
   for (const f of files) {
-    if (!f.startsWith('arcpower-tok-') || !f.endsWith('.json')) continue;
+    if (!f.startsWith(tokenPrefix) || !f.endsWith('.json')) continue;
     let tok;
     try {
       tok = JSON.parse(await fs.promises.readFile(path.join(dir, f), 'utf8'));
@@ -51,7 +54,7 @@ export async function findStaleSiblingToken(dir, requestId, now = Date.now()) {
       continue; // unreadable token - not ours to judge
     }
     if (typeof requestId === 'string' && requestId !== '') {
-      const tokId = typeof tok.requestId === 'string' ? tok.requestId : f.slice('arcpower-tok-'.length, -'.json'.length);
+      const tokId = typeof tok.requestId === 'string' ? tok.requestId : f.slice(tokenPrefix.length, -'.json'.length);
       if (tokId !== requestId) continue;
     }
     if (typeof tok.expiresAt === 'number' && tok.expiresAt < now) return path.join(dir, f);
