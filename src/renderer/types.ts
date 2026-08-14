@@ -151,8 +151,10 @@ export interface ApplyResult {
    *  Null when the payload carried no W-unit powerLimitW (or the write
    *  failed - nothing to note). The Tuning PL card's '(set)' session state
    *  feeds from it. Absent/omitted on the worker envelope when null (the
-   *  old envelope-shape pins stay green). */
-  pl2Note?: { landed: boolean; ceilingW?: number; valueW?: number } | null;
+   *  old envelope-shape pins stay green).
+   *  M17o: the CLAMP verdict also carries requestedW (the requested burst -
+   *  the read-out's promise sentence keys on valueW < requestedW). */
+  pl2Note?: { landed: boolean; ceilingW?: number; valueW?: number; requestedW?: number } | null;
 }
 
 export interface ApplyResponse {

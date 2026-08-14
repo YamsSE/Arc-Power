@@ -3,10 +3,19 @@
 // The one-shot `--sysman-helper` mode is the dev/verification path and is
 // spawned by NO ONE - this proxy always spawns the detached pipe form. The
 // M17l stdin form (`--sysman-helper-persist`) was REMOVED in run B of M17m
-// (the detached named-pipe transport supersedes it - the M17m premise: the
-// helper's ze context must OUTLIVE the app sessions, because a FRESH ze init
-// fails for 12-20+ min after an IGCL write elsewhere while an EXISTING
-// context writes through the window instantly - the measured 11:26 failure).
+// (the detached named-pipe transport supersedes it - the helper's ze context
+// must OUTLIVE the app sessions). M17o2 THE MEASURED TRUTH (live, on the
+// user's A770): the '12-20+ min arbitration window' NEVER EXISTED for FRESH
+// processes - a fresh process's ze init succeeds ALWAYS (5/5 live-proven,
+// even 2 s after a real elevated write), while the IN-PROCESS retry was
+// provably PERMANENTLY STUCK (PID 9404: attempt 1459+ over 50+ min while
+// fresh processes init'd fine in the same minutes; the ze loader's
+// per-process state after a failed init never recovers - a FRESH PROCESS is
+// required per retry). The helper therefore EXITS 77 on a failed init, and
+// THIS proxy HEALS: it schedules an ensureConnected() respawn (~1.5 s later)
+// from every helper-death trigger (the socket drop + the spawned child's
+// 0/77 exit), one-shot per trigger, capped at 5 consecutive heal-spawn
+// deaths (the recovery is the next warm()).
 // The measured root cause (plan M17i): the sysman consumer's zesInit fails
 // with ERROR_UNINITIALIZED ONLY when the IGCL is loaded inside an ELECTRON
 // process, so the consumer must run in a dedicated helper process that loads
@@ -24,7 +33,11 @@
 //     race - an existing helper is alive) is a DEBUG-LOG EVENT, NEVER a
 //     socket drop: the child's death surfaces as the socket's 'close' (the
 //     server side gone) - the proxy never tears down a live socket because
-//     its spawned child happened to exit;
+//     its spawned child happened to exit. M17o2 THE HEAL: every socket
+//     drop + the own child's 0/77 exit SCHEDULE an ensureConnected()
+//     respawn (~1.5 s later, unref'd, one-shot) - the fresh-process retry;
+//     the cap (5 consecutive heal-spawn deaths, ANY exit code) stops a
+//     heal loop; the recovery is the next warm();
 //   - THE CONNECT PATH (round-1 S2) - the warm()'s eager connect: a live
 //     machine-level helper (left by a previous app session) is REUSED with
 //     NO spawn (the M17m reuse shape); when the connect fails (no helper
@@ -63,10 +76,12 @@
 //     { ok: false, errorCode: 'helper-failed', message } - the honest
 //     degrade, never a throw;
 //   - M17n THE NO-WAIT APPLY (the user's measured cause: the helper's
-//     zesInit NEVER lands in the user's usage pattern - the applies + the
-//     boot probes keep the 12-20+ min arbitration window open, and the
-//     M17l 25-min HELPER_INIT_WAIT_MS horizon made the apply WAIT for it =
-//     'AGES'): THE NOT-READY CALLS ANSWER INSTANTLY. The parser still
+//     zesInit NEVER landed in the user's usage pattern - the in-process
+//     retry was provably permanently stuck, and the M17l 25-min
+//     HELPER_INIT_WAIT_MS horizon made the apply WAIT for it = 'AGES';
+//     M17o2: the fresh-process retry (the HEAL respawn) makes the
+//     not-ready class rare - only the ~1.5 s heal gaps): THE NOT-READY
+//     CALLS ANSWER INSTANTLY. The parser still
 //     recognizes the helper's { type: 'ready' } line + tracks the ready
 //     state, but NO call ever waits for the ready: the set on a NOT-ready
 //     helper returns { ok: false, errorCode: 'not-ready', message: 'the
@@ -99,7 +114,7 @@
 //   - M17m THE STDERR CAPTURE IS REMOVED (run B): the spawn's stdio is
 //     'ignore' - there are no pipes at all; the helper's diagnostics live
 //     in ITS OWN log file (%TEMP%\arcpower-sysman-helper.log - the
-//     init-retry lines + the ready/response events + the PID + the init
+//     init lines + the ready/response events + the PID + the init
 //     timestamp, round-1 S3) and the proxy's debug log keeps its
 //     connect/req/resp/close/child-exit events;
 //   - the debug file log STAYS (the verdicts + the spawn/init evidence),
@@ -127,12 +142,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn as childProcessSpawn } from 'node:child_process';
 import { sweepStaleWorkerFiles } from '../elevated-apply.js';
-import { SYSMAN_PIPE_NAME } from './helper-mode.js';
+import { SYSMAN_PIPE_NAME, resolveIntentFilePath } from './helper-mode.js';
 
 // The per-request answer window: the helper's zesInit + the read/write
 // round trip take ~1-6 s live (round-1 N3); 30 s covers the slowest legit
-// spawn + the init-retry wait (the timeout NEVER kills the helper - the
-// init keeps retrying in the background - round-1 S2). M17n: the bound
+// spawn + the SINGLE-attempt init (the timeout NEVER kills the helper -
+// M17o2 a failed init EXITS 77 and the HEAL respawns a fresh process).
+// M17n: the bound
 // applies ONLY to READY-helper round trips (ONE pipe round trip - round-2
 // N6) - a not-ready call never enqueues (it answers instantly).
 export const HELPER_TIMEOUT_MS = 30000;
@@ -155,6 +171,27 @@ export const NOT_READY_GRACE_MS = 200;
 // listen under a cold-start load.
 export const CONNECT_RETRY_INTERVAL_MS = 500;
 export const CONNECT_RETRY_CAP_MS = 30000;
+// M17o2 THE HEAL (the fresh-process retry - the in-process retry was
+// provably permanently stuck): the proxy schedules an ensureConnected()
+// respawn HELPER_RESPAWN_DELAY_MS after a helper death - from the TOP of
+// handleDrop (BEFORE the stale-guard, so the nulled-socket drops - the
+// write-failure + protocol-error paths - still heal via the socket's
+// 'close') AND from the own spawned child's 0/77 exit. The timer is
+// unref()d + ONE-SHOT (a failed heal is never re-armed); the fire-time
+// guard is ensureConnected's own socket check + the connecting latch (an
+// over-eager heal is a no-op reconnect).
+export const HELPER_RESPAWN_DELAY_MS = 1500;
+// M17o2 THE HEAL CAP (r2-S2 / r3-N1): consecutiveHealSpawns counts EVERY
+// heal-driven spawn's death regardless of the exit code (a heal-spawn flag
+// on the child + the counter), checked at SCHEDULE time (the one
+// scheduleHeal site). After MAX_CONSECUTIVE_HEAL_SPAWNS consecutive
+// deaths the heals STOP (a heal loop against a permanently dying helper
+// must not respawn forever; the request path stays instant-not-ready
+// meanwhile - the M17n contract untouched). The counter resets on ANY
+// successful socket landing AND on warm() - the post-cap recovery is the
+// next warm() (the next app session; no decay clause - nothing exists to
+// exercise it post-cap).
+export const MAX_CONSECUTIVE_HEAL_SPAWNS = 5;
 
 /** The default connect seam: node's net.connect to the named pipe. */
 const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
@@ -184,6 +221,7 @@ const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
  *   readyGraceMs?: number,         // M17n the ready-line grace (default NOT_READY_GRACE_MS - ~100-250 ms)
  *   connectRetryIntervalMs?: number,  // M17m the connect-retry interval (default 500 ms)
  *   connectRetryCapMs?: number,    // M17m the connect-retry cap (default 30 s)
+ *   healDelayMs?: number,          // M17o2 the heal respawn delay (default HELPER_RESPAWN_DELAY_MS - 1.5 s; the test seam)
  *   sleep?: (ms: number) => Promise<void>,  // the retry-interval sleep seam
  *   debugLogPath?: () => string,   // the debug file (default %TEMP%\arcpower-sysman-debug.log)
  *   log?: (s: string) => void,
@@ -201,6 +239,7 @@ export function createSysmanHelperProxy({
   readyGraceMs = NOT_READY_GRACE_MS,
   connectRetryIntervalMs = CONNECT_RETRY_INTERVAL_MS,
   connectRetryCapMs = CONNECT_RETRY_CAP_MS,
+  healDelayMs = HELPER_RESPAWN_DELAY_MS,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   debugLogPath = () => path.join(os.tmpdir(), 'arcpower-sysman-debug.log'),
   log = () => {},
@@ -237,6 +276,42 @@ export function createSysmanHelperProxy({
   // double-connect). The latch is cleared in the finally - a failed
   // connect leaves the next call free to re-attempt.
   let connecting = null;
+  // M17o2 THE HEAL state: the pending respawn timer (null = none) + the
+  // consecutive heal-spawn death counter (the cap - r2-S2/r3-N1). The
+  // counter resets on ANY successful socket landing AND on warm().
+  let healTimer = null;
+  let consecutiveHealSpawns = 0;
+
+  /**
+   * M17o2 THE HEAL SCHEDULE (the single schedule site): a helper death
+   * (the socket drop via the TOP of handleDrop - BEFORE the stale-guard,
+   * so the nulled-socket drops still land here through the socket's
+   * 'close' - or the own spawned child's 0/77 exit) schedules ONE
+   * ensureConnected() respawn after HELPER_RESPAWN_DELAY_MS. There is NO
+   * socket-gate at schedule time (unconditional scheduling is safe by
+   * design): the guard moves to FIRE time - the callback calls
+   * ensureConnected(), whose socket-first check + connecting latch make an
+   * over-eager heal a no-op reconnect (never a double-spawn). The timer is
+   * unref()d + ONE-SHOT (a failed heal is never re-armed - no retry loop
+   * of its own; the next trigger schedules a fresh heal). THE CAP: no
+   * schedule when MAX_CONSECUTIVE_HEAL_SPAWNS consecutive heal-spawn
+   * deaths have been counted (checked here - the one site); the recovery
+   * is the next warm().
+   */
+  const scheduleHeal = (reason) => {
+    if (consecutiveHealSpawns >= MAX_CONSECUTIVE_HEAL_SPAWNS) return; // post-cap - the next warm() recovers
+    if (healTimer) return; // one pending heal (the same death's socket close + child exit land in quick succession)
+    healTimer = setTimeout(() => {
+      healTimer = null;
+      // THE FIRE-TIME GUARD: ensureConnected's socket check + the
+      // connecting latch (a heal racing a warm shares the latch - never a
+      // double-spawn). A failed heal degrades silently (the not-ready
+      // verdicts cover the calls; a later trigger schedules afresh).
+      ensureConnected({ healSpawn: true }).catch(() => { /* best effort */ });
+    }, healDelayMs);
+    try { healTimer.unref?.(); } catch { /* best effort */ }
+    debugLog({ ts: Date.now(), event: 'heal', reason });
+  };
 
   // The debug file log (M17i - the packaged app's console is invisible,
   // the proxy's verdicts must be diagnosable on the user's machine):
@@ -246,6 +321,31 @@ export function createSysmanHelperProxy({
     try {
       fs.appendFileSync(debugLogPath(), `${JSON.stringify(event)}\n`, 'utf8');
     } catch { /* best effort */ }
+  };
+
+  /**
+   * M17o THE AUTO-UPGRADE INTENT (the 'no one waits 15 minutes' contract):
+   * the not-ready SET verdict writes the pair the apply wanted into
+   * %TEMP%\arcpower-sysman-intent.json ({ pl1W, pl2W, ts } - the
+   * RID_SYSMAN_INTENT_FILE override) so the detached helper's ONE-SHOT
+   * applies the exact value when its ze init finally lands (the window
+   * closes; the existing helper then raises PL2 from the clamp value to
+   * the requested value - no user action, no waiting). ATOMIC (tmp +
+   * rename - a crash mid-write can never leave a partial intent for the
+   * helper's parse), try/catch log-only (an intent write failure NEVER
+   * degrades the instant not-ready verdict), NEVER on reads or the ready
+   * path.
+   */
+  const writeAutoUpgradeIntent = ({ pl1W, pl2W }) => {
+    try {
+      if (!Number.isFinite(pl1W) || !Number.isFinite(pl2W)) return;
+      const target = resolveIntentFilePath();
+      const tmp = `${target}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ pl1W, pl2W, ts: Date.now() }), 'utf8');
+      fs.renameSync(tmp, target);
+    } catch (err) {
+      log(`auto-upgrade intent write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const finishPending = (out, reason) => {
@@ -266,8 +366,16 @@ export function createSysmanHelperProxy({
    * error and write-failure drops below are proxy-initiated - they destroy
    * the socket first, so the 'close' listener sees socket !== sock and
    * returns).
+   * M17o2 THE HEAL HOOK (r2-S1): the heal is scheduled at the TOP -
+   * BEFORE the stale-guard. The write-failure + protocol-error drops null
+   * the socket before the 'close' fires, so a post-guard hook would miss
+   * the dead-socket-write death - the genuine helper-death case; the
+   * top-of-handleDrop schedule is the single schedule point for every
+   * socket-driven drop (a stale close is an over-eager heal at most - a
+   * no-op reconnect via ensureConnected's socket-first check).
    */
   const handleDrop = (sock, reason) => {
+    scheduleHeal(reason); // M17o2 - BEFORE the stale-guard (unconditional: an over-eager heal is a no-op at fire time)
     if (socket !== sock) return; // a stale close from a superseded socket
     socket = null;
     ready = false;
@@ -284,9 +392,19 @@ export function createSysmanHelperProxy({
    * existing helper is alive; the connect-retry loop then connects to the
    * EXISTING helper). The child's death surfaces as the socket's 'close'
    * (the server side gone) - the socket-keyed drop handles it.
+   * M17o2 THE HEAL TRIGGERS: (a) EVERY heal-driven spawn's death (the
+   * healSpawn flag on the child) increments consecutiveHealSpawns -
+   * ANY exit code (r2-S2); (b) the own child's 0/77 exit SCHEDULES the
+   * heal (77 = the fresh-process init retry; 0 = the EADDRINUSE loser -
+   * there the fire is an over-eager no-op while the existing helper's
+   * socket is live, the connect-first shape).
    */
   const handleChildEvent = (event, proc, reason, code, signal) => {
     debugLog({ ts: Date.now(), event, pid: proc?.pid ?? null, reason, code, signal });
+    if (event === 'child-exit') {
+      if (proc?.healSpawn) consecutiveHealSpawns += 1; // EVERY heal-driven spawn death counts, regardless of the exit code
+      if (code === 0 || code === 77) scheduleHeal(`the spawned helper exited (code ${code})`);
+    }
   };
 
   /**
@@ -396,15 +514,18 @@ export function createSysmanHelperProxy({
    * token. Dev-tree args `['.', '--sysman-helper-pipe']` with cwd: appPath
    * (the elevated-apply convention - the '.' avoids the space-in-arg
    * quoting trap); the packaged EXE needs no app path (round-1 S4).
+   * M17o2: a HEAL-driven spawn flags the child (proc.healSpawn) - the
+   * cap counter counts that flag's deaths (the r2-S2 rule, ANY exit code).
    * @returns {Promise<{ ok: boolean, pid?: number | null, reason?: string }>}
    */
-  const spawnDetachedHelper = async () => {
+  const spawnDetachedHelper = async ({ healSpawn = false } = {}) => {
     try {
       const proc = await spawn(
         execPath,
         appPath ? ['.', '--sysman-helper-pipe'] : ['--sysman-helper-pipe'],
         appPath ? { cwd: appPath, detached: true, windowsHide: true, stdio: 'ignore' } : { detached: true, windowsHide: true, stdio: 'ignore' },
       );
+      if (healSpawn) proc.healSpawn = true; // M17o2 the heal-cap flag (r3-N1)
       attachChild(proc);
       spawnedPid = proc.pid ?? null;
       return { ok: true, pid: proc.pid ?? null };
@@ -429,10 +550,13 @@ export function createSysmanHelperProxy({
    * M17i never-throw contract). M17k (round-1 N3): the IN-FLIGHT LATCH -
    * concurrent warmers share ONE connect promise and NEVER double-spawn;
    * the latch clears in the finally, so a failed connect leaves the next
-   * warm free to re-attempt.
+   * warm free to re-attempt. M17o2 THE HEAL: the heal's fire-time call
+   * rides this same path with { healSpawn: true } - its spawn carries the
+   * heal flag (the r2-S2 cap counter) and ANY successful socket landing
+   * (heal or warm) resets the consecutive-heal-spawn counter.
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
-  const ensureConnected = async () => {
+  const ensureConnected = async ({ healSpawn = false } = {}) => {
     if (socket) return { ok: true };
     if (connecting) return connecting;
     connecting = (async () => {
@@ -467,6 +591,7 @@ export function createSysmanHelperProxy({
         }
         if (sock) {
           connects += 1;
+          consecutiveHealSpawns = 0; // M17o2: ANY successful socket landing resets the heal counter
           debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: spawnedPid, spawnError: null });
           attachSocket(sock);
           socket = sock;
@@ -474,7 +599,7 @@ export function createSysmanHelperProxy({
         }
         if (!spawned) {
           spawned = true;
-          const s = await spawnDetachedHelper();
+          const s = await spawnDetachedHelper({ healSpawn });
           if (!s.ok) {
             debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: null, spawnError: s.reason });
             return { ok: false, reason: s.reason };
@@ -511,9 +636,13 @@ export function createSysmanHelperProxy({
           // spawn/connect-retry wait). The set's not-ready out rides
           // VERBATIM (the same pinned errorCode/message the call-site gate
           // answers); the read degrades to null through the same out.
+          // M17o: a DRAINED SET also writes the AUTO-UPGRADE INTENT (the
+          // helper hasn't init'd yet - the one-shot WILL consume it at
+          // init-land).
           while (queue.length > 0) {
             const call = queue.shift();
             debugLog({ ts: Date.now(), event: 'resp', id: call.id, op: call.op, spawnError: NOT_READY_MESSAGE, out: null });
+            if (call.op === 'set') writeAutoUpgradeIntent({ pl1W: call.payload?.sustainedW, pl2W: call.payload?.burstW });
             call.resolve({ out: { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE }, reason: null });
           }
           break;
@@ -535,8 +664,9 @@ export function createSysmanHelperProxy({
         call.timer = setTimeout(() => {
           if (pending === call) {
             // The timeout degrades ONLY this call (round-1 S2): the helper
-            // is NEVER killed - it may still be inside its init-retry
-            // loop, and the next call reuses the same connection.
+            // is NEVER killed - it may still be inside its SINGLE-attempt
+            // init (M17o2: a failed init exits 77 and the heal respawns),
+            // and the next call reuses the same connection.
             pending = null;
             debugLog({ ts: Date.now(), event: 'resp', id: call.id, op: call.op, spawnError: `timeout after ${timeoutMs} ms`, out: null });
             call.resolve({ out: null, reason: `the sysman helper did not answer within ${timeoutMs} ms (the helper is never killed for timing out)` });
@@ -620,6 +750,11 @@ export function createSysmanHelperProxy({
      * @returns {Promise<void>}
      */
     async warm() {
+      // M17o2 THE POST-CAP RECOVERY (r3-N1): warm() resets the
+      // consecutive-heal-spawn counter - the next app session's boot warm
+      // restores the heals even after the 5-death cap (stated plainly; no
+      // decay clause - nothing exists to exercise it post-cap).
+      consecutiveHealSpawns = 0;
       await ensureConnected().catch(() => { /* a warm failure degrades silently - the not-ready verdicts cover the calls */ });
     },
     /**
@@ -664,6 +799,11 @@ export function createSysmanHelperProxy({
     async setLimits({ sustainedW, burstW }) {
       if (!(await readyGate())) {
         debugLog({ ts: Date.now(), event: 'resp', op: 'set', spawnError: NOT_READY_MESSAGE, out: null });
+        // M17o: the not-ready SET writes the AUTO-UPGRADE INTENT (the pair
+        // the apply wanted) - the detached helper's one-shot applies the
+        // exact value when its ze init lands (the V2-clamp covers PL2
+        // meanwhile - the 'no one waits 15 minutes' contract).
+        writeAutoUpgradeIntent({ pl1W: sustainedW, pl2W: burstW });
         return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
       }
       const { out, reason } = await enqueue({ op: 'set', payload: { sustainedW, burstW } });

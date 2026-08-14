@@ -16,10 +16,14 @@
 //     same IGCL-free consumer process, but the transport is the Windows
 //     named pipe \\.\pipe\arcpower-sysman (node's net) and the lifecycle
 //     is DETACHED - a client disconnect NEVER exits the helper (only the
-//     idle timeout does; RID_SYSMAN_HELPER_IDLE_MS, default 60 min), so
-//     its ze context (init'd when the machine was idle) outlives the app
-//     sessions and writes through the 12-20+ min arbitration window. Its
-//     own log file lives at %TEMP%\arcpower-sysman-helper.log. NO args.
+//     idle timeout does; RID_SYSMAN_HELPER_IDLE_MS, default 0 = NEVER -
+//     M17o the never-dying helper), so its ze context (init'd when the
+//     machine was idle) outlives the app sessions. M17o2: the ze init is
+//     a SINGLE attempt - a fresh process's init ALWAYS lands (5/5
+//     live-proven) while the in-process retry was provably permanently
+//     stuck; a failed init EXITS 77 and the proxy's HEAL respawns a
+//     fresh helper. Its own log file lives at
+//     %TEMP%\arcpower-sysman-helper.log. NO args.
 //     (The M17j/M17l PERSISTENT stdin form `--sysman-helper-persist` was
 //     REMOVED in M17m run B - the detached pipe form supersedes it.)
 //
@@ -352,16 +356,23 @@ async function main() {
   // consumer process, but the transport is a Windows NAMED PIPE
   // (\\.\pipe\arcpower-sysman, node's net) and the lifecycle is DETACHED:
   // a client disconnect NEVER exits the helper - only the idle timeout
-  // (RID_SYSMAN_HELPER_IDLE_MS, default 60 min) does, so the helper's ze
-  // context (init'd when the machine was idle) outlives the app sessions
-  // and writes through any arbitration window (the measured 12-20+ min
-  // class). The per-connection ready semantics + the globally serialized
-  // dispatch + the bind-conflict exit (EADDRINUSE -> 0) live in
-  // runSysmanHelperPipeMode. THE HELPER'S OWN LOG FILE (round-1 S3):
-  // %TEMP%\arcpower-sysman-helper.log carries the init-retry lines + the
-  // ready/response events + the PID + the init timestamp (the
-  // same-helper assertion surface) - the consumer's log is pinned to the
-  // SAME file. Like the one-shot branch, it sits BEFORE app.whenReady()
+  // (RID_SYSMAN_HELPER_IDLE_MS, default 0 = NEVER - M17o the never-dying
+  // helper) does, so the helper's ze context (init'd when the machine was
+  // idle) outlives the app sessions. M17o2 THE MEASURED TRUTH: the
+  // '12-20+ min arbitration window' NEVER EXISTED for FRESH processes - a
+  // fresh process's ze init succeeds ALWAYS (5/5 live-proven, even 2 s
+  // after a real elevated write), while the IN-PROCESS retry was provably
+  // PERMANENTLY STUCK (PID 9404: attempt 1459+ over 50+ min; the ze
+  // loader's per-process state after a failed init never recovers - a
+  // FRESH PROCESS is required per retry). The init is therefore a SINGLE
+  // attempt: a failed probe EXITS 77 (HELPER_INIT_FAILED_EXIT_CODE) and
+  // the proxy's HEAL respawns a fresh helper. The per-connection ready
+  // semantics + the globally serialized dispatch + the bind-conflict exit
+  // (EADDRINUSE -> 0) live in runSysmanHelperPipeMode. THE HELPER'S OWN
+  // LOG FILE (round-1 S3): %TEMP%\arcpower-sysman-helper.log carries the
+  // init lines + the ready/response events + the PID + the init timestamp
+  // (the same-helper assertion surface) - the consumer's log is pinned to
+  // the SAME file. Like the one-shot branch, it sits BEFORE app.whenReady()
   // and therefore BEFORE the instance-lock gate: the helper is a SECOND
   // instance spawned while the UI holds the lock and must NEVER touch it
   // (single-instance.js untouched). (Run B: the M17j/M17l PERSISTENT
@@ -370,10 +381,11 @@ async function main() {
   if (sysmanHelperPipeIdx >= 0) {
     const helperLog = createSysmanHelperLogFileWriter();
     const code = await runSysmanHelperPipeMode({
-      // A fresh consumer per init attempt (the retry-until-ready loop) -
-      // the real createSysmanPowerLimits LATCHES its degrade, so each
-      // retry must be a NEW init attempt. The consumer's log is pinned to
-      // the helper's OWN log file.
+      // M17o2 THE SINGLE INIT ATTEMPT on a FRESH consumer (the real
+      // createSysmanPowerLimits LATCHES its degrade - a failed ze init
+      // stays unavailable on that instance forever; the in-process retry
+      // is gone, the fresh-process retry is the proxy's HEAL respawn).
+      // The consumer's log is pinned to the helper's OWN log file.
       createConsumer: () => createSysmanPowerLimits({ log: (s) => helperLog(`[sysman] ${s}`) }),
       log: (s) => helperLog(s),
     });

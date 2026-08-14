@@ -167,7 +167,7 @@ let sysmanLimitsNode: HTMLElement | null = null;
 // discarded at the feed) - pl-readout.ts branches the sentence on it (the
 // clamp class's value-accurate sentence vs the refused class's kept
 // sentence).
-const pl2SetByDevice = new Map<number, { landed: boolean; valueW: number; ceilingW?: number }>();
+const pl2SetByDevice = new Map<number, { landed: boolean; valueW: number; ceilingW?: number; requestedW?: number }>();
 let applyBtn: HTMLButtonElement | null = null;
 let applying = false;
 // M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
@@ -237,8 +237,11 @@ function refreshChip(key: string) {
  *  NOTHING was applied in the session AND the sysman is absent.
  *  M17n (round-1 S1): the LANDED FLAG branches the sentence - the clamp
  *  class (landed + ceilingW) renders the value-accurate sentence, the
- *  refused class (landed false + ceilingW) keeps its sentence. */
-function formatSysmanLimits(limits: PowerLimitsRead | null, set: { landed?: boolean; valueW: number; ceilingW?: number } | undefined, enforcedW: number | null | undefined): string {
+ *  refused class (landed false + ceilingW) keeps its sentence.
+ *  M17o: the clamp class's requestedW drives the promise sentence ('it
+ *  will be raised to <requestedW> W automatically when the sysman layer
+ *  finishes initializing' when valueW < requestedW). */
+function formatSysmanLimits(limits: PowerLimitsRead | null, set: { landed?: boolean; valueW: number; ceilingW?: number; requestedW?: number } | undefined, enforcedW: number | null | undefined): string {
   return formatPlReadout(limits, set, enforcedW);
 }
 
@@ -1361,6 +1364,7 @@ export const tuningPage: Page = {
             landed: result.pl2Note.landed === true,
             valueW: result.pl2Note.valueW,
             ...(typeof result.pl2Note.ceilingW === 'number' ? { ceilingW: result.pl2Note.ceilingW } : {}),
+            ...(typeof result.pl2Note.requestedW === 'number' ? { requestedW: result.pl2Note.requestedW } : {}),
           });
         }
         // M17f: the PL2 read-out freshness = per-apply - refresh the sysman

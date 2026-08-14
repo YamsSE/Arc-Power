@@ -44,28 +44,39 @@ export function pl2CeilingSentence(ceilingW: number): string {
  * Max' observation). The wording is pinned in the unit tests (the clamp
  * path is exercised by the apply-routing suite - no ui-verify variant
  * drives the not-ready helper).
+ * M17o (N10): when the landed value is BELOW the requested burst
+ * (valueW < requestedW), the sentence appends THE PROMISE - 'it will be
+ * raised to <requestedW> W automatically when the sysman layer finishes
+ * initializing' (the auto-upgrade intent flow: the not-ready apply's
+ * intent lands the exact value when the helper's ze init closes the
+ * window). NO promise when the clamp already landed the full request
+ * (valueW === requestedW) - there is nothing left to raise to.
  */
-export function pl2ClampSentence(valueW: number, ceilingW: number): string {
+export function pl2ClampSentence(valueW: number, ceilingW: number, requestedW?: number): string {
   const v = Math.round(valueW);
   const c = Math.round(ceilingW);
   const eq = v === c ? ` = the driver ceiling (${c} W)` : '';
-  return `the burst limit (PL2) is set to ${v} W${eq} via the driverstore fallback - the sysman layer was not ready - the sustained limit (PL1) is set`;
+  const promise = typeof requestedW === 'number' && Number.isFinite(requestedW) && v < Math.round(requestedW)
+    ? ` - it will be raised to ${Math.round(requestedW)} W automatically when the sysman layer finishes initializing`
+    : '';
+  return `the burst limit (PL2) is set to ${v} W${eq} via the driverstore fallback - the sysman layer was not ready - the sustained limit (PL1) is set${promise}`;
 }
 
 /**
  * M17g/M17n: the power-limit card's read-out line.
  * @param {object | null} limits the sysman read ({ sustainedW, burstW } in
  *   W) - null when the layer is absent
- * @param {{ landed?: boolean, valueW: number, ceilingW?: number } | undefined} set the
+ * @param {{ landed?: boolean, valueW: number, ceilingW?: number, requestedW?: number } | undefined} set the
  *   session-tracked last-applied PL2 (fed ONLY from the apply envelope's
- *   pl2Note - the M17n landed flag branches the sentence) - undefined when
+ *   pl2Note - the M17n landed flag branches the sentence; M17o the
+ *   requestedW drives the promise clause) - undefined when
  *   nothing applied in this session
  * @param {number | null | undefined} enforcedW the IGCL enforced PL1 read
  *   (currentState.powerLimitW - the '(set)' line's PL1 side)
  */
 export function formatPlReadout(
   limits: { sustainedW?: number | null; burstW?: number | null } | null | undefined,
-  set: { landed?: boolean; valueW: number; ceilingW?: number } | undefined,
+  set: { landed?: boolean; valueW: number; ceilingW?: number; requestedW?: number } | undefined,
   enforcedW: number | null | undefined,
 ): string {
   if (limits && Number.isFinite(limits.sustainedW) && Number.isFinite(limits.burstW)) {
@@ -77,8 +88,9 @@ export function formatPlReadout(
     const ceilingW = typeof set.ceilingW === 'number' && Number.isFinite(set.ceilingW) ? set.ceilingW : null;
     if (set.landed === true && ceilingW !== null) {
       // THE CLAMP CLASS (M17n round-1 S1): the value-accurate sentence -
-      // the clamp class NEVER renders the refused sentence.
-      return `${base} - ${pl2ClampSentence(set.valueW, ceilingW)}`;
+      // the clamp class NEVER renders the refused sentence. M17o: the
+      // promise clause rides when valueW < requestedW.
+      return `${base} - ${pl2ClampSentence(set.valueW, ceilingW, set.requestedW)}`;
     }
     if (set.landed !== true && ceilingW !== null) {
       // THE REFUSED CLASS (kept - the M17g round-1 N4 wording; the M17g

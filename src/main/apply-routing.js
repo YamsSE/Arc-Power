@@ -424,8 +424,10 @@ export function requiresExtendedRange(settings, ranges = null) {
  * holds with it).
  * THE CLAMP VERDICT CONTRACT:
  * ok + verified -> the re-V1 re-applies the request; the re-V1 VERIFIES
- * too -> { landed: true, ceilingW, valueW: Math.min(requestedW, ceilingW) }
- * (the pl2Note REPLACES any earlier note - incl. the M17g refused note,
+ * too -> { landed: true, ceilingW, valueW: Math.min(requestedW, ceilingW), requestedW }
+ * (M17o: the note gains the REQUESTED burst - the read-out's promise
+ * sentence keys on valueW < requestedW; the pl2Note REPLACES any earlier
+ * note - incl. the M17g refused note,
  * which the clamp's landed note supersedes - the precedence pinned); the
  * re-V1 FAILS (or oldIgcl is absent) -> the honest { landed: false } (the
  * clamp may have landed PL2 but PL1 is UNCERTAIN - no '(set)' claim) +
@@ -446,7 +448,7 @@ export function requiresExtendedRange(settings, ranges = null) {
  * @returns {Promise<{ landed: boolean, ceilingW?: number, valueW?: number } | null>}
  *   M17n the note-or-null for the applySettingsRouted sysman-companion
  *   block to fold in: null = the M17f log-only classes (the note stays
- *   untouched); the clamp verdict { landed: true, ceilingW, valueW } /
+ *   untouched); the clamp verdict { landed: true, ceilingW, valueW, requestedW } /
  *   { landed: false }; the ready case { landed: true, valueW: requested }
  *   (the shape the note already carries - a no-op replace). Never throws.
  */
@@ -508,7 +510,11 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
           }
           if (reV1?.ok === true && reV1.readBackEqual !== false) {
             log(`[apply] sysman companion: the helper is NOT ready - THE V2-CLAMP wrote PL2 = ${valueW} W (min(${requestedW} W requested, the ${ceilingW} W driver ceiling)) via the driverstore fallback + the re-V1 re-applied PL1 = ${requestedW} W (the both-limits write overwrote it) - the apply never waited`);
-            return { landed: true, ceilingW, valueW };
+            // M17o: the clamp note carries the REQUESTED burst (the
+            // read-out's promise sentence: 'it will be raised to <requestedW>
+            // W automatically when the sysman layer finishes initializing' -
+            // the auto-upgrade intent flow lands the exact value at init).
+            return { landed: true, ceilingW, valueW, requestedW };
           }
           log(`[apply] sysman companion: the helper is NOT ready - the V2-CLAMP wrote PL2 = ${valueW} W but the re-V1 (PL1 = ${requestedW} W) did not verify (${reV1?.errorCode ?? reV1?.message ?? (oldIgcl ? 'unknown' : 'no oldIgcl seam')}) - PL1 is uncertain - the honest { landed: false } (no '(set)' claim)`);
           return { landed: false };

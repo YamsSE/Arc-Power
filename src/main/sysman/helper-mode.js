@@ -10,9 +10,16 @@
 // TWO forms share this module (the M17j/M17l PERSISTENT stdin form
 // `--sysman-helper-persist` was REMOVED in M17m run B - the detached pipe
 // form supersedes it: the helper's ze context must OUTLIVE the app
-// sessions, because a FRESH ze init fails for 12-20+ min after an IGCL
-// write elsewhere while an EXISTING context writes through the window
-// instantly):
+// sessions. THE M17o2 MEASURED TRUTH (live, on the user's A770): the
+// '12-20+ min arbitration window' NEVER EXISTED for FRESH processes - a
+// fresh process's ze init succeeds ALWAYS (5/5 live-proven, even 2 s
+// after a real elevated write), while the IN-PROCESS retry is provably
+// PERMANENTLY STUCK (PID 9404: attempt 1459+ over 50+ min while fresh
+// processes init'd fine in the same minutes - the ze loader's
+// per-process state after a failed init never recovers, a FRESH PROCESS
+// is required per retry). The helper's init is therefore a SINGLE
+// attempt + exit 77, and the fresh-process retry rides on the proxy's
+// HEAL respawn (a fresh helper whose init lands on attempt 1):
 //
 // 1. The M17i ONE-SHOT form (`--sysman-helper <reqFile> <outFile>`): the
 //    parent's proxy (helper-proxy.js) writes the request + the
@@ -37,8 +44,10 @@
 //        token).
 //
 // 2. The M17m PIPE form (`--sysman-helper-pipe`, no args): the DETACHED
-//    machine-level helper. The same IGCL-free consumer + the same
-//    retry-until-ready ze init, but the transport is a Windows NAMED PIPE
+//    machine-level helper. The same IGCL-free consumer, but the init is
+//    the M17o2 SINGLE ATTEMPT (a failed probe EXITS 77 - the in-process
+//    retry was provably permanently stuck, the fresh-process retry is
+//    the proxy's HEAL respawn) and the transport is a Windows NAMED PIPE
 //    (\\.\pipe\arcpower-sysman, node's net) and the lifecycle is detached:
 //    a client disconnect NEVER exits the helper (the M17l stdin-EOF exit
 //    is NOT in this mode) - the in-flight dispatch completes, the
@@ -47,7 +56,9 @@
 //    OPEN - cancelled on every connection-open, re-armed at the full
 //    value on every connection-close; a HELD-OPEN connection keeps the
 //    helper alive INDEFINITELY; the constant is HELPER-SIDE + injectable,
-//    RID_SYSMAN_HELPER_IDLE_MS, default 60 min) or on the BIND CONFLICT
+//    RID_SYSMAN_HELPER_IDLE_MS, default 0 = NEVER (M17o the NEVER-DYING
+//    helper: the timer is never armed - the helper lives until reboot;
+//    only a POSITIVE value arms the exit timer) or on the BIND CONFLICT
 //    (a second helper's EADDRINUSE -> exit 0 - the existing helper is
 //    alive). THE PER-CONNECTION READY SEMANTICS (round-1 S1): the ze init
 //    is GLOBAL (once); a NEW connection to an already-ready helper
@@ -59,7 +70,7 @@
 //    single ze context - the inFlight serialization of the stdin form
 //    carries over); the responses route to the requesting connection
 //    ({ id } per-connection routing). THE HELPER'S OWN LOG FILE (round-1
-//    S3): %TEMP%\arcpower-sysman-helper.log - the init-retry lines + the
+//    S3): %TEMP%\arcpower-sysman-helper.log - the init lines + the
 //    ready/response events + the PID + the init timestamp (the
 //    same-helper assertion surface), non-throwing.
 //
@@ -75,18 +86,36 @@ import readline from 'node:readline';
 import { findStaleSiblingToken } from '../apply-worker.js';
 
 /**
- * The M17j init-retry backoff: ~2 s between ze-init attempts (the
- * arbitration window eventually closes - the measured dev-box evidence: the
- * window closed within minutes; the retries are logged to STDERR).
+ * M17o2 THE SINGLE-ATTEMPT INIT EXIT CODE: the pipe helper's ze init is a
+ * SINGLE attempt (the in-process retry is provably permanently stuck - a
+ * fresh PROCESS is required per retry), and a failed init EXITS 77 (never
+ * a silent linger): the proxy's HEAL hears the 0/77 exit and respawns a
+ * FRESH helper process, whose fresh-process init ALWAYS lands (the M17o2
+ * 5/5 live proof).
  */
-export const INIT_RETRY_BACKOFF_MS = 2000;
+export const HELPER_INIT_FAILED_EXIT_CODE = 77;
+
+/**
+ * M17o2 THE INTENT FRESHNESS WINDOW (the wall-clock rule replacing the
+ * M17o spawnTs comparison): an auto-upgrade intent is consumable iff
+ * Date.now() - intent.ts <= INTENT_FRESH_WINDOW_MS (60 s). Covers the
+ * heal-spawned helper (its intent survives the respawn delay) while
+ * preserving reboot-staleness (a reboot's intent is always older than the
+ * window). Accepted residual (N2-r2): if spawns keep failing for > 60 s
+ * the intent decays and the pair is lost - the V2-clamp covers PL2
+ * meanwhile and the user re-applies; the fresh-init evidence (5/5) makes
+ * this a rare corner.
+ */
+export const INTENT_FRESH_WINDOW_MS = 60000;
 
 /**
  * M17m the named-pipe transport: \\.\pipe\arcpower-sysman (node's net).
  * The detached helper's listening endpoint - the app's proxy connects
  * here, and the helper's ze context (init'd when the machine was idle)
- * outlives the app sessions (the M17m premise: an EXISTING context
- * writes through the 12-20+ min arbitration window; a FRESH init cannot).
+ * outlives the app sessions (M17o2: a FRESH process's init ALWAYS lands
+ * - 5/5 live-proven - so the persistent context simply keeps every
+ * session on an already-ready helper; the M17o2 heal respawns a fresh
+ * helper when one dies, and the fresh init lands on attempt 1).
  */
 export const SYSMAN_PIPE_NAME = '\\\\.\\pipe\\arcpower-sysman';
 
@@ -100,15 +129,38 @@ export const SYSMAN_PIPE_NAME = '\\\\.\\pipe\\arcpower-sysman';
  * events - a timer firing mid-session would exit the helper inside an
  * open arbitration window). The constant is HELPER-SIDE + injectable:
  * the env override RID_SYSMAN_HELPER_IDLE_MS (round-1 S4).
+ * M17o (the NEVER-DYING HELPER): the default becomes 0 = NEVER arm the
+ * timer (the helper lives until reboot - the user's 'no one waits 15
+ * minutes' contract needs the existing ze context held across ALL
+ * sessions, so no session ever waits on an init; M17o2: a dead helper is
+ * replaced by the proxy's HEAL respawn - a fresh process whose init
+ * lands on attempt 1);
+ * only a POSITIVE idle value arms the exit timer (the semantics flip
+ * lives in the arm site, armIdleTimer - idleMsFromEnv already accepts
+ * n >= 0).
  */
-export const HELPER_IDLE_MS = 60 * 60 * 1000;
+export const HELPER_IDLE_MS = 0;
 export const HELPER_IDLE_MS_ENV = 'RID_SYSMAN_HELPER_IDLE_MS';
+
+/**
+ * M17o THE AUTO-UPGRADE INTENT FILE (the proxy's not-ready set verdict
+ * sites write it; the helper's one-shot consumes it when the init lands):
+ * %TEMP%\arcpower-sysman-intent.json - { pl1W, pl2W, ts }. The path is
+ * overridable via the RID_SYSMAN_INTENT_FILE env var (the test seam).
+ */
+export const SYSMAN_INTENT_FILE_ENV = 'RID_SYSMAN_INTENT_FILE';
+
+/** M17o the auto-upgrade intent file path (the env override ?? the default). */
+export function resolveIntentFilePath() {
+  const raw = process.env[SYSMAN_INTENT_FILE_ENV];
+  return raw && raw.trim() !== '' ? raw : path.join(os.tmpdir(), 'arcpower-sysman-intent.json');
+}
 
 /**
  * M17m the helper's own log file (round-1 S3): %TEMP%\
  * arcpower-sysman-helper.log. The diagnostic channel moves INTO the
  * helper (the proxy-side stderr capture dies with the stdin model in run
- * B); the log carries the init-retry lines + the ready/response events +
+ * B); the log carries the init lines + the ready/response events +
  * the PID + the init timestamp - the same-helper assertion surface
  * (round-1 S4: the PID + the initTs are UNCHANGED across the app
  * sessions).
@@ -262,8 +314,11 @@ async function writeOut(outPath, payload, id) {
 
 /**
  * M17m the DETACHED PIPE sysman-helper mode: the machine-level helper
- * that outlives the app sessions. The same IGCL-free consumer + the same
- * retry-until-ready ze init as the one-shot form, but the transport is
+ * that outlives the app sessions. The same IGCL-free consumer as the
+ * one-shot form - but the init is the M17o2 SINGLE ATTEMPT (a failed
+ * init EXITS 77 - the in-process retry is provably permanently stuck,
+ * the fresh-process retry rides on the proxy's HEAL respawn) - and the
+ * transport is
  * a Windows named pipe (\\\\.\\pipe\\arcpower-sysman - node's net) and
  * the lifecycle is detached: a client disconnect NEVER exits the helper
  * (the M17l stdin-EOF exit was REMOVED in run B along with the stdin
@@ -273,12 +328,15 @@ async function writeOut(outPath, payload, id) {
  * CONNECTION IS OPEN - cancelled on every connection-open, re-armed at
  * the full value on every connection-close; a HELD-OPEN connection keeps
  * the helper alive INDEFINITELY; the env override
- * RID_SYSMAN_HELPER_IDLE_MS, default HELPER_IDLE_MS = 60 min) or on the
+ * RID_SYSMAN_HELPER_IDLE_MS, default HELPER_IDLE_MS = 0 = NEVER (M17o the
+ * never-dying helper - the timer is never armed, the helper lives until
+ * reboot) or on the
  * BIND CONFLICT (a second helper's EADDRINUSE -> exit 0 - the existing
  * helper is alive, the proxy retries the connect).
  *
  * THE PER-CONNECTION READY SEMANTICS (round-1 S1): the ze init is GLOBAL
- * (once - the retry-until-ready loop); a NEW connection to an
+ * (once - the M17o2 single attempt; a failed init EXITS
+ * HELPER_INIT_FAILED_EXIT_CODE); a NEW connection to an
  * already-ready helper receives { type: 'ready' } as its FIRST line,
  * immediately (the write happens synchronously inside the connection
  * handler); a connection to an initializing helper has its requests
@@ -292,13 +350,17 @@ async function writeOut(outPath, payload, id) {
  *
  * THE HELPER'S OWN LOG FILE (round-1 S3): the default log is a
  * NON-THROWING append-only writer to %TEMP%\arcpower-sysman-helper.log -
- * the init-retry lines + the ready/response events + the PID + the init
+ * the init lines + the ready/response events + the PID + the init
  * timestamp (the same-helper assertion surface). The pipe-mode caller
  * (main.js) pins the consumer's log to the same file.
  *
- * The init retry creates a FRESH consumer per attempt (the real
- * createSysmanPowerLimits LATCHES its degrade - a failed ze init stays
- * unavailable on that instance, so a retry must be a new instance).
+ * The init is a SINGLE attempt on a FRESH consumer (the M17o2 measured
+ * finding: the real createSysmanPowerLimits LATCHES its degrade - a
+ * failed ze init stays unavailable on that instance forever, and the
+ * ze loader's per-process state after a failed init NEVER recovers - so
+ * the ONLY working retry is a fresh PROCESS, which the proxy's HEAL
+ * respawn provides; the helper's own loop was provably permanently
+ * stuck).
  *
  * @param {{
  *   createConsumer: () => {
@@ -307,21 +369,19 @@ async function writeOut(outPath, payload, id) {
  *   },
  *   log?: (s: string) => void,          // default: the file writer (round-1 S3)
  *   logFilePath?: string,               // the helper's log file (default %TEMP%\arcpower-sysman-helper.log)
- *   sleep?: (ms: number) => Promise<void>,  // the injectable backoff sleep
- *   initBackoffMs?: number,             // the ~2 s init-retry interval
- *   idleMs?: number,                    // the idle timeout (default: the RID override ?? 60 min)
+ *   idleMs?: number,                    // the idle timeout (default: the RID override ?? 0 = NEVER - M17o the never-dying helper; a POSITIVE value arms the exit timer)
  *   pipeName?: string,                  // the named pipe (default \\.\pipe\arcpower-sysman)
  *   netModule?: typeof import('node:net'),  // the injectable net seam
  * }} deps
  * @returns {Promise<number>} process exit code (0 = the idle exit / the
- *   EADDRINUSE bind-conflict exit; 1 = another listen error)
+ *   EADDRINUSE bind-conflict exit; 77 = the single-attempt ze init failed
+ *   - HELPER_INIT_FAILED_EXIT_CODE, the fresh-process retry; 1 = another
+ *   listen error)
  */
 export function runSysmanHelperPipeMode({
   createConsumer,
   log,
   logFilePath,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  initBackoffMs = INIT_RETRY_BACKOFF_MS,
   idleMs = idleMsFromEnv() ?? HELPER_IDLE_MS,
   pipeName = SYSMAN_PIPE_NAME,
   netModule = net,
@@ -354,13 +414,78 @@ export function runSysmanHelperPipeMode({
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
     if (conns.size > 0) return; // a HELD-OPEN connection - never armed
-    idleTimer = setTimeout(() => {
-      idleTimer = null;
-      if (conns.size > 0) return; // a connection opened while the timer was pending
-      helperLog(`idle timer fired (${idleMs} ms without connections) - exiting 0`);
-      finish(0);
-    }, idleMs);
-    helperLog(`idle timer armed (${idleMs} ms)`);
+    // M17o THE NEVER-DYING HELPER: idleMs === 0 (the default) = NEVER arm
+    // the timer - the helper lives until reboot (only a POSITIVE idle
+    // value arms the exit timer).
+    if (idleMs > 0) {
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        if (conns.size > 0) return; // a connection opened while the timer was pending
+        helperLog(`idle timer fired (${idleMs} ms without connections) - exiting 0`);
+        finish(0);
+      }, idleMs);
+      helperLog(`idle timer armed (${idleMs} ms)`);
+    }
+  };
+
+  /**
+   * M17o THE AUTO-UPGRADE ONE-SHOT: an app session's apply that answered
+   * the proxy's INSTANT 'not-ready' verdict (the sysman helper wasn't
+   * ready - the user's 'no one waits 15 minutes' contract) wrote the
+   * auto-upgrade intent (%TEMP%\arcpower-sysman-intent.json - the
+   * RID_SYSMAN_INTENT_FILE override) with the pair the apply wanted. When
+   * THIS helper's init lands, the one-shot applies that pair
+   * through the SAME internal set dispatch the pipe set uses - PL2 = the
+   * exact requested value arrives with no user action and no waiting.
+   * M17o2 FRESHNESS (the WALL-CLOCK WINDOW - the spawnTs rule is REMOVED):
+   * consumable iff Date.now() - intent.ts <= INTENT_FRESH_WINDOW_MS
+   * (60 s). NOT a 30-min cutoff and not a spawn comparison: the 60 s
+   * window covers the heal-spawned helper (the respawn delay) and
+   * preserves reboot-staleness (a reboot's intent is always older than
+   * the window); the fresh-init evidence (5/5) makes the > 60 s decay
+   * corner rare - the V2-clamp covers PL2 meanwhile and the user
+   * re-applies (the N2-r2 accepted residual, stated).
+   * Parse failure = no intent + a helper-log line - the ready path NEVER
+   * crashes on the intent file. The file is DELETED regardless of the
+   * apply outcome (one-shot by construction).
+   */
+  const consumeAutoUpgradeIntent = async () => {
+    const intentPath = resolveIntentFilePath();
+    let raw = null;
+    try {
+      raw = await fs.promises.readFile(intentPath, 'utf8');
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        helperLog(`intent read failed: ${err instanceof Error ? err.message : String(err)} - no intent (the ready path never crashes on it)`);
+      }
+      return; // no intent file (or unreadable) - nothing to upgrade
+    }
+    let intent = null;
+    try {
+      intent = JSON.parse(raw);
+    } catch (err) {
+      helperLog(`intent parse failed: ${err instanceof Error ? err.message : String(err)} - no intent (the ready path never crashes on it)`);
+      return;
+    }
+    if (!intent || typeof intent !== 'object' || typeof intent.pl1W !== 'number' || typeof intent.pl2W !== 'number' || typeof intent.ts !== 'number') {
+      helperLog('intent ignored: the intent file is malformed (expected { pl1W, pl2W, ts }) - no intent');
+      return;
+    }
+    if (Date.now() - intent.ts > INTENT_FRESH_WINDOW_MS) {
+      helperLog(`intent ignored: ts=${intent.ts} is ${Date.now() - intent.ts} ms old (older than the ${INTENT_FRESH_WINDOW_MS} ms freshness window) - it belongs to a previous session/reboot (discarded)`);
+      try { await fs.promises.unlink(intentPath); } catch (err) { helperLog(`intent delete failed: ${err instanceof Error ? err.message : String(err)}`); }
+      return;
+    }
+    // Apply through the SAME internal dispatch the pipe set uses (the
+    // one-shot runs BEFORE the ready sweep, so the global serialization
+    // latch is trivially free - no pipe set can be in flight).
+    const { payload } = await dispatchRequest({ op: 'set', sustainedW: intent.pl1W, burstW: intent.pl2W }, consumer, helperLog);
+    try { await fs.promises.unlink(intentPath); } catch (err) { helperLog(`intent delete failed: ${err instanceof Error ? err.message : String(err)}`); }
+    if (payload && payload.ok === true) {
+      helperLog(`intent applied: PL1 ${intent.pl1W} W PL2 ${intent.pl2W} W`);
+    } else {
+      helperLog(`intent apply failed: ${payload?.errorCode ?? 'unknown'} (${payload?.message ?? 'no message'})`);
+    }
   };
 
   /**
@@ -496,40 +621,52 @@ export function runSysmanHelperPipeMode({
   });
   server.listen(pipeName);
 
-  // The GLOBAL init-retry loop (DETACHED): a fresh consumer per attempt.
-  // When the init lands, every open connection receives the ready line
-  // NOW (the per-connection ready sweep - before its buffered responses
-  // drain; the sweep precedes the pump). The connections that open later
-  // get it on connect (the consumer is set); the readySent flag makes it
-  // at-most-once per connection.
+  // THE GLOBAL INIT - THE M17o2 SINGLE ATTEMPT (the measured finding: the
+  // in-process retry is provably PERMANENTLY STUCK - PID 9404 retried ze
+  // init every 2 s for 50+ min (attempt 1459+) while fresh processes
+  // init'd fine in the same minutes; the ze loader's per-process state
+  // after a failed init NEVER recovers - a FRESH PROCESS is required per
+  // retry). The init therefore runs ONCE: a failed probe EXITS 77
+  // (HELPER_INIT_FAILED_EXIT_CODE) and the proxy's HEAL respawns a fresh
+  // helper process (whose fresh-process init ALWAYS lands - the 5/5 live
+  // proof). When the init lands, every open connection receives the ready
+  // line NOW (the per-connection ready sweep - before its buffered
+  // responses drain; the sweep precedes the pump). The connections that
+  // open later get it on connect (the consumer is set); the readySent flag
+  // makes it at-most-once per connection.
   const initLoop = async () => {
-    let attempt = 0;
-    while (!consumer && !settled) {
-      attempt += 1;
-      let candidate = null;
-      let probe = null;
-      try {
-        candidate = createConsumer();
-        probe = await candidate.readLimits();
-      } catch (err) {
-        helperLog(`ze init attempt ${attempt} failed (${err instanceof Error ? err.message : String(err)}) - retrying in ~${initBackoffMs} ms`);
-      }
-      if (probe && typeof probe === 'object') {
-        consumer = candidate;
-        initTs = new Date().toISOString();
-        helperLog(`ze init ready on attempt ${attempt} (initTs=${initTs})`);
-        for (const conn of conns.values()) sendReady(conn);
-        pump();
-        return;
-      }
-      if (probe === null || probe === undefined) {
-        helperLog(`ze init attempt ${attempt} not ready yet (the consumer returned no limits) - retrying in ~${initBackoffMs} ms`);
-      }
-      if (settled) return;
-      await sleep(initBackoffMs);
+    let candidate = null;
+    let probe = null;
+    try {
+      candidate = createConsumer();
+      probe = await candidate.readLimits();
+    } catch (err) {
+      if (settled) return; // a bind conflict resolved mid-probe - the exit stays 0
+      helperLog(`ze init failed on the first attempt (${err instanceof Error ? err.message : String(err)}) - exiting ${HELPER_INIT_FAILED_EXIT_CODE} (the in-process retry is gone: the next warm() spawns a FRESH helper process, whose init lands on attempt 1)`);
+      finish(HELPER_INIT_FAILED_EXIT_CODE);
+      return;
     }
+    // THE SETTLE-CHECK ORDER (N3 pinned): FIRST the settled guard - a bind
+    // conflict (EADDRINUSE) that resolved mid-probe must keep the exit 0.
+    if (settled) return;
+    if (probe && typeof probe === 'object') {
+      consumer = candidate;
+      initTs = new Date().toISOString();
+      helperLog(`ze init ready on the first attempt (initTs=${initTs})`);
+      // M17o THE AUTO-UPGRADE ONE-SHOT: BEFORE the ready sweep (no pipe
+      // set can be in flight - the global serialization latch is
+      // irrelevant by construction). Consumes a not-ready apply's intent
+      // through the same internal set dispatch (never throws - the
+      // ready path is crash-free by contract).
+      await consumeAutoUpgradeIntent();
+      for (const conn of conns.values()) sendReady(conn);
+      pump();
+      return;
+    }
+    helperLog(`ze init failed on the first attempt (the consumer returned no limits) - exiting ${HELPER_INIT_FAILED_EXIT_CODE} (the in-process retry is gone: the next warm() spawns a FRESH helper process, whose init lands on attempt 1)`);
+    finish(HELPER_INIT_FAILED_EXIT_CODE);
   };
-  initLoop().catch((err) => helperLog(`the init loop failed: ${err instanceof Error ? err.message : String(err)}`));
+  initLoop().catch((err) => helperLog(`the init failed: ${err instanceof Error ? err.message : String(err)}`));
 
   // THE IDLE TIMER: armed at start (no connection is open yet).
   armIdleTimer();
