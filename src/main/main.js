@@ -12,6 +12,15 @@
 //     the IGCL-free process running the power-limits consumer (no backend,
 //     no OldIgcl - the bare-context zesInit path), spawned directly by the
 //     helper proxy, exits after writing the result file.
+//   electron . --sysman-helper-persist -> M17j PERSISTENT sysman helper:
+//     the same IGCL-free consumer process, but the ze init happens ONCE at
+//     start (the retry-until-ready loop rides out the M17j arbitration
+//     window - a FRESH ze init fails for 8+ s after an IGCL write in
+//     another process, while an EXISTING context writes fine) and the
+//     helper then serves JSON-LINE requests on stdin forever (the proxy's
+//     stdio client), exiting on stdin EOF. NO req/out args - the one-shot
+//     arg-count guard does NOT apply to this branch (the exact indexOf
+//     matching means the two flags never collide).
 //
 // The smoke path constructs the backend with allowAutoWaiver: true - the
 // ONLY place product code may do that (developer's own machine, no value
@@ -54,7 +63,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
 import { executeApply } from './apply-routing.js';
 import { runApplyWorker } from './apply-worker.js';
-import { runSysmanHelperMode } from './sysman/helper-mode.js';
+import { runSysmanHelperMode, runSysmanHelperPersistentMode } from './sysman/helper-mode.js';
 // M17i: the helper proxy - the parent-side client of the --sysman-helper
 // mode (the IGCL-free process running the power-limits consumer). The REAL
 // path constructs the proxy instead of the raw consumer everywhere the
@@ -104,6 +113,10 @@ const workerOutFile = applyWorkerIdx >= 0 ? process.argv[applyWorkerIdx + 2] : n
 const sysmanHelperIdx = process.argv.indexOf('--sysman-helper');
 const sysmanHelperReqFile = sysmanHelperIdx >= 0 ? process.argv[sysmanHelperIdx + 1] : null;
 const sysmanHelperOutFile = sysmanHelperIdx >= 0 ? process.argv[sysmanHelperIdx + 2] : null;
+// M17j PERSISTENT sysman-helper mode: `--sysman-helper-persist` (NO req/out
+// args). The exact indexOf element matching means this flag never collides
+// with `--sysman-helper` (round-1 N1).
+const sysmanHelperPersistIdx = process.argv.indexOf('--sysman-helper-persist');
 
 function createWindow(backgroundColor = '#0f1116', show = true) {
   const win = new BrowserWindow({
@@ -312,6 +325,37 @@ async function main() {
         log: (s) => console.log(`[sysman-helper] ${s}`),
       }),
       log: (s) => console.log(`[apply-worker] ${s}`),
+    });
+    app.exit(code);
+    return;
+  }
+
+  // --- M17j --sysman-helper-persist mode (NO req/out args): -------------
+  // the PERSISTENT form of the sysman helper (M17j). The ze init happens
+  // ONCE at start with the retry-until-ready loop (~2 s backoff) - the
+  // measured arbitration window: a FRESH ze init fails for 8+ s after an
+  // IGCL write in another process, while an EXISTING context writes fine.
+  // Once ready, the helper serves JSON-LINE requests from stdin ({ id, op:
+  // 'read' } | { id, op: 'set', sustainedW, burstW }) with JSON-LINE
+  // responses on stdout ({ id, ok, sustainedW?, burstW?, peakW?,
+  // errorCode?, message? }) and exits on stdin EOF. THE LOG CHANNEL IS
+  // PINNED (round-1 S1): the logs (the init retries) go to STDERR -
+  // console.error - stdout carries ONLY the JSON-line responses. Like the
+  // one-shot branch, it sits BEFORE app.whenReady() and the instance-lock
+  // gate: the helper is a SECOND instance spawned while the UI holds the
+  // lock and must NEVER touch it (single-instance.js untouched). The
+  // one-shot arg-count guard does NOT apply here (the flag takes no args;
+  // the exact indexOf matching means no collision - round-1 N1).
+  if (sysmanHelperPersistIdx >= 0) {
+    const code = await runSysmanHelperPersistentMode({
+      // A fresh consumer per init attempt: the real createSysmanPowerLimits
+      // LATCHES its degrade, so each retry must be a NEW init attempt.
+      // The consumer's log is pinned to STDERR (round-1 S1): its default
+      // is console.log (-> STDOUT), and a failed init attempt's degrade
+      // note would otherwise ride the response channel - the measured
+      // protocol-error in the run-A e2e.
+      createConsumer: () => createSysmanPowerLimits({ log: (s) => console.error(`[sysman] ${s}`) }),
+      log: (s) => console.error(`[sysman-helper-persist] ${s}`),
     });
     app.exit(code);
     return;
