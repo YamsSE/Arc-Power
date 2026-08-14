@@ -15,13 +15,13 @@
        standalone Graphics-API row joined between the VRAM row and the
        frametime strip, above the graph) + the frametime polyline strip.
        M16: the GPU row carries the voltage as a FIELD between the temp and
-       the power fields ('GPU 42%  2500 MHz  65°C  0.652 V  38.8 W  1030
-       RPM') - there is NO standalone Voltage row; the line count stays at
-       SIX.
+       the power fields ('GPU 42%  2500MHz  65°C  0.652V  38.8W  1030RPM' -
+       M18: every value-unit pair is GLUED) - there is NO standalone Voltage
+       row; the line count stays at SIX.
        M6-amd2: a frametime VALUE line sits DIRECTLY BELOW
        the canvas (the retracted "below the FPS" part - the graph stays at
        the bottom) - the latest derived frame time, max 2 decimals
-       ('16.67 ms'), '-' when no data. The 'frametime' stat controls BOTH
+       ('16.67ms'), '-' when no data. The 'frametime' stat controls BOTH
        the strip and the number (stat off -> both hidden).
        M7b (fix 4): the OPTIONAL background box - a translucent rounded
        box behind the HUD (the Appearance card's Background section). The
@@ -32,6 +32,13 @@
        --overlay-color pattern). -->
   <div id="overlay-root">
     <div id="overlay-backdrop"></div>
+    <!-- M18: the header divider - ONE absolutely-positioned 1px line behind
+         the FIVE labeled rows (FPS / CPU / RAM / GPU / VRAM), painted above
+         the backdrop (z-index 0, below the z-index-1 rows). The left comes
+         from the CSS calc carrying the --overlay-label-w var (set per
+         render by overlay.ts); the top/bottom come from the row offsets.
+         The API row below it is NOT part of the divider column (headerless). -->
+    <div id="overlay-divider"></div>
     <div class="overlay-line" id="overlay-fps"></div>
     <div class="overlay-line" id="overlay-cpu"></div>
     <div class="overlay-line" id="overlay-memory"></div>

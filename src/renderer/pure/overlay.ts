@@ -10,10 +10,11 @@
 // FIELD INSIDE the GPU row (between the temp and the power fields) - the
 // standalone Voltage row is gone, the overlay is back to the SIX lines.
 //
-// Field format: one value + its unit per field ('42%', '4.3 GHz', '61°C'),
-// '-' for a null field (the unit is dropped with it - the honest degrade,
-// never an invented number). Two spaces separate the fields (column
-// alignment like the monitor log).
+// Field format: one value + its GLUED unit per field ('42%', '4.3GHz',
+// '61°C' - M18: the unit never carries a leading space, the value and the
+// unit are one token), '-' for a null field (the unit is dropped with it -
+// the honest degrade, never an invented number). Two spaces separate the
+// fields (column alignment like the monitor log).
 //
 // M6: the lines are STATS-AWARE - overlayLines(sample, fps, stats) builds
 // each line from the ENABLED stats only (a stat off -> its field vanishes;
@@ -299,6 +300,14 @@ export interface OverlayLines {
    *  'DX12' or '' - the M10a vanish rule: EMPTY when the api is
    *  null/unknown or the api stat is off, never a '-'. */
   apiLine: string;
+  /** M18: the FIVE labeled-row labels (the header-divider column source).
+   *  The cpu/gpu entries carry the M17b chip-name labels when enabled, the
+   *  stock prefixes otherwise (the same cpuPrefix/gpuPrefix the lines
+   *  render); fps/memory/vram are the fixed 'FPS' / 'RAM' / 'VRAM'. NO api
+   *  entry - the API row is headerless (the bare badge) and not part of
+   *  the divider column. The renderer measures the max label length from
+   *  these and sets the --overlay-label-w CSS var (in ch) per render. */
+  labels: { fps: string; cpu: string; memory: string; gpu: string; vram: string };
   /** M6: the frametime stat is enabled - the stat is NOT a line, it feeds
    *  the canvas strip; the renderer shows/hides the strip by this flag. */
   frametimeEnabled: boolean;
@@ -309,7 +318,7 @@ function numOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
-/** One field: '42%' / '4.3 GHz' / '-'. Null drops the unit with the value. */
+/** One field: '42%' / '4.3GHz' / '-'. Null drops the unit with the value. */
 function unit(v: number | null, fmt: (n: number) => string, suffix: string): string {
   return v === null ? '-' : `${fmt(v)}${suffix}`;
 }
@@ -330,22 +339,22 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  *     a stale value); each field vanishes with its stat; '' when all five
  *     are off (M13: the api field LEFT this row - the six FPS-row stats
  *     became five);
- *   cpuLine: 'CPU 42%  4.3 GHz  61°C  125.5 W' (Util / Clock via ghzFreq /
+ *   cpuLine: 'CPU 42%  4.3GHz  61°C  125.5W' (Util / Clock via ghzFreq /
  *     Temp / Wattage with ONE decimal (toFixed(1) - the GPU watt format;
  *     M13) - each field vanishes with its stat; '' when all four are off);
- *   memoryLine: 'RAM 12.4 GB' (M14 - the system-wide USED RAM in bytes
+ *   memoryLine: 'RAM 12.4GB' (M14 - the system-wide USED RAM in bytes
  *     via gbValue (decimal GB, one decimal - the VRAM row's format; the
  *     M12 memoryUtilPct percent is REPLACED); M13: the row label reads
  *     'RAM' - the stat id stays 'memory-util'; '' when the memory-util
  *     stat is off);
- *   gpuLine: 'GPU 42%  2500 MHz  65°C  0.652 V  38.8 W  1030 RPM'
+ *   gpuLine: 'GPU 42%  2500MHz  65°C  0.652V  38.8W  1030RPM'
  *     (Util / Core clock / Temp / Voltage (volts with 3 decimals - M16,
  *     the amended shape: the voltage field rides INSIDE the GPU row
  *     between the temp and the power fields) / Power with ONE decimal
  *     (toFixed(1) - 38.8) / Fan (first RPM of the array) - each field
  *     vanishes with its stat; '' when all six are off; M16: the MEM-CLOCK
  *     field LEFT this row - it leads the VRAM row now);
- *   vramLine: 'VRAM 2187 MHz  3.0 GB  73°C' (M16 - the mem-clock field
+ *   vramLine: 'VRAM 2187MHz  3.0GB  73°C' (M16 - the mem-clock field
  *     LEADS (gpu-mem-clock), then the VRAM usage (gpu-vram via gbValue),
  *     then the VRAM temperature (gpu-vram-temp); '' when ALL three stats
  *     are off);
@@ -438,29 +447,29 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // label can never ride away with the util stat again).
   const cpuFields: string[] = [];
   if (enabled.has('cpu-util')) cpuFields.push(pct(cpuUtil));
-  if (enabled.has('cpu-clock')) cpuFields.push(unit(cpuFreqMhz, (n) => ghzFreq(n), ' GHz'));
+  if (enabled.has('cpu-clock')) cpuFields.push(unit(cpuFreqMhz, (n) => ghzFreq(n), 'GHz'));
   // M17b: the temp fields round to whole degrees (Math.round - the AMD
   // SMN die temp is 0.125 °C/LSB, so 60.5 renders '61°C', never '60.5°C').
   if (enabled.has('cpu-temp')) cpuFields.push(unit(cpuTemp, (n) => String(Math.round(n)), '°C'));
   // M13: the CPU wattage - after the temp, toFixed(1) (the GPU watt format).
-  if (enabled.has('cpu-power')) cpuFields.push(unit(cpuPower, (n) => n.toFixed(1), ' W'));
+  if (enabled.has('cpu-power')) cpuFields.push(unit(cpuPower, (n) => n.toFixed(1), 'W'));
   // M17b (2c): the chip-name label replaces the stock 'CPU ' prefix ONLY -
   // the field order is untouched.
   const cpuLine = cpuFields.length === 0 ? '' : `${cpuPrefix} ${cpuFields.join('  ')}`;
-  // M14: the Memory row - the memory-util stat only ('RAM 12.4 GB' - the
+  // M14: the Memory row - the memory-util stat only ('RAM 12.4GB' - the
   // M13 row label + the gbValue decimal-GB format; the honest '-' when
   // the field is null); '' when the stat is off.
-  const memoryLine = enabled.has('memory-util') ? `RAM ${unit(memoryUsed, (n) => gbValue(n), ' GB')}` : '';
+  const memoryLine = enabled.has('memory-util') ? `RAM ${unit(memoryUsed, (n) => gbValue(n), 'GB')}` : '';
   const gpuFields: string[] = [];
   if (enabled.has('gpu-util')) gpuFields.push(pct(gpuUtil));
-  if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), ' MHz'));
+  if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), 'MHz'));
   if (enabled.has('gpu-temp')) gpuFields.push(unit(gpuTemp, (n) => String(Math.round(n)), '°C'));
   // M16: the GPU voltage - a GPU-row field between the temp and the power
-  // fields (volts with 3 decimals - the mock 0.652 reads '0.652 V'; the
+  // fields (volts with 3 decimals - the mock 0.652 reads '0.652V'; the
   // honest '-' when null). The amended shape: NO standalone Voltage row.
-  if (enabled.has('gpu-voltage')) gpuFields.push(unit(gpuVoltage, (n) => n.toFixed(3), ' V'));
-  if (enabled.has('gpu-power')) gpuFields.push(unit(power, (n) => n.toFixed(1), ' W'));
-  if (enabled.has('gpu-fan')) gpuFields.push(unit(fan, (n) => String(n), ' RPM'));
+  if (enabled.has('gpu-voltage')) gpuFields.push(unit(gpuVoltage, (n) => n.toFixed(3), 'V'));
+  if (enabled.has('gpu-power')) gpuFields.push(unit(power, (n) => n.toFixed(1), 'W'));
+  if (enabled.has('gpu-fan')) gpuFields.push(unit(fan, (n) => String(n), 'RPM'));
   // M17b (2c): the chip-name label replaces the stock 'GPU ' prefix ONLY -
   // the field order is untouched.
   const gpuLine = gpuFields.length === 0 ? '' : `${gpuPrefix} ${gpuFields.join('  ')}`;
@@ -469,16 +478,20 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // order). Each field vanishes with its stat; the row writes '' only when
   // ALL THREE are off.
   const vramFields: string[] = [];
-  if (enabled.has('gpu-mem-clock')) vramFields.push(unit(memClock, (n) => String(n), ' MHz'));
-  if (enabled.has('gpu-vram')) vramFields.push(unit(vram, (n) => gbValue(n), ' GB'));
+  if (enabled.has('gpu-mem-clock')) vramFields.push(unit(memClock, (n) => String(n), 'MHz'));
+  if (enabled.has('gpu-vram')) vramFields.push(unit(vram, (n) => gbValue(n), 'GB'));
   if (enabled.has('gpu-vram-temp')) vramFields.push(unit(vramTemp, (n) => String(Math.round(n)), '°C'));
   const vramLine = vramFields.length === 0 ? '' : `VRAM ${vramFields.join('  ')}`;
-  return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, frametimeEnabled: enabled.has('frametime') };
+  // M18: the header-divider column labels - the FIVE labeled rows only
+  // (the cpu/gpu entries carry the chip labels when enabled); NO api entry
+  // (the API row is headerless and not part of the divider column).
+  const labels = { fps: 'FPS', cpu: cpuPrefix, memory: 'RAM', gpu: gpuPrefix, vram: 'VRAM' };
+  return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, labels, frametimeEnabled: enabled.has('frametime') };
 }
 
 /**
  * The frametime value for the polyline series. Passthrough when frameTimeMs
- * is a finite number > 0 (the RID_MOCK_FPS=1 16.7 ms shape); else 1000 / fps
+ * is a finite number > 0 (the RID_MOCK_FPS=1 16.7ms shape); else 1000 / fps
  * when fps is a finite number > 0, rounded to TWO decimals (1000/60 =
  * 16.666.. -> 16.67 - M6-amd2: the frametime NUMBER shows max 2 decimals;
  * the pre-amendment ONE-decimal rounding (16.7) moved to the format step);
@@ -498,11 +511,13 @@ export function deriveFrameTimeMs(fps: number | null | undefined, frameTimeMs: n
 
 /**
  * M6-amd2: format a derived frame time for the overlay's value line -
- * MAXIMUM 2 decimals, NEVER padded ('16.67 ms', '16.7 ms' - never
- * '16.70 ms'; the passthrough 16.7 stays '16.7 ms'). Honest '-' when
+ * MAXIMUM 2 decimals, NEVER padded ('16.67ms', '16.7ms' - never
+ * '16.70ms'; the passthrough 16.7 stays '16.7ms'). Honest '-' when
  * there is no data (null / non-finite / <= 0 - the fps-0 guard shape).
+ * M18: the unit is GLUED to the number (no space - the frametime value
+ * follows the glued-unit rule like every other value).
  */
 export function formatFrametime(ft: number | null | undefined): string {
   if (typeof ft !== 'number' || !Number.isFinite(ft) || ft <= 0) return '-';
-  return `${Math.round(ft * 100) / 100} ms`;
+  return `${Math.round(ft * 100) / 100}ms`;
 }

@@ -75,6 +75,11 @@ Quick access and apply-on-startup controls without opening the window.
   fall back to the child process that renders.
 - **Chip-name labels** - an overlay toggle shows the CPU/GPU row labels as
   the chip names (for example "A770" or "i7 5775C") instead of "GPU"/"CPU".
+- **Glued units + a header divider** - every overlay value-unit pair is one
+  token ("50W", "16.67ms" - never "50 W"), and a single aligned vertical
+  divider line separates the FPS/CPU/RAM/GPU/VRAM row headers from their
+  values (the column widens automatically when the chip-name labels are
+  on; the headerless API row sits below the line).
 - **Temperatures** - CPU, GPU and VRAM temperatures round to whole degrees;
   AMD Ryzen CPU wattage comes from the RAPL energy counters (with an honest
   status in the log when the counters are unavailable or frozen).

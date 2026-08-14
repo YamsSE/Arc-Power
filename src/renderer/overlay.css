@@ -41,6 +41,30 @@ body {
   display: block;
 }
 
+/* M18: the header divider - ONE absolutely-positioned 1px vertical line
+   behind the FIVE labeled rows (FPS / CPU / RAM / GPU / VRAM), between the
+   backdrop (below) and the rows (above). The left calc starts with the
+   root's 0.4rem padding (an absolutely-positioned child's containing block
+   is the root's PADDING box, so the label column starts 0.4rem inside it)
+   and carries the --overlay-label-w var WITH its ', 4ch' fallback (a bare
+   var() with the var unset computes to auto - the divider would sit over
+   the labels' first glyph column until the first push; ', 4ch' holds the
+   stock VRAM-width column pre-push). The + 0.35ch is the small gap after
+   the widest label. The font-family MUST be pinned to the same monospace
+   stack as the rows - the ch unit is the divider's own font, and the
+   browser-default font's ch differs (a chip label would drift off the
+   column). The top/bottom are set via CSSOM by overlay.ts from the row
+   offsets. NO text-shadow - deliberate (the glyphs keep the dark RTSS
+   outline, the 1px line does not). */
+#overlay-divider {
+  position: absolute;
+  width: 1px;
+  background: var(--overlay-color, #ffffff);
+  z-index: 0;
+  font-family: Consolas, 'Courier New', monospace;
+  left: calc(0.4rem + var(--overlay-label-w, 4ch) + 0.35ch);
+}
+
 /* M7b: the HUD content paints ABOVE the backdrop - an absolutely-positioned
    sibling paints above in-flow content otherwise, which would bury the
    text under the box. M12: the #overlay-memory + #overlay-vram rows JOIN
