@@ -56,7 +56,7 @@
 
   /* ---- hero card: random GPU per load ---- */
   var HERO_GPUS = [
-    { name: 'Arc A770',     family: 'Alchemist',  core: 2390, mem: 2187, temp: 62, fan: 1462, fps: 118, plMax: 252, ext: 315 },
+    { name: 'Arc A770',     family: 'Alchemist',  core: 2390, mem: 2187, temp: 62, fan: 1462, fps: 118, plMax: 252, ext: 375 },
     { name: 'Arc A750',     family: 'Alchemist',  core: 2050, mem: 2000, temp: 61, fan: 1415, fps: 101, plMax: 225, ext: 315 },
     { name: 'Arc A580',     family: 'Alchemist',  core: 1700, mem: 2000, temp: 59, fan: 1305, fps: 92,  plMax: 185, ext: 315 },
     { name: 'Arc B580',     family: 'Battlemage', core: 2670, mem: 2375, temp: 64, fan: 1510, fps: 124, plMax: 190, ext: null },
@@ -95,8 +95,8 @@
     var pMax = document.getElementById('powerMax');
     if (pMin) pMin.textContent = '0';
     if (pMax) {
-      // The max tick sits where it belongs on the bar's scale (80% for
-      // 252 of 315 W on Alchemist), not spread across the whole row.
+      // The max tick sits where it belongs on the bar's scale (67% for
+      // 252 of 375 W on the A770), not spread across the whole row.
       var pct = Math.round(heroGpu.plMax / heroLimit * 100);
       pMax.textContent = String(heroGpu.plMax);
       pMax.style.left = pct + '%';

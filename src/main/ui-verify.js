@@ -8,8 +8,8 @@
 //   1b. M2C-B B3: the header line below the GPU name is "Arc Power Ver.
 //       1.0.1" (app:version IPC + the display suffix - the IPC
 //       keeps the bare semver; M5: displayVersion renders ' Beta' for the
-//       -beta.x line, nothing for a stable - M17e round-2 N1: the pinned
-//       text is EXACTLY 'Arc Power Ver. 1.0.1' - no Beta) - the driver
+//       -beta.x line, nothing for a stable - the M21 1.0.1-beta.1 bump: the
+//       pinned text is EXACTLY 'Arc Power Ver. 1.0.1 Beta') - the driver
 //       version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
@@ -774,10 +774,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // semver - the OLD scheme). M11: the version is the 1.0 RELEASE and the
   // "Alpha" naming scheme is gone - the display is the plain
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
-  // text is EXACTLY 'Arc Power Ver. 1.0.1' (NO Beta; the suffix logic
-  // keeps the Beta line only for -beta.x versions).
-if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1'`))) {
-fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1')`);
+  // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
+  // the suffix logic keeps the Beta line only for -beta.x versions).
+if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Beta'`))) {
+fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Beta')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -4321,11 +4321,11 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // Version row (app:version via the header line's display format). M9: the
   // 1.1.1 base bump ('Arc Power Ver. 1.1.1 Alpha'); M10a: the 1.2.0 bump;
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
-// (round-2 N1): the 1.0.1 bump joins the flips - the Settings row is the
-// exact 'Arc Power Ver. 1.0.1' text (the M4-D row shares the header's
-// display format).
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1')`);
+// (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
+// - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
+// M4-D row shares the header's display format).
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Beta'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Beta')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
