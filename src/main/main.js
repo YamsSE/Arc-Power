@@ -709,6 +709,16 @@ async function main() {
   if (uiVerify) {
     mockOpts.fanCanControl = process.env.RID_MOCK_FAN_READONLY !== '1';
   }
+  // M20-B (the Alchemist fan Fixed mode): RID_MOCK_FAN_FIXED=1 runs the mock
+  // in the flat-table-fixed session - the probe's flat-table fallback
+  // learned 'fixed' (modes ['auto','curve','fixed']) and the read-back
+  // derives 'fixed' from a flat table. The ui-verify knob variant pins the
+  // enabled Fixed chip + the fixed apply round trip (the RID_MOCK_FAN_READONLY
+  // pattern; the mock default keeps the honest no-fixed card - the M4-C pins
+  // stay green).
+  if (uiVerify && process.env.RID_MOCK_FAN_FIXED === '1') {
+    mockOpts.fanFixed = true;
+  }
   // M8 (the Graphics tab): RID_MOCK_GRAPHICS_UNSUPPORTED=1 runs the mock in
   // the unsupported-graphics session - the WHOLE graphics surface degrades
   // to the supported-all-false state (the honest note on all four cards);

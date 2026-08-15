@@ -68,14 +68,27 @@ const FAN_UNITS_PERCENT = Number(Object.entries(CTL_FAN_SPEED_UNITS).find(([, n]
 // %APPDATA%\ArcPower, NOT temp which the OS cleans). The in-memory
 // _fanProbeCache is per-process, so the probe (~400-480 ms on this box:
 // the failing write/read-back/restore-retries) re-ran at EVERY boot.
-// SUCCESS-ONLY persistence: only a cached probeOk:true is trusted across
-// boots (the probe verdict is driver/device-bound and stable); a cached
-// failure is NEVER trusted - the verdict flips with the IGS service state,
-// and a persisted failure would lock a transiently-failing machine
-// read-only for a whole driver version (the session cache's re-probe
-// self-heals). Key = driverVersion + deviceId; the file is single-entry
-// (the last successful probe wins - the igcl-dll-cache shape).
+// SUCCESS-ONLY + PROBE-VERSIONED persistence: only a cached probeOk:true
+// from the CURRENT probe logic (probeVersion matches FAN_PROBE_VERSION) is
+// trusted across boots - the probe verdict is driver/device-bound, but the
+// fallback capability CHANGES with the probe code, so an OLD probe-logic
+// entry (e.g. a pre-M20-B fixed-only probe that never learned the flat-table
+// fallback) is never trusted and the probe re-runs once; a cached failure
+// is NEVER trusted - the verdict flips with the IGS service state, and a
+// persisted failure would lock a transiently-failing machine read-only for
+// a whole driver version (the session cache's re-probe self-heals). Key =
+// probeVersion + driverVersion + deviceId; the file is single-entry (the
+// last successful probe wins - the igcl-dll-cache shape).
 export const FAN_PROBE_CACHE_FILENAME = 'fan-probe-cache.json';
+
+// M20-B cache: the probe-LOGIC version. v1 = the pre-M20-B fixed-only probe
+// (the dedicated ctlFanSetFixedSpeedMode path only); v2 = the M20-B
+// flat-table fallback. The learned fixed capability depends on the probe
+// code, so a persisted v1 verdict (fixedOk:false from a probe that never
+// tried the fallback) must NOT be trusted once the code grew the fallback -
+// the version gates the cache: a missing/mismatched probeVersion is a miss
+// (the probe re-runs once and re-persists under the current version).
+export const FAN_PROBE_VERSION = 2;
 
 export function fanProbeCacheFile() {
   const dir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -551,9 +564,11 @@ export class IgclBackend {
       return { probeOk: false, writeAccepted: false, fixedOk: false };
     });
     this._fanProbeCache.set(deviceId, p);
-    // M17p: SUCCESS-ONLY persistence - only a verified success is written
-    // (a failure writes nothing and re-probes next boot; the write itself
-    // is best-effort - a cache failure never breaks the probe path).
+    // M17p: SUCCESS-ONLY + versioned persistence - only a verified success
+    // of the CURRENT probe logic is written (a failure writes nothing and
+    // re-probes next boot; an old-version success re-probes too - the
+    // probeVersion key gates it). The write itself is best-effort - a cache
+    // failure never breaks the probe path.
     void p.then((result) => {
       if (result?.probeOk === true) this._persistFanProbeCache(deviceId, result);
     });
@@ -561,11 +576,14 @@ export class IgclBackend {
   }
 
   /**
-   * M17p: the persisted-cache READ (SUCCESS-ONLY). Returns the cached
-   * verdict ONLY when the entry is a probeOk:true success for THIS
-   * device's driverVersion + deviceId (a missing / corrupt / mismatched /
-   * failed entry is a miss - the probe re-runs and re-persists on
-   * success). Never throws (the read is best-effort).
+   * M17p: the persisted-cache READ (SUCCESS-ONLY + probe-versioned).
+   * Returns the cached verdict ONLY when the entry is a probeOk:true
+   * success from the CURRENT probe logic (probeVersion matches
+   * FAN_PROBE_VERSION - an OLD probe-logic entry is never trusted, the
+   * fallback capability changes with the probe code) for THIS device's
+   * driverVersion + deviceId (a missing / corrupt / mismatched / failed
+   * entry is a miss - the probe re-runs and re-persists on success).
+   * Never throws (the read is best-effort).
    * @param {number} deviceId
    * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean } | null>}
    */
@@ -578,6 +596,7 @@ export class IgclBackend {
       const cacheFile = this._fanProbeCacheFile ?? fanProbeCacheFile();
       const entry = readFanProbeCache(cacheFile);
       if (!entry || entry.probeOk !== true) return null; // SUCCESS-ONLY
+      if (entry.probeVersion !== FAN_PROBE_VERSION) return null; // the probe-logic version (an old entry never trusted)
       if (entry.driverVersion !== driverVersion || entry.deviceId !== deviceId) return null; // the key mismatch
       return { probeOk: true, writeAccepted: entry.writeAccepted === true, fixedOk: entry.fixedOk === true };
     } catch {
@@ -587,10 +606,10 @@ export class IgclBackend {
 
   /**
    * M17p: the SUCCESS-ONLY persistence write - { driverVersion, deviceId,
-   * probeOk, writeAccepted, fixedOk } in the single-entry cache file (the
-   * last successful probe wins). A failure writes nothing and never
-   * deletes (the stale entry stays inert - the key check keeps it a miss).
-   * Best-effort: a write failure never breaks the probe path.
+   * probeVersion, probeOk, writeAccepted, fixedOk } in the single-entry
+   * cache file (the last successful probe wins). A failure writes nothing
+   * and never deletes (the stale entry stays inert - the key checks keep
+   * it a miss). Best-effort: a write failure never breaks the probe path.
    * @param {number} deviceId
    * @param {{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }} result
    * @returns {Promise<void>}
@@ -605,6 +624,7 @@ export class IgclBackend {
       writeFanProbeCache(cacheFile, {
         driverVersion,
         deviceId,
+        probeVersion: FAN_PROBE_VERSION,
         probeOk: result.probeOk === true,
         writeAccepted: result.writeAccepted === true,
         fixedOk: result.fixedOk === true,
@@ -639,11 +659,15 @@ export class IgclBackend {
    * is available: after the table restore succeeded. A refused table write
    * tells us nothing about fixed writes and a stuck table mode must never
    * be left behind - so the fixed sub-probe never runs independently.
-   * `fixedOk` = one reversible 50% write via ctlFanSetFixedSpeedMode +
-   * read-back verify + restore to default mode (the SAME restore-retry
-   * semantics: a failed restore is a probe failure - the fan must NEVER be
-   * left at 50% fixed). Only a fully verified fixed probe adds 'fixed' to
-   * the learned modes.
+   * M20-B: `fixedOk` = one reversible 50% write + read-back verify +
+   * restore to default mode (the SAME restore-retry semantics: a failed
+   * restore is a probe failure - the fan must NEVER be left at 50% fixed).
+   * The dedicated ctlFanSetFixedSpeedMode write is the primary; when it is
+   * unavailable or refuses with ERROR_UNSUPPORTED_FEATURE /
+   * ERROR_NOT_AVAILABLE (the live A770 verdict), the FLAT-TABLE fallback
+   * (a 2-point flat 50% table via ctlFanSetSpeedTableMode - the IGS/Acer
+   * Alchemist mechanism) is the honest fixed route. Only a fully verified
+   * fixed probe (either path) adds 'fixed' to the learned modes.
    * @param {number} deviceId
    * @param {number} [maxPoints]  fan properties' maxPoints (default 10)
    * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }>}
@@ -721,28 +745,48 @@ export class IgclBackend {
     // (a curve apply issues ctlFanSetSpeedTableMode, which exits fixed
     // mode), so making the whole fan read-only would strand the user at 50%
     // fixed with no recourse. fixedOk=false is reported honestly in the
-    // probe shape ('fixed' is never offered) - the plan's "honest read-only"
-    // intent for the fixed path. Reversibility is intact: the restore is
-    // always attempted after a successful fixed write, retried twice, and
-    // verified DEFAULT-mode.
+    // probe shape - the plan's "honest read-only" intent for the fixed
+    // path. Reversibility is intact: the restore is always attempted after
+    // a successful fixed write, retried twice, and verified DEFAULT-mode.
+    //
+    // M20-B: the F1 gate flip - the fixed sub-probe runs when the FIXED
+    // symbol OR the TABLE path is available. On the Alchemist driver
+    // (live-probed) ctlFanSetFixedSpeedMode refuses with
+    // ERROR_UNSUPPORTED_FEATURE while the TABLE API works - the probe's
+    // flat-table fallback (a flat 2-point table = a fixed speed) is the
+    // honest fixed mechanism there. A card with NEITHER symbol still
+    // honestly reports no fixed (the probe cannot run).
     let fixedOk = false;
-    if (restoreOk && !this._isUnavailable(lib.ctlFanSetFixedSpeedMode)) {
+    if (restoreOk && (!this._isUnavailable(lib.ctlFanSetFixedSpeedMode) || !this._isUnavailable(lib.ctlFanSetSpeedTableMode))) {
       fixedOk = await this._runFixedProbe(fan, deviceId);
     }
     return { probeOk, writeAccepted, fixedOk };
   }
 
   /**
-   * M4-C: the fixed-write sub-probe - one reversible 50% write via
-   * ctlFanSetFixedSpeedMode + read-back verify (FIXED mode, PERCENT units,
-   * 50%) + restore to default mode via ctlFanSetDefaultMode with the SAME
-   * restore-retry semantics as the table probe (`_restoreFanDefault`: a
-   * failed restore is a probe failure - the fan must NEVER be left at 50%
-   * fixed). Runs once per device per session inside the SAME promise-keyed
-   * probe cache as the table probe (never a re-probe per caps read; ocMode
-   * flips never re-probe). `fixedOk` = write + read-back + restore all
-   * succeeded; a refused write needs no restore (the card never entered
-   * fixed mode) and is the honest `false`.
+   * M4-C: the fixed-write sub-probe - one reversible 50% write +
+   * read-back verify (FIXED mode, PERCENT units, 50%) + restore to default
+   * mode via ctlFanSetDefaultMode with the SAME restore-retry semantics as
+   * the table probe (`_restoreFanDefault`: a failed restore is a probe
+   * failure - the fan must NEVER be left at 50% fixed). Runs once per
+   * device per session inside the SAME promise-keyed probe cache as the
+   * table probe (never a re-probe per caps read; ocMode flips never
+   * re-probe). `fixedOk` = write + read-back + restore all succeeded; a
+   * refused write needs no restore (the card never entered fixed mode) and
+   * is the honest `false`.
+   *
+   * M20-B: the Alchemist fallback - when the dedicated API is unavailable
+   * or refuses with ERROR_UNSUPPORTED_FEATURE / ERROR_NOT_AVAILABLE (the
+   * live A770 + driver 0x00200000006522a0 verdict: ctlFanSetFixedSpeedMode
+   * returns 0x4000000A), Fixed = a FLAT speed table via
+   * ctlFanSetSpeedTableMode (the IGS/Acer mechanism, live-proven on the
+   * same card: flat 30% -> 210 RPM, flat 60% -> 1980 RPM, clean restore).
+   * The fallback writes a 2-point flat 50% table (20C/100C, PERCENT units),
+   * read-back verifies TABLE mode + every point 50% PERCENT within 1 +
+   * numPoints >= 2, then restores via `_restoreFanDefault` - the fan is
+   * never left in table mode. An unavailable table API keeps the honest
+   * `fixedOk=false` (no flat-table probe possible). `fixedOk = readOk &&
+   * restoreOk` on both paths.
    * @param {object} fan
    * @param {number} deviceId
    * @returns {Promise<boolean>}
@@ -751,36 +795,96 @@ export class IgclBackend {
     const lib = this._libOrThrow();
     const FIXED_PCT = 50;
     const fixed = { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: FIXED_PCT, units: FAN_UNITS_PERCENT };
-    const setResult = lib.ctlFanSetFixedSpeedMode(fan, fixed);
+    // M20-B (F1): the PRIMARY write is guarded - an unavailable symbol
+    // skips straight to the flat-table fallback, never a throw.
+    let setResult;
+    if (!this._isUnavailable(lib.ctlFanSetFixedSpeedMode)) {
+      setResult = lib.ctlFanSetFixedSpeedMode(fan, fixed);
+    }
     const writeAccepted = setResult === CTL_RESULT.SUCCESS;
-    if (!writeAccepted) {
-      // The write itself failed: the card was never put in fixed mode, so
-      // no restore is needed - the refusal IS the honest answer.
+    // M20-B: the flat-table fallback triggers on the unavailable symbol OR
+    // the two refusal codes the Alchemist driver answers with; any OTHER
+    // failure is the honest `false` (the card was never put in fixed mode,
+    // so no restore is needed - the refusal IS the honest answer).
+    const flatFallback = !writeAccepted
+      && (setResult === undefined
+        || setResult === CTL_RESULT.ERROR_UNSUPPORTED_FEATURE
+        || setResult === CTL_RESULT.ERROR_NOT_AVAILABLE);
+    if (!writeAccepted && !flatFallback) {
       console.error(`[igcl-backend] fixed fan probe: ctlFanSetFixedSpeedMode refused (${describeResult(setResult)}) - 'fixed' stays out of the learned modes`);
       return false;
     }
 
-    // Read-back verify: FIXED mode + PERCENT units + the 50% sample.
+    if (writeAccepted) {
+      // Read-back verify: FIXED mode + PERCENT units + the 50% sample.
+      let readOk = false;
+      const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
+      koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
+      const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
+      if (getResult === CTL_RESULT.SUCCESS) {
+        const cfg = koffi.decode(cfgBuf, 'ctl_fan_config_t');
+        readOk = cfg.mode === 1 /* FIXED */
+          && cfg.speedFixed.units === FAN_UNITS_PERCENT
+          && nearlyEqual(cfg.speedFixed.speed, FIXED_PCT, 1);
+      }
+      if (!readOk) {
+        console.error('[igcl-backend] fixed fan probe: read-back did not match the 50% fixed sample - probe fails');
+      }
+
+      // Restore default mode, retried: a failed fixed probe must NEVER leave
+      // the fan at 50% fixed.
+      const restoreOk = await this._restoreFanDefault(fan, deviceId);
+
+      const fixedOk = readOk && restoreOk;
+      console.log(`[igcl-backend] fixed fan probe device ${deviceId}: 50% write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - fixedOk=${fixedOk}`);
+      return fixedOk;
+    }
+
+    // M20-B: the FLAT-TABLE fallback probe (the Alchemist fixed mechanism).
+    if (this._isUnavailable(lib.ctlFanSetSpeedTableMode)) {
+      console.error('[igcl-backend] fixed fan probe: the dedicated API refused and ctlFanSetSpeedTableMode is unavailable - no flat-table fallback possible, fixedOk stays false');
+      return false;
+    }
+    // A flat 2-point 50% table (20C/100C, FAN-enum PERCENT units - the
+    // probe convention shared with the apply path).
+    const table = [20, 100].map((t) => ({
+      Size: koffi.sizeof('ctl_fan_temp_speed_t'),
+      Version: 0,
+      temperature: t,
+      speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: FIXED_PCT, units: FAN_UNITS_PERCENT },
+    }));
+    const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: table.length, table };
+    const setTableResult = lib.ctlFanSetSpeedTableMode(fan, tableObj);
+    if (setTableResult !== CTL_RESULT.SUCCESS) {
+      // The flat-table write itself failed: the card was never put in
+      // table mode - no restore needed, the refusal IS the honest answer.
+      console.error(`[igcl-backend] fixed fan probe: the flat-table fallback write refused (${describeResult(setTableResult)}) - 'fixed' stays out of the learned modes`);
+      return false;
+    }
+
+    // Read-back verify: TABLE mode + >= 2 points, all PERCENT, ~50%.
     let readOk = false;
     const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
     koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
     const getResult = lib.ctlFanGetConfig(fan, cfgBuf);
     if (getResult === CTL_RESULT.SUCCESS) {
       const cfg = koffi.decode(cfgBuf, 'ctl_fan_config_t');
-      readOk = cfg.mode === 1 /* FIXED */
-        && cfg.speedFixed.units === FAN_UNITS_PERCENT
-        && nearlyEqual(cfg.speedFixed.speed, FIXED_PCT, 1);
+      readOk = cfg.mode === 2 /* TABLE */
+        && cfg.speedTable.numPoints >= 2
+        && cfg.speedTable.numPoints <= 32
+        && Array.from({ length: cfg.speedTable.numPoints }, (_, i) => cfg.speedTable.table[i])
+          .every((tp) => tp.speed.units === FAN_UNITS_PERCENT && nearlyEqual(tp.speed.speed, FIXED_PCT, 1));
     }
     if (!readOk) {
-      console.error('[igcl-backend] fixed fan probe: read-back did not match the 50% fixed sample - probe fails');
+      console.error('[igcl-backend] fixed fan probe: the flat-table read-back did not match the 50% sample - probe fails');
     }
 
-    // Restore default mode, retried: a failed fixed probe must NEVER leave
-    // the fan at 50% fixed.
+    // Restore default mode, retried: a failed probe must NEVER leave the
+    // fan in table mode.
     const restoreOk = await this._restoreFanDefault(fan, deviceId);
 
     const fixedOk = readOk && restoreOk;
-    console.log(`[igcl-backend] fixed fan probe device ${deviceId}: 50% write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - fixedOk=${fixedOk}`);
+    console.log(`[igcl-backend] fixed fan probe device ${deviceId}: flat-table 50% write accepted (result ${describeResult(setTableResult)}), read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - fixedOk=${fixedOk}`);
     return fixedOk;
   }
 
@@ -1106,9 +1210,11 @@ export class IgclBackend {
         // modes (claiming auto/curve on a genuinely fixed-only card would
         // lie). The derivation stays only for cards that never probe
         // (probe disabled, or probe symbols missing). M4-C: the fixed-write
-        // sub-probe (reversible 50% write) extends the same cached shape -
-        // only a fully verified fixed probe (fixedOk) adds 'fixed' to the
-        // learned modes (a refused fixed write keeps ['auto','curve']).
+        // sub-probe (reversible 50% write, M20-B: with the flat-table
+        // fallback when the dedicated API refuses - the Alchemist route)
+        // extends the same cached shape - only a fully verified fixed probe
+        // (fixedOk) adds 'fixed' to the learned modes (a refused fixed
+        // route keeps ['auto','curve']).
         let modes = Object.entries(CTL_FAN_SPEED_MODE)
           .filter(([v]) => (fp.supportedModes & (1 << Number(v))) !== 0)
           .map(([v]) => FAN_MODE_CANONICAL[Number(v)]);
@@ -1125,7 +1231,10 @@ export class IgclBackend {
           // only a FULLY verified fixed probe (write + read-back + restore
           // all succeeded, fixedOk) adds 'fixed' to the learned modes; a
           // refused/partial fixed probe keeps ['auto','curve'] (claiming
-          // fixed on a card that refuses fixed writes would lie).
+          // fixed on a card that refuses every fixed route would lie).
+          // M20-B: on the Alchemist driver the fixed sub-probe now learns
+          // 'fixed' through the FLAT-TABLE fallback (the dedicated API
+          // refuses, the flat table works) - the same fixedOk verdicts.
           if (probe.writeAccepted) {
             modes = probe.fixedOk ? ['auto', 'curve', 'fixed'] : ['auto', 'curve'];
           }
@@ -1399,7 +1508,23 @@ export class IgclBackend {
           // Mixed/unknown units make the canonical % curve meaningless.
           if (state.fanCurve.some((p) => p.speedPct === null)) state.fanCurve = null;
         }
-        if (cfg.speedFixed.units === FAN_UNITS_PERCENT) {
+        // M20-B (F3/F4): a FLAT table IS a fixed speed (the Alchemist
+        // mechanism - the read-back flips a mode-2 flat table to the honest
+        // 'fixed' state: TABLE mode + numPoints >= 2 (a 1-point table is
+        // vacuously "all equal" - gated out) + every point's speed equal
+        // (within 1) + PERCENT units). The derivation DUAL-REPORTS:
+        // state.fanCurve keeps the table points (the Curve chip still shows
+        // the user's points; the saved profile keeps fanMode='curve' +
+        // fanCurve untouched - only the live display flips, and honestly: a
+        // flat table IS a fixed speed). A non-flat table keeps the current
+        // 'curve' + fanCurve behavior.
+        const flatTable = state.fanMode === 'curve' /* TABLE */
+          && state.fanCurve !== null && state.fanCurve.length >= 2
+          && state.fanCurve.every((p) => Math.abs(p.speedPct - state.fanCurve[0].speedPct) <= 1);
+        if (flatTable) {
+          state.fanMode = 'fixed';
+          state.fixedFanPct = state.fanCurve[0].speedPct;
+        } else if (cfg.speedFixed.units === FAN_UNITS_PERCENT) {
           state.fixedFanPct = cfg.speedFixed.speed;
         } else {
           state.fixedFanPct = null; // RPM fixed speed (no maxRPM to normalize) or none set
@@ -1934,6 +2059,10 @@ export class IgclBackend {
       // mode; table points / fixed speed are compared (within tolerance) when
       // the read-back reports PERCENT units - RPM values cannot be normalized
       // without maxRPM, so mode match suffices there.
+      // M20-B (F2): `expected.flatPct` verifies a FLAT-table fixed write -
+      // the canonical 'curve' mode (a flat table reads back mode 2) + every
+      // table point's speed within 1 of flatPct (temperatures ignored - the
+      // fallback's 20/100 convention is NOT user curve data).
       const verifyFanConfig = (fan, expectedMode, expected = {}) => {
         if (this._isUnavailable(lib.ctlFanGetConfig)) {
           return { ok: false, message: 'fan set succeeded but read-back (ctlFanGetConfig) is unavailable' };
@@ -1968,6 +2097,25 @@ export class IgclBackend {
           for (let i = 0; i < got.length; i++) {
             if (!nearlyEqual(got[i].t, expected.curve[i].t, 1) || !nearlyEqual(got[i].speedPct, expected.curve[i].speedPct, 1)) {
               return { ok: false, message: `fan curve point ${i} read-back ${got[i].t}C/${got[i].speedPct}% != requested ${expected.curve[i].t}C/${expected.curve[i].speedPct}%` };
+            }
+          }
+        }
+        // M20-B (F2): the flat-table verify branch - every table point's
+        // speed (PERCENT units) must be within 1 of flatPct; numPoints >= 2
+        // (F3: a 1-point table is vacuously "all equal"); temperatures are
+        // the fallback's 20/100 convention, never user curve data.
+        if (expected.flatPct !== undefined) {
+          const numPoints = cfg.speedTable.numPoints;
+          if (numPoints < 2 || numPoints > 32) {
+            return { ok: false, message: 'flat-table read-back has an invalid point count' };
+          }
+          for (let i = 0; i < numPoints; i++) {
+            const tp = cfg.speedTable.table[i];
+            if (tp.speed.units !== FAN_UNITS_PERCENT) {
+              return { ok: false, message: 'flat-table read-back is not in PERCENT units - cannot verify' };
+            }
+            if (!nearlyEqual(tp.speed.speed, expected.flatPct, 1)) {
+              return { ok: false, message: `flat-table point ${i} read-back ${tp.speed.speed}% != requested ${expected.flatPct}%` };
             }
           }
         }
@@ -2016,18 +2164,52 @@ export class IgclBackend {
 
       let fixedOk = false;
       if (settings.fixedFanPct !== null && settings.fixedFanPct !== undefined) {
+        const fixed = pct(settings.fixedFanPct);
+        // M20-B: the fixed apply falls back to the FLAT-TABLE mechanism
+        // (the Alchemist route) when the dedicated API is unavailable or
+        // refuses with ERROR_UNSUPPORTED_FEATURE / ERROR_NOT_AVAILABLE -
+        // the same contract as the probe.
+        let flatTableFallback = false;
         if (this._isUnavailable(lib.ctlFanSetFixedSpeedMode)) {
-          fail('fixedFanPct', 'unavailable-symbol', 'fixed fan speed API missing in the IGCL runtime');
+          flatTableFallback = true;
         } else {
-          const fixed = pct(settings.fixedFanPct);
           const setResult = lib.ctlFanSetFixedSpeedMode(fan, fixed);
           if (setResult === CTL_RESULT.SUCCESS) {
             const v = verifyFanConfig(fan, 'fixed', { fixedPct: fixed.speed });
             result.perControl.fixedFanPct = { ok: v.ok, readBackEqual: v.ok, errorCode: v.ok ? undefined : 'io-failed', message: v.message };
             fixedOk = v.ok;
             if (!v.ok) result.ok = false;
+          } else if (setResult === CTL_RESULT.ERROR_UNSUPPORTED_FEATURE || setResult === CTL_RESULT.ERROR_NOT_AVAILABLE) {
+            flatTableFallback = true;
           } else {
             fail('fixedFanPct', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          }
+        }
+        if (flatTableFallback) {
+          if (this._isUnavailable(lib.ctlFanSetSpeedTableMode)) {
+            fail('fixedFanPct', 'unavailable-symbol', 'fixed fan speed API missing in the IGCL runtime');
+          } else {
+            // Fixed on this card = a FLAT speed table (every temperature ->
+            // the same speed - the IGS/Acer Alchemist mechanism). Write the
+            // 2-point flat table (20C/100C, PERCENT units) and verify via
+            // the CANONICAL 'curve' mode + the flatPct branch (a flat table
+            // reads back mode 2 = 'curve').
+            const flatTable = [20, 100].map((t) => ({
+              Size: koffi.sizeof('ctl_fan_temp_speed_t'),
+              Version: 0,
+              temperature: t,
+              speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fixed.speed, units: FAN_UNITS_PERCENT },
+            }));
+            const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: flatTable.length, table: flatTable };
+            const setResult = lib.ctlFanSetSpeedTableMode(fan, tableObj);
+            if (setResult === CTL_RESULT.SUCCESS) {
+              const v = verifyFanConfig(fan, 'curve', { flatPct: fixed.speed });
+              result.perControl.fixedFanPct = { ok: v.ok, readBackEqual: v.ok, errorCode: v.ok ? undefined : 'io-failed', message: v.message };
+              fixedOk = v.ok;
+              if (!v.ok) result.ok = false;
+            } else {
+              fail('fixedFanPct', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+            }
           }
         }
       }

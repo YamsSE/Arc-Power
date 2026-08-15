@@ -2,10 +2,11 @@
 // IOCBackend, driven by the M2D mock distribution file (mock/featuresets/
 // *.json - RID_MOCK_FEATURESET=<id> selects the device line, default a770).
 // Every cap, range, control, fan config and telemetry constant derives from
-// the featureset; env knobs (RID_MOCK_FAN_READONLY, RID_MOCK_OFFGRID_FREQ_MHZ,
-// RID_MOCK_EXTENDED_RANGES, RID_MOCK_EXTENDED_FAIL) and constructor opts act
-// as OVERLAYS on top of the featureset base. Used by tests, demo mode
-// (RID_BACKEND=mock / `--mock`) and --ui-verify.
+// the featureset; env knobs (RID_MOCK_FAN_READONLY, RID_MOCK_FAN_FIXED,
+// RID_MOCK_OFFGRID_FREQ_MHZ, RID_MOCK_EXTENDED_RANGES,
+// RID_MOCK_EXTENDED_FAIL) and constructor opts act as OVERLAYS on top of the
+// featureset base. Used by tests, demo mode (RID_BACKEND=mock / `--mock`)
+// and --ui-verify.
 //
 // Fan fixture vs the real A770 (M3-D): the a770 featureset carries the real
 // card's TRUE capability - canControl=true + modes ['auto','curve'] - learned
@@ -15,6 +16,12 @@
 // reproduces the read-only surface WITHOUT pretending the modes are ['fixed']
 // - the card's modes are ['auto','curve'] regardless of the control grant
 // (same honest-vs-reality principle as the real backend's probe-fail path).
+// M20-B: RID_MOCK_FAN_FIXED=1 models the ALchemist FIXED unlock - the probe's
+// flat-table fallback learned 'fixed' (the dedicated API refuses, a FLAT
+// speed table IS the fixed mechanism): the caps report modes
+// ['auto','curve','fixed'] and the read-back derives 'fixed' from a flat
+// table (the same numPoints>=2 + all-equal + PERCENT derivation the real
+// backend runs) - the mock round trip the ui-verify knob variant pins.
 
 import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve } from './units.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
@@ -107,6 +114,10 @@ export class MockBackend {
    *   fanCanControl?: boolean,           // overlay: false -> read-only fan (ui-verify
    *                                      // RID_MOCK_FAN_READONLY); a hasFan:false
    *                                      // featureset always stays fan-less
+   *   fanFixed?: boolean,                // M20-B: overlay - the flat-table-fixed session
+   *                                      // (RID_MOCK_FAN_FIXED=1): the learned modes
+   *                                      // include 'fixed' + the read-back derives
+   *                                      // 'fixed' from a flat table
    *   offGridFreqMhz?: number,           // report a driver freq offset off the 1 MHz grid (ui-verify only)
    *   telemetryIntervalS?: number,       // mock wall-clock between samples (default 0.5)
    *   energyStepJ?: number,              // energy added per sample (default from the
@@ -161,6 +172,13 @@ export class MockBackend {
     // RID_MOCK_MULTI_DEVICE=1 knob (or the constructor flag for tests);
     // device 1 is the arc-igpu line with DISTINCT caps/state/telemetry.
     this._multiDevice = opts.multiDevice === true || process.env.RID_MOCK_MULTI_DEVICE === '1';
+    // M20-B: the flat-table-fixed session knob (RID_MOCK_FAN_FIXED=1) - the
+    // probe's flat-table fallback learned 'fixed' (modes
+    // ['auto','curve','fixed']) and the read-back derives 'fixed' from a
+    // flat table. The mock default keeps the honest no-fixed card (the M4-C
+    // pins stay green); the knob variant pins the enabled Fixed chip + the
+    // fixed apply round trip.
+    this._fanFixed = opts.fanFixed === true || process.env.RID_MOCK_FAN_FIXED === '1';
     // 1.0.1 no-Intel round: the no-Intel session (RID_MOCK_NO_INTEL=1 or the
     // constructor flag) - listDevices enumerates NOTHING and health reports
     // igclLoaded false, the exact shape a REAL no-Intel machine reports
@@ -407,7 +425,11 @@ export class MockBackend {
       return { canControl: false, modes: [], maxRpm: -1, maxCurvePoints: 0 };
     }
     if (fanCanControl) {
-      return { ...FAN_EDITABLE, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
+      // M20-B: the flat-table-fixed session (RID_MOCK_FAN_FIXED=1) models
+      // the probe's fallback verdict - the learned modes include 'fixed'
+      // (the real A770 after the flat-table fallback probe).
+      const modes = this._fanFixed ? ['auto', 'curve', 'fixed'] : FAN_EDITABLE.modes;
+      return { ...FAN_EDITABLE, modes, maxCurvePoints: fs.fanMaxCurvePoints || 10 };
     }
     // Read-only overlay (M3-D round-2 F1): the modes stay the card's TRUE
     // modes ['auto','curve'] - the read-only fixture must not claim ['fixed'],
@@ -740,6 +762,13 @@ export class MockBackend {
 
   async getCurrentSettings(deviceId = 0) {
     const s = this._entry(deviceId).state;
+    // M20-B: the flat-table -> 'fixed' derivation mirrors the real backend's
+    // read-back - a flat fanCurve (>= 2 points, all speeds equal within 1,
+    // PERCENT units - the mock curve is canonical % by construction) in
+    // TABLE/curve mode IS a fixed speed. The dual report keeps fanCurve
+    // populated (the Curve chip still shows the points).
+    const flatCurve = s.fanMode === 'curve' && s.fanCurve !== null && s.fanCurve.length >= 2
+      && s.fanCurve.every((p) => p.speedPct !== null && Math.abs(p.speedPct - s.fanCurve[0].speedPct) <= 1);
     return {
       powerLimitW: s.powerLimitW,
       gpuVoltOffsetV: s.gpuVoltOffsetV,
@@ -749,9 +778,9 @@ export class MockBackend {
       vramVoltOffsetV: s.vramVoltOffsetV,
       gpuLock: s.gpuLock ? { ...s.gpuLock } : null,
       vfCurve: s.vfCurve ? s.vfCurve.map((p) => ({ ...p })) : null,
-      fanMode: s.fanMode,
+      fanMode: flatCurve ? 'fixed' : s.fanMode,
       fanCurve: s.fanCurve ? s.fanCurve.map((p) => ({ ...p })) : null,
-      fixedFanPct: s.fixedFanPct,
+      fixedFanPct: flatCurve ? s.fanCurve[0].speedPct : s.fixedFanPct,
     };
   }
 
@@ -869,6 +898,8 @@ export class MockBackend {
 
     const applyScalar = (control, canonicalName, value) => {
       if (value === null || value === undefined) return;
+      if (canonicalName === 'powerLimitW' || canonicalName === 'tempLimitC') {
+      }
       if (!caps.controls[control]) {
         result.perControl[canonicalName] = { ok: false, errorCode: 'unsupported', message: 'control not supported on this device' };
         result.ok = false;
@@ -1014,7 +1045,20 @@ export class MockBackend {
           this._consumeFailOnce('fixedFanPct');
         } else {
           state.fixedFanPct = clampFanPct(settings.fixedFanPct);
-          state.fanMode = 'fixed';
+          // M20-B: the flat-table-fixed session mirrors the real backend's
+          // fallback mechanism - a fixed apply WRITES A FLAT TABLE (the
+          // card stays in TABLE mode; the read-back derivation flips it to
+          // 'fixed'). The default (no knob) keeps the old direct-fixed mock
+          // shape.
+          if (this._fanFixed) {
+            state.fanCurve = [
+              { t: 20, speedPct: state.fixedFanPct },
+              { t: 100, speedPct: state.fixedFanPct },
+            ];
+            state.fanMode = 'curve';
+          } else {
+            state.fanMode = 'fixed';
+          }
           result.perControl.fixedFanPct = { ok: true, readBackEqual: true };
           result.perControl.fanMode = { ok: true, readBackEqual: true };
         }

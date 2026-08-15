@@ -102,3 +102,5 @@ Quick access and apply-on-startup controls without opening the window.
   (with shorter, one-line descriptions), the Core-Offset range line hides
   when the gpuLock page switches to Lock mode, and the tuning sliders' blue
   fill no longer crosses the dark-blue thumb.
+
+- **Alchemist fan Fixed mode** - on the Alchemist line (the dedicated fixed-speed API refuses with ERROR_UNSUPPORTED_FEATURE on the current driver), Fixed mode works through the flat-table mechanism: the fan-capability probe falls back to a flat 2-point speed table, the Fixed apply writes the flat table and verifies by read-back, and the editor's Fixed chip enables with the fixed % slider (a flat table reads back as the honest 'fixed' mode while the Curve chip still shows the table points).

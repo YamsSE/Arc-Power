@@ -51,16 +51,52 @@ export { newProfileId };
  * Build a Settings payload from the driver's current read-back (only
  * controls the UI understands; expert controls gpuLock/vfCurve are excluded -
  * they are not editable in M2b and a saved {0,0} lock pair would mislead).
+ * M20-B (plan F4): the read-back derives 'fixed' from a FLAT TABLE (TABLE
+ * mode + numPoints >= 2 + every speed within 1 + PERCENT) while keeping the
+ * table points in fanCurve - saving that derived 'fixed' as-is would
+ * collapse the user's table points (incl. custom temps) into the 20/100
+ * fixed convention. A flat-table fixed therefore saves as fanMode='curve' +
+ * the flat fanCurve (no fixedFanPct); a genuine driver fixed (mode-1 via
+ * fixedFanPct, no flat table) keeps 'fixed' + fixedFanPct. M20-B step-5 R2:
+ * the derivation ALSO requires the flat curve's speed to match
+ * fixedFanPct - a stale flat fanCurve paired with a mismatched fixedFanPct
+ * (a mode-1-capable card edge) must not classify as derived (it would drop
+ * the fixedFanPct). Derived-fixed satisfies this by construction (both
+ * backends set fixedFanPct from the common speed). M20-B step-5 R3 (R4):
+ * fanCurve is meaningful ONLY in curve (or derived-fixed) mode - an
+ * auto-mode read-back can still carry the last table points (the config
+ * struct keeps the table across mode switches; the mock mirrors it), and
+ * shipping them in an auto payload would make the profile-load RE-write the
+ * table (flipping the mode back to curve) - auto never carries a table.
  */
 export function settingsFromState(state: DeviceState): Settings {
   const out: Settings = {};
+  const curve = state.fanCurve;
+  const flatTableFixed = state.fanMode === 'fixed'
+    && Array.isArray(curve) && curve.length >= 2
+    && curve.every((p) => Math.abs(p.speedPct - curve[0].speedPct) <= 1)
+    && typeof state.fixedFanPct === 'number'
+    && Math.abs(curve[0].speedPct - state.fixedFanPct) <= 1;
   for (const key of SCALAR_KEYS) {
+    // M20-B step-5 R2 (F3): fixedFanPct is meaningful ONLY in fixed mode -
+    // a curve/auto-mode read-back can still carry the last fixed speed (the
+    // config struct keeps the speedFixed field across mode switches; the
+    // mock mirrors it). Shipping it in a curve payload would make the
+    // profile-load RE-write a fixed speed the user never asked for (the
+    // table is the curve-mode authority) - the derived flat-table fixed
+    // (fanMode 'fixed' + flat curve) already omits it above.
+    if (key === 'fixedFanPct' && (flatTableFixed || state.fanMode !== 'fixed')) continue;
     const v = state[key as keyof DeviceState];
     if (typeof v === 'number') (out as Record<string, number>)[key] = v;
   }
-  if (state.fanMode) out.fanMode = state.fanMode;
-  if (state.fanCurve) out.fanCurve = state.fanCurve;
-  if (state.fixedFanPct !== null && state.fixedFanPct !== undefined) out.fixedFanPct = state.fixedFanPct;
+  if (state.fanMode) out.fanMode = flatTableFixed ? 'curve' : state.fanMode;
+  // M20-B step-5 R3 (R4): fanCurve is meaningful ONLY in curve (or
+  // derived-fixed) mode - an auto read-back can still carry the last table
+  // points (the config struct keeps the table across mode switches; the mock
+  // mirrors it). Shipping them in an auto payload would make the
+  // profile-load RE-write the table (flipping the mode back to curve) -
+  // auto never carries a table.
+  if (state.fanCurve && state.fanMode !== 'auto') out.fanCurve = state.fanCurve;
   return out;
 }
 

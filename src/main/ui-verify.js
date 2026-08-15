@@ -150,6 +150,13 @@
 //      session nor a later BOOT (RID_MOCK_ADVANCED_ACCEPTED=1 seeds the
 //      accepted store) ever shows it again. Stock variant: full once-flow.
 //      Knob variant: boot-persisted acceptance -> toggle shows no dialog.
+//  22. M20-B flat-table-fixed variant (RID_MOCK_FAN_FIXED=1): the mock
+//      learned 'fixed' (the probe's flat-table fallback - the Alchemist
+//      fixed mechanism): the Fixed chip is ENABLED with no "not supported"
+//      note, the fixed 40% apply round trip reads back 'fixed' + 40 (the
+//      flat-table detection) with the flat points still in fanCurve (the
+//      dual report). The default mock keeps the honest disabled-Fixed card
+//      (the M4-C pins stay green).
 // This script is dev tooling only - it always uses MockBackend (it never
 // touches hardware) and exists to catch DOM-wiring regressions that unit
 // tests cannot. Profile rows created here are cleaned up before exit.
@@ -2865,6 +2872,13 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 
   // --- 6. fan editor (M4-D2: the Tuning page's "Fan Curve" sub-view) -------
   const fanReadonly = process.env.RID_MOCK_FAN_READONLY === '1';
+  // M20-B: the flat-table-fixed knob variant (RID_MOCK_FAN_FIXED=1) - the
+  // mock's learned modes include 'fixed' (the probe's flat-table fallback
+  // on the Alchemist driver) and the read-back derives 'fixed' from a flat
+  // table. The M4-C pins below branch: the DEFAULT keeps the honest
+  // disabled-Fixed card (the mock default), the knob variant pins the
+  // ENABLED chip + the fixed apply round trip at the end of the fan block.
+  const fanFixedKnob = process.env.RID_MOCK_FAN_FIXED === '1';
   // M4-D2 (§8): the old '#/fan' hash redirects to the Tuning page with the
   // FAN sub-view active (router consumeFanViewRequest) - the pins below run
   // inside the sub-view, unchanged selectors.
@@ -2982,7 +2996,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // --- M4-C: Fixed tab always rendered + the honest disabled state ---------
   // The editable a770 overlay's learned modes are ['auto','curve'] (fixed
   // writes are genuinely unsupported on this card) - the Fixed chip must
-  // ALWAYS render, DISABLED, with the honest note.
+  // ALWAYS render, DISABLED, with the honest note. M20-B: under
+  // RID_MOCK_FAN_FIXED=1 the mock models the live A770 verdict - the probe's
+  // flat-table fallback learned 'fixed' - so the chip must be ENABLED with
+  // no "not supported" note (the flat-table Fixed mechanism).
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).some((c) => (c.textContent ?? '').trim() === 'Fixed')`))) {
     fail('M4-C: the Fixed mode chip is missing from the toggle (it must ALWAYS render)');
   }
@@ -2990,20 +3007,27 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   const toggle = JSON.parse(toggleState);
   const fixedChip = toggle.find(([label]) => label === 'Fixed');
   if (!fixedChip) fail('M4-C: the Fixed chip is not in the toggle');
-  if (fixedChip[1] !== true) fail('M4-C: the Fixed chip must be DISABLED when fixed is not in caps.fan.modes');
-  const autoChip = toggle.find(([label]) => label === 'Auto');
-  const curveChip = toggle.find(([label]) => label === 'Curve');
-  if (!autoChip || autoChip[1] !== false || !curveChip || curveChip[1] !== false) {
-    fail(`M4-C: the supported Auto/Curve chips must stay enabled: ${toggleState}`);
+  if (fanFixedKnob) {
+    if (fixedChip[1] !== false) fail('M20-B: the Fixed chip must be ENABLED under RID_MOCK_FAN_FIXED=1 (the flat-table fallback learned fixed)');
+    const fixedNote = await js(`document.querySelector('.fan-fixed-note')?.textContent ?? ''`);
+    if (fixedNote.length > 0) fail(`M20-B: the honest 'not supported' note must NOT render under the knob: '${fixedNote}'`);
+    step('fan-m20b-fixed-enabled', `M20-B: Fixed chip ENABLED under RID_MOCK_FAN_FIXED=1 (${toggleState}), no 'not supported' note`);
+  } else {
+    if (fixedChip[1] !== true) fail('M4-C: the Fixed chip must be DISABLED when fixed is not in caps.fan.modes');
+    const autoChip = toggle.find(([label]) => label === 'Auto');
+    const curveChip = toggle.find(([label]) => label === 'Curve');
+    if (!autoChip || autoChip[1] !== false || !curveChip || curveChip[1] !== false) {
+      fail(`M4-C: the supported Auto/Curve chips must stay enabled: ${toggleState}`);
+    }
+    if (toggle.some(([label, , active]) => label === 'Fixed' && active)) {
+      fail('M4-C: a DISABLED Fixed chip must never render as the active mode');
+    }
+    const fixedNote = await js(`document.querySelector('.fan-fixed-note')?.textContent ?? ''`);
+    if (!fixedNote.includes('Fixed speed is not supported on this GPU')) {
+      fail(`M4-C: the honest fixed note is missing: '${fixedNote}'`);
+    }
+    step('fan-m4c-fixed', `M4-C: Fixed tab always renders - chip disabled (${toggleState}), note '${fixedNote.trim()}'`);
   }
-  if (toggle.some(([label, , active]) => label === 'Fixed' && active)) {
-    fail('M4-C: a DISABLED Fixed chip must never render as the active mode');
-  }
-  const fixedNote = await js(`document.querySelector('.fan-fixed-note')?.textContent ?? ''`);
-  if (!fixedNote.includes('Fixed speed is not supported on this GPU')) {
-    fail(`M4-C: the honest fixed note is missing: '${fixedNote}'`);
-  }
-  step('fan-m4c-fixed', `M4-C: Fixed tab always renders - chip disabled (${toggleState}), note '${fixedNote.trim()}'`);
 
   // --- M4-C + M4-H: dot hover readout + live drag readout ------------------
   // Hover a dot: the popup shows the label ("85% @ 72 °C · #N"-style) and
@@ -3378,6 +3402,65 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (/read-back mismatch/.test(refuseMsg)) fail(`fan refusal toast fell back to the errorCode mapping: '${refuseMsg}'`);
   backend.injectFail('fanCurve', null);
   step('fan-fail-toast', `fan apply failure mapped: '${errMsg}' (hard) + refusal composed: '${refuseMsg}'`);
+
+  // --- M20-B: the flat-table Fixed round trip (RID_MOCK_FAN_FIXED=1) ------
+  // The mock learned 'fixed' (the probe's flat-table fallback) - drive the
+  // editor end to end: click the Fixed chip, set 40 %, apply, and read back
+  // 'fixed' + 40 (the flat-table detection) with the flat points still in
+  // fanCurve (the dual report). Then restore the Curve view for the steps
+  // that follow.
+  if (fanFixedKnob) {
+    const fanChip = (label) => `Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).find((c) => (c.textContent ?? '').trim() === '${label}')`;
+    await js(`${fanChip('Fixed')}?.click()`);
+    await sleep(250);
+    if (!(await js(`!!document.querySelector('.fan-fixed-row input[type="range"]')`))) {
+      fail('M20-B: the fixed % slider did not render after clicking the Fixed chip');
+    }
+    await js(`(() => {
+      const range = document.querySelector('.fan-fixed-row input[type="range"]');
+      range.value = '40';
+      range.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    const fixedReadout = await js(`document.querySelector('.fan-fixed-row .oc-value')?.textContent ?? ''`);
+    if (fixedReadout.trim() !== '40 %') fail(`M20-B: the fixed % readout is '${fixedReadout}' (expected '40 %')`);
+    await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings'))?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M20-B: the fixed 40% apply success toast missing');
+    const fixedState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (fixedState.fanMode !== 'fixed') fail(`M20-B: the read-back mode is '${fixedState.fanMode}' (expected 'fixed' - the flat-table detection)`);
+    if (fixedState.fixedFanPct !== 40) fail(`M20-B: the read-back fixedFanPct is ${fixedState.fixedFanPct} (expected 40)`);
+    const flatCurve = fixedState.fanCurve;
+    if (!flatCurve || flatCurve.length < 2) fail('M20-B: the read-back fanCurve must still carry the flat table points (the dual report)');
+    if (!flatCurve.every((p) => Math.abs(p.speedPct - 40) <= 1)) {
+      fail(`M20-B: the read-back fanCurve is not flat at 40%: ${JSON.stringify(flatCurve)}`);
+    }
+    step('fan-m20b-fixed-roundtrip', `M20-B: Fixed 40% round trip - chip enabled, apply OK, read-back 'fixed' + ${fixedState.fixedFanPct}%, flat points ${JSON.stringify(flatCurve.map((p) => [p.t, p.speedPct]))} (dual fanCurve report)`);
+    // M20-B step-5 R2 (F3): restore the APPLIED fan state to the fixture
+    // curve before the view restore - the later profile-create captures
+    // fan=curve+fixture, so the profile-load applies power+freq (real
+    // changes) + the fan curve (a NO-OP vs the current curve) -> exactly 2
+    // success toasts (the shared profiles-load pin). Same fixture + apply
+    // pattern as the M4N fan-apply pins: the 'Intel Curve' preset (the
+    // fixture curve, verified above) + the 'Apply fan settings' button.
+    // The read-back keeps the stale fixedFanPct (the mock mirrors the real
+    // config struct carrying the last speedFixed across mode switches) -
+    // settingsFromState omits it outside fixed mode, so the profile-load
+    // never re-writes a fixed speed.
+    await clearToasts();
+    await js(`${fanChip('Curve')}?.click()`);
+    await sleep(250);
+    await clickPreset('Intel Curve');
+    await sleep(250);
+    await js(`Array.from(document.querySelectorAll('#page button')).find((b) => b.textContent.includes('Apply fan settings'))?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M20-B: the fixture-curve restore apply success toast missing');
+    const restoredState = await js(`window.arcPower.getCurrentSettings(0)`);
+    const restoredCurve = (restoredState.fanCurve ?? []).map((p) => ({ t: p.t, s: p.speedPct }));
+    if (restoredState.fanMode !== 'curve' || JSON.stringify(restoredCurve) !== JSON.stringify(fixtureCurve)) {
+      fail(`M20-B: the restore apply did not return the fan to the fixture curve (mode ${restoredState.fanMode}, ${restoredCurve.length} points, expected the ${fixtureCurve.length}-point fixture)`);
+    }
+    step('fan-m20b-restore', `M20-B: applied state restored to the fixture curve (${restoredCurve.length} points, mode ${restoredState.fanMode}) - the profile-load no-op baseline`);
+    await js(`${fanChip('Curve')}?.click()`);
+    await sleep(250);
+  }
 
   // --- 8. startup channels (M4-D2): the ONE Run value + the derivation ----
   // startup-get composes { startWithWindows, applyOnBoot } from the raw
@@ -3864,7 +3947,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   //    REAL change is the power limit: exactly ONE success toast + the
   //    'Profile loaded' info + no error toast + no second dialog.
   if (!(await waitFor(win, `document.querySelectorAll('.toast-success').length === 1`, 5000))) {
-    fail(`M4-D: the profile-load retry did not land the power-limit change (got ${await js(`document.querySelectorAll('.toast-success').length`)} success toasts; toasts=${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => t.className + ':' + t.textContent).join(' | ')`)}; driver=${JSON.stringify(await js(`window.arcPower.getCurrentSettings(0)`))}; storeWaiver=${(await store.loadSettings()).waiverAccepted}; modal=${await js(`!!document.querySelector('.modal')`)})`);
+    fail(`M4-D: the profile-load retry did not land the power-limit change (got ${await js(`document.querySelectorAll('.toast-success').length`)} success toasts; toasts=${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => t.className + ':' + t.textContent).join(' | ')`)}; driver=${JSON.stringify(await js(`window.arcPower.getCurrentSettings(0)`))}; storeWaiver=${(await store.loadSettings()).waiverAccepted}; modal=${await js(`!!document.querySelector('.modal')`)}; profiles=${await js(`window.arcPower.profilesList().then((e) => JSON.stringify(e.profiles.map((p) => ({ name: p.name, settings: p.settings }))))`)}; mockState=${JSON.stringify({ power: backend._state.powerLimitW, freq: backend._state.gpuFreqOffsetMhz, fanMode: backend._state.fanMode, fanCurve: backend._state.fanCurve, fixedFanPct: backend._state.fixedFanPct, failOn: backend._failOn })}`);
   }
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.toast-info')).some((t) => (t.textContent ?? '').includes('Profile loaded'))`, 5000))) {
     fail('M4-D: the retried profile load did not mark the profile active (no "Profile loaded" info)');
