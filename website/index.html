@@ -30,7 +30,7 @@
     <a class="nav-brand" href="#top">
       <img class="nav-logo" src="assets/logo.svg" alt="Arc Power logo" width="28" height="28">
       <span class="nav-name">Arc&nbsp;Power</span>
-      <span class="nav-ver mono">1.1.1 alpha</span>
+      <span class="nav-ver mono">1.0.1 beta</span>
     </a>
     <div class="nav-links" id="navLinks">
       <a href="#features">Features</a>
@@ -165,7 +165,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17h4l2-5 3 9 3-13 2 6h4"/></svg>
           </div>
           <h3>Tuning</h3>
-          <p>Power limit (W), core frequency offset (MHz), voltage offset and temperature limit (&deg;C) - applied through Intel's documented IGCL API with read-back verification and a warranty-waiver gate. Expert controls (VRAM frequency, voltage lock, custom VF curves) appear only when your GPU reports them.</p>
+          <p>Power limit (W), core frequency offset (MHz) or a frequency&nbsp;+&nbsp;voltage lock, voltage offset and temperature limit (&deg;C) - applied through Intel's documented IGCL API with read-back verification, a warranty-waiver gate and sub-second applies. Expert controls (VRAM frequency, custom VF curves) appear only when your GPU reports them.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
@@ -179,28 +179,28 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="13" rx="2"/><path d="m10 9 5 2.5-5 2.5V9Z"/></svg>
           </div>
           <h3>Graphics tuning</h3>
-          <p>XeSS Frame Generation override (2x/3x/4x), frame synchronization, an FPS limit (30-300) and Low Latency (Off/On/On+Boost) - applied through Intel's documented 3D-feature API on the dedicated Graphics page.</p>
+          <p>XeSS Frame Generation override (2x/3x/4x), frame synchronization, an FPS limit (30-300) and Low Latency (Off/On/On+Boost) - applied through Intel's documented 3D-feature API on the dedicated Graphics page, with an IGS-style Display view (scaling mode, quantization range, display info).</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2"/><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/></svg>
           </div>
           <h3>Fan control</h3>
-          <p>Auto, curve and fixed modes with an interactive SVG curve editor - hover/drag readouts and adaptive presets (Driver Curve / Quiet / Max) derived from the driver's own curve. Read-only on boards that don't expose control.</p>
+          <p>Auto, curve and fixed modes - Fixed verified on Alchemist - with an interactive SVG curve editor, hover/drag readouts and adaptive presets (Driver Curve / Quiet / Max) derived from the driver's own curve. Read-only on boards that don't expose control.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17 8 12l4 4 8-9"/><path d="M15 7h5v5"/></svg>
           </div>
           <h3>Live telemetry</h3>
-          <p>Clocks, temperatures, power from GPU energy counters, fan RPM, utilization and throttle reasons - plus FPS via DXGI frame statistics, VRAM usage, and a CPU card with RAM type and cache readouts, as readouts and rolling graphs.</p>
+          <p>Clocks, temperatures, power from GPU energy counters, fan RPM, utilization and throttle reasons - plus FPS via ETW/PresentMon present timestamps (DXGI fallback), VRAM usage, and a CPU card with RAM type, cache readouts and CPU power on Intel and AMD, as readouts and rolling graphs.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
           <h3>In-game overlay</h3>
-          <p>A click-through, always-on-top stats overlay - clocks, temps, FPS with 1% Low / 99% FPS percentiles and a frametime polyline. Hotkey toggle, 4-corner positioning, size, text colors and an optional background.</p>
+          <p>A click-through, always-on-top stats overlay - clocks, temps, FPS with 1% Low / 99% FPS percentiles and a frametime polyline. Hotkey toggle, 4-corner positioning, size, text colors, an optional background and a configurable polling rate.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">

@@ -8,21 +8,21 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.1.1 Alpha</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
+<p align="center"><b>1.0.1 Beta</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
 
 ## Features
 
-- **Tuning** - power limit (W), core frequency offset (MHz), voltage offset, and temperature limit (°C), applied through Intel's documented IGCL API with a warranty-waiver gate and read-back verification on every apply. Expert controls (VRAM frequency offset, VRAM voltage offset, GPU voltage lock, custom VF curves) appear only on hardware that reports them.
+- **Tuning** - power limit (W), core frequency offset (MHz) or a clock lock (frequency + voltage pair), voltage offset, and temperature limit (°C), applied through Intel's documented IGCL API with a warranty-waiver gate and read-back verification on every apply. Offset and lock applies are mutually exclusive (applying one clears the other). Power-limit applies land in under a second, with an instant driver-store fallback when the sysman runtime isn't ready. Expert controls (VRAM frequency offset, VRAM voltage offset, custom VF curves) appear only on hardware that reports them.
 - **Extended range** - on Alchemist, power limits up to **315 W** and temperature limits up to **115 °C** (elevation prompt + explicit confirm required).
-- **Fan control** - auto / curve / fixed modes with an interactive SVG curve editor and adaptive presets (Driver Curve / Quiet / Max) derived from the driver's own curve.
-- **Live telemetry** - clocks, temperatures, power, fan RPM, utilization, FPS / frame-time, and VRAM usage, as readouts and rolling graphs. The dashboard also shows a CPU card (RAM type, L1-L4 caches) and a two-group live readout with CPU wattage and GPU utilization.
-- **In-game overlay** - a click-through, always-on-top stats overlay (MSI Afterburner/RTSS-style): clocks, temps, FPS with 1% Low / 99% FPS percentiles, and a frametime polyline. Hotkey toggle, 4-corner positioning, size/scale, text colors, and an optional background.
-- **Graphics tuning** - XeSS Frame Generation override (2x/3x/4x), frame synchronization, an FPS limit (30-300), and Low Latency (Off/On/On+Boost), applied through the IGCL 3D-feature API on the dedicated Graphics page.
+- **Fan control** - auto / curve / fixed modes with an interactive SVG curve editor and adaptive presets (Driver Curve / Quiet / Max) derived from the driver's own curve. Fixed mode is verified on Alchemist (applied via the driver's flat fan table) and read-only where the board exposes no control.
+- **Live telemetry** - clocks, temperatures, power, fan RPM, utilization, FPS / frame-time, and VRAM usage, as readouts and rolling graphs (FPS from ETW/PresentMon present timestamps, with a DXGI fallback). The dashboard also shows a CPU card (RAM type, L1-L4 caches, CPU temperature and power on Intel and AMD) and a two-group live readout with CPU wattage and GPU utilization.
+- **In-game overlay** - a click-through, always-on-top stats overlay (MSI Afterburner/RTSS-style): clocks, temps, FPS with 1% Low / 99% FPS percentiles, and a frametime polyline. Hotkey toggle, 4-corner positioning, size/scale, text colors, an optional background, an API row and a configurable polling rate (100-2000 ms).
+- **Graphics tuning** - XeSS Frame Generation override (2x/3x/4x), frame synchronization, an FPS limit (30-300), and Low Latency (Off/On/On+Boost), applied through the IGCL 3D-feature API on the dedicated Graphics page, plus a Display view (scaling mode, quantization range, display info) via the IGCL display module.
 - **Multi-GPU** - pick which Intel Arc GPU to control; the choice persists and applies to the dashboard, tuning, telemetry, waiver, and boot/tray applies.
 - **UI themes** - Dark Steel (default), Midnight, and Arctic Light, selectable in Settings and persisted.
 - **Profiles** - save, load, and apply named profiles, optionally at every startup/logon (silently, via an elevated scheduled task on the installed build).
 - **Reversible tweaks** - registry hacks (MPO disable, HAGS, and more) with one-click Enable / Disable / Revert.
-- **Graceful fallback** - on non-Intel GPUs the app boots into a "Non supported GPU" state, keeps CPU/RAM telemetry live, and shows no raw error text.
+- **Graceful fallback** - on non-Intel GPUs the app boots into a "Non supported GPU" state, keeps CPU/RAM telemetry live, reads GPU clocks/temperature/utilization/power/VRAM through the vendor libraries (NVML/ADL) when present, and shows no raw error text.
 
 Details on expert controls, the safety design, and the capability model live in [docs/features.md](docs/features.md).
 
@@ -62,9 +62,9 @@ npm run dist
 
 The app is organized into tabs:
 
-- **Dashboard** - GPU card (name, clocks, PCIe link, ReBAR status, health), CPU card (RAM type, L1-L4 caches), and a two-group live readout with CPU wattage and GPU utilization.
+- **Dashboard** - GPU Status card (name, board partner, clocks, PCIe link, ReBAR status, OC status), CPU card (RAM type, L1-L4 caches, CPU temperature and power on Intel and AMD), and a two-group live readout with CPU wattage and GPU utilization.
 - **Tuning** - the Overclocking and Fan pages. Sliders with step snapping and min/max/step ticks, preset chips, per-control Apply, one-click reset to defaults, plus a Save-as-Profile / Override-Profile card. First OC apply shows the warranty-waiver dialog; values above the standard range ask for explicit confirmation. The fan page offers auto / curve / fixed modes with an interactive SVG curve editor (hover/drag readouts, adaptive presets); fan control is read-only on boards that report `canControl = false`.
-- **Graphics** - XeSS Frame Generation override, frame synchronization, FPS limit, and Low Latency, mirrored from Intel Graphics Software.
+- **Graphics** - XeSS Frame Generation override, frame synchronization, FPS limit, and Low Latency in the 3D view, plus scaling mode, quantization range and display info in the Display view, mirrored from Intel Graphics Software.
 - **Monitoring** - telemetry readout grid and rolling graphs.
 - **Overlay Settings** - the in-game overlay: enabled stats, position, size, colors, background, hotkey, and the enable toggle.
 - **Profiles** - save and manage named profiles, toggle apply-on-startup.
@@ -95,7 +95,7 @@ Architecture notes and the IGCL integration write-up (struct mappings, capabilit
 - [x] Profiles, apply-on-startup, system tray
 - [x] Reversible tweaks (MPO disable and more)
 - [x] Installer (portable EXE + NSIS setup) and silent elevated logon applies
-- [x] 1.0.x Alpha feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics tuning)
+- [x] 1.0.x Alpha/Beta feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics + display tuning)
 - [ ] Published releases on GitHub
 - [ ] Battlemage enablement (live verification on B580 / B570)
 
