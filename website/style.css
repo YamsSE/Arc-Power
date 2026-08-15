@@ -96,7 +96,7 @@ a:hover { text-decoration: underline; }
 .nav-links a { color: var(--muted); font-size: 14px; font-weight: 500; transition: color 0.2s; }
 .nav-links a:hover { color: var(--text); text-decoration: none; }
 
-.nav-cta { margin-left: auto; }
+.nav-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 
 /* ---------- mobile nav (hamburger; shown below 960px) ---------- */
 .nav-burger {
@@ -172,7 +172,8 @@ a:hover { text-decoration: underline; }
 
 .hero-sub { font-size: 17px; color: var(--muted); max-width: 520px; margin-bottom: 34px; }
 
-.hero-actions { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 30px; }
+.hero-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; margin-bottom: 30px; }
+.hero-actions-row { display: flex; gap: 14px; flex-wrap: wrap; }
 
 .hero-trust {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -358,12 +359,13 @@ a:hover { text-decoration: underline; }
   .hero { grid-template-columns: 1fr; gap: 48px; padding-top: 64px; }
   .hero-text { text-align: center; }
   .hero-sub { margin-left: auto; margin-right: auto; }
-  .hero-actions, .hero-trust { justify-content: center; }
+  .hero-actions, .hero-actions-row, .hero-trust { justify-content: center; }
+  .hero-actions { align-items: center; }
   .feature-grid, .safety-grid, .req-grid { grid-template-columns: 1fr; }
   .stats { grid-template-columns: repeat(2, 1fr); }
 
   .nav-burger { display: flex; margin-left: auto; }
-  .nav-cta { margin-left: 0; }
+  .nav-actions { margin-left: 0; }
   .nav-links {
     display: none;
     position: absolute; top: calc(100% + 8px); left: 12px; right: 12px;
@@ -401,8 +403,8 @@ html.mobile .power-ext { position: static; display: block; text-align: right; ma
 html.mobile .gpu-row { padding: 14px 18px; }
 html.mobile .btn { padding: 12px 18px; }
 html.mobile .nav { padding: 12px 16px; }
-html.mobile .nav-cta { padding: 10px 12px; }
-html.mobile .nav-cta span { display: none; }
+html.mobile .nav-actions .btn { padding: 10px 12px; }
+html.mobile .nav-actions span { display: none; }
 
 /* touch devices: no hover lifts, no tap flash */
 @media (hover: none) {
