@@ -2240,7 +2240,7 @@ async function main() {
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides
       // too (the GitHub-link pin asserts the counting op ticked). M4J (G):
       // the tray probe rides as well (the tray-start pin).
-      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts, () => openExternalCount, () => trayProbe);
+      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts, () => openExternalCount, () => trayProbe, sysmanPowerLimits);
     }
     return;
   }

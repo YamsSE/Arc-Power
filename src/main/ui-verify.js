@@ -69,7 +69,9 @@
 //      the off-grid value with an extra decimal, distinct from the snapped
 //      slider value.
 //  12. M3-C-D/E extended variant (RID_MOCK_EXTENDED_RANGES=1, mock default
-//      OC mode = advanced): the power slider max is 315 W and the temp
+//      OC mode = advanced): the power slider max is 375 W (M21: the
+//      sysman-primary ceiling - the >315 W range applies through the
+//      sysman pair as the PRIMARY write) and the temp
 //      slider max 115 C (M17d FLIP (round-3 N3) - the a770's ADVANCED TL is
 //      the restored KMD ceiling 115, the M17c listed-row 90 cap is removed);
 //      setting PL 300 and applying SKIPS the per-apply
@@ -342,8 +344,11 @@ export class UiVerifyFailure extends Error {}
  *   M4-D dev probe: the injected window-op counters (ui-verify mode counts
  *   instead of performing the real BrowserWindow ops) - run 2 pins the
  *   integrated title-bar buttons through this.
+ * @param {object|null} [sysmanPowerLimits] M21: the mock sysman consumer
+ *   (main.js wires it under the no-sysman knob) - the new >315
+ *   sysman-primary pin asserts its recorded setLimits calls.
  */
-export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null, applyHandler: null, doubleClickHandler: null })) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null, applyHandler: null, doubleClickHandler: null }), sysmanPowerLimits = null) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -1886,6 +1891,18 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     backend._state[control] = before; // the read-back lags
     return res;
   };
+  // M21: the mock sysman's setLimits ALSO writes the canonical state (the
+  // sysman-primary setter) - the lag wrap must cover it too, or the
+  // companion's state write would defeat the simulated lagging read-back.
+  const realSysmanSet = sysmanPowerLimits?.setLimits?.bind(sysmanPowerLimits);
+  if (realSysmanSet && sysmanPowerLimits) {
+    sysmanPowerLimits.setLimits = async (limits, deviceId) => {
+      const before = backend._state.powerLimitW;
+      const res = await realSysmanSet(limits, deviceId);
+      backend._state.powerLimitW = before; // the read-back lags
+      return res;
+    };
+  }
   await setSlider(220);
   await clearToasts();
   await clickApply();
@@ -1914,6 +1931,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // back to the 210 W read-back; the applied reference is per-page state).
   backend.applySettings = realApply;
   backend.extendedApply = realExtended;
+  if (realSysmanSet && sysmanPowerLimits) sysmanPowerLimits.setLimits = realSysmanSet;
   await js(`location.hash = '#/dashboard'`);
   await gotoOverclocking();
   if (!(await floatingHidden())) fail('floating Apply visible on a clean re-render');
@@ -2514,10 +2532,11 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 
   // --- 5c. M3-C-D/E extended + stock variants. ------------------------------
   // RID_MOCK_EXTENDED_RANGES=1 (mock default OC mode = advanced): full slider
-  // range (315 W / 115 C - M17d FLIP (round-3 N3): the a770's ADVANCED shape
-  // restores the KMD ceiling 115, the M17c listed-row 90 cap is removed;
-  // the fixture's raw 115 passes the finalize now), the extended apply
-  // SKIPS the per-apply confirm
+  // range (375 W / 115 C - M21: the PL max is the sysman-primary ceiling
+  // (2026-08-15 live pair write); M17d FLIP (round-3 N3): the a770's
+  // ADVANCED shape restores the KMD ceiling 115, the M17c listed-row 90 cap
+  // is removed; the fixture's raw 115 passes the finalize now), the
+  // extended apply SKIPS the per-apply confirm
   // (the mode-enable confirm already warned - double-dialog decision);
   // optional RID_MOCK_WORKER_APPLY=1 adds the elevation toast on top.
   // RID_MOCK_STOCK_MODE=1: stock mode - sliders pinned to the standard
@@ -2535,11 +2554,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
       return card.querySelector('.oc-value').textContent;
     })()`);
 
-    // The extended ranges are exposed: PL slider max 315 W; the TL slider
+    // The extended ranges are exposed: PL slider max 375 W (M21: the
+    // sysman-primary ceiling); the TL slider
     // max is the M17d restored 115 C (the a770 ADVANCED shape - the
     // app-verified KMD ceiling; the M17c listed-row 90 cap is removed).
     const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
-    if (plMax !== '315') fail(`M3-C-D: power slider max is '${plMax}' (expected 315 - live-verified ceiling)`);
+    if (plMax !== '375') fail(`M3-C-D/M21: power slider max is '${plMax}' (expected 375 - the sysman-primary ceiling)`);
     const tlMax = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] input[type="range"]')?.getAttribute('max')`);
     if (tlMax !== '115') fail(`M3-C-D: temp slider max is '${tlMax}' (expected 115 - M17d: the restored a770 advanced TL)`);
     // The mode toggle renders with Advanced active (mock default advanced).
@@ -2631,6 +2651,38 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
       step('m17g-pl2note-worker', `M17g: the worker-apply envelope carried the ready-sysman pl2Note ${JSON.stringify(pl2NoteCheck.result.pl2Note)} (the forwarding survived)`);
     }
     step('m17g-pl2note', `M17g: the pl2Note envelope - landed ${JSON.stringify(pl2Landed.result.pl2Note)} / ready ${JSON.stringify(pl2NoteCheck.result.pl2Note)} (never a failed apply; the V1 read-back stays canonical); the V2 companion recording advanced by 2 (${JSON.stringify(backend._v2CompanionCalls.slice(v2Before))})`);
+
+    // (e) M21 - the >315 SYSMAN-PRIMARY apply (350 W): the V1 write must
+    // NEVER receive a >315 value (it would silent-clamp to 315 and report
+    // ok:true) - the sysman pair IS the primary write (zesPowerSetLimits
+    // sustainedW + burstW in ONE call). Pin: perControl ok, pl2Note landed,
+    // the state 350, the mock sysman RECORDED the { 350, 350 } pair, and
+    // the V2 companion recording did NOT advance (no V2 write for >315).
+    const sysmanCallsBefore = sysmanPowerLimits ? sysmanPowerLimits.calls.length : -1;
+    const v2BeforeSysman = backend._v2CompanionCalls.length;
+    const sysmanPrimary = await js(`window.arcPower.applySettings(0, { powerLimitW: 350 })`);
+    if (sysmanPrimary.result.ok !== true) fail(`M21: the 350 W sysman-primary apply failed: ${JSON.stringify(sysmanPrimary.result)}`);
+    if (!sysmanPrimary.result.perControl?.powerLimitW || sysmanPrimary.result.perControl.powerLimitW.ok !== true) {
+      fail(`M21: the 350 W perControl verdict is '${JSON.stringify(sysmanPrimary.result.perControl)}' (expected the sysman verdict { ok: true, readBackEqual: true })`);
+    }
+    if (JSON.stringify(sysmanPrimary.result.pl2Note) !== JSON.stringify({ landed: true, valueW: 350 })) {
+      fail(`M21: the 350 W pl2Note is '${JSON.stringify(sysmanPrimary.result.pl2Note)}' (expected the sysman landed note { landed: true, valueW: 350 })`);
+    }
+    const a770After350 = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(a770After350.powerLimitW - 350) > 1e-6) {
+      fail(`M21: the sysman-primary write must land the state at 350 W (got ${a770After350.powerLimitW})`);
+    }
+    if (!sysmanPowerLimits || sysmanPowerLimits.calls.length !== sysmanCallsBefore + 1) {
+      fail(`M21: the mock sysman recording is '${sysmanPowerLimits ? JSON.stringify(sysmanPowerLimits.calls) : 'no seam'}' (expected exactly ONE new { 350, 350 } call)`);
+    }
+    const lastSysmanCall = sysmanPowerLimits.calls[sysmanPowerLimits.calls.length - 1];
+    if (!lastSysmanCall || lastSysmanCall.sustainedW !== 350 || lastSysmanCall.burstW !== 350) {
+      fail(`M21: the recorded sysman pair is '${JSON.stringify(lastSysmanCall)}' (expected { sustainedW: 350, burstW: 350 })`);
+    }
+    if (backend._v2CompanionCalls.length !== v2BeforeSysman) {
+      fail(`M21: the V2 companion recording advanced for the >315 apply: ${JSON.stringify(backend._v2CompanionCalls.slice(v2BeforeSysman))} (the sysman verdict owns the >315 PL domain - no V2 write)`);
+    }
+    step('m21-sysman-primary', `M21: the 350 W apply routes sysman-PRIMARY - perControl ok, pl2Note ${JSON.stringify(sysmanPrimary.result.pl2Note)}, state ${a770After350.powerLimitW} W, the mock sysman recorded ${JSON.stringify(lastSysmanCall)} (ONE call); the V2 companion recording stayed flat`);
     // Restore the deterministic 210 W baseline for the later steps.
     await js(`window.arcPower.applySettings(0, { powerLimitW: 210 })`);
     if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 5000))) {
@@ -5622,8 +5674,9 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // extendedRanges + the mock default mode is advanced) - the caps-level
   // vramFreqOffset gate is gone, as in 1.0.3.
   // M17d (Run C): the RID_MOCK_STOCK_MODE=1 combos report the a770 STOCK
-  // shape instead (252 W - no extendedRanges in a stock session).
-  const expectedSwapPlMax = stockMode ? 252 : 315;
+  // shape instead (252 W - no extendedRanges in a stock session). M21:
+  // the extended surface exposes the sysman-primary 375 W ceiling.
+  const expectedSwapPlMax = stockMode ? 252 : 375;
   if (a770Caps.ranges.powerLimitW.units !== 'W' || a770Caps.ranges.powerLimitW.max !== expectedSwapPlMax) {
     fail(`swap to a770: caps wrong: ${JSON.stringify(a770Caps.ranges.powerLimitW)} (expected the a770 ${expectedSwapPlMax} W ${stockMode ? 'stock' : 'extended in advanced mode'} surface)`);
   }
@@ -6589,9 +6642,12 @@ export async function runBootApplyVerify(win, backend, store) {
 //       AUTOMATIC window-path apply recorded it - the seed is what makes
 //       it run; hide/show never re-applies, so the exactly-one assert is
 //       safe before the close probe);
-//   (b) getCurrentSettings(0).powerLimitW === 315 - the post-apply DEVICE
-//       state (the tuning slider would display the stock-snapped 252, so
-//       the assertion is the device state, NOT the slider);
+  //   (b) getCurrentSettings(0).powerLimitW === 315 - the post-apply DEVICE
+  //       state (the tuning slider would display the stock-snapped 252, so
+  //       the assertion is the device state, NOT the slider). M21: the seed
+  //       315 W is a PROFILE VALUE (not the exposed max - the a770 extended
+  //       ceiling is the sysman-primary 375 W now; 315 is still <= 375 and
+  //       applies through the ordinary V1 path);
 //   (c) the OC status health row is GREEN and reads the M16 stock-state
 //       text ('Overclock Applied' - the boot-applied 315 W is non-stock);
 //       the profile-name record is pinned via bootApplyOutcome() (the
@@ -6639,7 +6695,8 @@ export async function runBootApplyExtVerify(win, backend, store) {
   }
   step('boot-apply-ext-log', `mock:boot-apply-log records the automatic apply: ${JSON.stringify(entry)}`);
 
-  // (b) the DEVICE state read-back: 315 W landed. The tuning slider would
+  // (b) the DEVICE state read-back: 315 W landed (M21: a profile VALUE -
+  // still <= the 375 W sysman-primary ceiling). The tuning slider would
   // snap to the stock max 252 - the device state is the assertion (the
   // profile's value applied against the driver's true limits).
   const state = await backend.getCurrentSettings(0);
@@ -6650,7 +6707,8 @@ export async function runBootApplyExtVerify(win, backend, store) {
 
   // (c) the boot-apply OUTCOME reached the renderer - the dashboard OC
   // status row is GREEN and reads the M16 STOCK-STATE text: the boot-applied
-  // 315 W differs from the 210 W stock default, so the row reads
+  // 315 W (a profile value - M21: below the 375 W sysman-primary ceiling)
+  // differs from the 210 W stock default, so the row reads
   // 'Overclock Applied' (the last-apply profile NAME is no longer displayed
   // in the row - the record is pinned via window.arcPower.bootApplyOutcome()
   // below; the status-ok class sits on the inner .status-dot, not the row

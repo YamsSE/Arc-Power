@@ -35,7 +35,7 @@ import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
 // backend's getCapabilities finalize (step-4 N1) with the STOCK/ADVANCED
 // SPLIT (round-1 S1): the listed rows' ceilings per ACTIVE shape (the
 // stock per-AIB maxes + the TL 90 caps; the advanced per-card KMD ceilings
-// - a770 315/115, a750 270/115 - the A750 TL probe-verified 2026-08-12;
+// - a770 375/115, a750 270/115 - the A750 TL probe-verified 2026-08-12;
 // the round-3-N3 rule flipped) so the mock
 // slider never offers a window the real caps refuse.
 import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
@@ -47,6 +47,18 @@ import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 // backend's parent-side merge - getCapabilities merges the store so the
 // mock-refusal fixture exercises the same merge the renderer sees).
 import { createRefusedCeilingStore, mergeIntoRanges, recordRefusalEnvelope } from './refused-ceilings.js';
+
+// M21: the mock V1 (extendedApply) PL write-range max - a SEPARATE 315
+// constant mirroring the real bundled-2023-runtime V1 clamp (old-igcl.js
+// EXTENDED_PL_RANGE max: the V1 setter refuses >315 W 0x44000004 - live-
+// verified 2026-08-06). The mock's EXPOSED caps max comes from
+// fs.extended.plMax (375 on the a770 - the sysman-primary ceiling), but the
+// V1 write itself must still refuse/clamp at 315 exactly like the real
+// runtime, so the >315 routing (which NEVER hands the V1 a >315 value) is
+// what applies the sysman range - never the mock V1 setter. Behaviorally
+// neutral for the a750/acer-a750 (fs.extended.plMax 270 -> the same 315
+// clamp; the A750 advanced gate refuses 271+ first).
+const MOCK_V1_PL_MAX_W = 315;
 
 // M8 (the Graphics tab): the mock's graphics fixture - mirrors the
 // M8 checkpoint-1 probe record (pipeline/live-3d-feature.md, the A770
@@ -518,15 +530,20 @@ export class MockBackend {
     if (!this._extended || this._extendedFail) {
       return { ok: false, errorCode: 'unsupported', readBackEqual: false, message: EXTENDED_UNAVAILABLE_MSG };
     }
-    // M4O: clamp against the FEATURE's EXTENDED range (fs.extended.plMax/
-    // tlMax - featureset-faithful: 315/115 for a770; keeps b580/pro-b50
-    // honest if their maxes differ), NEVER this._caps.ranges - that range
+    // M4O + M21: clamp against the real bundled 2023 runtime's write range -
+    // the FEATURE's TL max (fs.extended.tlMax - featureset-faithful:
+    // 115 for a770; keeps b580/pro-b50 honest if their maxes differ) and
+    // the pinned V1 PL write-range 315 (MOCK_V1_PL_MAX_W - the real
+    // ctlOverclockPowerLimitSet clamps at EXTENDED_PL_RANGE 315; the mock
+    // must refuse a >315 value via the V1 path exactly like the real
+    // runtime even though fs.extended.plMax now exposes 375). NEVER
+    // this._caps.ranges - that range
     // set is MODE-GATED (252 in a stock session) while the real bundled
     // 2023 runtime clamps mode-independently (old-igcl.js EXTENDED_PL_RANGE/
     // EXTENDED_TL_RANGE). The mock must mirror the real runtime: a stock
     // session's extendedApply accepts the same values the driver does.
     const fs = this._featureset;
-    const extendedMax = control === 'powerLimitW' ? fs.extended?.plMax : fs.extended?.tlMax;
+    const extendedMax = control === 'powerLimitW' ? MOCK_V1_PL_MAX_W : fs.extended?.tlMax;
     const base = this._caps.ranges[control];
     const range = {
       ...base,
@@ -666,7 +683,7 @@ export class MockBackend {
    * same pure table, the same row resolution + units guard + min-cap + step
    * rules) with the STOCK/ADVANCED SPLIT: the ACTIVE shape's ceilings apply
    * (the stock per-AIB maxes + the TL 90 caps; the advanced per-card KMD
-   * ceilings - a770 315/115, a750 270/115 - the A750 TL probe-verified
+   * ceilings - a770 375/115, a750 270/115 - the A750 TL probe-verified
    * 2026-08-12). The mock must expose the SAME
    * ranges as the real caps or the mock slider offers a window the real
    * caps refuse. MUTATES caps.ranges in place
@@ -685,7 +702,7 @@ export class MockBackend {
     // the ADVANCED shape when caps.extendedRanges is true and the STOCK
     // shape otherwise - NOT the same row in both modes (the round-3-N3 rule
     // FLIPS to "listed-row advanced ceiling = the app-verified KMD
-    // ceiling": A770 315/115, A750 270/115 - probe-verified 2026-08-12).
+    // ceiling": A770 375/115, A750 270/115 - probe-verified 2026-08-12).
     const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set

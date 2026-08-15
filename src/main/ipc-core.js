@@ -1113,8 +1113,9 @@ export function createIpcHandlers({
         // M3-C-E: the OC-mode gate runs BEFORE every clamp - an explicit
         // pre-clamp REFUSAL, never a clamp. Stock mode refuses anything
         // beyond the standard limits (252 W / 90 C) with the mode message;
-        // advanced mode refuses only above the extended ceiling (315 W /
-        // 115 C - never clamps, so a >315 W request is reported honestly).
+        // advanced mode refuses only above the sysman-primary ceiling
+        // (375 W on the A770 / 115 C - never clamps, so an above-ceiling
+        // request is reported honestly).
         // A config-refusal is NOT a hardware failure: it must never trigger
         // the reset-to-defaults fallback anywhere downstream.
         // M4-E: the gate is unit-aware - it receives the capability RANGES
@@ -1127,7 +1128,8 @@ export function createIpcHandlers({
         // STOCK gate - the mode is the interactive slider gate ONLY, a
         // saved profile applies as saved (uniform with the boot/tray/
         // --apply-profile paths). The CEILING refusal STAYS: a hand-edited
-        // >315 W profile must refuse with OC_CEILING_REFUSAL_MSG, never a
+        // above-ceiling profile (above the M21 sysman-primary 375 W on the
+        // A770) must refuse with OC_CEILING_REFUSAL_MSG, never a
         // silent clamp. The flagless interactive path is UNCHANGED - the
         // mode still gates the slider applies.
         const ocMode = (await store.loadSettings()).ocMode;

@@ -451,7 +451,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // already warned; M4O: in Stock mode the profile apply is NOT gated by
     // the OC mode either (the profile applies as saved against the
     // driver's true limits - the flagless slider gate does not apply here;
-    // the >315 W ceiling + the runtime-capability refusals still surface
+    // the >375 W ceiling (M21: the sysman-primary ceiling) + the runtime-capability refusals still surface
     // as per-control error toasts below, never a dead-end confirm).
     // M2C-C: a non-elevated product app delegates to the elevated worker -
     // explain before the UAC prompt. M4-D2: the packaged EXE is asInvoker
@@ -465,8 +465,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // M4O: the profile apply carries { profileApply: true } - the OC-mode
       // gate (the interactive slider gate) must NOT block a saved profile
       // (uniform with the boot/tray/--apply-profile paths: the profile
-      // applies as saved against the driver's true limits; the >315 W
-      // ceiling + the runtime-capability refusals still apply in main).
+      // applies as saved against the driver's true limits; the >375 W
+      // ceiling (M21: the sysman-primary ceiling) + the runtime-capability
+      // refusals still apply in main).
       const { result, state: fresh } = await api.applySettings(deviceId, p.settings, { profileApply: true });
       // M3-C review F2: only store a NON-NULL fresh state - a refusal
       // envelope's null state must never null out the store's device state

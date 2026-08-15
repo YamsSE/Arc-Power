@@ -35,7 +35,7 @@ export const STD_TL_MAX_C = 90;
  * caps.ranges (a caps-keyed gate would silently clamp on the worker side).
  * M17d (round-1 S1): the thresholds consume the SAME STOCK/ADVANCED SPLIT
  * as the finalize consumers - `advanced` selects the ADVANCED shape (the
- * per-card KMD ceilings: A770 315/115, A750 270/115 - the A750 TL
+ * per-card KMD ceilings: A770 375/115, A750 270/115 - the A750 TL
  * probe-verified 2026-08-12; the round-3-N3 rule
  * FLIPS to "listed-row advanced ceiling = the app-verified KMD ceiling"),
  * the stock shape otherwise (the per-AIB maxes + the TL 90 caps). A
@@ -116,10 +116,14 @@ export const OC_CEILING_REFUSAL_MSG =
  * current mode, else the refusal descriptor { mode, controls, message }.
  * - stock:    any PL > STD_PL_MAX_W (252) or TL > STD_TL_MAX_C (90) refuses
  *             with the mode message;
- * - advanced: PL/TL up to the EXTENDED ceiling (315 W / 115 C - the live-verified KMD ceiling) are allowed;
- *             values above it refuse with the ceiling message - NEVER
+ * - advanced: PL/TL up to the EXTENDED ceiling are allowed; M21: the
+ *             advanced PL ceiling is the sysman-primary 375 W (the
+ *             device-scoped row - A770 375 / A750 270 / 315 unlisted - the
+ *             >315 W range applies through the sysman pair mechanism as the
+ *             PRIMARY write, never a silent clamp); TL up to 115 C;
+ *             values above the ceiling refuse with the ceiling message - NEVER
  *             clamped (an above-ceiling write would be silently capped by
- *             the clamp layer, voiding the 400 W probe - live 2026-08-06: 315 W is the ceiling).
+ *             the clamp layer, voiding the 400 W probe).
  * M4-E: unit-aware like splitByRuntime / extendedUnavailableRefusal - when
  * the capability ranges are known and a control's units are NOT W/C
  * (percent-unit Battlemage mock: volt/PL/TL as %), the W/C thresholds do
@@ -140,7 +144,8 @@ export const OC_CEILING_REFUSAL_MSG =
  * tray apply of a value in (216, 315] on a listed card must REFUSE with
  * the ceiling class in stock mode, never silently clamp down to the card's
  * ceiling via caps.ranges); the ADVANCED thresholds are the per-card KMD
- * ceilings (A770 315/115, A750 270/115 - probe-verified 2026-08-12; the
+ * ceilings (A770 375/115 - M21: the 375 is the sysman-primary ceiling,
+ * the 315 is the V1 write range; A750 270/115 - probe-verified 2026-08-12; the
  * round-3-N3 rule FLIPS: a listed-card advanced apply up to the KMD
  * ceiling SUCCEEDS). The DEFAULT
  * row (252/315) is only for unlisted cards. PRE-CLAMP and non-caps-keyed:
@@ -273,10 +278,18 @@ export function extendedUnavailablePerControl(controls) {
 
 /**
  * M4O: the clamp ranges for PROFILE applies - the driver's TRUE limits
- * (the extended W/C maxes EXTENDED_PL_MAX_W / EXTENDED_TL_MAX_C), NOT the
+ * (the extended W/C maxes, NOT the
  * mode-gated caps.ranges (stock mode caps max at 252 W / 90 C - clamping a
  * profile there would silently reduce a saved 300 W profile to 252 W, the
  * "silent reduction reported as applied" class the codebase forbids).
+ *
+ * M21 (F3): the W max is DEVICE-SCOPED to the ADVANCED row's ceiling
+ * (deviceLimitsOf(limitsKey, { advanced: true }) -> 375 W on the A770 /
+ * 270 W on the A750 / the 315 W default row for unlisted cards) so a 350 W
+ * A770 profile passes the clamp and reaches the sysman-primary write
+ * instead of a silent 315 W clamp. The M4O contract stays: an above-ceiling
+ * (>375 W on the A770) profile still refuses via ocModeRefusal BEFORE this
+ * clamp.
  *
  * Overrides ONLY when the range key exists with the matching unit: a
  * W-unit device without a tempLimitC key yields undefined for it (no own
@@ -284,7 +297,7 @@ export function extendedUnavailablePerControl(controls) {
  * unit devices (Battlemage) keep their own ranges (their max IS the
  * ceiling and splitByRuntime never routes them to the 2023 runtime).
  * Null-guarded - the helper is exported and standalone-tested.
- * @param {{ ranges?: Record<string, { units?: string }> } | null | undefined} caps
+ * @param {{ ranges?: Record<string, { units?: string }>, pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null | undefined} caps
  * @returns {Record<string, unknown>}
  */
 export function extendedRangesFor(caps) {
@@ -292,7 +305,19 @@ export function extendedRangesFor(caps) {
   if (!ranges) return {};
   const out = { ...ranges };
   const pl = ranges.powerLimitW;
-  if (pl && pl.units === 'W') out.powerLimitW = { ...pl, max: EXTENDED_PL_MAX_W };
+  if (pl && pl.units === 'W') {
+    // M21: the device-scoped ADVANCED ceiling (the caps identity resolves
+    // the listed row; an unlisted card keeps the 315 W default row).
+    const advanced = deviceLimitsOf({
+      pciDeviceId: caps.pciDeviceId ?? null,
+      aibVendor: caps.aibVendor ?? null,
+      aibModel: caps.aibModel ?? null,
+    }, { advanced: true });
+    const plMax = typeof advanced?.powerLimitW?.max === 'number'
+      ? advanced.powerLimitW.max
+      : EXTENDED_PL_MAX_W;
+    out.powerLimitW = { ...pl, max: plMax };
+  }
   const tl = ranges.tempLimitC;
   if (tl && tl.units === 'C') out.tempLimitC = { ...tl, max: EXTENDED_TL_MAX_C };
   return out;
@@ -422,97 +447,70 @@ export function requiresExtendedRange(settings, ranges = null) {
  * domain, where the primary write did NOT touch the burst domain; in
  * STOCK mode the not-ready verdict stays the best-effort log - the
  * primary write already landed both limits).
- * M17n ROUND-2 S1 (the live probe caught the PL1 CLOBBER): the V2 write
- * is the 'both-limits' write - the live read-back after the clamp showed
- * PL1 252 / PL2 252 (the V1's 300 overwritten) - THE CLAMP BRANCH
- * RE-APPLIES THE V1 (oldIgcl.setPowerLimitW(requestedW)) AFTER the clamp
- * so PL1 ends at the REQUESTED value - the final: PL1 = requested + PL2 =
- * min(requested, ceiling) (the re-V1's burst effect can only keep-or-lower
- * toward the ceiling - never raises above the clamp's value - the 11:26 +
- * Arm-B evidence). The re-V1's cost ~400 ms (its own ALWAYS-delayed
- * verification - the trusted read-back): the not-ready path's total ~800-
- * 900 ms < the 1 s criterion, measured live - the delayed verification is
- * KEPT (the implementer decision documented: skipping it would save 400 ms
- * but the delayed re-read is the only trusted verification - the target
- * holds with it).
- * THE CLAMP VERDICT CONTRACT (M19-amended: the not-ready path now runs the
- * BOUNDED FRESH-SPAWN RETRY FIRST - the Acer-tool mechanism; the clamp is
- * the post-retry fallback only):
- * M19 THE FRESH-SPAWN RETRY: when the set answers the instant 'not-ready'
- * verdict AND the seam has the proxy's warm() (the mock/not-ready stubs do
- * not), the companion WARMS the proxy (the ONLY spawn+connect path - a
- * fresh detached helper whose ze init ALWAYS succeeds per the M17o2 live
- * evidence: 5/5, even 2 s after a write - the Acer Predator tool applies
- * its profile 300/300 instantly by spawning a fresh helper per apply) and
- * RETRIES the set within NOT_READY_RETRY_BOUND_MS (~2.5 s; the fresh init
- * lands in ~0.5 s). The retry LANDING returns the exact value - the
- * sysman-READY shape { landed: true, valueW: requested } (PL2 = the
- * requested value, never a clamp - the user's 'if i do 300W it should do
- * 300w/300w'); the pl2Note replaces any earlier note like the clamp's
- * landed note does. Only when the retry bound EXPIRES does the V2-clamp
- * fire (the contract below, unchanged).
- * CLAMP (post-retry): ok + verified -> the re-V1 re-applies the request;
- * the re-V1 VERIFIES
- * too -> { landed: true, ceilingW, valueW: Math.min(requestedW, ceilingW), requestedW }
- * (M17o: the note gains the REQUESTED burst - the read-out's promise
- * sentence keys on valueW < requestedW; the pl2Note REPLACES any earlier
- * note - incl. the M17g refused note,
- * which the clamp's landed note supersedes - the precedence pinned); the
- * re-V1 FAILS (or oldIgcl is absent) -> the honest { landed: false } (the
- * clamp may have landed PL2 but PL1 is UNCERTAIN - no '(set)' claim) +
- * the best-effort log; anything else -> the honest { landed: false } (no
- * '(set)' claim - PL2 stayed) + the best-effort log. The sysman-READY
- * case is UNCHANGED ({ landed: true, valueW: requested } - the same shape
- * the note already carries in the landed paths).
+ * M21 (the >315 sysman-PRIMARY case): for a >315 W apply the sysman write
+ * IS the primary write (the V1 setter refuses >315 - it would silent-clamp
+ * to 315 - and the V2-clamp would silently reduce to 252). The routed
+ * block passes `sysmanPrimary: true`, the companion's verdict becomes the
+ * perControl, and the movement check gains a DELAYED RE-READ: when the
+ * immediate burst read-back did not move, the companion sleeps
+ * `delayedVerifyMs` then re-reads BOTH the sysman pair and the backend
+ * getCurrentSettings state before the honest verdict - a lagging read-back
+ * must not fail a persisted >315 write, and a write that genuinely did not
+ * land still fails honestly. The <=315 path's immediate verdict is
+ * UNCHANGED.
  * @param {{
  *   sysmanPowerLimits?: { setLimits: (l: { sustainedW: number, burstW: number }) => Promise<{ ok: boolean, errorCode?: string, message?: string }>, readLimits?: () => Promise<{ burstW?: number | null } | null>, warm?: () => Promise<void> } | null, // M19: the proxy's warm seam (the fresh-spawn retry's trigger; absent on the mock/not-ready stubs)
  *   requestedW: number,
  *   log?: (s: string) => void,
- *   sleep?: (ms: number) => Promise<void>, // M19: the retry-loop poll seam (default the real sleep)
- *   backend?: import('./backend/backend.interface.js').IOCBackend | null, // M17n the V2-clamp deps (round-1 S6)
+ *   sleep?: (ms: number) => Promise<void>, // M19: the retry-loop poll seam (default the real sleep); M21: also the delayed re-read seam
+ *   delayedVerifyMs?: number, // M21: the >315 sysman-primary delayed re-read delay (default DELAYED_VERIFY_MS)
+ *   backend?: import('./backend/backend.interface.js').IOCBackend | null, // M17n the V2-clamp deps (round-1 S6); M21: also the delayed re-read's getCurrentSettings source
  *   deviceId?: number,
  *   limitsKey?: { pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null,
- *   clampAdvanced?: boolean, // M17n the S2 gate: extended.powerLimitW !== undefined
+ *   clampAdvanced?: boolean, // M17n the S2 gate: extended.powerLimitW !== undefined && <= EXTENDED_PL_MAX_W (M21: the <=315 advanced case only)
+ *   extendedW?: boolean, // M21: the NOT-READY GATE DECOUPLE - the extended-W-CONTROL gate (extended.powerLimitW !== undefined at the routed block); the warm()-retry runs on it (a STOCK apply keeps the instant best-effort log); ABSENT -> the legacy clampAdvanced gate (the direct-call tests)
+ *   sysmanPrimary?: boolean, // M21: the >315 sysman-PRIMARY case - the verdict IS the perControl + the delayed re-read applies
  *   oldIgcl?: { setPowerLimitW: (w: number) => Promise<{ ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean }> } | null | undefined, // M17n round-2 S1: the re-V1 seam (the clamp branch re-applies the request AFTER the both-limits V2 write)
  * }} deps
- * @returns {Promise<{ landed: boolean, ceilingW?: number, valueW?: number } | null>}
+ * @returns {Promise<{ landed: boolean, ceilingW?: number, valueW?: number, requestedW?: number, errorCode?: string, message?: string } | null>}
  *   M17n the note-or-null for the applySettingsRouted sysman-companion
- *   block to fold in: null = the M17f log-only classes (the note stays
- *   untouched); the clamp verdict { landed: true, ceilingW, valueW, requestedW } /
- *   { landed: false }; the ready case { landed: true, valueW: requested }
- *   (the shape the note already carries - a no-op replace). Never throws.
+ *   block to fold in: null = ONLY the no-sysman-seam case (unreachable -
+ *   the routed block is gated); the clamp verdict
+ *   { landed: true, ceilingW, valueW, requestedW } / { landed: false };
+ *   the ready case { landed: true, valueW: requested }
+ *   (the shape the note already carries - a no-op replace).
+ *   M21 RETURN-CONTRACT EXTENSION: the failure classes now return
+ *   { landed: false, errorCode, message } instead of null - the errorCode
+ *   from the sysman set answer where one exists ('ERROR_NOT_AVAILABLE' for
+ *   the KMD-arbitration refusal, 'not-ready' for the persistent not-ready,
+ *   'io-failed' for threw/no-movement). Never throws.
  */
-export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, limitsKey = null, clampAdvanced = false, oldIgcl = null, sleep = defaultSleep }) {
+export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, limitsKey = null, clampAdvanced = false, extendedW, sysmanPrimary = false, oldIgcl = null, sleep = defaultSleep, delayedVerifyMs = DELAYED_VERIFY_MS }) {
   if (!sysmanPowerLimits) return null;
   let res;
   try {
-    res = await sysmanPowerLimits.setLimits({ sustainedW: requestedW, burstW: requestedW });
+    // M21: the deviceId rides as the SECOND argument (the mock seam keys
+    // its state write on it; the real adapter + the proxy ignore it).
+    res = await sysmanPowerLimits.setLimits({ sustainedW: requestedW, burstW: requestedW }, deviceId);
   } catch (err) {
-    log(`[apply] sysman companion: threw (${err instanceof Error ? err.message : String(err)}) - best-effort only, the IGCL read-back stays the canonical verification`);
-    return null;
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[apply] sysman companion: threw (${msg}) - best-effort only, the IGCL read-back stays the canonical verification`);
+    return { landed: false, errorCode: 'io-failed', message: msg };
   }
   if (!res || res.ok !== true) {
     let msg = res?.message ?? res?.errorCode ?? 'unknown';
     let refused = res?.errorCode === 'ERROR_NOT_AVAILABLE'
       || (typeof msg === 'string' && msg.includes('NOT_AVAILABLE'));
-    // M19 THE BOUNDED FRESH-SPAWN RETRY (the Acer-tool mechanism - the
-    // user's demand: 'PL2 needs to apply instantly like it should have
-    // before', 'if i do 300W it should do 300w/300w'). The M17o2 live
-    // evidence: a FRESH process's ze init ALWAYS succeeds (5/5, even 2 s
-    // after a write) - the Acer Predator tool applies its profile 300/300
-    // instantly by spawning a fresh helper per apply. The app's boot warm
-    // is fire-and-forget (`void warm?.()`), so a helper that never came up
-    // in the boot race makes every apply answer the instant not-ready
-    // verdict -> the V2-clamp -> PL2 = min(requested, ceiling) = 252 all
-    // session (the complaint). FIX: on the not-ready verdict, WARM the
-    // proxy (the ONLY spawn+connect path - a fresh detached helper whose
-    // ze init succeeds per the evidence) and RETRY the set within a SHORT
-    // bound (~2.5 s - the fresh init lands in ~0.5 s); the retry landing
-    // returns the exact value (PL2 = requested, the Acer shape). Only when
-    // the bound expires does the V2-clamp fallback fire, unchanged. Gated
-    // on the proxy's warm seam (the mock/not-ready stubs have none - every
-    // existing clamp test keeps its instant-clamp path).
-    if (res?.errorCode === 'not-ready' && clampAdvanced && backend
+    // M21: the NOT-READY GATE DECOUPLE - the warm()-retry runs whenever
+    // the extended-W-CONTROL gate holds (backend && warm && extendedW; a
+    // STOCK-mode apply keeps the instant best-effort log, the ADVANCED
+    // <=315 path keeps its retry exactly as today). `extendedW` ABSENT
+    // falls back to the legacy clampAdvanced gate (the direct-call tests
+    // pass clampAdvanced only). The V2-CLAMP fallback below STAYS gated on
+    // clampAdvanced: for >315 (clampAdvanced false) a persistent not-ready
+    // returns the honest { landed: false, errorCode: 'not-ready' } - never
+    // a silent 252 clamp.
+    if (res?.errorCode === 'not-ready' && (extendedW ?? clampAdvanced) && backend
       && typeof sysmanPowerLimits.warm === 'function') {
       const deadline = Date.now() + NOT_READY_RETRY_BOUND_MS;
       // The warm: spawn the fresh detached helper + connect (fire-and-
@@ -524,7 +522,7 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
       while (Date.now() < deadline) {
         await sleep(NOT_READY_RETRY_POLL_MS);
         try {
-          retried = await sysmanPowerLimits.setLimits({ sustainedW: requestedW, burstW: requestedW });
+          retried = await sysmanPowerLimits.setLimits({ sustainedW: requestedW, burstW: requestedW }, deviceId);
         } catch {
           retried = null;
         }
@@ -556,7 +554,10 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
       // max instantly (no ze, no window). The clamp is ADVANCED-MODE-GATED
       // (round-1 S2): the V1 write set PL1 only, so the burst domain needs
       // the fallback; in STOCK mode the primary V2 write already landed both
-      // limits - the not-ready verdict stays the best-effort log.
+      // limits - the not-ready verdict stays the best-effort log. M21: for
+      // >315 (clampAdvanced false) the clamp NEVER fires - the persistent
+      // not-ready returns the honest { landed: false, errorCode: 'not-ready'
+      // } (a clamp would silently reduce the request to 252 - forbidden).
     if (res?.errorCode === 'not-ready' && clampAdvanced && backend) {
       // The DriverStore ceiling: the device-limits STOCK row's PL max (the
       // same source runV2Companion uses - 252 a770 / 216 Acer a750 / 228
@@ -609,10 +610,18 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
         return { landed: false };
       }
     }
+    if (res?.errorCode === 'not-ready') {
+      // M21: the persistent not-ready without the clamp gate (>315: the
+      // honest refusal - never a silent 252 clamp; STOCK: the instant
+      // best-effort class). The errorCode-bearing shape folds into the
+      // pl2Note ONLY for the >315 sysman-primary case.
+      log(`[apply] sysman companion: not-ready (${msg}) - the honest { landed: false, errorCode: 'not-ready' } (never a silent clamp)`);
+      return { landed: false, errorCode: 'not-ready', message: res?.message ?? msg };
+    }
     log(refused
       ? `[apply] sysman companion: REFUSED (${msg}) - the KMD-arbitration note (the GPU under overclocking blocks the sysman power-limit write); the IGCL read-back stays the canonical verification`
       : `[apply] sysman companion: failed (${msg}) - best-effort only, the IGCL read-back stays the canonical verification`);
-    return null;
+    return { landed: false, errorCode: refused ? (typeof res?.errorCode === 'string' ? res.errorCode : 'ERROR_NOT_AVAILABLE') : (typeof res?.errorCode === 'string' ? res.errorCode : 'io-failed'), message: msg };
     }
   }
   // The movement verdict: re-read the burst - accepted-but-no-movement is
@@ -632,8 +641,40 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
     // landed paths; the fold-in replaces a same-shaped note with itself).
     return { landed: true, valueW: requestedW };
   }
+  if (sysmanPrimary) {
+    // M21 (R2-F4 + R4-F6): the >315 sysman-PRIMARY delayed re-read - the
+    // immediate verdict cannot ride a lagging read-back (a persisted >315
+    // write must not fail on it): sleep the routed delay, then re-read
+    // BOTH the sysman pair and the backend getCurrentSettings state before
+    // the honest verdict.
+    await sleep(delayedVerifyMs);
+    let moved2 = false;
+    try {
+      const after2 = await sysmanPowerLimits.readLimits?.();
+      moved2 = after2 !== null && after2 !== undefined
+        && typeof after2.burstW === 'number' && Math.abs(after2.burstW - requestedW) <= 1;
+    } catch {
+      moved2 = false;
+    }
+    let backendMatched = false;
+    if (backend && typeof backend.getCurrentSettings === 'function') {
+      try {
+        const st = await backend.getCurrentSettings(deviceId);
+        backendMatched = st !== null && st !== undefined
+          && typeof st.powerLimitW === 'number' && Math.abs(st.powerLimitW - requestedW) <= 1;
+      } catch {
+        backendMatched = false;
+      }
+    }
+    if (moved2 || backendMatched) {
+      log(`[apply] sysman companion: the ${delayedVerifyMs} ms delayed re-read verified the persisted ${requestedW} W pair (the sysman-primary write landed - the read-back lagged)`);
+      return { landed: true, valueW: requestedW };
+    }
+    log(`[apply] sysman companion: the sysman-primary write did NOT land - the delayed re-read of both the sysman pair and the backend state still mismatches - the honest failure (the IGCL read-back stays the canonical verification)`);
+    return { landed: false, errorCode: 'io-failed', message: 'the sysman write did not persist (the delayed re-read of the sysman pair and the backend state still mismatched)' };
+  }
   log(`[apply] sysman companion: the write was ACCEPTED but the burst read-back did not move - the firmware-pinned note (the KMD enforces its own budget); the IGCL read-back stays the canonical verification`);
-  return null;
+  return { landed: false, errorCode: 'io-failed', message: 'the write was accepted but the burst read-back did not move - the firmware-pinned class (the KMD enforces its own budget)' };
 }
 
 /**
@@ -787,6 +828,14 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
   if (Object.keys(extended).length > 0) {
     log(`[apply] extended controls: [${Object.keys(extended).join(', ')}] via the bundled 2023 IGCL runtime`);
     for (const [key, value] of Object.entries(extended)) {
+      // M21: the >315 sysman-PRIMARY gate - the V1 write must NEVER receive
+      // a >315 value (oldIgcl.setPowerLimitW silent-clamps to
+      // EXTENDED_PL_RANGE 315 and reports { ok: true, readBackEqual: true }
+      // - the forbidden silent clamp). The >315 powerLimitW is SKIPPED here
+      // entirely (perControl.powerLimitW stays undefined - the sysman
+      // companion block below fills it with the sysman verdict). tempLimitC
+      // keeps the V1 path (the 115 C ceiling is unchanged).
+      if (key === 'powerLimitW' && value > EXTENDED_PL_MAX_W) continue;
       // M17d (step-4 N2): a NULL oldIgcl must never throw (the advanced-
       // mode + null-oldIgcl construct would TypeError on setPowerLimitW,
       // surfacing as 'apply threw: ...') - the honest per-control
@@ -888,8 +937,57 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
   //   both-limits V2 clamp write overwrites PL1, so the branch RE-APPLIES
   //   the V1 (oldIgcl.setPowerLimitW(requestedW)) after the clamp; the
   //   re-V1 failure degrades the note to the honest { landed: false }.
-  if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits
-    && (plUnits === undefined || plUnits === 'W')) {
+  // M21 (the >315 sysman-PRIMARY case): the fire-gate becomes
+  // `typeof settings.powerLimitW === 'number' && sysmanPowerLimits &&
+  // wUnits` with the V1-ok requirement applying ONLY to <=315. For a
+  // >315 powerLimitW (sysmanPrimary - the V1 write was SKIPPED above, so
+  // perControl.powerLimitW is undefined) the sysman write IS the PRIMARY
+  // write and its verdict IS the perControl: landed -> { ok: true,
+  // readBackEqual: true }; landed:false -> { ok: false, errorCode, message
+  // } from the extended contract; sysmanPowerLimits absent -> the honest
+  // { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG
+  // } (state UNTOUCHED - never a clamp). THE pl2Note FOLD GATE (R4-F3):
+  // the fold discriminates SHAPES, not modes - the SUCCESS shape
+  // ({ landed: true, valueW } - incl. the clamp verdict
+  // { landed: true, ceilingW, valueW, requestedW }) folds in ALL modes;
+  // the ERRORCODE-LESS { landed: false } clamp-failure verdict folds in ALL
+  // modes; ONLY the NEW errorCode-bearing { landed: false, errorCode,
+  // message } shapes fold when extended.powerLimitW > EXTENDED_PL_MAX_W (a
+  // <=315 errorCode-bearing failure class leaves the pl2Note UNTOUCHED -
+  // the STOCK not-ready pin keeps { landed: true, valueW }).
+  const sysmanPrimary = typeof extended.powerLimitW === 'number' && extended.powerLimitW > EXTENDED_PL_MAX_W;
+  if (sysmanPrimary) {
+    if (sysmanPowerLimits && wUnits) {
+      const sysmanNote = await runSysmanCompanion({
+        sysmanPowerLimits,
+        requestedW: settings.powerLimitW,
+        log,
+        backend,
+        deviceId,
+        limitsKey,
+        clampAdvanced: false, // >315 NEVER fires the V2-CLAMP (it would silently reduce to 252)
+        extendedW: true,
+        sysmanPrimary: true,
+        oldIgcl,
+        sleep,
+        delayedVerifyMs,
+      });
+      if (sysmanNote?.landed === true) {
+        perControl.powerLimitW = { ok: true, readBackEqual: true };
+      } else if (sysmanNote) {
+        perControl.powerLimitW = { ok: false, errorCode: sysmanNote.errorCode ?? 'io-failed', message: sysmanNote.message ?? 'the sysman power-limit write did not land' };
+      } else {
+        perControl.powerLimitW = { ok: false, errorCode: 'io-failed', message: 'the sysman power-limit write did not land' };
+      }
+      // The fold: EVERY sysmanPrimary shape folds (the sysman verdict owns
+      // the note + the perControl for >315).
+      if (sysmanNote) pl2Note = sysmanNote;
+    } else if (!sysmanPowerLimits) {
+      // The honest capability refusal - never a clamp, state untouched.
+      perControl.powerLimitW = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
+      log(`[apply] sysman companion: >${EXTENDED_PL_MAX_W} W requested but the sysman layer is ABSENT - the honest 'unsupported' refusal (never a silent clamp)`);
+    }
+  } else if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits && wUnits) {
     const sysmanNote = await runSysmanCompanion({
       sysmanPowerLimits,
       requestedW: settings.powerLimitW,
@@ -897,10 +995,23 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
       backend,
       deviceId,
       limitsKey,
-      clampAdvanced: extended.powerLimitW !== undefined,
+      // M21: the clampAdvanced computation is PINNED (R2-F3): the V2-CLAMP
+      // fires ONLY for an extended control AT OR BELOW the V1 write range
+      // (extended.powerLimitW <= EXTENDED_PL_MAX_W) - the >315 case NEVER
+      // fires it (a persistent >315 not-ready must refuse honestly, never
+      // a silent 252).
+      clampAdvanced: extended.powerLimitW !== undefined && extended.powerLimitW <= EXTENDED_PL_MAX_W,
+      extendedW: extended.powerLimitW !== undefined,
+      sysmanPrimary: false,
       oldIgcl,
+      sleep,
+      delayedVerifyMs,
     });
-    if (sysmanNote) pl2Note = sysmanNote;
+    // THE pl2Note FOLD GATE (M21): the SUCCESS shape + the ERRORCODE-LESS
+    // failure shape fold in ALL modes; an errorCode-bearing failure class
+    // (the M21 extension) leaves the pl2Note UNTOUCHED for <=315 (this
+    // branch is unreachable for >315 - the sysmanPrimary branch owns it).
+    if (sysmanNote && (sysmanNote.landed === true || sysmanNote.errorCode === undefined)) pl2Note = sysmanNote;
   } else if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits && plUnits !== 'W') {
     log(`[apply] sysman companion: SKIPPED - the powerLimitW units are '${plUnits}' (the sysman layer is W-only; the percent apply stays IGCL-verified)`);
   }

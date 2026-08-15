@@ -107,7 +107,9 @@ export interface Capabilities {
   ranges: Record<string, RangeInfo>;
   fan: { canControl: boolean; modes: string[]; maxRpm: number; maxCurvePoints: number };
   /** M2C-C: the bundled 2023 IGCL runtime loaded - PL/TL ranges are extended
-   *  (max 315 W / 115 C) and applies above the DriverStore clamp route to it. */
+   *  (max 375 W / 115 C - M21: the PL max is the sysman-primary ceiling; the
+   *  >315 W range applies through the sysman pair) and applies above the
+   *  DriverStore clamp route to it. */
   extendedRanges?: boolean;
   /** M17c: the APPENDED AIB-identity fields (absent -> null). The backend
    *  decodes them from the IGCL subsystem fields (pci_subsys_vendor_id /

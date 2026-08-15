@@ -17,12 +17,22 @@ import { A770_PCI_DEVICE_ID, deviceLimitsOf } from './device-limits.ts';
 // caps.extendedRanges - values above 90 C then route to the bundled 2023
 // IGCL runtime.
 export const TEMP_LIMIT_MAX_C = 90;
-// M3-C-D: the extended PL ceiling. Live-verified 2026-08-06: 400/350/330 W
-// are refused by the runtime (0x44000004), 315 W persists - 315 W IS the
-// ceiling on this card (in lockstep with old-igcl.js / the backend ranges /
-// the mock featureset / every pinning test). Requests above it are refused
-// honestly by main, never clamped.
+// M3-C-D + M21: the V1 write-side PL range max (old-igcl.js
+// EXTENDED_PL_RANGE) - the bundled 2023 runtime's ctlOverclockPowerLimitSet
+// refuses above 315 W (0x44000004 - live-verified 2026-08-06). The V1 write
+// must NEVER receive a >315 value (it would silent-clamp to 315 and report
+// ok:true). M21: the EXPOSED ceiling moved to SYSMAN_PL_MAX_W (375) - the
+// >315 W range applies through the sysman pair, never this setter.
 export const EXTENDED_PL_MAX_W = 315;
+// M21: the A770 advanced-mode PL ceiling - the physical budget (2x8-pin
+// 300 W + slot 75 W). Live-verified 2026-08-15 (elevated, this box): the
+// sysman pair (zesPowerSetLimits, sustainedW + burstW in ONE call) accepts
+// + stores consistent PL1=PL2 up to 4095 W (12-bit field) and ALL THREE
+// interfaces (sysman ze, bundled-2023 IGCL, DriverStore getCurrentSettings)
+// read the written value back - while the V1 setter refuses >315 and the
+// V2 setter refuses >252. So the >315 W range applies through the EXISTING
+// sysman companion mechanism (runSysmanCompanion) as the PRIMARY write.
+export const SYSMAN_PL_MAX_W = 375;
 export const EXTENDED_TL_MAX_C = 115;
 // The DriverStore-runtime clamps: applies above these route to the bundled
 // 2023 runtime and need the extended-range confirm dialog.

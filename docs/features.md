@@ -17,11 +17,17 @@ These controls only appear on hardware that reports support for them.
 
 ## Extended range
 
-On Alchemist (A770-class), power limits up to **315 W** and temperature limits
-up to **115 °C** are available through a bundled 2023-era IGCL runtime (Intel's
+On Alchemist (A770-class), power limits up to **375 W** and temperature
+limits up to **115 °C** are available in Advanced OC Mode. Values above the
+standard 252 W / 90 °C require an elevation prompt and an explicit confirm.
+The <=315 W range applies through a bundled 2023-era IGCL runtime (Intel's
 own, BSD-3-Clause, attributed in `THIRD_PARTY_NOTICES.txt`), which the
-kernel-mode driver still accepts. Values above the standard 252 W / 90 °C
-require an elevation prompt and an explicit confirm.
+kernel-mode driver still accepts. Above 315 W, the limit applies through
+the Level Zero sysman power pair (`zesPowerSetLimits`, sustained + burst
+limits written in ONE call - the same mechanism that syncs the PL2 burst
+domain on every apply today); the app-verified sysman acceptance ceiling on
+the A770 is 375 W (the physical budget: 2x8-pin 300 W + slot 75 W), and
+requests above the ceiling are refused honestly, never clamped.
 
 ## Safety design
 

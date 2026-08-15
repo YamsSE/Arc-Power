@@ -191,9 +191,10 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // SKIPS the STOCK gate - the mode is the interactive slider gate ONLY,
     // a saved profile applies as saved (the parent's applyProfile already
     // gated on the runtime capability). The CEILING refusal STAYS - a
-    // hand-edited >315 W profileApply reaching the worker directly must
-    // never silently clamp to 315 (the worker's caps max IS 315, so the
-    // flagless skip would clamp silently - the forbidden class).
+    // hand-edited above-ceiling profileApply reaching the worker directly
+    // must never silently clamp (the worker's caps max IS the sysman-
+    // primary 375 W on the a770, so the flagless skip would clamp silently
+    // - the forbidden class).
     const caps = await backend.getCapabilities(deviceId);
     // M17c: the DEVICE-SCOPED gate thresholds - the caps carry the device
     // identity (pciDeviceId/aibVendor/aibModel - resolved from the

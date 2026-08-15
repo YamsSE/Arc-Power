@@ -344,7 +344,9 @@ export function createApplyRunner({
         // M4O (NEW): the IN-PROCESS branch forwards profileApply too - the
         // always-elevated packaged app's TRAY apply of a 315 W profile in
         // stock mode would otherwise refuse via executeApply's safety net
-        // (caps.extendedRanges is false in stock mode). Only present when
+        // (caps.extendedRanges is false in stock mode). M21: the 315 W
+        // profile is a PROFILE VALUE (still <= the 375 W sysman-primary
+        // ceiling). Only present when
         // true (no undefined own-keys in the executor request).
         // M17d (Run D): the ocMode rides too - the executor passes it into
         // executeApply -> splitByRuntime (the V1-call pin). The callers

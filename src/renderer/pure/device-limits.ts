@@ -23,8 +23,9 @@
 //     path refuses 228+ with 0x44000004; A770: LE 228) + the TL 90 C caps
 //     + the A770 volt pin / A750 volt unclamp;
 //   - ADVANCED ({ advanced: true }): the per-CARD KMD ceilings - the
-//     advanced ceiling is a KMD-level clamp, AIB-independent (A770 315 W -
-//     app-verified, the M3-C-D live probe; A750 270 W - the 2026-08-12
+//     advanced ceiling is a KMD-level clamp, AIB-independent (A770 375 W -
+//     M21: the sysman-primary ceiling, the live-verified 2026-08-15 pair
+//     write; A750 270 W - the 2026-08-12
 //     app-path probe: 250 AND 270 W applied via the bundled 2023 runtime
 //     + V1 mW setters, 280+ refused 0x44000004 - the KMD ceiling, NOT in
 //     any public source, documented as the app's evidence). The A770
@@ -120,8 +121,10 @@ const A770_ROW_STOCK: DeviceLimits = {
 };
 
 /** The Arc A770 ADVANCED shape (M17d): the KMD-ceiling class, AIB-
- *  independent - PL 315 W (M3-C-D live probe: 400/350/330 W refused
- *  0x44000004, 315 W persisted - the app-verified ceiling) + the TL 115 C
+ *  independent - PL 375 W (M21: the exposed ceiling rose from 315 to 375 -
+ *  the sysman pair accepts + stores PL1=PL2 up to 4095 W (live-verified
+ *  2026-08-15), so the >315 W range applies through the sysman companion
+ *  as the PRIMARY write; the V1 write range stays 315) + the TL 115 C
  *  RESTORED (docs/igcl-integration.md 8c: 125->115 KMD clamp, 100/110
  *  persist - the app-verified ceiling; the M17c row cap at 90 is REMOVED,
  *  the 115 lives on the extended 2023-runtime path, the driver props cap
@@ -129,7 +132,7 @@ const A770_ROW_STOCK: DeviceLimits = {
 const A770_ROW_ADVANCED: DeviceLimits = {
   listed: true,
   gpuVoltOffsetV: { max: 0.234, step: 0.001 }, // M15 live probe (mode-independent)
-  powerLimitW: { max: 315 }, // M3-C-D live probe (2026-08-06, this box)
+  powerLimitW: { max: 375 }, // M21: the sysman-primary ceiling (live-verified 2026-08-15); the M3-C-D 315 probe (2026-08-06) pinned the V1 WRITE range
   tempLimitC: { max: 115 }, // docs/igcl-integration.md 8c (125->115 KMD clamp)
 };
 
@@ -263,8 +266,8 @@ const LISTED_ROWS: Record<string, (input: DeviceLimitsInput, advanced: boolean) 
  * M17d: `options.advanced` selects the ADVANCED shape (the per-card KMD
  * ceilings); the default/falsy selects the STOCK shape (the per-AIB maxes)
  * - the round-3-N3 rule FLIPS to "a listed row's advanced ceiling = the
- * app-verified KMD ceiling" (A770 315/115, A750 270/115 - the A750 TL
- * probe-verified 2026-08-12).
+ * app-verified KMD ceiling" (A770 375/115 - the M21 sysman-primary
+ * ceiling, A750 270/115 - the A750 TL probe-verified 2026-08-12).
  * @param {DeviceLimitsInput} input the device identity (caps pciDeviceId +
  *   the decoded AIB fields)
  * @param {DeviceLimitsOptions} [options] the shape selector - `advanced`

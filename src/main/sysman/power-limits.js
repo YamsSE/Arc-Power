@@ -254,9 +254,20 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
  * (Battlemage) answer null - the honest '-': the real sysman layer reads
  * WATTS regardless of the IGCL units, and the mock's percent fixture value
  * must never masquerade as W. setLimits() RECORDS the call (the
- * companion-sync-path assertion surface) and answers ok - the state was
- * already set by the IGCL write the companion runs after.
- * @param {{ getCurrentSettings: (deviceId: number) => Promise<{ powerLimitW?: number | null }>, getCapabilities?: (deviceId: number) => Promise<{ ranges?: Record<string, { units?: string }> }> }} backend
+ * companion-sync-path assertion surface) and answers ok. M21: setLimits
+ * ALSO WRITES the canonical per-device state
+ * (`backend._entry(deviceId).state.powerLimitW`) - for the >315 W
+ * sysman-PRIMARY case the mock sysman IS the state setter (the state was
+ * previously always set by the IGCL write the companion runs after; a
+ * >315 W apply skips the V1 write, so the sysman write must land the state
+ * itself). The write goes through the CANONICAL per-device accessor (the
+ * flat `_state` for device 0 / `_extraDevices` for devices > 0) - NEVER
+ * backend.applySettings (refuses >252) and NEVER extendedApply (clamps to
+ * the V1 write range 315). GUARD: no-ops when the injected backend lacks
+ * the `_entry` seam (power-limits.test.js injects a bare
+ * getCurrentSettings-only backend) - the recording + the ok answer stay
+ * unconditional.
+ * @param {{ getCurrentSettings: (deviceId: number) => Promise<{ powerLimitW?: number | null }>, getCapabilities?: (deviceId: number) => Promise<{ ranges?: Record<string, { units?: string }> }>, _entry?: (deviceId: number) => { state: Record<string, unknown> } }} backend
  */
 export function createMockSysmanPowerLimits({ backend }) {
   const calls = [];
@@ -285,8 +296,22 @@ export function createMockSysmanPowerLimits({ backend }) {
       }
       return { sustainedW: pl, burstW: pl, peakW: 800 };
     },
-    async setLimits({ sustainedW, burstW }) {
+    /** M21: the deviceId rides as the SECOND argument (the routed companion
+     *  passes its own deviceId through; the real adapter + the proxy take
+     *  the limits object only and ignore the extra argument). */
+    async setLimits({ sustainedW, burstW }, deviceId = 0) {
       calls.push({ sustainedW, burstW });
+      // M21: the sysman-PRIMARY state write (see the doc above) - the
+      // CANONICAL per-device accessor; silent about its verdict (the mock
+      // sysman's ok answer is unconditional - the read-back verification is
+      // what the routed block checks).
+      try {
+        const entry = backend._entry?.(deviceId);
+        if (entry && entry.state) entry.state.powerLimitW = sustainedW;
+      } catch {
+        // no _entry seam (or an unknown device id) - the recording + the ok
+        // answer stay unconditional
+      }
       return { ok: true };
     },
   };

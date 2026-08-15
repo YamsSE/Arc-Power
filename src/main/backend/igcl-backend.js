@@ -36,7 +36,7 @@ import {
   GRAPHICS_LOW_LATENCY_OPTIONS,
 } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName } from './units.js';
-import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from '../old-igcl.js';
+import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
 // imports fine under the packaged Electron (Node 22.21 - type stripping is
 // default since 22.18); the pure module carries no runtime TS-only features.
@@ -45,6 +45,9 @@ import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
 // applied main-side in getCapabilities AFTER the driver-props loop. The
 // renderer TS imports fine under the packaged Electron (see aib.ts).
 import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
+// M21: the sysman-primary PL ceiling (the >315 W exposed max) - the same
+// pure module the renderer pins the slider max from.
+import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // M17e: the listed-card lockRange fallback table (the pure module - the
 // a770/a750 documented-class rows; the caps-level fallback when the driver
 // props do not report the VF-curve limits; the live A770 driver answers
@@ -1088,10 +1091,13 @@ export class IgclBackend {
         // _finalizeCaps AFTER the extended-ranges block below.
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
         // this driver AND the OC mode is advanced (M3-C-E), report the FULL
-        // range (PL max 315 W - live-verified ceiling, TL max 115 C - min/default stay
+        // range (PL max 375 W - M21: the sysman-primary ceiling; the >315 W
+        // range applies through the sysman pair mechanism, live-verified
+        // 2026-08-15; TL max 115 C - min/default stay
         // the DriverStore values) + the extendedRanges flag. The UI exposes
         // those maxes; applies above the DriverStore clamp route to the
-        // 2023 runtime (apply-routing.js). In stock mode the extended maxes
+        // 2023 runtime (apply-routing.js) - and above 315 W to the sysman
+        // pair as the primary write. In stock mode the extended maxes
         // are NEVER exposed - the mode gate refuses them before any clamp.
         const extendedCapable = this._extended
           ? await this._extended.isCapable()
@@ -1107,7 +1113,7 @@ export class IgclBackend {
             || (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C'));
         if (wcExtended) {
           if (caps.ranges.powerLimitW && caps.ranges.powerLimitW.units === 'W') {
-            caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: EXTENDED_PL_MAX_W };
+            caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
           }
           if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C') {
             caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
