@@ -191,7 +191,7 @@ export const tweaksPage: Page = {
       el('h1', { class: 'page-title', text: 'Tweaks' }),
       el('p', {
         class: 'page-subtitle',
-        text: 'Well-known, reversible registry tweaks that affect GPU behavior. Enable/Disable/Revert run ELEVATED - one Windows administrator prompt per action; every write is reported per registry value. Fullscreen optimizations is read-only info (it is a per-app flag, not a system-wide switch).',
+        text: 'Reversible GPU registry tweaks. Enable/Disable/Revert run elevated (one prompt per action).',
       }),
       el('div', { class: 'page-actions' }, [
         el('button', {

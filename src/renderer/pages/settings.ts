@@ -58,7 +58,7 @@ export const settingsPage: Page = {
       el('h1', { class: 'page-title', text: 'Settings' }),
       el('p', {
         class: 'page-subtitle',
-        text: 'Startup behavior and app information. Start with Windows registers Arc Power in the HKCU Run key (no elevation, no prompt); Start minimized starts the app in the system tray - restore it from the tray icon.',
+        text: 'Startup behavior and app information.',
       }),
       el('div', { id: 'settings-root', class: 'settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
     );
@@ -252,7 +252,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // the navigation, the #/fan pattern).
     const overlayCard = el('section', { class: 'card settings-card overlay-card' }, [
       el('h2', { class: 'card-title', text: 'Overlay' }),
-      el('p', { class: 'card-note', text: 'The in-game style HUD - bold text floating over the screen. The enable toggle, the stats, colors, size, position and hotkey live in the Monitoring tab\'s Overlay view.' }),
+      el('p', { class: 'card-note', text: 'The in-game HUD - its settings live in the Monitoring tab\'s Overlay view.' }),
       el('div', { class: 'settings-row overlay-open-row' }, [
         el('button', {
           type: 'button',
@@ -267,7 +267,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
     const themeCard = el('section', { class: 'card settings-card theme-card' }, [
       el('h2', { class: 'card-title', text: 'Theme' }),
-      el('p', { class: 'card-note', text: 'Appearance - Dark Steel (the default black/gray), Midnight (deep indigo) or Arctic Light. The change applies immediately and is saved.' }),
+      el('p', { class: 'card-note', text: 'Appearance theme - applies immediately.' }),
       el('div', { class: 'theme-options' }, THEMES.map((t) =>
         el('button', {
           type: 'button',

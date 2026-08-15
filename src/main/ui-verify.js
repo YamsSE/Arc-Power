@@ -2198,6 +2198,15 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (!voltCardHiddenLock) fail('M17f: the Voltage offset card must NOT be displayed in Lock mode (the card-replacement toggle)');
     const freqSliderHiddenLock = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-slider-row')?.hidden === true`);
     if (!freqSliderHiddenLock) fail('M17f: the Core-Offset slider must NOT be displayed in Lock mode (the card-replacement toggle)');
+    // M20: the freq card's .oc-meta (the "0 - 300 MHz · step 1" range
+    // caption) hides in Lock mode too - the range describes the offset
+    // slider that Lock mode replaces. SCOPED to the freq card: the
+    // power-limit card's .oc-meta (with the .oc-sysman-limits PL1/PL2
+    // span) must stay VISIBLE.
+    const freqMetaDisplayLock = await js(`getComputedStyle(document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-meta')).display`);
+    if (freqMetaDisplayLock !== 'none') fail(`M20: the freq card's .oc-meta must be hidden in Lock mode (computed display '${freqMetaDisplayLock}', expected none)`);
+    const plMetaDisplayLock = await js(`getComputedStyle(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-meta')).display`);
+    if (plMetaDisplayLock === 'none') fail(`M20: the power-limit card's .oc-meta (with the .oc-sysman-limits span) must stay VISIBLE in Lock mode (computed display '${plMetaDisplayLock}')`);
     const lockTitleFlipped = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
     if (lockTitleFlipped.trim() !== 'GPU Lock') fail(`M17f: the card title must flip to 'GPU Lock' in Lock mode (got '${lockTitleFlipped}')`);
     const lockNoteText = await js(`document.querySelector('.gpu-lock-editor .card-note')?.textContent ?? ''`);
@@ -2343,6 +2352,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     if (await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]')?.hidden === true`)) {
       fail('M17f: the Voltage offset card must be displayed again in Offset mode');
     }
+    // M20: back in Offset mode the freq card's .oc-meta range caption
+    // shows again.
+    const freqMetaDisplayOffset = await js(`getComputedStyle(document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-meta')).display`);
+    if (freqMetaDisplayOffset === 'none') fail(`M20: the freq card's .oc-meta must be visible again in Offset mode (computed display '${freqMetaDisplayOffset}')`);
     if (!(await floatingHidden())) fail('M17e: the floating Apply must stay hidden after the mode flip back (the offsets drafted 0 - nothing dirty)');
     // The ATOMIC UNLOCK: drag the freq offset to 100 while the driver
     // still holds the lock -> the per-card chip apply carries the (0,0)

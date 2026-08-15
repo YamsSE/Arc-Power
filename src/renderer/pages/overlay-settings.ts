@@ -62,7 +62,7 @@ export function renderOverlaySettings(container: HTMLElement, ctx: PageContext):
     el('h2', { class: 'overlay-settings-title', text: 'Overlay Settings' }),
     el('p', {
       class: 'page-subtitle',
-      text: 'The in-game style HUD (bold text floating over the screen - no boxes, no window). Everything lives here: the enable toggle, which stats show, the text color, the size and the corner position (in the Appearance card) and the hotkey letter.',
+      text: 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.',
     }),
     el('div', { id: 'overlay-settings-root', class: 'overlay-settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
   );
@@ -148,7 +148,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // are KEPT so the ui-verify toggle pins moved with the control.
     const generalCard = el('section', { class: 'card settings-card overlay-general-card' }, [
       el('h2', { class: 'card-title', text: 'General' }),
-      el('p', { class: 'card-note', text: 'Whether the overlay shows. The hotkey, the position, the size, the colors and the stats live below.' }),
+      el('p', { class: 'card-note', text: 'Shows the overlay over games.' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
           el('input', {
@@ -208,7 +208,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // frametime id is NOT a line - it drives the canvas strip visibility.
     const statsCard = el('section', { class: 'card settings-card overlay-stats-card' }, [
       el('h2', { class: 'card-title', text: 'Stats' }),
-      el('p', { class: 'card-note', text: 'Which readouts the overlay shows. Unchecking every stat of a line hides that line; the frametime strip hides with its own stat.' }),
+      el('p', { class: 'card-note', text: 'Pick the readouts. Uncheck all of a line to hide it.' }),
       el('div', { class: 'overlay-stat-grid' }, OVERLAY_STAT_IDS.map((id) =>
         el('label', { class: 'boot-toggle overlay-stat-toggle' }, [
           el('input', {
@@ -284,7 +284,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     positionSelect.value = persisted.position;
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('h2', { class: 'card-title', text: 'Appearance' }),
-      el('p', { class: 'card-note', text: 'The overlay text color, the size and the corner position.' }),
+      el('p', { class: 'card-note', text: 'Color, size and corner position.' }),
       el('div', { class: 'overlay-color-options' }, [
         ...colorOptions,
         el('label', { class: 'overlay-custom-color' }, [
@@ -390,7 +390,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // inject into games to avoid this; Arc Power does not).
     const notesCard = el('section', { class: 'card settings-card overlay-notes-card' }, [
       el('h2', { class: 'card-title', text: 'Notes' }),
-      el('p', { class: 'card-note overlay-note', text: 'The overlay is a standard topmost window - Windows does not expose overlay-plane (MPO) assignment to apps; exclusive-fullscreen games may cover it (tools like MSI Afterburner inject into games to avoid this; Arc Power does not).' }),
+      el('p', { class: 'card-note overlay-note', text: 'A topmost window - exclusive-fullscreen games may cover it.' }),
       // M17b (2d-1): the honest refresh-bound limit. The GFS-borderless
       // probe (pipeline/live-fps-accuracy.mjs, 2026-08-11) proved
       // GetFrameStatistics does NOT answer for a borderless-fullscreen
@@ -405,7 +405,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // rate); the DXGI desktop-presentation reading is the FALLBACK tier
       // when the lane is inactive (no foreground program / the sidecar is
       // unavailable, e.g. the unelevated dev run).
-      el('p', { class: 'card-note overlay-note', text: 'FPS comes from the per-process present stream (PresentMon ETW) of the foreground program when the ETW lane is active - the game\'s own present rate, not the display rate. When the lane is inactive (no foreground program, or the sidecar unavailable) the reading falls back to the graphics-driver desktop presentation statistics (DXGI) - which follow the DISPLAY refresh rate on windowed or borderless programs (the per-display presented-frame count, last 400-600 ms), not the game\'s render rate. The frametime line is derived from the frame rate when per-frame timing is unavailable. Unavailable readings show "-".' }),
+      el('p', { class: 'card-note overlay-note', text: 'FPS from the foreground game\'s present stream; the driver\'s desktop-presentation stats serve when the per-process lane is inactive.' }),
     ]);
 
     clear(root);

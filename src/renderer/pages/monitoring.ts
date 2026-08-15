@@ -313,7 +313,7 @@ export const monitoringPage: Page = {
       el('p', {
         class: 'page-subtitle',
         text: monView === 'overlay'
-          ? 'The in-game style HUD - its settings live in the Overlay view below (the readout grid keeps running behind it).'
+          ? 'The in-game HUD - its settings live in the Overlay view below.'
           : 'Live values and 60-second rolling graphs from the GPU.',
       }),
       viewToggle,

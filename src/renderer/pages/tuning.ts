@@ -759,6 +759,13 @@ export const tuningPage: Page = {
       if (sliderRow) sliderRow.hidden = lockMode;
       const voltCard = cards.get('gpuVoltOffsetV');
       if (voltCard) voltCard.hidden = lockMode;
+      // M20: the FREQ card's .oc-meta row (the "0 – 300 MHz · step 1" range
+      // caption) hides in Lock mode too - the range describes the offset
+      // slider that Lock mode replaces. SCOPED to the freq card only - the
+      // power-limit card's .oc-meta (with the .oc-sysman-limits PL1/PL2
+      // span) and the VRAM editor's .oc-meta are never touched.
+      const meta = card?.querySelector<HTMLElement>('.oc-meta');
+      if (meta) meta.hidden = lockMode;
       // M17f (round-3 N4): the card TITLE flips with the mode - a
       // CARD-TITLE ELEMENT MUTATION, never CONTROL_LABELS (shared by the
       // toasts + the profiles page - it must not change).

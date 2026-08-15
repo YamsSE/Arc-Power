@@ -52,18 +52,23 @@ body {
    would sit over the labels' first glyph column until the first push;
    ', 4ch' holds the stock VRAM-width column pre-push). The + 0.75ch is the
    gap after the widest label (M19b: widened from 0.35ch - the widest
-   label now clears the line by ~0.75ch). The font-family MUST be pinned
-   to the same monospace stack as the rows - the ch unit is the divider's
-   own font, and the browser-default font's ch differs (a chip label would
-   drift off the column). The top/bottom are set via CSSOM by overlay.ts
-   from the row offsets. NO text-shadow - deliberate (the glyphs keep the
-   dark RTSS outline, the 1px line does not). */
+   label now clears the line by ~0.75ch). M20: the font-family MUST be
+   pinned to the same monospace stack as the rows AND font-size to 1rem -
+   the ch unit is now the SAME scaled root as the rows (html's 14px x the
+   overlayScale, applied via CSSOM by overlay.ts). Before M20 the divider
+   inherited the body's FIXED 14px, so its ch terms never scaled (the
+   browser-default font's ch differs too - a chip label would drift off
+   the column); with font-size: 1rem the whole left calc scales with the
+   rows. The top/bottom are set via CSSOM by overlay.ts from the row
+   offsets. NO text-shadow - deliberate (the glyphs keep the dark RTSS
+   outline, the 1px line does not). */
 #overlay-divider {
   position: absolute;
   width: 1px;
   background: var(--overlay-color, #ffffff);
   z-index: 0;
   font-family: Consolas, 'Courier New', monospace;
+  font-size: 1rem;
   left: calc(0.4rem + var(--overlay-label-w, 4ch) + 0.75ch);
 }
 

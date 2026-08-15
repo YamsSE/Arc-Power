@@ -96,3 +96,9 @@ Quick access and apply-on-startup controls without opening the window.
 - **RAM brand** - the JEDEC manufacturer decode covers more raw encodings,
   with a part-number fallback for modules whose SPD brand string the board
   BIOS reports as "Unknown".
+- **M20 UI compaction** - the overlay divider now scales with the overlay
+  size slider (its font is tied to the same scaled root as the rows), the
+  Settings page was condensed so all cards fit the window without scrolling
+  (with shorter, one-line descriptions), the Core-Offset range line hides
+  when the gpuLock page switches to Lock mode, and the tuning sliders' blue
+  fill no longer crosses the dark-blue thumb.

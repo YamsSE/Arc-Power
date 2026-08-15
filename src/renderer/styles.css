@@ -961,21 +961,33 @@ select {
   margin: 0;
 }
 
+/* M20: the thumbs LIFT above the .oc-track-fill - the fill is positioned
+   (absolute) while the input stays in-flow, so the fill paints OVER the
+   thumb (the glitch); a positioned thumb with z-index 1 paints above the
+   positioned fill. The thumb is Arc Power dark blue (--accent-strong) with
+   the brighter accent ring - readable on the filled + unfilled track.
+   Covers the VRAM editor slider too (the same .oc-slider structure). The
+   .fan-fixed-row slider (fan editor) has NO fill + a separate selector -
+   untouched. */
 .oc-slider input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
+  position: relative;
+  z-index: 1;
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--text);
+  background: var(--accent-strong);
   border: 2px solid var(--accent);
   cursor: pointer;
 }
 .oc-slider input[type="range"]::-moz-range-thumb {
+  position: relative;
+  z-index: 1;
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--text);
+  background: var(--accent-strong);
   border: 2px solid var(--accent);
   cursor: pointer;
 }
@@ -1102,6 +1114,10 @@ select {
   margin-top: 8px;
   flex-wrap: wrap;
 }
+/* M20: .oc-meta sets display: flex, which beats the UA [hidden] rule - the
+   explicit [hidden] companion makes meta.hidden = true actually hide the
+   row (the Lock-mode hide of the freq card's range caption). */
+.oc-meta[hidden] { display: none; }
 
 .oc-range { color: var(--text-dim); font-size: 12px; font-family: var(--mono); }
 
@@ -1708,17 +1724,22 @@ select {
 
 /* ------------------------------------------------------------ settings (M4-D) */
 
+/* M20: the settings cards are compacted so all cards fit the 820px window
+   without scrolling - the root gap 14px -> 10px, the card padding 16px 20px
+   -> 12px 16px, the title margin 8px -> 4px, the state line margin 8px ->
+   4px. Spacing-only: the .settings-checkbox[data-setting=...] selectors +
+   card titles are untouched (pinned). */
 .settings-root {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
   max-width: 680px;
 }
 
-.settings-card { padding: 16px 20px; }
-.settings-card .card-title { margin-bottom: 8px; }
+.settings-card { padding: 12px 16px; }
+.settings-card .card-title { margin-bottom: 4px; }
 .settings-row { display: flex; align-items: center; gap: 8px; }
-.settings-state { margin-top: 8px; }
+.settings-state { margin-top: 4px; }
 /* M17c (user request): the settings checkboxes are restyled as real
    controls - appearance:none + the shared --control-bg surface + a border,
    with the accent checkmark drawn via the :checked state (a border-rotated
