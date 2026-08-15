@@ -301,6 +301,19 @@ export function extendedRangesFor(caps) {
 // The momentary-lie re-read delay (default 400 ms, injectable in tests).
 export const DELAYED_VERIFY_MS = 400;
 
+// M19 THE BOUNDED FRESH-SPAWN RETRY (the Acer-tool mechanism): when the
+// proxy answers the instant not-ready verdict, the helper was NOT up (the
+// boot's warm is fire-and-forget; the request paths never connect). The
+// M17o2 live evidence: a FRESH process's ze init ALWAYS succeeds (5/5,
+// even 2 s after a write) - the Acer Predator tool applies its profile
+// 300/300 instantly by spawning a fresh helper per apply. So the
+// companion fires the proxy's warm() (the only spawn+connect path) and
+// retries the set within this bound before falling to the V2-clamp.
+export const NOT_READY_RETRY_BOUND_MS = 2500;
+// The poll cadence of the bounded retry loop (the set answers the instant
+// not-ready verdict until the fresh helper's socket + ready line land).
+export const NOT_READY_RETRY_POLL_MS = 400;
+
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -422,8 +435,24 @@ export function requiresExtendedRange(settings, ranges = null) {
  * KEPT (the implementer decision documented: skipping it would save 400 ms
  * but the delayed re-read is the only trusted verification - the target
  * holds with it).
- * THE CLAMP VERDICT CONTRACT:
- * ok + verified -> the re-V1 re-applies the request; the re-V1 VERIFIES
+ * THE CLAMP VERDICT CONTRACT (M19-amended: the not-ready path now runs the
+ * BOUNDED FRESH-SPAWN RETRY FIRST - the Acer-tool mechanism; the clamp is
+ * the post-retry fallback only):
+ * M19 THE FRESH-SPAWN RETRY: when the set answers the instant 'not-ready'
+ * verdict AND the seam has the proxy's warm() (the mock/not-ready stubs do
+ * not), the companion WARMS the proxy (the ONLY spawn+connect path - a
+ * fresh detached helper whose ze init ALWAYS succeeds per the M17o2 live
+ * evidence: 5/5, even 2 s after a write - the Acer Predator tool applies
+ * its profile 300/300 instantly by spawning a fresh helper per apply) and
+ * RETRIES the set within NOT_READY_RETRY_BOUND_MS (~2.5 s; the fresh init
+ * lands in ~0.5 s). The retry LANDING returns the exact value - the
+ * sysman-READY shape { landed: true, valueW: requested } (PL2 = the
+ * requested value, never a clamp - the user's 'if i do 300W it should do
+ * 300w/300w'); the pl2Note replaces any earlier note like the clamp's
+ * landed note does. Only when the retry bound EXPIRES does the V2-clamp
+ * fire (the contract below, unchanged).
+ * CLAMP (post-retry): ok + verified -> the re-V1 re-applies the request;
+ * the re-V1 VERIFIES
  * too -> { landed: true, ceilingW, valueW: Math.min(requestedW, ceilingW), requestedW }
  * (M17o: the note gains the REQUESTED burst - the read-out's promise
  * sentence keys on valueW < requestedW; the pl2Note REPLACES any earlier
@@ -436,9 +465,10 @@ export function requiresExtendedRange(settings, ranges = null) {
  * case is UNCHANGED ({ landed: true, valueW: requested } - the same shape
  * the note already carries in the landed paths).
  * @param {{
- *   sysmanPowerLimits?: { setLimits: (l: { sustainedW: number, burstW: number }) => Promise<{ ok: boolean, errorCode?: string, message?: string }>, readLimits?: () => Promise<{ burstW?: number | null } | null> } | null,
+ *   sysmanPowerLimits?: { setLimits: (l: { sustainedW: number, burstW: number }) => Promise<{ ok: boolean, errorCode?: string, message?: string }>, readLimits?: () => Promise<{ burstW?: number | null } | null>, warm?: () => Promise<void> } | null, // M19: the proxy's warm seam (the fresh-spawn retry's trigger; absent on the mock/not-ready stubs)
  *   requestedW: number,
  *   log?: (s: string) => void,
+ *   sleep?: (ms: number) => Promise<void>, // M19: the retry-loop poll seam (default the real sleep)
  *   backend?: import('./backend/backend.interface.js').IOCBackend | null, // M17n the V2-clamp deps (round-1 S6)
  *   deviceId?: number,
  *   limitsKey?: { pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null,
@@ -452,7 +482,7 @@ export function requiresExtendedRange(settings, ranges = null) {
  *   { landed: false }; the ready case { landed: true, valueW: requested }
  *   (the shape the note already carries - a no-op replace). Never throws.
  */
-export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, limitsKey = null, clampAdvanced = false, oldIgcl = null }) {
+export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, limitsKey = null, clampAdvanced = false, oldIgcl = null, sleep = defaultSleep }) {
   if (!sysmanPowerLimits) return null;
   let res;
   try {
@@ -462,18 +492,71 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
     return null;
   }
   if (!res || res.ok !== true) {
-    const msg = res?.message ?? res?.errorCode ?? 'unknown';
-    const refused = res?.errorCode === 'ERROR_NOT_AVAILABLE'
+    let msg = res?.message ?? res?.errorCode ?? 'unknown';
+    let refused = res?.errorCode === 'ERROR_NOT_AVAILABLE'
       || (typeof msg === 'string' && msg.includes('NOT_AVAILABLE'));
-    // M17n THE INSTANT 'not-ready' TRIGGER -> THE V2-CLAMP FALLBACK
-    // (round-1 S6): the set answered the proxy's instant not-ready verdict
-    // - the sysman layer is NOT coming up in this session (the user's
-    // measured pattern) - so the apply must NOT wait: the V2 driverstore
-    // write at min(requested, the driver ceiling) lands PL2 = the driver
-    // max instantly (no ze, no window). The clamp is ADVANCED-MODE-GATED
-    // (round-1 S2): the V1 write set PL1 only, so the burst domain needs
-    // the fallback; in STOCK mode the primary V2 write already landed both
-    // limits - the not-ready verdict stays the best-effort log.
+    // M19 THE BOUNDED FRESH-SPAWN RETRY (the Acer-tool mechanism - the
+    // user's demand: 'PL2 needs to apply instantly like it should have
+    // before', 'if i do 300W it should do 300w/300w'). The M17o2 live
+    // evidence: a FRESH process's ze init ALWAYS succeeds (5/5, even 2 s
+    // after a write) - the Acer Predator tool applies its profile 300/300
+    // instantly by spawning a fresh helper per apply. The app's boot warm
+    // is fire-and-forget (`void warm?.()`), so a helper that never came up
+    // in the boot race makes every apply answer the instant not-ready
+    // verdict -> the V2-clamp -> PL2 = min(requested, ceiling) = 252 all
+    // session (the complaint). FIX: on the not-ready verdict, WARM the
+    // proxy (the ONLY spawn+connect path - a fresh detached helper whose
+    // ze init succeeds per the evidence) and RETRY the set within a SHORT
+    // bound (~2.5 s - the fresh init lands in ~0.5 s); the retry landing
+    // returns the exact value (PL2 = requested, the Acer shape). Only when
+    // the bound expires does the V2-clamp fallback fire, unchanged. Gated
+    // on the proxy's warm seam (the mock/not-ready stubs have none - every
+    // existing clamp test keeps its instant-clamp path).
+    if (res?.errorCode === 'not-ready' && clampAdvanced && backend
+      && typeof sysmanPowerLimits.warm === 'function') {
+      const deadline = Date.now() + NOT_READY_RETRY_BOUND_MS;
+      // The warm: spawn the fresh detached helper + connect (fire-and-
+      // forget - the retry loop below is the bounded wait; a warm racing
+      // the boot's own warm shares ONE connect via the in-flight latch,
+      // never a double-spawn).
+      try { void sysmanPowerLimits.warm(); } catch { /* best effort */ }
+      let retried = null;
+      while (Date.now() < deadline) {
+        await sleep(NOT_READY_RETRY_POLL_MS);
+        try {
+          retried = await sysmanPowerLimits.setLimits({ sustainedW: requestedW, burstW: requestedW });
+        } catch {
+          retried = null;
+        }
+        if (retried?.ok === true) break;
+        if (retried && retried.errorCode !== 'not-ready') break; // a real failure class - stop retrying
+      }
+      if (retried?.ok === true) {
+        log(`[apply] sysman companion: not-ready -> the FRESH helper landed the set (PL2 = ${requestedW} W exactly, the Acer-tool mechanism) - no clamp needed`);
+        res = retried;
+      } else if (retried && retried.errorCode !== 'not-ready') {
+        // The loop stopped on a REAL failure class (the stop condition
+        // above) - the refused/failed handling below must run on the TRUE
+        // verdict, not the stale first not-ready (which would wrongly fire
+        // the V2-clamp on e.g. the KMD-arbitration refusal class).
+        res = retried;
+        msg = res?.message ?? res?.errorCode ?? 'unknown';
+        refused = res?.errorCode === 'ERROR_NOT_AVAILABLE'
+          || (typeof msg === 'string' && msg.includes('NOT_AVAILABLE'));
+      } else {
+        log(`[apply] sysman companion: not-ready persisted across the ${NOT_READY_RETRY_BOUND_MS} ms fresh-spawn retry bound - falling to the V2-clamp`);
+      }
+    }
+    if (!res || res.ok !== true) {
+      // M17n THE INSTANT 'not-ready' TRIGGER -> THE V2-CLAMP FALLBACK
+      // (round-1 S6): the set answered the proxy's instant not-ready verdict
+      // - the sysman layer is NOT coming up in this session (the user's
+      // measured pattern) - so the apply must NOT wait: the V2 driverstore
+      // write at min(requested, the driver ceiling) lands PL2 = the driver
+      // max instantly (no ze, no window). The clamp is ADVANCED-MODE-GATED
+      // (round-1 S2): the V1 write set PL1 only, so the burst domain needs
+      // the fallback; in STOCK mode the primary V2 write already landed both
+      // limits - the not-ready verdict stays the best-effort log.
     if (res?.errorCode === 'not-ready' && clampAdvanced && backend) {
       // The DriverStore ceiling: the device-limits STOCK row's PL max (the
       // same source runV2Companion uses - 252 a770 / 216 Acer a750 / 228
@@ -530,6 +613,7 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
       ? `[apply] sysman companion: REFUSED (${msg}) - the KMD-arbitration note (the GPU under overclocking blocks the sysman power-limit write); the IGCL read-back stays the canonical verification`
       : `[apply] sysman companion: failed (${msg}) - best-effort only, the IGCL read-back stays the canonical verification`);
     return null;
+    }
   }
   // The movement verdict: re-read the burst - accepted-but-no-movement is
   // the firmware-pinned note (a DIFFERENT honest outcome from a refusal).

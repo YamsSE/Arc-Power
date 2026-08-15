@@ -80,6 +80,11 @@ Quick access and apply-on-startup controls without opening the window.
   divider line separates the FPS/CPU/RAM/GPU/VRAM row headers from their
   values (the column widens automatically when the chip-name labels are
   on; the headerless API row sits below the line).
+- **Refreshed ReBAR + a straight value column** - the ReBAR pill refreshes
+  on fast boots (concurrent boot readers share one driver query, so the
+  pill lands green on the first render instead of staying gray), and every
+  overlay row's values start at the same x - one character right of the
+  divider line, never overlapping it.
 - **Temperatures** - CPU, GPU and VRAM temperatures round to whole degrees;
   AMD Ryzen CPU wattage comes from the RAPL energy counters (with an honest
   status in the log when the counters are unavailable or frozen).

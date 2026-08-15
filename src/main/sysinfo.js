@@ -649,6 +649,42 @@ export function applyDriverReBar(sysinfo, driverEnabled) {
 }
 
 /**
+ * M19: the memoized-promise driver-BAR reader - the REPLACEMENT for the
+ * one-shot latch (the boot race: the main renderer app.ts:347 and the
+ * overlay overlay.ts:372 fire sysinfo:get CONCURRENTLY at boot; caller A
+ * set the latch + awaited listDevices while caller B saw the latch and
+ * returned the STILL-NULL cache -> the merged payload kept rebarActive
+ * null -> the dashboard pill rendered gray for the whole session). The
+ * seam shares ONE in-flight promise: every caller awaits the SAME
+ * resolving verdict, so both boot callers get `true` (the green pill on
+ * the first landing). Semantics unchanged from the latch: the query runs
+ * ONCE per session, `backend.listDevices()` -> empty -> null; else
+ * `backend.pciProperties(devices[0].id)` -> `resizableBarEnabled` ->
+ * true/false/null; ANY throw resolves null (the honest gray + the OS
+ * fallback stays), cached for the session.
+ * @param {{ listDevices: () => Promise<Array<{ id: string }>>, pciProperties: (id: string) => Promise<object|null> }} backend
+ * @returns {() => Promise<boolean | null>}
+ */
+export function createDriverReBar(backend) {
+  let promise = null;
+  return () => {
+    if (!promise) {
+      promise = (async () => {
+        try {
+          const devices = await backend.listDevices();
+          if (devices.length === 0) return null;
+          const p = await backend.pciProperties(devices[0].id);
+          return p ? (p.resizableBarEnabled ? true : false) : null;
+        } catch {
+          return null;
+        }
+      })();
+    }
+    return promise;
+  };
+}
+
+/**
  * M4-D: the ReBAR verdict - a functioning Resizable BAR shows a
  * multi-GiB memory BAR in the device resources (the A770's non-ReBAR
  * aperture is 16 MB; with ReBAR the BAR spans the full VRAM). True when

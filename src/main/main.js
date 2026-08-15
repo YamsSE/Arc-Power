@@ -64,7 +64,7 @@ import { createMemoryUtilDetector } from './memory-util.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
 import { createMsrReader } from './msr-reader.js';
 import { createMonitorLog } from './monitor-log.js';
-import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar } from './sysinfo.js';
+import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar, createDriverReBar } from './sysinfo.js';
 import { applyProfile, runApplyOnStartup, applyProfileBoot, resolveApplyDeviceId } from './apply-on-boot.js';
 import { runBootApplyMode } from './boot-apply-mode.js';
 import { shouldUseInstanceLock, acquireInstanceLock, focusExistingWindow } from './single-instance.js';
@@ -135,6 +135,43 @@ const sysmanHelperOutFile = sysmanHelperIdx >= 0 ? process.argv[sysmanHelperIdx 
 // stdin mode; run B REMOVED the stdin mode + its `--sysman-helper-persist`
 // branch + swapped the proxy's spawn arg - no dead-flag window).
 const sysmanHelperPipeIdx = process.argv.indexOf('--sysman-helper-pipe');
+
+// M19 THE BOUNDED BOOT WARM (the PL2 fix - the user: 'PL2 needs to apply
+// instantly like it should have before', 'if i do 300W it should do
+// 300w/300w'). The M17k boot-order promise ('the helper's ze init lands
+// while the machine is idle, before the backend load opens the arbitration
+// window') was never HONORED: `void realSysmanLimits.warm?.()` is fire-and-
+// forget, so the helper's ze init RACES the backend's IGCL load + the boot
+// probe writes. A fresh ze init INSIDE the window fails (the M17j measured
+// window: fresh inits fail for 8+ s after an IGCL write - zesInit
+// ERROR_UNINITIALIZED), so the helper never establishes its ze context and
+// every apply that session answers the instant not-ready verdict -> the
+// V2-clamp -> PL2 = min(requested, 252) = 252 (the user's exact complaint).
+// THE FIX: bound-AWAIT the warm - the fresh helper's ze init lands in
+// ~0.5 s (the M17o2 live evidence: 5/5, even 2 s after a write; the Acer
+// Predator tool applies its profile 300/300 instantly by spawning a fresh
+// helper per apply), so the boot warm gets up to SYSMAN_WARM_BOUND_MS to
+// establish the context BEFORE the backend load; a helper that genuinely
+// cannot init never stalls the boot past the bound (the apply's own
+// bounded fresh-spawn retry in runSysmanCompanion covers the rest).
+const SYSMAN_WARM_BOUND_MS = 3000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** M19: bound-await the proxy warm (idempotent, never throws). The warm
+ *  resolves on the SOCKET CONNECT (helper-proxy's ensureConnected) - NOT
+ *  the helper's ready line, so the ze init may still be in flight when it
+ *  lands; the bounded fresh-spawn retry in runSysmanCompanion covers that
+ *  residual ze-init gap. A warm that lands inside the bound gives the whole
+ *  session working PL2 (300/300 on every apply).
+ *  @param {{ warm?: () => Promise<unknown> } | null | undefined} proxy */
+async function boundWarm(proxy) {
+  if (!proxy || typeof proxy.warm !== 'function') return;
+  try {
+    await Promise.race([proxy.warm(), sleep(SYSMAN_WARM_BOUND_MS)]);
+  } catch {
+    // a warm failure degrades silently - the apply's not-ready retry covers it
+  }
+}
 
 function createWindow(backgroundColor = '#0f1116', show = true) {
   const win = new BrowserWindow({
@@ -320,7 +357,9 @@ async function main() {
       appPath: process.defaultApp ? app.getAppPath() : null,
       log: (s) => console.log(`[sysman-helper] ${s}`),
     });
-    void workerSysmanLimits.warm?.();
+    // M19: the warm is BOUND-AWAITED (not fire-and-forget) - the worker's
+    // helper must be ready before ITS backend/IGCL load (the M17k shape).
+    await boundWarm(workerSysmanLimits);
     // M2C-C S1: the extended-capability probe is constructed BEFORE the
     // backend and injected - the worker's getCapabilities (its clamp ranges)
     // must report the same extended ranges the UI path does.
@@ -466,7 +505,9 @@ async function main() {
       appPath: process.defaultApp ? app.getAppPath() : null,
       log: (s) => console.log(`[sysman-helper] ${s}`),
     });
-    if (!mock) void bootRealSysmanLimits.warm?.();
+    // M19: the warm is BOUND-AWAITED (not fire-and-forget) - the boot
+    // apply's helper must be ready before the boot backend load.
+    if (!mock) await boundWarm(bootRealSysmanLimits);
     const bootOldIgcl = mock ? null : new OldIgcl();
     const bootBackend = createBackend({
       kind: mock ? 'mock' : 'igcl',
@@ -626,7 +667,7 @@ async function main() {
     });
   }
   markProfileBoot('instance-lock');
-  // M17k: the EARLY helper warm-up (the boot-order fix for the 30-90 s
+  // M17k + M19: the EARLY helper warm-up (the boot-order fix for the 30-90 s
   // apply hangs - the M17j debug log: the persistent helper CONNECTED but
   // every request timed out because its ze init retried INSIDE the
   // arbitration window the app's own IGCL activity had opened). The REAL
@@ -635,17 +676,23 @@ async function main() {
   // and BEFORE the backend/IGCL creation below - so the helper's ze init
   // lands while the machine is idle (the persist-proof: attempt 1), long
   // before the backend load + the caps probes (incl. the fan-probe WRITES)
-  // + the renderer's boot caps fetch. warm() is idempotent + never throws:
-  // a failure degrades silently and the first readLimits/setLimits
-  // re-attempts the connect as today. The MOCK seam stays at the
-  // sysmanPowerLimits const below (the mock consumer wraps the backend and
-  // can only exist after it).
+  // + the renderer's boot caps fetch. M19: the warm is BOUND-AWAITED (the
+  // M17k `void warm?.()` was fire-and-forget - the helper's ze init RACED
+  // the backend's IGCL load and lost, so the session had no ze context and
+  // every apply answered not-ready -> the V2-clamp -> PL2 252; the bound-
+  // await gives the fresh init (~0.5 s) time to establish BEFORE the load
+  // opens the window - PL2 = 300/300 on every apply; a helper that cannot
+  // init never stalls the boot past SYSMAN_WARM_BOUND_MS). warm() is
+  // idempotent + never throws: a failure degrades silently and the first
+  // readLimits/setLimits re-attempts the connect as today. The MOCK seam
+  // stays at the sysmanPowerLimits const below (the mock consumer wraps
+  // the backend and can only exist after it).
   const realSysmanLimits = mock ? null : createSysmanHelperProxy({
     execPath: process.execPath,
     appPath: process.defaultApp ? app.getAppPath() : null,
     log: (s) => console.log(`[sysman-helper] ${s}`),
   });
-  if (!mock) void realSysmanLimits.warm?.();
+  if (!mock) await boundWarm(realSysmanLimits);
   // --ui-verify runs against MockBackend; the env knobs act as OVERLAYS on
   // the featureset base (mock/featuresets/*.json, RID_MOCK_FEATURESET):
   //   - the a770 featureset base is the real card's TRUE editable fan fixture
@@ -798,24 +845,29 @@ async function main() {
       }
       return cached;
     };
-    let driverBarCached = null;
-    let driverBarDone = false;
-    const driverReBar = async () => {
-      if (driverBarDone) return driverBarCached;
-      driverBarDone = true;
-      try {
-        const devices = await backend.listDevices();
-        if (devices.length === 0) return (driverBarCached = null);
-        const p = await backend.pciProperties(devices[0].id);
-        driverBarCached = p ? (p.resizableBarEnabled ? true : false) : null;
-      } catch {
-        driverBarCached = null;
-      }
-      return driverBarCached;
-    };
+    // M19: the driver-BAR reader is the MEMOIZED-PROMISE seam (sysinfo.js
+    // createDriverReBar) - the one-shot latch RACED: the main renderer
+    // (app.ts:347) and the overlay (overlay.ts:372) fire sysinfo:get
+    // CONCURRENTLY at boot, caller B saw the latch and returned the
+    // STILL-NULL cache -> the dashboard ReBAR pill rendered gray for the
+    // whole session. The seam shares ONE in-flight promise - both callers
+    // await the SAME resolving verdict (green pill on the first landing);
+    // a query failure still resolves null (the honest gray + the OS
+    // fallback stays), cached for the session.
+    // M19 (round-2 S1): the seam is DEFERRED to the first get() - the
+    // backend binding is declared AFTER this block (TDZ: an eager seam
+    // construction at this point evaluates the backend before its
+    // declaration and throws on the real boot - the mock/headless paths
+    // return before it, so every harness stayed green). get() is only
+    // reachable once the whole boot body has run, so `backend` exists by
+    // then; the null-guard creates the seam exactly once and its returned
+    // reader memoizes its own in-flight promise (the M19 boot-race
+    // semantics stay intact).
+    let driverReBar = null;
     sysinfo = {
       get: async () => {
         const result = await sysinfoResult();
+        if (driverReBar === null) driverReBar = createDriverReBar(backend);
         const verdict = await driverReBar();
         return verdict === null ? result : applyDriverReBar(result, verdict);
       },
@@ -2164,8 +2216,8 @@ async function main() {
       // M5: the overlay variant - the overlay window is REAL (created above
       // under the knob, seeded overlayEnabled:true); the hotkey is the
       // counting probe (never a real registration). Three matrix configs:
-      // 'overlay' alone (the 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS
-      // -' pin), 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS 60  AVG 58  1% Low
+      // 'overlay' alone (the 'FPS  -  AVG -  1% Low -  0.1% Low -  99% FPS
+      // -' pin), 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS  60  AVG 58  1% Low
       // 52  0.1% Low 42  99% FPS 58') and 'overlay+fps+api'
       // (RID_MOCK_API=1 - the standalone API row reads 'DX12' - M13: the
       // api field LEFT the FPS row).

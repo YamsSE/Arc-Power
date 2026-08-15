@@ -6697,19 +6697,21 @@ export async function runTrayApplyVerify(win, backend, store, getTrayProbe) {
 // real globalShortcut registration). This runner asserts:
 //   (a) 'overlay:get-state' -> exists + visible (the seeded session);
 //   (b) the overlay DOM lines - ONLY the STABLE fields pinned exactly
-//       ('CPU 42%', '4.3GHz', '61°C'|'62°C', '125.5W'|'-' - the M13 CPU
-//       watt field with the RID_MOCK_NO_POWER_METER degrade, 'GPU 42%',
-//       '0.652V', '38.8W', '1030RPM' + the M14 'RAM 12.4GB' + 'VRAM 3.0GB'
-//       rows - M18: every value-unit pair is GLUED, never '50 W'); the
-//       climbing clock/temp are pattern-matched (/GPU 42%
+//       ('CPU  42%', '4.3GHz', '61°C'|'62°C', '125.5W'|'-' - the M13 CPU
+//       watt field with the RID_MOCK_NO_POWER_METER degrade, 'GPU  42%',
+//       '0.652V', '38.8W', '1030RPM' + the M14 'RAM  12.4GB' + 'VRAM 3.0GB'
+//       rows - M18: every value-unit pair is GLUED, never '50 W'; M19: the
+//       rows carry the divider-aligned padded labels - every value starts
+//       at maxLabelLen + 1 ch, right of the divider); the
+//       climbing clock/temp are pattern-matched (/GPU  42%
 //       \d+MHz  \d+°C  0\.652V  38\.8W  1030RPM/ - M16: the GPU line is
 //       Util / Core clock / Temp / Voltage / Power / Fan - the mem-clock
 //       LEFT the row (it leads the VRAM row now) and the voltage rides
 //       INSIDE the row between the temp and the power fields; the
 //       standalone #overlay-voltage div does NOT exist); the FPS row pins
 //       the FULL line -
-//       'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -' unless
-//       RID_MOCK_FPS=1 -> 'FPS 60  AVG 58  1% Low 52  0.1% Low 42
+//       'FPS  -  AVG -  1% Low -  0.1% Low -  99% FPS -' unless
+//       RID_MOCK_FPS=1 -> 'FPS  60  AVG 58  1% Low 52  0.1% Low 42
 //       99% FPS 58' (M7a/M12: the percentile + AVG stats ride the FPS
 //       row); M13: the standalone API row (#overlay-api between the VRAM
 //       row and the frametime strip) reads 'DX12' under RID_MOCK_API=1
@@ -6916,9 +6918,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // ('4.3GHz'), cpuTemp 61|62 alternating, memClock 2187, vram 2971324416
   // ('3.0GB'), power 38.8 ('38.8W'), fan 1030 ('1030RPM'); the clock
   // climbs 600+tick*100 and the GPU temp climbs 36+tick%30 - those two are
-  // pattern-matched, never exact-pinned (M1).
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU 42%')`, 15000))) {
-    fail(`M5: the overlay CPU line lacks 'CPU 42%': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  // pattern-matched, never exact-pinned (M1). M19: the stock rows carry
+  // the padded labels (maxLabelLen 4 - 'CPU  42%', 'FPS  60', 'RAM  12.4GB';
+  // 'VRAM' is already 4ch).
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU  42%')`, 15000))) {
+    fail(`M5: the overlay CPU line lacks 'CPU  42%': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
   // M17g: cpu-clock is OFF by default (the user's 11) - the boot CPU line
   // must NOT carry the frequency field (the M18 glued shape: '4.3GHz').
@@ -6942,9 +6946,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // row (between the temp and the power fields) - the standalone Voltage
   // row is GONE. M17g: the stock overlay stats = the user's 11 - the GPU
   // row's clock/voltage/fan fields are OFF by default, so the boot line is
-  // 'GPU 42%  <temp>°C  38.8W' (Util / Temp / Power - the M17b chips
-  // section turns the other fields on + off; M18: the units are GLUED).
-  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
+  // 'GPU  42%  <temp>°C  38.8W' (Util / Temp / Power - the M17b chips
+  // section turns the other fields on + off; M18: the units are GLUED;
+  // M19: the 'GPU' label is padded to the 4ch column).
+  if (!(await waitFor(overlayWin, `/GPU  42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
     fail(`M17g: the overlay GPU line does not match the default-set pattern (Util / Temp / Power - the clock/voltage/fan fields are OFF by default): '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
   // M16: the standalone Voltage row is REMOVED - the #overlay-voltage div
@@ -6953,15 +6958,16 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M16: the standalone #overlay-voltage row still exists (the GPU voltage must be a field INSIDE the GPU row - the row div was removed)');
   }
   // M7a/M12: the FPS row carries the percentile + AVG stats - the FULL
-  // pinned line is 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
+  // pinned line is 'FPS  60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
   // under RID_MOCK_FPS=1 ONLY when those stats are ON. M17g: the stock
   // overlay stats = the user's 11 (fps ON, the percentile stats OFF by
-  // default) - the BOOT line is the plain frame rate ('FPS 60' with the
-  // mock fps / 'FPS -' without it; the percentile round trips below turn
-  // the stats on and back).
+  // default) - the BOOT line is the plain frame rate ('FPS  60' with the
+  // mock fps / 'FPS  -' without it; the percentile round trips below turn
+  // the stats on and back). M19: the 'FPS' label is padded to the 4ch
+  // column ('FPS  60' = 2 spaces; 'FPS  -').
   // M13: the api field LEFT this row - the fpsLine NEVER carries a badge
   // (the standalone API row pins below cover the mockApi shape).
-  const fpsPin = mockFps ? 'FPS 60' : 'FPS -';
+  const fpsPin = mockFps ? 'FPS  60' : 'FPS  -';
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 10000))) {
     fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
@@ -6989,13 +6995,14 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   // M14: the Memory row - the sysStats fixture's memoryUsedBytes
   // 12400000000 (12.4GB - decimal, the fixture-wins composition; M13:
-  // the row label reads 'RAM'; M18: the unit is GLUED). M16: the VRAM row
+  // the row label reads 'RAM'; M18: the unit is GLUED; M19: the label is
+  // padded to the 4ch column - 'RAM  12.4GB'). M16: the VRAM row
   // now carries 'MemClock;VRAM;VramTEMP' - the mock's memClockMhz 2187,
   // gpuMemUsedBytes
   // 2971324416 -> '3.0GB' and vramTempC = tempCBase + 8 + (tick % 10)
   // (the 44|..|53°C ramp - pattern-matched: /2187MHz  3\.0GB  \d+°C/).
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM 12.4GB'`, 10000))) {
-    fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected 'RAM 12.4GB' - the sysStats fixture's memoryUsedBytes)`);
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM  12.4GB'`, 10000))) {
+    fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected 'RAM  12.4GB' - the sysStats fixture's memoryUsedBytes)`);
   }
   // M16: the VRAM row's mem-clock + vram-temp fields are OFF by default
   // (M17g - the user's 11) - the boot row is the gpu-vram field only.
@@ -7072,6 +7079,47 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail(`M18: the overlay header divider pins failed (${dividerPins.why})`);
   }
   step('m18-divider', `M18: the header divider exists behind the five labeled rows - ${dividerPins.why} (the independently-derived x; spans the fps->vram block, stops above the API row; 1px, the overlay color, z-index 0, no text-shadow)`);
+
+  // (m19-divider-alignment) M19: the divider ALIGNMENT - the ONE rule
+  // (`label.padEnd(maxLabelLen) + ' ' + fields`) puts every row's VALUE at
+  // `maxLabelLen + 1 ch` - 1ch RIGHT of the divider (the divider sits at
+  // maxLabelLen + 0.35ch). Derived inside the page: the value start is the
+  // left edge of a Range over the row's text node starting at char
+  // (maxLabelLen + 1) - the exact offset the ONE rule puts the first value
+  // at (maxLabelLen = the renderer's --overlay-label-w CSS var - the
+  // per-render source of truth set from the TRUE max of the five labels;
+  // never a DOM-text tokenization - the space-containing chip labels like
+  // 'i7 14700K' would tokenize to 4 chars instead of 9). Assert: every
+  // value start is RIGHT of the divider's x AND the five value starts are
+  // EQUAL (the aligned column).
+  const dividerAlignPin = () => `(() => {
+    const divider = document.getElementById('overlay-divider');
+    if (!divider) return { ok: false, why: 'missing-divider' };
+    const ids = ['overlay-fps', 'overlay-cpu', 'overlay-memory', 'overlay-gpu', 'overlay-vram'];
+    const els = ids.map((id) => document.getElementById(id));
+    const maxLen = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--overlay-label-w'));
+    const offset = maxLen + 1; // the ONE rule: every value starts at maxLabelLen + 1 ch
+    const starts = els.map((el) => {
+      const node = el?.firstChild;
+      if (!node || node.nodeType !== 3) return null;
+      const range = document.createRange();
+      range.setStart(node, Math.min(offset, node.textContent.length));
+      range.setEnd(node, node.textContent.length);
+      return range.getBoundingClientRect().left;
+    });
+    const d = divider.getBoundingClientRect();
+    return {
+      ok: starts.length === 5
+        && starts.every((s) => s !== null && s > d.left)
+        && starts.every((s) => Math.abs(s - starts[0]) < 1),
+      why: JSON.stringify({ maxLen, offset, dividerX: d.left, starts, varW: getComputedStyle(document.documentElement).getPropertyValue('--overlay-label-w'), rows: els.map((e) => e?.textContent ?? null) }),
+    };
+  })()`;
+  const alignPins = await ojs(dividerAlignPin());
+  if (!alignPins.ok) {
+    fail(`M19: the overlay divider-alignment pins failed (${alignPins.why}) - every labeled row's value must start RIGHT of the divider and the five value starts must be EQUAL`);
+  }
+  step('m19-divider-alignment', `M19: the divider-aligned value column - ${alignPins.why} (every value starts at maxLabelLen + 1 ch, right of the divider; the five value starts are equal)`);
 
   // (c) the frametime canvas has drawn content under RID_MOCK_FPS=1 (the
   // 16.7ms passthrough series fed the polyline - non-transparent pixels on
@@ -7280,11 +7328,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === true)`, 5000))) {
     fail('M17b: toggling the chip-names checkbox did not persist overlayChipNames=true');
   }
-  if (!(await waitFor(overlayWin, `/^A770 42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
-    fail(`M17b: the overlay GPU row label is not the mock-derived 'A770': '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}' (expected 'A770 42%  <temp>°C  38.8W' - the M17g default-set fields, the field order unchanged)`);
+  if (!(await waitFor(overlayWin, `/^A770      42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: the overlay GPU row label is not the mock-derived 'A770': '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}' (expected 'A770      42%  <temp>°C  38.8W' - the M17g default-set fields, the label padded to the 9ch 'i7 14700K' column)`);
   }
   if (!(await waitFor(overlayWin, `/^i7 14700K 42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
-    fail(`M17b: the overlay CPU row label is not the mock-derived 'i7 14700K': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (expected 'i7 14700K 42%  <temp>°C ...' - the M17g default-set fields)`);
+    fail(`M17b: the overlay CPU row label is not the mock-derived 'i7 14700K': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (expected 'i7 14700K 42%  <temp>°C ...' - the M17g default-set fields; the 9ch label is the max, its row keeps the single separator)`);
   }
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('GPU ') === false && (document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU ') === false`, 5000))) {
     fail('M17b: the chip labels must REPLACE the stock prefixes (no doubling)');
@@ -7327,15 +7375,24 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     };
   })()`);
   if (!dividerWide.ok) fail(`M18: the chip-names ON pass did not widen the divider column (${dividerWide.why})`);
+  // (m19-divider-alignment-wide) M19: under the widened 9ch column the ONE
+  // rule still holds - every value starts right of the WIDER divider and
+  // the five value starts stay equal (the same var-derived pin as the
+  // stock pass; --overlay-label-w 9ch -> maxLen 9 -> offset 10).
+  const alignWide = await ojs(dividerAlignPin());
+  if (!alignWide.ok) {
+    fail(`M19: the chip-names ON alignment pins failed (${alignWide.why}) - the widened column must still put every value right of the divider, aligned`);
+  }
+  step('m19-divider-alignment-wide', `M19: the chip-names ON alignment - ${alignWide.why} (the values still start at maxLabelLen + 1 ch, right of the widened divider)`);
   await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayChipNames"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === false)`, 5000))) {
     fail('M17b: re-toggling the chip-names checkbox did not persist overlayChipNames=false');
   }
-  if (!(await waitFor(overlayWin, `/^GPU 42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
-    fail(`M17b: re-toggling did not restore the stock 'GPU ' prefix: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(overlayWin, `/^GPU  42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: re-toggling did not restore the stock 'GPU' prefix: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
-  if (!(await waitFor(overlayWin, `/^CPU 42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
-    fail(`M17b: re-toggling did not restore the stock 'CPU ' prefix: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(overlayWin, `/^CPU  42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
+    fail(`M17b: re-toggling did not restore the stock 'CPU' prefix: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
   step('m17b-chipnames-off', 'the chip-names toggle OFF: the stock CPU / GPU prefixes return (byte-identical)');
 
@@ -7455,13 +7512,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // uncheck never touches them).
   await ensureStatOn('fps-1pct-low');
   await ensureStatOn('fps-99pct');
-  const fullPctPin = mockFps ? 'FPS 60  1% Low 52  99% FPS 58' : 'FPS -  1% Low -  99% FPS -';
+  const fullPctPin = mockFps ? 'FPS  60  1% Low 52  99% FPS 58' : 'FPS  -  1% Low -  99% FPS -';
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fullPctPin}'`, 5000))) {
     fail(`M7a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fullPctPin}' after turning the percentile stats on)`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
-  const plainFpsPin = mockFps ? 'FPS 60' : 'FPS -';
+  const plainFpsPin = mockFps ? 'FPS  60' : 'FPS  -';
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-1pct-low') === false && e.settings.overlayStats.includes('fps-99pct') === false)`, 5000))) {
     fail('M7a: unchecking the 1% Low / 99% FPS tickboxes did not persist overlayStats without them');
   }
@@ -7482,16 +7539,16 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   await ensureStatOn('fps-avg');
   await ensureStatOn('fps-01pct-low');
   const avg01Pin = mockFps
-    ? 'FPS 60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
-    : 'FPS -  AVG -  1% Low -  0.1% Low -  99% FPS -';
+    ? 'FPS  60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
+    : 'FPS  -  AVG -  1% Low -  0.1% Low -  99% FPS -';
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${avg01Pin}'`, 5000))) {
     fail(`M12: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${avg01Pin}' after turning the AVG / 0.1% Low stats on)`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-avg"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-01pct-low"]'); if (b) b.click(); })()`);
   const noAvg01Pin = mockFps
-    ? 'FPS 60  1% Low 52  99% FPS 58'
-    : 'FPS -  1% Low -  99% FPS -';
+    ? 'FPS  60  1% Low 52  99% FPS 58'
+    : 'FPS  -  1% Low -  99% FPS -';
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-avg') === false && e.settings.overlayStats.includes('fps-01pct-low') === false)`, 5000))) {
     fail('M12: unchecking the AVG / 0.1% Low tickboxes did not persist overlayStats without them');
   }
@@ -7510,7 +7567,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // the fixed div stays, the fps line keeps its badge-free pinned text),
   // re-checking restores 'DX12'. Meaningful ONLY under RID_MOCK_API=1
   // (without the knob the row never fills and the none-case apiPin above
-  // already covers it).
+  // already covers it). The fps line at this point is the FULL percentile
+  // line - the f3b/f3b2 round trips above leave the four percentile stats
+  // ON (each re-checks at its end), so the pin is avg01Pin, never the
+  // boot-plain fpsPin (the M19 padded shapes apply to both).
   if (mockApi) {
     await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="api"]'); if (b) b.click(); })()`);
     if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('api') === false)`, 5000))) {
@@ -7519,8 +7579,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === ''`, 5000))) {
       fail(`M13: the overlay API row is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '' after unchecking the api stat - the row empties)`);
     }
-    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 5000))) {
-      fail(`M13: the overlay FPS line changed when the api stat was unchecked: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}' - the api row is independent)`);
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${avg01Pin}'`, 5000))) {
+      fail(`M13: the overlay FPS line changed when the api stat was unchecked: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${avg01Pin}' - the api row is independent; the percentile stats are ON from the round trips above)`);
     }
     await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="api"]'); if (b) b.click(); })()`);
     if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === 'DX12'`, 5000))) {
@@ -7533,7 +7593,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
 
   // (f3d) M14: the Memory-row stat - the memory-util tickbox round-trips
   // like the FPS-row stats: unchecking it empties the row ('' - the fixed
-  // div stays), re-checking restores 'RAM 12.4GB'.
+  // div stays), re-checking restores 'RAM  12.4GB'.
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="memory-util"]'); if (b) b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('memory-util') === false)`, 5000))) {
     fail('M14: unchecking the Memory tickbox did not persist overlayStats without memory-util');
@@ -7542,10 +7602,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected '' after unchecking memory-util - the row fully off writes '')`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="memory-util"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM 12.4GB'`, 5000))) {
-    fail(`M14: the overlay Memory row did not regain 'RAM 12.4GB' after re-checking: '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM  12.4GB'`, 5000))) {
+    fail(`M14: the overlay Memory row did not regain 'RAM  12.4GB' after re-checking: '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'`);
   }
-  step('m14-memory-tickbox', 'the Memory tickbox round trip: uncheck -> the Memory row writes \'\'; re-check -> \'RAM 12.4GB\' again');
+  step('m14-memory-tickbox', 'the Memory tickbox round trip: uncheck -> the Memory row writes \'\'; re-check -> \'RAM  12.4GB\' again');
 
   // (f3d-2) M13: the CPU-row watt field - the cpu-power tickbox round-trips
   // like the Memory/VRAM stats: unchecking it drops the '125.5W' TAIL from
@@ -7606,11 +7666,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('0.652V') === false`, 5000))) {
     fail(`M16: the overlay GPU line still shows the voltage field after unchecking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
-  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+MHz  \\d+°C  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
+  if (!(await waitFor(overlayWin, `/GPU  42%  \\d+MHz  \\d+°C  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
     fail(`M16: the GPU line lost more than the voltage field after unchecking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-voltage"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `/GPU 42%  \\d+MHz  \\d+°C  0\\.652V  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
+  if (!(await waitFor(overlayWin, `/GPU  42%  \\d+MHz  \\d+°C  0\\.652V  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
     fail(`M16: the overlay GPU line did not regain the voltage field after re-checking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
   step('m16-gpu-voltage-tickbox', 'the GPU Voltage tickbox round trip: uncheck -> the \'0.652V\' field vanishes from the GPU row (the rest stays); re-check -> the full row again');
