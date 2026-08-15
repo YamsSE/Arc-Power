@@ -85,6 +85,11 @@ Quick access and apply-on-startup controls without opening the window.
   pill lands green on the first render instead of staying gray), and every
   overlay row's values start at the same x - one character right of the
   divider line, never overlapping it.
+- **Divider margins + an API header** - the overlay divider keeps a clear
+  gap on both sides (the header side widened; every value starts two
+  characters past its padded label, ~1.25ch right of the line), and the
+  API row gained its "API" header - it is now the sixth labeled row of
+  the divider column, its value after the line like the other five.
 - **Temperatures** - CPU, GPU and VRAM temperatures round to whole degrees;
   AMD Ryzen CPU wattage comes from the RAPL energy counters (with an honest
   status in the log when the counters are unavailable or frozen).

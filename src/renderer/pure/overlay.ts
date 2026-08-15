@@ -67,7 +67,9 @@ export const OVERLAY_POLL_MS_DEFAULT = 400;
  * the badge in its OWN standalone line (M13: the api field LEFT the FPS
  * row - the apiLine row sits between the VRAM row and the frametime
  * strip; the row order and the tickbox order are independent - the
- * apiLine content is explicit in overlayLines).
+ * apiLine content is explicit in overlayLines). M19b: the apiLine row
+ * carries the 'API' row label like the other five rows - the SIXTH
+ * labeled row of the divider column).
  * M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% Low row stats)
  * ride right after 'fps' (the row field order); 'memory-util' (the Memory
  * row) joins after the CPU stats; 'gpu-vram' stays where it was - it now
@@ -297,17 +299,18 @@ export interface OverlayLines {
   vramLine: string;
   /** M13: the standalone Graphics-API row (the api field LEFT the fpsLine
    *  and now feeds this row between the VRAM row and the frametime strip).
-   *  'DX12' or '' - the M10a vanish rule: EMPTY when the api is
+   *  'API   DX12' or '' - the M10a vanish rule: EMPTY when the api is
    *  null/unknown or the api stat is off, never a '-'. */
   apiLine: string;
-  /** M18: the FIVE labeled-row labels (the header-divider column source).
-   *  The cpu/gpu entries carry the M17b chip-name labels when enabled, the
-   *  stock prefixes otherwise (the same cpuPrefix/gpuPrefix the lines
-   *  render); fps/memory/vram are the fixed 'FPS' / 'RAM' / 'VRAM'. NO api
-   *  entry - the API row is headerless (the bare badge) and not part of
-   *  the divider column. The renderer measures the max label length from
-   *  these and sets the --overlay-label-w CSS var (in ch) per render. */
-  labels: { fps: string; cpu: string; memory: string; gpu: string; vram: string };
+  /** M18/M19b: the SIX labeled-row labels (the header-divider column
+   *  source). The cpu/gpu entries carry the M17b chip-name labels when
+   *  enabled, the stock prefixes otherwise (the same cpuPrefix/gpuPrefix
+   *  the lines render); fps/memory/vram are the fixed 'FPS' / 'RAM' /
+   *  'VRAM'; the M19b api entry is the fixed 'API' - the API row joined
+   *  the divider column as the SIXTH labeled row. The renderer measures
+   *  the max label length from these and sets the --overlay-label-w CSS
+   *  var (in ch) per render. */
+  labels: { fps: string; cpu: string; memory: string; gpu: string; vram: string; api: string };
   /** M6: the frametime stat is enabled - the stat is NOT a line, it feeds
    *  the canvas strip; the renderer shows/hides the strip by this flag. */
   frametimeEnabled: boolean;
@@ -331,45 +334,52 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  * (M7a/M12 - the low1Pct / low01Pct / avgFps / p99 numbers from the same
  * fps poll, null until the sampler's frame floors) + the api id + the RAM
  * utilization. Every enabled field degrades honestly to '-':
- *   fpsLine: 'FPS  60  AVG 58  1% Low 52  0.1% Low 40  99% FPS 58' - the
- *     FPS field rounds like the Monitoring tile and renders 'FPS  -' for
+ *   fpsLine: 'FPS   60  AVG 58  1% Low 52  0.1% Low 40  99% FPS 58' - the
+ *     FPS field rounds like the Monitoring tile and renders 'FPS   -' for
  *     null, non-finite or <= 0 fps (0 is the DXGI no-signal shape - not a
  *     real frame rate); the AVG / 1% Low / 0.1% Low / 99% FPS fields
  *     render '-' when their numbers are null (the honest degrade - never
  *     a stale value); each field vanishes with its stat; '' when all five
  *     are off (M13: the api field LEFT this row - the six FPS-row stats
  *     became five);
- *   cpuLine: 'CPU  42%  4.3GHz  61°C  125.5W' (Util / Clock via ghzFreq /
+ *   cpuLine: 'CPU   42%  4.3GHz  61°C  125.5W' (Util / Clock via ghzFreq /
  *     Temp / Wattage with ONE decimal (toFixed(1) - the GPU watt format;
  *     M13) - each field vanishes with its stat; '' when all four are off);
- *   memoryLine: 'RAM  12.4GB' (M14 - the system-wide USED RAM in bytes
+ *   memoryLine: 'RAM   12.4GB' (M14 - the system-wide USED RAM in bytes
  *     via gbValue (decimal GB, one decimal - the VRAM row's format; the
  *     M12 memoryUtilPct percent is REPLACED); M13: the row label reads
  *     'RAM' - the stat id stays 'memory-util'; '' when the memory-util
  *     stat is off);
- *   gpuLine: 'GPU  42%  2500MHz  65°C  0.652V  38.8W  1030RPM'
+ *   gpuLine: 'GPU   42%  2500MHz  65°C  0.652V  38.8W  1030RPM'
  *     (Util / Core clock / Temp / Voltage (volts with 3 decimals - M16,
  *     the amended shape: the voltage field rides INSIDE the GPU row
  *     between the temp and the power fields) / Power with ONE decimal
  *     (toFixed(1) - 38.8) / Fan (first RPM of the array) - each field
  *     vanishes with its stat; '' when all six are off; M16: the MEM-CLOCK
  *     field LEFT this row - it leads the VRAM row now);
- *   vramLine: 'VRAM 2187MHz  3.0GB  73°C' (M16 - the mem-clock field
+ *   vramLine: 'VRAM  2187MHz  3.0GB  73°C' (M16 - the mem-clock field
  *     LEADS (gpu-mem-clock), then the VRAM usage (gpu-vram via gbValue),
  *     then the VRAM temperature (gpu-vram-temp); '' when ALL three stats
  *     are off);
- *   apiLine: 'DX12' (M13 - the standalone Graphics-API row; the api field
- *     LEFT the fpsLine and now renders its own row between the VRAM row
- *     and the frametime strip. EMPTY when the api is null/unknown or the
- *     api stat is off - "if it's none, it won't display anything", never
- *     a '-'; only the canonical labels ever render (apiLabelOf)).
+ *   apiLine: 'API   DX12' (M13: the standalone Graphics-API row; the api
+ *     field LEFT the fpsLine and now renders its own row between the VRAM
+ *     row and the frametime strip. EMPTY when the api is null/unknown or
+ *     the api stat is off - "if it's none, it won't display anything",
+ *     never a '-'; only the canonical labels ever render (apiLabelOf)).
+ *     M19b: the row rides the SAME labeledRow rule - the 'API' label
+ *     padded to the max label length + the two-space separator ('API   '
+ *     at the stock 4ch column, 'API        ' under the M17b 9ch chip
+ *     column), so its value aligns with the other five rows.
  * M7a (fix 3): the 'CPU '/'GPU ' row label is NOT baked into any field -
  * it is prefixed ONCE to the first field when the row is non-empty
- * ('CPU  61°C' for a temp-only row - never a bare '61°C') and padded to
- * the max label length (M19: label.padEnd(maxLabelLen) + ' ' - the
- * already-4-ch 'VRAM ' label keeps its exact string; the shorter labels
- * pad - 'FPS  ' / 'CPU  ' / 'RAM  ' / 'GPU  '). The Memory / VRAM labels
- * ride the same rule.
+ * ('CPU   61°C' for a temp-only row - never a bare '61°C') and padded to
+ * the max label length (M19b: label.padEnd(maxLabelLen) + '  ' - the
+ * two-space separator; the already-4-ch 'VRAM' label only gains the
+ * separator - 'VRAM  '; the shorter labels pad - 'FPS   ' / 'CPU   ' /
+ * 'RAM   ' / 'GPU   '). M19b: the separator FLIPS to TWO spaces -
+ * `label.padEnd(maxLabelLen) + '  ' + fields` - every value starts at
+ * maxLabelLen + 2 ch (the divider-to-value gap).
+ * The Memory / VRAM labels ride the same rule.
  * M13 (the M2 explicit move): the api parameter (the foreground-window
  * Graphics-API badge) feeds the STANDALONE apiLine - the fpsLine carries
  * no api field anymore.
@@ -440,11 +450,6 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   if (enabled.has('fps-1pct-low')) fpsFields.push(`1% Low ${low1 === null ? '-' : Math.round(low1)}`);
   if (enabled.has('fps-01pct-low')) fpsFields.push(`0.1% Low ${low01 === null ? '-' : Math.round(low01)}`);
   if (enabled.has('fps-99pct')) fpsFields.push(`99% FPS ${p99num === null ? '-' : Math.round(p99num)}`);
-  // M13: the standalone Graphics-API row - the api field LEFT the fpsLine.
-  // 'DX12' or '' - the M10a vanish rule: EMPTY when the api is
-  // null/unknown ( "if it's none, it won't display anything" - never a
-  // '-', never a raw id) and when the api stat is off.
-  const apiLine = enabled.has('api') ? (apiLabelOf(api) ?? '') : '';
   // M6: each line builds from its ENABLED stats only - a stat off -> its
   // field vanishes; ALL of a line's stats off -> the line writes '' (the
   // renderer KEEPS the fixed div and only empties it - never removed).
@@ -481,22 +486,24 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   if (enabled.has('gpu-mem-clock')) vramFields.push(unit(memClock, (n) => String(n), 'MHz'));
   if (enabled.has('gpu-vram')) vramFields.push(unit(vram, (n) => gbValue(n), 'GB'));
   if (enabled.has('gpu-vram-temp')) vramFields.push(unit(vramTemp, (n) => String(Math.round(n)), '°C'));
-  // M18: the header-divider column labels - the FIVE labeled rows only
-  // (the cpu/gpu entries carry the chip labels when enabled); NO api entry
-  // (the API row is headerless and not part of the divider column).
-  const labels = { fps: 'FPS', cpu: cpuPrefix, memory: 'RAM', gpu: gpuPrefix, vram: 'VRAM' };
-  // M19 (the divider alignment - ONE rule): every NON-EMPTY row's label is
-  // padded to the max label length with a separator space after it
-  // (`label.padEnd(maxLabelLen) + ' ' + fields`), so EVERY value starts at
-  // `maxLabelLen + 1 ch` - 1ch RIGHT of the divider (the divider sits at
-  // maxLabelLen + 0.35ch; the rows are white-space:pre + monospace, so
+  // M18/M19b: the header-divider column labels - the SIX labeled rows (the
+  // cpu/gpu entries carry the chip labels when enabled); M19b: the api
+  // entry joins - the API row is the SIXTH labeled row of the divider
+  // column (the M18 headerless decision REVERSED).
+  const labels = { fps: 'FPS', cpu: cpuPrefix, memory: 'RAM', gpu: gpuPrefix, vram: 'VRAM', api: 'API' };
+  // M19/M19b (the divider alignment - ONE rule): every NON-EMPTY row's
+  // label is padded to the max label length with a TWO-space separator
+  // after it (`label.padEnd(maxLabelLen) + '  ' + fields`), so EVERY
+  // value starts at `maxLabelLen + 2 ch` - 2ch RIGHT of the divider's
+  // left edge (the divider sits at maxLabelLen + 0.75ch, so the value-to-
+  // divider gap is ~1.25ch; the rows are white-space:pre + monospace, so
   // space-padding is byte-exact). The empty-row degrade ('' when all
   // fields off) stays '' - no padding on an empty line. The `labels`
   // field itself stays UNPADDED (the renderer's --overlay-label-w column
   // var + the divider position derive from the raw lengths).
-  const maxLabelLen = Math.max(labels.fps.length, labels.cpu.length, labels.memory.length, labels.gpu.length, labels.vram.length);
+  const maxLabelLen = Math.max(labels.fps.length, labels.cpu.length, labels.memory.length, labels.gpu.length, labels.vram.length, labels.api.length);
   const labeledRow = (label: string, fields: string[]): string =>
-    fields.length === 0 ? '' : `${label.padEnd(maxLabelLen)} ${fields.join('  ')}`;
+    fields.length === 0 ? '' : `${label.padEnd(maxLabelLen)}  ${fields.join('  ')}`;
   const fpsLine = labeledRow(labels.fps, fpsFields);
   // M17b (2c): the chip-name label replaces the stock 'CPU ' prefix ONLY -
   // the field order is untouched.
@@ -506,6 +513,19 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // the field order is untouched.
   const gpuLine = labeledRow(labels.gpu, gpuFields);
   const vramLine = labeledRow(labels.vram, vramFields);
+  // M13: the standalone Graphics-API row - the api field LEFT the fpsLine.
+  // M19b: the row builds through the SAME labeledRow rule as the other
+  // five - the 'API' label padded to the max label length + the two-space
+  // separator, so its value aligns with the divider column. The M10a
+  // vanish rule is preserved: EMPTY ('' - the labeledRow empty degrade)
+  // when the api is null/unknown ("if it's none, it won't display
+  // anything" - never a '-', never a raw id) or the api stat is off.
+  const apiFields: string[] = [];
+  if (enabled.has('api')) {
+    const badge = apiLabelOf(api);
+    if (badge !== null) apiFields.push(badge);
+  }
+  const apiLine = labeledRow(labels.api, apiFields);
   return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, labels, frametimeEnabled: enabled.has('frametime') };
 }
 

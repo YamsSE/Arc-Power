@@ -32,12 +32,13 @@
        --overlay-color pattern). -->
   <div id="overlay-root">
     <div id="overlay-backdrop"></div>
-    <!-- M18: the header divider - ONE absolutely-positioned 1px line behind
-         the FIVE labeled rows (FPS / CPU / RAM / GPU / VRAM), painted above
+    <!-- M18/M19b: the header divider - ONE absolutely-positioned 1px line
+         behind the SIX labeled rows (FPS / CPU / RAM / GPU / VRAM / API -
+         M19b: the API row joined the divider column), painted above
          the backdrop (z-index 0, below the z-index-1 rows). The left comes
          from the CSS calc carrying the --overlay-label-w var (set per
-         render by overlay.ts); the top/bottom come from the row offsets.
-         The API row below it is NOT part of the divider column (headerless). -->
+         render by overlay.ts); the top/bottom come from the row offsets
+         (the line spans fps -> api; the frametime strip stays below). -->
     <div id="overlay-divider"></div>
     <div class="overlay-line" id="overlay-fps"></div>
     <div class="overlay-line" id="overlay-cpu"></div>

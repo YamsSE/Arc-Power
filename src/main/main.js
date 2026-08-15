@@ -2216,11 +2216,12 @@ async function main() {
       // M5: the overlay variant - the overlay window is REAL (created above
       // under the knob, seeded overlayEnabled:true); the hotkey is the
       // counting probe (never a real registration). Three matrix configs:
-      // 'overlay' alone (the 'FPS  -  AVG -  1% Low -  0.1% Low -  99% FPS
-      // -' pin), 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS  60  AVG 58  1% Low
+      // 'overlay' alone (the 'FPS   -  AVG -  1% Low -  0.1% Low -  99% FPS
+      // -' pin), 'overlay+fps' (RID_MOCK_FPS=1 - 'FPS   60  AVG 58  1% Low
       // 52  0.1% Low 42  99% FPS 58') and 'overlay+fps+api'
-      // (RID_MOCK_API=1 - the standalone API row reads 'DX12' - M13: the
-      // api field LEFT the FPS row).
+      // (RID_MOCK_API=1 - the standalone API row reads the padded
+      // 'API   DX12' - M13: the api field LEFT the FPS row; M19b: the
+      // SIXTH labeled row with the 'API' header after the divider).
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
       await runGraphicsVerify(win, backend);
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe, () => fpsPolls);

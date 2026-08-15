@@ -101,8 +101,8 @@ const vramEl = document.getElementById('overlay-vram') as HTMLElement;
 const apiEl = document.getElementById('overlay-api') as HTMLElement;
 const canvas = document.getElementById('overlay-frametime') as HTMLCanvasElement;
 const valueEl = document.getElementById('overlay-frametime-value') as HTMLElement;
-// M18: the header divider - ONE absolutely-positioned 1px line behind the
-// FIVE labeled rows (the root is its containing block; the divider's
+// M18/M19b: the header divider - ONE absolutely-positioned 1px line behind
+// the SIX labeled rows (the root is its containing block; the divider's
 // top/bottom get set from the row offsets per render, the left comes from
 // the CSS calc carrying the --overlay-label-w var).
 const rootEl = document.getElementById('overlay-root') as HTMLElement;
@@ -200,24 +200,26 @@ function render(): void {
   // The value line: the latest derived frame time (max 2 decimals; the
   // honest '-' when the last poll had nothing to derive from).
   valueEl.textContent = lines.frametimeEnabled ? formatFrametime(latestFrameTime) : '';
-  // M18: the header-divider column - the --overlay-label-w CSS var in ch
-  // (WITH the unit - '4ch' / '9ch', never a bare number: a unit-less value
-  // inside the calc is invalid at computed-value time) from the max of the
-  // FIVE labeled rows' labels (the chip-name labels widen the column; the
-  // CSS calc's fallback holds the stock 4ch column before the first push).
+  // M18/M19b: the header-divider column - the --overlay-label-w CSS var in
+  // ch (WITH the unit - '4ch' / '9ch', never a bare number: a unit-less
+  // value inside the calc is invalid at computed-value time) from the max
+  // of the SIX labeled rows' labels (the chip-name labels widen the
+  // column; the M19b api entry is 3ch - it never widens it; the CSS
+  // calc's fallback holds the stock 4ch column before the first push).
   const maxLabelLen = Math.max(...Object.values(lines.labels).map((l) => l.length));
   document.documentElement.style.setProperty('--overlay-label-w', `${maxLabelLen}ch`);
-  // M18: the divider's top/bottom - the FPS row's top to the VRAM row's
-  // bottom, relative to the root (measured like sizeCanvas() reads the
-  // canvas rect - getBoundingClientRect, so it adapts to the scale and to
-  // collapsed empty rows). The API row sits BELOW the line's bottom: it is
-  // NOT part of the divider column.
+  // M18/M19b: the divider's top/bottom - the FPS row's top to the API
+  // row's bottom, relative to the root (measured like sizeCanvas() reads
+  // the canvas rect - getBoundingClientRect, so it adapts to the scale and
+  // to collapsed empty rows). M19b: the API row JOINED the divider column
+  // - the line now spans fps -> api (the frametime strip stays BELOW the
+  // divider's bottom).
   if (dividerEl) {
     const rootRect = rootEl.getBoundingClientRect();
     const fpsRect = fpsEl.getBoundingClientRect();
-    const vramRect = vramEl.getBoundingClientRect();
+    const apiRect = apiEl.getBoundingClientRect();
     dividerEl.style.top = `${fpsRect.top - rootRect.top}px`;
-    dividerEl.style.bottom = `${rootRect.bottom - vramRect.bottom}px`;
+    dividerEl.style.bottom = `${rootRect.bottom - apiRect.bottom}px`;
   }
   draw();
 }
