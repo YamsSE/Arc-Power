@@ -28,7 +28,11 @@ export const CONTROL_LABELS: Record<string, string> = {
 const ERROR_MESSAGES: Record<OcErrorCode, string> = {
   'waiver-not-set': 'The warranty waiver is not accepted for this GPU. Accept the waiver and apply again.',
   'out-of-range': 'The value is outside the range supported by this GPU - the slider clamps to the supported range.',
-  'locked-mode': 'Overclocking is locked on this GPU (voltage locked mode). Unlock it to apply changes.',
+  // M22: reworded - there is NO in-session unlock on driver 8974 (a {0,0}
+  // GpuLockSet write min-pins instead of unlocking and resetToDefaults does
+  // not clear a held lock), so the old "Unlock it to apply changes" offered
+  // an action that does not exist - the honest guidance is the reboot.
+  'locked-mode': 'Overclocking is locked on this GPU (voltage locked mode). The GPU lock is held - reboot to clear it, then apply changes.',
   'reset-required': 'This GPU requires a reset before the value can be applied. Reset the device and apply again.',
   unsupported: 'This control is not supported on this GPU.',
   'unavailable-symbol': 'The IGCL runtime on this driver is missing the API for this control - update the Intel graphics driver.',

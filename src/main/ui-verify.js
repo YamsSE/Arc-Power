@@ -136,9 +136,14 @@
 //      freq card's toggle is Offset|Lock: Lock mode renders the gpuLock
 //      editor INSIDE the card (the M17d standalone card is folded in), the
 //      mode switch resets the other side IN THE DRAFT, the lock apply is
-//      the ATOMIC payload (offsets 0 ride along), the offset apply carries
-//      the (0,0) unlock, the floating apply is force-hidden in Lock mode,
-//      the editor bounds come from caps.lockRange; (d) M4J clarification:
+//      the ATOMIC payload (offsets 0 ride along), M22: the OFFSET apply
+//      carries the OFFSETS ONLY (the M17e-era (0,0) gpuLock companion is
+//      REMOVED - a {0,0} GpuLockSet write switches the 8974 driver into a
+//      lock mode, it never unlocks) and REFUSES while a real lock is held,
+//      the lock editor's 0 V / 0 MHz input is the CORE + VOLTAGE OFFSET
+//      RESET (never a gpuLock write; refused while locked), the floating
+//      apply is force-hidden in Lock mode, the editor bounds come from
+//      caps.lockRange; (d) M4J clarification:
 //      the vfCurve/vramVoltOffset expert rows are REMOVED -
 //      the Advanced section renders ONLY on vramFreqOffset devices (b580 =
 //      the VRAM clock editor) and is GONE on Alchemist (the OC-mode pill
@@ -2174,7 +2179,11 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // presentation). The toggle is Offset|Lock; Lock mode renders the
   // gpuLock editor INSIDE the freq card; the mode switch resets the other
   // side IN THE DRAFT; the lock apply is the ATOMIC payload (the offsets
-  // zero ride along); the offset apply carries the (0,0) unlock; the
+  // zero ride along); M22: the OFFSET apply carries the OFFSETS ONLY (the
+  // M17e-era (0,0) gpuLock companion is REMOVED - a {0,0} GpuLockSet write
+  // switches the 8974 driver into a lock mode, never an unlock) and
+  // REFUSES while a real lock is held; the lock editor's 0 V / 0 MHz input
+  // is the CORE + VOLTAGE OFFSET RESET (never a gpuLock write); the
   // floating apply is FORCE-HIDDEN in Lock mode; the editor bounds come
   // from caps.lockRange. gpuLock-capable sessions (a770/a750/acer-a750)
   // run the full round trip; b580-like sessions (no gpuLock control) pin
@@ -2235,8 +2244,8 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     const lockTitleFlipped = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
     if (lockTitleFlipped.trim() !== 'GPU Lock') fail(`M17f: the card title must flip to 'GPU Lock' in Lock mode (got '${lockTitleFlipped}')`);
     const lockNoteText = await js(`document.querySelector('.gpu-lock-editor .card-note')?.textContent ?? ''`);
-    if (lockNoteText.trim() !== 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz returns to automatic. Setting a lock clears the core and voltage offsets; setting offsets clears the lock.') {
-      fail(`M17f: the lock description is '${lockNoteText}' (expected the pinned short text)`);
+    if (lockNoteText.trim() !== 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz resets the core and voltage offsets (never writes the lock); setting a real lock clears the offsets; applying offsets while a lock is held is refused - clear the lock (reboot) first.') {
+      fail(`M17f/M22: the lock description is '${lockNoteText}' (expected the pinned M22 wording - the old "setting offsets clears the lock" is FALSE now)`);
     }
     // M17q: the gpuLock power warning - the user's exact wording in the
     // --danger red (the lock ignores the in-place power limits and can
@@ -2326,7 +2335,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     await clearToasts();
     // An out-of-range typed pair clamps to caps.lockRange (the renderer
     // clamp mirror + the backend clamp - 9.9 V -> 1.1 V, the A770's
-    // probe-pinned voltMax; the (0,0) unlock stays reachable via the S2
+    // probe-pinned voltMax; the (0,0) reset pair stays reachable via the S2
     // bypass).
     await js(`(() => {
       const v = document.querySelector('.gpu-lock-editor input[data-lock-field="voltageV"]');
@@ -2382,15 +2391,53 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
     const freqMetaDisplayOffset = await js(`getComputedStyle(document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-meta')).display`);
     if (freqMetaDisplayOffset === 'none') fail(`M20: the freq card's .oc-meta must be visible again in Offset mode (computed display '${freqMetaDisplayOffset}')`);
     if (!(await floatingHidden())) fail('M17e: the floating Apply must stay hidden after the mode flip back (the offsets drafted 0 - nothing dirty)');
-    // The ATOMIC UNLOCK: drag the freq offset to 100 while the driver
-    // still holds the lock -> the per-card chip apply carries the (0,0)
-    // unlock -> the driver lock clears + the offset lands.
+    // M22: the ATOMIC-UNLOCK pin FLIPS - the M17e-era "the offset apply
+    // carries the (0,0) unlock, the driver lock clears" design DIED with the
+    // 8974 live probe: NO product path clears a held lock in-session ({0,0}
+    // GpuLockSet min-pins instead of unlocking; the 0/0 editor apply sends
+    // NO gpuLock key and REFUSES while locked - the lock survives until
+    // reboot). The pin has TWO halves: (i) the HONEST REFUSAL while the real
+    // lock is held, and (ii) an UNLOCKED mock state reached by an EXPLICIT
+    // method (the featureset swap rebuilds the state fresh - NEVER a UI 0/0
+    // apply), on which the offset apply LANDS normally.
+    // (i) while the mock holds the real lock (1.1 / 2600): the offset
+    // chip-apply REFUSES (the 'locked-mode' per-control failure) and the
+    // lock + offsets stay.
+    await setFreqSlider(100);
+    await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 8000))) {
+      fail('M22: the offset chip-apply while the real lock is held must REFUSE (the locked-mode per-control failure) - no refusal toast surfaced');
+    }
+    // S4-F1: the refusal toast must carry the REWORDED guidance (the mock
+    // emits { errorCode:'locked-mode' } with NO message so applyFailureText
+    // falls to the mapping - the errors.ts 'reboot to clear it' text is the
+    // only user-facing honesty change of M22 and must be pinned).
+    const refusedToastText = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
+    if (!refusedToastText.includes('reboot to clear')) {
+      fail(`M22: the refusal toast text is '${refusedToastText}' (expected the reworded 'reboot to clear it' guidance - the M22 honesty change)`);
+    }
+    const refusedLockState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (!(refusedLockState.gpuLock && refusedLockState.gpuLock.voltageV === 1.1 && refusedLockState.gpuLock.freqMhz === 2600)) {
+      fail(`M22: the refused offset apply changed the lock (${JSON.stringify(refusedLockState.gpuLock)} - the lock must stay 1.1 / 2600 MHz)`);
+    }
+    if (Math.abs(refusedLockState.gpuFreqOffsetMhz) > 1e-6) {
+      fail(`M22: the refused offset apply landed the freq offset (${refusedLockState.gpuFreqOffsetMhz} - the offset must stay 0 while the lock is held)`);
+    }
+    await clearToasts();
+    // (ii) reach the UNLOCKED mock state by the explicit featureset swap
+    // (a fresh device - never a UI 0/0 apply) and pin that the offset apply
+    // LANDS normally on the unlocked mock (offset 100, the lock stays (0,0)).
+    await lockSwapTo('a750');
+    await lockSwapTo('a770');
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 8000))) {
+      fail(`M22 (ii): the swap-back to a770 did not re-render (PL readout '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' - expected '210 W')`);
+    }
     await setFreqSlider(100);
     await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.click()`);
     if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.gpuLock && s.gpuLock.voltageV === 0 && s.gpuLock.freqMhz === 0 && s.gpuFreqOffsetMhz === 100)`, 8000))) {
-      fail(`M17e: the atomic UNLOCK apply did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - the offset apply while locked must clear the driver lock first)`);
+      fail(`M22 (ii): the offset apply on the UNLOCKED mock did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - offset 100 must land with the lock staying (0,0))`);
     }
-    step('m17e-lock-toggle', `M17e/M17f: Offset|Lock toggle - Lock drafts the offsets 0 + prefills (0,0) + REPLACES the card content (the offset slider row + the Voltage offset card NOT displayed - the card-replacement toggle) + flips the title to 'GPU Lock' + shows the new pinned description + the range line reads the caps.lockRange bounds ('Range: 0 - 1.1 V / 0 - 5000 MHz') + force-hides the floating apply; the atomic LOCK lands (1 V / 2600 MHz + the offsets 0); the 9.9 V clamp lands (1.1 V); Offset drafts (0,0) without applying + restores the 'Core clock' title + the volt card + the slider; the atomic UNLOCK lands (offset 100 + the driver lock cleared); bounds ${lockVoltMax} V / ${lockFreqMax} MHz from caps.lockRange`);
+    step('m17e-lock-toggle', `M17e/M17f: Offset|Lock toggle - Lock drafts the offsets 0 + prefills (0,0) + REPLACES the card content (the offset slider row + the Voltage offset card NOT displayed - the card-replacement toggle) + flips the title to 'GPU Lock' + shows the new pinned description + the range line reads the caps.lockRange bounds ('Range: 0 - 1.1 V / 0 - 5000 MHz') + force-hides the floating apply; the atomic LOCK lands (1 V / 2600 MHz + the offsets 0); the 9.9 V clamp lands (1.1 V); Offset drafts (0,0) without applying + restores the 'Core clock' title + the volt card + the slider; M22: the LOCKED offset chip-apply REFUSES (locked-mode, the lock + offsets stay), the explicit featureset swap reaches the unlocked mock and the offset apply LANDS (offset 100, the lock stays (0,0)); bounds ${lockVoltMax} V / ${lockFreqMax} MHz from caps.lockRange`);
     await clearToasts();
   } else {
     // b580-like sessions (no gpuLock control): the offset card renders with
@@ -2453,12 +2500,12 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   await clearToasts();
 
-  // --- M17d (Run D)/M17e (Run B): the gpuLock editor round trip - the
+  // --- M17d (Run D)/M17e (Run B)/M22: the gpuLock editor round trip - the
   // --- editor is now NESTED inside the freq card's Lock mode (the M17d
   // --- standalone card is folded in - the .gpu-lock-editor +
   // --- .gpu-lock-actions selectors survive the move). Type a pair, apply,
-  // --- verify the mock lock state + the read-out, reset to dynamic (0,0),
-  // --- verify the state cleared. -----------------------------------------
+  // --- verify the mock lock state + the read-out; the M22 0/0 RESET pin
+  // --- restructures into TWO contexts (locked refusal + unlocked success).
   if (gpuLockUi) {
     const lockInitial = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
     if (!lockInitial.includes('Dynamic (unlocked)')) {
@@ -2488,33 +2535,79 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
       fail(`M17d: the lock read-out is '${lockReadout}' (expected 'Lock: 1 V / 2600 MHz' - the card shows the driver state)`);
     }
     await clearToasts();
-    // Reset to Dynamic: the (0,0) unlock pair - apply it and verify the
-    // mock state cleared + the read-out returns to Dynamic.
+    // M22: the 0/0 RESET pin RESTRUCTURES into TWO contexts - the M17d-era
+    // "Reset to Dynamic clears the lock (0,0)" flow fired while the mock
+    // was LOCKED at 1.0/2600; under the refusal mirror BOTH offset keys
+    // refuse there, so "verify the offsets reset" would be false in situ.
+    // (i) LOCKED: the editor's 0/0 apply (Reset to Dynamic + Apply - typed
+    // 0/0 is dirty vs the applied 1.0/2600) sends the offset-reset payload,
+    // which the locked mock REFUSES (locked-mode) - the lock read-out stays
+    // pinned. (ii) UNLOCKED (reached by the DIRECT MOCK-STATE RESET - the
+    // M17e in-session unlock is dead, so never a UI 0/0 apply): apply an
+    // offset first (+100), then the 0/0 editor apply LANDS the offset reset
+    // (offsets 0, the lock read-out unchanged 'Dynamic (unlocked)').
     await js(`(() => {
       const card = document.querySelector('.gpu-lock-editor');
       if (!card) return;
       Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Reset to Dynamic').click();
       Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
     })()`);
-    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => !!(s.gpuLock && s.gpuLock.voltageV === 0 && s.gpuLock.freqMhz === 0))`, 8000))) {
-      fail(`M17d: the reset-to-dynamic apply did not clear the mock lock state (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)})`);
+    if (!(await waitFor(win, `!!document.querySelector('.toast-error')`, 8000))) {
+      fail('M22: the 0/0 editor reset on the LOCKED mock must REFUSE (the locked-mode per-control failure) - no refusal toast surfaced');
+    }
+    // S4-F1: pin the reworded guidance in this refusal too (the errors.ts
+    // 'reboot to clear it' text - the mock's no-message refusal routes
+    // applyFailureText to the mapping).
+    const resetRefusedToastText = await js(`document.querySelector('.toast-error .toast-message')?.textContent ?? ''`);
+    if (!resetRefusedToastText.includes('reboot to clear')) {
+      fail(`M22: the 0/0-reset refusal toast text is '${resetRefusedToastText}' (expected the reworded 'reboot to clear it' guidance)`);
+    }
+    const refusedResetReadout = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
+    if (!refusedResetReadout.includes('1 V / 2600 MHz')) {
+      fail(`M22: the lock read-out after the refused 0/0 reset is '${refusedResetReadout}' (expected '1 V / 2600 MHz' - the lock must stay)`);
+    }
+    const refusedResetState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (!(refusedResetState.gpuLock && refusedResetState.gpuLock.voltageV === 1 && refusedResetState.gpuLock.freqMhz === 2600)) {
+      fail(`M22: the refused 0/0 reset changed the lock (${JSON.stringify(refusedResetState.gpuLock)} - must stay 1 / 2600)`);
+    }
+    await clearToasts();
+    // (ii) the UNLOCKED success - reset the MOCK'S driver lock directly
+    // (the explicit method; the +100 chip apply then refreshes the renderer
+    // state through its fresh envelope, which does NOT touch the editor's
+    // appliedLock reference - so the 0/0 editor Apply stays dirty-able and
+    // fires the offset-reset payload).
+    backend._state.gpuLock = { voltageV: 0, freqMhz: 0 };
+    await setFreqSlider(100);
+    await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.click()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.gpuFreqOffsetMhz === 100 && s.gpuLock && s.gpuLock.voltageV === 0 && s.gpuLock.freqMhz === 0)`, 8000))) {
+      fail(`M22 (ii): the +100 offset apply on the unlocked mock did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - the offset must land with the lock (0,0))`);
+    }
+    await clearToasts();
+    await js(`(() => {
+      const card = document.querySelector('.gpu-lock-editor');
+      if (!card) return;
+      Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Reset to Dynamic').click();
+      Array.from(card.querySelectorAll('.gpu-lock-actions button')).find((b) => (b.textContent ?? '').trim() === 'Apply').click();
+    })()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.gpuFreqOffsetMhz === 0 && s.gpuVoltOffsetV === 0 && s.gpuLock && s.gpuLock.voltageV === 0 && s.gpuLock.freqMhz === 0)`, 8000))) {
+      fail(`M22 (ii): the 0/0 editor reset on the UNLOCKED mock did not land (${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuLock)} - the offsets must reset to 0 with the lock staying (0,0))`);
     }
     const lockUnlocked = await js(`document.querySelector('.gpu-lock-current')?.textContent ?? ''`);
     if (!lockUnlocked.includes('Dynamic (unlocked)')) {
-      fail(`M17d: the lock read-out is '${lockUnlocked}' after the reset (expected 'Dynamic (unlocked)')`);
+      fail(`M22 (ii): the lock read-out after the 0/0 reset is '${lockUnlocked}' (expected 'Dynamic (unlocked)' - the reset never writes the lock)`);
     }
-    step('m17d-gpulock', 'M17d (Run D): the Fixed Clock / Voltage Lock card - 1.0 V / 2600 MHz apply lands (mock state + read-out verified), Reset to Dynamic clears the lock (0,0)');
+    step('m17d-gpulock', 'M17d (Run D)/M22: the Fixed Clock / Voltage Lock editor - 1.0 V / 2600 MHz apply lands (mock state + read-out verified); the LOCKED 0/0 reset REFUSES (locked-mode, the lock stays 1 V / 2600 MHz); the direct mock-state reset reaches the unlocked mock, the +100 offset apply lands, and the 0/0 reset returns the offsets 0 with the lock read-out unchanged (Dynamic (unlocked))');
     await clearToasts();
   }
 
   // Restore: Offset mode + freq 0 + volt 0 - the later sections expect the
   // a770 baseline (the freq card must never be left in Lock mode, and the
   // volt slider must never be left in the negative half-plane). The M4-B
-  // restore-Offset click DIES with the Offset/Clock toggle - the M17e
-  // Offset|Lock toggle's Offset button restores the mode instead. M17e:
-  // the baseline may ALREADY be clean (the atomic lock zeroes the offsets
-  // + the atomic unlock rides the payloads) - the floating apply is
-  // clicked only when visible (a hidden-button click would be a no-op).
+// restore-Offset click DIES with the Offset/Clock toggle - the M17e
+    // Offset|Lock toggle's Offset button restores the mode instead. M22:
+    // the baseline may ALREADY be clean (the atomic lock zeroes the offsets
+    // + the m17d 0/0 reset rides the payloads) - the floating apply is
+    // clicked only when visible (a hidden-button click would be a no-op).
   await js(`Array.from(document.querySelectorAll('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-lock-mode-btn')).find((b) => b.textContent.trim() === 'Offset')?.click()`);
   await sleep(150);
   await setVoltSlider(0);

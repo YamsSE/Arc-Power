@@ -880,6 +880,35 @@ export class MockBackend {
     const state = e.state;
     const result = { ok: true, perControl: {} };
 
+    // M22: the apply-while-LOCKED refusal mirror - the HONEST behavior the
+    // renderer's fixed payloads now produce. A NON-ZERO HELD lock
+    // (state.gpuLock - evaluated on the PRE-payload held lock, before ANY
+    // state mutation) refuses the payload's ORIGINAL offset keys
+    // (gpuFreqOffsetMhz / gpuVoltOffsetV - INCLUDING zero-valued ones: the
+    // lock editor's 0/0 reset is an offset-reset payload, refused like any
+    // offset write) with the IN_VOLTAGE_LOCKED_MODE class (per-control
+    // errorCode 'locked-mode', NO message - applyFailureText prefers
+    // per.message over the mapping, so the reworded errors.ts 'locked-mode'
+    // text only renders here; the real backend always emits its IGCL status
+    // message). The refusal is measured against the PRE-NORMALIZATION
+    // payload (rawSettings) - the M17e lock-vs-offset normalization below
+    // ADDS synthetic zero-offset keys to LOCK-ONLY payloads, and those
+    // synthetic keys must NOT trigger the refusal (a LOCK-ONLY payload is  not
+    // an offset apply; its final state stays lock + offsets 0). The gpuLock
+    // key itself processes normally regardless (a non-zero pair
+    // lands/changes the lock; a {0,0} pair still writes per the mock's existing
+    // {0,0} handling - the renderer never sends it, but the backend contract
+    // for a direct caller stays). The refusal is evaluated BEFORE the scalar
+    // applies - the lock editor's OWN atomic payloads (zero offsets + a pair)
+    // applied while a DIFFERENT lock is held refuse their offset keys and
+    // still LAND the lock - coherent with the real backend's offsets-first
+    // write order on a locked driver (the real driver refuses the offset
+    // writes and the lock write proceeds).
+    const rawSettings = settings;
+    const heldLock = state.gpuLock;
+    const heldLockNonZero = !!(heldLock && (heldLock.voltageV !== 0 || heldLock.freqMhz !== 0));
+    const payloadHadOffsetKey = (key) => rawSettings[key] !== null && rawSettings[key] !== undefined;
+
     // M17e (round-1 S1b, mock parity): mirror IgclBackend's UNIVERSAL
     // lock-vs-offset normalization - a non-zero gpuLock forces the carried
     // freq/volt offsets to 0 (a legacy/hand-edited profile with lock +
@@ -915,6 +944,19 @@ export class MockBackend {
 
     const applyScalar = (control, canonicalName, value) => {
       if (value === null || value === undefined) return;
+      // M22: the locked-refusal mirror - while a non-zero lock is HELD and
+      // the ORIGINAL payload carried this offset key, refuse it per-control
+      // (the lock editor's 0/0 reset is an offset-reset payload, so
+      // zero-valued offsets refuse the same way); the refusal wins over the
+      // inject-fail + clamp machinery (the driver refuses BEFORE any
+      // acceptance logic).
+      if (heldLockNonZero
+        && (canonicalName === 'gpuVoltOffsetV' || canonicalName === 'gpuFreqOffsetMhz')
+        && payloadHadOffsetKey(canonicalName)) {
+        result.perControl[canonicalName] = { ok: false, errorCode: 'locked-mode' };
+        result.ok = false;
+        return;
+      }
       if (canonicalName === 'powerLimitW' || canonicalName === 'tempLimitC') {
       }
       if (!caps.controls[control]) {

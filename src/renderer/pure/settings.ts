@@ -483,7 +483,7 @@ export function clampGpuLock(
   lockRange?: Partial<LockRange> | null,
 ): { voltageV: number; freqMhz: number } {
   if (lock.voltageV === 0 && lock.freqMhz === 0) {
-    return { voltageV: 0, freqMhz: 0 }; // the (0,0) unlock bypass (S2)
+    return { voltageV: 0, freqMhz: 0 }; // the (0,0) reset pair bypass (S2)
   }
   const range = lockRange ?? {};
   const voltMin = Math.max(0, Number.isFinite(range.voltMin) ? (range.voltMin as number) : 0);

@@ -124,8 +124,9 @@ let renderCaps: Capabilities | null = null;
 // renders INSIDE the freq card in Lock mode (the standalone M17d card is
 // folded in); the mode switch resets the other side IN THE DRAFT (Lock ->
 // the offsets draft 0; Offset -> the lock drafts (0,0)); the lock apply
-// zeroes the offsets + the offset apply unlocks (the atomic payloads the
-// backend normalizes + orders).
+// zeroes the offsets; the offset apply REFUSES while a real lock is held
+// (M22 - the offset applies carry no lock, the lock editor's 0/0 is the
+// offset reset).
 let lockMode = false;
 // M4-B: the automatic waiver re-prompt + single retry counter - the
 // driver can lose the waiver while settings.json still says accepted; the
@@ -332,10 +333,10 @@ function refreshCard(key: string) {
 function updateFloating() {
   if (!applyBtn) return;
   if (applying) return;
-  // M17e (round-2 N5): the floating apply is FORCE-HIDDEN in Lock mode -
+  // M17e (round-2 N5)/M22: the floating apply is FORCE-HIDDEN in Lock mode -
   // the lock card owns its apply (a slider drag in Lock mode must NOT
-  // re-enable the floating button; the per-card offset chip remains the
-  // atomic-unlock path when the mode flips back to Offset).
+  // re-enable the floating button; the per-card offset chip REFUSES while a
+  // real lock is held - the M17e-era atomic-unlock path is dead).
   if (lockMode) {
     applyBtn.hidden = true;
     return;
@@ -481,7 +482,11 @@ export const tuningPage: Page = {
           if (deviceId === null || !caps) return;
           // M4-B step-5 F3: parse + validate FIRST - empty/whitespace fields
           // are rejected before conversion (Number('') === 0 would silently
-          // apply the legal 0 V / 0 MHz UNLOCK pair); non-numeric fields too.
+          // apply the legal 0 V / 0 MHz pair); non-numeric fields too. M22:
+          // the 0 V / 0 MHz pair is no longer the UNLOCK - it is the CORE +
+          // VOLTAGE OFFSET RESET (a 0/0 apply sends the offset-reset payload,
+          // NEVER a gpuLock write) - the parse gate stays (an empty field
+          // would typo a 0 and reset the offsets).
           if (!lockVoltageInput || !lockFreqInput) return;
           const parsed = parseGpuLockInput(lockVoltageInput.value, lockFreqInput.value);
           if (!parsed.ok) {
@@ -489,10 +494,19 @@ export const tuningPage: Page = {
             return;
           }
           // M17e (N8): the renderer clamps the typed pair to caps.lockRange
-          // (the clampGpuLock mirror - the (0,0) unlock bypass included) so
-          // the payload the card sends is the pair the driver will receive;
+          // (the clampGpuLock mirror - the (0,0) bypass included) so the
+          // payload the card sends is the pair the driver will receive;
           // main's applyLock stays the authoritative gate.
           const clamped = clampGpuLock(parsed.pair, caps.lockRange);
+          // M22 (the user-directed 0/0 semantics): a 0 V / 0 MHz CLAMPED pair
+          // is the OFFSET RESET - the payload is { gpuFreqOffsetMhz: 0,
+          // gpuVoltOffsetV: 0 } with NO gpuLock key. A {0,0} GpuLockSet write
+          // on driver 32.0.101.8974 is a LOCK-MODE SWITCH (idle pinned
+          // 300 MHz, offsets inert, persists until reboot) - never a no-op
+          // unlock - so {0,0} is NEVER written to the driver from any product
+          // path. A non-zero clamped pair keeps the atomic lock payload
+          // (probed working: {0.9 V/2000} locks at 2001 MHz).
+          const isOffsetReset = clamped.voltageV === 0 && clamped.freqMhz === 0;
           // Same waiver gate as every apply path (read LIVE from the store).
           // M17 (B50-class): OC-locked devices have no waiver - skipped.
           const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
@@ -508,21 +522,73 @@ export const tuningPage: Page = {
           }
           try {
             setBusy(true);
-            // M17e (S1c): the ATOMIC LOCK payload - the offsets zero RIDE
+            // M17e (S1c)/M22: the ATOMIC LOCK payload - the offsets zero RIDE
             // ALONG so the driver never sits in the lock-vs-offset fight
             // (IN_VOLTAGE_LOCKED_MODE); PL/TL NEVER ride the payload (the
-            // user's rule - their cards stay independent).
-            const { result, state: fresh } = await api.applySettings(deviceId, {
-              gpuLock: clamped,
-              gpuFreqOffsetMhz: 0,
-              gpuVoltOffsetV: 0,
-            });
+            // user's rule - their cards stay independent). The 0/0 RESET
+            // payload carries the offset keys ONLY - the gpuLock key never
+            // rides an offset/0/0 apply (the M22 lock-mode-switch rule).
+            const { result, state: fresh } = await api.applySettings(deviceId, isOffsetReset
+              ? { gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 }
+              : { gpuLock: clamped, gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 });
             if (fresh) {
               currentState = fresh;
               ctx.store.set({ state: fresh });
             }
             const per = result.perControl.gpuLock;
-            if (per?.ok) {
+            // S4-F3: the detail keys on per?.ok - the lock-while-locked
+            // pair change REFUSES the zero-offset companions (the M22
+            // mirror) so result.ok may be false while the lock itself
+            // landed (perControl.gpuLock.ok true) - the success toast keys
+            // on per?.ok, the record must agree (nothing reads lastApply
+            // today - M16 - but the record must never contradict the toast).
+            let lastDetail = per?.ok ? 'Fixed Clock / Voltage Lock applied' : (per?.message ?? 'GPU lock failed');
+            if (isOffsetReset) {
+              // M22: the 0/0 RESET success gate - the offset-reset payload
+              // carries NO gpuLock key, so the gate must NOT read
+              // result.perControl.gpuLock (a 0/0 apply would carry no entry
+              // and every apply would route into the failure branch). Gate
+              // on the OFFSET per-control entries - both ok -> the offsets
+              // reset; a refusal (apply-while-locked - the driver's
+              // IN_VOLTAGE_LOCKED_MODE refusal, mirrored by the mock with
+              // the 'locked-mode' errorCode) renders the locked-mode toast.
+              const perFreq = result.perControl['gpuFreqOffsetMhz'];
+              const perVolt = result.perControl['gpuVoltOffsetV'];
+              if (perFreq?.ok && perVolt?.ok) {
+                // M22: the appliedLock sync is KEPT for the reset - the
+                // editor's dirty semantics need it (appliedLock =
+                // fresh?.gpuLock ?? {0,0} - the reset produced the unlocked
+                // state, so the editor returns pristine) or the editor would
+                // never stop reading dirty after a reset.
+                appliedLock = fresh?.gpuLock ?? { voltageV: 0, freqMhz: 0 };
+                // The reset landed the offsets 0 - the editor inputs re-sync
+                // to the applied (0,0) pair (the M17e N2 honesty: never a
+                // stale typed value next to the read-out).
+                if (lockVoltageInput) lockVoltageInput.value = '0';
+                if (lockFreqInput) lockFreqInput.value = '0';
+                values['gpuFreqOffsetMhz'] = snapToRange(0, caps.ranges['gpuFreqOffsetMhz']);
+                values['gpuVoltOffsetV'] = snapToRange(0, caps.ranges['gpuVoltOffsetV']);
+                applied['gpuFreqOffsetMhz'] = 0;
+                applied['gpuVoltOffsetV'] = 0;
+                toast('success', 'Core + voltage offsets reset', 'The core and voltage offsets are back to 0; the GPU lock API was never written.');
+                ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
+                lastDetail = 'Core + voltage offsets reset';
+              } else {
+                // S4-F2: never assume at least one per-control entry exists
+                // - a pre-backend gate refusal (ocModeRefusal /
+                // extendedUnavailable - unreachable today: those refuse W/C
+                // controls only and the offset-reset payload carries none)
+                // would leave both entries absent; fall back to the
+                // locked-mode class so the toast body is never empty.
+                const failing = (perFreq && !perFreq.ok) ? perFreq : (perVolt && !perVolt.ok)
+                  ? perVolt : { ok: false as const, errorCode: 'locked-mode' as const };
+                const failingKey = perFreq && !perFreq.ok ? 'gpuFreqOffsetMhz' : 'gpuVoltOffsetV';
+                toast('error', 'Core + voltage offsets reset failed', applyFailureText(failing, failingKey));
+                const freshCaps = await api.getCapabilities(deviceId);
+                ctx.store.set({ caps: freshCaps });
+                lastDetail = (failing as { message?: string }).message ?? 'the offset reset was refused';
+              }
+            } else if (per?.ok) {
               // M4-B step-5 F4: report the pair the DRIVER received - the
               // read-back pair when the fresh envelope carried one (main
               // clamped the typed values), else the locally clamped pair.
@@ -554,9 +620,16 @@ export const tuningPage: Page = {
             }
             ctx.store.set({
               lastApply: {
-                ok: result.ok,
+                // S5-F1: ok keys on per?.ok - the lock-while-locked pair
+                // change refuses the zero-offset companions (the M22
+                // mirror) so result.ok may be false while the lock itself
+                // landed (perControl.gpuLock.ok true); the success toast
+                // gates on per?.ok, the record's ok must agree (nothing
+                // reads lastApply today - M16 - but it must never
+                // contradict the toast).
+                ok: isOffsetReset ? result.ok : per?.ok === true,
                 at: Date.now(),
-                detail: result.ok ? 'Fixed Clock / Voltage Lock applied' : (per?.message ?? 'GPU lock failed'),
+                detail: lastDetail,
               },
             });
             // Only refresh the read-out on a NON-NULL fresh envelope - a
@@ -591,9 +664,15 @@ export const tuningPage: Page = {
             class: 'card-note',
             // M17f (the round-1/round-3 fold - the user's SIMPLIFIED
             // description): the M17e-era long text is REPLACED by the
-            // pinned short version (the exact wording asserted by the
-            // ui-verify pin).
-            text: 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz returns to automatic. Setting a lock clears the core and voltage offsets; setting offsets clears the lock.',
+            // pinned short version. M22: the LAST sentence is now FALSE in
+            // both backends (offset applies while locked REFUSE - the lock
+            // stays), so it is reworded: 0 V / 0 MHz resets the offsets
+            // (NEVER writes the lock - a {0,0} GpuLockSet write switches
+            // the 8974 driver into a lock mode); setting a real lock clears
+            // the offsets; applying offsets while a lock is held is refused
+            // - clear the lock (reboot) first (the exact wording asserted
+            // by the ui-verify pin).
+            text: 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz resets the core and voltage offsets (never writes the lock); setting a real lock clears the offsets; applying offsets while a lock is held is refused - clear the lock (reboot) first.',
           }),
           el('div', { class: 'gpu-lock-fields' }, [
             el('label', { class: 'gpu-lock-field' }, [
@@ -622,7 +701,11 @@ export const tuningPage: Page = {
             el('button', {
               class: 'btn btn-ghost btn-sm',
               text: 'Reset to Dynamic',
-              title: 'Reset the editor to the default unlock pair (0 V / 0 MHz)',
+              // M22: the button only DRAFTS the inputs (never applies), but
+              // the wording was reworded with the new 0/0 semantics - a 0/0
+              // apply is the CORE + VOLTAGE OFFSET RESET (never a gpuLock
+              // unlock - the {0,0} write is the 8974 lock-mode switch).
+              title: 'Reset the editor inputs to 0 V / 0 MHz (applies a core + voltage offset reset)',
               onClick: resetToDynamic,
             }),
           ]),
@@ -666,7 +749,10 @@ export const tuningPage: Page = {
                   class: `oc-mode-btn oc-lock-mode-btn${lockMode ? '' : ' active'}`,
                   dataset: { lockMode: 'offset' },
                   text: 'Offset',
-                  title: 'Set the frequency as an offset (the lock apply zeroes the offsets; the offset apply unlocks)',
+                  // M22: "the offset apply unlocks" is DEAD - an offset
+                  // apply while a REAL lock is held REFUSES (the driver's
+                  // IN_VOLTAGE_LOCKED_MODE; the lock stays until reboot).
+                  title: 'Set the frequency as an offset (the lock apply zeroes the offsets; applying offsets while a lock is held is refused)',
                   onClick: () => setLockMode('offset'),
                 }),
                 el('button', {
@@ -1227,24 +1313,23 @@ export const tuningPage: Page = {
       const live = ctx.store.get();
       const deviceId = live.deviceId;
       if (deviceId === null || !caps) return;
-      // M17e (S1c): the ATOMIC payload compositions. The OFFSET applies
+      // M17e (S1c)/M22: the ATOMIC payload compositions. The OFFSET applies
       // (the per-card chips for gpuFreqOffsetMhz / gpuVoltOffsetV AND the
-      // floating apply in Offset mode) carry the (0,0) unlock - a per-card
-      // offset apply WHILE LOCKED clears the driver lock first (the main-
-      // side write order does the unlock first; the unlock is a no-op when
-      // no lock is held). Power Limit + Temp Limit NEVER ride the payload
-      // (the user's rule - the lock apply never resets them and their
-      // applies never touch the lock). The LOCK apply is composed by the
-      // lock editor itself (the lock-mode branch - the floating apply is
-      // force-hidden in Lock mode).
+      // floating apply in Offset mode) carry the OFFSETS ONLY - the M17e-era
+      // (0,0) gpuLock companion is REMOVED because on driver 32.0.101.8974 a
+      // {0,0} GpuLockSet write is NOT a no-op unlock - it switches the driver
+      // into a LOCK MODE (idle pinned 300 MHz, offsets inert, persists until
+      // reboot); IGS/Arc OC Tool never write the lock API, which is exactly
+      // why their offsets work. The OFFSET payloads now match them. Power
+      // Limit + Temp Limit NEVER ride the payload (the user's rule - the
+      // lock apply never resets them and their applies never touch the
+      // lock). The LOCK apply is composed by the lock editor itself (the
+      // lock-mode branch - the floating apply is force-hidden in Lock mode).
       let settings: Settings;
       if (only !== undefined) {
-        settings = (lockSupported && (only === 'gpuFreqOffsetMhz' || only === 'gpuVoltOffsetV'))
-          ? ({ [only]: values[only], gpuLock: { voltageV: 0, freqMhz: 0 } } as unknown as Settings)
-          : ({ [only]: values[only] } as unknown as Settings);
+        settings = ({ [only]: values[only] } as unknown as Settings);
       } else {
         settings = buildScalarSettings(values);
-        if (lockSupported) settings = { ...settings, gpuLock: { voltageV: 0, freqMhz: 0 } };
       }
       if (!validateSettingsPayload(settings)) {
         toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -1343,13 +1428,11 @@ export const tuningPage: Page = {
             // the pre-apply read-back.
             const wanted = settings[key as keyof typeof settings];
             if (typeof wanted === 'number') applied[key] = wanted;
-            // M17e: the (0,0) unlock entries ride the offset applies - the
-            // lock editor's dirty reference follows the applied pair (the
-            // fresh envelope pair when present, else the sent pair).
-            if (key === 'gpuLock') {
-              const sent = (settings.gpuLock as { voltageV: number; freqMhz: number } | undefined);
-              appliedLock = fresh?.gpuLock ?? (sent ?? { voltageV: 0, freqMhz: 0 });
-            }
+            // M17e/M22: the (0,0) unlock entries RODE the M17e-era offset
+            // applies - that companion is REMOVED (a {0,0} GpuLockSet write
+            // switches the 8974 driver into a lock mode, it never unlocks),
+            // so the offset applies can no longer reach this reference; the
+            // LOCK editor's own apply path owns the appliedLock sync.
             if (!isNoopApply(key, settings, before as DeviceState)) {
               toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof wanted === 'number' && range ? formatValue(wanted, range.units) : '');
             }

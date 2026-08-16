@@ -212,7 +212,7 @@ export const VOLT_OFFSET_STEP_V = 0.001;
  */
 export function clampGpuLock(lock, lockRange) {
   if (lock.voltageV === 0 && lock.freqMhz === 0) {
-    return { voltageV: 0, freqMhz: 0 }; // the (0,0) unlock bypass (S2)
+    return { voltageV: 0, freqMhz: 0 }; // the (0,0) reset pair bypass (S2)
   }
   const range = lockRange ?? {};
   const voltMin = Math.max(0, Number.isFinite(range.voltMin) ? range.voltMin : 0);

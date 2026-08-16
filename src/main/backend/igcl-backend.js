@@ -2261,7 +2261,12 @@ export class IgclBackend {
     //     the driver must not still sit in offset mode when the lock lands;
     //   - a (0,0) unlock + non-zero offsets (the atomic unlock): the
     //     UNLOCK FIRST, then the offsets - a locked driver refuses the
-    //     offset writes before the unlock;
+    //     offset writes before the unlock. M22: the RENDERER no longer
+    //     composes this shape (a {0,0} GpuLockSet write switches the 8974
+    //     driver into a lock mode - the M17e atomic-unlock design is dead;
+    //     offset applies carry no lock, the lock editor's 0/0 is the
+    //     offset-reset payload with no lock key). The branch STAYS for
+    //     direct/legacy callers - the backend contract is unchanged;
     //   - neither (offsets only, or a lone lock/unlock): the historical
     //     order (offsets then lock).
     const hasLockPair = settings.gpuLock !== undefined && settings.gpuLock !== null;
