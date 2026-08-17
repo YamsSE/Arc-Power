@@ -454,13 +454,25 @@ html, body {
   font-weight: 650;
 }
 
-.oc-meta { margin-top: 2px; display: flex; align-items: baseline; gap: 12px; }
+.oc-meta { margin-top: 2px; display: flex; align-items: center; gap: 8px; }
 
 .oc-sysman-limits { font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
 
 .oc-range { color: var(--text-dim); font-size: 10px; font-family: var(--mono); }
 
-.oc-card-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+/* M23 (user): the chips ride the SAME row as the range note (Tuning) and
+   the top-right of each card (Graphics) - the spacer pushes them right. */
+.oc-meta-spacer { flex: 1; }
+
+.graphics-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.graphics-card-head .card-title { margin: 0; flex-shrink: 0; }
+.graphics-card-head .oc-chip-status,
+.graphics-card-head .oc-chip-apply { flex-shrink: 0; }
 
 /* The M22-safe lock editor (the panel's Tuning tab) - the same inputs the
    main Tuning page's Lock mode renders. */
@@ -746,9 +758,8 @@ html, body {
 .oc-card-head { margin-bottom: 2px; }
 .oc-card .card-title { font-size: 12.5px; }
 .oc-slider-row { gap: 12px; min-height: 22px; }
-.oc-meta { margin-top: 1px; display: flex; align-items: baseline; gap: 10px; }
+.oc-meta { margin-top: 1px; display: flex; align-items: center; gap: 8px; }
 .oc-sysman-limits { font-size: 10.5px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
-.oc-card-actions { margin-top: 2px; gap: 8px; }
 .oc-value { font-size: 12.5px; min-width: 72px; }
 .oc-range { font-size: 10px; }
 .oc-chip-status { font-size: 10.5px; padding: 1px 8px; }
@@ -773,7 +784,7 @@ html, body {
 .graphics-card .card-title { font-size: 13.5px; }
 .graphics-card .card-note { margin-top: 6px; }
 .graphics-unsupported .card-note { color: var(--text-dim); font-style: italic; }
-.graphics-control { margin-top: 8px; }
+.graphics-control { margin-top: 4px; }
 .graphics-select {
   appearance: none;
   background: var(--control-bg);
@@ -788,7 +799,6 @@ html, body {
 }
 .graphics-select:focus { outline: none; border-color: var(--accent-strong); }
 .graphics-select option { background: var(--bg-panel); color: var(--text); }
-.graphics-card-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
 .graphics-fps-row {
   margin-top: 8px;
   display: flex;

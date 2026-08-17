@@ -309,8 +309,15 @@ async function renderTuning(): Promise<void> {
       el('div', { class: 'oc-slider-row' }, [
         el('div', { class: 'oc-slider' }, [fill, slider]),
       ]),
-      el('div', { class: 'oc-meta' }, [rangeNode]),
-      el('div', { class: 'oc-card-actions' }, [chip, chipApply]),
+      // M23 (user): the chips (Applied / Apply) ride the SAME row as the
+      // range note, right-aligned - the old separate actions row dragged
+      // out the card height.
+      el('div', { class: 'oc-meta' }, [
+        rangeNode,
+        el('span', { class: 'oc-meta-spacer' }),
+        chip,
+        chipApply,
+      ]),
     ]);
     refreshChip(key);
     return card;
@@ -571,21 +578,25 @@ function renderGraphicsCards(view: HTMLElement): void {
       text: DROPDOWN_LABELS[key]?.[o] ?? o,
       selected: o === current,
     })));
+    const chipApplyBtn = el('button', {
+      class: 'chip chip-btn oc-chip-apply',
+      hidden: true,
+      text: 'Apply',
+      onClick: () => {
+        if (graphicsApplying) return;
+        void applyGraphics(key);
+      },
+    });
     const card = el('section', { class: 'card graphics-card', dataset: { control: key } }, [
-      el('h2', { class: 'card-title', text: CARD_TITLES[key] }),
-      el('div', { class: 'graphics-control' }, [select]),
-      el('div', { class: 'graphics-card-actions' }, [
+      // M23 (user): the chips (Applied / Apply) sit TOP-RIGHT of each card
+      // - the old actions row dragged out the card height.
+      el('div', { class: 'graphics-card-head' }, [
+        el('h2', { class: 'card-title', text: CARD_TITLES[key] }),
+        el('span', { class: 'oc-meta-spacer' }),
         el('span', { class: 'chip oc-chip-status', hidden: true }),
-        el('button', {
-          class: 'chip chip-btn oc-chip-apply',
-          hidden: true,
-          text: 'Apply',
-          onClick: () => {
-            if (graphicsApplying) return;
-            void applyGraphics(key);
-          },
-        }),
+        chipApplyBtn,
       ]),
+      el('div', { class: 'graphics-control' }, [select]),
     ]);
     refreshChip(key);
     return card;
@@ -634,23 +645,26 @@ function renderGraphicsCards(view: HTMLElement): void {
     });
     const valueNode = el('span', { class: 'graphics-fps-value', text: `${clampFrameLimitValue(fl.value, range)} FPS` });
     const sliderRow = el('div', { class: 'graphics-fps-slider-row', hidden: !fl.enabled }, [slider, valueNode]);
+    const frameLimitApplyBtn = el('button', {
+      class: 'chip chip-btn oc-chip-apply',
+      hidden: true,
+      text: 'Apply',
+      onClick: () => {
+        if (graphicsApplying) return;
+        void applyGraphics('frameLimit');
+      },
+    });
     const card = el('section', { class: 'card graphics-card', dataset: { control: 'frameLimit' } }, [
-      el('h2', { class: 'card-title', text: CARD_TITLES.frameLimit }),
+      // M23 (user): the chips (Applied / Apply) sit TOP-RIGHT of the card.
+      el('div', { class: 'graphics-card-head' }, [
+        el('h2', { class: 'card-title', text: CARD_TITLES.frameLimit }),
+        el('span', { class: 'oc-meta-spacer' }),
+        el('span', { class: 'chip oc-chip-status', hidden: true }),
+        frameLimitApplyBtn,
+      ]),
       el('div', { class: 'graphics-fps-row' }, [
         el('div', { class: 'graphics-control' }, [toggle]),
         sliderRow,
-      ]),
-      el('div', { class: 'graphics-card-actions' }, [
-        el('span', { class: 'chip oc-chip-status', hidden: true }),
-        el('button', {
-          class: 'chip chip-btn oc-chip-apply',
-          hidden: true,
-          text: 'Apply',
-          onClick: () => {
-            if (graphicsApplying) return;
-            void applyGraphics('frameLimit');
-          },
-        }),
       ]),
     ]);
     refreshChip('frameLimit');
