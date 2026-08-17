@@ -118,4 +118,21 @@ contextBridge.exposeInMainWorld('arcPower', {
   },
   overlayGetState: () => ipcRenderer.invoke('overlay:get-state'),
   overlayToggle: () => ipcRenderer.invoke('overlay:toggle'),
+  // M23: the ADVANCED overlay (the M5 triad, new names - the
+  // AMD-Adrenaline-style interactive side panel). onAdvancedOverlaySettings
+  // receives the pushed 'advanced-overlay:settings' payload (carrying
+  // { position, enabled, hotkeyLetter } - sent by main on every apply,
+  // incl. the initial did-finish-load push); advancedOverlayGetState/
+  // advancedOverlayToggle drive the Overlay view's Advanced card.
+  onAdvancedOverlaySettings: (cb) => {
+    const listener = (_event, settings) => cb(settings);
+    ipcRenderer.on('advanced-overlay:settings', listener);
+    return () => ipcRenderer.removeListener('advanced-overlay:settings', listener);
+  },
+  advancedOverlayGetState: () => ipcRenderer.invoke('advanced-overlay:get-state'),
+  advancedOverlayToggle: () => ipcRenderer.invoke('advanced-overlay:toggle'),
+  // M23: the panel's custom close button - the DEDICATED
+  // 'advanced-overlay:close' channel (a SESSION hide; the main window is
+  // never closed by the panel).
+  advancedOverlayClose: () => ipcRenderer.invoke('advanced-overlay:close'),
 });

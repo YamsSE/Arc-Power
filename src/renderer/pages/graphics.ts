@@ -58,7 +58,10 @@ export const ELEVATION_TOAST_TEXT = 'Administrator approval is needed to apply G
 export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 
 // The honest notes (plan 2.3 - one per card).
-const CARD_NOTES: Record<string, string> = {
+// M23: EXPORTED - the ADVANCED overlay's Graphics tab imports them (export,
+// never duplicate - the option lists/labels/titles/notes are the single
+// source both surfaces render from).
+export const CARD_NOTES: Record<string, string> = {
   frameGenOverride: "Sets the driver's XeSS frame-generation override for games that use XeSS Frame Generation (the game may need a restart for the change to apply).",
   flipMode: 'The driver\'s frame-synchronization mode (VSync / Smooth Sync / Speed Sync). Smart VSync is not exposed by the driver interface.',
   frameLimit: 'A driver-level frame-rate cap. The limiter works independently of Arc Power.',
@@ -66,14 +69,14 @@ const CARD_NOTES: Record<string, string> = {
 };
 const PAGE_NOTE = 'These settings are applied via the Intel driver\'s control interface (the same state the Intel Graphics Software app manages). Per-game profiles stay in Intel Graphics Software - this tab applies the global settings.';
 
-const CARD_TITLES: Record<string, string> = {
+export const CARD_TITLES: Record<string, string> = {
   frameGenOverride: 'XeSS Frame Generation Override',
   flipMode: 'Frame Synchronization',
   frameLimit: 'FPS Limit',
   lowLatency: 'Low Latency Mode',
 };
 
-const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
+export const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
   frameGenOverride: { 'app-choice': 'Application Default', '2x': '2x Frame Generation', '3x': '3x Frame Generation', '4x': '4x Frame Generation' },
   flipMode: { 'application-default': 'Application Choice', 'vsync-on': 'Enable VSync', 'vsync-off': 'Disable VSync', 'smooth-sync': 'Smooth Sync', 'speed-frame': 'Speed Sync' },
   lowLatency: { off: 'Off', on: 'On', 'on-boost': 'On + Boost' },
@@ -82,7 +85,7 @@ const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
 // The dropdown default (a "Reset to default" target): the FIRST SUPPORTED
 // option - the probe + the mock + the driver's caps DefaultType all agree
 // (app-choice / application-default / off).
-const DROPDOWN_OPTIONS: Record<string, string[]> = {
+export const DROPDOWN_OPTIONS: Record<string, string[]> = {
   frameGenOverride: FRAME_GEN_OPTIONS,
   flipMode: FLIP_MODE_OPTIONS,
   lowLatency: LOW_LATENCY_OPTIONS,

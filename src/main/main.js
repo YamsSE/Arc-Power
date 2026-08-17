@@ -46,12 +46,17 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
-import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify } from './ui-verify.js';
+import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify, runAdvancedOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
 import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT } from './store/profile-store.js';
 import { createOverlayWindow } from './overlay.js';
+// M23 (Part B): the ADVANCED overlay module (the AMD-Adrenaline-style
+// interactive side panel - CONTROL + <letter>, stock P). The HUD's
+// overlay.js stays untouched - this panel has its own lifecycle + its own
+// interactivity (NO setIgnoreMouseEvents).
+import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
@@ -173,6 +178,25 @@ async function boundWarm(proxy) {
   }
 }
 
+// M23 CHANGE 3 / PART A (the full-close reap): the SYSMAN SHUTDOWN BOUND -
+// the helper-proxy shutdown handshake bound (~1 s, the proxy's own
+// shutdownBoundMs). The worker + boot-apply branches BOUND-AWAIT the
+// shutdown BEFORE app.exit: those branches exit immediately after the
+// apply, so a fire-and-forget socket.write would be torn down before the
+// op flushes and the helper would survive (the boot task must not leave a
+// helper behind either). ~1 s is fine on the sequential exit paths.
+const SYSMAN_SHUTDOWN_BOUND_MS = 1000;
+
+/** M23: bound-await the proxy shutdown (idempotent, never throws). */
+async function boundShutdown(proxy) {
+  if (!proxy || typeof proxy.shutdown !== 'function') return;
+  try {
+    await Promise.race([proxy.shutdown(), sleep(SYSMAN_SHUTDOWN_BOUND_MS)]);
+  } catch {
+    // a shutdown failure degrades silently - the helper-side idle backstop reaps it
+  }
+}
+
 function createWindow(backgroundColor = '#0f1116', show = true) {
   const win = new BrowserWindow({
     width: 1280,
@@ -238,6 +262,19 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
   // the harness lines).
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), profileBoot ? { query: { profileBoot: '1' } } : undefined);
   return win;
+}
+
+// M23 (user): --ui-verify windows must NOT flash on the user's screen - the
+// suite drives the DOM/IPC/bounds/isVisible pins (all of which work on an
+// opacity-0 window: it stays SHOWN + laid out at its real coordinates, only
+// the OS presentation is transparent), so every window the harness creates
+// (main, HUD overlay, advanced overlay) is made invisible this way. Product
+// runs never call it (opacity stays 1).
+function stealthVerifyWindow(win) {
+  if (!uiVerify) return;
+  try {
+    win.setOpacity(0);
+  } catch { /* best effort - a destroyed mid-verify window never throws */ }
 }
 
 // --- system tray (normal app path only - never headless) -------------------
@@ -394,6 +431,14 @@ async function main() {
       sysmanPowerLimits: workerSysmanLimits,
       log: (s) => console.log(`[apply-worker] ${s}`),
     });
+    // M23 CHANGE 3 (Part A): the ELEVATED worker's full close reaps the
+    // helper BEFORE app.exit - the branch exits immediately after the
+    // apply, so a fire-and-forget write would be torn down before the op
+    // flushes (the worker must not leave a helper behind either). Bounded
+    // (~1 s); the stated tradeoff (conscious): a full close mid-apply
+    // kills the helper under the worker's in-flight set - the socket close
+    // resolves that set as a failure. Benign - the process is exiting.
+    await boundShutdown(workerSysmanLimits);
     app.exit(code);
     return;
   }
@@ -575,6 +620,13 @@ async function main() {
     } finally {
       await bootBackend.close().catch(() => {});
     }
+    // M23 CHANGE 3 (Part A): the boot task's full close reaps the helper
+    // BEFORE app.exit - the same bounded-await rationale as the worker
+    // branch (the branch exits immediately after the apply; a
+    // fire-and-forget write would be torn down before the op flushes and
+    // the boot task must not leave a helper behind either). The mock seam
+    // never built a proxy (bootRealSysmanLimits is null in mock mode).
+    await boundShutdown(bootRealSysmanLimits);
     app.exit(0);
     return;
   }
@@ -1092,6 +1144,32 @@ async function main() {
     } catch (err) {
       console.log(`[boot] overlay session seed skipped: ${err.message}`);
     }
+    // M23 (Part B): RID_MOCK_ADV_OVERLAY=1 seeds advancedOverlayEnabled:true
+    // into the isolated mock store - the advanced-overlay variant boots with
+    // the panel SHOWN (the HUD-overlay parity - the same deterministic
+    // session-seed pattern; a leaked 'false' from an interrupted run must
+    // never hide the panel for the next variant). The OTHER advanced fields
+    // reset to their defaults under the knob too (letter 'P' / right) - a
+    // crashed run that left another letter/edge must never bleed into the
+    // next advanced-overlay run (the variant's pins are deterministic).
+    // The HUD overlay fields are ALSO reset under the knob (the two overlay
+    // variants may share the isolated dir - the advanced pins must not see a
+    // leaked HUD letter 'P' that would collide with the advanced defaults).
+    try {
+      const cur = await store.loadSettings();
+      const advOn = process.env.RID_MOCK_ADV_OVERLAY === '1';
+      const hudOn = process.env.RID_MOCK_OVERLAY === '1';
+      await store.saveSettings({
+        ...cur,
+        overlayEnabled: hudOn,
+        overlayHotkeyLetter: 'O',
+        advancedOverlayEnabled: advOn,
+        advancedOverlayHotkeyLetter: advOn ? 'P' : cur.advancedOverlayHotkeyLetter,
+        advancedOverlayPosition: advOn ? 'right' : cur.advancedOverlayPosition,
+      });
+    } catch (err) {
+      console.log(`[boot] advanced-overlay session seed skipped: ${err.message}`);
+    }
     // M4-A/M4-B: deterministic waiver session seed - every mock session    // boots UNACCEPTED so the boot waiver prompt shows in the classic
     // Cancel/Accept state (ui-verify F4: the prompt would otherwise hit
     // every variant unpredictably, and a previous run's persisted
@@ -1399,6 +1477,17 @@ async function main() {
     void oldIgcl?.close?.().catch(() => {});
     // M4L (N2): release the PawnIO device handle (msr-reader close hygiene).
     try { msrReader?.close?.(); } catch { /* best effort */ }
+    // M23 CHANGE 3 (Part A): the window path's full close reaps the
+    // sysman helper - BOUNDED + FIRE-AND-FORGET, never blocks quit (the
+    // window-close teardown normally flushes the small write; the helper-
+    // side idle backstop covers a dropped op). Unconditional: this
+    // session's proxy kills the machine-level helper even if a prior
+    // session spawned it (there is only ONE helper - EADDRINUSE dedupes;
+    // the user wants NO 'Arc Power Helper' tasks after full close).
+    // M17o2's live proof (a FRESH process's ze init ALWAYS lands, 5/5)
+    // makes the reap safe - the next session's warm() respawns a fresh
+    // helper.
+    void realSysmanLimits?.shutdown?.().catch(() => {});
   });
 
   // Boot-time health + waiver seeding (shared by the window path and the
@@ -1696,6 +1785,7 @@ async function main() {
   markProfileBoot('boot-apply-gate');
 
   const win = createWindow(windowBackground, !startMinimizedAtBoot);
+  stealthVerifyWindow(win);
   windowForInstance = win;
   markProfileBoot('window');
   // M17d (Run E): the profile window run exits by itself - after the
@@ -1750,6 +1840,16 @@ async function main() {
   win.on('closed', () => {
     overlayHandle?.destroy();
     unregisterOverlayHotkey();
+    // M23 (Part B): the ADVANCED overlay rides the SAME lifecycle rule - the
+    // main window's close destroys the panel + unregisters its hotkey (the
+    // panel NEVER keeps the app alive by itself). The handle is NULLED (not
+    // just destroyed) - an onAdvancedOverlaySettings reaction in flight at
+    // the close instant must not re-create the panel via apply()
+    // (step-5 N2: the `if (!advancedOverlayHandle) return` guards make the
+    // reaction a no-op after the null).
+    advancedOverlayHandle?.destroy();
+    advancedOverlayHandle = null;
+    unregisterAdvancedOverlayHotkey();
   });
 
   // --- M5: the software overlay (the MSI Afterburner/RTSS-style HUD) ------
@@ -1883,6 +1983,8 @@ async function main() {
         }
       },
     });
+    // M23: the harness must not flash the HUD overlay on the user's screen.
+    stealthVerifyWindow(overlayHandle.getWindow?.() ?? null);
     applyOverlaySettings();
     // Boot the hotkey with the persisted letter (default 'O').
     let bootLetter = 'O';
@@ -1897,6 +1999,154 @@ async function main() {
   app.on('will-quit', () => {
     overlayHandle?.destroy();
     unregisterOverlayHotkey();
+  });
+
+  // --- M23 (Part B): the ADVANCED overlay (the AMD-Adrenaline-style        ---
+  // interactive side panel - CONTROL + <letter>, stock P). Created
+  // UNCONDITIONALLY on the product window path (HIDDEN when
+  // advancedOverlayEnabled is false - apply() shows it when the user enables
+  // it through the Overlay view; a lazy create would break the enable path).
+  // NEVER in headless/boot-apply/apply-profile (they return earlier);
+  // ui-verify creates it only under RID_MOCK_ADV_OVERLAY=1 (the variant's
+  // real-window pins). M7b (fix-5 semantics): the hotkey/shortcut NEVER
+  // shows the panel while the master advancedOverlayEnabled is OFF - the
+  // gate lives in advanced-overlay.js toggle().
+  let advancedOverlayHandle = null;
+  let advancedOverlayHotkeyAccelerator = null;
+  // The SECOND hotkey seam (the registerOverlayHotkey mirror): product path -
+  // a REAL globalShortcut registration ('Control+<letter>' - CTRL fixed,
+  // only the letter is user-changeable), unregistered on will-quit + window
+  // closed + a letter change. ui-verify injects a COUNTING probe that NEVER
+  // registers (a real system hotkey mid-verify would disrupt the session) +
+  // a mid-run settable failure fake (the register-failure honesty pin).
+  // register() returning false (the accelerator taken by another app / the
+  // COLLIDING HUD letter - the renderer refuses the same-letter save with a
+  // toast, but the seam still handles a failed register honestly) surfaces
+  // hotkeyRegistered:false - the Overlay view then shows the honest note.
+  const advancedOverlayHotkeyProbe = { registrations: [], failRegister: false };
+  const registerAdvancedOverlayHotkey = (letter) => {
+    if (!advancedOverlayHandle) return;
+    const normalized = typeof letter === 'string' && /^[A-Za-z]$/.test(letter) ? letter.toUpperCase() : 'P';
+    const accel = `Control+${normalized}`;
+    if (uiVerify) {
+      advancedOverlayHotkeyProbe.registrations.push(accel);
+      advancedOverlayHandle.setHotkeyRegistered(!advancedOverlayHotkeyProbe.failRegister);
+      return;
+    }
+    if (advancedOverlayHotkeyAccelerator) {
+      try { globalShortcut.unregister(advancedOverlayHotkeyAccelerator); } catch { /* best effort */ }
+      advancedOverlayHotkeyAccelerator = null;
+    }
+    let ok = false;
+    try {
+      ok = globalShortcut.register(accel, () => { void advancedOverlayHandle.toggle(); });
+    } catch {
+      ok = false;
+    }
+    advancedOverlayHotkeyAccelerator = ok ? accel : null;
+    advancedOverlayHandle.setHotkeyRegistered(ok);
+    if (!ok) {
+      console.log(`[advanced-overlay] hotkey ${accel} registration failed (taken by another application?)`);
+    }
+  };
+  const unregisterAdvancedOverlayHotkey = () => {
+    if (advancedOverlayHotkeyAccelerator) {
+      try { globalShortcut.unregister(advancedOverlayHotkeyAccelerator); } catch { /* best effort */ }
+      advancedOverlayHotkeyAccelerator = null;
+    }
+    advancedOverlayHandle?.setHotkeyRegistered(false);
+  };
+  // The advanced-overlay settings reaction (the onOverlaySettings pattern):
+  // re-apply the geometry/visibility from the FRESH store + re-register the
+  // hotkey on a letter change. 'advanced-overlay:settings' is NOT an
+  // ipc-core push - the advanced-overlay module sends it DIRECTLY to the
+  // panel window (webContents.send).
+  const onAdvancedOverlaySettings = async (patch) => {
+    if (!advancedOverlayHandle) return;
+    applyAdvancedOverlaySettings();
+    if (patch && typeof patch.advancedOverlayHotkeyLetter === 'string') {
+      registerAdvancedOverlayHotkey(patch.advancedOverlayHotkeyLetter);
+    }
+  };
+  const applyAdvancedOverlaySettings = () => {
+    if (!advancedOverlayHandle) return;
+    let settings = {};
+    try {
+      settings = store.loadSettingsSync() ?? {};
+    } catch {
+      settings = {};
+    }
+    advancedOverlayHandle.apply({
+      enabled: settings.advancedOverlayEnabled === true,
+      position: settings.advancedOverlayPosition === 'left' || settings.advancedOverlayPosition === 'right'
+        ? settings.advancedOverlayPosition
+        : 'right',
+      hotkeyLetter: typeof settings.advancedOverlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter)
+        ? settings.advancedOverlayHotkeyLetter
+        : 'P',
+    });
+  };
+  // The dedicated panel-close op (the 'advanced-overlay:close' channel's
+  // handler): a SESSION hide - the panel's own close button never closes the
+  // main window and never touches the persisted master.
+  const advancedOverlayClose = async () => {
+    if (advancedOverlayHandle) await advancedOverlayHandle.closePanel();
+  };
+  if (uiVerify ? process.env.RID_MOCK_ADV_OVERLAY === '1' : true) {
+    advancedOverlayHandle = createAdvancedOverlayWindow({
+      // The CURRENT persisted settings - the sync cache (like the HUD).
+      getOverlaySettings: () => {
+        try {
+          return store.loadSettingsSync() ?? {};
+        } catch {
+          return {};
+        }
+      },
+      // The panel's custom close is a SESSION hide performed inside the
+      // module (step-4 S1: closePanel hides the window directly - the
+      // earlier injected-op design left the X a dead no-op); the
+      // 'advanced-overlay:close' channel routes here.
+    });
+    // M23: the harness must not flash the advanced panel on the user's screen.
+    stealthVerifyWindow(advancedOverlayHandle.getWindow?.() ?? null);
+    applyAdvancedOverlaySettings();
+    // Boot the hotkey with the persisted letter (default 'P').
+    let bootLetter = 'P';
+    try {
+      const s = store.loadSettingsSync() ?? {};
+      if (typeof s.advancedOverlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.advancedOverlayHotkeyLetter)) {
+        bootLetter = s.advancedOverlayHotkeyLetter;
+      }
+    } catch { /* default P */ }
+    // M23 (step-5 N1): the upgrade-path collision reconcile. A PRE-M23
+    // persisted HUD letter 'P' + the new advanced default 'P' would
+    // register TWO same-app Control+P accelerators back to back - same-app
+    // register REPLACES and returns true, so one hotkey dies silently with
+    // hotkeyRegistered still true on both cards (the honest note could not
+    // detect it). At BOOT only: when the persisted letters collide, SKIP the
+    // advanced registration and surface hotkeyRegistered:false - the
+    // Advanced card then shows the honest "could not be registered" note
+    // (accurate: the HUD holds the key) and the user picks a letter. The
+    // persisted state is NEVER silently changed. The renderer's symmetric
+    // envelope rejection keeps any FUTURE same-letter save from landing.
+    let hudBootLetter = 'O';
+    try {
+      const s = store.loadSettingsSync() ?? {};
+      if (typeof s.overlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)) {
+        hudBootLetter = s.overlayHotkeyLetter.toUpperCase();
+      }
+    } catch { /* default O */ }
+    if (bootLetter.toUpperCase() === hudBootLetter) {
+      console.log(`[advanced-overlay] boot hotkey ${bootLetter.toUpperCase()} collides with the HUD letter - the advanced registration is SKIPPED (the honest note shows; the user picks another letter)`);
+      advancedOverlayHandle.setHotkeyRegistered(false);
+    } else {
+      registerAdvancedOverlayHotkey(bootLetter);
+    }
+  }
+  app.on('will-quit', () => {
+    advancedOverlayHandle?.destroy();
+    unregisterAdvancedOverlayHotkey();
   });
   // M4J (G): the OLD post-window start-minimized block (minimize-to-taskbar
   // after ready-to-show) is REMOVED - the window is created show:false when
@@ -2030,6 +2280,11 @@ async function main() {
     // M5: the overlay window (the telemetry emit forwards to BOTH windows;
     // null when no overlay exists - the emit null-guards it).
     getOverlayWindow: () => (overlayHandle ? overlayHandle.getWindow() : null),
+    // M23 (Part B): the ADVANCED overlay window - the telemetry push's THIRD
+    // consumer (the panel's live clock/temp/fan/power readout strip rides
+    // the same sample stream; null when no panel exists - the emit
+    // null-guards it).
+    getAdvancedOverlayWindow: () => (advancedOverlayHandle ? advancedOverlayHandle.getWindow() : null),
     // M5: the injected overlay ops - the REAL overlay handle in both the
     // product path and the RID_MOCK_OVERLAY=1 ui-verify variant (the
     // variant's overlay window is real, like the main window - the toggle
@@ -2041,6 +2296,24 @@ async function main() {
           toggle: async () => { await overlayHandle.toggle(); },
         }
       : undefined,
+    // M23 (Part B): the injected ADVANCED-overlay ops - the REAL panel
+    // handle in both the product path and the RID_MOCK_ADV_OVERLAY=1
+    // ui-verify variant (the variant's panel window is real, like the main
+    // window - the toggle really flips it). When no panel exists (other
+    // ui-verify variants) the DEFAULT no-window ops keep the channels honest.
+    advancedOverlayOps: advancedOverlayHandle
+      ? {
+          getState: async () => advancedOverlayHandle.getState(),
+          toggle: async () => { await advancedOverlayHandle.toggle(); },
+        }
+      : undefined,
+    // M23 (Part B): the panel's custom close op (the dedicated
+    // 'advanced-overlay-close' channel - never the main window's close).
+    advancedOverlayClose,
+    // M23 (Part B): the advanced-overlay settings reaction (the
+    // onOverlaySettings pattern) - called by profiles-settings-save when an
+    // advancedOverlay* field changed.
+    onAdvancedOverlaySettings,
     // M5: the overlay settings reaction (the rebuildTray pattern) - called
     // by profiles-settings-save when an overlay field changed.
     onOverlaySettings,
@@ -2235,6 +2508,14 @@ async function main() {
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
       await runGraphicsVerify(win, backend);
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe, () => fpsPolls);
+    } else if (process.env.RID_MOCK_ADV_OVERLAY === '1') {
+      // M23 (Part B): the ADVANCED-overlay variant - the panel window is
+      // REAL (created above under the knob, seeded advancedOverlayEnabled:
+      // true - the panel boots SHOWN); the hotkey is the counting probe
+      // (never a real registration). The mock backend is passed so the
+      // M22-safe payload pins can record the apply-settings payloads (the
+      // NO-gpuLock-key shape assertions).
+      await runAdvancedOverlayVerify(win, advancedOverlayHandle, store, advancedOverlayHotkeyProbe, backend);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides

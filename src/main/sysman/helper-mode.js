@@ -51,14 +51,21 @@
 //    (\\.\pipe\arcpower-sysman, node's net) and the lifecycle is detached:
 //    a client disconnect NEVER exits the helper (the M17l stdin-EOF exit
 //    is NOT in this mode) - the in-flight dispatch completes, the
-//    connection's buffered queue is dropped. It exits only on the IDLE
-//    TIMEOUT (round-2 S1: the timer is ARMED ONLY WHILE NO CONNECTION IS
-//    OPEN - cancelled on every connection-open, re-armed at the full
-//    value on every connection-close; a HELD-OPEN connection keeps the
-//    helper alive INDEFINITELY; the constant is HELPER-SIDE + injectable,
-//    RID_SYSMAN_HELPER_IDLE_MS, default 0 = NEVER (M17o the NEVER-DYING
-//    helper: the timer is never armed - the helper lives until reboot;
-//    only a POSITIVE value arms the exit timer) or on the BIND CONFLICT
+//    connection's buffered queue is dropped. It exits on the M23
+//    SHUTDOWN OP (the app's full close - an EXPLICIT request, honored even
+//    with connections open: the { ok: true } ack is written FIRST, then
+//    the graceful finish(0) exits the helper - the parent's reap path),
+//    on the IDLE TIMEOUT (round-2 S1: the timer is ARMED ONLY WHILE NO
+//    CONNECTION IS OPEN - cancelled on every connection-open, re-armed at
+//    the full value on every connection-close; a HELD-OPEN connection
+//    keeps the helper alive INDEFINITELY; the constant is HELPER-SIDE +
+//    injectable, RID_SYSMAN_HELPER_IDLE_MS, default HELPER_IDLE_MS =
+//    30000 - M23 the CRASH-BACKSTOP idle default: 30 s after the LAST
+//    connection closes, so an abnormal app exit (crash / Task-Manager
+//    kill / power loss) reaps the helper; only an explicit idleMs: 0
+//    (= NEVER - the M17o never-dying arm, still injectable for the
+//    tests/gate harness) or a positive value override the default) or on
+//    the BIND CONFLICT
 //    (a second helper's EADDRINUSE -> exit 0 - the existing helper is
 //    alive). THE PER-CONNECTION READY SEMANTICS (round-1 S1): the ze init
 //    is GLOBAL (once); a NEW connection to an already-ready helper
@@ -134,17 +141,20 @@ export const SYSMAN_PIPE_NAME = '\\\\.\\pipe\\arcpower-sysman';
  * events - a timer firing mid-session would exit the helper inside an
  * open arbitration window). The constant is HELPER-SIDE + injectable:
  * the env override RID_SYSMAN_HELPER_IDLE_MS (round-1 S4).
- * M17o (the NEVER-DYING HELPER): the default becomes 0 = NEVER arm the
- * timer (the helper lives until reboot - the user's 'no one waits 15
- * minutes' contract needs the existing ze context held across ALL
- * sessions, so no session ever waits on an init; M17o2: a dead helper is
- * replaced by the proxy's HEAL respawn - a fresh process whose init
- * lands on attempt 1);
- * only a POSITIVE idle value arms the exit timer (the semantics flip
- * lives in the arm site, armIdleTimer - idleMsFromEnv already accepts
- * n >= 0).
+ * M23 (the CRASH-BACKSTOP idle default - the M17o never-dying premise is
+ * RETIRED by the M17o2 5/5 fresh-process live proof + the user's explicit
+ * full-close requirement): the default becomes 30000 ms - 30 s after the
+ * LAST connection closes, the helper exits on its own (the abnormal-exit
+ * coverage: the app crashes / is killed in Task Manager / power loss - the
+ * socket dies, the idle timer arms, the helper exits). The EXPLICIT
+ * shutdown op (M23 Change 1) covers the normal quit immediately; the idle
+ * default covers everything else. An explicit idleMs: 0 (= NEVER arm -
+ * the M17o never-dying semantics, still the explicit arm for the tests +
+ * the gate harness) or a positive value overrides the default; the env
+ * override RID_SYSMAN_HELPER_IDLE_MS still wins (the gate harness +
+ * the live Part-C gate exercise it).
  */
-export const HELPER_IDLE_MS = 0;
+export const HELPER_IDLE_MS = 30000;
 export const HELPER_IDLE_MS_ENV = 'RID_SYSMAN_HELPER_IDLE_MS';
 
 /**
@@ -374,7 +384,7 @@ async function writeOut(outPath, payload, id) {
  *   },
  *   log?: (s: string) => void,          // default: the file writer (round-1 S3)
  *   logFilePath?: string,               // the helper's log file (default %TEMP%\arcpower-sysman-helper.log)
- *   idleMs?: number,                    // the idle timeout (default: the RID override ?? 0 = NEVER - M17o the never-dying helper; a POSITIVE value arms the exit timer)
+ *   idleMs?: number,                    // the idle timeout (default: the RID override ?? 30000 = the M23 crash-backstop; an EXPLICIT 0 = NEVER - the M17o never-dying arm; any positive value arms the exit timer)
  *   pipeName?: string,                  // the named pipe (default \\.\pipe\arcpower-sysman)
  *   netModule?: typeof import('node:net'),  // the injectable net seam
  * }} deps
@@ -419,9 +429,11 @@ export function runSysmanHelperPipeMode({
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
     if (conns.size > 0) return; // a HELD-OPEN connection - never armed
-    // M17o THE NEVER-DYING HELPER: idleMs === 0 (the default) = NEVER arm
-    // the timer - the helper lives until reboot (only a POSITIVE idle
-    // value arms the exit timer).
+    // M23 THE CRASH-BACKSTOP IDLE DEFAULT: idleMs === 0 (an EXPLICIT arm -
+    // the M17o never-dying semantics, still injectable) = NEVER arm the
+    // timer; the DEFAULT (30000) + any positive value arms the exit timer
+    // (the helper exits HELPER_IDLE_MS after the last connection closes -
+    // the abnormal-app-exit backstop).
     if (idleMs > 0) {
       idleTimer = setTimeout(() => {
         idleTimer = null;
@@ -592,6 +604,24 @@ export function runSysmanHelperPipeMode({
         // ok/errorCode, never 'type' - the ready-line discrimination is
         // unambiguous.
         respond(sock, null, { ok: false, errorCode: 'invalid-request', message: 'malformed request: expected a JSON line with { id, op }' });
+        return;
+      }
+      // THE M23 CHANGE 1 SHUTDOWN OP (the app full-close reap): SPECIAL-
+      // CASED in the pipe scope - an EXPLICIT request, honored even with
+      // connections open (it is NOT the idle timer, which stays
+      // connection-gated). The { ok: true } ack is written FIRST so the
+      // proxy's awaited call resolves BEFORE the socket dies, then the
+      // GRACEFUL finish(0) (the existing teardown: close server/sockets,
+      // resolve the exit) exits the helper. dispatchRequest is shared
+      // with the one-shot form and has NO finish access - the shutdown
+      // never rides it (the one-shot's exit stays covered by its returned
+      // exitCode path). The op is consumed EVEN while the global init is
+      // pending (settled guards the init-loop + the ready sweep), so a
+      // full close never leaves an orphan helper behind a slow init.
+      if (req.op === 'shutdown') {
+        respond(sock, req?.id, { ok: true });
+        helperLog(`shutdown op received (id=${String(req?.id ?? '<none>')}) - finishing 0`);
+        finish(0);
         return;
       }
       conn.queue.push(req);

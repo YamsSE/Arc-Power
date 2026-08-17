@@ -5,6 +5,8 @@
 
 import type {
   ApplyResponse,
+  AdvancedOverlaySettings,
+  AdvancedOverlayState,
   Capabilities,
   DeviceInfo,
   DeviceState,
@@ -169,6 +171,22 @@ export interface ArcPowerApi {
   /** M5: flip the overlay's visibility (the Settings toggle + the hotkey
    *  flip the same persisted field). Returns the fresh state. */
   overlayToggle(): Promise<OverlayState>;
+  /** M23: pushed ADVANCED-overlay settings ({ position, enabled,
+   *  hotkeyLetter } - the panel window's surface; sent by main on every
+   *  apply incl. the initial did-finish-load push - the panel registers
+   *  SYNCHRONOUSLY at script top so the initial push is never missed). */
+  onAdvancedOverlaySettings(cb: (settings: AdvancedOverlaySettings) => void): () => void;
+  /** M23: the ADVANCED-overlay window's live state (the Overlay view's
+   *  Advanced card re-queries it on every render - hotkeyRegistered is
+   *  live-derived from the second hotkey seam). */
+  advancedOverlayGetState(): Promise<AdvancedOverlayState>;
+  /** M23: the ADVANCED-overlay shortcut flip (M7b fix-5 semantics: gated on
+   *  the persisted advancedOverlayEnabled master - a no-op while the master
+   *  is off; NEVER writes the master). Returns the fresh state. */
+  advancedOverlayToggle(): Promise<AdvancedOverlayState>;
+  /** M23: the ADVANCED-overlay's custom close button - a SESSION hide (the
+   *  dedicated channel; the main window is never closed by the panel). */
+  advancedOverlayClose(): Promise<void>;
 }
 
 declare global {

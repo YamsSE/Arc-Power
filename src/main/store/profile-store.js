@@ -27,6 +27,14 @@ const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
 
+// M23: the ADVANCED overlay's anchored-edge ids - the persisted-truth owner
+// of the list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
+// src/renderer/pure/overlay.ts and the envelope validation in
+// src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
+// files -> 'right' (Adrenaline opens on the right); a garbage value degrades
+// to 'right' at the STORE. NO scale key - the panel is a fixed compact size.
+const ADVANCED_OVERLAY_POSITIONS = ['left', 'right'];
+
 // M6: the canonical overlay stat ids - the persisted-truth owner of the
 // list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
 // src/renderer/pure/overlay.ts and the envelope validation in
@@ -276,7 +284,12 @@ export class ProfileStore {
    * the stock 'CPU '/'GPU ' prefixes when absent).
    * M17e: overlayPollMs (the overlay telemetry push cadence) rides it too
    * (400 ms when absent).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number }>}
+   * M23: the ADVANCED overlay fields (advancedOverlayEnabled/
+   * advancedOverlayHotkeyLetter/advancedOverlayPosition) - absent on old
+   * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
+   * pattern, NO schema bump - NO scale key, the panel is a fixed compact
+   * size).
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -341,6 +354,13 @@ export class ProfileStore {
         // M17e: the overlay polling-rate - absent -> 400 ms (the same
         // absent-field mechanism; the telemetry-service default).
         overlayPollMs: OVERLAY_POLL_MS_DEFAULT,
+        // M23: the ADVANCED overlay - absent -> off, the letter 'P' (the
+        // stock Adrenaline shortcut), anchored right (the same absent-field
+        // mechanism, NO schema bump; NO scale key - the panel is a fixed
+        // compact size).
+        advancedOverlayEnabled: false,
+        advancedOverlayHotkeyLetter: 'P',
+        advancedOverlayPosition: 'right',
       };
     }
     return {
@@ -407,11 +427,23 @@ export class ProfileStore {
       // telemetry-service default; a garbage value degrades to 400 - never
       // a crash, never an out-of-range cadence).
       overlayPollMs: clampOverlayPollMs(data.overlayPollMs),
+      // M23: the ADVANCED overlay (the M5 overlaySettings pattern, NO
+      // schema bump): enabled off when absent, the letter 'P', anchored
+      // 'right'; a garbage value degrades to the default - never a crash.
+      // NO scale key - the panel is a fixed compact size.
+      advancedOverlayEnabled: data.advancedOverlayEnabled === true,
+      advancedOverlayHotkeyLetter: typeof data.advancedOverlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(data.advancedOverlayHotkeyLetter)
+        ? data.advancedOverlayHotkeyLetter
+        : 'P',
+      advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(data.advancedOverlayPosition)
+        ? data.advancedOverlayPosition
+        : 'right',
     };
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -469,6 +501,19 @@ export class ProfileStore {
       // store fallback covers direct callers - an absent/garbage value
       // persists as the 400 ms default).
       overlayPollMs: clampOverlayPollMs(settings.overlayPollMs),
+      // M23: the ADVANCED overlay - validated on save like the theme (the
+      // channel validates first + rejects the hotkey-letter collision at
+      // the envelope; the store fallback covers direct callers - an
+      // absent/garbage value degrades to the default). NO scale key - the
+      // panel is a fixed compact size.
+      advancedOverlayEnabled: settings.advancedOverlayEnabled === true,
+      advancedOverlayHotkeyLetter: typeof settings.advancedOverlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter)
+        ? settings.advancedOverlayHotkeyLetter
+        : 'P',
+      advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(settings.advancedOverlayPosition)
+        ? settings.advancedOverlayPosition
+        : 'right',
     });
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.

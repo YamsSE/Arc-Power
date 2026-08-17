@@ -48,8 +48,13 @@ import {
   clampOverlayScale,
   clampOverlayBgOpacity,
   clampOverlayPollMs,
+  // M23: the ADVANCED overlay's anchored-edge mirror (pure/overlay.ts - the
+  // HUD's lockstep family; the persisted-truth owner is profile-store.js).
+  ADVANCED_OVERLAY_POSITIONS,
+  ADVANCED_OVERLAY_POSITION_LABELS,
+  isValidAdvancedOverlayPosition,
 } from '../pure/overlay.ts';
-import type { OverlayPosition, OverlayState } from '../types.ts';
+import type { OverlayPosition, OverlayState, AdvancedOverlayState } from '../types.ts';
 
 // M9: the Overlay Settings content renderer - the old page module's export
 // (the fan-editor.ts precedent: the old page shell moved into the
@@ -88,6 +93,12 @@ interface PersistedOverlay {
   // slider) - the telemetry push cadence in ms (100-2000, 400 the default
   // - M17g: the stock polling rate FLIPS 500 -> 400).
   pollMs: number;
+  // M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
+  // panel - CONTROL + <letter>, stock P). Absent on old files -> the
+  // defaults (off / 'P' / 'right').
+  advEnabled: boolean;
+  advHotkeyLetter: string;
+  advPosition: 'left' | 'right';
 }
 
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
@@ -121,6 +132,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // M17e: the polling-rate (absent on old files -> the 400 ms default
       // - M17g: the stock polling rate FLIPS 500 -> 400).
       pollMs: clampOverlayPollMs(s.overlayPollMs),
+      // M23: the ADVANCED overlay (absent on old files -> off / 'P' /
+      // 'right' - the same absent-field mechanism; NO scale key - the
+      // panel is a fixed compact size).
+      advEnabled: s.advancedOverlayEnabled === true,
+      advHotkeyLetter: typeof s.advancedOverlayHotkeyLetter === 'string'
+        && /^[A-Za-z]$/.test(s.advancedOverlayHotkeyLetter)
+        ? s.advancedOverlayHotkeyLetter
+        : 'P',
+      advPosition: isValidAdvancedOverlayPosition(s.advancedOverlayPosition) ? s.advancedOverlayPosition : 'right',
     };
   } catch (err) {
     clear(root);
@@ -130,11 +150,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   try {
     overlayState = await api.overlayGetState();
   } catch { /* the cards degrade to the persisted state */ }
+  // M23: the advanced panel's live state - the Advanced card re-queries it
+  // on EVERY render (the register-failure note must never go stale - the
+  // second hotkey seam's live flag).
+  let advancedOverlayState: AdvancedOverlayState | null = null;
+  try {
+    advancedOverlayState = await api.advancedOverlayGetState();
+  } catch { /* the card degrades to the persisted state */ }
 
   const refresh = async (): Promise<void> => {
     try {
       overlayState = await api.overlayGetState();
     } catch { /* keep the last known overlay state */ }
+    try {
+      advancedOverlayState = await api.advancedOverlayGetState();
+    } catch { /* keep the last known panel state */ }
     render();
   };
 
@@ -383,6 +413,62 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : null,
     ]);
 
+    // --- Advanced card (M23): the ADVANCED overlay - the interactive
+    // AMD-Adrenaline-style side panel (CONTROL + <letter>, stock P). The
+    // same M5 card pattern: the enable toggle, the hotkey letter input
+    // (CTRL + fixed), the position select (left|right - the anchored
+    // display edge). The COLLISION RULE: the letter must differ from the
+    // HUD hotkey letter - both cards refuse the same-letter save with a
+    // toast (the envelope is the STRUCTURAL guard - ipc-core rejects the
+    // colliding patch). The honest register-failure note rides the
+    // advanced-overlay get-state re-query (live-derived from the second
+    // hotkey seam).
+    const advancedHotkeyInput = el('input', {
+      type: 'text',
+      class: 'settings-hotkey-input settings-advanced-hotkey-input',
+      maxlength: 1,
+      value: persisted.advHotkeyLetter.toUpperCase(),
+      title: 'The advanced overlay hotkey letter (CONTROL + <letter>)',
+      oninput: (ev: Event) => {
+        const t = ev.target as HTMLInputElement;
+        const m = t.value.match(/[A-Za-z]/);
+        t.value = m ? m[m.length - 1].toUpperCase() : '';
+      },
+      onchange: (ev: Event) => void onAdvancedHotkeyLetterChange((ev.target as HTMLInputElement).value),
+    });
+    const advancedPositionSelect = el('select', {
+      class: 'settings-position-select settings-advanced-position-select',
+      onchange: (ev: Event) => void onAdvancedPositionChange((ev.target as HTMLSelectElement).value),
+    }, ADVANCED_OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: ADVANCED_OVERLAY_POSITION_LABELS[p] })));
+    advancedPositionSelect.value = persisted.advPosition;
+    const advancedCard = el('section', { class: 'card settings-card overlay-advanced-card' }, [
+      el('h2', { class: 'card-title', text: 'Advanced (CTRL + P)' }),
+      el('p', { class: 'card-note', text: 'The interactive side panel with the Tuning / Fan / Graphics tabs. Control + <letter> toggles it; the letter must differ from the hotkey letter above.' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'advancedOverlayEnabled' },
+            checked: persisted.advEnabled,
+            onchange: (ev: Event) => void onAdvancedEnabledToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Show the advanced overlay' }),
+        ]),
+      ]),
+      el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
+        el('span', { class: 'overlay-hotkey-fixed', text: 'CONTROL +' }),
+        advancedHotkeyInput,
+      ]),
+      el('div', { class: 'settings-row overlay-advanced-position-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Edge' }),
+        advancedPositionSelect,
+      ]),
+      advancedOverlayState && advancedOverlayState.exists && advancedOverlayState.hotkeyRegistered === false
+        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CONTROL + ${persisted.advHotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it. The toggle above still shows the panel.` })
+        : null,
+    ]);
+
     // The honest limitations + data sources (moved from the Settings card
     // with the rest): the overlay is a standard topmost window - Windows
     // does not expose overlay-plane (MPO) assignment to apps, and an
@@ -409,7 +495,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    root.append(generalCard, statsCard, appearanceCard, hotkeyCard, notesCard);
+    root.append(generalCard, statsCard, appearanceCard, hotkeyCard, advancedCard, notesCard);
   };
 
   // --- M6 handlers (every save goes through profiles-settings-save;
@@ -624,6 +710,62 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     }
     // The register-failure note must follow the live registration state
     // (the letter save re-registers through main's hotkey seam).
+    await refresh();
+  };
+
+  // --- M23: the ADVANCED card handlers (the same profiles-settings-save
+  // pattern as the HUD card - the honest revert on error). The COLLISION
+  // RULE is enforced BOTH in the renderer (the toast below) AND at the
+  // ENVELOPE (ipc-core rejects a patch whose advanced letter equals the HUD
+  // letter - and symmetrically a HUD letter equal to the advanced one). The
+  // envelope's rejection surfaces here as the honest toast + input revert.
+
+  const onAdvancedEnabledToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="advancedOverlayEnabled"]');
+    try {
+      await api.profilesSettingsSave({ advancedOverlayEnabled: checked });
+      persisted.advEnabled = checked;
+      toast(checked ? 'success' : 'info', checked ? 'Advanced overlay enabled' : 'Advanced overlay disabled', '');
+    } catch (err) {
+      toast('error', 'Advanced overlay could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = persisted.advEnabled;
+      return;
+    }
+  };
+
+  const onAdvancedPositionChange = async (position: string): Promise<void> => {
+    if (!isValidAdvancedOverlayPosition(position) || position === persisted.advPosition) return;
+    const select = root.querySelector<HTMLSelectElement>('.settings-advanced-position-select');
+    try {
+      await api.profilesSettingsSave({ advancedOverlayPosition: position });
+      persisted.advPosition = position;
+      toast('success', 'Advanced overlay edge changed', `${ADVANCED_OVERLAY_POSITION_LABELS[position]} - the panel moves immediately.`);
+    } catch (err) {
+      toast('error', 'Advanced overlay edge could not be changed', err instanceof Error ? err.message : String(err));
+      if (select) select.value = persisted.advPosition;
+      return;
+    }
+  };
+
+  const onAdvancedHotkeyLetterChange = async (letter: string): Promise<void> => {
+    const input = root.querySelector<HTMLInputElement>('.settings-advanced-hotkey-input');
+    const v = letter.trim().toUpperCase();
+    if (!/^[A-Za-z]$/.test(v)) {
+      toast('error', 'Advanced overlay hotkey', 'The hotkey must be a single letter (CONTROL + <letter>).');
+      if (input) input.value = persisted.advHotkeyLetter.toUpperCase();
+      return;
+    }
+    try {
+      await api.profilesSettingsSave({ advancedOverlayHotkeyLetter: v });
+      persisted.advHotkeyLetter = v;
+      toast('success', 'Advanced overlay hotkey changed', `The panel toggles with CONTROL + ${v}.`);
+    } catch (err) {
+      toast('error', 'Advanced overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
+      if (input) input.value = persisted.advHotkeyLetter.toUpperCase();
+      return;
+    }
+    // The register-failure note must follow the live registration state
+    // (the letter save re-registers through main's second hotkey seam).
     await refresh();
   };
 

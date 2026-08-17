@@ -522,6 +522,27 @@ export interface OverlayState {
   hotkeyRegistered: boolean;
 }
 
+/** M23: the ADVANCED-overlay settings push payload ({ position, enabled,
+ *  hotkeyLetter } - the HUD's push parity; the letter rides it so the
+ *  panel can render its own shortcut hint). */
+export interface AdvancedOverlaySettings {
+  position: 'left' | 'right';
+  enabled: boolean;
+  hotkeyLetter: string;
+}
+
+/** M23: the advanced-overlay:get-state envelope (the Overlay view's
+ *  Advanced card + the verify read it; hotkeyRegistered is derived LIVE
+ *  from the SECOND hotkey seam). */
+export interface AdvancedOverlayState {
+  exists: boolean;
+  visible: boolean;
+  bounds: { x: number; y: number; width: number; height: number } | null;
+  position: 'left' | 'right';
+  enabled: boolean;
+  hotkeyRegistered: boolean;
+}
+
 /** Persisted profile-settings envelope (ocOnBoot / activeProfileId / ocMode). */
 export interface ProfileSettingsState {
   waiverAccepted: boolean;
@@ -575,6 +596,13 @@ export interface ProfileSettingsState {
    *  schema bump). The Overlay Settings page's polling-rate slider
    *  persists this. */
   overlayPollMs: number;
+  /** M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
+   *  panel - CONTROL + <letter>, stock P; absent on old files -> the
+   *  defaults: off / 'P' / 'right' - the same absent-field mechanism, NO
+   *  schema bump; NO scale key - the panel is a fixed compact size). */
+  advancedOverlayEnabled: boolean;
+  advancedOverlayHotkeyLetter: string;
+  advancedOverlayPosition: 'left' | 'right';
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

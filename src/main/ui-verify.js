@@ -9,7 +9,8 @@
 //       1.0.1" (app:version IPC + the display suffix - the IPC
 //       keeps the bare semver; M5: displayVersion renders ' Beta' for the
 //       -beta.x line, nothing for a stable - the M21 1.0.1-beta.1 bump: the
-//       pinned text is EXACTLY 'Arc Power Ver. 1.0.1 Beta') - the driver
+//       pinned text is EXACTLY 'Arc Power Ver. 1.0.1 Beta'; M23 (user): the
+//       1.0.2 STABLE bump - 'Arc Power Ver. 1.0.2', no suffix) - the driver
 //       version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
@@ -781,8 +782,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Beta'`))) {
-fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Beta')`);
+  // M23 (user): the 1.0.2 STABLE bump - the display drops the Beta line
+  // entirely ('Arc Power Ver. 1.0.2' - a stable has no suffix).
+if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.2'`))) {
+fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.2')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -4416,9 +4419,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// M4-D row shares the header's display format).
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.1 Beta'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.1 Beta')`);
+// M4-D row shares the header's display format). M23 (user): the 1.0.2
+// STABLE bump - 'Arc Power Ver. 1.0.2' (no Beta suffix on a stable).
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.2'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.2')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -4480,7 +4484,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.1`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.2`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -8103,13 +8107,15 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input');
     if (!i) return;
-    i.value = 'P';
+    // M23: 'X' - NOT 'P' (the advanced overlay's STOCK letter; the M23
+    // collision envelope correctly rejects a HUD save of 'P').
+    i.value = 'X';
     i.dispatchEvent(new Event('change'));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'P')`, 5000))) {
-    fail('M5: the Overlay Settings page letter save did not persist overlayHotkeyLetter=P');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'X')`, 5000))) {
+    fail('M5: the Overlay Settings page letter save did not persist overlayHotkeyLetter=X');
   }
-  if (!hotkeyProbe.registrations.includes('Control+P')) {
+  if (!hotkeyProbe.registrations.includes('Control+X')) {
     fail(`M5: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   const s4 = await js(`window.arcPower.overlayGetState()`);
@@ -8118,8 +8124,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M5: the Overlay Settings page does not show the honest hotkey-register-failure note after the faked failure + letter save');
   }
   const inputValue = await js(`document.querySelector('.settings-hotkey-input')?.value ?? ''`);
-  if (inputValue !== 'P') fail(`M5: the Overlay Settings hotkey input reads '${inputValue}' (expected 'P' after the save)`);
-  step('m5-hotkey-failure-note', `mid-run faked register failure + letter save 'P' -> probe re-registered 'Control+P', hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
+  if (inputValue !== 'X') fail(`M5: the Overlay Settings hotkey input reads '${inputValue}' (expected 'X' after the save)`);
+  step('m5-hotkey-failure-note', `mid-run faked register failure + letter save 'X' -> probe re-registered 'Control+X', hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
 
   // Restore the deterministic session end (like the theme-dark-final step):
   // letter O + a successful registration -> the note disappears, and the
@@ -8156,5 +8162,477 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
 
   console.log('\nUI VERIFY OK (overlay)\n' + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// M23 (Part B) - the ADVANCED-overlay verify block (RID_MOCK_ADV_OVERLAY=1,
+// the AMD-Adrenaline-style interactive side panel - CONTROL + <letter>,
+// stock P). The RID_MOCK_OVERLAY pattern: the panel window is REAL (created
+// by main.js under the knob, seeded advancedOverlayEnabled:true - the panel
+// boots SHOWN), the hotkey is the COUNTING probe (never a real
+// globalShortcut). Pins:
+//   1. get-state: exists + SHOWN boot (the seeded advancedOverlayEnabled:
+//      true) + the counting probe registered 'Control+P' + hotkeyRegistered
+//      true + the seeded position 'right'.
+//   2. The toggle semantics (M7b fix-5): master ON (seeded) -> the shortcut
+//      ('advanced-overlay:toggle') flips SESSION visibility only - the
+//      persisted advancedOverlayEnabled NEVER flips from the hotkey; the
+//      master-OFF case is exercised by flipping the Settings General-card
+//      toggle OFF mid-run (the toggle is then a NO-OP assert) - NOT a second
+//      boot seed (the PHASES note).
+//   3. The Tuning tab: the scalar slider cards render for the mock a770 caps
+//      (gpuFreqOffsetMhz/gpuVoltOffsetV/tempLimitC - the canonical-keyed
+//      cards) + the M22-safe lock editor (0/0 = the OFFSET RESET payload
+//      {gpuFreqOffsetMhz:0, gpuVoltOffsetV:0} with NO gpuLock key); a FIXED
+//      offset apply round trip lands (perControl ok + readBackEqual) with NO
+//      gpuLock key; the 0/0 editor reset sends {gpuFreqOffsetMhz:0,
+//      gpuVoltOffsetV:0} (no gpuLock); the locked-mode refusal mirrors while
+//      a real lock is held (the mock refusal surface exists); powerLimitW
+//      renders EDITABLE (a slider + a per-card apply round trip - the user's
+//      PL rule was about the M22 fix never touching HOW PL is applied, not
+//      about hiding PL from the panel).
+//   4. The Fan tab: the reused fan editor renders (curve plot + mode chips)
+//      + a fan apply round trip lands.
+//   5. The Graphics tab: the four cards render (mock supported) + a graphics
+//      apply round trip lands.
+//   6. The live readout strip renders honest values from the telemetry push
+//      (the third consumer of the sample stream).
+//   7. The hotkey collision: saving the advanced letter equal to the HUD
+//      letter is refused with a toast (the renderer refuses - the envelope
+//      rejection is unit-tested elsewhere, pin the toast UX here; both cards
+//      enforce symmetrically).
+//   8. The Settings card (Overlay view): the advanced hotkey card renders +
+//      a letter save re-registers through the probe + the honest
+//      register-failure note appears when the probe fails.
+//
+// @param {import('electron').BrowserWindow} win the main window
+// @param {object} advancedOverlayHandle the handle created by main.js under
+//   RID_MOCK_ADV_OVERLAY=1 (createAdvancedOverlayWindow's return)
+// @param {import('./store/profile-store.js').ProfileStore} store
+// @param {{ registrations: string[], failRegister: boolean }} hotkeyProbe
+//   the second hotkey seam's counting probe (main.js injects it in ui-verify)
+// @param {object|null} [backend] the mock backend - optional; when passed the
+//   apply-settings payloads are recorded so the M22-safe payload pins can
+//   assert the exact shape (NO gpuLock key on offset/reset applies).
+export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store, hotkeyProbe, backend = null) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const panelWin = advancedOverlayHandle ? advancedOverlayHandle.getWindow() : null;
+  if (!panelWin || panelWin.isDestroyed()) {
+    fail('M23: the advanced-overlay panel window does not exist under RID_MOCK_ADV_OVERLAY=1 (main.js must create it under the knob)');
+  }
+  const ojs = (code) => panelWin.webContents.executeJavaScript(code);
+  const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+  const clearPanelToasts = () => ojs(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+
+  // The apply-settings payload recorder (the M22-safe payload pins): when
+  // the backend is passed, every applySettings call's payload is recorded
+  // so the pins can assert the exact shape (a FIXED offset apply carries NO
+  // gpuLock key; the 0/0 editor reset sends ONLY the two offset keys).
+  const applyPayloads = [];
+  if (backend && typeof backend.applySettings === 'function') {
+    const origApply = backend.applySettings.bind(backend);
+    backend.applySettings = async (deviceId, settings, opts) => {
+      applyPayloads.push(JSON.parse(JSON.stringify(settings ?? {})));
+      return origApply(deviceId, settings, opts);
+    };
+  }
+  const lastApplyPayload = () => (applyPayloads.length > 0 ? applyPayloads[applyPayloads.length - 1] : null);
+
+  // (1) the seeded session: exists + SHOWN (advancedOverlayEnabled:true
+  // seeded by main.js - the RID_MOCK_OVERLAY parity) + the probe registered
+  // 'Control+P' + hotkeyRegistered true + the seeded position 'right'.
+  const s0 = await js(`window.arcPower.advancedOverlayGetState()`);
+  if (!s0.exists) fail('M23: advanced-overlay:get-state reports exists:false in the advanced-overlay variant');
+  if (!s0.visible) fail('M23: the seeded advancedOverlayEnabled:true session must boot with the panel SHOWN (get-state visible:false)');
+  if (s0.position !== 'right') fail(`M23: the seeded advanced-overlay position is '${s0.position}' (expected 'right')`);
+  if (s0.enabled !== true) fail(`M23: the seeded advancedOverlayEnabled:true did not reach the panel handle (get-state enabled:${s0.enabled})`);
+  if (s0.hotkeyRegistered !== true) fail(`M23: the boot hotkey registration did not land (hotkeyRegistered ${s0.hotkeyRegistered}, probe ${JSON.stringify(hotkeyProbe.registrations)})`);
+  if (!hotkeyProbe.registrations.includes('Control+P')) {
+    fail(`M23: the hotkey probe never registered 'Control+P' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  }
+  step('m23-get-state', `advanced-overlay:get-state -> exists + SHOWN boot (position '${s0.position}', enabled ${s0.enabled}, bounds ${JSON.stringify(s0.bounds)}); the counting probe registered ${JSON.stringify(hotkeyProbe.registrations)}; hotkeyRegistered true`);
+
+  // (2) the toggle semantics (M7b fix-5): the shortcut
+  // ('advanced-overlay:toggle') with the master ON flips the SESSION
+  // visibility only - the persisted advancedOverlayEnabled NEVER flips from
+  // the hotkey (the Overlay view's Advanced card is its only writer).
+  const t1 = await js(`window.arcPower.advancedOverlayToggle()`);
+  if (t1.visible) fail('M23: advanced-overlay:toggle did not HIDE the visible panel');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === true)`, 5000))) {
+    fail('M23 (M7b): the shortcut press must NOT write advancedOverlayEnabled (still true - the hotkey never persists)');
+  }
+  const t2 = await js(`window.arcPower.advancedOverlayToggle()`);
+  if (!t2.visible) fail('M23: advanced-overlay:toggle did not SHOW the panel again');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === true)`, 5000))) {
+    fail('M23 (M7b): the second shortcut press must NOT write advancedOverlayEnabled either (still true)');
+  }
+  step('m23-toggle', 'M23 (M7b): the shortcut (advanced-overlay:toggle) flipped visible -> hidden -> visible while the persisted advancedOverlayEnabled stayed true - the hotkey NEVER writes the master');
+
+  // (2a) M23 (step-4 S1): the panel's custom close button is a SESSION
+  // hide - click #adv-close (in the PANEL window's DOM - ojs, not js):
+  // visible false + enabled true + the persisted master still true + the
+  // hotkey re-shows the panel. (The close was a DEAD no-op when it routed
+  // through an injected op main.js never provided - this pin guards the
+  // direct-hide fix.)
+  const closeClick = await ojs(`(() => {
+    const b = document.getElementById('adv-close');
+    if (!b) return { ok: false };
+    b.click();
+    return { ok: true };
+  })()`);
+  if (!closeClick.ok) fail('M23 (S1): the panel has no #adv-close button');
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.visible === false)`, 5000))) {
+    fail('M23 (S1): the #adv-close click did not hide the panel (visible still true)');
+  }
+  const c1 = await js(`window.arcPower.advancedOverlayGetState()`);
+  if (c1.enabled !== true) fail('M23 (S1): the close button must NOT change the enabled master');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === true)`, 5000))) {
+    fail('M23 (S1): the close button must NOT persist advancedOverlayEnabled=false');
+  }
+  const t3 = await js(`window.arcPower.advancedOverlayToggle()`);
+  if (!t3.visible) fail('M23 (S1): the hotkey must re-show the panel after the close-button hide');
+  step('m23-close', 'M23 (S1): the #adv-close button hid the panel (session hide - master + persistence untouched) and the hotkey re-showed it');
+
+  // (2b) PHASES note: the master-OFF case is exercised by flipping the
+  // Settings General-card toggle OFF mid-run (the toggle is then a no-op),
+  // NOT a second boot seed. Navigate to the Overlay view (the #/overlay
+  // alias - the Advanced card renders there) and flip the master OFF.
+  await js(`location.hash = '#/overlay'`);
+  if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="advancedOverlayEnabled"]')`, 8000))) {
+    fail('M23: the Overlay view Advanced card has no advancedOverlayEnabled toggle');
+  }
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="advancedOverlayEnabled"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === false)`, 5000))) {
+    fail('M23: the Advanced-card toggle did not persist advancedOverlayEnabled=false');
+  }
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.visible === false)`, 5000))) {
+    fail('M23: the Advanced-card toggle off did not HIDE the panel window');
+  }
+  // M7b (fix 5, pin a): with the master OFF the shortcut does NOTHING - the
+  // window stays hidden AND advancedOverlayEnabled stays false in the store.
+  const off = await js(`window.arcPower.advancedOverlayToggle()`);
+  if (off.visible) fail('M23 (M7b): the shortcut must NOT show the panel while the master advancedOverlayEnabled is OFF');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === false)`, 5000))) {
+    fail('M23 (M7b): the shortcut press while the master is OFF must NOT write advancedOverlayEnabled (still false)');
+  }
+  // Restore the master ON (the panel pins below need the SHOWN panel).
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="advancedOverlayEnabled"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === true)`, 5000))) {
+    fail('M23: the Advanced-card toggle did not persist advancedOverlayEnabled=true');
+  }
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.visible === true)`, 5000))) {
+    fail('M23: the Advanced-card toggle on did not SHOW the panel window');
+  }
+  step('m23-master-off', 'M23 (M7b): the Advanced-card toggle round trip - OFF persisted false + hid the panel (the shortcut is a NO-OP while the master is off); ON restored the shown panel');
+
+  // (3) the Tuning tab: the panel's real DOM. The scalar slider cards for
+  // the mock a770 caps (gpuFreqOffsetMhz/gpuVoltOffsetV/tempLimitC - the
+  // canonical-keyed cards; the a770 has no VRAM offsets so those are absent)
+  // + the M22-safe lock editor + the READ-ONLY power-limit card.
+  const tuningTabSel = `document.querySelector('.adv-tab[data-tab="tuning"]')`;
+  await ojs(`${tuningTabSel}.click()`);
+  await sleep(250);
+  if (!(await waitFor(panelWin, `!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]')`, 10000))) {
+    fail(`M23: the Tuning tab has no gpuFreqOffsetMhz slider card (page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
+  }
+  const tuningCards = await ojs(`JSON.stringify(Array.from(document.querySelectorAll('.adv-view .oc-card')).map((c) => c.dataset.control ?? ''))`);
+  const tuningList = JSON.parse(tuningCards);
+  for (const want of ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'tempLimitC', 'powerLimitW']) {
+    if (!tuningList.includes(want)) fail(`M23: the Tuning tab is missing the ${want} card (got ${tuningCards})`);
+  }
+  if (tuningList.includes('vramFreqOffsetGts') || tuningList.includes('vramVoltOffsetV')) {
+    fail(`M23: the a770 Tuning tab must NOT render VRAM-offset cards (the mock has no VRAM ranges - got ${tuningCards})`);
+  }
+  const sliderOk = await ojs(`Array.from(document.querySelectorAll('.adv-view .oc-card[data-control] input[type="range"]')).length >= 3`);
+  if (!sliderOk) fail('M23: the a770 Tuning tab must render at least three slider cards with range inputs');
+  // M23 (user): the gpuLock editor is NOT part of the panel's Tuning tab.
+  if (await ojs(`!!document.querySelector('input[data-lock-field="voltageV"]') || !!document.querySelector('input[data-lock-field="freqMhz"]') || !!document.querySelector('[data-lock-apply="1"]')`)) {
+    fail('M23 (user): the gpuLock editor must NOT render in the panel Tuning tab (it is gone from the overlay - the main window\'s Tuning page keeps the M22-safe editor)');
+  }
+  step('m23-tuning-render', `M23: the Tuning tab renders the scalar slider cards ${JSON.stringify(tuningList.filter((k) => k !== 'powerLimitW'))} + the editable power-limit card, and NO gpuLock editor (the user's directive - the main window's Tuning page keeps it)`);
+
+  // (3a) a FIXED offset apply round trip lands (perControl ok + readBackEqual)
+  // with NO gpuLock key: set the freq slider to a fixed 100 MHz and apply it
+  // through the per-card chip apply. The mock lands it (read-back equals)
+  // and the recorded payload carries NO gpuLock key.
+  await ojs(`(() => {
+    const s = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] input[type="range"]');
+    s.value = '100';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(150);
+  const chipApplyVisible = await ojs(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply') && !document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply').hidden`);
+  if (!chipApplyVisible) fail('M23: the dirty freq slider must reveal the per-card .oc-chip-apply button');
+  // The first panel apply shows the warranty-waiver dialog INSIDE the panel
+  // window (the panel has its own modal-root); accept it.
+  await clearPanelToasts();
+  await ojs(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply').click()`);
+  if (await waitFor(panelWin, `!!document.querySelector('.modal button.btn-danger')`, 6000)) {
+    await ojs(`document.querySelector('.modal button.btn-danger').click()`);
+  }
+  if (!(await waitFor(panelWin, `(() => { const c = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 10000))) {
+    fail(`M23: the fixed offset apply did not flip the Core clock chip to 'Applied' (driver='${JSON.stringify((await js(`window.arcPower.getCurrentSettings(0)`)).gpuFreqOffsetMhz)}', payloads=${JSON.stringify(applyPayloads)})`);
+  }
+  const offsetState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (offsetState.gpuFreqOffsetMhz !== 100) fail(`M23: the fixed offset apply did not land in the mock driver (read-back ${offsetState.gpuFreqOffsetMhz}, expected 100)`);
+  const offsetPayload = lastApplyPayload();
+  if (!offsetPayload || !('gpuFreqOffsetMhz' in offsetPayload)) fail(`M23: no apply payload recorded for the offset apply (${JSON.stringify(applyPayloads)})`);
+  if ('gpuLock' in offsetPayload) fail(`M23: the offset apply payload must NOT carry a gpuLock key (got ${JSON.stringify(offsetPayload)})`);
+  step('m23-fixed-offset', `M23: fixed offset apply round trip - slider 100 -> per-card apply -> chip 'Applied' + driver read-back ${offsetState.gpuFreqOffsetMhz} MHz (perControl ok + readBackEqual); the recorded payload ${JSON.stringify(offsetPayload)} carries NO gpuLock key`);
+  await clearPanelToasts();
+
+  // (3b) M23 (user): the Fixed Clock / Voltage Lock editor is NOT part of
+  // the panel's Tuning tab - a gpuLock change risks the driver's lock-mode
+  // crash on this card, and the panel must fit without scrolling. The MAIN
+  // window's Tuning page keeps the M22-safe lock editor (its pins live in
+  // the M22 ui-verify block - the 0/0 offset-reset payload + the
+  // apply-while-locked refusal are still covered there). Here we pin the
+  // ABSENCE: no lock inputs, no lock apply button, no lock read-out.
+  const hasLockUi = await ojs(`(() => {
+    const panel = document.getElementById('adv-content');
+    if (!panel) return true; // the Tuning tab is not rendered - fail loud
+    return !!panel.querySelector('input[data-lock-field="voltageV"], input[data-lock-field="freqMhz"], [data-lock-apply="1"], .gpu-lock-current, .gpu-lock-fields');
+  })()`);
+  if (hasLockUi) fail('M23 (user): the gpuLock editor must NOT render in the panel\'s Tuning tab (it is gone from the overlay - the main window\'s Tuning page keeps it)');
+  step('m23-no-lock-editor', 'M23 (user): the panel Tuning tab has NO gpuLock editor (no lock inputs / apply button / read-out) - the main window\'s Tuning page keeps the M22-safe lock editor');
+  await clearPanelToasts();
+
+  // (3c) powerLimitW is an EDITABLE slider card (the user's clarification:
+  // the PL rule was about the M22 FIX never touching HOW PL is applied, not
+  // about hiding PL from the panel - the panel mirrors the main Tuning
+  // page's applyable PL slider) + the PL1/PL2 sysman readout line.
+  const plCard = `document.querySelector('.oc-card[data-control="powerLimitW"]')`;
+  if (!(await ojs(`!!${plCard}`))) fail('M23: the power-limit card is missing from the Tuning tab');
+  if (!(await ojs(`(() => { const c = ${plCard}; return !!c.querySelector('input[type="range"]'); })()`))) {
+    fail('M23: the power-limit card must have an EDITABLE slider (the user\'s PL rule was about the M22 fix never touching HOW PL is applied - the panel mirrors the Tuning page)');
+  }
+  if (!(await waitFor(panelWin, `(() => { const c = ${plCard}; return (c.textContent ?? '').includes('W'); })()`, 5000))) {
+    fail('M23: the power-limit card has no watt readout');
+  }
+  // A PL slider move dirties the card; the per-card Apply lands a PL write
+  // round trip (the mock's a770 range: 210 -> e.g. 220 W -> read-back).
+  await ojs(`(() => {
+    const s = document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]');
+    if (!s) return;
+    s.value = String(Number(s.max) > 210 ? 220 : Number(s.min));
+    s.dispatchEvent(new Event('input'));
+    s.dispatchEvent(new Event('change'));
+  })()`);
+  await sleep(200);
+  const plApplyVisible = await ojs(`!!document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply:not([hidden])')`);
+  if (!plApplyVisible) fail('M23: the PL slider move did not dirty the card (no per-card Apply)');
+  await ojs(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-apply').click()`);
+  await sleep(400);
+  if (!(await waitFor(panelWin, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-chip-status')?.textContent ?? '') === 'Applied'`, 5000))) {
+    fail('M23: the PL apply round trip did not land (chip not Applied)');
+  }
+  step('m23-pl-editable', 'M23: the power-limit card is EDITABLE - slider move dirties, the per-card Apply lands the PL round trip (the user\'s PL rule was about the M22 fix never touching HOW PL is applied, not about hiding PL from the panel)');
+  await clearPanelToasts();
+
+  // (4) the Fan tab: the REUSED fan editor renders (curve plot + mode chips)
+  // + a fan apply round trip lands (the a770 mock supports auto/curve).
+  await ojs(`document.querySelector('.adv-tab[data-tab="fan"]').click()`);
+  await sleep(250);
+  if (!(await waitFor(panelWin, `!!document.querySelector('.fan-card .fan-plot svg') && !!document.querySelector('.fan-mode-toggle .chip')`, 8000))) {
+    fail(`M23: the Fan tab did not render the fan editor (curve plot + mode chips) - page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}'`);
+  }
+  const fanChips = await ojs(`JSON.stringify(Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).map((c) => (c.textContent ?? '').trim()))`);
+  const chipList = JSON.parse(fanChips);
+  if (!chipList.includes('Auto') || !chipList.includes('Curve')) {
+    fail(`M23: the fan mode chips are ${fanChips} (expected the mock a770's Auto + Curve)`);
+  }
+  // Switch to Auto + apply -> the driver fanMode flips to 'auto'.
+  await clearPanelToasts();
+  await ojs(`(() => { const c = Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).find((x) => (x.textContent ?? '').trim() === 'Auto'); if (c) c.click(); })()`);
+  await sleep(150);
+  await ojs(`document.querySelector('.fan-apply-row .btn-primary').click()`);
+  if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.fanMode === 'auto')`, 8000))) {
+    fail(`M23: the fan Auto apply did not land (driver fanMode='${(await js(`window.arcPower.getCurrentSettings(0)`)).fanMode}')`);
+  }
+  // Back to Curve + apply -> restored (the deterministic session end).
+  await clearPanelToasts();
+  await ojs(`(() => { const c = Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).find((x) => (x.textContent ?? '').trim() === 'Curve'); if (c) c.click(); })()`);
+  await sleep(150);
+  await ojs(`document.querySelector('.fan-apply-row .btn-primary').click()`);
+  if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.fanMode === 'curve')`, 8000))) {
+    fail(`M23: the fan Curve restore apply did not land (driver fanMode='${(await js(`window.arcPower.getCurrentSettings(0)`)).fanMode}')`);
+  }
+  step('m23-fan', `M23: the Fan tab renders the reused fan editor (curve plot svg + the ${fanChips} mode chips); an Auto apply round trip landed (driver fanMode 'auto') and the Curve restore landed (fanMode 'curve')`);
+  await clearPanelToasts();
+
+  // (5) the Graphics tab: the four M8 cards render (mock supported) + a
+  // graphics apply round trip lands (the DEDICATED graphics path - no OC
+  // waiver anywhere).
+  await ojs(`document.querySelector('.adv-tab[data-tab="graphics"]').click()`);
+  await sleep(250);
+  if (!(await waitFor(panelWin, `document.querySelectorAll('.graphics-card').length === 4`, 10000))) {
+    fail(`M23: the panel Graphics tab did not render four cards (got ${await ojs(`document.querySelectorAll('.graphics-card').length`)} - page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
+  }
+  if (await ojs(`Array.from(document.querySelectorAll('.graphics-card')).some((c) => (c.textContent ?? '').includes('Not supported on this GPU.'))`)) {
+    fail('M23: a panel Graphics card shows the unsupported state (the mock supports all four)');
+  }
+  const graphicsSel = `document.querySelector('.graphics-select[data-graphics-select="flipMode"]')`;
+  await ojs(`(() => { const s = ${graphicsSel}; s.value = 'vsync-on'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await clearPanelToasts();
+  await ojs(`document.querySelector('.graphics-card[data-control="flipMode"] .oc-chip-apply').click()`);
+  if (!(await waitFor(panelWin, `(() => { const c = document.querySelector('.graphics-card[data-control="flipMode"] .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 8000))) {
+    fail(`M23: the graphics apply did not flip the Frame Sync chip to 'Applied' (driver flip='${(await js(`window.arcPower.graphicsGet(0)`)).values.flipMode}')`);
+  }
+  if ((await js(`window.arcPower.graphicsGet(0)`)).values.flipMode !== 'vsync-on') {
+    fail('M23: the graphics apply round trip did not reach the mock driver (flipMode != vsync-on)');
+  }
+  step('m23-graphics', 'M23: the panel Graphics tab renders the four M8 cards (mock supported) + a flipMode vsync-on apply round trip landed (chip Applied + the mock driver read-back)');
+  await clearPanelToasts();
+
+  // (6) the LIVE readout strip: honest values from the telemetry push (the
+  // THIRD consumer of the sample stream). The mock telemetry: tempCBase 36
+  // (+tick%30), fanRpm [1030], powerW 38.8 - the readout renders
+  // '<temp>°C' / '1030 RPM' / '38.8 W' (never the honest '-' once a sample
+  // lands).
+  if (!(await waitFor(panelWin, `/^\\d+°C$/.test((document.getElementById('adv-readout-temp')?.textContent ?? '').trim())`, 10000))) {
+    fail(`M23: the readout temp strip is '${await ojs(`document.getElementById('adv-readout-temp')?.textContent ?? ''`)}' (expected an honest '<n>°C' from the telemetry push)`);
+  }
+  if (!(await waitFor(panelWin, `(document.getElementById('adv-readout-fan')?.textContent ?? '').trim() === '1030 RPM'`, 10000))) {
+    fail(`M23: the readout fan strip is '${await ojs(`document.getElementById('adv-readout-fan')?.textContent ?? ''`)}' (expected '1030 RPM' from the mock telemetry)`);
+  }
+  if (!(await waitFor(panelWin, `(document.getElementById('adv-readout-power')?.textContent ?? '').trim() === '38.8 W'`, 10000))) {
+    fail(`M23: the readout power strip is '${await ojs(`document.getElementById('adv-readout-power')?.textContent ?? ''`)}' (expected '38.8 W' from the mock telemetry)`);
+  }
+  step('m23-readout', `M23: the live readout strip renders honest telemetry values - temp '${await ojs(`document.getElementById('adv-readout-temp')?.textContent ?? ''`)}', fan '${await ojs(`document.getElementById('adv-readout-fan')?.textContent ?? ''`)}', power '${await ojs(`document.getElementById('adv-readout-power')?.textContent ?? ''`)}' (the third consumer of the sample stream)`);
+
+  // (7) the hotkey collision: saving the advanced letter equal to the HUD
+  // letter is refused with a toast (the renderer refuses - the ENVELOPE
+  // rejection is unit-tested elsewhere; pin the toast UX here). Both cards
+  // enforce symmetrically. The HUD letter is seeded 'O' (main.js resets it
+  // under the knob) and the advanced letter 'P'.
+  await js(`location.hash = '#/overlay'`);
+  if (!(await waitFor(win, `!!document.querySelector('.settings-advanced-hotkey-input')`, 8000))) {
+    fail('M23: the Overlay view did not render the advanced hotkey input');
+  }
+  // (7a) the ADVANCED card side: save the advanced letter = the HUD letter
+  // ('O') -> the envelope rejects (collision) -> the honest toast + the
+  // input reverts + the store is untouched.
+  await clearToasts();
+  await js(`(() => {
+    const i = document.querySelector('.settings-advanced-hotkey-input');
+    i.value = 'O';
+    i.dispatchEvent(new Event('change'));
+  })()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-error') && (document.body.textContent ?? '').includes('Advanced overlay hotkey could not be changed')`, 8000))) {
+    fail(`M23: the colliding advanced-letter save did not surface the honest toast (toasts='${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => (t.textContent ?? '').slice(0, 60)).join(' | ')`)}')`);
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'P')`, 5000))) {
+    fail('M23: the colliding advanced-letter save must NOT persist (advancedOverlayHotkeyLetter must stay P - the envelope rejected it)');
+  }
+  const advInputValue = await js(`document.querySelector('.settings-advanced-hotkey-input')?.value ?? ''`);
+  if (advInputValue !== 'P') fail(`M23: the advanced hotkey input reads '${advInputValue}' (expected 'P' - the renderer reverts the rejected save)`);
+  // (7b) the HUD card side, symmetrically: save the HUD letter = the
+  // advanced letter ('P') -> the same envelope rejection -> the HUD toast.
+  await clearToasts();
+  await js(`(() => {
+    const i = document.querySelector('.settings-hotkey-input:not(.settings-advanced-hotkey-input)');
+    if (i) { i.value = 'P'; i.dispatchEvent(new Event('change')); }
+  })()`);
+  if (!(await waitFor(win, `!!document.querySelector('.toast-error') && (document.body.textContent ?? '').includes('Overlay hotkey could not be changed')`, 8000))) {
+    fail(`M23: the colliding HUD-letter save did not surface the honest toast (toasts='${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => (t.textContent ?? '').slice(0, 60)).join(' | ')`)}')`);
+  }
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'O')`, 5000))) {
+    fail('M23: the colliding HUD-letter save must NOT persist (overlayHotkeyLetter must stay O - the symmetric envelope rejection)');
+  }
+  step('m23-collision', `M23: the hotkey COLLISION - saving the advanced letter 'O' (= the HUD letter) is refused with the honest toast + the input reverts ('${advInputValue}') + the store stays 'P'; the HUD card enforces symmetrically (HUD 'P' -> the HUD toast + the store stays 'O')`);
+
+  // (8) the Settings card (Overlay view): the advanced hotkey card renders +
+  // a letter save re-registers through the probe + the honest
+  // register-failure note appears when the probe fails.
+  if (!(await js(`!!document.querySelector('.overlay-advanced-card')`))) {
+    fail('M23: the Overlay view has no advanced settings card');
+  }
+  // (8a) a letter save re-registers through the counting probe.
+  await clearToasts();
+  await js(`(() => {
+    const i = document.querySelector('.settings-advanced-hotkey-input');
+    i.value = 'K';
+    i.dispatchEvent(new Event('change'));
+  })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'K')`, 5000))) {
+    fail('M23: the advanced letter save did not persist advancedOverlayHotkeyLetter=K');
+  }
+  if (!hotkeyProbe.registrations.includes('Control+K')) {
+    fail(`M23: the advanced letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  }
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.hotkeyRegistered === true)`, 5000))) {
+    fail('M23: hotkeyRegistered must stay true after the successful letter save');
+  }
+  // (8b) the honest register-failure note: the probe fakes a failure (the
+  // mid-run settable fake) -> a letter save re-registers through the probe
+  // (registrations still accumulate) but the LIVE flag reads false -> the
+  // Advanced card's every-render re-query shows the honest note.
+  hotkeyProbe.failRegister = true;
+  await clearToasts();
+  await js(`(() => {
+    const i = document.querySelector('.settings-advanced-hotkey-input');
+    i.value = 'L';
+    i.dispatchEvent(new Event('change'));
+  })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'L')`, 5000))) {
+    fail('M23: the advanced letter save did not persist advancedOverlayHotkeyLetter=L');
+  }
+  if (!hotkeyProbe.registrations.includes('Control+L')) {
+    fail(`M23: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  }
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.hotkeyRegistered === false)`, 5000))) {
+    fail('M23: hotkeyRegistered must read false after the faked register failure');
+  }
+  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`, 5000))) {
+    fail('M23: the Advanced card does not show the honest hotkey-register-failure note after the faked failure + letter save');
+  }
+  // (8c) restore the deterministic session end: clear the fake + save 'P' ->
+  // re-registered 'Control+P' + hotkeyRegistered true + the note disappears
+  // (the every-render get-state re-query).
+  hotkeyProbe.failRegister = false;
+  await js(`(() => {
+    const i = document.querySelector('.settings-advanced-hotkey-input');
+    i.value = 'P';
+    i.dispatchEvent(new Event('change'));
+  })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'P')`, 5000))) {
+    fail('M23: the restore letter save did not persist advancedOverlayHotkeyLetter=P');
+  }
+  if (!hotkeyProbe.registrations.includes('Control+P')) {
+    fail(`M23: the restore letter save did not re-register 'Control+P' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  }
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.hotkeyRegistered === true)`, 5000))) {
+    fail('M23: hotkeyRegistered did not recover after the failure fake was cleared');
+  }
+  await js(`location.hash = '#/dashboard'`);
+  await js(`location.hash = '#/overlay'`);
+  if (!(await waitFor(win, `!!document.querySelector('.settings-advanced-hotkey-input')`, 8000))) {
+    fail('M23: the Overlay view did not re-render after the restore');
+  }
+  await sleep(250);
+  if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
+    fail('M23: the hotkey-failure note is still visible after the successful re-registration (the page must re-query get-state on every render)');
+  }
+  step('m23-settings-card', `M23: the Overlay-view Advanced card - letter save 'K' persisted + re-registered 'Control+K' (probe ${JSON.stringify(hotkeyProbe.registrations)}) + hotkeyRegistered true; the faked failure + save 'L' -> re-registered 'Control+L' + hotkeyRegistered false + the honest note appears; cleared + save 'P' -> re-registered 'Control+P' + hotkeyRegistered true + the note gone`);
+
+  // M23 (the shared close-to-tray ending): the main window's closed handler
+  // destroys the panel + unregisters its hotkey (the lifecycle rule) - the
+  // app must still quit when the main window closes with closeToTray off.
+  await runCloseToTrayProbe(win);
+  if (!panelWin.isDestroyed()) {
+    fail('M23: the advanced-overlay panel window survived the main window close (the closed handler must destroy it - the app must quit when the main window closes)');
+  }
+
+  console.log('\nUI VERIFY OK (advanced-overlay)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
 }

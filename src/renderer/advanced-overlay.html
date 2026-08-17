@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- M23: the ADVANCED overlay window's CSP - the index.html pattern
+       (style-src 'self' only; the panel's CSSOM writes are not blocked). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Arc Power Advanced Overlay</title>
+  <link rel="stylesheet" href="./advanced-overlay.css">
+</head>
+<body>
+  <!-- M23 (Part B §Design): the AMD-Adrenaline-style interactive side
+       panel. Header (the Arc logo + the "Arc Power" wordmark + the LIVE
+       readout strip + the drag region + the close button), the segmented
+       Tuning | Fan | Graphics tabs, the tab content, and the compact
+       "driver state" footer (device name + the live lock readout). The
+       panel is INTERACTIVE - no setIgnoreMouseEvents, the drag region is
+       the only -webkit-app-region: drag surface. -->
+  <div id="adv-root">
+    <header class="adv-header">
+      <div class="adv-header-top adv-drag">
+        <img class="adv-logo" src="../assets/icon.png" alt="" aria-hidden="true">
+        <div class="adv-wordmark">Arc <span class="adv-wordmark-power">Power</span></div>
+        <button class="adv-close" id="adv-close" title="Close the panel" aria-label="Close the panel">&#10005;</button>
+      </div>
+      <div class="adv-readout" id="adv-readout">
+        <div class="adv-readout-cell">
+          <span class="adv-readout-label">Time</span>
+          <span class="adv-readout-value" id="adv-readout-clock">--:--</span>
+        </div>
+        <div class="adv-readout-cell">
+          <span class="adv-readout-label">Temp</span>
+          <span class="adv-readout-value" id="adv-readout-temp">-</span>
+        </div>
+        <div class="adv-readout-cell">
+          <span class="adv-readout-label">Fan</span>
+          <span class="adv-readout-value" id="adv-readout-fan">-</span>
+        </div>
+        <div class="adv-readout-cell">
+          <span class="adv-readout-label">Power</span>
+          <span class="adv-readout-value" id="adv-readout-power">-</span>
+        </div>
+      </div>
+      <nav class="adv-tabs" id="adv-tabs" role="tablist">
+        <button class="adv-tab adv-tab-active" data-tab="tuning" role="tab" aria-selected="true">Tuning</button>
+        <button class="adv-tab" data-tab="fan" role="tab" aria-selected="false">Fan</button>
+        <button class="adv-tab" data-tab="graphics" role="tab" aria-selected="false">Graphics</button>
+      </nav>
+    </header>
+    <main class="adv-content" id="adv-content"></main>
+    <footer class="adv-footer">
+      <span class="adv-device" id="adv-device">-</span>
+    </footer>
+  </div>
+  <script src="./out/advanced-overlay.js"></script>
+</body>
+</html>

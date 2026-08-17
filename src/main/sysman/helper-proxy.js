@@ -227,6 +227,15 @@ export const MAX_CONSECUTIVE_HEAL_SPAWNS = 30;
 // M17o4 THE POST-CAP BACKOFF DELAY: the heal's slow cadence after the
 // cap (one unref'd timer per trigger - never a hot loop).
 export const HEAL_BACKOFF_DELAY_MS = 30000;
+// M23 CHANGE 2 THE SHUTDOWN BOUND (ms): the best-effort, bounded
+// shutdown handshake - the op's ack-or-close wait. ~1 s covers the
+// helper's ack write + the socket teardown; the idle backstop (the
+// helper exits HELPER_IDLE_MS after the last connection closes) covers
+// a dropped/never-reached op. MODULE SCOPE: the destructuring default
+// parameter `shutdownBoundMs = HELPER_SHUTDOWN_BOUND_MS` is evaluated
+// BEFORE the function body runs - a body-level const would throw
+// ReferenceError on every omitted-arg call (step-4 round-2 S1).
+export const HELPER_SHUTDOWN_BOUND_MS = 1000;
 
 /** The default connect seam: node's net.connect to the named pipe. */
 const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
@@ -260,6 +269,7 @@ const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
  *   healDelayMs?: number,          // M17o2 the heal respawn delay (default HELPER_RESPAWN_DELAY_MS - 5 s; the test seam)
  *   maxConsecutiveHealSpawns?: number,  // M17o4 the heal cap (default MAX_CONSECUTIVE_HEAL_SPAWNS - 30; the test seam - the heals continue at the backoff cadence after it)
  *   healBackoffDelayMs?: number,   // M17o4 the post-cap backoff delay (default HEAL_BACKOFF_DELAY_MS - 30 s; the test seam)
+ *   shutdownBoundMs?: number,      // M23 the shutdown handshake bound (default ~1 s; the test seam)
  *   sleep?: (ms: number) => Promise<void>,  // the retry-interval sleep seam
  *   debugLogPath?: () => string,   // the debug file (default %TEMP%\arcpower-sysman-debug.log)
  *   log?: (s: string) => void,
@@ -281,6 +291,7 @@ export function createSysmanHelperProxy({
   healDelayMs = HELPER_RESPAWN_DELAY_MS,
   maxConsecutiveHealSpawns = MAX_CONSECUTIVE_HEAL_SPAWNS, // M17o4 the heal cap (the backoff engages at >= it)
   healBackoffDelayMs = HEAL_BACKOFF_DELAY_MS, // M17o4 the post-cap slow cadence
+  shutdownBoundMs = HELPER_SHUTDOWN_BOUND_MS, // M23 the shutdown handshake bound (~1 s; the test seam)
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   debugLogPath = () => path.join(os.tmpdir(), 'arcpower-sysman-debug.log'),
   log = () => {},
@@ -322,6 +333,15 @@ export function createSysmanHelperProxy({
   // counter resets on ANY successful socket landing AND on warm().
   let healTimer = null;
   let consecutiveHealSpawns = 0;
+  // M23 CHANGE 2 (the full-close reap): THE SHUTDOWN FLAG. Set BEFORE the
+  // shutdown op is sent - it gates scheduleHeal ITSELF (the single heal-
+  // schedule site), so NEITHER trigger can respawn a helper after an
+  // intentional close: the shutdown's own socket 'close' (handleDrop) and
+  // the spawned child's graceful exit code 0 (handleChildEvent - the
+  // helper's finish(0) fires it) would otherwise schedule a respawn 5 s
+  // later and the orphan helper would reappear. The flag makes the
+  // intentional close a dead-end: no respawn, no reconnect, no orphan.
+  let shuttingDown = false;
 
   /**
    * M17o2 THE HEAL SCHEDULE (the single schedule site): a helper death
@@ -342,8 +362,15 @@ export function createSysmanHelperProxy({
    * the horizon guess is removed entirely, the session recovers whenever
    * the machine quiets; the socket-landing / warm() counter reset returns
    * the cadence to fast).
+   * M23 CHANGE 2: the SHUTDOWN GATE lives HERE - the ONE scheduleHeal
+   * site. When shuttingDown is set (the intentional full close), the heal
+   * is a DEAD-END: BOTH trigger sites (handleDrop's socket 'close' AND
+   * handleChildEvent's spawned-child exit 0 - the graceful shutdown's own
+   * exit) funnel through this gate and can never respawn. No heal timer,
+   * no reconnect, no orphan helper 5 s later.
    */
   const scheduleHeal = (reason) => {
+    if (shuttingDown) return; // M23: the intentional close is a dead-end - never respawn
     if (healTimer) return; // one pending heal (the same death's socket close + child exit land in quick succession)
     healTimer = setTimeout(() => {
       healTimer = null;
@@ -419,7 +446,7 @@ export function createSysmanHelperProxy({
    * no-op reconnect via ensureConnected's socket-first check).
    */
   const handleDrop = (sock, reason) => {
-    scheduleHeal(reason); // M17o2 - BEFORE the stale-guard (unconditional: an over-eager heal is a no-op at fire time)
+    if (!shuttingDown) scheduleHeal(reason); // M17o2 - BEFORE the stale-guard (unconditional: an over-eager heal is a no-op at fire time). M23: the shutdown's own close NEVER respawns (shuttingDown gates the schedule here + at the single scheduleHeal site).
     if (socket !== sock) return; // a stale close from a superseded socket
     socket = null;
     ready = false;
@@ -447,7 +474,11 @@ export function createSysmanHelperProxy({
     debugLog({ ts: Date.now(), event, pid: proc?.pid ?? null, reason, code, signal });
     if (event === 'child-exit') {
       if (proc?.healSpawn) consecutiveHealSpawns += 1; // EVERY heal-driven spawn death counts, regardless of the exit code
-      if (code === 0 || code === 77) scheduleHeal(`the spawned helper exited (code ${code})`);
+      // M23: the graceful shutdown exits the helper with code 0 - BOTH
+      // exit codes are gated by shuttingDown here (for clarity) AND at the
+      // single scheduleHeal site, so the reap's own child-exit can never
+      // respawn.
+      if (!shuttingDown && (code === 0 || code === 77)) scheduleHeal(`the spawned helper exited (code ${code})`);
     }
   };
 
@@ -830,6 +861,64 @@ export function createSysmanHelperProxy({
       // post-cap).
       consecutiveHealSpawns = 0;
       await ensureConnected().catch(() => { /* a warm failure degrades silently - the not-ready verdicts cover the calls */ });
+    },
+    /**
+     * M23 CHANGE 2 (the full-close reap): the PARENT-SIDE shutdown - the
+     * mirror of warm(): warm = the ONLY spawn path, shutdown = the ONLY
+     * kill path. Sends { id, op: 'shutdown' } on the current socket and
+     * waits for the ack-or-close, then destroys the socket. The helper
+     * acks { ok: true } FIRST and finishes (the graceful `helper exiting
+     * (code 0)`), which fires handleChildEvent - the heal is gated by the
+     * shuttingDown flag (set BEFORE the send), so the reap's own exit can
+     * NEVER respawn an orphan helper ~5 s later.
+     * Bounded (~1 s - shutdownBoundMs): a busy/dropped helper resolves the
+     * bound instead of the ack; the helper-side idle backstop (the 30 s
+     * crash-backstop default / the 0 explicit arm) covers the downstream
+     * reap. Idempotent (a second call is a no-op) + NEVER throws - the
+     * full-close path is fire-and-forget in the window branch and
+     * bounded-awaited in the worker/boot-apply branches.
+     * @returns {Promise<void>}
+     */
+    async shutdown() {
+      if (shuttingDown) return; // idempotent
+      shuttingDown = true;
+      // Belt-and-braces: a pending heal timer is cancelled so it can never
+      // fire a respawn from a trigger that raced the flag (the scheduleHeal
+      // gate already swallows it - this makes the dead-end absolute).
+      if (healTimer) {
+        try { clearTimeout(healTimer); } catch { /* best effort */ }
+        healTimer = null;
+      }
+      const sock = socket;
+      if (!sock) return; // nothing connected - the helper's idle backstop reaps it
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        try { sock.destroy(); } catch { /* best effort */ }
+      };
+      try {
+        // THE BOUND: the ack-or-close may never arrive (a dropped write / a
+        // busy helper). The bound RACES the enqueue, force-resolves
+        // whatever is in flight (no dangling 30 s pending timeout), and
+        // resolves the handshake; the helper-side idle backstop covers the
+        // reap of a helper that never saw the op.
+        await Promise.race([
+          enqueue({ op: 'shutdown' }), // the ack { id, ok: true } OR the socket close resolves it
+          sleep(shutdownBoundMs).then(() => {
+            if (pending) finishPending(null, 'the sysman helper did not acknowledge the shutdown within the bound');
+            while (queue.length > 0) {
+              const call = queue.shift();
+              call.resolve({ out: null, reason: 'the sysman helper did not acknowledge the shutdown within the bound' });
+            }
+          }),
+        ]);
+        debugLog({ ts: Date.now(), event: 'resp', op: 'shutdown', spawnError: null, out: { ok: true } });
+      } catch (err) {
+        log(`shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        release();
+      }
     },
     /**
      * M17f (step-4 N2): the deviceId is ACCEPTED for the mock-scoped

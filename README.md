@@ -8,7 +8,7 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.0.1 Beta</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
+<p align="center"><b>1.0.2</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
 
 ## Features
 
@@ -95,13 +95,18 @@ Architecture notes and the IGCL integration write-up (struct mappings, capabilit
 - [x] Profiles, apply-on-startup, system tray
 - [x] Reversible tweaks (MPO disable and more)
 - [x] Installer (portable EXE + NSIS setup) and silent elevated logon applies
-- [x] 1.0.x Alpha/Beta feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics + display tuning)
-- [ ] Published releases on GitHub
+- [x] 1.0.x feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics + display tuning)
+- [x] Published releases on GitHub
 - [ ] Battlemage enablement (live verification on B580 / B570)
+- [ ] Advanced Overlay (the AMD-Adrenaline-style interactive side panel - tuning / fan / graphics, CTRL+P)
 
 ## Disclaimer
 
 Overclocking voids warranties and can damage hardware. Arc Power respects the ranges Intel reports and never overrides driver-level ceilings; use the extended range at your own risk. This project is not affiliated with or endorsed by Intel Corporation.
+
+## Development disclaimer
+
+This software is developed with the help of DeepSeek V4 Flash in a plan-based, multi-review setup (AI and manual human review) aimed at maximum compatibility and bug-freeness to offer a good end-user experience.
 
 ## License
 

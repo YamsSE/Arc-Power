@@ -43,6 +43,23 @@ export const OVERLAY_POSITION_LABELS: Record<OverlayPosition, string> = {
   'bottom-right': 'Bottom right',
 };
 
+/** M23: the ADVANCED overlay's anchored-edge ids (the persisted-truth owner
+ *  is profile-store.js - the HUD's lockstep family; this mirror joins the
+ *  same module. Keep both in lockstep). The panel anchors to the PRIMARY
+ *  display's left or right edge (Adrenaline opens on the right). */
+export const ADVANCED_OVERLAY_POSITIONS: readonly string[] = ['left', 'right'];
+
+/** The advanced-overlay position select labels. */
+export const ADVANCED_OVERLAY_POSITION_LABELS: Record<string, string> = {
+  left: 'Left edge',
+  right: 'Right edge',
+};
+
+/** M23: whether v is one of the advanced-overlay anchored-edge ids. */
+export function isValidAdvancedOverlayPosition(v: unknown): v is 'left' | 'right' {
+  return typeof v === 'string' && (ADVANCED_OVERLAY_POSITIONS as readonly string[]).includes(v);
+}
+
 /** The scale slider's range (mirrored in ipc-core's clamp). */
 export const OVERLAY_SCALE_MIN = 0.5;
 export const OVERLAY_SCALE_MAX = 2.0;

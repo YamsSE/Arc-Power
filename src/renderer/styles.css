@@ -1850,6 +1850,11 @@ select {
 
 /* M5: the Settings Overlay card. */
 .overlay-hotkey-row { margin-top: 10px; }
+/* M23: the Advanced card's rows need their own spacing - the unstyled
+   Edge (position) row sat flush against the CONTROL+<letter> row and
+   overlapped it; the small top margin separates them (the user's fix). */
+.overlay-advanced-hotkey-row { margin-top: 10px; }
+.overlay-advanced-position-row { margin-top: 10px; }
 .overlay-hotkey-fixed {
   font-family: Consolas, 'Courier New', monospace;
   font-weight: 700;

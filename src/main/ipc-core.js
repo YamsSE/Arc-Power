@@ -149,6 +149,21 @@ export function validateOverlayPosition(v) {
 }
 
 /**
+ * M23: the ADVANCED overlay's anchored edge must be 'left' | 'right' (reject
+ * + honest error - a garbage position must never reach the geometry code;
+ * the renderer mirror is pure/overlay.ts, the store normalize is
+ * profile-store.js - keep the three in lockstep).
+ * @param {unknown} v
+ * @returns {'left'|'right'}
+ */
+export function validateAdvancedOverlayPosition(v) {
+  if (typeof v !== 'string' || (v !== 'left' && v !== 'right')) {
+    throw new Error('advancedOverlayPosition must be one of: left, right');
+  }
+  return v;
+}
+
+/**
  * M5: clamp the overlay scale to the slider's range 0.5..2.0 (garbage
  * degrades to the 1.0 default - the store normalizes the same way).
  * @param {unknown} v
@@ -569,6 +584,27 @@ export async function resolveBootDeviceId(backend, store) {
  *                                  // save changed any overlay field; main.js
  *                                  // applies geometry/visibility/hotkey + sends
  *                                  // 'overlay:settings' to the overlay window.
+ *   advancedOverlayOps?: {         // M23: the injected ADVANCED-overlay-window
+ *                                  // ops (the overlayOps pattern - the M5 HUD
+ *                                  // seam, new names). main.js wires the real
+ *                                  // panel handle; the DEFAULT is the honest
+ *                                  // "no panel" state (tests + non-advanced
+ *                                  // variants).
+ *     getState: () => Promise<{ exists: boolean, visible: boolean, bounds: object|null, position: 'left'|'right', enabled: boolean, hotkeyRegistered: boolean }>,
+ *     toggle: () => Promise<unknown>,
+ *   },
+ *   advancedOverlayClose?: () => Promise<unknown>,  // M23: the panel's custom
+ *                                  // close op (the dedicated
+ *                                  // 'advanced-overlay-close' channel - the
+ *                                  // main window is never closed by the
+ *                                  // panel; the DEFAULT is a no-op).
+ *   onAdvancedOverlaySettings?: (patch: object) => Promise<unknown>,  // M23:
+ *                                  // the advanced-overlay settings reaction
+ *                                  // (the onOverlaySettings pattern) - called
+ *                                  // when profiles-settings-save changed any
+ *                                  // advancedOverlay* field; main.js applies
+ *                                  // geometry/visibility/hotkey + sends
+ *                                  // 'advanced-overlay:settings' to the panel.
  * }} ctx
  */
 export function createIpcHandlers({
@@ -671,6 +707,25 @@ export function createIpcHandlers({
   // a no-op; main.js applies the geometry/visibility/hotkey + sends
   // 'overlay:settings' DIRECTLY to the overlay window.
   onOverlaySettings = async () => {},
+  // M23: the injected ADVANCED-overlay-window ops (the M5 overlayOps seam,
+  // new names - the AMD-Adrenaline-style interactive side panel). The
+  // DEFAULT is the honest "no panel" state (tests + non-advanced variants
+  // never have one); main.js wires the real panel handle in the product
+  // path + the RID_MOCK_ADV_OVERLAY=1 ui-verify variant.
+  advancedOverlayOps = {
+    getState: async () => ({ exists: false, visible: false, bounds: null, position: 'right', enabled: false, hotkeyRegistered: false }),
+    toggle: async () => {},
+  },
+  // M23: the advanced-overlay settings reaction (the onOverlaySettings
+  // pattern) - called when profiles-settings-save changed any
+  // advancedOverlay* field. The DEFAULT is a no-op; main.js applies the
+  // geometry/visibility/hotkey + sends 'advanced-overlay:settings'
+  // DIRECTLY to the panel window.
+  onAdvancedOverlaySettings = async () => {},
+  // M23: the panel's custom close op - the dedicated 'advanced-overlay:close'
+  // channel's handler (the DEFAULT is a no-op; main.js wires it to the panel
+  // handle's session hide - the main window is never closed by the panel).
+  advancedOverlayClose = async () => {},
   // M17f: the sysman power-limits consumer (src/main/sysman/power-limits.js)
   // - the PL2 companion + the 'power-limits:read' channel source. The
   // DEFAULT is null (tests/mock degrade to the honest '-' read-out + no
@@ -1448,6 +1503,39 @@ export function createIpcHandlers({
         return overlayOps.getState();
       },
 
+      // M23: the ADVANCED-overlay ops (the overlayOps pattern, new names -
+      // the AMD-Adrenaline-style interactive side panel). 'advanced-overlay:
+      // get-state' is the panel's every-render read (exists/visible/bounds +
+      // the persisted enabled master + the live hotkeyRegistered flag from
+      // the SECOND hotkey seam); 'advanced-overlay:toggle' is the SHORTCUT
+      // flip (M7b fix-5 semantics): gated on the persisted
+      // advancedOverlayEnabled master - while the master is OFF it does
+      // NOTHING (no window change, no persist), and when ON it flips the
+      // SESSION visibility only, NEVER writing advancedOverlayEnabled (the
+      // Overlay-view toggle is its only writer). No payload; the ops are
+      // injected (the DEFAULT is the honest "no panel" state; main.js wires
+      // the real panel handle).
+      'advanced-overlay:get-state': async (...args) => {
+        assertNoPayload(args, 'advanced-overlay:get-state');
+        return advancedOverlayOps.getState();
+      },
+
+      'advanced-overlay:toggle': async (...args) => {
+        assertNoPayload(args, 'advanced-overlay:toggle');
+        await advancedOverlayOps.toggle();
+        return advancedOverlayOps.getState();
+      },
+
+      // M23: the panel's custom CLOSE button - a DEDICATED channel (the
+      // main window is never closed by the panel - reusing 'window-close'
+      // would let the panel drive windowOps.close() which targets the main
+      // window). The op is injected (the DEFAULT is a no-op); main.js wires
+      // it to the panel handle's session hide.
+      'advanced-overlay:close': async (...args) => {
+        assertNoPayload(args, 'advanced-overlay:close');
+        await advancedOverlayClose();
+      },
+
       // M4-H (D1): the sidebar GitHub link - open a URL in the default
       // browser via the injected shell.openExternal op. STRICT validation
       // (S3): new URL() + protocol https: + hostname github.com + the
@@ -1750,7 +1838,58 @@ export function createIpcHandlers({
           overlayPollMs: patch.overlayPollMs === undefined
             ? cur.overlayPollMs
             : clampOverlayPollMs(patch.overlayPollMs),
+          // M23: the ADVANCED-overlay fields (the Overlay view's Advanced
+          // card persists them through this channel - the M5 overlaySettings
+          // pattern, new keys). The letter REJECTS with an honest error when
+          // it is not exactly one letter (the rule: Control + <letter> - the
+          // letter is the only changeable part; validateOverlayHotkeyLetter
+          // normalizes UPPERCASE); the position REJECTS outside
+          // left|right (the panel anchors to the PRIMARY display edge).
+          // NO scale key - the panel is a fixed compact size.
+          advancedOverlayEnabled: patch.advancedOverlayEnabled === undefined
+            ? cur.advancedOverlayEnabled
+            : patch.advancedOverlayEnabled === true,
+          advancedOverlayHotkeyLetter: patch.advancedOverlayHotkeyLetter === undefined
+            ? cur.advancedOverlayHotkeyLetter
+            : validateOverlayHotkeyLetter(patch.advancedOverlayHotkeyLetter),
+          advancedOverlayPosition: patch.advancedOverlayPosition === undefined
+            ? cur.advancedOverlayPosition
+            : validateAdvancedOverlayPosition(patch.advancedOverlayPosition),
         };
+        // M23 THE CROSS-FIELD LETTER-COLLISION REJECTION AT THE ENVELOPE
+        // (the STRUCTURAL guard - the renderer toasts are UX only): the two
+        // hotkeys share ONE modifier pair (Control + <letter>), and
+        // globalShortcut collisions within the SAME app are SILENT (a
+        // register REPLACES the same-app registration and returns true - a
+        // colliding pair in the store would kill one hotkey with
+        // hotkeyRegistered still true and the honest note could not detect
+        // it). The envelope therefore REJECTS a patch whose (patched ??)
+        // persisted letters would collide - on BOTH sides, symmetrically:
+        // an advancedOverlayHotkeyLetter equal to the effective
+        // overlayHotkeyLetter, and an overlayHotkeyLetter equal to the
+        // effective advancedOverlayHotkeyLetter. The comparison uses the
+        // NORMALIZED UPPERCASE form (the letters persist uppercase - a
+        // lowercase patch colliding with an uppercase persisted letter must
+        // reject). The rejection throws BEFORE the store write - the store
+        // stays unchanged, the save answers the honest error.
+        if (patch.advancedOverlayHotkeyLetter !== undefined) {
+          const advLetter = validateOverlayHotkeyLetter(patch.advancedOverlayHotkeyLetter);
+          const hudLetter = patch.overlayHotkeyLetter !== undefined
+            ? validateOverlayHotkeyLetter(patch.overlayHotkeyLetter)
+            : cur.overlayHotkeyLetter;
+          if (advLetter === hudLetter) {
+            throw new Error('advancedOverlayHotkeyLetter must differ from the overlay hotkey letter (the Control+<letter> hotkeys would collide)');
+          }
+        }
+        if (patch.overlayHotkeyLetter !== undefined) {
+          const hudLetter = validateOverlayHotkeyLetter(patch.overlayHotkeyLetter);
+          const advLetter = patch.advancedOverlayHotkeyLetter !== undefined
+            ? validateOverlayHotkeyLetter(patch.advancedOverlayHotkeyLetter)
+            : cur.advancedOverlayHotkeyLetter;
+          if (hudLetter === advLetter) {
+            throw new Error('overlayHotkeyLetter must differ from the advanced overlay hotkey letter (the Control+<letter> hotkeys would collide)');
+          }
+        }
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
         // false - one reg.exe call per save, mock-safe). A registry failure
@@ -1787,6 +1926,24 @@ export function createIpcHandlers({
             await onOverlaySettings(overlayChanged);
           } catch (err) {
             console.log(`[overlay] settings reaction failed: ${err.message}`);
+          }
+        }
+        // M23: the ADVANCED-overlay reaction (the onOverlaySettings
+        // pattern, second consumer) - when any advancedOverlay* field the
+        // PATCH touched actually changed, the injected callback gets the
+        // CHANGED fields so main.js applies the new
+        // geometry/visibility/hotkey letter + sends
+        // 'advanced-overlay:settings' to the panel window. Best effort: a
+        // callback failure must never fail the save.
+        const advancedOverlayChanged = {};
+        for (const key of ['advancedOverlayEnabled', 'advancedOverlayHotkeyLetter', 'advancedOverlayPosition']) {
+          if (patch[key] !== undefined && next[key] !== cur[key]) advancedOverlayChanged[key] = next[key];
+        }
+        if (Object.keys(advancedOverlayChanged).length > 0) {
+          try {
+            await onAdvancedOverlaySettings(advancedOverlayChanged);
+          } catch (err) {
+            console.log(`[advanced-overlay] settings reaction failed: ${err.message}`);
           }
         }
         // M17e (round-2 N4, the overlay polling-rate slider): the LIVE

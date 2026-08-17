@@ -1,0 +1,824 @@
+/* Arc Power - M23 the ADVANCED overlay stylesheet (the interactive side
+   panel). The panel reads as a sibling of the main window: it uses the app's
+   design tokens (--bg-panel, --bg-elev, --accent #4cc2ff, --accent-strong,
+   the radius/shadow language from styles.css) and LOADS the shared component
+   rules the reused renderFanEditor + the OC/graphics cards emit (.fan-*,
+   .oc-*, .graphics-*, .chip*, .btn*, .card*, the toast + modal surfaces) -
+   a copy of those rules from styles.css (the panel is a standalone window
+   with its own stylesheet; the CSP style-src 'self' allows exactly one
+   self-hosted stylesheet). M23 Part B §Design: the panel defaults to the
+   dark design language (the HUD precedent - a floating surface over games);
+   following the app Theme setting is a deferred nice-to-have. */
+
+:root {
+  --bg: #0f1116;
+  --bg-elev: #151923;
+  --bg-inset: #1b2130;
+  --border: #252c3d;
+  --border-strong: #33405c;
+  --text: #e8ebf2;
+  --text-muted: #8b93a8;
+  --text-dim: #5c6478;
+  --accent: #4cc2ff;
+  --accent-strong: #1f9ce8;
+  --accent-soft: rgba(76, 194, 255, 0.12);
+  --on-accent: #07111c;
+  --success: #34d399;
+  --warn: #fbbf24;
+  --error: #f87171;
+  --danger: #ef4444;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+  --bg-panel: #0d1017;
+  --control-bg: #0a0d13;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ------------------------------------------------------------------ shell */
+
+#adv-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* ----------------------------------------------------------------- header */
+
+.adv-header {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.adv-header-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 4px;
+}
+
+/* The CSS drag region - the ONLY -webkit-app-region: drag surface (the
+   panel is INTERACTIVE - sliders/buttons receive input everywhere else). */
+.adv-drag {
+  -webkit-app-region: drag;
+}
+
+.adv-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.adv-wordmark {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.adv-wordmark-power {
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #7ee0ff 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* The custom close button - a no-drag interactive control; calls the
+   DEDICATED 'advanced-overlay-close' channel (a session hide - the main
+   window is never closed by the panel). */
+.adv-close {
+  -webkit-app-region: no-drag;
+  margin-left: auto;
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--text-muted);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.adv-close:hover { border-color: var(--error); color: var(--error); }
+
+/* The LIVE readout strip (Part B §Design): accent-tinted clock / temp /
+   fan / power cells fed by the telemetry push (the THIRD consumer of the
+   same sample stream). Honest '-' per field before the first sample. */
+.adv-readout {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 6px 10px 8px;
+}
+
+.adv-readout-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+}
+
+.adv-readout-label {
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.adv-readout-value {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+/* The segmented Tabs control: the accent underline + the active tab uses
+   --accent-soft + the accent text (Part B §Design). */
+.adv-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-top: 1px solid var(--border);
+}
+
+.adv-tab {
+  appearance: none;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 4px 7px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.adv-tab:hover { color: var(--text); }
+
+.adv-tab-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+  border-top-left-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm);
+}
+
+/* ---------------------------------------------------------------- content */
+
+.adv-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.adv-content::-webkit-scrollbar { width: 9px; }
+.adv-content::-webkit-scrollbar-track { background: var(--bg); }
+.adv-content::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; }
+
+.adv-view-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.page-subtitle {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  margin: 4px 0 10px;
+}
+
+/* ----------------------------------------------------------------- footer */
+
+.adv-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.adv-device { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.adv-lock { color: var(--accent); white-space: nowrap; }
+
+/* ========================================================================
+   The shared component rules (copied from styles.css - the surfaces the
+   reused fan editor + the OC/graphics cards emit must render styled in
+   the panel, never unstyled).
+   ======================================================================== */
+
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.card-title { margin: 0 0 12px; font-size: 15px; font-weight: 650; }
+
+.card-stack { display: flex; flex-direction: column; gap: 14px; }
+
+.card-note { color: var(--text-dim); font-size: 10px; margin: 6px 0 0; line-height: 1.35; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chip-btn {
+  cursor: pointer;
+  color: var(--text);
+  transition: border-color 0.12s, background 0.12s;
+}
+.chip-btn:hover { border-color: var(--accent); }
+.chip-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+.chip-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.chip-btn:disabled:hover { border-color: var(--border); }
+
+.chip-ok { color: var(--success); border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.08); }
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  background: var(--control-bg);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); font-weight: 650; }
+.btn-primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+
+.btn-ghost { background: transparent; }
+.btn-ghost:hover:not(:disabled) { background: var(--control-bg); }
+
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 650; }
+.btn-danger:hover:not(:disabled) { background: #dc2626; border-color: #dc2626; }
+
+.btn-sm { padding: 5px 11px; font-size: 12.5px; }
+
+/* ----------------------------------------------------------------- toasts */
+
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 1000;
+  max-width: 380px;
+}
+
+.toast {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--text-dim);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 11px 14px;
+  cursor: pointer;
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.toast-success { border-left-color: var(--success); }
+.toast-error { border-left-color: var(--error); }
+.toast-warn { border-left-color: var(--warn); }
+.toast-info { border-left-color: var(--accent); }
+
+.toast-title { font-weight: 650; font-size: 13.5px; }
+.toast-message { color: var(--text-muted); font-size: 12.5px; margin-top: 2px; }
+
+/* ------------------------------------------------------------------ modal */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 12, 0.7);
+  display: grid;
+  place-items: center;
+  z-index: 900;
+}
+
+.modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  max-width: 420px;
+  box-shadow: var(--shadow);
+}
+
+.modal-title { margin: 0 0 10px; font-size: 16px; font-weight: 700; }
+
+.modal-device { color: var(--accent); font-family: var(--mono); font-size: 12.5px; margin-bottom: 8px; }
+
+.modal-text { color: var(--text-muted); font-size: 13px; line-height: 1.5; margin: 0 0 16px; }
+
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+.text-error { color: var(--error); }
+
+/* ------------------------------------------------------------ OC cards ---- */
+
+.oc-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.oc-card-head .card-title { margin: 0; }
+
+.oc-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.oc-slider {
+  position: relative;
+  flex: 1;
+  height: 28px;
+  display: flex;
+  align-items: center;
+}
+
+.oc-track-fill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent-strong), var(--accent));
+  pointer-events: none;
+}
+
+.oc-slider input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  outline: none;
+  margin: 0;
+}
+
+.oc-slider input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  border: 2px solid var(--accent);
+  cursor: pointer;
+}
+.oc-slider input[type="range"]::-moz-range-thumb {
+  position: relative;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  border: 2px solid var(--accent);
+  cursor: pointer;
+}
+
+.oc-value {
+  min-width: 92px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.oc-meta { margin-top: 2px; display: flex; align-items: baseline; gap: 12px; }
+
+.oc-sysman-limits { font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
+
+.oc-range { color: var(--text-dim); font-size: 10px; font-family: var(--mono); }
+
+.oc-card-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+
+/* The M22-safe lock editor (the panel's Tuning tab) - the same inputs the
+   main Tuning page's Lock mode renders. */
+.gpu-lock-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.gpu-lock-fields {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gpu-lock-fields label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.gpu-lock-fields input[type="number"] {
+  width: 76px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.gpu-lock-fields input[type="number"]:focus { outline: none; border-color: var(--accent); }
+
+.gpu-lock-current {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* The panel's READ-ONLY power-limit card (PL1/PL2 readout - the panel NEVER
+   writes PL). */
+.adv-pl-card .oc-value { color: var(--text-muted); }
+
+/* ------------------------------------------------------- fan editor ------- */
+
+.fan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* M23: compact - the panel must fit without scrolling. */
+  margin-bottom: 8px;
+}
+
+.fan-rpm { font-family: var(--mono); font-size: 15px; color: var(--accent); font-weight: 650; }
+
+.fan-stage {
+  position: relative;
+  display: flex;
+  width: 100%;
+  /* M23 (user): the graph must FIT the small panel - 180px (down from
+     300px) keeps the curve readable without forcing the tab to scroll. */
+  height: 180px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.fan-plot {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.fan-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+.fan-grid-bg { fill: var(--bg-inset); }
+.fan-grid-h, .fan-grid-v { stroke: var(--border); stroke-width: 0.4; vector-effect: non-scaling-stroke; }
+.fan-maxline { stroke: var(--border-strong); stroke-width: 0.4; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
+.fan-polyline {
+  stroke: var(--accent);
+  stroke-width: 0.6;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.fan-yaxis {
+  position: relative;
+  width: 38px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.fan-yaxis-tick {
+  position: absolute;
+  right: 8px;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+  line-height: 1;
+}
+
+.fan-yaxis-tick-edge-top { transform: translateY(0); }
+.fan-yaxis-tick-edge-bottom { transform: translateY(-100%); }
+
+.fan-dots { position: absolute; inset: 0; }
+
+.fan-dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--bg-elev);
+  border: 2px solid var(--accent);
+  cursor: grab;
+  touch-action: none;
+}
+.fan-dot:hover { background: var(--accent-soft); }
+.fan-dot-selected { background: var(--accent); }
+
+.fan-dot-readout {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  margin-top: -8px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 11.5px;
+  font-family: var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.fan-dot-readout-editing {
+  pointer-events: auto;
+}
+
+.fan-dot-readout-label {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.fan-dot-readout-fields {
+  display: none;
+}
+
+.fan-dot-readout-editing .fan-dot-readout-fields {
+  display: flex;
+  gap: 8px;
+}
+
+.fan-dot-readout-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.fan-readout-input {
+  width: 46px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.fan-readout-input:focus { outline: none; border-color: var(--accent); }
+
+.fan-dot-readout-below {
+  transform: translate(-50%, 0);
+  margin-top: 10px;
+}
+
+.fan-marker {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--warn);
+  border: 2px solid #fff;
+  pointer-events: none;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.7);
+}
+
+.fan-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: var(--mono);
+  padding: 6px 2px 0;
+}
+
+.fan-axis-mid { color: var(--text-dim); }
+
+.fan-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.fan-presets { margin-top: 8px; }
+
+.fan-auto-note {
+  padding: 22px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.fan-fixed-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 0;
+}
+
+.fan-fixed-row input[type="range"] {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  outline: none;
+}
+.fan-fixed-row input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--accent);
+  cursor: pointer;
+}
+.fan-fixed-row input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--accent);
+  cursor: pointer;
+}
+
+.fan-mode-toggle { margin-bottom: 8px; }
+.fan-apply-row { margin-top: 10px; }
+
+/* --------------------------------------------------- compact OC cards ---- */
+/* M23 (user): the panel must fit WITHOUT scrolling - the cards are tight
+   (6 slider cards + the lock editor inside ~520px of content height). */
+
+.oc-stack { gap: 6px; }
+
+.oc-card { padding: 6px 10px; }
+.oc-card-head { margin-bottom: 2px; }
+.oc-card .card-title { font-size: 12.5px; }
+.oc-slider-row { gap: 12px; min-height: 22px; }
+.oc-meta { margin-top: 1px; display: flex; align-items: baseline; gap: 10px; }
+.oc-sysman-limits { font-size: 10.5px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
+.oc-card-actions { margin-top: 2px; gap: 8px; }
+.oc-value { font-size: 12.5px; min-width: 72px; }
+.oc-range { font-size: 10px; }
+.oc-chip-status { font-size: 10.5px; padding: 1px 8px; }
+
+.oc-chip-status[hidden],
+.oc-chip-apply[hidden],
+.graphics-fps-slider-row[hidden],
+.oc-slider-row[hidden] { display: none; }
+
+.oc-chip-apply {
+  font-size: 11px;
+  padding: 2px 9px;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ------------------------------------------------- Graphics cards ------- */
+
+.graphics-stack { gap: 8px; }
+.graphics-page-note { font-size: 12px; }
+.graphics-card { padding: 10px 14px; }
+.graphics-card .card-title { font-size: 13.5px; }
+.graphics-card .card-note { margin-top: 6px; }
+.graphics-unsupported .card-note { color: var(--text-dim); font-style: italic; }
+.graphics-control { margin-top: 8px; }
+.graphics-select {
+  appearance: none;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 180px;
+  max-width: 100%;
+  cursor: pointer;
+}
+.graphics-select:focus { outline: none; border-color: var(--accent-strong); }
+.graphics-select option { background: var(--bg-panel); color: var(--text); }
+.graphics-card-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+.graphics-fps-row {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.graphics-fps-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.graphics-slider { flex: 1; accent-color: var(--accent-strong); }
+.graphics-fps-value {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--accent);
+  min-width: 64px;
+  text-align: right;
+}
+
+/* The panel's floating Apply (the Apply-button model) - anchored INSIDE
+   the panel content, never over the main window. */
+.adv-floating-apply {
+  position: sticky;
+  bottom: 0;
+  z-index: 50;
+  width: 100%;
+  margin-top: 4px;
+  box-shadow: var(--shadow);
+  font-size: 13.5px;
+  padding: 10px 18px;
+}

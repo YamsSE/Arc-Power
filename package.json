@@ -1,6 +1,6 @@
 {
     "name":  "arc-power",
-    "version":  "1.0.1-beta.2",
+    "version":  "1.0.2",
     "license":  "GPL-2.0-only",
     "private":  true,
     "description":  "Overclocking tool for Intel Arc GPUs (M1: core backend, no UI)",
@@ -17,7 +17,7 @@
                     "make:icon":  "node scripts/make-icon.js",
                     "make:og":  "electron scripts/make-og.js",
                     "make:banner":  "electron scripts/make-banner.js",
-                    "build:renderer":  "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138",
+                    "build:renderer":  "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138 && esbuild src/renderer/advanced-overlay.ts --bundle --outfile=src/renderer/out/advanced-overlay.js --format=iife --target=chrome138",
                     "typecheck":  "tsc --noEmit",
                     "dist":  "npm run build:renderer \u0026\u0026 electron-builder --win"
                 },
@@ -51,11 +51,11 @@
                               "requestedExecutionLevel":  "requireAdministrator"
                           },
                   "portable":  {
-                                   "artifactName":  "Arc-Power-${version}.exe",
+                                   "artifactName":  "Arc-Power_Portable.exe",
                                    "requestExecutionLevel":  "admin"
                                },
                   "nsis":  {
-                               "artifactName":  "Arc-Power-Setup-${version}.exe",
+                               "artifactName":  "Arc-Power_Installer.exe",
                                "oneClick":  false,
                                "perMachine":  false,
                                "shortcutName":  "Arc Power",
