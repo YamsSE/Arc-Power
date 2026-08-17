@@ -14,9 +14,14 @@
 
 import { applyProfile, resolveApplyDeviceId } from './apply-on-boot.js';
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-
-/** The pushed post-apply device read-back channel (main -> renderer). */
-export const DEVICE_STATE_UPDATED_CHANNEL = 'device:state-updated';
+// M24 (Part B): the channel vocabulary is HOISTED into ipc-core.js (the
+// owner of the channel names); this module re-exports the constant
+// additively so the existing send site below keeps working unchanged -
+// importing it from tray-apply.js would drag the apply/tray graph into
+// ipc.js. (Import for the local send site + re-export: a bare
+// `export { X } from` creates NO local binding.)
+import { DEVICE_STATE_UPDATED_CHANNEL } from './ipc-core.js';
+export { DEVICE_STATE_UPDATED_CHANNEL };
 
 /**
  * The tray menu's "Apply active profile" click handler (M2b). Applies the

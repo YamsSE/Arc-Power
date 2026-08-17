@@ -47,6 +47,17 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
+// M24 (Part B): the pushed post-apply read-back channel vocabulary (ipc-core
+// owns the channel names; ipc.js's handler-loop wrap + tray-apply.js both
+// send on them - tray-apply re-exports DEVICE_STATE_UPDATED_CHANNEL
+// additively so its existing send site keeps working unchanged).
+/** The pushed post-apply DEVICE read-back channel (main -> renderer;
+ *  { deviceId, state } - the tray-apply + the ipc.js apply/reset wrap). */
+export const DEVICE_STATE_UPDATED_CHANNEL = 'device:state-updated';
+/** M24 (Part B): the pushed post-apply GRAPHICS read-back channel (main ->
+ *  renderer; { deviceId, graphicsState } - the ipc.js graphics:apply wrap). */
+export const GRAPHICS_STATE_UPDATED_CHANNEL = 'graphics:state-updated';
+
 const SCALAR_CONTROLS = new Set([
   'powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC',
   'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct',
@@ -200,6 +211,22 @@ export function validateOverlayColor(v) {
 export function validateOverlayBgColor(v) {
   if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) {
     throw new Error('overlayBgColor must be a hex color like #000000');
+  }
+  return v;
+}
+
+/**
+ * M24: the overlay THEME must be 'classic' | 'arc' (the validateOverlayColor
+ * pattern - the Theme row's two buttons can only produce the two ids; a
+ * garbage patch must never reach the overlay renderer). The persisted-name
+ * 'overlayTheme' rides the settings patch; the pushed overlay payload
+ * shortens to 'theme'.
+ * @param {unknown} v
+ * @returns {'classic'|'arc'}
+ */
+export function validateOverlayTheme(v) {
+  if (typeof v !== 'string' || (v !== 'classic' && v !== 'arc')) {
+    throw new Error('overlayTheme must be one of: classic, arc');
   }
   return v;
 }
@@ -1838,6 +1865,13 @@ export function createIpcHandlers({
           overlayPollMs: patch.overlayPollMs === undefined
             ? cur.overlayPollMs
             : clampOverlayPollMs(patch.overlayPollMs),
+          // M24: the overlay THEME - REJECTS outside classic|arc (the
+          // Theme row's two buttons can only produce the two ids; a garbage
+          // patch must never reach the overlay renderer - the
+          // validateOverlayColor pattern).
+          overlayTheme: patch.overlayTheme === undefined
+            ? cur.overlayTheme
+            : validateOverlayTheme(patch.overlayTheme),
           // M23: the ADVANCED-overlay fields (the Overlay view's Advanced
           // card persists them through this channel - the M5 overlaySettings
           // pattern, new keys). The letter REJECTS with an honest error when
@@ -1917,8 +1951,11 @@ export function createIpcHandlers({
         // a bg change persists but onOverlaySettings never fires and the
         // overlay never re-renders (the box would only appear on the next
         // boot).
+        // M24: the theme key rides the loop too - without it a theme change
+        // persists but onOverlaySettings never fires and the HUD never
+        // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs']) {
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

@@ -442,6 +442,25 @@ export function ocCapsChanged(prev: Capabilities | null, next: Capabilities | nu
     || prev.extendedRanges !== next.extendedRanges;
 }
 
+/**
+ * M24 (Part B): the FAN-STATE SIGNATURE - a stable string over the store
+ * state's fan fields (fanMode / fanCurve / fixedFanPct). The Tuning page's
+ * fan view re-renders its editor when the signature CHANGES (an external
+ * push - the advanced-overlay panel's fan apply - changed the store's fan
+ * fields), and stays untouched when it is equal (the user's own apply, the
+ * telemetry ticks). Absent fields degrade to null in the JSON (a state
+ * without a field and a state with an explicit null are the SAME
+ * signature - never a spurious re-render).
+ */
+export function fanStateSignature(state: DeviceState | null | undefined): string {
+  if (!state) return 'null';
+  return JSON.stringify({
+    fanMode: state.fanMode ?? null,
+    fanCurve: state.fanCurve ?? null,
+    fixedFanPct: state.fixedFanPct ?? null,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // M4-B/M17d - gpuLock card (pure; mirrors the main-side clamp bounds)
 // ---------------------------------------------------------------------------

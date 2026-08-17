@@ -93,6 +93,12 @@ const OVERLAY_COLOR_DEFAULT = '#ffffff';
 // when absent/garbage; the renderer mirror lives in pure/overlay.ts).
 const OVERLAY_BG_COLOR_DEFAULT = '#000000';
 const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
+// M24: the overlay THEME ids (the persisted-truth owner is profile-store.js;
+// the renderer mirror is pure/overlay.ts - keep the three in lockstep).
+// 'arc' is the PRODUCT default (the Intel-Arc harness redesign; 'classic'
+// stays one click away via the Overlay Settings Theme row).
+const OVERLAY_THEMES = ['classic', 'arc'];
+const OVERLAY_THEME_DEFAULT = 'arc';
 
 /**
  * Normalize a raw settings object into the overlay's applied shape (the
@@ -162,6 +168,11 @@ function normalizeSettings(raw = {}) {
       && Number.isFinite(raw.overlayPollMs)
       ? Math.min(2000, Math.max(100, Math.round(raw.overlayPollMs)))
       : 400,
+    // M24: the overlay theme - 'arc' when absent/garbage (the redesign IS
+    // the product default; 'classic' stays one click away). The payload
+    // carries the theme so the renderer applies it from the push (the
+    // single-source-of-truth rule).
+    theme: OVERLAY_THEMES.includes(raw.theme) ? raw.theme : OVERLAY_THEME_DEFAULT,
   };
 }
 
@@ -308,6 +319,11 @@ export function createOverlayWindow({ getOverlaySettings }) {
     // M17e: the polling-rate rides the same push (the main.js forwarding +
     // the normalize clamp are the final gates for garbage).
     overlayPollMs: applied.overlayPollMs,
+    // M24: the theme rides the same push - without it the renderer would
+    // never know when to flip the arc harness / the classic HUD (the
+    // main.js applyOverlaySettings MUST forward it; the normalize is the
+    // final gate).
+    theme: applied.theme,
   });
 
   return {

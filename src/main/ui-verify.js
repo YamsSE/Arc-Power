@@ -819,6 +819,18 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   step('themes-boot', `1.0.1: boot theme '${bootTheme}' on <html> + computed --bg ${bootBg} (applied from the persisted envelope, equal-specificity ordering safe)`);
 
+  // --- M24 (Part A): the PRODUCT-DEFAULT overlay theme. This variant's
+  // seeds never touch overlayTheme (only the RID_MOCK_OVERLAY boot seed
+  // writes 'classic' when its knob is on), so the fresh store must carry
+  // the product default 'arc' - the redesign IS the product; 'classic' is
+  // one click away via the Overlay Settings Theme row. (The overlay
+  // variant is classic-seeded by design and cannot host this pin.)
+  const productTheme = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayTheme)`);
+  if (productTheme !== 'arc') {
+    fail(`M24: the product-default overlayTheme is '${productTheme}' (expected 'arc' on the fresh store - the redesign IS the product default)`);
+  }
+  step('m24-theme-default', `M24: the fresh-store overlayTheme defaults to 'arc' (the product default - the Arc look; 'classic' stays one click away)`);
+
   // M17c (user request): the shared --control-bg token renders on the
   // interactive controls - the M8-style computed-style pins for a select
   // (.featureset-select - always present in mock mode), a plain non-primary
@@ -8152,6 +8164,65 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   step('m5-hotkey-restore', `restore: letter O + failRegister cleared -> 'Control+O' re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
 
+  // --- M24 (Part A): the overlay THEMES - the Theme row round trip. The
+  // RID_MOCK_OVERLAY seed writes overlayTheme 'classic' at boot (the
+  // M5-M17g backdrop pins above assert the classic .visible/var/display
+  // mechanics that arc's always-visible backdrop would break), so this
+  // block starts from the classic-seeded state: save 'arc' -> the overlay
+  // window flips to the harness (dataset.overlayTheme, the always-visible
+  // backdrop WITHOUT the .visible toggle, the ::before accent bar, the
+  // gradient canvas stroke); save 'classic' -> the dataset flips back and
+  // the backdrop respects the .visible toggle again; the persisted value
+  // round-trips (m24-theme-persist). The deterministic session end: the
+  // overlay variant's boot seed resets the theme to 'classic' on the next
+  // run, and this block itself ends on 'classic'.
+  const seedTheme = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayTheme)`);
+  if (seedTheme !== 'classic') {
+    fail(`M24: the RID_MOCK_OVERLAY boot seed must set overlayTheme 'classic' (got '${seedTheme}' - the classic-seeded backdrop pins depend on it)`);
+  }
+  step('m24-theme-seed', `M24: the overlay variant boots CLASSIC-seeded (overlayTheme '${seedTheme}') - the classic backdrop mechanics stay deterministic`);
+
+  // m24-theme-arc: save 'arc' -> the dataset flips, the backdrop computes
+  // display:block WITHOUT the .visible toggle, the ::before accent bar
+  // exists, the canvas stroke is a gradient (the exposed themeStroke flag).
+  await js(`window.arcPower.profilesSettingsSave({ overlayTheme: 'arc' })`);
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayTheme === 'arc'`, 5000))) {
+    fail(`M24: the overlay window dataset.overlayTheme reads '${await ojs(`document.documentElement.dataset.overlayTheme ?? ''`)}' (expected 'arc' after the save - the push must re-render the HUD)`);
+  }
+  if (!(await waitFor(overlayWin, `(() => { const b = document.getElementById('overlay-backdrop'); return !!b && getComputedStyle(b).display === 'block' && !b.classList.contains('visible'); })()`, 5000))) {
+    fail('M24: the arc backdrop must compute display:block WITHOUT the .visible toggle (the harness is ALWAYS visible in arc)');
+  }
+  if (!(await waitFor(overlayWin, `getComputedStyle(document.getElementById('overlay-backdrop'), '::before').content !== 'none'`, 5000))) {
+    fail('M24: the arc backdrop has no ::before accent bar (the 2px #7FE3FF -> #4C8DFF top accent)');
+  }
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.themeStroke === 'gradient'`, 5000))) {
+    fail(`M24: the overlay themeStroke reads '${await ojs(`document.documentElement.dataset.themeStroke ?? ''`)}' (expected 'gradient' in arc)`);
+  }
+  step('m24-theme-arc', `M24: the theme save 'arc' re-rendered the HUD - dataset.overlayTheme 'arc', the backdrop computes display:block WITHOUT .visible, the ::before accent bar exists, the canvas stroke is a gradient (themeStroke 'gradient')`);
+
+  // m24-theme-classic: save 'classic' -> the dataset flips back + the
+  // backdrop respects the .visible toggle again (hidden when off - the
+  // classic control; the M7b pins above left the box off).
+  await js(`window.arcPower.profilesSettingsSave({ overlayTheme: 'classic' })`);
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayTheme === 'classic'`, 5000))) {
+    fail(`M24: the overlay window dataset.overlayTheme reads '${await ojs(`document.documentElement.dataset.overlayTheme ?? ''`)}' (expected 'classic' after the restore save)`);
+  }
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.themeStroke === 'flat'`, 5000))) {
+    fail('M24: the themeStroke must read flat in classic (the pushed-color stroke)');
+  }
+  if (!(await waitFor(overlayWin, `(() => { const b = document.getElementById('overlay-backdrop'); return !!b && getComputedStyle(b).display === 'none' && !b.classList.contains('visible'); })()`, 5000))) {
+    fail('M24: the classic backdrop must respect the .visible toggle again (hidden while off - the harness is arc-only)');
+  }
+  step('m24-theme-classic', `M24: the theme save 'classic' flipped the HUD back - dataset.overlayTheme 'classic', themeStroke 'flat', the backdrop hidden again (the .visible toggle is the classic control)`);
+
+  // m24-theme-persist: the settings.json key round-trips (the pushed
+  // payload shortens to 'theme' - the persisted key keeps 'overlayTheme').
+  const persistedTheme = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayTheme)`);
+  if (persistedTheme !== 'classic') {
+    fail(`M24: profilesList().settings.overlayTheme reads '${persistedTheme}' (expected 'classic' - the theme round trip must persist through the store)`);
+  }
+  step('m24-theme-persist', `M24: the persisted overlayTheme round-trips through profilesList (settings.overlayTheme '${persistedTheme}' - the settings.json key keeps the full name)`);
+
   // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   // The main window's closed handler destroys the overlay + unregisters the
   // hotkey (the lifecycle rule) - the app must still quit when the main
@@ -8453,6 +8524,17 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   step('m23-fixed-offset', `M23: fixed offset apply round trip - slider 100 -> per-card apply -> chip 'Applied' + driver read-back ${offsetState.gpuFreqOffsetMhz} MHz (perControl ok + readBackEqual); the recorded payload ${JSON.stringify(offsetPayload)} carries NO gpuLock key`);
   await clearPanelToasts();
 
+  // M24 (sync-tune): the panel's freq offset apply (100 MHz) is pushed to
+  // the main window via onStateUpdated - the Tuning page re-syncs the card
+  // in place (the B5 re-sync: never-applied controls take the pushed value).
+  // Navigate the main window to the Tuning page first.
+  await js(`location.hash = '#/tuning'`);
+  await sleep(300);
+  if (!(await waitFor(win, `(() => { const v = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-value'); return v && v.textContent.includes('100'); })()`, 8000))) {
+    fail('M24 (sync-tune): the main window Tuning page did not reflect the panel\'s 100 MHz offset apply');
+  }
+  step('m24-sync-tune', 'M24: the panel\'s 100 MHz offset apply pushed to the main window Tuning page (onStateUpdated -> card re-synced in place)');
+
   // (3b) M23 (user): the Fixed Clock / Voltage Lock editor is NOT part of
   // the panel's Tuning tab - a gpuLock change risks the driver's lock-mode
   // crash on this card, and the panel must fit without scrolling. The MAIN
@@ -8521,6 +8603,21 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((s) => s.fanMode === 'auto')`, 8000))) {
     fail(`M23: the fan Auto apply did not land (driver fanMode='${(await js(`window.arcPower.getCurrentSettings(0)`)).fanMode}')`);
   }
+  // M24 (sync-fan): the panel's fan Auto apply is pushed to the main window
+  // via onStateUpdated -> the tuning page's fan-view onUpdate detects the
+  // changed signature and re-renders the fan editor. Navigate the main
+  // window to the Tuning page's fan view first.
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  await js(`(() => {
+    const b = Array.from(document.querySelectorAll('.tuning-view-btn')).find((x) => x.textContent.trim() === 'Fan Curve');
+    if (b && !b.classList.contains('active')) b.click();
+  })()`);
+  await sleep(250);
+  if (!(await waitFor(win, `(() => { const chip = Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).find((c) => c.textContent.includes('Auto')); return chip && chip.classList.contains('chip-active'); })()`, 8000))) {
+    fail('M24 (sync-fan): the main window fan view did not reflect the panel\'s Auto mode apply');
+  }
+  step('m24-sync-fan', 'M24: the panel\'s Auto fan mode apply pushed to the main window fan view (onStateUpdated -> signature changed -> editor re-rendered)');
   // Back to Curve + apply -> restored (the deterministic session end).
   await clearPanelToasts();
   await ojs(`(() => { const c = Array.from(document.querySelectorAll('.fan-mode-toggle .chip')).find((x) => (x.textContent ?? '').trim() === 'Curve'); if (c) c.click(); })()`);
@@ -8555,6 +8652,45 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   step('m23-graphics', 'M23: the panel Graphics tab renders the four M8 cards (mock supported) + a flipMode vsync-on apply round trip landed (chip Applied + the mock driver read-back)');
   await clearPanelToasts();
+
+  // M24 (sync-graphics): the panel's graphics apply (flipMode vsync-on) is
+  // pushed to the main window via onGraphicsStateUpdated - the Graphics
+  // page re-syncs the select in place. Navigate the main window to the
+  // Graphics page first.
+  await js(`location.hash = '#/graphics'`);
+  await sleep(250);
+  if (!(await waitFor(win, `(() => { const sel = document.querySelector('.graphics-select[data-graphics-select="flipMode"]'); return sel && sel.value === 'vsync-on'; })()`, 8000))) {
+    fail('M24 (sync-graphics): the main window Graphics page did not reflect the panel\'s vsync-on apply');
+  }
+  step('m24-sync-graphics', 'M24: the panel\'s flipMode vsync-on apply pushed to the main window Graphics page (onGraphicsStateUpdated -> card re-synced in place)');
+
+  // M24 (sync-reset): after a main-window reset-to-defaults, the panel's
+  // Tuning tab shows the reset values (the onStateUpdated push refreshes
+  // the panel). Navigate the main window to the Tuning page, reset the
+  // freq offset to 0 (the panel applied 100), apply, then check the panel.
+  await js(`location.hash = '#/tuning'`);
+  await sleep(300);
+  // The Tuning page's `view` variable persists from the sync-fan pin;
+  // explicitly switch to the Tuning sub-view by clicking the view button.
+  await js(`(() => {
+    const b = Array.from(document.querySelectorAll('.tuning-view-btn')).find((x) => x.textContent.trim() === 'Tuning');
+    if (b && !b.classList.contains('active')) b.click();
+  })()`);
+  await sleep(300);
+  if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length >= 4`, 10000))) {
+    fail('M24 (sync-reset): the Tuning page did not re-render after navigating back from Graphics');
+  }
+  // Reset the freq offset via the preload API (simpler than clicking UI
+  // buttons which may not be in the right state after navigation).
+  await js(`window.arcPower.resetToDefaults(0)`);
+  await sleep(500);
+  // Navigate the panel to the Tuning tab and check the freq card shows 0.
+  await ojs(`document.querySelector('.adv-tab[data-tab="tuning"]').click()`);
+  await sleep(250);
+  if (!(await waitFor(panelWin, `(() => { const v = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-value'); return v && (v.textContent ?? '').includes('0'); })()`, 8000))) {
+    fail('M24 (sync-reset): the panel Tuning tab did not reflect the main window\'s reset-to-defaults (freq offset should be 0)');
+  }
+  step('m24-sync-reset', 'M24: the main window\'s reset-to-defaults pushed to the panel Tuning tab (onStateUpdated -> card re-synced to 0 MHz)');
 
   // (6) the LIVE readout strip: honest values from the telemetry push (the
   // THIRD consumer of the sample stream). The mock telemetry: tempCBase 36

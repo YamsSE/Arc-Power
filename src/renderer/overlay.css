@@ -91,6 +91,61 @@ body {
   z-index: 1;
 }
 
+/* ---------------------------------------------------------------------------
+   M24 - the 'arc' THEME block (html[data-overlay-theme="arc"], set via the
+   documentElement dataset by overlay.ts from the pushed theme). The Intel
+   Arc look: a glass "harness" panel - the theme-owned navy gradient, the
+   1px light border, the 2px top accent bar (the #7FE3FF -> #4C8DFF sweep)
+   and an INNER glow. NO outer box-shadow: the backdrop is inset:0
+   full-window (see #overlay-backdrop above) - an outer halo would clip at
+   the transparent window edge; the inset glow renders inside the panel.
+   The accent bar / border / radius all live inside the 460x170 base - no
+   window-size change. --overlay-bg-color is IGNORED in arc (the theme owns
+   the palette); --overlay-bg-opacity STILL applies (the panel
+   translucency). The accent bar + the border + the radius sit on the
+   backdrop itself - they never add a window edge.
+   The arc backdrop is ALWAYS visible: `display: block` (specificity beats
+   the display:none default; the .visible toggle stays the CLASSIC control).
+   ---------------------------------------------------------------------------
+   The font stack: MONOSPACE ONLY - the --overlay-label-w ch math + the
+   divider calc REQUIRE it; arc swaps to a modern mono (Cascadia Mono),
+   keeping ch self-consistent (the divider's font-family follows via this
+   block - M20 pinned it to the row stack, so the arc block re-pins both).
+   The --overlay-color setting still applies in BOTH themes (the text color
+   is orthogonal to the theme - arc's chrome carries the tint). */
+html[data-overlay-theme="arc"] #overlay-backdrop {
+  display: block;
+  border-radius: 0.6rem;
+  background: linear-gradient(165deg, rgba(16, 30, 60, 0.68), rgba(6, 12, 28, 0.74));
+  border: 1px solid rgba(120, 170, 255, 0.25);
+  box-shadow: inset 0 0 18px rgba(76, 141, 255, 0.10);
+  opacity: var(--overlay-bg-opacity, 0.5);
+}
+
+/* The 2px top accent bar - the Intel Arc sweep (theme-owned chrome). */
+html[data-overlay-theme="arc"] #overlay-backdrop::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #7FE3FF, #4C8DFF);
+}
+
+/* The header divider follows the arc chrome (the tinted line + the
+   monospace stack - the ch units stay self-consistent with the rows). */
+html[data-overlay-theme="arc"] #overlay-divider {
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  background: rgba(160, 200, 255, 0.55);
+}
+
+/* The rows ride the same mono stack in arc (the --overlay-label-w ch math
+   requires monospace in BOTH themes). */
+html[data-overlay-theme="arc"] .overlay-line {
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+}
+
 .overlay-line {
   font-family: Consolas, 'Courier New', monospace;
   font-weight: 700;

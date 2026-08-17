@@ -105,6 +105,16 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('device:state-updated', listener);
     return () => ipcRenderer.removeListener('device:state-updated', listener);
   },
+  // M24 (Part B): pushed POST-APPLY GRAPHICS read-backs ({ deviceId,
+  // graphicsState } on 'graphics:state-updated') - the onStateUpdated twin
+  // for the graphics surface: a panel/external graphics apply pushes the
+  // fresh read-back, and the main window's Graphics page + the panel's
+  // Graphics tab re-render from it in place (the cross-window sync).
+  onGraphicsStateUpdated: (cb) => {
+    const listener = (_event, payload) => cb(payload);
+    ipcRenderer.on('graphics:state-updated', listener);
+    return () => ipcRenderer.removeListener('graphics:state-updated', listener);
+  },
   // M5: the software overlay (the Overlay window's surface - the main
   // window never calls these; the channels validate in ipc-core.js).
   // onOverlaySettings receives the pushed 'overlay:settings' payload (the

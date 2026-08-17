@@ -117,6 +117,18 @@ api.onStateUpdated((payload) => {
   }
 });
 
+// M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
+// onStateUpdated for the graphics surface). On a matching deviceId push,
+// update the panel's graphicsState + re-render the graphics tab.
+api.onGraphicsStateUpdated((payload) => {
+  if (payload && payload.deviceId === store.get().deviceId) {
+    graphicsState = payload.graphicsState;
+    if (activeTab === 'graphics') {
+      void renderGraphics();
+    }
+  }
+});
+
 function renderReadout(sample: TelemetrySample | null): void {
   const s: Partial<TelemetrySample> = sample ?? {};
   const temp = typeof s.tempC === 'number' && Number.isFinite(s.tempC) ? s.tempC : null;

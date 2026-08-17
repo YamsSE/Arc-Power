@@ -224,6 +224,27 @@ export function computeGraphicsDirty(draft: GraphicsSettings, state: GraphicsSta
 }
 
 /**
+ * M24 (Part B): the graphics-draft RE-SYNC rule (the TUNING B5 contract
+ * keyed on the APPLIED reference - tuning.ts's refresh loop): after a
+ * pushed read-back, a control the user applied-and-changed KEEPS the
+ * user's position (`key in applied`), while a never-applied control takes
+ * the pushed value UNCONDITIONALLY (the presence check handles the
+ * object-shaped frameLimit - no per-field equality compare). Absent pushed
+ * values (null driver read-outs) keep the draft's current position (never
+ * clobber a control the driver did not report).
+ */
+export function resyncGraphicsDraft(draft: GraphicsSettings, applied: GraphicsSettings, pushed: GraphicsState): GraphicsSettings {
+  const out = { ...draft };
+  for (const key of Object.keys(out) as (keyof GraphicsSettings)[]) {
+    if (key in applied) continue;
+    const v = pushed.values[key as keyof GraphicsState['values']];
+    if (v === null || v === undefined) continue;
+    (out as Record<string, unknown>)[key] = v;
+  }
+  return out;
+}
+
+/**
  * Build the apply payload from the draft: only the controls that DIFFER
  * from the driver state are included (the "leave untouched" contract) -
  * except controls with an applied reference (the chip/button semantics

@@ -31,13 +31,46 @@ import {
   STOCK_FAN_CURVE,
   MIN_CURVE_POINTS,
 } from '../pure/curve.ts';
-import { buildFanSettings, validateSettingsPayload } from '../pure/settings.ts';
+import { buildFanSettings, validateSettingsPayload, fanStateSignature } from '../pure/settings.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { toast } from '../components/toast.ts';
-import type { FanMode } from '../types.ts';
+import type { DeviceState, FanMode } from '../types.ts';
 
 const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Curve', fixed: 'Fixed' };
+
+// M24 (Part B): the fan-state SIGNATURE - the mechanism that lets the
+// Tuning page's fan view re-render its editor when the STORE's fan fields
+// changed EXTERNALLY (the advanced-overlay panel's fan apply pushes a fresh
+// read-back -> app.ts sets the store -> the tuning onUpdate sees a CHANGED
+// signature -> renderFanEditor re-renders). The signature lives here
+// because BOTH writers see it:
+//   (a) EVERY fan-editor render refreshes it (this module's renderFanEditor
+//       entry - the store state and the editor agree after a render);
+//   (b) applyFan notes it from `fresh` BEFORE the store.set - Store.set
+//       dispatches subscribers SYNCHRONOUSLY (router.ts), so the tuning
+//       page's onUpdate runs INSIDE the set; the note must precede it or
+//       the user's OWN apply would find a stale signature and re-render
+//       the editor once per apply (killing an open point-edit popup /
+//       mid-flight drag). The user's own apply then finds the signature
+//       EQUAL -> NO re-render; an external push changes the store's fan
+//       fields without touching the signature -> the onUpdate branch
+//       re-renders. Only one fan editor renders at a time, so one
+//       module-level slot suffices (the ADV panel is a separate window/JS
+//       context - no cross-contamination).
+let lastFanSignature: string | null = null;
+
+/** M24: record the CURRENT fan signature from a state (the applyFan note -
+ *  must run BEFORE the store.set that dispatches the subscribers). */
+export function noteFanApplied(state: DeviceState | null | undefined): void {
+  lastFanSignature = fanStateSignature(state);
+}
+
+/** M24: the last-recorded fan signature (tuning.ts's fan branch compares
+ *  the store state against it to decide the editor re-render). */
+export function currentFanSignature(): string | null {
+  return lastFanSignature;
+}
 
 // M4N (D): the FIXED preset chips. The chip NAMES are static; the POINTS
 // are the three exact fixed tables in pure/curve.ts (STOCK_FAN_CURVE - the
@@ -762,7 +795,15 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       const { result, state: fresh } = await api.applySettings(deviceId, settings);
       // M3-C review F2: only store a NON-NULL fresh state - a refusal
       // envelope's null state must never null out the store's device state.
-      if (fresh) ctx.store.set({ state: fresh });
+      // M24: note the fan signature BEFORE the store.set - Store.set
+      // dispatches subscribers SYNCHRONOUSLY (router.ts), so the tuning
+      // page's onUpdate runs INSIDE the set; the note must precede it or
+      // the user's OWN apply would find a stale signature and re-render
+      // the editor once per apply.
+      if (fresh) {
+        noteFanApplied(fresh);
+        ctx.store.set({ state: fresh });
+      }
       // M3-A: record the outcome for the dashboard "OC working" health row.
       const failedFan = Object.entries(result.perControl)
         .filter(([, per]) => !per.ok)

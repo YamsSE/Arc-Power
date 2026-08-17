@@ -34,7 +34,7 @@
 // and the number - a stat off hides them together.
 
 import { api } from './ipc.ts';
-import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT } from './pure/overlay.ts';
+import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT } from './pure/overlay.ts';
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
@@ -87,6 +87,13 @@ let latestFrameTime: number | null = null;
 // M17e: the telemetry push counter (the fast-rate pin's mocked-push-cadence
 // surface - the ui-verify counts the pushed samples over a window).
 let telemetryTicks = 0;
+// M24: the pushed theme ('arc' the product default - the Intel-Arc harness;
+// 'classic' the original HUD). Applied via the documentElement dataset
+// (CSP-safe, the --overlay-color pattern) + picked by draw() for the canvas
+// stroke (arc: a horizontal #7FE3FF -> #4C8DFF gradient; classic: the
+// pushed color). The dataset.themeStroke flag exposes the stroke kind for
+// the ui-verify pin.
+let theme: 'classic' | 'arc' = OVERLAY_THEME_DEFAULT;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
@@ -152,6 +159,14 @@ api.onOverlaySettings((settings) => {
   // the cadence itself is main-side).
   const pollMs = clampOverlayPollMs(s.overlayPollMs);
   document.documentElement.dataset.overlayPollMs = String(pollMs);
+  // M24: the overlay theme - the documentElement dataset drives the arc CSS
+  // block (the harness vs the classic HUD); garbage degrades to the 'arc'
+  // product default. The renderer applies the theme from the push (the M7
+  // single-source-of-truth rule - the push and the window are applied
+  // together).
+  theme = isValidOverlayTheme(s.theme) ? s.theme : OVERLAY_THEME_DEFAULT;
+  document.documentElement.dataset.overlayTheme = theme;
+  document.documentElement.dataset.themeStroke = theme === 'arc' ? 'gradient' : 'flat';
   // M17f: the FPS-poll cadence follows the SAME slider - the bootFpsLoop
   // re-arms its interval when the pushed value changes (the FPS line then
   // updates at the user's chosen rate, not the stock 1000 ms).
@@ -240,7 +255,19 @@ function draw(): void {
   const y = (v: number): number => canvas.height - ((v - range.min) / span) * canvas.height;
   // M6: the stroke takes the SAME hex as the text lines (the pushed
   // overlayColor - never the old hardcoded '#ffffff').
-  ctx.strokeStyle = color;
+  // M24: the ARC theme's stroke is the theme-owned horizontal gradient
+  // (#7FE3FF -> #4C8DFF across the strip - the Intel Arc sweep); the
+  // CLASSIC theme keeps the pushed color. The --overlay-color text setting
+  // is orthogonal to the theme in BOTH cases (the user's color choice still
+  // applies to the lines; only the stroke kind changes with the theme).
+  if (theme === 'arc') {
+    const g = ctx.createLinearGradient(0, 0, canvas.width, 0);
+    g.addColorStop(0, '#7FE3FF');
+    g.addColorStop(1, '#4C8DFF');
+    ctx.strokeStyle = g;
+  } else {
+    ctx.strokeStyle = color;
+  }
   ctx.lineWidth = 1.5;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';

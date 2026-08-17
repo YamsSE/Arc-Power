@@ -68,14 +68,14 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
 import { formatPlReadout } from '../pure/pl-readout.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
-import { renderFanEditor, updateFanReadout } from './fan-editor.ts';
+import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 // M4-H (B): the profiles page's prompt modal + id generator + the
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
@@ -1552,6 +1552,17 @@ export const tuningPage: Page = {
     // contract as the removed Fan page's onUpdate).
     if (view === 'fan') {
       updateFanReadout(container, ctx);
+      // M24: an external fan-state push changed the store -> re-render the
+      // fan editor (the editor is rebuilt from the fresh store). The user's
+      // own apply finds them equal -> no re-render (the signature is
+      // refreshed inside applyFan BEFORE the store.set).
+      const s2 = ctx.store.get();
+      const currentSig = currentFanSignature();
+      const storeSig = fanStateSignature(s2.state);
+      if (currentSig !== null && currentSig !== storeSig && viewContainer) {
+        clear(viewContainer);
+        renderFanEditor(viewContainer, ctx);
+      }
       return;
     }
     // M3-C-F: refresh the cards IN PLACE when the store's state slot changed

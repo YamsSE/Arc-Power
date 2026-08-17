@@ -27,6 +27,16 @@ const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
 
+// M24: the overlay THEME ids - the persisted-truth owner of the list (the
+// OVERLAY_POSITIONS pattern). The renderer mirror lives in
+// src/renderer/pure/overlay.ts and the envelope validation in
+// src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
+// files -> 'arc' (the redesign IS the product default - the Intel-Arc
+// harness; 'classic' stays one click away via the Overlay Settings Theme
+// row); a garbage value degrades to 'arc' at the STORE.
+const OVERLAY_THEMES = ['classic', 'arc'];
+const OVERLAY_THEME_DEFAULT = 'arc';
+
 // M23: the ADVANCED overlay's anchored-edge ids - the persisted-truth owner
 // of the list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
 // src/renderer/pure/overlay.ts and the envelope validation in
@@ -93,7 +103,7 @@ const OVERLAY_POLL_MS_DEFAULT = 400;
 const OVERLAY_POLL_MS_MIN = 100;
 const OVERLAY_POLL_MS_MAX = 2000;
 
-export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT };
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -284,12 +294,15 @@ export class ProfileStore {
    * the stock 'CPU '/'GPU ' prefixes when absent).
    * M17e: overlayPollMs (the overlay telemetry push cadence) rides it too
    * (400 ms when absent).
+   * M24: overlayTheme (the overlay THEME - the Intel-Arc harness redesign
+   * vs the classic HUD) rides it too ('arc' when absent - the redesign IS
+   * the product default).
    * M23: the ADVANCED overlay fields (advancedOverlayEnabled/
    * advancedOverlayHotkeyLetter/advancedOverlayPosition) - absent on old
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -354,6 +367,10 @@ export class ProfileStore {
         // M17e: the overlay polling-rate - absent -> 400 ms (the same
         // absent-field mechanism; the telemetry-service default).
         overlayPollMs: OVERLAY_POLL_MS_DEFAULT,
+        // M24: the overlay theme - absent -> 'arc' (the redesign IS the
+        // product default; 'classic' stays one click away via the Theme
+        // row - the same absent-field mechanism, NO schema bump).
+        overlayTheme: OVERLAY_THEME_DEFAULT,
         // M23: the ADVANCED overlay - absent -> off, the letter 'P' (the
         // stock Adrenaline shortcut), anchored right (the same absent-field
         // mechanism, NO schema bump; NO scale key - the panel is a fixed
@@ -427,6 +444,12 @@ export class ProfileStore {
       // telemetry-service default; a garbage value degrades to 400 - never
       // a crash, never an out-of-range cadence).
       overlayPollMs: clampOverlayPollMs(data.overlayPollMs),
+      // M24: the overlay theme - absent on old files -> 'arc' (the
+      // redesign IS the product default; a garbage value degrades to 'arc'
+      // - never a crash, never an unknown theme).
+      overlayTheme: OVERLAY_THEMES.includes(data.overlayTheme)
+        ? data.overlayTheme
+        : OVERLAY_THEME_DEFAULT,
       // M23: the ADVANCED overlay (the M5 overlaySettings pattern, NO
       // schema bump): enabled off when absent, the letter 'P', anchored
       // 'right'; a garbage value degrades to the default - never a crash.
@@ -443,7 +466,7 @@ export class ProfileStore {
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -501,6 +524,12 @@ export class ProfileStore {
       // store fallback covers direct callers - an absent/garbage value
       // persists as the 400 ms default).
       overlayPollMs: clampOverlayPollMs(settings.overlayPollMs),
+      // M24: the overlay theme - validated on save like the rest (the
+      // channel validates first; the store fallback covers direct callers -
+      // an absent/garbage value persists as the 'arc' default).
+      overlayTheme: OVERLAY_THEMES.includes(settings.overlayTheme)
+        ? settings.overlayTheme
+        : OVERLAY_THEME_DEFAULT,
       // M23: the ADVANCED overlay - validated on save like the theme (the
       // channel validates first + rejects the hotkey-letter collision at
       // the envelope; the store fallback covers direct callers - an

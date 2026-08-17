@@ -50,7 +50,7 @@ import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerif
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
-import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT } from './store/profile-store.js';
+import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
 import { createOverlayWindow } from './overlay.js';
 // M23 (Part B): the ADVANCED overlay module (the AMD-Adrenaline-style
 // interactive side panel - CONTROL + <letter>, stock P). The HUD's
@@ -1090,9 +1090,18 @@ async function main() {
     // interrupted run must never bleed into the next variant (the isolated
     // mock dir is shared across variants). RID_MOCK_THEME=light flips the
     // session (the light-boot sanity pin).
+    // M24: the overlay THEME is seeded DETERMINISTICALLY the same way -
+    // every non-overlay session resets overlayTheme to the PRODUCT default
+    // 'arc' (the m24-theme-default pin asserts it on the fresh store; the
+    // RID_MOCK_OVERLAY seed block BELOW then overrides to 'classic' when
+    // its knob is on, so the overlay variant still boots classic).
     try {
       const cur = await store.loadSettings();
-      await store.saveSettings({ ...cur, theme: process.env.RID_MOCK_THEME === 'light' ? 'light' : 'dark' });
+      await store.saveSettings({
+        ...cur,
+        theme: process.env.RID_MOCK_THEME === 'light' ? 'light' : 'dark',
+        overlayTheme: 'arc',
+      });
     } catch (err) {
       console.log(`[boot] theme session seed skipped: ${err.message}`);
     }
@@ -1126,6 +1135,11 @@ async function main() {
     // M7b: the background box resets the same way (the new pins toggle it
     // mid-run - a crashed run must never bleed a visible box / non-black
     // color / non-0.5 opacity into the next overlay variant).
+    // M24: the overlay THEME resets the same way - the overlay variant is
+    // CLASSIC-seeded (the M5-M17g backdrop pins assert the .visible/var/
+    // display mechanics that arc's always-visible backdrop would break);
+    // the PRODUCT default stays 'arc' (the non-overlay variants never
+    // touch the theme).
     try {
       const cur = await store.loadSettings();
       const overlayOn = process.env.RID_MOCK_OVERLAY === '1';
@@ -1140,6 +1154,7 @@ async function main() {
         overlayBgEnabled: overlayOn ? false : cur.overlayBgEnabled,
         overlayBgColor: overlayOn ? '#000000' : cur.overlayBgColor,
         overlayBgOpacity: overlayOn ? 0.5 : cur.overlayBgOpacity,
+        overlayTheme: overlayOn ? 'classic' : cur.overlayTheme,
       });
     } catch (err) {
       console.log(`[boot] overlay session seed skipped: ${err.message}`);
@@ -1969,6 +1984,14 @@ async function main() {
         && Number.isFinite(settings.overlayPollMs)
         ? Math.min(2000, Math.max(100, Math.round(settings.overlayPollMs)))
         : 400,
+      // M24: the overlay THEME - forwarded like the rest (the payload
+      // shortens to 'theme'; the renderer applies it from the push -
+      // dataset.overlayTheme + the arc canvas gradient). Garbage degrades
+      // to the 'arc' product default (the overlay.js normalize is the
+      // final gate).
+      theme: OVERLAY_THEMES.includes(settings.overlayTheme)
+        ? settings.overlayTheme
+        : OVERLAY_THEME_DEFAULT,
     });
   };
   if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {

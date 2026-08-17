@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers } from './ipc-core.js';
+import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL } from './ipc-core.js';
 import { createStartup } from './startup.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
@@ -106,7 +106,33 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     },
   });
   for (const [channel, fn] of Object.entries(handlers)) {
-    ipcMain.handle(channel, (_event, ...args) => fn(...args));
+    ipcMain.handle(channel, async (_event, ...args) => {
+      const out = await fn(...args);
+      // M24 (Part B): the cross-window settings sync - an apply/reset from
+      // ANY renderer (the main window OR the advanced-overlay panel) pushes
+      // the FRESH read-back to BOTH windows, so the other surface re-renders
+      // in place (today a panel apply writes the driver but the main window
+      // keeps showing the stale value until a full page re-render). Both
+      // sends null-guard the windows (the emit pattern); the main window's
+      // OWN applies get a redundant push (same state, ocStateChanged false ->
+      // no visible change; the app.ts handler already guards the deviceId).
+      // The panel's own onStateUpdated re-renders from its push too
+      // (bidirectional freshness, free).
+      if ((channel === 'apply-settings' || channel === 'reset-to-defaults') && out && out.state != null) {
+        const payload = { deviceId: args[0], state: out.state };
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(DEVICE_STATE_UPDATED_CHANNEL, payload);
+        const advancedOverlayWin = getAdvancedOverlayWindow();
+        if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(DEVICE_STATE_UPDATED_CHANNEL, payload);
+      } else if (channel === 'graphics:apply' && out && out.graphicsState != null) {
+        const payload = { deviceId: args[0], graphicsState: out.graphicsState };
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(GRAPHICS_STATE_UPDATED_CHANNEL, payload);
+        const advancedOverlayWin = getAdvancedOverlayWindow();
+        if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(GRAPHICS_STATE_UPDATED_CHANNEL, payload);
+      }
+      return out;
+    });
   }
   // M17c: the teardown kills the PresentMon sidecar too (no orphaned ETW
   // session / child process on app exit).

@@ -43,8 +43,11 @@ import {
   OVERLAY_COLOR_LABELS,
   OVERLAY_POLL_MS_MIN,
   OVERLAY_POLL_MS_MAX,
+  OVERLAY_THEMES,
+  OVERLAY_THEME_DEFAULT,
   isValidOverlayPosition,
   isValidOverlayColor,
+  isValidOverlayTheme,
   clampOverlayScale,
   clampOverlayBgOpacity,
   clampOverlayPollMs,
@@ -81,6 +84,10 @@ interface PersistedOverlay {
   scale: number;
   color: string;
   stats: string[];
+  // M24: the overlay THEME ('arc' the product default - the Intel-Arc
+  // harness redesign; 'classic' the original HUD, one click away via the
+  // Theme row). Persisted as settings.json 'overlayTheme'.
+  theme: 'classic' | 'arc';
   // M7b (fix 4): the background box (the Appearance card's Background
   // section) - off / black / 0.5 opacity when absent.
   bgEnabled: boolean;
@@ -123,6 +130,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       scale: clampOverlayScale(s.overlayScale),
       color: isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff',
       stats: Array.isArray(s.overlayStats) ? s.overlayStats : [...OVERLAY_STATS_DEFAULT],
+      // M24: the overlay theme (absent on old files -> 'arc' - the redesign
+      // IS the product default; 'classic' stays one click away).
+      theme: isValidOverlayTheme(s.overlayTheme) ? s.overlayTheme : OVERLAY_THEME_DEFAULT,
       // M7b (fix 4): the background box defaults (off / black / 0.5).
       bgEnabled: s.overlayBgEnabled === true,
       bgColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : '#000000',
@@ -258,6 +268,23 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // CLASS-driven swatch chips, CSP-safe) + the custom hex input
     // (type=color - a plain value applied via CSSOM, never an inline
     // style) + the SIZE slider (the existing overlayScale).
+    // M24: the THEME row sits at the TOP of the card (the swatch-button
+    // pattern - two buttons button[data-overlay-theme-option="classic"|"arc"],
+    // the .active class on the persisted one). The switch saves through
+    // profiles-settings-save ({ overlayTheme }); main's onOverlaySettings
+    // then applies + pushes 'overlay:settings' so the HUD re-renders
+    // immediately (the overlayChanged loop carries the theme key).
+    const themeOptions = OVERLAY_THEMES.map((t) =>
+      el('button', {
+        type: 'button',
+        class: `theme-option overlay-theme-option${persisted.theme === t ? ' active' : ''}`,
+        dataset: { overlayThemeOption: t },
+        title: t === 'arc' ? 'The Arc Power look - the Intel Arc harness' : 'The original HUD',
+        onclick: () => void onThemeSelect(t),
+      }, [
+        el('span', { class: 'theme-option-name', text: t === 'arc' ? 'Arc' : 'Classic' }),
+      ]),
+    );
     const colorOptions = OVERLAY_COLOR_PRESETS.map((hex) =>
       el('button', {
         type: 'button',
@@ -314,7 +341,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     positionSelect.value = persisted.position;
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('h2', { class: 'card-title', text: 'Appearance' }),
-      el('p', { class: 'card-note', text: 'Color, size and corner position.' }),
+      // M24: the note gains the theme sentence - the card owns the look.
+      el('p', { class: 'card-note', text: 'Color, size and corner position. Arc is the Arc Power look; Classic is the original HUD.' }),
+      el('div', { class: 'settings-row overlay-theme-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Theme' }),
+        el('div', { class: 'chips overlay-theme-options' }, themeOptions),
+      ]),
       el('div', { class: 'overlay-color-options' }, [
         ...colorOptions,
         el('label', { class: 'overlay-custom-color' }, [
@@ -576,6 +608,30 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     });
     const custom = root.querySelector<HTMLInputElement>('.settings-color-input');
     if (custom && custom.value.toLowerCase() !== hex.toLowerCase()) custom.value = hex;
+  };
+
+  // M24: the theme row handler - the same profiles-settings-save pattern as
+  // the color handler (toast + the .active class flip; the overlay itself
+  // re-renders on the push - the save + the push are one main-side flow).
+  const syncThemeButtons = (theme: string): void => {
+    root.querySelectorAll<HTMLElement>('.overlay-theme-option').forEach((b) => {
+      b.classList.toggle('active', b.dataset.overlayThemeOption === theme);
+    });
+  };
+
+  const onThemeSelect = async (theme: string): Promise<void> => {
+    if (!isValidOverlayTheme(theme) || theme === persisted.theme) return;
+    const previous = persisted.theme;
+    syncThemeButtons(theme);
+    persisted.theme = theme;
+    try {
+      await api.profilesSettingsSave({ overlayTheme: theme });
+      toast('success', 'Overlay theme changed', theme === 'arc' ? 'The Arc look is active.' : 'The classic HUD is active.');
+    } catch (err) {
+      toast('error', 'Overlay theme could not be changed', err instanceof Error ? err.message : String(err));
+      persisted.theme = previous;
+      syncThemeButtons(previous);
+    }
   };
 
   const onColorSelect = async (hex: string): Promise<void> => {

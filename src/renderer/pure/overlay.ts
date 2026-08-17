@@ -43,6 +43,22 @@ export const OVERLAY_POSITION_LABELS: Record<OverlayPosition, string> = {
   'bottom-right': 'Bottom right',
 };
 
+/** M24: the overlay THEME ids - the persisted-truth owner is
+ *  profile-store.js; this is the renderer mirror (keep both in lockstep).
+ *  'classic' is the original RTSS-style HUD; 'arc' is the redesigned
+ *  Intel-Arc-tinted harness (the PRODUCT default - the redesign IS the
+ *  product; 'classic' stays one click away via the Overlay Settings Theme
+ *  row). Absent/garbage -> 'arc' (the store's absent-field default). */
+export const OVERLAY_THEMES: readonly string[] = ['classic', 'arc'];
+/** M24: the product-default overlay theme ('arc' - the redesign; the
+ *  persisted-truth owner is profile-store.js, keep both in lockstep). */
+export const OVERLAY_THEME_DEFAULT = 'arc';
+
+/** M24: whether v is one of the two overlay theme ids. */
+export function isValidOverlayTheme(v: unknown): v is 'classic' | 'arc' {
+  return typeof v === 'string' && (OVERLAY_THEMES as readonly string[]).includes(v);
+}
+
 /** M23: the ADVANCED overlay's anchored-edge ids (the persisted-truth owner
  *  is profile-store.js - the HUD's lockstep family; this mirror joins the
  *  same module. Keep both in lockstep). The panel anchors to the PRIMARY

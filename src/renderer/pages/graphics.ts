@@ -111,6 +111,28 @@ const sliderRowNodes = new Map<string, HTMLElement>();
 const toggleNodes = new Map<string, HTMLSelectElement>();
 const selectNodes = new Map<string, HTMLSelectElement>();
 let viewContainer: HTMLElement | null = null;
+let currentCtx: PageContext | null = null;
+
+// M24 (Part B): subscribe ONCE to the graphics-state push (the ADVANCED
+// overlay panel's graphics apply + any future external graphics write). On a
+// matching deviceId: update the module state + re-sync draft per the B5
+// rule (applied controls keep the user's position; never-applied controls
+// take the pushed value unconditionally), then re-render the card list from
+// the module state (no re-fetch).
+api.onGraphicsStateUpdated((payload) => {
+  if (!currentCtx) return;
+  const s = currentCtx.store.get();
+  if (s.deviceId === null || payload.deviceId !== s.deviceId) return;
+  graphicsState = payload.graphicsState;
+  const pushed = normalizeGraphicsSettings(payload.graphicsState);
+  for (const key of ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']) {
+    if (key in applied) continue;
+    (draft as Record<string, unknown>)[key] = (pushed as Record<string, unknown>)[key];
+  }
+  if (viewContainer && viewContainer.isConnected) {
+    renderCards(viewContainer, currentCtx);
+  }
+});
 
 function resetPageState() {
   graphicsState = null;
@@ -126,6 +148,7 @@ function resetPageState() {
   toggleNodes.clear();
   selectNodes.clear();
   viewContainer = null;
+  currentCtx = null;
 }
 
 /** M9: the shared chip state machine (pure/chip.ts) drives the per-card
@@ -178,6 +201,7 @@ export const graphicsPage: Page = {
     const s = ctx.store.get();
     clear(container);
     resetPageState();
+    currentCtx = ctx;
 
     // The deviceId-null guard runs FIRST (plan-review S3): on the no-Intel
     // path deviceId is null and graphics:get must NEVER be called with it

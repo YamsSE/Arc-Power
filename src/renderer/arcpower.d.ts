@@ -160,6 +160,13 @@ export interface ArcPowerApi {
    *  refreshes its store `state` slot (the dashboard OC status row derives
    *  from the live read-back and must flip after a tray apply). */
   onStateUpdated(cb: (payload: { deviceId: number; state: DeviceState }) => void): () => void;
+  /** M24 (Part B): pushed POST-APPLY GRAPHICS read-backs ({ deviceId,
+   *  graphicsState } on 'graphics:state-updated') - the onStateUpdated twin
+   *  for the graphics surface: the ipc.js wrap pushes the fresh read-back
+   *  after every graphics:apply, and the main window's Graphics page + the
+   *  advanced-overlay panel's Graphics tab re-render from it in place (the
+   *  cross-window settings sync). */
+  onGraphicsStateUpdated(cb: (payload: { deviceId: number; graphicsState: GraphicsState }) => void): () => void;
   /** M5: pushed overlay settings (the Overlay window surface) - the scale
    *  source of truth, sent by main on every apply (incl. the initial
    *  did-finish-load push; the renderer registers this SYNCHRONOUSLY at

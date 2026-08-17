@@ -486,6 +486,14 @@ export interface OverlaySettings {
    *  stock white). Applied via CSSOM to the lines + the frametime canvas
    *  stroke by the overlay renderer. */
   color: string;
+  /** M24: the overlay THEME ('arc' the product default - the Intel-Arc
+   *  harness redesign; 'classic' the original HUD, one click away via the
+   *  Overlay Settings Theme row). NOTE: the PUSHED-PAYLOAD name shortens to
+   *  'theme' - the settings.json key + the profilesList envelope keep the
+   *  full 'overlayTheme' (the two surfaces deliberately differ). The
+   *  renderer applies the theme from the push (dataset.overlayTheme +
+   *  dataset.themeStroke). */
+  theme: 'classic' | 'arc';
   /** M6: the ENABLED overlay stat ids (the canonical OVERLAY_STAT_IDS; the
    *  full set the stock default - a stat off -> its field/line vanishes). */
   stats: string[];
@@ -596,6 +604,13 @@ export interface ProfileSettingsState {
    *  schema bump). The Overlay Settings page's polling-rate slider
    *  persists this. */
   overlayPollMs: number;
+  /** M24: the overlay THEME (the settings.json key + the profilesList
+   *  envelope keep the FULL name 'overlayTheme' - the pushed overlay
+   *  payload shortens to 'theme'; the two surfaces deliberately differ).
+   *  Absent on old files -> 'arc' (the redesign IS the product default; the
+   *  same absent-field mechanism, NO schema bump). The Overlay Settings
+   *  Appearance card's Theme row persists this. */
+  overlayTheme: 'classic' | 'arc';
   /** M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
    *  panel - CONTROL + <letter>, stock P; absent on old files -> the
    *  defaults: off / 'P' / 'right' - the same absent-field mechanism, NO
