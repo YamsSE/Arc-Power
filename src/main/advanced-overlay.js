@@ -50,12 +50,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *  A770 Tuning tab + the chrome - the harness measured header 126px + tabs
  *  34px + footer 28px = 188px chrome and the 4-card stack (3 offsets + the
  *  PL card, NO PL1/PL2 readout) at 396px, so 584px is the exact fit; the
- *  base is 612 (a ~28px cushion for real-card rendering differences - the
+ *  base is 616 (a ~32px cushion for real-card rendering differences - the
  *  4-card set must NEVER scroll). MORE than 4 cards (e.g. a Battlemage
  *  with VRAM offsets) MAY scroll - the content area scrolls, the panel
  *  never grows. The geometry still clamps to the display height. */
 const PANEL_WIDTH = 360;
-const PANEL_HEIGHT = 612;
+const PANEL_HEIGHT = 616;
 /** The margin from the anchored display edge. */
 const PANEL_MARGIN = 8;
 
