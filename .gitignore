@@ -15,3 +15,6 @@ docs/sysman.md
 tools/
 pipeline/
 .opencode/
+
+# Dev tools (website asset generation, asar verification — not part of the software)
+scripts/
