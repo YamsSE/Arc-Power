@@ -107,6 +107,9 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
+  // M24 (user): the panel must NOT show on boot  -  only when the shortcut
+  // is pressed. Same pattern as the HUD overlay.
+  let bootApply = true;
   // The applied settings (the single source the geometry + the pushed
   // 'advanced-overlay:settings' payload both derive from).
   let applied = normalizeSettings(getOverlaySettings());
@@ -235,7 +238,12 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
           width: PANEL_WIDTH,
           height: geom.height,
         });
-        if (applied.enabled) {
+        // M24 (user): the first apply() is the boot apply  -  apply geometry
+        // + push settings but do NOT show the window. Subsequent applies
+        // (Settings toggle) show/hide normally.
+        if (bootApply) {
+          bootApply = false;
+        } else if (applied.enabled) {
           if (!win.isVisible()) win.show();
           try {
             win.setAlwaysOnTop(true, 'screen-saver');

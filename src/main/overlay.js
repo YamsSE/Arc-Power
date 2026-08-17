@@ -197,6 +197,11 @@ export function createOverlayWindow({ getOverlaySettings }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
+  // M24 (user): the overlay must NOT show on boot  -  only when the shortcut
+  // is pressed. The first apply() is the boot apply: it applies geometry +
+  // pushes settings but does NOT show the window. Subsequent applies
+  // (Settings toggle) show/hide normally.
+  let bootApply = true;
   // The applied settings (the single source the geometry + the pushed
   // 'overlay:settings' payload both derive from - M7: the push and the
   // resize are applied together, never a race).
@@ -363,7 +368,13 @@ export function createOverlayWindow({ getOverlaySettings }) {
           width: size.width,
           height: size.height,
         });
-        if (applied.enabled) {
+        // M24 (user): the first apply() is the boot apply  -  apply geometry
+        // + push settings but do NOT show the window. The hotkey still works
+        // (toggle() checks applied.enabled, not visible). Subsequent applies
+        // (Settings toggle) show/hide normally.
+        if (bootApply) {
+          bootApply = false;
+        } else if (applied.enabled) {
           if (!win.isVisible()) win.show();
           // M16: reassert the topmost state right after a show - a
           // show() can land the window under a program that raised itself

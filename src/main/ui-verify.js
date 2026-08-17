@@ -7172,12 +7172,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // honest no-metering shape - the CPU-row watt field renders '-').
   const noPowerMeter = process.env.RID_MOCK_NO_POWER_METER === '1';
 
-  // (a) the seeded session: exists + visible.
+  // (a) the seeded session: exists but HIDDEN on boot (M24 user directive:
+  // overlays only appear when the shortcut is pressed, not on boot).
   const s0 = await js(`window.arcPower.overlayGetState()`);
   if (!s0.exists) fail('M5: overlay:get-state reports exists:false in the overlay variant');
-  if (!s0.visible) fail('M5: the seeded overlayEnabled:true session must boot with the overlay SHOWN (get-state visible:false)');
+  if (s0.visible) fail('M5: the overlay must NOT show on boot (M24 user directive - visible:true)');
   if (s0.hotkeyRegistered !== true) fail(`M5: the boot hotkey registration did not land (hotkeyRegistered ${s0.hotkeyRegistered}, probe ${JSON.stringify(hotkeyProbe.registrations)})`);
-  step('m5-get-state', `overlay:get-state -> exists + visible (bounds ${JSON.stringify(s0.bounds)}, position '${s0.position}', scale ${s0.scale})`);
+  step('m5-get-state', `overlay:get-state -> exists + hidden-on-boot (position '${s0.position}', scale ${s0.scale})`);
 
   // (b) the overlay DOM lines. The mock telemetry: util 42, cpuFreq 4300
   // ('4.3GHz'), cpuTemp 61|62 alternating, memClock 2187, vram 2971324416
@@ -7445,23 +7446,23 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     step('m6-frametime-value', "the frametime value line honestly reads '-' (no fps poll data)");
   }
 
-  // (d) M7b (fix 5): the toggle and the shortcut are INDEPENDENT now.
+  // (d) M7b (fix 5) + M24: the toggle and the shortcut are INDEPENDENT now.
   // 'overlay:toggle' (the hotkey's channel) is the SHORTCUT: with the
   // master overlayEnabled ON (the seeded session), pressing it flips the
-  // SESSION visibility only - the persisted overlayEnabled NEVER flips
-  // (the Overlay-page General toggle is its only writer; a reboot shows
-  // the overlay again when it is enabled).
+  // SESSION visibility only - the persisted overlayEnabled NEVER flips.
+  // M24: the overlay starts HIDDEN on boot; the first toggle SHOWS it,
+  // the second hides it again.
   const s1 = await js(`window.arcPower.overlayToggle()`);
-  if (s1.visible) fail('M5: overlay:toggle did not HIDE the visible overlay');
+  if (!s1.visible) fail('M5: overlay:toggle did not SHOW the hidden overlay');
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
     fail('M7b: the shortcut press must NOT write overlayEnabled (still true - the hotkey never persists)');
   }
   const s2 = await js(`window.arcPower.overlayToggle()`);
-  if (!s2.visible) fail('M5: overlay:toggle did not SHOW the overlay again');
+  if (s2.visible) fail('M5: overlay:toggle did not HIDE the visible overlay');
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayEnabled === true)`, 5000))) {
     fail('M7b: the second shortcut press must NOT write overlayEnabled either (still true)');
   }
-  step('m5-toggle', 'M7b: the shortcut (overlay:toggle) flipped visible -> hidden -> visible while the persisted overlayEnabled stayed true - the hotkey NEVER writes the master');
+  step('m5-toggle', 'M7b: the shortcut (overlay:toggle) flipped hidden -> visible -> hidden while the persisted overlayEnabled stayed true - the hotkey NEVER writes the master');
 
   // (e) the hotkey probe registered 'Control+O' (the boot registration -
   // never a real globalShortcut) + the live hotkeyRegistered flag reads
@@ -8319,35 +8320,36 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   const lastApplyPayload = () => (applyPayloads.length > 0 ? applyPayloads[applyPayloads.length - 1] : null);
 
-  // (1) the seeded session: exists + SHOWN (advancedOverlayEnabled:true
-  // seeded by main.js - the RID_MOCK_OVERLAY parity) + the probe registered
+  // (1) the seeded session: exists but HIDDEN on boot (M24 user directive:
+  // overlays only appear when the shortcut is pressed). The probe registered
   // 'Control+P' + hotkeyRegistered true + the seeded position 'right'.
   const s0 = await js(`window.arcPower.advancedOverlayGetState()`);
   if (!s0.exists) fail('M23: advanced-overlay:get-state reports exists:false in the advanced-overlay variant');
-  if (!s0.visible) fail('M23: the seeded advancedOverlayEnabled:true session must boot with the panel SHOWN (get-state visible:false)');
+  if (s0.visible) fail('M23: the panel must NOT show on boot (M24 user directive - visible:true)');
   if (s0.position !== 'right') fail(`M23: the seeded advanced-overlay position is '${s0.position}' (expected 'right')`);
   if (s0.enabled !== true) fail(`M23: the seeded advancedOverlayEnabled:true did not reach the panel handle (get-state enabled:${s0.enabled})`);
   if (s0.hotkeyRegistered !== true) fail(`M23: the boot hotkey registration did not land (hotkeyRegistered ${s0.hotkeyRegistered}, probe ${JSON.stringify(hotkeyProbe.registrations)})`);
   if (!hotkeyProbe.registrations.includes('Control+P')) {
     fail(`M23: the hotkey probe never registered 'Control+P' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
-  step('m23-get-state', `advanced-overlay:get-state -> exists + SHOWN boot (position '${s0.position}', enabled ${s0.enabled}, bounds ${JSON.stringify(s0.bounds)}); the counting probe registered ${JSON.stringify(hotkeyProbe.registrations)}; hotkeyRegistered true`);
+  step('m23-get-state', `advanced-overlay:get-state -> exists + hidden-on-boot (position '${s0.position}', enabled ${s0.enabled}); the counting probe registered ${JSON.stringify(hotkeyProbe.registrations)}; hotkeyRegistered true`);
 
-  // (2) the toggle semantics (M7b fix-5): the shortcut
+  // (2) the toggle semantics (M7b fix-5) + M24: the shortcut
   // ('advanced-overlay:toggle') with the master ON flips the SESSION
   // visibility only - the persisted advancedOverlayEnabled NEVER flips from
-  // the hotkey (the Overlay view's Advanced card is its only writer).
+  // the hotkey. M24: the panel starts HIDDEN on boot; the first toggle
+  // SHOWS it, the second hides it again.
   const t1 = await js(`window.arcPower.advancedOverlayToggle()`);
-  if (t1.visible) fail('M23: advanced-overlay:toggle did not HIDE the visible panel');
+  if (!t1.visible) fail('M23: advanced-overlay:toggle did not SHOW the hidden panel');
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === true)`, 5000))) {
     fail('M23 (M7b): the shortcut press must NOT write advancedOverlayEnabled (still true - the hotkey never persists)');
   }
   const t2 = await js(`window.arcPower.advancedOverlayToggle()`);
-  if (!t2.visible) fail('M23: advanced-overlay:toggle did not SHOW the panel again');
+  if (t2.visible) fail('M23: advanced-overlay:toggle did not HIDE the visible panel');
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayEnabled === true)`, 5000))) {
     fail('M23 (M7b): the second shortcut press must NOT write advancedOverlayEnabled either (still true)');
   }
-  step('m23-toggle', 'M23 (M7b): the shortcut (advanced-overlay:toggle) flipped visible -> hidden -> visible while the persisted advancedOverlayEnabled stayed true - the hotkey NEVER writes the master');
+  step('m23-toggle', 'M23 (M7b): the shortcut (advanced-overlay:toggle) flipped hidden -> visible -> hidden while the persisted advancedOverlayEnabled stayed true - the hotkey NEVER writes the master');
 
   // (2a) M23 (step-4 S1): the panel's custom close button is a SESSION
   // hide - click #adv-close (in the PANEL window's DOM - ojs, not js):
