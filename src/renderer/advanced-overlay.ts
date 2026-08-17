@@ -456,7 +456,7 @@ async function renderTuning(): Promise<void> {
 
   stack.append(
     el('p', { class: 'adv-view-title', text: 'Tuning' }),
-    ...controls.map(buildCard),
+    ...controls.filter((k) => k !== 'powerLimitW').map(buildCard),
     buildPlCard(),
     tuningApplyBtn as HTMLElement,
   );

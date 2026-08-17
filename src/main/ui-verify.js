@@ -8350,6 +8350,10 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   for (const want of ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'tempLimitC', 'powerLimitW']) {
     if (!tuningList.includes(want)) fail(`M23: the Tuning tab is missing the ${want} card (got ${tuningCards})`);
   }
+  // M23 (user): exactly ONE powerLimitW card - the duplicate (the PL card
+  // riding BOTH the controls map and the dedicated buildPlCard) is gone.
+  const plCount = tuningList.filter((k) => k === 'powerLimitW').length;
+  if (plCount !== 1) fail(`M23: the Tuning tab has ${plCount} powerLimitW cards (got ${tuningCards} - must be exactly one; the duplicate-at-the-top fix)`);
   if (tuningList.includes('vramFreqOffsetGts') || tuningList.includes('vramVoltOffsetV')) {
     fail(`M23: the a770 Tuning tab must NOT render VRAM-offset cards (the mock has no VRAM ranges - got ${tuningCards})`);
   }
