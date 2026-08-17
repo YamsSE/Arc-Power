@@ -8363,6 +8363,64 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (await ojs(`!!document.querySelector('input[data-lock-field="voltageV"]') || !!document.querySelector('input[data-lock-field="freqMhz"]') || !!document.querySelector('[data-lock-apply="1"]')`)) {
     fail('M23 (user): the gpuLock editor must NOT render in the panel Tuning tab (it is gone from the overlay - the main window\'s Tuning page keeps the M22-safe editor)');
   }
+  // M23 (user): the panel height is sized to the A770 Tuning tab (the 4
+  // scalar cards + the footer) so it fits WITHOUT a scrollbar; MORE than 4
+  // cards MAY scroll. The assertion runs in the REAL harness (the mock
+  // backend wired - the bare-window probes measured an empty panel and
+  // scrollH == clientH was vacuous). Log the heights for sizing + assert no
+  // overflow on the a770's 4-card set.
+  const tuneFit = await ojs(`(() => {
+    const c = document.getElementById('adv-content');
+    const footer = document.querySelector('.adv-footer');
+    const header = document.querySelector('.adv-header');
+    const tabs = document.querySelector('.adv-tabs');
+    // The TRUE content height: the stack's bounding rect (the flex child
+    // stretches to fill, so the container scrollHeight is useless).
+    const stack = document.querySelector('.adv-view .card-stack, .adv-view > *');
+    const sr = stack ? stack.getBoundingClientRect() : null;
+    return {
+      contentClientH: c.clientHeight,
+      stackBottom: sr ? Math.round(sr.bottom - c.getBoundingClientRect().top) : 0,
+      stackH: sr ? Math.round(sr.height) : 0,
+      headerH: header ? Math.round(header.getBoundingClientRect().height) : 0,
+      tabsH: tabs ? Math.round(tabs.getBoundingClientRect().height) : 0,
+      footerH: footer ? Math.round(footer.getBoundingClientRect().height) : 0,
+      cardCount: document.querySelectorAll('.adv-view .oc-card').length,
+    };
+  })()`);
+  console.log(`[ui-verify] M23 sizing: header ${tuneFit.headerH}px tabs ${tuneFit.tabsH}px footer ${tuneFit.footerH}px; stack bottom ${tuneFit.stackBottom}px (${tuneFit.cardCount} cards)`);
+  if (tuneFit.stackBottom > tuneFit.contentClientH + 1) {
+    fail(`M23 (user): the A770 Tuning tab (4 cards) must fit WITHOUT a scrollbar (stack bottom ${tuneFit.stackBottom}px > content client ${tuneFit.contentClientH}px)`);
+  }
+  // Dev-only visual capture (RID_MOCK_ADV_SHOT=1): save the REAL rendered
+  // panel (mock wired - the bare-window probes showed an empty panel) so the
+  // user can inspect the actual look. NOT part of the verify flow.
+  if (process.env.RID_MOCK_ADV_SHOT === '1') {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const pathMod = await import('node:path');
+    const dir = pathMod.join(os.tmpdir(), 'adv-shots');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best effort */ }
+    const shot = async (tab, name) => {
+      await ojs(`document.querySelector('.adv-tab[data-tab="${tab}"]').click()`);
+      await sleep(600);
+      try {
+        const img = await panelWin.webContents.capturePage();
+        fs.writeFileSync(pathMod.join(dir, name), img.toPNG());
+        console.log(`[ui-verify] saved ${pathMod.join(dir, name)}`);
+      } catch (err) {
+        console.log(`[ui-verify] capture failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    await shot('tuning', 'adv-tuning.png');
+    await shot('fan', 'adv-fan.png');
+    await shot('graphics', 'adv-graphics.png');
+    // The captures left the panel on the Graphics tab - restore Tuning so
+    // the following pins (the offset apply round trip) find their cards.
+    await ojs(`document.querySelector('.adv-tab[data-tab="tuning"]').click()`);
+    await sleep(300);
+  }
+
   step('m23-tuning-render', `M23: the Tuning tab renders the scalar slider cards ${JSON.stringify(tuningList.filter((k) => k !== 'powerLimitW'))} + the editable power-limit card, and NO gpuLock editor (the user's directive - the main window's Tuning page keeps it)`);
 
   // (3a) a FIXED offset apply round trip lands (perControl ok + readBackEqual)

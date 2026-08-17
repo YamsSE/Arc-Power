@@ -202,7 +202,6 @@ let values: Record<string, number> = {};
 let applied: Record<string, number> = {};
 let applying = false;
 let tuningApplyBtn: HTMLButtonElement | null = null;
-let plReadoutLine: HTMLElement | null = null;
 
 async function renderTuning(): Promise<void> {
   const s = store.get();
@@ -224,7 +223,6 @@ async function renderTuning(): Promise<void> {
   values = {};
   applied = {};
   applying = false;
-  plReadoutLine = null;
 
   // The mutable current state (the main Tuning page's pattern): every apply
   // refreshes it from the envelope so the driver readouts + the chips never
@@ -321,29 +319,9 @@ async function renderTuning(): Promise<void> {
   // The power-limit card: a REAL slider card (editable - the user's PL rule
   // was about the M22 FIX never touching HOW PL is applied, not about hiding
   // PL from the panel; the main Tuning page's PL slider is a real applyable
-  // control, so the panel mirrors it) + the PL1/PL2 sysman readout line.
-  const buildPlCard = (): HTMLElement => {
-    const card = buildCard('powerLimitW');
-    const meta = card.querySelector('.oc-meta');
-    plReadoutLine = el('span', { class: 'oc-sysman-limits', text: 'PL1 - / PL2 -' });
-    if (meta) meta.append(plReadoutLine);
-    void refreshPlReadout();
-    return card;
-  };
-
-  const refreshPlReadout = async (): Promise<void> => {
-    if (!plReadoutLine || s.deviceId === null) return;
-    let limits = null;
-    try {
-      limits = await api.powerLimitsRead(s.deviceId);
-    } catch {
-      limits = null;
-    }
-    if (limits && typeof limits.sustainedW === 'number') {
-      const b = typeof limits.burstW === 'number' ? Math.round(limits.burstW) : '-';
-      plReadoutLine.textContent = `PL1 ${Math.round(limits.sustainedW)} W / PL2 ${b} W`;
-    }
-  };
+  // control, so the panel mirrors it). M23 (user): NO PL1/PL2 sysman readout
+  // line - the panel PL card stays as simple as the other slider cards.
+  const buildPlCard = (): HTMLElement => buildCard('powerLimitW');
 
   // M23 (user): the Fixed Clock / Voltage Lock editor is NOT part of the
   // overlay's Tuning tab - a gpuLock change risks the driver's lock-mode
