@@ -98,7 +98,9 @@ Architecture notes and the IGCL integration write-up (struct mappings, capabilit
 - [x] 1.0.x feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics + display tuning)
 - [x] Published releases on GitHub
 - [ ] Battlemage enablement (live verification on B580 / B570)
-- [ ] Advanced Overlay (the AMD-Adrenaline-style interactive side panel - tuning / fan / graphics, CTRL+P)
+- [x] Advanced Overlay (the AMD-Adrenaline-style interactive side panel - tuning / fan / graphics, CTRL+P)
+- [x] Arc overlay theme (the glass-harness HUD theme, switchable via Overlay Settings)
+- [x] Cross-window settings sync (advanced-overlay applies refresh the main window pages in place)
 
 ## Disclaimer
 
