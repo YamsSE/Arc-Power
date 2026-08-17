@@ -46,9 +46,18 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** The panel's fixed compact size (CSS px - NO scale key, the panel is a
- *  control surface, not a HUD). */
+ *  control surface, not a HUD). M23 (user): the height was 640 - the Tuning
+ *  tab (the 4 scalar cards: 3 offsets + the PL card + the floating Apply)
+ *  sat exactly flush against the scroll boundary (the fit probe measured
+ *  scrollH == clientH == 484 at 640), so ANY rendering difference on the
+ *  real card tipped it into a scrollbar; 720 was STILL flush (564 == 564),
+ *  so the base is 760 - a real ~100px headroom margin under the tallest
+ *  tab, no scrollbar even if the real render runs a few px taller (the
+ *  geometry still clamps to the display height). Alchemist cards (incl.
+ *  the A770) have NO VRAM offsets - the card set is the four scalar cards,
+ *  never six. */
 const PANEL_WIDTH = 360;
-const PANEL_HEIGHT = 640;
+const PANEL_HEIGHT = 760;
 /** The margin from the anchored display edge. */
 const PANEL_MARGIN = 8;
 
