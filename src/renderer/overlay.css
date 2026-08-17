@@ -64,7 +64,7 @@ body {
    outline, the 1px line does not). */
 #overlay-divider {
   position: absolute;
-  width: 1px;
+  width: 2px;
   background: var(--overlay-color, #ffffff);
   z-index: 0;
   font-family: Consolas, 'Courier New', monospace;

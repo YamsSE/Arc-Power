@@ -110,22 +110,24 @@ api.onTelemetrySample((sample) => {
 });
 
 // The post-apply device read-back push (the tray/profile apply path).
+// M24 (fix): the panel's own apply already handles state updates via
+// renderTuningInPlace - a full re-render from the push causes a race
+// (the push arrives before applied[] is set, so the rebuilt chips show
+// 'dirty' instead of 'applied'). Just update the store; the next tab
+// switch or explicit render picks up the fresh state.
 api.onStateUpdated((payload) => {
   if (payload && payload.state) {
     store.set({ state: payload.state });
-    if (activeTab === 'tuning') renderTuning();
   }
 });
 
 // M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
-// onStateUpdated for the graphics surface). On a matching deviceId push,
-// update the panel's graphicsState + re-render the graphics tab.
+// onStateUpdated for the graphics surface). M24 (fix): same race as the
+// tuning handler - the panel's own graphics apply already handles state
+// updates; just update the store.
 api.onGraphicsStateUpdated((payload) => {
   if (payload && payload.deviceId === store.get().deviceId) {
     graphicsState = payload.graphicsState;
-    if (activeTab === 'graphics') {
-      void renderGraphics();
-    }
   }
 });
 
@@ -185,7 +187,15 @@ function renderTab(): void {
     t.setAttribute('aria-selected', String(on));
   }
   clear(contentEl);
-  if (activeTab === 'tuning') void renderTuning();
+  if (activeTab === 'tuning') {
+    // M24 (fix): reset the tuning state ONLY on tab switch (not on
+    // onStateUpdated push re-renders, which call renderTuning directly).
+    values = {};
+    applied = {};
+    applying = false;
+    tuningApplyBtn = null;
+    void renderTuning();
+  }
   else if (activeTab === 'fan') renderFan();
   else void renderGraphics();
 }
@@ -216,6 +226,7 @@ let applying = false;
 let tuningApplyBtn: HTMLButtonElement | null = null;
 
 async function renderTuning(): Promise<void> {
+  clear(contentEl);
   const s = store.get();
   const caps = s.caps;
   const state = s.state;
@@ -231,10 +242,6 @@ async function renderTuning(): Promise<void> {
     contentEl.append(view);
     return;
   }
-
-  values = {};
-  applied = {};
-  applying = false;
 
   // The mutable current state (the main Tuning page's pattern): every apply
   // refreshes it from the envelope so the driver readouts + the chips never
@@ -391,14 +398,23 @@ async function renderTuning(): Promise<void> {
     setBusy(true);
     try {
       const { result, state: fresh } = await api.applySettings(deviceId, settings);
+      // M24 (fix): set the applied reference BEFORE store.set - the M24
+      // sync push fires onStateUpdated → renderTuning() which clears +
+      // rebuilds the DOM; if applied is not yet set, the rebuilt chips
+      // show 'dirty' instead of 'applied'. Setting applied first ensures
+      // the re-render picks up the correct chip state.
+      for (const [key, per] of Object.entries(result.perControl)) {
+        if (per.ok) {
+          const wanted = (settings as Record<string, unknown>)[key];
+          if (typeof wanted === 'number') applied[key] = wanted;
+        }
+      }
       if (fresh) {
         currentState = fresh;
         store.set({ state: fresh });
       }
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) {
-          const wanted = (settings as Record<string, unknown>)[key];
-          if (typeof wanted === 'number') applied[key] = wanted;
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
         } else {
           // M22: the apply-while-locked refusal (the driver's locked-mode
@@ -468,6 +484,7 @@ async function renderTuning(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function renderFan(): void {
+  clear(contentEl);
   const view = el('div', { class: 'adv-view fan-view' });
   view.append(el('p', { class: 'adv-view-title', text: 'Fan' }));
   contentEl.append(view);
@@ -494,6 +511,7 @@ let graphicsApplyBtn: HTMLButtonElement | null = null;
 const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
 
 async function renderGraphics(): Promise<void> {
+  clear(contentEl);
   const s = store.get();
   const view = el('div', { class: 'adv-view graphics-view' });
   if (s.deviceId === null) {

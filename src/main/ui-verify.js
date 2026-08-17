@@ -7335,7 +7335,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
       ok: Math.abs(x - expectedX) < 1.5
         && Math.abs(d.top - fps.top) < 1
         && Math.abs(d.bottom - api.bottom) < 1
-        && cs.width === '1px'
+        && cs.width === '2px'
         && cs.backgroundColor === 'rgb(255, 255, 255)'
         && cs.zIndex === '0'
         && cs.textShadow === 'none'
@@ -7346,7 +7346,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!dividerPins.ok) {
     fail(`M18: the overlay header divider pins failed (${dividerPins.why})`);
   }
-  step('m18-divider', `M18/M19b: the header divider exists behind the six labeled rows - ${dividerPins.why} (the independently-derived x; spans the fps->api block; 1px, the overlay color, z-index 0, no text-shadow)`);
+  step('m18-divider', `M18/M19b: the header divider exists behind the six labeled rows - ${dividerPins.why} (the independently-derived x; spans the fps->api block; 2px, the overlay color, z-index 0, no text-shadow)`);
 
   // (m19-divider-alignment) M19/M19b: the divider ALIGNMENT - the ONE rule
   // (`label.padEnd(maxLabelLen) + '  ' + fields` - the TWO-space separator)
