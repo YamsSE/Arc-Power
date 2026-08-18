@@ -72,6 +72,12 @@ export const A770_PCI_DEVICE_ID = '0x000056a0';
 /** The Arc A750 PCI device id (verified from pci-ids.ucw.cz/read/PC/8086:
  *  'DG2 [Arc A750]'). */
 export const A750_PCI_DEVICE_ID = '0x000056a1';
+/** The Arc A380 PCI device id (verified from pci-ids.ucw.cz/read/PC/8086:
+ *  'DG2 [Arc A380]'). */
+export const A380_PCI_DEVICE_ID = '0x000056a5';
+/** The Arc A310 PCI device id (verified from pci-ids.ucw.cz/read/PC/8086:
+ *  'DG2 [Arc A310]'). */
+export const A310_PCI_DEVICE_ID = '0x000056a6';
 
 /** A per-control override - the exposed max (+ optionally the step). A row
  *  may carry only a subset of the controls; `max` is present on the
@@ -223,6 +229,36 @@ function a770PlMaxOf(input: DeviceLimitsInput): number | undefined {
     : undefined;
 }
 
+/** The Arc A380 (pciDeviceId 0x56A5) STOCK shape:
+ *  - PL 66: user-reported (IGS spec for A380); Gunnir SKUs can do 92 W
+ *    but the generic stock ceiling is 66 W. The driver-reported max may
+ *    be lower (~55 W) - this row overrides it so the slider exposes the
+ *    IGS-spec ceiling;
+ *  - TL 90: shared Alchemist TL ceiling (oc-corner). */
+const A380_ROW_STOCK: DeviceLimits = {
+  listed: true,
+  powerLimitW: { max: 66 },
+  tempLimitC: { max: 90 },
+};
+
+/** The Arc A380 ADVANCED shape: PL 225 W (user-specified ceiling for the
+ *  A380 in advanced mode) + the Alchemist TL ceiling 90 C (no evidence
+ *  of a higher KMD ceiling on the A380). */
+const A380_ROW_ADVANCED: DeviceLimits = {
+  listed: true,
+  powerLimitW: { max: 225 },
+  tempLimitC: { max: 90 },
+};
+
+/** The Arc A310 (pciDeviceId 0x56A6) STOCK + ADVANCED shape:
+ *  - PL 75: user-specified ceiling (the A310's documented max);
+ *  - TL 90: shared Alchemist TL ceiling. */
+const A310_ROW: DeviceLimits = {
+  listed: true,
+  powerLimitW: { max: 75 },
+  tempLimitC: { max: 90 },
+};
+
 /** The listed rows keyed on the PCI device id (the canonical '0x0000xxxx'
  *  caps/DeviceInfo rendering). Each factory returns the requested shape:
  *  the STOCK row (with the per-AIB PL ceilings) or the ADVANCED row (the
@@ -250,6 +286,14 @@ const LISTED_ROWS: Record<string, (input: DeviceLimitsInput, advanced: boolean) 
       ...(pl !== undefined ? { powerLimitW: { max: pl } } : {}),
     };
   },
+  // The A380: 0x56A5 (pci-ids-verified). Stock 66 W / advanced 225 W
+  // (user-specified ceilings - the driver may report a lower max ~55 W;
+  // IGS sets 66 W; the row overrides so the slider exposes the IGS-spec
+  // ceiling). TL 90 C (shared Alchemist ceiling).
+  [A380_PCI_DEVICE_ID]: (_input, advanced) => advanced ? A380_ROW_ADVANCED : A380_ROW_STOCK,
+  // The A310: 0x56A6 (pci-ids-verified). PL 75 W for both shapes
+  // (user-specified ceiling). TL 90 C.
+  [A310_PCI_DEVICE_ID]: () => A310_ROW,
 };
 
 /**

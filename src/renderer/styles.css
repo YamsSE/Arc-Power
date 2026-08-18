@@ -193,6 +193,58 @@ html, body {
   flex-shrink: 0;
 }
 
+/* M25: the version text next to the corner icon in the titlebar-left. */
+.titlebar-version {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  margin-left: 6px;
+  -webkit-app-region: drag;
+}
+
+/* M25: the update check/download/install button next to the version. */
+.titlebar-update-btn {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.titlebar-update-btn:hover {
+  background: var(--bg-inset);
+  color: var(--text);
+}
+.titlebar-update-btn.update-available {
+  color: var(--accent);
+}
+.titlebar-update-btn.update-available:hover {
+  background: var(--accent-soft);
+}
+.titlebar-update-btn.update-downloading {
+  color: var(--accent);
+}
+.titlebar-update-btn.update-error {
+  color: var(--danger);
+}
+.titlebar-update-btn.update-spinning svg {
+  animation: update-spin 1s linear infinite;
+}
+@keyframes update-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .titlebar-drag {
   flex: 1;
   min-width: 0;
@@ -1922,22 +1974,39 @@ select {
    letter/position/scale controls KEEP the Settings-card class names
    (.settings-hotkey-input etc. - the ui-verify selectors survived the
    move). */
+/* M25: compact overlay settings - tighter gaps, smaller padding. */
 .overlay-settings-root {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
   max-width: 680px;
 }
+.overlay-settings-root .settings-card { padding: 10px 14px; }
+.overlay-settings-root .card-title { font-size: 13px; margin-bottom: 2px; }
+
+/* M25: Select All / Hide All buttons row above the stat grid. */
+.overlay-stat-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.overlay-stat-actions .btn { font-size: 11px; padding: 2px 8px; }
 
 /* The Stats card - one tickbox row per stat id (data-stat-id), two
-   columns on wide cards. */
+   columns on wide cards. M25: more compact. */
 .overlay-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 16px;
-  margin-top: 10px;
+  gap: 3px 14px;
 }
-.overlay-stat-toggle { padding: 4px 2px; }
+.overlay-stat-toggle { padding: 2px 0; font-size: 12px; }
+
+/* M25: the hotkey divider between HUD and Panel sections. */
+.overlay-hotkey-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 6px 0;
+}
 
 /* The Appearance card - the color swatches (the theme-option pattern:
    button[data-color-option="#..."]; the chips are CLASS-driven solid

@@ -1639,6 +1639,32 @@ export function createIpcHandlers({
         return { elevated, workerApply: applyRunner?.needsWorker?.() === true };
       },
 
+      // M25: auto-update check (GitHub Releases). Returns { available,
+      // version, assetUrl, assetName } or { available: false }.
+      'update:check': async (...args) => {
+        assertNoPayload(args, 'update:check');
+        const { checkForUpdates } = await import('./auto-update.js');
+        return checkForUpdates();
+      },
+
+      // M25: download an update asset to temp. Returns { ok, path } or
+      // throws on failure. The renderer sends the assetUrl from the check.
+      'update:download': async (assetUrl) => {
+        if (typeof assetUrl !== 'string' || !assetUrl.startsWith('https://')) {
+          throw new Error('invalid asset URL');
+        }
+        const { downloadUpdate } = await import('./auto-update.js');
+        const filePath = await downloadUpdate(assetUrl);
+        return { ok: true, path: filePath };
+      },
+
+      // M25: install a downloaded update and quit the app.
+      'update:install': async (filePath) => {
+        if (typeof filePath !== 'string') throw new Error('missing file path');
+        const { installUpdate } = await import('./auto-update.js');
+        await installUpdate(filePath);
+      },
+
       // FPS via DXGI GetFrameStatistics (M4-D2 - replaced PresentMon). The
       // default adapter is the mock (always null); the product path injects
       // the real DXGI adapter, which itself degrades to null when DXGI is

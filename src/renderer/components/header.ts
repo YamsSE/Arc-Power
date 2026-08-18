@@ -105,9 +105,12 @@ export class GpuHeader {
     const gpuName = s.noIntel
       ? (s.osGpu?.name ?? (s.sysinfo?.videoControllers?.length ? '-' : 'No GPU detected'))
       : device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power');
+    // M25: the standalone "Arc Power Ver." tag is REMOVED - the version
+    // now lives in the titlebar-left next to the corner icon. The gpu-meta
+    // shows the boot error when present, otherwise empty.
     const gpuMeta = s.noIntel
       ? 'Non supported GPU'
-      : s.bootError ?? displayVersion(s.appVersion);
+      : s.bootError ?? '';
     clear(this.mount);
     this.mount.append(
       el('div', { class: 'gpu-header' }, [

@@ -64,14 +64,11 @@ import type { OverlayPosition, OverlayState, AdvancedOverlayState } from '../typ
 // Monitoring page, this module renders the sub-view content). The
 // sub-view carries its own heading ("Overlay Settings" stays - the
 // ui-verify pins the title text).
+// M25: the "Overlay Settings" heading + subtitle are REMOVED - the
+// Monitoring page's own title + subtitle now serve as the description.
 export function renderOverlaySettings(container: HTMLElement, ctx: PageContext): void {
   clear(container);
   container.append(
-    el('h2', { class: 'overlay-settings-title', text: 'Overlay Settings' }),
-    el('p', {
-      class: 'page-subtitle',
-      text: 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.',
-    }),
     el('div', { id: 'overlay-settings-root', class: 'overlay-settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
   );
   void mount(ctx, container);
@@ -188,7 +185,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // are KEPT so the ui-verify toggle pins moved with the control.
     const generalCard = el('section', { class: 'card settings-card overlay-general-card' }, [
       el('h2', { class: 'card-title', text: 'General' }),
-      el('p', { class: 'card-note', text: 'Shows the overlay over games.' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
           el('input', {
@@ -213,7 +209,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.chipNames,
             onchange: (ev: Event) => void onChipNamesToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Use chip names (A770, i7 5775C) instead of the CPU / GPU labels' }),
+          el('span', { text: 'Use chip names instead of the CPU / GPU labels' }),
         ]),
       ]),
       // M17e (the user addition - "current 500 ms is a bit slow" - M17g:
@@ -246,9 +242,37 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // --- Stats card: one tickbox per stat id (data-stat-id; the persisted
     // overlayStats round-trips through profiles-settings-save). The
     // frametime id is NOT a line - it drives the canvas strip visibility.
+    // M25: Select All / Hide All buttons + compact stat grid sorted by
+    // category (CPU / RAM / GPU / VRAM / FPS / API).
+    const onSelectAll = async (): Promise<void> => {
+      const all = [...OVERLAY_STAT_IDS];
+      if (all.join(',') === persisted.stats.join(',')) return;
+      try {
+        await api.profilesSettingsSave({ overlayStats: all });
+        persisted.stats = all;
+        render();
+        toast('success', 'All stats shown', '');
+      } catch (err) {
+        toast('error', 'Overlay stats could not be changed', err instanceof Error ? err.message : String(err));
+      }
+    };
+    const onHideAll = async (): Promise<void> => {
+      if (persisted.stats.length === 0) return;
+      try {
+        await api.profilesSettingsSave({ overlayStats: [] });
+        persisted.stats = [];
+        render();
+        toast('info', 'All stats hidden', '');
+      } catch (err) {
+        toast('error', 'Overlay stats could not be changed', err instanceof Error ? err.message : String(err));
+      }
+    };
     const statsCard = el('section', { class: 'card settings-card overlay-stats-card' }, [
       el('h2', { class: 'card-title', text: 'Stats' }),
-      el('p', { class: 'card-note', text: 'Pick the readouts. Uncheck all of a line to hide it.' }),
+      el('div', { class: 'overlay-stat-actions' }, [
+        el('button', { class: 'btn btn-sm btn-ghost', text: 'Select all', onClick: () => void onSelectAll() }),
+        el('button', { class: 'btn btn-sm btn-ghost', text: 'Hide all', onClick: () => void onHideAll() }),
+      ]),
       el('div', { class: 'overlay-stat-grid' }, OVERLAY_STAT_IDS.map((id) =>
         el('label', { class: 'boot-toggle overlay-stat-toggle' }, [
           el('input', {
@@ -341,8 +365,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     positionSelect.value = persisted.position;
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('h2', { class: 'card-title', text: 'Appearance' }),
-      // M24: the note gains the theme sentence - the card owns the look.
-      el('p', { class: 'card-note', text: 'Color, size and corner position. Arc is the Arc Power look; Classic is the original HUD.' }),
       el('div', { class: 'settings-row overlay-theme-row' }, [
         el('span', { class: 'settings-row-label', text: 'Theme' }),
         el('div', { class: 'chips overlay-theme-options' }, themeOptions),
@@ -377,49 +399,52 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('span', { class: 'settings-row-label', text: 'Position' }),
         positionSelect,
       ]),
-      // M7b (fix 4): the Background section - a translucent box behind the
-      // HUD (the Appearance-card addition).
-      el('div', { class: 'settings-row overlay-bg-row' }, [
-        el('label', { class: 'boot-toggle' }, [
+      // M7b (fix 4) / M25: the Background section - hidden when the Arc
+      // theme is selected (Arc has its own built-in chrome; background box
+      // is a Classic-only option).
+      ...(persisted.theme === 'classic' ? [
+        el('div', { class: 'settings-row overlay-bg-row' }, [
+          el('label', { class: 'boot-toggle' }, [
+            el('input', {
+              type: 'checkbox',
+              class: 'settings-checkbox',
+              dataset: { setting: 'overlayBgEnabled' },
+              checked: persisted.bgEnabled,
+              onchange: (ev: Event) => void onBgEnabledToggle((ev.target as HTMLInputElement).checked),
+            }),
+            el('span', { text: 'Show a background box' }),
+          ]),
+        ]),
+        el('div', { class: 'overlay-bg-options' }, [
+          ...bgColorOptions,
+          el('label', { class: 'overlay-custom-color' }, [
+            el('span', { class: 'settings-row-label', text: 'Custom' }),
+            customBgColor,
+          ]),
+        ]),
+        el('div', { class: 'settings-row overlay-bg-row' }, [
+          el('span', { class: 'settings-row-label', text: 'Opacity' }),
           el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox',
-            dataset: { setting: 'overlayBgEnabled' },
-            checked: persisted.bgEnabled,
-            onchange: (ev: Event) => void onBgEnabledToggle((ev.target as HTMLInputElement).checked),
+            type: 'range',
+            class: 'settings-bg-opacity-slider',
+            min: 0,
+            max: 100,
+            step: 1,
+            value: String(Math.round(persisted.bgOpacity * 100)),
+            oninput: (ev: Event) => {
+              const v = Number((ev.target as HTMLInputElement).value);
+              bgOpacityValue.textContent = `${v}%`;
+            },
+            onchange: (ev: Event) => void onBgOpacityChange(Number((ev.target as HTMLInputElement).value)),
           }),
-          el('span', { text: 'Show a background box' }),
+          bgOpacityValue,
         ]),
-      ]),
-      el('div', { class: 'overlay-bg-options' }, [
-        ...bgColorOptions,
-        el('label', { class: 'overlay-custom-color' }, [
-          el('span', { class: 'settings-row-label', text: 'Custom' }),
-          customBgColor,
-        ]),
-      ]),
-      el('div', { class: 'settings-row overlay-bg-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Opacity' }),
-        el('input', {
-          type: 'range',
-          class: 'settings-bg-opacity-slider',
-          min: 0,
-          max: 100,
-          step: 1,
-          value: String(Math.round(persisted.bgOpacity * 100)),
-          oninput: (ev: Event) => {
-            const v = Number((ev.target as HTMLInputElement).value);
-            bgOpacityValue.textContent = `${v}%`;
-          },
-          onchange: (ev: Event) => void onBgOpacityChange(Number((ev.target as HTMLInputElement).value)),
-        }),
-        bgOpacityValue,
-      ]),
+      ] : []),
     ]);
 
-    // --- Hotkey card: the letter input (CTRL + FIXED - the rule:
-    // the letter is the ONLY changeable part) + the honest
-    // register-failure note (the get-state re-query on every render).
+    // M25: the Hotkey + Advanced cards are MERGED into a single "Hotkey"
+    // card. The overlay hotkey (CTRL + letter) and the advanced overlay
+    // hotkey (CTRL + letter) + edge select live in one compact card.
     const hotkeyInput = el('input', {
       type: 'text',
       class: 'settings-hotkey-input',
@@ -433,28 +458,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       },
       onchange: (ev: Event) => void onHotkeyLetterChange((ev.target as HTMLInputElement).value),
     });
-    const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
-      el('h2', { class: 'card-title', text: 'Hotkey' }),
-      el('p', { class: 'card-note', text: `The overlay toggles with CTRL + <letter> anywhere - the letter is the only changeable part.` }),
-      el('div', { class: 'settings-row overlay-hotkey-row' }, [
-        el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
-        hotkeyInput,
-      ]),
-      overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
-        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it. The Show-the-overlay toggle above still works.` })
-        : null,
-    ]);
-
-    // --- Advanced card (M23): the ADVANCED overlay - the interactive
-    // AMD-Adrenaline-style side panel (CONTROL + <letter>, stock P). The
-    // same M5 card pattern: the enable toggle, the hotkey letter input
-    // (CTRL + fixed), the position select (left|right - the anchored
-    // display edge). The COLLISION RULE: the letter must differ from the
-    // HUD hotkey letter - both cards refuse the same-letter save with a
-    // toast (the envelope is the STRUCTURAL guard - ipc-core rejects the
-    // colliding patch). The honest register-failure note rides the
-    // advanced-overlay get-state re-query (live-derived from the second
-    // hotkey seam).
     const advancedHotkeyInput = el('input', {
       type: 'text',
       class: 'settings-hotkey-input settings-advanced-hotkey-input',
@@ -473,9 +476,17 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       onchange: (ev: Event) => void onAdvancedPositionChange((ev.target as HTMLSelectElement).value),
     }, ADVANCED_OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: ADVANCED_OVERLAY_POSITION_LABELS[p] })));
     advancedPositionSelect.value = persisted.advPosition;
-    const advancedCard = el('section', { class: 'card settings-card overlay-advanced-card' }, [
-      el('h2', { class: 'card-title', text: 'Advanced (CTRL + P)' }),
-      el('p', { class: 'card-note', text: 'The interactive side panel with the Tuning / Fan / Graphics tabs. Control + <letter> toggles it; the letter must differ from the hotkey letter above.' }),
+    const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
+      el('h2', { class: 'card-title', text: 'Hotkey' }),
+      el('div', { class: 'settings-row overlay-hotkey-row' }, [
+        el('span', { class: 'settings-row-label', text: 'HUD' }),
+        el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
+        hotkeyInput,
+      ]),
+      overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
+        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
+        : null,
+      el('hr', { class: 'overlay-hotkey-divider' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
           el('input', {
@@ -485,11 +496,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.advEnabled,
             onchange: (ev: Event) => void onAdvancedEnabledToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Show the advanced overlay' }),
+          el('span', { text: 'Show the side panel' }),
         ]),
       ]),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
-        el('span', { class: 'overlay-hotkey-fixed', text: 'CONTROL +' }),
+        el('span', { class: 'settings-row-label', text: 'Panel' }),
+        el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         advancedHotkeyInput,
       ]),
       el('div', { class: 'settings-row overlay-advanced-position-row' }, [
@@ -497,37 +509,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         advancedPositionSelect,
       ]),
       advancedOverlayState && advancedOverlayState.exists && advancedOverlayState.hotkeyRegistered === false
-        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CONTROL + ${persisted.advHotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it. The toggle above still shows the panel.` })
+        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.advHotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
         : null,
     ]);
 
-    // The honest limitations + data sources (moved from the Settings card
-    // with the rest): the overlay is a standard topmost window - Windows
-    // does not expose overlay-plane (MPO) assignment to apps, and an
-    // exclusive-fullscreen game can cover it (tools like MSI Afterburner
-    // inject into games to avoid this; Arc Power does not).
-    const notesCard = el('section', { class: 'card settings-card overlay-notes-card' }, [
-      el('h2', { class: 'card-title', text: 'Notes' }),
-      el('p', { class: 'card-note overlay-note', text: 'A topmost window - exclusive-fullscreen games may cover it.' }),
-      // M17b (2d-1): the honest refresh-bound limit. The GFS-borderless
-      // probe (pipeline/live-fps-accuracy.mjs, 2026-08-11) proved
-      // GetFrameStatistics does NOT answer for a borderless-fullscreen
-      // window (14/14 NOT_CURRENTLY_AVAILABLE) - only EXCLUSIVE
-      // fullscreen. On windowed/borderless programs the reading is the
-      // per-display presented-frame count (the DWM duplication drain),
-      // which tracks the DISPLAY REFRESH RATE, not the game's render
-      // rate - and the displayed window is the last 400-600 ms (no 1 s-lagged
-      // average). Documented here so the limit is never silent.
-      // M17c (the ETW lane): the preferred source is now the per-process
-      // present stream (PresentMon ETW events - the game's own present
-      // rate); the DXGI desktop-presentation reading is the FALLBACK tier
-      // when the lane is inactive (no foreground program / the sidecar is
-      // unavailable, e.g. the unelevated dev run).
-      el('p', { class: 'card-note overlay-note', text: 'FPS from the foreground game\'s present stream; the driver\'s desktop-presentation stats serve when the per-process lane is inactive.' }),
-    ]);
-
     clear(root);
-    root.append(generalCard, statsCard, appearanceCard, hotkeyCard, advancedCard, notesCard);
+    root.append(generalCard, statsCard, appearanceCard, hotkeyCard);
   };
 
   // --- M6 handlers (every save goes through profiles-settings-save;

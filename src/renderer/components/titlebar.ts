@@ -6,13 +6,122 @@
 // window-op IPC and keeps the max button's icon in sync with the pushed
 // window:maximized-changed state.
 //
-// The drag regions + double-click-to-maximize are handled by Electron
-// itself (-webkit-app-region: drag on .titlebar-drag / .titlebar-brand);
-// only the no-drag cluster's buttons need JS here.
+// M25: the titlebar-left now carries the app version + an update button
+// next to the corner icon. The version is filled from the boot-fetched
+// appVersion; the update button cycles through check -> download -> install
+// states.
 
 import { api } from '../ipc.ts';
 
 const MAX_BTN_SEL = '.window-btn[data-op="maximize-toggle"]';
+
+/** Update button states. */
+type UpdateState = 'idle' | 'checking' | 'update-available' | 'downloading' | 'downloaded' | 'error';
+
+let updateState: UpdateState = 'idle';
+let updateInfo: { version: string; assetUrl: string; assetName: string } | null = null;
+let downloadedPath: string | null = null;
+
+function setUpdateBtn(state: UpdateState): void {
+  const btn = document.getElementById('titlebar-update-btn');
+  if (!btn) return;
+  const iconCheck = btn.querySelector('.icon-update-check');
+  const iconDownload = btn.querySelector('.icon-update-download');
+  const iconDone = btn.querySelector('.icon-update-done');
+  if (!iconCheck || !iconDownload || !iconDone) return;
+
+  updateState = state;
+
+  // Hide all icons first
+  (iconCheck as HTMLElement).style.display = 'none';
+  (iconDownload as HTMLElement).style.display = 'none';
+  (iconDone as HTMLElement).style.display = 'none';
+  btn.classList.remove('update-spinning', 'update-available', 'update-downloading', 'update-error');
+
+  switch (state) {
+    case 'idle':
+      btn.style.display = 'none';
+      break;
+    case 'checking':
+      btn.style.display = '';
+      (iconCheck as HTMLElement).style.display = '';
+      btn.classList.add('update-spinning');
+      btn.title = 'Checking for updates...';
+      break;
+    case 'update-available':
+      btn.style.display = '';
+      (iconDownload as HTMLElement).style.display = '';
+      btn.classList.add('update-available');
+      btn.title = `Update available: v${updateInfo?.version ?? '?'} - click to download`;
+      break;
+    case 'downloading':
+      btn.style.display = '';
+      (iconDownload as HTMLElement).style.display = '';
+      btn.classList.add('update-downloading', 'update-spinning');
+      btn.title = 'Downloading update...';
+      break;
+    case 'downloaded':
+      btn.style.display = '';
+      (iconDone as HTMLElement).style.display = '';
+      btn.classList.add('update-available');
+      btn.title = 'Update ready - click to install and restart';
+      break;
+    case 'error':
+      btn.style.display = '';
+      (iconCheck as HTMLElement).style.display = '';
+      btn.classList.add('update-error');
+      btn.title = 'Update check failed - click to retry';
+      break;
+  }
+}
+
+async function handleUpdateClick(): Promise<void> {
+  switch (updateState) {
+    case 'idle':
+    case 'error':
+      // Check for updates
+      setUpdateBtn('checking');
+      try {
+        const result = await api.updateCheck();
+        if (result.available && result.version && result.assetUrl) {
+          updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '' };
+          setUpdateBtn('update-available');
+        } else {
+          // No update - briefly show check icon, then hide
+          setUpdateBtn('idle');
+        }
+      } catch {
+        setUpdateBtn('error');
+      }
+      break;
+
+    case 'update-available':
+      // Download update
+      if (!updateInfo) return;
+      setUpdateBtn('downloading');
+      try {
+        const dl = await api.updateDownload(updateInfo.assetUrl);
+        downloadedPath = dl.path;
+        setUpdateBtn('downloaded');
+      } catch {
+        setUpdateBtn('error');
+      }
+      break;
+
+    case 'downloaded':
+      // Install and restart
+      if (!downloadedPath) return;
+      try {
+        await api.updateInstall(downloadedPath);
+      } catch {
+        setUpdateBtn('error');
+      }
+      break;
+
+    default:
+      break;
+  }
+}
 
 export function initTitlebar(): void {
   document.querySelector('.window-btn[data-op="minimize"]')
@@ -21,6 +130,10 @@ export function initTitlebar(): void {
     ?.addEventListener('click', () => { void api.windowMaximizeToggle(); });
   document.querySelector('.window-btn[data-op="close"]')
     ?.addEventListener('click', () => { void api.windowClose(); });
+
+  // M25: wire the update button
+  document.getElementById('titlebar-update-btn')
+    ?.addEventListener('click', () => { void handleUpdateClick(); });
 
   // M4-D: the max button icon follows the live maximize state (main pushes
   // window:maximized-changed on maximize/unmaximize). M4J (F): ONE svg -
@@ -36,4 +149,33 @@ export function initTitlebar(): void {
     const svg = btn.querySelector<SVGElement>('.icon-maximize-restore');
     svg?.classList.toggle('icon-state-restore', maximized);
   });
+}
+
+/**
+ * M25: fill the version text in the titlebar-left. Called from app.ts
+ * after the boot-fetch provides appVersion.
+ */
+export function setTitlebarVersion(version: string): void {
+  const el = document.getElementById('titlebar-version');
+  if (el) el.textContent = version || '0.0.0';
+}
+
+/**
+ * M25: trigger the automatic startup update check. Called from app.ts
+ * after the titlebar version is set.
+ */
+export async function startupUpdateCheck(): Promise<void> {
+  setUpdateBtn('checking');
+  try {
+    const result = await api.updateCheck();
+    if (result.available && result.version && result.assetUrl) {
+      updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '' };
+      setUpdateBtn('update-available');
+    } else {
+      setUpdateBtn('idle');
+    }
+  } catch {
+    // Silent fail on startup - button stays hidden
+    setUpdateBtn('idle');
+  }
 }

@@ -25,6 +25,7 @@ export function canonicalUnit(units) {
     case 13: return 'mV';
     case 11: return '%';
     case 9: return 'RPM';
+    case 12: return 'MHz'; // Battlemage VRAM speed: driver reports Gbps, display as MHz (×125 for GDDR6)
     default: return CTL_UNITS[units] ?? `UNITS_${units}`;
   }
 }
@@ -41,6 +42,7 @@ export function canonicalToIgcl(value, units) {
     case 10: return value * 1000; // W -> mW
     case 13: return value * 1000; // V -> mV
     case 2: return value * 1000; // GTS -> MTS
+    case 12: return value / 125; // MHz -> Gbps (GDDR6: ×125)
     case 3: case 0: case 1: case 4: case 5: case 11: case 9:
       return value;
     default:
@@ -59,6 +61,7 @@ export function igclToCanonical(value, units) {
     case 10: return value / 1000; // mW -> W
     case 13: return value / 1000; // mV -> V
     case 2: return value / 1000; // MTS -> GTS
+    case 12: return value * 125; // Gbps -> MHz (GDDR6: ×125)
     default:
       return value;
   }

@@ -1392,6 +1392,9 @@ export class IgclBackend {
       // (a 'UNITS_11' string would render "120 UNITS_11" in the UI and drift
       // from the mock's '%').
       case 11: return '%';
+      // M4-G: Battlemage VRAM speed uses MEM_SPEED_GBPS (12) - display as
+      // MHz (x125 for GDDR6: 19 Gbps = 2375 MHz)
+      case 12: return 'MHz';
       default: return `UNITS_${units}`;
     }
   }

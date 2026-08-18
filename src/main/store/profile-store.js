@@ -82,9 +82,12 @@ const OVERLAY_STAT_IDS = [
 // constant is renderer/pure/overlay.ts (keep both in lockstep); the renderer
 // mirror's normalizeOverlayStats (:210-211) + overlay-settings.ts + types.ts
 // ride the same default.
+// M25: reordered by category (CPU / RAM / GPU / VRAM / FPS / API).
 const OVERLAY_STATS_DEFAULT = [
-  'fps', 'api', 'cpu-util', 'cpu-temp', 'cpu-power',
-  'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'frametime',
+  'cpu-util', 'cpu-temp', 'cpu-power',
+  'memory-util',
+  'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram',
+  'fps', 'api', 'frametime',
 ];
 // M6: the stock overlay text color (white - the M5 pre-color default).
 const OVERLAY_COLOR_DEFAULT = '#ffffff';

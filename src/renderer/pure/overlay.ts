@@ -114,10 +114,14 @@ export const OVERLAY_POLL_MS_DEFAULT = 400;
  * temp and the power fields) joins after 'gpu-clock'; 'gpu-vram-temp' (the
  * VRAM row's trailing field) closes the GPU stats.
  */
+// M25: reordered by category for compactness: CPU / RAM / GPU / VRAM / FPS / API.
 export const OVERLAY_STAT_IDS: readonly string[] = [
-  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
-  'memory-util', 'gpu-util', 'gpu-clock', 'gpu-voltage',
-  'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime',
+  'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power',
+  'memory-util',
+  'gpu-util', 'gpu-clock', 'gpu-voltage', 'gpu-temp', 'gpu-power', 'gpu-fan',
+  'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp',
+  'fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct',
+  'api', 'frametime',
 ];
 
 /** M17g (the user's stock overlay settings): the DEFAULT overlayStats set -
@@ -127,9 +131,12 @@ export const OVERLAY_STAT_IDS: readonly string[] = [
  *  persisted-truth owner is profile-store.js - keep both in lockstep);
  *  absent/garbage overlayStats degrades to this set (the M6 full-set
  *  default FLIPS). */
+// M25: reordered by category (CPU / RAM / GPU / VRAM / FPS / API).
 export const OVERLAY_STATS_DEFAULT: readonly string[] = [
-  'fps', 'api', 'cpu-util', 'cpu-temp', 'cpu-power',
-  'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'frametime',
+  'cpu-util', 'cpu-temp', 'cpu-power',
+  'memory-util',
+  'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram',
+  'fps', 'api', 'frametime',
 ];
 
 /** M6: the Overlay Settings page's tickbox labels (one per stat id). */

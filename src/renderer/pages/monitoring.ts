@@ -309,11 +309,11 @@ export const monitoringPage: Page = {
     ]);
     viewContainer = el('div', { class: 'mon-view' });
     container.append(
-      el('h1', { class: 'page-title', text: 'Monitoring' }),
+      el('h1', { class: 'page-title', text: monView === 'overlay' ? 'Overlay' : 'Monitoring' }),
       el('p', {
         class: 'page-subtitle',
         text: monView === 'overlay'
-          ? 'The in-game HUD - its settings live in the Overlay view below.'
+          ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
           : 'Live values and 60-second rolling graphs from the GPU.',
       }),
       viewToggle,

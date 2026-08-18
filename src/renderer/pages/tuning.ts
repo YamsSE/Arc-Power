@@ -68,7 +68,7 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, advancedUiVisible, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
 import { formatPlReadout } from '../pure/pl-readout.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
@@ -87,7 +87,9 @@ import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, P
 export { ocStateChanged, ocCapsChanged } from '../pure/settings.ts';
 
 // Display order only - support comes from caps.ranges, limits from the ranges.
-const CONTROL_ORDER = ['gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'powerLimitW', 'tempLimitC'];
+// M25: vramFreqOffsetGts moved here from the Advanced section (Battlemage
+// only - filtered by supportedScalars when caps.ranges[key] exists).
+const CONTROL_ORDER = ['gpuFreqOffsetMhz', 'vramFreqOffsetGts', 'gpuVoltOffsetV', 'powerLimitW', 'tempLimitC'];
 // M4J (D): the EXPERT_CONTROLS row list is REMOVED with the M4-B expert
 // section - the Advanced section now renders ONLY the VRAM clock editor on
 // devices whose supportedControls carry vramFreqOffset (Battlemage); the
@@ -371,12 +373,8 @@ export const tuningPage: Page = {
       return;
     }
 
-    // M4J clarification (Alchemist scope): `advancedUi` keys the ADVANCED
-    // SECTION only (caps.controls.vramFreqOffset - Battlemage yes, Alchemist
-    // no). The OC-mode column (Stock/Advanced pill) renders on EVERY device
-    // as in 1.0.3 - the mode + the advanced confirm + the extended ranges
-    // work on Alchemist as before (only the bottom expert section is gone).
-    const advancedUi = advancedUiVisible(caps);
+    // M25: the Advanced (Expert) section is REMOVED - VRAM clock now lives
+    // in the main card stack (CONTROL_ORDER) on Battlemage devices.
 
     // M17e (Run B): the gpuLock-capable freq card's Lock-mode editor element
     // references - created inside buildCard (the freq-card branch), read by
@@ -913,114 +911,8 @@ export const tuningPage: Page = {
     // already existed. The M4-B gpuLock editor is REMOVED (the section dies
     // on Alchemist - documented: profiles can still apply gpuLock via the
     // state machinery).
-    const buildVramEditor = (ctx: PageContext): HTMLElement => {
-      const range = caps.ranges.vramFreqOffsetGts as RangeInfo;
-      const vramValue = (() => {
-        const cur = currentState?.vramFreqOffsetGts;
-        return typeof cur === 'number' && Number.isFinite(cur) ? snapToRange(cur, range) : range.default;
-      })();
-      let vramApplied = vramValue;
-      const slider = el('input', {
-        type: 'range',
-        min: range.min,
-        max: range.max,
-        step: range.step,
-        value: vramValue,
-        dataset: { vramEditor: 'slider' },
-      });
-      const readout = el('span', { class: 'vram-editor-value', text: formatValue(vramValue, range.units) });
-      const driverLine = el('span', { class: 'vram-editor-driver' });
-      const refreshDriver = () => {
-        const raw = currentState?.vramFreqOffsetGts;
-        driverLine.textContent = `Driver: ${formatDriverValue(typeof raw === 'number' ? raw : null, range)}`;
-      };
-      refreshDriver();
-      const applyVram = async () => {
-        const live = ctx.store.get();
-        const deviceId = live.deviceId;
-        if (deviceId === null) return;
-        // Same waiver gate as every apply path (read LIVE from the store).
-        // M17 (B50-class): OC-locked devices (overclockingSupported === false)
-        // have no waiver - the gate is skipped (uniform with every apply path).
-        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
-        if (decision === 'cancelled') {
-          toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
-          return;
-        }
-        {
-          const cur = ctx.store.get();
-          if (cur.caps && cur.caps.waiverAccepted !== true) {
-            ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
-          }
-        }
-        try {
-          const wanted = snapToRange(Number(slider.value), range);
-          const { result, state: fresh } = await api.applySettings(deviceId, { vramFreqOffsetGts: wanted });
-          if (fresh) {
-            currentState = fresh;
-            ctx.store.set({ state: fresh });
-          }
-          const per = result.perControl.vramFreqOffsetGts;
-          if (per?.ok) {
-            vramApplied = typeof fresh?.vramFreqOffsetGts === 'number'
-              ? fresh.vramFreqOffsetGts
-              : wanted;
-            readout.textContent = formatValue(vramApplied, range.units);
-            toast('success', 'VRAM clock applied', formatValue(vramApplied, range.units));
-            ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
-          } else {
-            toast('error', 'VRAM clock failed', applyFailureText(per, 'vramFreqOffsetGts'));
-            const freshCaps = await api.getCapabilities(deviceId);
-            ctx.store.set({ caps: freshCaps });
-          }
-          ctx.store.set({
-            lastApply: {
-              ok: result.ok,
-              at: Date.now(),
-              detail: result.ok ? 'VRAM clock applied' : (per?.message ?? 'VRAM clock failed'),
-            },
-          });
-          refreshDriver();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
-          toast('error', 'VRAM clock failed', msg);
-        }
-      };
-      slider.addEventListener('input', () => {
-        readout.textContent = formatValue(snapToRange(Number(slider.value), range), range.units);
-      });
-      return el('div', { class: 'card vram-editor-card' }, [
-        el('h3', { class: 'card-title', text: 'VRAM clock' }),
-        el('p', {
-          class: 'card-note',
-          text: `Raise the video memory clock offset (${range.units}) above the driver default. Applied on demand - the driver read-back is shown below.`,
-        }),
-        el('div', { class: 'oc-slider-row' }, [
-          el('div', { class: 'oc-slider' }, [
-            el('div', { class: 'oc-track-fill' }),
-            slider,
-          ]),
-          el('div', { class: 'oc-value' }, [readout]),
-        ]),
-        el('div', { class: 'oc-meta' }, [
-          el('span', { class: 'oc-range', text: `${range.min} - ${range.max} ${range.units} · step ${range.step}` }),
-        ]),
-        el('div', { class: 'vram-editor-driver-line' }, [driverLine]),
-        el('div', { class: 'vram-editor-actions' }, [
-          el('button', { class: 'btn btn-primary btn-sm', text: 'Apply', onClick: () => void applyVram() }),
-          el('button', {
-            class: 'btn btn-ghost btn-sm',
-            text: 'Reset',
-            title: `Reset the editor to the driver default (${formatValue(range.default, range.units)})`,
-            onClick: () => {
-              slider.value = String(range.default);
-              readout.textContent = formatValue(range.default, range.units);
-            },
-          }),
-        ]),
-      ]);
-    };
+    // M25: buildVramEditor REMOVED - VRAM clock now lives in the main card
+    // stack (CONTROL_ORDER) via buildCard on Battlemage devices.
 
     // M17e (Run B): the M17d STANDALONE Fixed Clock / Voltage Lock card is
     // REMOVED - the gpuLock editor is folded INSIDE the freq card's Lock
@@ -1265,27 +1157,11 @@ export const tuningPage: Page = {
           ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
 
-        // M4J (D) + clarification: the Advanced section renders ONLY on
-        // vramFreqOffset-capable devices (Battlemage) and holds ONLY the
-        // VRAM clock editor. On Alchemist (a770/arc-igpu/pro-b50) the whole
-        // section is REMOVED - the gpuLock editor + the vfCurve/
-        // vramVoltOffset rows are gone per the user (profiles can still
-        // apply those values via the state machinery - documented). The
-        // OC-mode pill above is NOT affected (renders on every device).
-        ...(advancedUi
-          ? [el('details', { class: 'card advanced-card' }, [
-            el('summary', { class: 'card-title advanced-summary', text: 'Advanced (VRAM overclocking)' }),
-            el('div', { class: 'card-body' }, [
-              buildVramEditor(ctx),
-            ]),
-          ])]
-          : []),
-
-        // M17e (Run B): the M17d STANDALONE Fixed Clock / Voltage Lock card
-        // is REMOVED - the gpuLock editor lives INSIDE the freq card's Lock
-        // mode (the buildCard branch - the Offset|Lock toggle on
-        // gpuLock-capable cards; b580/arc-igpu/pro-b50 stay editor-less -
-        // unsupported - and the b580 freq card shows NO toggle).
+        // M25: the Advanced (VRAM overclocking) section is REMOVED - VRAM
+        // now lives in the main card stack (CONTROL_ORDER) below Core-Offset
+        // on Battlemage devices. The gpuLock editor + vfCurve/vramVoltOffset
+        // rows are gone per the user (profiles can still apply those values
+        // via the state machinery - documented).
 
         applyBtn as Node,
       ];

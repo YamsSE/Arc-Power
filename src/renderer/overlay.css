@@ -67,7 +67,7 @@ body {
   width: 2px;
   background: var(--overlay-color, #ffffff);
   z-index: 0;
-  font-family: Consolas, 'Courier New', monospace;
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
   font-size: 1rem;
   left: calc(0.4rem + var(--overlay-label-w, 4ch) + 0.75ch);
 }
@@ -147,7 +147,7 @@ html[data-overlay-theme="arc"] .overlay-line {
 }
 
 .overlay-line {
-  font-family: Consolas, 'Courier New', monospace;
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
   font-weight: 700;
   font-size: 1rem;
   line-height: 1.3;

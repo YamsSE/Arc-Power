@@ -320,6 +320,11 @@ export function loadSysman(dllPath) {
   bind('zesOverclockGetControlCurrentValue', 'uint32', ['void*', 'int32', 'double*']);
   bind('zesOverclockSetControlUserValue', 'uint32', ['void*', 'int32', 'double', 'int32*']); // zes_pending_action_t*
 
+  // VF curve point values (zes_api.h - not exposed by IGCL but may be
+  // available via Sysman directly on some drivers)
+  bind('zesOverclockGetVFPointValues', 'uint32', ['void*', 'uint32*', 'void*']); // (device, count*, points)
+  bind('zesOverclockSetVFPointValues', 'uint32', ['void*', 'uint32', 'void*']); // (device, count, points*)
+
   // Power domains + limits
   bind('zesDeviceEnumPowerDomains', 'uint32', ['void*', 'uint32*', 'void**']);
   bind('zesDeviceGetCardPowerDomain', 'uint32', ['void*', 'void**']);

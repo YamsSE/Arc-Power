@@ -8,7 +8,7 @@ import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
 import { GpuHeader } from './components/header.ts';
 import { toast } from './components/toast.ts';
-import { initTitlebar } from './components/titlebar.ts';
+import { initTitlebar, setTitlebarVersion, startupUpdateCheck } from './components/titlebar.ts';
 import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { tuningPage } from './pages/tuning.ts';
@@ -296,6 +296,10 @@ async function boot() {
   } catch {
     store.set({ appVersion: '0.0.0' });
   }
+
+  // M25: fill the titlebar version + trigger the startup update check.
+  setTitlebarVersion(store.get().appVersion);
+  void startupUpdateCheck();
 
   // M4-E: the distribution kind (app:build-info IPC) - the Settings
   // start-with-Windows hint differentiates by it. Failure degrades to 'dev'.
