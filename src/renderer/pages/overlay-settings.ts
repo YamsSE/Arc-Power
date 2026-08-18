@@ -197,6 +197,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           el('span', { text: 'Show the overlay' }),
         ]),
       ]),
+      // M25: the "Show Advanced Overlay" toggle moved here from the
+      // Hotkey card (the AMD-Adrenaline-style side panel).
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'advancedOverlayEnabled' },
+            checked: persisted.advEnabled,
+            onchange: (ev: Event) => void onAdvancedEnabledToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Show Advanced Overlay' }),
+        ]),
+      ]),
       // M17b: the chip-name row labels - the overlayEnabled/overlayBgEnabled
       // checkbox pattern (NOT the per-stat .overlay-stat-toggle hook; the
       // ui-verify pin queries [data-setting="overlayChipNames"]).
@@ -476,6 +490,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       onchange: (ev: Event) => void onAdvancedPositionChange((ev.target as HTMLSelectElement).value),
     }, ADVANCED_OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: ADVANCED_OVERLAY_POSITION_LABELS[p] })));
     advancedPositionSelect.value = persisted.advPosition;
+    // M25: "Show Advanced Overlay" toggle moved to the General card.
     const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
       el('h2', { class: 'card-title', text: 'Hotkey' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
@@ -487,18 +502,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
         : null,
       el('hr', { class: 'overlay-hotkey-divider' }),
-      el('div', { class: 'settings-row' }, [
-        el('label', { class: 'boot-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox',
-            dataset: { setting: 'advancedOverlayEnabled' },
-            checked: persisted.advEnabled,
-            onchange: (ev: Event) => void onAdvancedEnabledToggle((ev.target as HTMLInputElement).checked),
-          }),
-          el('span', { text: 'Show the side panel' }),
-        ]),
-      ]),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Panel' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
@@ -611,6 +614,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const previous = persisted.theme;
     syncThemeButtons(theme);
     persisted.theme = theme;
+    // M25: re-render so the background section hides/shows (Arc has its
+    // own chrome; background box is Classic-only).
+    render();
     try {
       await api.profilesSettingsSave({ overlayTheme: theme });
       toast('success', 'Overlay theme changed', theme === 'arc' ? 'The Arc look is active.' : 'The classic HUD is active.');
@@ -618,6 +624,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('error', 'Overlay theme could not be changed', err instanceof Error ? err.message : String(err));
       persisted.theme = previous;
       syncThemeButtons(previous);
+      render();
     }
   };
 
