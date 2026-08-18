@@ -407,12 +407,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }),
         scaleValue,
       ]),
-      // M9: the Position row - the old standalone Position card's select
-      // lives here now (the same settings-row pattern as the Size row).
-      el('div', { class: 'settings-row overlay-position-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Position' }),
-        positionSelect,
-      ]),
+      // M25: Position select moved to the Hotkey card (below Classic
+      // Overlay hotkey, matching the Advanced Overlay layout).
       // M7b (fix 4) / M25: the Background section - hidden when the Arc
       // theme is selected (Arc has its own built-in chrome; background box
       // is a Classic-only option).
@@ -494,21 +490,25 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
       el('h2', { class: 'card-title', text: 'Hotkey' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
-        el('span', { class: 'settings-row-label', text: 'HUD' }),
+        el('span', { class: 'settings-row-label', text: 'Classic Overlay' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         hotkeyInput,
+      ]),
+      el('div', { class: 'settings-row overlay-hotkey-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Position' }),
+        positionSelect,
       ]),
       overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
         ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
         : null,
       el('hr', { class: 'overlay-hotkey-divider' }),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Panel' }),
+        el('span', { class: 'settings-row-label', text: 'Advanced Overlay' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         advancedHotkeyInput,
       ]),
       el('div', { class: 'settings-row overlay-advanced-position-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Edge' }),
+        el('span', { class: 'settings-row-label', text: 'Position' }),
         advancedPositionSelect,
       ]),
       advancedOverlayState && advancedOverlayState.exists && advancedOverlayState.hotkeyRegistered === false
