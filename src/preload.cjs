@@ -7,10 +7,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('arcPower', {
   health: () => ipcRenderer.invoke('health'),
   listDevices: () => ipcRenderer.invoke('list-devices'),
-  // M4-F: the persisted GPU selection (device-get reads it at boot;
-  // device-set is the ONLY writer - like oc-mode-set).
+  // M29: device identity carries the session id plus durable PCI/BDF key.
   deviceGet: () => ipcRenderer.invoke('device-get'),
-  deviceSet: (deviceId) => ipcRenderer.invoke('device-set', deviceId),
+  deviceSet: (selection) => ipcRenderer.invoke('device-set', selection),
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
   getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
   // M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the

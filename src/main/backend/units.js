@@ -293,3 +293,52 @@ export function formatDeviceName(name, vramBytes, memType) {
   const mib = Math.floor(vramBytes / (1024 * 1024));
   return `${name} ${mib} MB`;
 }
+
+/**
+ * Stable hardware identity shared by the main and renderer selection paths.
+ * PCI/BDF is session-independent for a physical adapter; the PCI ids provide
+ * a deterministic fallback when a driver omits one BDF component.
+ * @param {object|null|undefined} device
+ * @returns {string}
+ */
+export function deviceHardwareKey(device) {
+  const vendor = String(device?.pciVendorId ?? '').toLowerCase();
+  const pci = String(device?.pciDeviceId ?? '').toLowerCase();
+  const bdf = device?.bdf;
+  const bus = Number.isInteger(bdf?.bus) ? bdf.bus : -1;
+  const slot = Number.isInteger(bdf?.device) ? bdf.device : -1;
+  const fn = Number.isInteger(bdf?.function) ? bdf.function : -1;
+  // A zeroed adapter_bdf is the binding's "not supplied" shape, not a
+  // physical slot. Treat it as unknown for stable cross-boot cache keys.
+  const hasBdf = bus !== 0 || slot !== 0 || fn !== 0;
+  return `pci:${vendor}:${pci}@${hasBdf ? bus : -1}:${hasBdf ? slot : -1}.${hasBdf ? fn : -1}`;
+}
+
+/** True for conservative integrated-style names (including model-less Arc). */
+export function isIntegratedStyleDevice(device) {
+  const name = String(device?.name ?? '').replace(/\s+\d+\s*GB(?:\s+\S+)?$/i, '');
+  if (/\b(?:iris|uhd|hd graphics|xe graphics)\b/i.test(name)) return true;
+  if (/\barc\b/i.test(name) && !/\b(?:a\d{3}|b\d{2,3}|pro)\b/i.test(name)) return true;
+  return false;
+}
+
+/** Stable discrete-first ordering; input order is only the final tie-break. */
+export function sortDevicesDiscreteFirst(devices) {
+  return (Array.isArray(devices) ? devices : [])
+    .map((device, index) => ({ device, index }))
+    .sort((a, b) => {
+      const classDiff = Number(isIntegratedStyleDevice(a.device)) - Number(isIntegratedStyleDevice(b.device));
+      if (classDiff !== 0) return classDiff;
+      const keyDiff = deviceHardwareKey(a.device).localeCompare(deviceHardwareKey(b.device));
+      return keyDiff !== 0 ? keyDiff : a.index - b.index;
+    })
+    .map(({ device }) => device);
+}
+
+/** Arc classification used by the Tuning-only selector. */
+export function isArcDevice(device) {
+  const name = String(device?.name ?? '');
+  return /\barc\b/i.test(name)
+    && !isIntegratedStyleDevice(device)
+    && !/basic|microsoft/i.test(name);
+}

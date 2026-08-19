@@ -39,23 +39,15 @@ import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRanges
 // clamped values (the worker import pattern - no cycle: ipc-core never
 // imports apply-on-boot).
 import { clampSettings } from './ipc-core.js';
+import { deviceHardwareKey } from './backend/units.js';
 
 /** Any per-control result carrying the waiver-not-set driver answer. */
 const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
   .some((p) => p?.errorCode === 'waiver-not-set');
-
 /**
- * M4-F (S2): resolve the apply's target device. Priority:
- *   1. an explicit `deviceId` that matches an enumerated device;
- *   2. the persisted settings' deviceId (when it matches an enumerated id);
- *   3. devices[0] (the historical behavior - a 1-device machine is
- *      unaffected; the persisted/selected device is honored on 2-GPU
- *      machines so a logon apply never silently targets the iGPU).
- * Returns null when no devices are enumerated (callers degrade).
- * @param {import('./backend/backend.interface.js').IOCBackend} backend
- * @param {import('./store/profile-store.js').ProfileStore} store
- * @param {number|null|undefined} explicitDeviceId
- * @returns {Promise<number|null>}
+ * M29: explicit session ids remain authoritative; persisted selections resolve
+ * by durable PCI/BDF identity and legacy numeric-only settings fall back to
+ * the sorted preferred device.
  */
 export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null) {
   const devices = await backend.listDevices();
@@ -68,9 +60,11 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
   } catch {
     // degraded: never fall back on an unreadable store beyond devices[0]
   }
-  const persisted = settings?.deviceId;
-  if (Number.isInteger(persisted) && ids.has(persisted)) return persisted;
-  return devices[0].id;
+  const key = typeof settings?.deviceKey === 'string' ? settings.deviceKey : null;
+  const matched = key
+    ? devices.find((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key)
+    : null;
+  return matched?.id ?? devices[0].id;
 }
 
 /**

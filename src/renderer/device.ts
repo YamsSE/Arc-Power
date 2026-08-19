@@ -38,6 +38,35 @@ export interface DeviceSwitchDeps {
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+type TelemetryApi = Pick<ArcPowerApi, 'telemetryStop' | 'telemetryStart'>;
+
+export async function stopTelemetry(
+  api: TelemetryApi,
+  deviceId: number | null,
+  warn: (title: string, message: string) => void,
+): Promise<void> {
+  if (deviceId === null) return;
+  try {
+    await api.telemetryStop(deviceId);
+  } catch (err) {
+    warn('Telemetry', `Stopping telemetry on device ${deviceId} failed: ${errText(err)}`);
+  }
+}
+
+export async function startTelemetry(
+  api: TelemetryApi,
+  deviceId: number | null,
+  warn: (title: string, message: string) => void,
+): Promise<boolean> {
+  try {
+    await api.telemetryStart(deviceId);
+    return true;
+  } catch (err) {
+    warn('Telemetry', `Starting telemetry on device ${deviceId ?? 'none'} failed: ${errText(err)}`);
+    return false;
+  }
+}
+
 
 // N10: ONE switch at a time - a second selectDevice while a switch is in
 // flight is a no-op (the in-flight switch's re-render settles the UI).
@@ -53,20 +82,9 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
     const oldId = live.deviceId;
     inFlight = true;
     try {
-      // Best-effort stop: a failure must never block the switch.
-      if (oldId !== null) {
-        try {
-          await deps.api.telemetryStop(oldId);
-        } catch (err) {
-          deps.warn('Telemetry', `Stopping telemetry on device ${oldId} failed: ${errText(err)}`);
-        }
-      }
+      await stopTelemetry(deps.api, oldId, deps.warn);
       // Best-effort start (M5): the switch always completes.
-      try {
-        await deps.api.telemetryStart(id);
-      } catch (err) {
-        deps.warn('Telemetry', `Starting telemetry on device ${id} failed: ${errText(err)}`);
-      }
+      await startTelemetry(deps.api, id, deps.warn);
       // The caps/state pair is the session's rendering surface - a read
       // failure keeps the OLD device (never pair the new deviceId with a
       // stale or missing pair).
@@ -89,7 +107,8 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
       // the in-session selection - the next boot falls back to devices[0]
       // (or the main-side self-heal re-resolves).
       try {
-        await deps.api.deviceSet(id);
+        const selected = live.devices.find((d: DeviceInfo) => d.id === id);
+        await deps.api.deviceSet({ deviceId: id, deviceKey: selected?.deviceKey });
       } catch (err) {
         deps.warn('GPU selection', `The selection could not be saved - the switch stays for this session (${errText(err)})`);
       }

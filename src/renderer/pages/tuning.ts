@@ -73,7 +73,7 @@ import { formatPlReadout } from '../pure/pl-readout.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
-import { buildDeviceSelect } from '../components/device-select.ts';
+import { buildArcDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 // M4-H (B): the profiles page's prompt modal + id generator + the
@@ -1068,7 +1068,7 @@ export const tuningPage: Page = {
     // the row, right of the selector - its own label-over-button column so
     // its top aligns with the pills' (the pin asserts the bounding tops
     // match). The old full-width Save-as-Profile CARD is REMOVED.
-    const deviceSelect = buildDeviceSelect(ctx.store, (id) => void selectDevice(id));
+    const deviceSelect = buildArcDeviceSelect(ctx.store, (id) => void selectDevice(id));
     const modeRow = el('div', { class: 'oc-mode-row' }, [
       el('div', { class: 'oc-mode-col' }, [
         el('span', { class: 'oc-mode-label', text: 'View' }),

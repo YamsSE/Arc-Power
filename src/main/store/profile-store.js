@@ -282,11 +282,10 @@ export class ProfileStore {
   }
 
   /**
-   * M4-F: `deviceId` - the persisted GPU selection (number | null). Absent
-   * on old files -> null (the devices[0] default resolves at boot); stored
-   * via the device-set channel, NEVER through profiles-settings-save (which
-   * carries it read-modify-write so a Settings/Profiles save can never
-   * clobber it).
+   * PCI/BDF identity. Legacy files with only deviceId remain readable but
+   * are explicitly unverified and are resolved to the sorted preferred GPU.
+   * device-set is the ONLY writer (profiles-settings-save carries both
+   * values read-modify-write so it cannot clobber the selection).
    * M5: the software-overlay fields (overlayEnabled/overlayHotkeyLetter/
    * overlayPosition/overlayScale) - absent on old files -> the defaults.
    * M6: overlayColor + overlayStats ride the same mechanism (stock white +
@@ -337,14 +336,10 @@ export class ProfileStore {
       return {
         waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
         ocMode: this.ocModeDefault, advancedModeAccepted: false,
-        // M4-D: absent -> false (the Settings-tab fields ride the
-        // absent-field defaults mechanism - NO schema bump).
         startWithWindows: false, startMinimized: false, closeToTray: false,
-        // M4-D2: absent -> false (the Monitoring log-to-file toggle).
         monitorLogToFile: false,
-        // M4-F: absent -> null (the devices[0] fallback resolves at boot).
         deviceId: null,
-        // 1.0.1 Themes: absent -> 'dark' (same absent-field mechanism).
+        deviceKey: null,
         theme: 'dark',
         // M5: the software-overlay settings. Absent on old files -> the
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
@@ -400,17 +395,11 @@ export class ProfileStore {
       closeToTray: data.closeToTray === true,
       // M4-D2: the Monitoring "Log to file" toggle (same mechanism).
       monitorLogToFile: data.monitorLogToFile === true,
-      // M4-F: the persisted GPU selection. Absent on old files -> null
-      // (devices[0] resolves at boot - same absent-field mechanism as
-      // ocMode; a garbage value never crashes, it degrades to null).
+      // M4-F/M29: numeric-only settings remain readable but unverified until
+      // boot resolution writes the matching durable PCI/BDF key.
       deviceId: Number.isInteger(data.deviceId) && data.deviceId >= 0 ? data.deviceId : null,
-      // 1.0.1 Themes: the persisted UI theme. Absent on old files -> 'dark'
-      // (same absent-field mechanism); a garbage value degrades to 'dark'
-      // - never a crash.
+      deviceKey: typeof data.deviceKey === 'string' && data.deviceKey.length > 0 ? data.deviceKey : null,
       theme: THEMES.includes(data.theme) ? data.theme : 'dark',
-      // M5: the software-overlay settings (same mechanism): enabled off
-      // when absent, the letter 'O', top-left, scale 1.0; a garbage value
-      // degrades to the default - never a crash.
       overlayEnabled: data.overlayEnabled === true,
       overlayHotkeyLetter: typeof data.overlayHotkeyLetter === 'string'
         && /^[A-Za-z]$/.test(data.overlayHotkeyLetter)
@@ -483,11 +472,9 @@ export class ProfileStore {
       startMinimized: settings.startMinimized === true,
       closeToTray: settings.closeToTray === true,
       monitorLogToFile: settings.monitorLogToFile === true,
-      // M4-F: non-negative integers only; anything else (absent, null,
-      // garbage) persists as null - the boot resolution + self-heal then
-      // repersists devices[0].
+      // Durable PCI/BDF identity; absent/garbage remains unverified.
       deviceId: Number.isInteger(settings.deviceId) && settings.deviceId >= 0 ? settings.deviceId : null,
-      // 1.0.1 Themes: validated on save - an absent/garbage theme persists
+      deviceKey: typeof settings.deviceKey === 'string' && settings.deviceKey.length > 0 ? settings.deviceKey : null,
       // as 'dark' (the channel already guards patch.theme, so the store
       // fallback only ever sees absent fields on direct callers).
       theme: THEMES.includes(settings.theme) ? settings.theme : 'dark',

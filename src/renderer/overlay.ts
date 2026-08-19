@@ -38,6 +38,7 @@ import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, is
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
+import { resolveBootDevice } from './pure/device.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, TelemetrySample } from './types.ts';
@@ -185,6 +186,19 @@ function sizeCanvas(): void {
   if (canvas.height !== h) canvas.height = h;
 }
 
+// Supplementary layout resynchronization for later font/window changes. The
+// render path above remains the authoritative synchronous visibility fix.
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(() => {
+    sizeCanvas();
+    draw();
+  }).observe(canvas);
+}
+window.addEventListener('resize', () => {
+  sizeCanvas();
+  draw();
+});
+
 function render(): void {
   // M7a: the latest percentile stats ride the same fps poll into the FPS
   // row (null -> the honest '-' fields). M10a/M13: the latest Graphics-API
@@ -236,6 +250,8 @@ function render(): void {
     dividerEl.style.top = `${fpsRect.top - rootRect.top}px`;
     dividerEl.style.bottom = `${rootRect.bottom - apiRect.bottom}px`;
   }
+  // The visibility transition must be ordered display -> backing bitmap -> draw.
+  sizeCanvas();
   draw();
 }
 
@@ -296,13 +312,30 @@ api.onTelemetrySample((sample) => {
 // null via assertValidDeviceId) and the fps line honestly stays '-'.
 // M17f: the cadence follows the overlayPollMs slider - ONE module-level
 // interval, re-armed by the settings handler when the pushed value changes.
-async function bootFpsLoop(): Promise<void> {
+async function resolveOverlayDeviceId(): Promise<number | null> {
+  let persisted: { deviceId?: number | null; deviceKey?: string | null } | null = null;
   try {
-    const d = await api.deviceGet();
-    fpsDeviceId = typeof d?.deviceId === 'number' && d.deviceId >= 0 ? d.deviceId : null;
+    persisted = await api.deviceGet();
   } catch {
-    fpsDeviceId = null;
+    return null;
   }
+  const fallback = typeof persisted?.deviceId === 'number' && persisted.deviceId >= 0
+    ? persisted.deviceId
+    : null;
+  try {
+    const devices = await api.listDevices();
+    return resolveBootDevice(
+      devices,
+      fallback,
+      persisted?.deviceKey ?? null,
+    );
+  } catch {
+    return fallback;
+  }
+}
+
+async function bootFpsLoop(): Promise<void> {
+  fpsDeviceId = await resolveOverlayDeviceId();
   armFpsLoop();
 }
 

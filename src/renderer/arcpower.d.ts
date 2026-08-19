@@ -37,11 +37,10 @@ import type {
 export interface ArcPowerApi {
   health(): Promise<HealthReport>;
   listDevices(): Promise<DeviceInfo[]>;
-  /** M4-F: the persisted GPU selection (null when absent - devices[0] resolves at boot). */
-  deviceGet(): Promise<{ deviceId: number | null }>;
-  /** M4-F: persist the selected GPU (non-negative integer; the ONLY writer,
-   *  like oc-mode-set - a Settings/Profiles save never clobbers it). */
-  deviceSet(deviceId: number): Promise<{ deviceId: number | null }>;
+  /** M29: persisted GPU selection (numeric id + durable PCI/BDF key). */
+  deviceGet(): Promise<{ deviceId: number | null; deviceKey: string | null }>;
+  /** Persist the selected GPU and its stable identity. */
+  deviceSet(selection: number | { deviceId: number; deviceKey?: string }): Promise<{ deviceId: number | null; deviceKey?: string | null }>;
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
   /** M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the

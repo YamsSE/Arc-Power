@@ -93,6 +93,8 @@ export interface LockRange {
 export interface Capabilities {
   oemName: string;
   deviceName: string;
+  /** Stable PCI/BDF identity shared by device enumeration and apply routing. */
+  deviceKey?: string | null;
   /** M4-I (S1): the memory type carried on the caps payload (the igcl
    *  backend derives it once from the token table; the mock fixture
    *  supplies it). Null when unknown. */
@@ -179,20 +181,13 @@ export interface DeviceInfo {
   driverVersion: string;
   graphicsClockMHz: number;
   numXeCores: number;
-  /** M4-B: VRAM in bytes for the display-name suffix (set by the backend at
-   *  listDevices time; null when unknown - iGPU, real backend until the
-   *  M4-D sysinfo fallback lands). */
+  /** Stable PCI/BDF identity; session `id` is intentionally not durable. */
+  deviceKey?: string;
+  /** M4-B: VRAM in bytes for the display-name suffix. */
   vramBytes?: number | null;
-  /** M4-I (S1): the memory type CARRIED ON THE DEVICE PAYLOAD (the igcl
-   *  backend derives it once from the token table; the mock fixture
-   *  supplies it) - the renderer's VRAM row never re-derives it. Null when
-   *  unknown (the row shows the size only). */
+  /** M4-I: memory type carried by the backend. */
   memType?: string | null;
-  /** M17c: the IGCL subsystem fields (ctl_device_adapter_properties_t
-   *  pci_subsys_vendor_id / pci_subsys_id - the PNP SUBSYS_ fields) carried
-   *  on the device payload (the mock mirrors the real backend). The AIB
-   *  decode keys on them; the caps response carries the DECODED fields.
-   *  Absent/null when unknown. */
+  /** M17c: IGCL subsystem fields carried on the device payload. */
   pciSubsysVendorId?: number | null;
   pciSubsysId?: number | null;
 }
@@ -567,15 +562,13 @@ export interface ProfileSettingsState {
   closeToTray: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
-  /** M4-F: the persisted GPU selection (absent on old files -> null - the
-   *  devices[0] fallback resolves at boot; device-set is the ONLY writer). */
+  /** Persisted GPU selection; numeric ids without deviceKey are unverified. */
   deviceId: number | null;
+  deviceKey: string | null;
   /** 1.0.1: the persisted UI theme ('dark'|'midnight'|'light'; absent on
    *  old files -> 'dark' - the absent-field default, no schema bump). */
   theme: Theme;
-  /** M5: the software-overlay settings (absent on old files -> the defaults:
-   *  enabled false, letter 'O', position 'top-left', scale 1.0 - the same
-   *  absent-field mechanism, NO schema bump). */
+  /** M5: software overlay settings. */
   overlayEnabled: boolean;
   overlayHotkeyLetter: string;
   overlayPosition: OverlayPosition;
@@ -674,6 +667,8 @@ export interface MockFeaturesetsResponse {
 /** mock:set-featureset response - everything the UI renders from one swap. */
 export interface MockSwapResponse {
   featureset: FeaturesetInfo;
+  /** Stable key for the requested physical slot, independent of new ids. */
+  activeDeviceKey: string;
   devices: DeviceInfo[];
   caps: Capabilities;
   state: DeviceState;

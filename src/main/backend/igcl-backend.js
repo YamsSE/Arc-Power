@@ -35,7 +35,7 @@ import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
   GRAPHICS_LOW_LATENCY_OPTIONS,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
 // imports fine under the packaged Electron (Node 22.21 - type stripping is
@@ -80,8 +80,8 @@ const FAN_UNITS_PERCENT = Number(Object.entries(CTL_FAN_SPEED_UNITS).find(([, n]
 // is NEVER trusted - the verdict flips with the IGS service state, and a
 // persisted failure would lock a transiently-failing machine read-only for
 // a whole driver version (the session cache's re-probe self-heals). Key =
-// probeVersion + driverVersion + deviceId; the file is single-entry (the
-// last successful probe wins - the igcl-dll-cache shape).
+// probeVersion + driverVersion + stable deviceKey; deviceId is retained only
+// as legacy metadata and MUST NOT decide a cache hit after reorder.
 export const FAN_PROBE_CACHE_FILENAME = 'fan-probe-cache.json';
 
 // M20-B cache: the probe-LOGIC version. v1 = the pre-M20-B fixed-only probe
@@ -437,7 +437,12 @@ export class IgclBackend {
       dev.name = formatDeviceName(plainName, dev.vramBytes);
       devices.push(dev);
     }
-    return (this._devices = devices);
+    const ordered = sortDevicesDiscreteFirst(devices);
+    ordered.forEach((dev, id) => {
+      dev.id = id;
+      dev.deviceKey = deviceHardwareKey(dev);
+    });
+    return (this._devices = ordered);
   }
 
   /**
@@ -460,8 +465,8 @@ export class IgclBackend {
 
   async listDevices() {
     const devices = await this._ensureDevices();
-    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId }) => ({
-      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId,
+    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId, deviceKey }) => ({
+      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId, deviceKey,
     }));
   }
 
@@ -600,8 +605,13 @@ export class IgclBackend {
       const entry = readFanProbeCache(cacheFile);
       if (!entry || entry.probeOk !== true) return null; // SUCCESS-ONLY
       if (entry.probeVersion !== FAN_PROBE_VERSION) return null; // the probe-logic version (an old entry never trusted)
-      if (entry.driverVersion !== driverVersion || entry.deviceId !== deviceId) return null; // the key mismatch
-      return { probeOk: true, writeAccepted: entry.writeAccepted === true, fixedOk: entry.fixedOk === true };
+      const deviceKey = typeof dev?.deviceKey === 'string' ? dev.deviceKey : deviceHardwareKey(dev);
+      if (entry.driverVersion !== driverVersion || entry.deviceKey !== deviceKey) return null; // stable identity + driver are mandatory
+      return {
+        probeOk: true,
+        writeAccepted: entry.writeAccepted === true,
+        fixedOk: entry.fixedOk === true,
+      };
     } catch {
       return null; // a cache read failure never blocks the probe
     }
@@ -624,9 +634,11 @@ export class IgclBackend {
       const driverVersion = typeof dev?.driverVersion === 'string' && dev.driverVersion ? dev.driverVersion : null;
       if (!driverVersion) return;
       const cacheFile = this._fanProbeCacheFile ?? fanProbeCacheFile();
+      const deviceKey = typeof dev?.deviceKey === 'string' ? dev.deviceKey : deviceHardwareKey(dev);
       writeFanProbeCache(cacheFile, {
         driverVersion,
         deviceId,
+        deviceKey,
         probeVersion: FAN_PROBE_VERSION,
         probeOk: result.probeOk === true,
         writeAccepted: result.writeAccepted === true,
@@ -1010,6 +1022,7 @@ export class IgclBackend {
       // store merge run AFTER the cache read on BOTH paths (the store is
       // session state - the merge must never be cached into the caps).
       const out = structuredClone(cached);
+      out.deviceKey = out.deviceKey ?? this._devices?.[deviceId]?.deviceKey ?? deviceHardwareKey(this._devices?.[deviceId]);
       out.waiverAccepted = this._waiverAccepted.get(deviceId) ?? false;
       return this._finalizeCaps(deviceId, out, this._devices?.[deviceId] ?? null);
     }
@@ -1019,6 +1032,10 @@ export class IgclBackend {
     const caps = {
       oemName: 'Intel',
       deviceName: dev.name,
+      // Stable PCI/BDF identity is carried with capabilities so apply routing
+      // can bind the old runtime's raw handle to the selected main-backend
+      // device instead of assuming both enumerations share an order.
+      deviceKey: dev.deviceKey ?? deviceHardwareKey(dev),
       // M4-I (S1): the memory type rides the caps payload (the waiver
       // dialogs + the VRAM row's type source - same token-table value the
       // device payload carries).
@@ -1181,6 +1198,7 @@ export class IgclBackend {
     // null (the honest '-' - the Dashboard AIB row renders it). These are
     // APPENDED caps fields (absent -> null).
     caps.pciDeviceId = dev.pciDeviceId ?? null;
+    caps.deviceKey = dev.deviceKey ?? deviceHardwareKey(dev);
     const laptopInfo = this._laptopInfoOf ? this._laptopInfoOf() : null;
     const laptopDecoded = laptopInfo ? laptopAibOf(laptopInfo) : null;
     const aib = laptopDecoded ?? aibOf(dev.pciSubsysVendorId, dev.pciSubsysId);

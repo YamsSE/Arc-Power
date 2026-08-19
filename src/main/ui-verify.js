@@ -1276,7 +1276,21 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
   //      save - the OTHER device's state unchanged);
   //   7. switching BACK via the Tuning selector restores the a770 surface
   //      (both selectors drive the same selectDevice flow).
-  if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+  if (process.env.RID_MOCK_MULTI_DEVICE === '1' && process.env.RID_MOCK_MULTI_ARC === '1') {
+    const mixedNames = ['Mock Arc A770 Graphics (fixture) 16GB GDDR6', 'Mock Arc A750 Graphics (fixture) 8GB GDDR6'];
+    await js(`location.hash = '#/tuning'`);
+    await sleep(250);
+    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 8000))) {
+      fail('M29: mixed A770+A750 Tuning selector is missing');
+    }
+    const mixedOptions = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-mode-row .device-select option')).map((o) => [o.value, o.textContent.trim()]))`));
+    if (mixedOptions.length !== 2 || mixedOptions.some(([id, name]) => !mixedNames.includes(name)) || mixedOptions.map(([id]) => id).sort().join(',') !== '0,1') {
+      fail(`M29: mixed A770+A750 Tuning selector options are ${JSON.stringify(mixedOptions)}`);
+    }
+    step('m29-mixed-arc-selector', `mixed A770+A750: Tuning Arc selector is visible with options ${JSON.stringify(mixedOptions)}`);
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(250);
+  } else if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
     const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
     const IGPU_NAME = 'Mock Arc iGPU (fixture)';
     const driveSelector = (value) => js(`(() => {
@@ -1333,15 +1347,12 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
     if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length === 0 && document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
       fail(`M4-F: the Tuning page did not degrade to the no-OC note on device 1 (cards=${await js(`document.querySelectorAll('.oc-card').length`)}; page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
     }
-    // the Tuning tab renders the selector too, with BOTH names.
-    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 5000))) {
-      fail('M4-F: the device selector is missing on the Tuning page (multi-device session)');
+    // M29: A770 + unrelated iGPU is not a two-Arc session, so Tuning has no
+    // selector even though Dashboard keeps the all-device inspection control.
+    if (await js(`!!document.querySelector('.oc-mode-row .device-select')`)) {
+      fail('M29: Tuning rendered the Arc selector with only one Arc device');
     }
-    const tuneOpts = JSON.parse(await selectorOptions());
-    if (tuneOpts.length !== 2 || !tuneOpts.some(([v, t]) => v === '1' && t === IGPU_NAME)) {
-      fail(`M4-F: the Tuning selector options are ${JSON.stringify(tuneOpts)} (expected both devices, incl. '${IGPU_NAME}')`);
-    }
-    step('m4f-switch', `M4-F: dashboard selector -> device 1: header '${IGPU_NAME}', caps telemetry-only (no ranges/controls), deviceGet=1 persisted, Tuning no-OC note, Tuning selector renders both names`);
+    step('m4f-switch', `M29: dashboard Inspect GPU -> device 1: header '${IGPU_NAME}', caps telemetry-only, Tuning no-OC note and no Arc selector`);
 
     // (3) F1: a featureset swap while device 1 is selected must re-read the
     // CURRENT device's pair - the Tuning page keeps the no-OC note, never
@@ -1433,14 +1444,14 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
     // (7) switch BACK via the TUNING selector: the a770 surface returns
     // (header name, control cards, 210 W readout) and the persisted
     // selection follows.
+    // (7) switch BACK via Dashboard's all-device Inspect GPU selector.
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(250);
+    if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-select')`, 5000))) {
+      fail('M29: the Dashboard Inspect GPU selector is missing for the switch back');
+    }
+    if ((await driveSelector('0')) !== 'ok') fail('M29: the Dashboard Inspect GPU selector change did not dispatch');
     await gotoOverclocking();
-    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 5000))) {
-      fail('M4-F: the Tuning selector is missing for the switch back');
-    }
-    if ((await driveSelector('0')) !== 'ok') fail('M4-F: the Tuning selector change did not dispatch');
-    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
-      fail(`M4-F: the switch back to device 0 failed (header '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' - expected '${A770_NAME}')`);
-    }
     if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length >= 4 && (document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 8000))) {
       fail(`M4-F: the Tuning page did not restore the a770 surface after the switch back (cards=${await js(`document.querySelectorAll('.oc-card').length`)}; PL='${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}')`);
     }
@@ -5188,7 +5199,7 @@ export async function runGraphicsVerify(win, backend) {
   step('m17c-fps-reset', 'M17c: FPS Reset-to-default mirrors the Off state - dropdown Off, slider-row hidden, the apply writes { enabled:false, value:60 } (the shape is byte-identical)');
 
   // --- 6. the multi-device degrade (RID_MOCK_MULTI_DEVICE=1) -----------------
-  if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+  if (process.env.RID_MOCK_MULTI_DEVICE === '1' && process.env.RID_MOCK_MULTI_ARC !== '1') {
     const IGPU_NAME = 'Mock Arc iGPU (fixture)';
     const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
     const driveSelector = (value) => js(`(() => {
@@ -7393,6 +7404,23 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   step('m19-divider-alignment', `M19/M19b: the divider-aligned value column - ${alignPins.why} (every value starts at maxLabelLen + 2 ch, right of the divider; the value starts are equal)`);
 
+  // M29: hide then immediately re-enable frametime through the real settings
+  // push; the renderer must synchronously restore the backing bitmap.
+  const resizePin = await js(`(async () => {
+    const env = await window.arcPower.profilesList();
+    const stats = env.settings.overlayStats;
+    const off = stats.filter((id) => id !== 'frametime');
+    await window.arcPower.profilesSettingsSave({ overlayStats: off });
+    await window.arcPower.profilesSettingsSave({ overlayStats: stats });
+    return ${JSON.stringify({})};
+  })()`).then(async () => ojs(`(() => {
+    const c = document.getElementById('overlay-frametime');
+    if (!c) return { ok: false, why: 'missing-canvas' };
+    const rect = c.getBoundingClientRect();
+    return { ok: c.width > 1 && c.height > 1 && Math.abs(c.width - Math.round(rect.width)) <= 1 && Math.abs(c.height - Math.round(rect.height)) <= 1, css: { width: rect.width, height: rect.height }, bitmap: { width: c.width, height: c.height } };
+  })()`));
+  if (!resizePin.ok) fail(`M29: frametime canvas backing bitmap did not track the visible strip after off/on (${JSON.stringify(resizePin)})`);
+  step('m29-frametime-resize', `frametime canvas backing bitmap tracks CSS strip after synchronous off/on (${JSON.stringify(resizePin.bitmap)})`);
   // (c) the frametime canvas has drawn content under RID_MOCK_FPS=1 (the
   // 16.7ms passthrough series fed the polyline - non-transparent pixels on
   // the otherwise transparent canvas).

@@ -50,6 +50,7 @@ import {
   cardSliderRange,
 } from './pure/settings.ts';
 import { applyFailureText, CONTROL_LABELS } from './pure/errors.ts';
+import { resolveBootDevice } from './pure/device.ts';
 import { chipState } from './pure/chip.ts';
 import { renderFanEditor, updateFanReadout } from './pages/fan-editor.ts';
 import {
@@ -145,14 +146,26 @@ function renderReadout(sample: TelemetrySample | null): void {
 // Boot: deviceGet -> getCapabilities -> getCurrentSettings -> render
 // ---------------------------------------------------------------------------
 
-async function boot(): Promise<void> {
-  let deviceId: number | null = null;
+async function resolveAdvancedOverlayDeviceId(): Promise<number | null> {
+  let persisted: { deviceId?: number | null; deviceKey?: string | null } | null = null;
   try {
-    const d = await api.deviceGet();
-    deviceId = d.deviceId;
+    persisted = await api.deviceGet();
   } catch {
-    deviceId = null;
+    return null;
   }
+  const fallback = typeof persisted?.deviceId === 'number' && persisted.deviceId >= 0
+    ? persisted.deviceId
+    : null;
+  try {
+    const devices = await api.listDevices();
+    return resolveBootDevice(devices, fallback, persisted?.deviceKey ?? null);
+  } catch {
+    return fallback;
+  }
+}
+
+async function boot(): Promise<void> {
+  const deviceId = await resolveAdvancedOverlayDeviceId();
   store.set({ deviceId });
 
   if (deviceId === null) {

@@ -3,6 +3,7 @@
 // hash routing.
 
 import { api } from './ipc.ts';
+import { stopTelemetry, startTelemetry } from './device.ts';
 import { el, clear } from './dom.ts';
 import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
@@ -47,6 +48,7 @@ export function applyTheme(theme: string): void {
   document.documentElement.dataset.theme = isValidTheme(theme) ? theme : 'dark';
   redrawMonitoringGraphs();
 }
+let featuresetSwapInFlight = false;
 const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElement, store, {
   // M2D: the mock featureset swap re-reads caps + state + device + health in
   // main (one mock:set-featureset round trip) and re-renders the whole page
@@ -61,16 +63,62 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
     // 1.0.1 no-Intel round (m5): the swap is a NO-OP in the no-device mode -
     // a swap would store caps/state into the no-Intel store and break the
     // presentation (the dropdown itself is hidden there too).
-    if (store.get().noIntel) return;
+    const before = store.get();
+    if (before.noIntel || featuresetSwapInFlight) return;
+    featuresetSwapInFlight = true;
+    const warn = (title: string, message: string) => toast('warn', title, message);
+    let swapApplied = false;
+    let targetId: number | null = null;
+    let targetTelemetryStarted = false;
     try {
-      const out = await api.mockSetFeatureset(id);
-      const curId = store.get().deviceId;
-      const caps = curId !== null && curId !== 0 ? await api.getCapabilities(curId) : out.caps;
-      const state = curId !== null && curId !== 0 ? await api.getCurrentSettings(curId) : out.state;
+      // Stop the old numeric session before main rebuilds the list. The
+      // returned devices get fresh ids, so leaving this service alive would
+      // keep polling the old id after a stable-key reorder.
+      await stopTelemetry(api, before.deviceId, warn);
+      let out;
+      try {
+        out = await api.mockSetFeatureset(id);
+      } catch (err) {
+        // A failed swap leaves the existing renderer selection in place;
+        // restore its session rather than leaving telemetry stopped.
+        await startTelemetry(api, before.deviceId, warn);
+        throw err;
+      }
+      swapApplied = true;
+      // The returned list has freshly assigned session ids. Resolve the
+      // selection by durable identity first. If that adapter disappeared,
+      // resolve the requested featureset's physical slot by its returned
+      // activeDeviceKey; otherwise use the first enumerated device.
+      const selected = before.devices.find((device) => device.id === before.deviceId);
+      const selectedKey = selected?.deviceKey ?? null;
+      const resolved = selectedKey
+        ? out.devices.find((device) => device.deviceKey === selectedKey)
+        : null;
+      const active = out.activeDeviceKey
+        ? out.devices.find((device) => device.deviceKey === out.activeDeviceKey)
+        : null;
+      const target = resolved ?? active ?? out.devices[0] ?? null;
+      if (!target) throw new Error('the featureset returned no devices');
+      targetId = target.id;
+      const caps = await api.getCapabilities(target.id);
+      const state = await api.getCurrentSettings(target.id);
+      // Start exactly one service for the freshly resolved session id.
+      targetTelemetryStarted = await startTelemetry(api, target.id, warn);
+      // If the old stable key disappeared, persist the visible fallback so
+      // the next boot does not resurrect the stale selection.
+      if (!resolved) {
+        try {
+          await api.deviceSet({ deviceId: target.id, deviceKey: target.deviceKey });
+        } catch (err) {
+          warn('GPU selection', `The fallback selection could not be saved for this session (${err instanceof Error ? err.message : String(err)})`);
+        }
+      }
       store.set({
         devices: out.devices,
+        deviceId: target.id,
         caps,
         state,
+        latestSample: null,
         health: out.health,
         featuresetId: out.featureset.id,
         // M2D: the swap replaces the boot registry date with the featureset's
@@ -80,7 +128,18 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
       });
       renderPage(currentPage());
     } catch (err) {
+      if (swapApplied) {
+        // A post-swap read/start/render failure must not strand the old
+        // session without telemetry. Stop a successfully started target
+        // before restoring the previous session, best effort.
+        if (targetTelemetryStarted && targetId !== null) {
+          await stopTelemetry(api, targetId, warn);
+        }
+        await startTelemetry(api, before.deviceId, warn);
+      }
       toast('error', 'Featureset swap failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      featuresetSwapInFlight = false;
     }
   },
 });
@@ -270,21 +329,16 @@ async function boot() {
   // null). Read by the caps/state block and the final telemetryStart below.
   let deviceId: number | null = null;
   if (!noIntel) {
-    // M4-F: boot selection - the persisted deviceId wins when it matches an
-    // enumerated id (device-get; the MAIN-side boot resolution is the
-    // authority and has already self-healed the persisted id before this
-    // round trip), else devices[0]. The main-side resolution applies the
-    // same rule to the boot-apply target, so the renderer and the boot
-    // apply can never disagree.
     let persistedDeviceId: number | null = null;
+    let persistedDeviceKey: string | null = null;
     try {
-      persistedDeviceId = (await api.deviceGet()).deviceId;
+      const persisted = await api.deviceGet();
+      persistedDeviceId = persisted.deviceId;
+      persistedDeviceKey = persisted.deviceKey ?? null;
     } catch {
-      persistedDeviceId = null; // degraded: devices[0]
+      persistedDeviceId = null;
     }
-    // (devices.length > 0 is guaranteed here - the empty enumeration branched
-    // above - so the resolution is always a concrete id).
-    deviceId = resolveBootDevice(devices, persistedDeviceId) ?? devices[0].id;
+    deviceId = resolveBootDevice(devices, persistedDeviceId, persistedDeviceKey) ?? devices[0].id;
     store.set({ deviceId });
   }
 

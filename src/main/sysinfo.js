@@ -187,9 +187,29 @@ export function applyRegistryMemory(controllers, registryMemory) {
         && (devId === c.pnpDeviceId || c.pnpDeviceId.startsWith(devId));
     });
     // The registry UInt64 is the RELIABLE source - it wins over the
-    // 32-bit AdapterRAM whenever it exists.
-    return row ? { ...c, vramBytes: Math.floor(row.MemoryBytes) } : c;
+    // 32-bit AdapterRAM whenever it exists. Apply the exact A770 correction
+    // here, before the carried value reaches backend/device-name consumers.
+    return row
+      ? { ...c, vramBytes: normalizeA770RegistryMemory(c, Math.floor(row.MemoryBytes)) }
+      : c;
   });
+}
+/**
+ * Normalize the two documented Windows under-report shapes for the physical
+ * Intel Arc A770 SKUs. The controller identity is mandatory: a name or byte
+ * count alone must never turn an unrelated adapter into an A770.
+ * @param {object} controller
+ * @param {number} memoryBytes
+ * @returns {number}
+ */
+export function normalizeA770RegistryMemory(controller, memoryBytes) {
+  if (!controller || typeof controller !== 'object') return memoryBytes;
+  const name = typeof controller.name === 'string' ? controller.name : '';
+  const pnp = typeof controller.pnpDeviceId === 'string' ? controller.pnpDeviceId : '';
+  if (!/a770/i.test(name) || !/VEN_8086&DEV_56A0/i.test(pnp)) return memoryBytes;
+  if (memoryBytes === 7 * 1024 ** 3) return 8 * 1024 ** 3;
+  if (memoryBytes === 15 * 1024 ** 3) return 16 * 1024 ** 3;
+  return memoryBytes;
 }
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ import { createRequire } from 'node:module';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS } from './backend/backend.interface.js';
-import { clampAndSnap, clampGpuLock, nearlyEqual } from './backend/units.js';
+import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey } from './backend/units.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
@@ -520,39 +520,31 @@ export function assertNoPayload(args, channel) {
 }
 
 /**
- * M4-F: resolve the boot device selection + self-heal. The persisted
- * deviceId wins when it matches an enumerated device id; otherwise
- * devices[0] AND the fallback is re-persisted (self-healing - a stale
- * selection (device removed, ordering changed) or an absent field must
- * never wedge the app on a dead id). A store read failure degrades to
- * devices[0] WITHOUT re-persisting (never a false write). Returns null when
- * no devices are enumerated (the caller degrades - never a crash).
- * @param {import('./backend/backend.interface.js').IOCBackend} backend
- * @param {import('./store/profile-store.js').ProfileStore} store
- * @returns {Promise<number|null>}
+ * M29: resolve the boot device by durable PCI/BDF identity. A legacy
+ * numeric-only setting is deliberately unverified after reorder, so the
+ * sorted preferred device is chosen and both identity fields are healed.
  */
 export async function resolveBootDeviceId(backend, store) {
   const devices = await backend.listDevices();
   if (devices.length === 0) return null;
-  const ids = new Set(devices.map((d) => d.id));
+  const keyed = devices.map((d) => ({ ...d, deviceKey: d.deviceKey ?? deviceHardwareKey(d) }));
   let settings = null;
   try {
     settings = await store.loadSettings();
   } catch {
     // degraded: never re-persist over an unreadable store
   }
-  const persisted = settings?.deviceId;
-  const resolved = Number.isInteger(persisted) && ids.has(persisted) ? persisted : devices[0].id;
-  if (settings && resolved !== persisted) {
+  const persistedKey = typeof settings?.deviceKey === 'string' ? settings.deviceKey : null;
+  const matched = persistedKey ? keyed.find((d) => d.deviceKey === persistedKey) : null;
+  const resolvedDevice = matched ?? keyed[0];
+  if (settings && (settings.deviceId !== resolvedDevice.id || settings.deviceKey !== resolvedDevice.deviceKey)) {
     try {
-      await store.saveSettings({ ...settings, deviceId: resolved });
+      await store.saveSettings({ ...settings, deviceId: resolvedDevice.id, deviceKey: resolvedDevice.deviceKey });
     } catch (err) {
-      // a re-persist failure must never break boot - the session still
-      // uses the resolved device; the next boot re-attempts the self-heal
-      console.log(`[boot] deviceId self-heal persist skipped: ${err.message}`);
+      console.log(`[boot] device selection self-heal persist skipped: ${err.message}`);
     }
   }
-  return resolved;
+  return resolvedDevice.id;
 }
 
 /**
@@ -1107,17 +1099,28 @@ export function createIpcHandlers({
       // profiles-settings-save carries it read-modify-write but never
       // chooses it). The id is validated as a non-negative integer; the
       // enumerated-set check is the boot resolution's job (self-heal).
+      // M29: device-get/set carry both the session id and durable hardware key.
       'device-get': async (...args) => {
         assertNoPayload(args, 'device-get');
         const s = await store.loadSettings();
-        return { deviceId: s.deviceId };
+        return { deviceId: s.deviceId, deviceKey: s.deviceKey ?? null };
       },
 
-      'device-set': async (deviceId) => {
+      'device-set': async (selection) => {
+        const isObject = typeof selection === 'object' && selection !== null;
+        const deviceId = isObject ? selection.deviceId : selection;
         assertValidDeviceId(deviceId);
         const cur = await store.loadSettings();
-        await store.saveSettings({ ...cur, deviceId });
-        return { deviceId };
+        const devices = await backend.listDevices();
+        const device = devices.find((d) => d.id === deviceId);
+        if (!device) throw new Error(`unknown device id ${deviceId}`);
+        const deviceKey = device.deviceKey ?? deviceHardwareKey(device);
+        if (isObject && selection.deviceKey !== undefined
+          && (typeof selection.deviceKey !== 'string' || selection.deviceKey !== deviceKey)) {
+          throw new Error(`device key mismatch for device id ${deviceId}`);
+        }
+        await store.saveSettings({ ...cur, deviceId, deviceKey });
+        return { deviceId, deviceKey };
       },
 
       'get-capabilities': async (deviceId) => {
@@ -1902,8 +1905,10 @@ export function createIpcHandlers({
           // M4-F (S3): the persisted GPU selection is NEVER chosen by the
           // profiles patch - the envelope carries it read-modify-write so
           // a Settings/Profiles save can never clobber device-set's write
-          // (normalized like the store: non-negative integers or null).
+          // M29: preserve both session id and durable identity; the patch
+          // never chooses or clobbers the selected GPU.
           deviceId: Number.isInteger(cur.deviceId) && cur.deviceId >= 0 ? cur.deviceId : null,
+          deviceKey: typeof cur.deviceKey === 'string' && cur.deviceKey.length > 0 ? cur.deviceKey : null,
           // 1.0.1 Themes (M4): the persisted UI theme rides the envelope
           // read-modify-write like the rest. An INVALID patch.theme keeps
           // the CURRENT theme - never a silent reset to 'dark' (the store

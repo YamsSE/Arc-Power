@@ -1,32 +1,34 @@
-// Arc Power - M4-F compact GPU selector (`<select>`, styled like the
-// featureset dropdown). Rendered (a) on the Dashboard GPU card header row
-// and (b) on the Tuning page top (the oc-mode row area); both drive the
-// same selectDevice switch. Returns null when 1 device or fewer - the
-// honest single-device degradation (the live 1-GPU machine shows nothing).
+// Arc Power - compact GPU selectors. Dashboard exposes the all-device
+// inspection control; Tuning gets an Arc-only selector only when two or more
+// Arc adapters are present.
 
 import { el } from '../dom.ts';
 import type { Store } from '../router.ts';
-import { showDeviceSelector, deviceSelectorOptions } from '../pure/device.ts';
+import { showDeviceSelector, deviceSelectorOptions, showArcDeviceSelector, arcDeviceSelectorOptions } from '../pure/device.ts';
 
-/**
- * @param {Store} store the app store (devices + deviceId drive the options)
- * @param {(id: number) => void} onSwitch the selectDevice handler
- * @returns {HTMLElement | null} the `<select>`, or null with <= 1 device
- */
-export function buildDeviceSelect(store: Store, onSwitch: (id: number) => void): HTMLElement | null {
+function buildSelect(store: Store, onSwitch: (id: number) => void, arcOnly: boolean): HTMLElement | null {
   const s = store.get();
-  if (!showDeviceSelector(s.devices)) return null;
+  if (arcOnly ? !showArcDeviceSelector(s.devices, s.deviceId) : !showDeviceSelector(s.devices)) return null;
+  const options = arcOnly ? arcDeviceSelectorOptions(s.devices, s.deviceId) : deviceSelectorOptions(s.devices, s.deviceId);
   return el('select', {
     class: 'device-select',
-    title: 'Select GPU',
-    'aria-label': 'Select GPU',
+    title: arcOnly ? 'Select Arc GPU' : 'Inspect GPU',
+    'aria-label': arcOnly ? 'Select Arc GPU' : 'Inspect GPU',
     onchange: (e: Event) => {
       const id = Number((e.target as HTMLSelectElement).value);
       if (Number.isInteger(id)) onSwitch(id);
     },
-  }, deviceSelectorOptions(s.devices, s.deviceId).map((o) => {
+  }, options.map((o) => {
     const opt = el('option', { value: String(o.id), text: o.label });
     if (o.selected) opt.selected = true;
     return opt;
   }));
+}
+
+export function buildDeviceSelect(store: Store, onSwitch: (id: number) => void): HTMLElement | null {
+  return buildSelect(store, onSwitch, false);
+}
+
+export function buildArcDeviceSelect(store: Store, onSwitch: (id: number) => void): HTMLElement | null {
+  return buildSelect(store, onSwitch, true);
 }
