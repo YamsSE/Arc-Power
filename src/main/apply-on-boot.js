@@ -360,7 +360,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       fallbackSkipped: true,
     };
   }
-  log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} - restoring defaults`);
+  log('[apply-on-boot] apply failed: ' + JSON.stringify(result.perControl) + ' - restoring defaults');
   let fallbackApplied = true;
   try {
     if (applyRunner?.needsWorker?.()) {
@@ -368,6 +368,19 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       if (!out.ok) throw new Error('reset via elevated worker failed');
     } else {
       await backend.resetToDefaults(deviceId_);
+    }
+    // M26: the fallback reset also clears a negative Sysman voltage offset;
+    // backend.resetToDefaults only resets the IGCL controls.
+    if (typeof sysmanPowerLimits?.readVoltageOffset === 'function'
+      && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
+      let voltRead = null;
+      try { voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId_); } catch { /* degraded */ }
+      if (voltRead && typeof voltRead.offsetV === 'number' && Number.isFinite(voltRead.offsetV) && voltRead.offsetV < 0) {
+        const cleared = await sysmanPowerLimits.setVoltageOffset({ offsetV: 0 }, deviceId_);
+        if (cleared?.ok !== true) {
+          throw new Error(`Sysman voltage clear failed: ${cleared?.message ?? cleared?.errorCode ?? 'unknown failure'}`);
+        }
+      }
     }
   } catch (err) {
     fallbackApplied = false;

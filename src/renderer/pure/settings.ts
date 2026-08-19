@@ -54,6 +54,9 @@ export const STD_TL_MAX_C = 90;
 // ceiling.
 export const VOLT_OFFSET_MAX_V = 0.234;
 export const VOLT_OFFSET_STEP_V = 0.001;
+// M26: the conservative stock safe floor - the lowest exposed product voltage
+// offset in stock mode. Advanced mode extends to -0.800 V.
+export const SAFE_VOLT_OFFSET_MIN_V = -0.500;
 
 /**
  * Clamp the exposed range for tempLimitC to TEMP_LIMIT_MAX_C (F3). Other
@@ -104,8 +107,18 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
       // M17c: the A770-scoped pin - max = min(degraded ceiling, 0.234),
       // NEVER a raise (a session-store degrade below 0.234 is preserved);
       // the step is pinned to 0.001 so the 0.234 ceiling is reachable.
-      if (range.max > VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V) {
-        return { ...range, max: Math.min(range.max, VOLT_OFFSET_MAX_V), step: VOLT_OFFSET_STEP_V };
+      // M26: the conservative stock safe floor is enforced as a min pin -
+      // the slider never goes below the safe mV floor.
+      const needsMax = range.max > VOLT_OFFSET_MAX_V;
+      const needsStep = range.step !== VOLT_OFFSET_STEP_V;
+      const needsMin = range.min === undefined || range.min > SAFE_VOLT_OFFSET_MIN_V;
+      if (needsMax || needsStep || needsMin) {
+        return {
+          ...range,
+          ...(needsMax ? { max: Math.min(range.max, VOLT_OFFSET_MAX_V) } : {}),
+          ...(needsStep ? { step: VOLT_OFFSET_STEP_V } : {}),
+          ...(needsMin ? { min: SAFE_VOLT_OFFSET_MIN_V } : {}),
+        };
       }
       return range; // already legal - the pass-through identity pins stay green
     }

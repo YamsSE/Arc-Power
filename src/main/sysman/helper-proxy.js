@@ -976,5 +976,53 @@ export function createSysmanHelperProxy({
       if (out.message !== undefined) result.message = out.message;
       return result;
     },
+
+    // M26: voltage offset methods. Reuse readiness/FIFO/timeout/degrade
+    // semantics without auto-upgrade PL intent for voltage.
+
+    /**
+     * M26: read the current GPU voltage offset via the Sysman frequency OC
+     * getter. Not-ready or not-connected returns null immediately.
+     * @param {number} [_deviceId] accepted for device-scoped consumer parity;
+     *   the one elevated helper is intentionally device-agnostic.
+     * @returns {Promise<{ targetV: number, offsetV: number } | null>}
+     */
+    async readVoltageOffset(_deviceId = 0) {
+      if (!(await readyGate())) return null;
+      const { out } = await enqueue({ op: 'read-voltage' });
+      if (out?.ok === true
+        && Number.isFinite(out.targetV)
+        && Number.isFinite(out.offsetV)) {
+        return { targetV: out.targetV, offsetV: out.offsetV };
+      }
+      return null;
+    },
+
+    /**
+     * M26: set the GPU voltage offset via the Sysman frequency OC setter.
+     * Not-ready or not-connected returns the not-ready verdict immediately.
+     * Finite guards run before the call; the result rides VERBATIM.
+     * Voltage not-ready must NOT write arcpower-sysman-intent.json.
+     * @param {{ offsetV: number }} params
+     * @param {number} [_deviceId] accepted for device-scoped consumer parity;
+     *   the one elevated helper is intentionally device-agnostic.
+     * @returns {Promise<{ ok: boolean, offsetV?: number, errorCode?: string, message?: string }>}
+     */
+    async setVoltageOffset({ offsetV }, _deviceId = 0) {
+      if (!Number.isFinite(offsetV)) {
+        return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
+      }
+      if (!(await readyGate())) {
+        debugLog({ ts: Date.now(), event: 'resp', op: 'set-voltage', spawnError: NOT_READY_MESSAGE, out: null });
+        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
+      }
+      const { out, reason } = await enqueue({ op: 'set-voltage', payload: { offsetV } });
+      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
+      const result = { ok: out.ok === true };
+      if (out.offsetV !== undefined) result.offsetV = out.offsetV;
+      if (out.errorCode !== undefined) result.errorCode = out.errorCode;
+      if (out.message !== undefined) result.message = out.message;
+      return result;
+    },
   };
 }

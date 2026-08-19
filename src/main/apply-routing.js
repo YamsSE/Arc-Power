@@ -320,6 +320,18 @@ export function extendedRangesFor(caps) {
   }
   const tl = ranges.tempLimitC;
   if (tl && tl.units === 'C') out.tempLimitC = { ...tl, max: EXTENDED_TL_MAX_C };
+  const volt = ranges.gpuVoltOffsetV;
+  if (volt && volt.units === 'V') {
+    const advanced = deviceLimitsOf({
+      pciDeviceId: caps.pciDeviceId ?? null,
+      aibVendor: caps.aibVendor ?? null,
+      aibModel: caps.aibModel ?? null,
+    }, { advanced: true });
+    const advancedMin = advanced?.gpuVoltOffsetV?.min;
+    if (Number.isFinite(advancedMin)) {
+      out.gpuVoltOffsetV = { ...volt, min: advancedMin };
+    }
+  }
   return out;
 }
 
@@ -741,6 +753,111 @@ export async function runV2Companion({ backend, deviceId, requestedW, opts = {},
   }
 }
 
+// M26: the safe voltage floor (canonical volts). No live write below this
+// value. The live capability 0/0 bounds are diagnostic only; the
+// The UI exposes -0.500 V in stock and -0.800 V in Advanced. The routed
+// backend safety bound is the deepest approved Advanced value.
+export const SAFE_VOLT_OFFSET_MIN_V = -0.800;
+
+/**
+ * M26: route a negative gpuVoltOffsetV through the Sysman frequency OC
+ * setter. The Sysman path reads the current target first, converts
+ * canonical volts to the driver's mV boundary, writes, and verifies via
+ * the same getter. A mismatch is a failed per-control result.
+ *
+ * @param {{
+ *   sysmanPowerLimits?: { setVoltageOffset?: (p: { offsetV: number }, deviceId?: number) => Promise<{ ok: boolean, offsetV?: number, errorCode?: string, message?: string }> } | null,
+ *   offsetV: number,
+ *   deviceId?: number,
+ *   log?: (s: string) => void,
+ * }} deps
+ * @returns {Promise<{ ok: boolean, offsetV?: number, errorCode?: string, message?: string }>}
+ */
+export async function runSysmanVoltageOffset({ sysmanPowerLimits, offsetV, deviceId = 0, log = () => {} }) {
+  if (!sysmanPowerLimits || typeof sysmanPowerLimits.setVoltageOffset !== 'function') {
+    return { ok: false, errorCode: 'unsupported', message: 'the sysman voltage offset setter is unavailable' };
+  }
+  if (!Number.isFinite(offsetV) || offsetV >= 0) {
+    return { ok: false, errorCode: 'invalid-argument', message: 'runSysmanVoltageOffset requires a negative finite offsetV' };
+  }
+  const clamped = Math.max(SAFE_VOLT_OFFSET_MIN_V, offsetV);
+  if (clamped !== offsetV) {
+    log(`[apply] sysman voltage: clamped ${offsetV} V to the safe floor ${SAFE_VOLT_OFFSET_MIN_V} V`);
+  }
+  try {
+    const res = await sysmanPowerLimits.setVoltageOffset({ offsetV: clamped }, deviceId);
+    const verified = res?.ok === true && Number.isFinite(res.offsetV)
+      && Math.abs(res.offsetV - clamped) <= 0.001;
+    if (verified) {
+      log(`[apply] sysman voltage: offset ${res.offsetV} V (read-back verified)`);
+      return { ...res, ok: true, offsetV: res.offsetV };
+    }
+    if (res?.ok === true) {
+      const message = `sysman voltage setter returned an invalid read-back for ${clamped} V`;
+      log(`[apply] sysman voltage: FAILED (${message})`);
+      return { ok: false, errorCode: 'io-failed', message };
+    }
+    log(`[apply] sysman voltage: FAILED (${res?.errorCode ?? res?.message ?? 'unknown'})`);
+    return res;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[apply] sysman voltage: threw (${msg})`);
+    return { ok: false, errorCode: 'io-failed', message: msg };
+  }
+}
+
+/**
+ * Clear a previously routed negative Sysman voltage offset before applying
+ * the positive/zero IGCL control. Without this transition, a later positive
+ * or reset apply can leave the old Sysman curve offset active while the
+ * backend reports only the IGCL value.
+ *
+ * A missing/degraded read is best-effort and does not block the IGCL path.
+ * Once the read proves a negative offset is active, a failed clear is an
+ * honest per-control refusal and the IGCL voltage write is skipped.
+ *
+ * @param {{
+ *   sysmanPowerLimits?: {
+ *     readVoltageOffset?: (deviceId?: number) => Promise<{ offsetV?: number } | null>,
+ *     setVoltageOffset?: (p: { offsetV: number }, deviceId?: number) => Promise<{ ok: boolean, errorCode?: string, message?: string }>,
+ *   } | null,
+ *   deviceId: number,
+ *   log?: (s: string) => void,
+ * }} deps
+ * @returns {Promise<{ ok: boolean, checked: boolean, errorCode?: string, message?: string }>}
+ */
+async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = () => {} }) {
+  if (typeof sysmanPowerLimits?.readVoltageOffset !== 'function'
+    || typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
+    return { ok: true, checked: false };
+  }
+  let current;
+  try {
+    current = await sysmanPowerLimits.readVoltageOffset(deviceId);
+  } catch {
+    return { ok: true, checked: false };
+  }
+  if (!current || typeof current.offsetV !== 'number' || !Number.isFinite(current.offsetV) || current.offsetV >= 0) {
+    return { ok: true, checked: true };
+  }
+  try {
+    const cleared = await sysmanPowerLimits.setVoltageOffset({ offsetV: 0 }, deviceId);
+    if (cleared?.ok === true) {
+      log(`[apply] sysman voltage: cleared prior negative offset ${current.offsetV} V before the non-negative IGCL apply`);
+      return { ok: true, checked: true };
+    }
+    return {
+      ok: false,
+      checked: true,
+      errorCode: cleared?.errorCode ?? 'io-failed',
+      message: cleared?.message ?? 'the prior negative sysman voltage offset could not be cleared',
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, checked: true, errorCode: 'io-failed', message };
+  }
+}
+
 /**
  * A failed per-control result can be a non-persisting write (the momentary
  * lie) rather than a real refusal: the shape is SUCCESS from the setter with
@@ -796,7 +913,46 @@ export function isMomentaryLieCandidate(per) {
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
   const { driverstore, extended } = splitByRuntime(settings, ranges, mode);
+  const voltageIsVUnit = ranges === null || ranges?.gpuVoltOffsetV?.units === 'V';
+
+  // M26: the backend normalizes a non-zero GPU lock to zero offsets. Do not
+  // route a conflicting negative voltage after that lock has landed; the
+  // lock's zero-offset contract wins and the negative request is ignored in
+  // the same way the direct backend path ignores it.
+  const lockForcesZero = !!(settings.gpuLock && typeof settings.gpuLock === 'object'
+    && (settings.gpuLock.voltageV !== 0 || settings.gpuLock.freqMhz !== 0));
+  const negativeVoltOffsetV = voltageIsVUnit && !lockForcesZero
+    && typeof driverstore.gpuVoltOffsetV === 'number' && driverstore.gpuVoltOffsetV < 0
+    ? driverstore.gpuVoltOffsetV
+    : undefined;
+  if (negativeVoltOffsetV !== undefined) {
+    delete driverstore.gpuVoltOffsetV;
+  }
+
   const perControl = {};
+
+  // M26: a non-negative voltage request is the transition back to the IGCL
+  // control. A lock request also normalizes the IGCL offsets to zero (even
+  // when the voltage key is absent), so it must clear a previously routed
+  // Sysman offset before the lock lands.
+  const lockRequestsOffsetZero = !!(settings.gpuLock && typeof settings.gpuLock === 'object');
+  const nonNegativeVoltOffsetV = typeof settings.gpuVoltOffsetV === 'number' && settings.gpuVoltOffsetV >= 0
+    ? settings.gpuVoltOffsetV
+    : undefined;
+  if (voltageIsVUnit && (nonNegativeVoltOffsetV !== undefined || lockRequestsOffsetZero)) {
+    const clear = await clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log });
+    if (!clear.ok) {
+      delete driverstore.gpuVoltOffsetV;
+      if (lockRequestsOffsetZero) delete driverstore.gpuLock;
+      const failure = {
+        ok: false,
+        errorCode: clear.errorCode ?? 'io-failed',
+        message: clear.message ?? 'the prior negative sysman voltage offset could not be cleared',
+      };
+      perControl.gpuVoltOffsetV = failure;
+      if (lockRequestsOffsetZero) perControl.gpuLock = failure;
+    }
+  }
 
   if (Object.keys(driverstore).length > 0) {
     log(`[apply] driverstore controls: [${Object.keys(driverstore).join(', ')}] (single attempt)`);
@@ -1016,6 +1172,21 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
     log(`[apply] sysman companion: SKIPPED - the powerLimitW units are '${plUnits}' (the sysman layer is W-only; the percent apply stays IGCL-verified)`);
   }
 
+  // M26: route negative gpuVoltOffsetV through Sysman after normal controls.
+  // The negative value was removed from the IGCL driverstore payload above;
+  // it is applied here via the Sysman frequency OC setter, and the
+  // perControl.gpuVoltOffsetV is set from the Sysman read-back. Report
+  // per-control success only after Sysman read-back verification.
+  if (negativeVoltOffsetV !== undefined && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
+    const voltResult = await runSysmanVoltageOffset({ sysmanPowerLimits, offsetV: negativeVoltOffsetV, deviceId, log });
+    perControl.gpuVoltOffsetV = voltResult.ok === true
+      ? { ok: true, readBackEqual: true }
+      : { ok: false, errorCode: voltResult.errorCode ?? 'io-failed', message: voltResult.message ?? 'the sysman voltage offset write did not verify' };
+  } else if (negativeVoltOffsetV !== undefined) {
+    // Missing Sysman or failed verification is an honest per-control failure.
+    perControl.gpuVoltOffsetV = { ok: false, errorCode: 'unsupported', message: 'negative gpuVoltOffsetV requires the sysman voltage offset setter' };
+  }
+
   const ok = Object.keys(perControl).length === 0
     ? true
     : Object.values(perControl).every((p) => p.ok === true);
@@ -1084,6 +1255,26 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
   const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+
+  // M26: always inspect the shared Sysman voltage domain for supported
+  // V-unit devices with a finite backend voltage state. Only a finite
+  // negative Sysman offset is authoritative for the overlay; positive/zero
+  // read-back leaves the backend's IGCL value intact.
+  if (caps.ranges?.gpuVoltOffsetV?.units === 'V'
+    && Number.isFinite(state?.gpuVoltOffsetV)
+    && typeof sysmanPowerLimits?.readVoltageOffset === 'function') {
+    try {
+      const voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId);
+      if (voltRead && typeof voltRead === 'object'
+        && Number.isFinite(voltRead.offsetV)
+        && voltRead.offsetV < 0) {
+        state = { ...state, gpuVoltOffsetV: voltRead.offsetV };
+      }
+    } catch {
+      // best-effort overlay - degraded to backend state
+    }
+  }
+
   return { result: out.result, state };
 }
 

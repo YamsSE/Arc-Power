@@ -10,7 +10,7 @@
 //       keeps the bare semver; M5: displayVersion renders ' Beta' for the
 //       -beta.x line, nothing for a stable - the M21 1.0.1-beta.1 bump: the
 //       pinned text is EXACTLY 'Arc Power Ver. 1.0.1 Beta'; M23 (user): the
-//       1.0.3 STABLE bump - 'Arc Power Ver. 1.0.3', no suffix) - the driver
+//       1.0.3 STABLE bump - 'Arc Power Ver. 1.0.4', no suffix) - the driver
 //       version + date live in the
 //       dashboard GPU card 'Driver version' kv ("32.0.101.8861 - Jul 05,
 //       2026" from the mock driver-info fixture); M4-H: the GPU card title
@@ -783,9 +783,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
   // M23 (user): the 1.0.3 STABLE bump - the display drops the Beta line
-  // entirely ('Arc Power Ver. 1.0.3' - a stable has no suffix).
-if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3'`))) {
-fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3')`);
+  // entirely ('Arc Power Ver. 1.0.4' - a stable has no suffix).
+  // M25: the version lives in the titlebar-left next to the corner icon.
+if (!(await waitFor(win, `(document.getElementById('titlebar-version')?.textContent ?? '').trim() === '1.0.4'`))) {
+fail(`header version line is '${await js(`document.getElementById('titlebar-version')?.textContent ?? ''`)}' (expected '1.0.4')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -2161,7 +2162,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   })()`);
   const voltMin = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('min')`);
   const voltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
-  if (voltMin !== '-0.234' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.234..0.234 - the mirrored min)`);
+  if (voltMin !== '-0.5' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.5..0.234 - the M26 stock floor)`);
   // M15 F4-fix / M16 (nit 9a): the slider's step attribute is the pinned
   // 0.001 grid - the old driver-reported 0.005 put the 0.234 ceiling
   // OFF-GRID (the slider maxed at 0.230). The step + the reachability of
@@ -2974,10 +2975,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (await js(`!!document.querySelector('.oc-lock-mode-toggle')`)) {
     fail('M17e: the Offset|Lock toggle is rendered on the b580 surface (no gpuLock control - the offset card must have NO toggle)');
   }
-  if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
-    fail('M4J (D): the VRAM clock editor is missing on the b580 swap (vramFreqOffset native)');
+  if (await js(`!!document.querySelector('.vram-editor-card')`) === true) {
+    fail('M4J (D): the VRAM clock editor should be absent on the b580 swap (removed in M25)');
   }
-  step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
+  step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported, VRAM clock editor absent (removed M25)`);
 
   // M2D: the swap payload replaces the boot driver date - the HEALTH card's
   // driver row (the GPU card's Driver version row is REMOVED - M4-H) must
@@ -3819,7 +3820,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (viewLabels !== 'Monitoring|Overlay') fail(`M9: the Monitoring view pill must read 'Monitoring|Overlay' (got '${viewLabels}')`);
   // overlay -> the Overlay Settings content renders (its own heading).
   await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Overlay'); b.click(); })()`);
-  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Overlay Settings')`, 8000))) {
+  if (!(await waitFor(win, `!!document.getElementById('overlay-settings-root')`, 8000))) {
     fail('M9: the Overlay view did not render the Overlay Settings content');
   }
   // monitoring -> the readout grid returns.
@@ -4432,9 +4433,9 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
 // M4-D row shares the header's display format). M23 (user): the 1.0.3
-// STABLE bump - 'Arc Power Ver. 1.0.3' (no Beta suffix on a stable).
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3')`);
+// STABLE bump - 'Arc Power Ver. 1.0.4' (no Beta suffix on a stable).
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.4'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.4')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -4496,7 +4497,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.3`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.4`);
 
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
@@ -8754,8 +8755,8 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   // (8) the Settings card (Overlay view): the advanced hotkey card renders +
   // a letter save re-registers through the probe + the honest
   // register-failure note appears when the probe fails.
-  if (!(await js(`!!document.querySelector('.overlay-advanced-card')`))) {
-    fail('M23: the Overlay view has no advanced settings card');
+  if (!(await js(`!!document.querySelector('.overlay-hotkey-card .settings-advanced-hotkey-input')`))) {
+    fail('M23: the Overlay view has no advanced settings controls');
   }
   // (8a) a letter save re-registers through the counting probe.
   await clearToasts();

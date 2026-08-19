@@ -731,6 +731,12 @@ export class MockBackend {
             next = { ...next, default: Math.min(range.default, next.max) };
           }
         }
+        // M26: mirror the real backend - a device-limits min is authoritative
+        // for a V-unit row, even when the raw fixture already supplies a
+        // shallower or stale min.
+        if (typeof override.min === 'number' && Number.isFinite(override.min)) {
+          next = { ...next, min: override.min };
+        }
         if (typeof override.step === 'number' && Number.isFinite(override.step)) {
           next = { ...next, step: override.step };
         }

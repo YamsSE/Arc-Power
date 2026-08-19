@@ -1,6 +1,6 @@
 {
     "name":  "arc-power",
-    "version":  "1.0.3",
+    "version":  "1.0.4",
     "license":  "GPL-2.0-only",
     "private":  true,
     "description":  "Overclocking tool for Intel Arc GPUs (M1: core backend, no UI)",

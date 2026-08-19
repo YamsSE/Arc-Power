@@ -18,8 +18,7 @@ const OWNER = 'YamsSE';
 const REPO = 'Arc-Power';
 const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
 
-/** Compare two semver strings. Returns >0 if a > b, <0 if a < b, 0 if equal. */
-function compareVersions(a: string, b: string): number {
+function compareVersions(a, b) {
   const pa = a.split('.').map(Number);
   const pb = b.split('.').map(Number);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
@@ -30,8 +29,7 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** Parse a GitHub release tag like "v1.0.3" or "1.0.3" into a bare semver. */
-function parseTag(tag: string): string | null {
+function parseTag(tag) {
   const m = /^v?(\d+\.\d+\.\d+)$/.exec(tag);
   return m ? m[1] : null;
 }
@@ -40,15 +38,10 @@ function parseTag(tag: string): string | null {
  * Check GitHub Releases for a newer version.
  * Returns { available, version, assetUrl, assetName } or { available: false }.
  */
-export async function checkForUpdates(): Promise<{
-  available: boolean;
-  version?: string;
-  assetUrl?: string;
-  assetName?: string;
-}> {
+export async function checkForUpdates() {
   const currentVersion = app.getVersion();
 
-  const response = await fetchJson<{ tag_name: string; assets: Array<{ name: string; browser_download_url: string }> }>(API_URL);
+  const response = await fetchJson(API_URL);
   if (!response) return { available: false };
 
   const latestVersion = parseTag(response.tag_name);
@@ -75,7 +68,7 @@ export async function checkForUpdates(): Promise<{
  * Download an update asset to a temp file.
  * Returns the path to the downloaded file.
  */
-export async function downloadUpdate(url: string, onProgress?: (pct: number) => void): Promise<string> {
+export async function downloadUpdate(url, onProgress) {
   const tmpDir = join(tmpdir(), 'arc-power-updates');
   if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
 
@@ -91,10 +84,10 @@ export async function downloadUpdate(url: string, onProgress?: (pct: number) => 
   const totalBytes = Number(response.headers.get('content-length') ?? 0);
   let downloadedBytes = 0;
 
-  const nodeStream = Readable.fromWeb(response.body as any);
+  const nodeStream = Readable.fromWeb(response.body);
   const writeStream = createWriteStream(destPath);
 
-  nodeStream.on('data', (chunk: Buffer) => {
+  nodeStream.on('data', (chunk) => {
     downloadedBytes += chunk.length;
     if (totalBytes > 0 && onProgress) {
       onProgress(Math.round((downloadedBytes / totalBytes) * 100));
@@ -109,7 +102,7 @@ export async function downloadUpdate(url: string, onProgress?: (pct: number) => 
  * Install a downloaded update. NSIS installer runs silently; portable exe
  * prompts the user to replace.
  */
-export async function installUpdate(filePath: string): Promise<void> {
+export async function installUpdate(filePath) {
   // Launch the installer/exe and quit the app
   shell.openExternal(`file://${filePath}`);
   // Give the installer a moment to start, then quit
@@ -120,7 +113,7 @@ export async function installUpdate(filePath: string): Promise<void> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function fetchJson<T>(url: string): Promise<T | null> {
+function fetchJson(url) {
   return new Promise((resolve) => {
     const request = net.request(url);
     request.setHeader('Accept', 'application/vnd.github.v3+json');
@@ -132,9 +125,9 @@ function fetchJson<T>(url: string): Promise<T | null> {
         resolve(null);
         return;
       }
-      response.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      response.on('data', (chunk) => { body += chunk.toString(); });
       response.on('end', () => {
-        try { resolve(JSON.parse(body) as T); } catch { resolve(null); }
+        try { resolve(JSON.parse(body)); } catch { resolve(null); }
       });
     });
     request.on('error', () => resolve(null));
@@ -142,7 +135,7 @@ function fetchJson<T>(url: string): Promise<T | null> {
   });
 }
 
-function netFetch(url: string): Promise<Response | null> {
+function netFetch(url) {
   return new Promise((resolve) => {
     const request = net.request(url);
     request.setHeader('User-Agent', `Arc-Power/${app.getVersion()}`);
@@ -153,11 +146,11 @@ function netFetch(url: string): Promise<Response | null> {
         return;
       }
       // Convert Electron IncomingMessage to a Fetch-like Response
-      const chunks: Buffer[] = [];
-      response.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+      const chunks = [];
+      response.on('data', (chunk) => { chunks.push(chunk); });
       response.on('end', () => {
         const body = Buffer.concat(chunks);
-        const headers: Record<string, string> = {};
+        const headers = {};
         response.headers;
         for (const [key, val] of Object.entries(response.headers)) {
           if (typeof val === 'string') headers[key] = val;

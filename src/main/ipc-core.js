@@ -1127,7 +1127,31 @@ export function createIpcHandlers({
 
       'get-current-settings': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return backend.getCurrentSettings(deviceId);
+        const state = await backend.getCurrentSettings(deviceId);
+        // M26: for supported V-unit devices with a finite backend state,
+        // always inspect the shared Sysman domain. Only a finite negative
+        // Sysman offset is authoritative; positive/zero read-back preserves
+        // the backend's IGCL value. Percent-unit/null states stay untouched.
+        let voltageUnits = null;
+        if (state && Number.isFinite(state.gpuVoltOffsetV)
+          && typeof sysmanPowerLimits?.readVoltageOffset === 'function') {
+          try {
+            voltageUnits = (await backend.getCapabilities(deviceId))?.ranges?.gpuVoltOffsetV?.units ?? null;
+          } catch { /* degraded */ }
+        }
+        if (voltageUnits === 'V') {
+          try {
+            const voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId);
+            if (voltRead && typeof voltRead === 'object'
+              && Number.isFinite(voltRead.offsetV)
+              && voltRead.offsetV < 0) {
+              return { ...state, gpuVoltOffsetV: voltRead.offsetV };
+            }
+          } catch {
+            // best-effort overlay
+          }
+        }
+        return state;
       },
 
       // M17f: the sysman PL2 read-out source - { sustainedW, burstW, peakW }
@@ -1302,13 +1326,43 @@ export function createIpcHandlers({
         // (0-value writes are refused even elevated - reset runs
         // ctlOverclockResetToDefault, which works elevated only). The
         // non-elevated app delegates to the elevated self-worker.
-        let state;
+        let state = null;
         if (applyRunner?.needsWorker?.()) {
           const out = await applyRunner.reset(deviceId);
           state = out.state;
         } else {
           await backend.resetToDefaults(deviceId);
-          state = await backend.getCurrentSettings(deviceId);
+          try {
+            state = await backend.getCurrentSettings(deviceId);
+          } catch {
+            // A degraded backend read must not skip the Sysman reset; the
+            // final OC verification remains honest against the null state.
+          }
+        }
+        // M26: reset-to-defaults must clear a previously routed negative
+        // Sysman offset too; backend.resetToDefaults only knows the IGCL
+        // controls. A missing/degraded read is best-effort, but once a
+        // negative offset is observed a failed clear is an honest reset
+        // failure rather than a false all-defaults result.
+        if (typeof sysmanPowerLimits?.readVoltageOffset === 'function'
+          && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
+          let voltRead = null;
+          try { voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId); } catch { /* degraded */ }
+          if (voltRead && typeof voltRead.offsetV === 'number' && Number.isFinite(voltRead.offsetV) && voltRead.offsetV < 0) {
+            let cleared;
+            try {
+              cleared = await sysmanPowerLimits.setVoltageOffset({ offsetV: 0 }, deviceId);
+            } catch (err) {
+              throw new Error(`reset-to-defaults could not clear the Sysman voltage offset: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            if (cleared?.ok !== true) {
+              throw new Error(`reset-to-defaults could not clear the Sysman voltage offset: ${cleared?.message ?? cleared?.errorCode ?? 'unknown failure'}`);
+            }
+            if (state && typeof state === 'object') state = { ...state, gpuVoltOffsetV: 0 };
+          }
+        }
+        if (!state || typeof state !== 'object') {
+          throw new Error('reset-to-defaults verification failed: backend state read-back unavailable');
         }
         // No success claims without verification (plan §5): confirm the
         // supported OC controls moved to their capability defaults

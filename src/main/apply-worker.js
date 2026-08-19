@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
-import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, wcUnitControls, extendedRangesFor, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -264,8 +264,9 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       await finish({ ok: false, perControl: extendedUnavailablePerControl(unavailable.controls), state, extendedUnavailable: true });
       return 0;
     }
-    const clamped = clampSettings(settings, caps.ranges);
-    const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log, ocMode: applyMode, sysmanPowerLimits });
+    const clampRanges = req.profileApply === true ? extendedRangesFor(caps) : caps.ranges;
+    const clamped = clampSettings(settings, clampRanges);
+    const out = await executeApply({ backend, oldIgcl, deviceId, settings: clamped, log, ocMode: applyMode, opts: { profileApply: req.profileApply === true }, sysmanPowerLimits });
     // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
     // round-3 N1): the attempted values of the 'out-of-range' per-control
     // results - the parent's session refused-ceiling store records from

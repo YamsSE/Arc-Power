@@ -1343,6 +1343,14 @@ export class IgclBackend {
             next = { ...next, default: Math.min(range.default, next.max) };
           }
         }
+        // M26: the device-limits min is authoritative for a V-unit row. A
+        // driver-reported min can be a shallower floor (for example
+        // -0.234 V) or a stale deeper floor from another mode; retaining it
+        // would either hide the approved negative range or expose a floor
+        // outside the active stock/advanced safety row.
+        if (typeof override.min === 'number' && Number.isFinite(override.min)) {
+          next = { ...next, min: override.min };
+        }
         if (typeof override.step === 'number' && Number.isFinite(override.step)) {
           next = { ...next, step: override.step };
         }
@@ -1917,6 +1925,14 @@ export class IgclBackend {
       const range = caps.ranges[canonicalName];
       if (!range) {
         fail(canonicalName, 'unsupported', 'no capability range reported for this control');
+        return;
+      }
+      // M26: canonical negative volts must never reach the IGCL V2
+      // setter. Battlemage percent-unit voltage values are a different
+      // control domain and remain valid on IGCL (the routed Sysman path is
+      // only for canonical V-unit negatives).
+      if (control === 'gpuVoltOffset' && typeof value === 'number' && value < 0 && range.units !== '%') {
+        fail(canonicalName, 'unsupported', 'negative gpuVoltOffsetV is not supported on the IGCL V2 path - it must be routed through Sysman');
         return;
       }
       const clamped = opts.snapToStep === false

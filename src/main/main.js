@@ -1014,7 +1014,7 @@ async function main() {
         // the safety-net capability refusal keys on the runtime probe.
         // M17d (Run D): forward the ocMode too - executeApply threads it
         // into splitByRuntime (the V1-call pin: the mode-based W/C routing).
-        apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode }),
+        apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }),
         waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
         reset: async (deviceId) => {
           await backend.resetToDefaults(deviceId);
@@ -2211,6 +2211,7 @@ async function main() {
       profileId: settings.activeProfileId,
       deviceId: mockBootDeviceId,
       oldIgcl,
+      sysmanPowerLimits,
       log: (s) => console.log(`[mock-boot-apply] ${s}`),
     });
     recordBootApply(settings.activeProfileId, out);

@@ -222,6 +222,63 @@ const zes_overclock_properties_t = koffi.struct('zes_overclock_properties_t', {
   NumberOfVFPoints: 'uint32',
 });
 
+// M26: frequency domain structs (deprecated Level Zero frequency OC APIs,
+// pinned to the live A770 driver's mV boundary). Every [in] struct field
+// (stype, pNext, and all others) is initialized before calls.
+
+// zes_freq_properties_t = 48 bytes (the probe-verified layout on the live
+// A770 driver; the driver uses `type` with ZES_DOMAIN_TYPE_GPU = 0).
+const zes_freq_properties_t = koffi.struct('zes_freq_properties_t', {
+  stype: 'uint32',
+  pNext: 'void*',
+  type: 'int32',
+  onSubdevice: 'uint8',
+  subdeviceId: 'uint32',
+  canControl: 'uint8',
+  isThrottleEventSupported: 'uint8',
+  min: 'double',
+  max: 'double',
+});
+
+// zes_freq_state_t = 64 bytes (the probe-verified layout).
+const zes_freq_state_t = koffi.struct('zes_freq_state_t', {
+  stype: 'uint32',
+  pNext: 'void*',
+  currentVoltage: 'double',
+  request: 'double',
+  tdp: 'double',
+  efficient: 'double',
+  actual: 'double',
+  throttleReasons: 'uint32',
+});
+
+// zes_oc_capabilities_t = 80 bytes (the probe-verified layout).
+const zes_oc_capabilities_t = koffi.struct('zes_oc_capabilities_t', {
+  stype: 'uint32',
+  pNext: 'void*',
+  isOcSupported: 'uint8',
+  maxFactoryDefaultFrequency: 'double',
+  maxFactoryDefaultVoltage: 'double',
+  maxOcFrequency: 'double',
+  minOcVoltageOffset: 'double',
+  maxOcVoltageOffset: 'double',
+  maxOcVoltage: 'double',
+  isTjMaxSupported: 'uint8',
+  isIccMaxSupported: 'uint8',
+  isHighVoltModeCapable: 'uint8',
+  isHighVoltModeEnabled: 'uint8',
+  isExtendedModeSupported: 'uint8',
+  isFixedModeSupported: 'uint8',
+});
+
+// M26: the structure type tag values for [in] initialization (zes_api.h
+// v1.32.0). Every frequency OC struct is initialized with its stype + null
+// pNext before the driver call.
+export const ZES_STRUCTURE_TYPE_FREQ_PROPERTIES = 0x9;
+export const ZES_STRUCTURE_TYPE_FREQ_STATE = 0x1b;
+export const ZES_STRUCTURE_TYPE_OC_CAPABILITIES = 0x1c;
+export const ZES_DOMAIN_TYPE_GPU = 0;
+
 // zes_control_property_t { 5 x double } = 40
 const zes_control_property_t = koffi.struct('zes_control_property_t', {
   MinValue: 'double',
@@ -237,6 +294,9 @@ const EXPECTED_SIZES = {
   zes_power_peak_limit_t: 8,
   zes_overclock_properties_t: 32,
   zes_control_property_t: 40,
+  zes_freq_properties_t: 48,
+  zes_freq_state_t: 64,
+  zes_oc_capabilities_t: 80,
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -330,6 +390,18 @@ export function loadSysman(dllPath) {
   bind('zesDeviceGetCardPowerDomain', 'uint32', ['void*', 'void**']);
   bind('zesPowerGetLimits', 'uint32', ['void*', 'zes_power_sustained_limit_t*', 'zes_power_burst_limit_t*', 'zes_power_peak_limit_t*']);
   bind('zesPowerSetLimits', 'uint32', ['void*', 'zes_power_sustained_limit_t*', 'zes_power_burst_limit_t*', 'zes_power_peak_limit_t*']);
+
+  // M26: frequency domain + OC voltage-target bindings (optional - callers
+  // degrade per-symbol when the driver's ze_loader.dll lacks them). These
+  // are the deprecated Level Zero frequency OC APIs whose live A770 driver
+  // boundary is integer millivolts despite the public header's volts
+  // wording.
+  bind('zesDeviceEnumFrequencyDomains', 'uint32', ['void*', 'uint32*', 'void**']);
+  bind('zesFrequencyGetProperties', 'uint32', ['void*', 'zes_freq_properties_t*']);
+  bind('zesFrequencyGetState', 'uint32', ['void*', 'zes_freq_state_t*']);
+  bind('zesFrequencyOcGetCapabilities', 'uint32', ['void*', 'zes_oc_capabilities_t*']);
+  bind('zesFrequencyOcGetVoltageTarget', 'uint32', ['void*', 'double*', 'double*']);
+  bind('zesFrequencyOcSetVoltageTarget', 'uint32', ['void*', 'double', 'double']);
 
   return fn;
 }

@@ -212,10 +212,12 @@ function idleMsFromEnv() {
  * result mapping. The one-shot form writes the payload to the out file;
  * the pipe form writes it as a JSON line on the connection - the payload
  * shape is IDENTICAL so the proxy's consumer contract never diverges.
- * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown }} req
+ * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown, offsetV?: unknown }} req
  * @param {{
  *   readLimits: (deviceId?: number) => object | null | Promise<object | null>,
  *   setLimits: ({ sustainedW: number, burstW: number }) => object | Promise<object>,
+ *   readVoltageOffset?: () => { targetV: number, offsetV: number } | null,
+ *   setVoltageOffset?: ({ offsetV: number }) => { ok: boolean, offsetV?: number, errorCode?: string, message?: string },
  * }} consumer
  * @param {(s: string) => void} log
  * @returns {Promise<{ payload: object, exitCode: number }>}
@@ -259,6 +261,53 @@ async function dispatchRequest(req, consumer, log) {
     }
     if (!result || typeof result !== 'object') {
       result = { ok: false, errorCode: 'io-failed', message: 'the setLimits call returned no result' };
+    }
+    return { payload: result, exitCode: 0 };
+  }
+
+  // M26: read-voltage operation - reads the current GPU voltage offset via
+  // the Sysman frequency OC getter. Not-ready voltage must not write
+  // arcpower-sysman-intent.json. Finite guards and verbatim errors.
+  if (op === 'read-voltage') {
+    if (typeof consumer.readVoltageOffset !== 'function') {
+      return { payload: { ok: false, errorCode: 'unsupported', message: 'readVoltageOffset is not available on this consumer' }, exitCode: 0 };
+    }
+    let result = null;
+    try {
+      result = consumer.readVoltageOffset();
+    } catch (err) {
+      log(`readVoltageOffset failed: ${err.message}`);
+      result = null;
+    }
+    if (result && typeof result === 'object'
+      && Number.isFinite(result.targetV)
+      && Number.isFinite(result.offsetV)) {
+      return { payload: { ok: true, targetV: result.targetV, offsetV: result.offsetV }, exitCode: 0 };
+    }
+    return { payload: { ok: false, errorCode: 'unavailable', message: 'the sysman voltage offset read returned no result (the consumer is unavailable)' }, exitCode: 0 };
+  }
+
+  // M26: set-voltage operation - writes the GPU voltage offset via the
+  // Sysman frequency OC setter. The finite guard runs BEFORE the call;
+  // the result rides VERBATIM (same contract as the PL set dispatch).
+  // Voltage operations NEVER write arcpower-sysman-intent.json.
+  if (op === 'set-voltage') {
+    if (typeof consumer.setVoltageOffset !== 'function') {
+      return { payload: { ok: false, errorCode: 'unsupported', message: 'setVoltageOffset is not available on this consumer' }, exitCode: 0 };
+    }
+    const offsetV = req.offsetV;
+    if (!Number.isFinite(offsetV)) {
+      return { payload: { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' }, exitCode: 1 };
+    }
+    let result = null;
+    try {
+      result = consumer.setVoltageOffset({ offsetV });
+    } catch (err) {
+      log(`setVoltageOffset failed: ${err.message}`);
+      result = { ok: false, errorCode: 'io-failed', message: err.message };
+    }
+    if (!result || typeof result !== 'object') {
+      result = { ok: false, errorCode: 'io-failed', message: 'the setVoltageOffset call returned no result' };
     }
     return { payload: result, exitCode: 0 };
   }
