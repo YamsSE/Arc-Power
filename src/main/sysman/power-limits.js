@@ -13,7 +13,12 @@
 // throw (the apply path treats a sysman failure as best-effort).
 
 import koffi from 'koffi';
-import { findZeLoaderDll, loadSysman, zeOk, describeZeResult, enumerateHandles, ZES_STRUCTURE_TYPE_FREQ_PROPERTIES, ZES_DOMAIN_TYPE_GPU } from './sysman-bindings.js';
+import {
+  findZeLoaderDll, loadSysman, zeOk, describeZeResultWithMap,
+  selectZeResultMap, enumerateHandles, ZES_STRUCTURE_TYPE_FREQ_PROPERTIES,
+  ZES_STRUCTURE_TYPE_OVERCLOCK_PROPERTIES, ZES_DOMAIN_TYPE_GPU, ZES_VF_TYPE, ZES_VF_ARRAY_TYPE,
+  ZES_OVERCLOCK_CONTROL_VF, ZES_GPU_OVERCLOCK_DOMAIN_PRIORITY,
+} from './sysman-bindings.js';
 
 // M17h: the enum binding joins the REQUIRED exports - the domain resolution
 // is enum-FIRST (see ensure() below), so a loader without the enum symbol
@@ -27,18 +32,43 @@ const REQUIRED_EXPORTS = [
 
 // M26: the optional frequency-domain exports. Missing exports degrade ONLY
 // voltage methods - the existing PL consumer is never affected.
-const FREQ_EXPORTS = [
+const FREQ_READ_EXPORTS = [
   'zesDeviceEnumFrequencyDomains',
   'zesFrequencyGetProperties',
   'zesFrequencyOcGetVoltageTarget',
-  'zesFrequencyOcSetVoltageTarget',
 ];
-
 // M26: the user-approved Alchemist-wide voltage range (canonical volts).
 // Stock UI clamps at -0.500 V; Advanced UI may reach -0.800 V. The live
 // capability 0/0 offset bounds are diagnostic only. Positive max remains
 // the existing per-card +0.234/+0.288 V.
 export const SAFE_VOLT_OFFSET_MIN_V = -0.800;
+const VF_READ_EXPORTS = [
+  'zesDeviceEnumOverclockDomains',
+  'zesOverclockGetDomainProperties',
+  'zesOverclockGetDomainVFProperties',
+  'zesOverclockGetVFPointValues',
+];
+
+export const VF_VOLTAGE_MIN_MV = 1;
+export const VF_VOLTAGE_MAX_MV = 0xffffffff;
+
+/** Convert a DEFAULT unsigned-mV point to an idempotent lowered point. */
+export function transformDefaultVoltageMv(defaultMv, magnitudeV, {
+  minMv = VF_VOLTAGE_MIN_MV, maxMv = VF_VOLTAGE_MAX_MV, stepMv = 1,
+} = {}) {
+  if (!Number.isFinite(defaultMv) || !Number.isFinite(magnitudeV) || magnitudeV < 0) return null;
+  const step = Number.isFinite(stepMv) && stepMv > 0 ? Math.max(1, Math.round(stepMv)) : 1;
+  const requested = Math.max(0, Math.round(magnitudeV * 1000));
+  const aligned = Math.floor(requested / step) * step;
+  const floor = Math.max(VF_VOLTAGE_MIN_MV, Math.ceil(Number.isFinite(minMv) ? minMv : VF_VOLTAGE_MIN_MV));
+  const ceiling = Math.min(VF_VOLTAGE_MAX_MV, Math.floor(Number.isFinite(maxMv) ? maxMv : VF_VOLTAGE_MAX_MV));
+  if (floor > ceiling) return null;
+  return Math.max(floor, Math.min(ceiling, Math.round(defaultMv) - aligned)) >>> 0;
+}
+
+export function isUnsignedVoltageMv(value) {
+  return Number.isInteger(value) && value >= 0 && value <= VF_VOLTAGE_MAX_MV;
+}
 export const SAFE_VOLT_OFFSET_MAX_V = 0.234;
 
 // M26: the live A770 driver boundary is integer millivolts despite the
@@ -73,9 +103,18 @@ const W = (powerMw) => Math.round((powerMw / 1000) * 10) / 10;
 export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = loadSysman, log = (s) => console.log(`[sysman] ${s}`) } = {}) {
   /** @type {{ lib: object, pwrHandle: unknown } | null} */
   let ready = null;
-  /** @type {{ lib: object, freqHandle: unknown } | null} */
-  let freqReady = null;
-  /** @type {string | null} */
+  /** @type {Map<number, { lib: object, freqHandle: unknown, deviceId: number }>} */
+  const freqReady = new Map();
+  /** @type {Map<number, unknown>} */
+  const deviceHandles = new Map();
+  /** @type {Map<number, { domain: unknown, pointCount: number, stepMv: number, minMv: number, maxMv: number, defaults: number[] }>} */
+  const vfReady = new Map();
+  /** @type {Map<number, string>} */
+  const freqStatus = new Map();
+  /** @type {Map<number, string>} */
+  const vfStatus = new Map();
+  const waiverReady = new Set();
+  let resultMap = selectZeResultMap(null);
   let degradeReason = null;
   let degradeNoted = false;
 
@@ -104,44 +143,57 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       // enumeration order: ze and zes enumerate the same devices in the
       // same order, the documented Level Zero contract).
       let r = lib.zeInit(0);
-      if (!zeOk(r)) throw new Error(`zeInit: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zeInit: ${resultText(r)}`);
       const zeDriverCountBuf = koffi.alloc('uint32', 1);
       r = lib.zeDriverGet(zeDriverCountBuf, null);
-      if (!zeOk(r)) throw new Error(`zeDriverGet count: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zeDriverGet count: ${resultText(r)}`);
       const zeDriverCount = koffi.decode(zeDriverCountBuf, 'uint32');
       if (zeDriverCount === 0) throw new Error('no ze drivers');
       const zeDriversBuf = koffi.alloc('void*', zeDriverCount);
       r = lib.zeDriverGet(zeDriverCountBuf, zeDriversBuf);
-      if (!zeOk(r)) throw new Error(`zeDriverGet fill: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zeDriverGet fill: ${resultText(r)}`);
       const zeDriver = koffi.decode(zeDriversBuf, 0, 'void*');
+      if (typeof lib.zeDriverGetApiVersion === 'function') {
+        try {
+          const versionBuf = koffi.alloc('uint32', 1);
+          const versionResult = lib.zeDriverGetApiVersion(zeDriver, versionBuf);
+          if (zeOk(versionResult)) resultMap = selectZeResultMap(koffi.decode(versionBuf, 'uint32'));
+        } catch {
+          resultMap = selectZeResultMap(null);
+        }
+      }
       const zeCountBuf = koffi.alloc('uint32', 1);
       r = lib.zeDeviceGet(zeDriver, zeCountBuf, null);
-      if (!zeOk(r)) throw new Error(`zeDeviceGet count: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zeDeviceGet count: ${resultText(r)}`);
       const zeDevCount = koffi.decode(zeCountBuf, 'uint32');
       if (zeDevCount === 0) throw new Error('no ze devices');
       const zeDevBuf = koffi.alloc('void*', zeDevCount);
       r = lib.zeDeviceGet(zeDriver, zeCountBuf, zeDevBuf);
-      if (!zeOk(r)) throw new Error(`zeDeviceGet fill: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zeDeviceGet fill: ${resultText(r)}`);
 
       r = lib.zesInit(0);
-      if (!zeOk(r)) throw new Error(`zesInit: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zesInit: ${resultText(r)}`);
       const zesDriverCountBuf = koffi.alloc('uint32', 1);
       r = lib.zesDriverGet(zesDriverCountBuf, null);
-      if (!zeOk(r)) throw new Error(`zesDriverGet count: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zesDriverGet count: ${resultText(r)}`);
       const zesDriverCount = koffi.decode(zesDriverCountBuf, 'uint32');
       if (zesDriverCount === 0) throw new Error('no zes drivers');
       const zesDriversBuf = koffi.alloc('void*', zesDriverCount);
       r = lib.zesDriverGet(zesDriverCountBuf, zesDriversBuf);
-      if (!zeOk(r)) throw new Error(`zesDriverGet fill: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zesDriverGet fill: ${resultText(r)}`);
       const zesDriver = koffi.decode(zesDriversBuf, 0, 'void*');
       const zesCountBuf = koffi.alloc('uint32', 1);
       r = lib.zesDeviceGet(zesDriver, zesCountBuf, null);
-      if (!zeOk(r)) throw new Error(`zesDeviceGet count: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zesDeviceGet count: ${resultText(r)}`);
       const zesDevCount = koffi.decode(zesCountBuf, 'uint32');
       if (zesDevCount === 0) throw new Error('no zes devices');
       const zesDevBuf = koffi.alloc('void*', zesDevCount);
       r = lib.zesDeviceGet(zesDriver, zesCountBuf, zesDevBuf);
-      if (!zeOk(r)) throw new Error(`zesDeviceGet fill: ${describeZeResult(r)}`);
+      if (!zeOk(r)) throw new Error(`zesDeviceGet fill: ${resultText(r)}`);
+      deviceHandles.clear();
+      for (let i = 0; i < zesDevCount; i++) {
+        deviceHandles.set(i, koffi.decode(zesDevBuf, i * 8, 'void*'));
+      }
 
       // M17h THE DOMAIN-RESOLUTION FIX (the root cause of the dev-box
       // 'PL1 - / PL2 -' + the companion degrade): the power domain resolves
@@ -159,7 +211,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       let pwrHandle = null;
       let enumVerdict = null;
       if (!zeOk(en.result)) {
-        enumVerdict = `zesDeviceEnumPowerDomains: ${describeZeResult(en.result)}`;
+        enumVerdict = `zesDeviceEnumPowerDomains: ${resultText(en.result)}`;
       } else if (en.handles.length === 0) {
         enumVerdict = 'zesDeviceEnumPowerDomains yielded no domains (count 0)';
       } else {
@@ -181,7 +233,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
         if (zeOk(r)) {
           pwrHandle = koffi.decode(pwrBuf, 0, 'void*');
         } else {
-          throw new Error(`no usable power domain: ${enumVerdict}; fallback zesDeviceGetCardPowerDomain: ${describeZeResult(r)}`);
+          throw new Error(`no usable power domain: ${enumVerdict}; fallback zesDeviceGetCardPowerDomain: ${resultText(r)}`);
         }
       }
       ready = { lib, pwrHandle };
@@ -189,12 +241,27 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       // M26: resolve the GPU frequency domain alongside the power domain.
       // Missing frequency exports/domain degrade ONLY voltage methods -
       // the existing PL consumer is never affected.
-      const hasFreqExports = FREQ_EXPORTS.every((n) => typeof lib[n] === 'function');
-      if (hasFreqExports) {
+      const hasFreqExports = FREQ_READ_EXPORTS.every((n) => typeof lib[n] === 'function');
+      const unsupportedFreqResult = (result) => {
         try {
-          const freqEn = enumerateHandles((countBuf, arr) => lib.zesDeviceEnumFrequencyDomains(zesDev, countBuf, arr));
-          if (zeOk(freqEn.result) && freqEn.handles.length > 0) {
-            // Find the GPU frequency domain by probing properties.
+          const text = resultText(result);
+          return text.includes('UNSUPPORTED') || text.includes('NOT_SUPPORTED');
+        } catch {
+          return false;
+        }
+      };
+      for (const [deviceId, device] of deviceHandles.entries()) {
+        if (!hasFreqExports) {
+          freqStatus.set(deviceId, 'unsupported');
+          continue;
+        }
+        let status = 'unsupported';
+        try {
+          const freqEn = enumerateHandles((countBuf, arr) => lib.zesDeviceEnumFrequencyDomains(device, countBuf, arr));
+          if (!zeOk(freqEn.result)) {
+            status = unsupportedFreqResult(freqEn.result) ? 'unsupported' : 'io-failed';
+          } else if (freqEn.handles.length > 0) {
+            let propertyReadFailed = false;
             for (const candidate of freqEn.handles) {
               try {
                 const fpBuf = koffi.alloc('zes_freq_properties_t', 1);
@@ -209,23 +276,27 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
                   min: 0,
                   max: 0,
                 });
-                const r = lib.zesFrequencyGetProperties(candidate, fpBuf);
-                if (zeOk(r)) {
-                  const fp = koffi.decode(fpBuf, 'zes_freq_properties_t');
-                  // The live driver uses type 0 for ZES_DOMAIN_TYPE_GPU.
-                  if (fp.type === ZES_DOMAIN_TYPE_GPU) {
-                    freqReady = { lib, freqHandle: candidate };
-                    break;
-                  }
+                const freqResult = lib.zesFrequencyGetProperties(candidate, fpBuf);
+                if (!zeOk(freqResult)) {
+                  propertyReadFailed = true;
+                  continue;
+                }
+                const fp = koffi.decode(fpBuf, 'zes_freq_properties_t');
+                if (fp.type === ZES_DOMAIN_TYPE_GPU) {
+                  freqReady.set(deviceId, { lib, freqHandle: candidate, deviceId });
+                  status = 'ready';
+                  break;
                 }
               } catch {
-                // skip this candidate
+                propertyReadFailed = true;
               }
             }
+            if (status !== 'ready' && propertyReadFailed) status = 'io-failed';
           }
         } catch {
-          // frequency domain resolution is best-effort
+          status = 'io-failed';
         }
+        freqStatus.set(deviceId, status);
       }
 
       return ready;
@@ -240,6 +311,149 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
     degradeNoted = true;
     log(degradeReason ?? 'the sysman layer is unavailable');
   };
+  const resultText = (code) => describeZeResultWithMap(code, resultMap);
+
+  const readVfCurves = (lib, vf) => {
+    const curves = { user: [], defaults: [], live: [] };
+    const arrays = [
+      ['user', ZES_VF_ARRAY_TYPE.USER],
+      ['defaults', ZES_VF_ARRAY_TYPE.DEFAULT],
+      ['live', ZES_VF_ARRAY_TYPE.LIVE],
+    ];
+    for (let i = 0; i < vf.pointCount; i++) {
+      for (const [name, arrayType] of arrays) {
+        const pointBuf = koffi.alloc('uint32', 1);
+        const result = lib.zesOverclockGetVFPointValues(vf.domain, ZES_VF_TYPE.VOLT, arrayType, i, pointBuf);
+        if (!zeOk(result)) return null;
+        const value = koffi.decode(pointBuf, 'uint32');
+        if (!isUnsignedVoltageMv(value)) return null;
+        curves[name].push(value);
+      }
+    }
+    return curves;
+  };
+
+  const ensureVf = (deviceId = 0) => {
+    if (vfReady.has(deviceId)) return vfReady.get(deviceId);
+    if (vfStatus.has(deviceId)) return null;
+    const r = ensure();
+    if (!r || !deviceHandles.has(deviceId)) {
+      vfStatus.set(deviceId, 'unsupported');
+      return null;
+    }
+    const missing = VF_READ_EXPORTS.filter((name) => typeof r.lib[name] !== 'function');
+    if (missing.length > 0) {
+      vfStatus.set(deviceId, 'unsupported');
+      return null;
+    }
+    const unsupportedResult = (result) => {
+      const code = result >>> 0;
+      const text = resultText(result);
+      // The installed A770 v1.32 driver reports this optional-domain
+      // capability absence as 0x78000003 even when its version query is
+      // unavailable; this is an unsupported VF surface, not a transient I/O
+      // failure. Keep the generic result formatter version-aware elsewhere.
+      return code === 0x78000003 || code === 0x7800000d
+        || text.includes('UNSUPPORTED') || text.includes('NOT_SUPPORTED');
+    };
+    const dev = deviceHandles.get(deviceId);
+    try {
+      const domains = enumerateHandles((countBuf, arr) => r.lib.zesDeviceEnumOverclockDomains(dev, countBuf, arr));
+      if (!zeOk(domains.result)) {
+        vfStatus.set(deviceId, unsupportedResult(domains.result) ? 'unsupported' : 'io-failed');
+        return null;
+      }
+      const candidates = [];
+      let propertyIoFailure = false;
+      for (const domain of domains.handles) {
+        const propsBuf = koffi.alloc('zes_overclock_properties_t', 1);
+        koffi.encode(propsBuf, 'zes_overclock_properties_t', {
+          stype: ZES_STRUCTURE_TYPE_OVERCLOCK_PROPERTIES,
+          pNext: null,
+          domainType: 0,
+          AvailableControls: 0,
+          VFProgramType: 0,
+          NumberOfVFPoints: 0,
+        });
+        let propsResult;
+        try {
+          propsResult = r.lib.zesOverclockGetDomainProperties(domain, propsBuf);
+        } catch {
+          propertyIoFailure = true;
+          continue;
+        }
+        if (!zeOk(propsResult)) {
+          if (!unsupportedResult(propsResult)) propertyIoFailure = true;
+          continue;
+        }
+        let props;
+        try {
+          props = koffi.decode(propsBuf, 'zes_overclock_properties_t');
+        } catch {
+          propertyIoFailure = true;
+          continue;
+        }
+        const rank = ZES_GPU_OVERCLOCK_DOMAIN_PRIORITY.indexOf(props.domainType);
+        if (rank < 0 || (props.AvailableControls & ZES_OVERCLOCK_CONTROL_VF) === 0
+          || !Number.isInteger(props.NumberOfVFPoints) || props.NumberOfVFPoints <= 0) continue;
+        candidates.push({ domain, props, rank });
+      }
+      candidates.sort((a, b) => a.rank - b.rank);
+      if (candidates.length === 0) {
+        vfStatus.set(deviceId, propertyIoFailure ? 'io-failed' : 'unsupported');
+        return null;
+      }
+      let readFailure = false;
+      for (const { domain, props } of candidates) {
+        const vfPropsBuf = koffi.alloc('zes_vf_property_t', 1);
+        const vfPropsResult = r.lib.zesOverclockGetDomainVFProperties(domain, vfPropsBuf);
+        if (!zeOk(vfPropsResult)) {
+          readFailure = true;
+          continue;
+        }
+        const vfProps = koffi.decode(vfPropsBuf, 'zes_vf_property_t');
+        const found = {
+          domain,
+          pointCount: props.NumberOfVFPoints,
+          stepMv: Number.isFinite(vfProps.StepVolt) && vfProps.StepVolt > 0 ? vfProps.StepVolt : 1,
+          minMv: Number.isFinite(vfProps.MinVolt) ? vfProps.MinVolt : VF_VOLTAGE_MIN_MV,
+          maxMv: Number.isFinite(vfProps.MaxVolt) ? vfProps.MaxVolt : VF_VOLTAGE_MAX_MV,
+        };
+        const curves = readVfCurves(r.lib, found);
+        if (!curves) {
+          readFailure = true;
+          continue;
+        }
+        found.defaults = curves.defaults;
+        found.users = curves.user;
+        found.live = curves.live;
+        found.lib = r.lib;
+        vfReady.set(deviceId, found);
+        vfStatus.set(deviceId, 'ready');
+        return found;
+      }
+      vfStatus.set(deviceId, readFailure ? 'io-failed' : 'unsupported');
+    } catch {
+      vfStatus.set(deviceId, 'io-failed');
+    }
+    return null;
+  };
+
+  const ensureWaiver = (deviceId = 0) => {
+    if (waiverReady.has(deviceId)) return { ok: true };
+    const r = ensure();
+    const dev = deviceHandles.get(deviceId);
+    if (!r || !dev || typeof r.lib.zesDeviceSetOverclockWaiver !== 'function') {
+      return { ok: false, errorCode: 'unsupported', message: 'Sysman overclock waiver is unavailable' };
+    }
+    const result = r.lib.zesDeviceSetOverclockWaiver(dev);
+    if (zeOk(result) || (result >>> 0) === 0x78000033) {
+      waiverReady.add(deviceId);
+      return { ok: true };
+    }
+    return { ok: false, errorCode: resultText(result).split(' ')[0], message: resultText(result) };
+  };
+
 
   return {
     /** M17f (step-4 N2): the deviceId is ACCEPTED for the mock-scoped
@@ -297,7 +511,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
         koffi.encode(bb, 'zes_power_burst_limit_t', { enabled: 1, power: Math.round(burstW * 1000) });
         const res = r.lib.zesPowerSetLimits(r.pwrHandle, sb, bb, null);
         if (!zeOk(res)) {
-          return { ok: false, errorCode: describeZeResult(res).split(' ')[0], message: describeZeResult(res) };
+          return { ok: false, errorCode: resultText(res).split(' ')[0], message: resultText(res) };
         }
         return { ok: true };
       } catch (err) {
@@ -308,122 +522,278 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
     },
 
     /**
-     * M26: read the current GPU voltage offset via the Sysman frequency OC
-     * getter. Returns { offsetV } in canonical volts on success, null when
-     * the frequency domain is unavailable. The getter receives two allocated
-     * double* output pointers (target + offset) per the safety invariant.
-     * The driver returns integer-mV values despite the public header's volts
-     * wording; the consumer converts to canonical volts (/ 1000).
-     * @param {number} [_deviceId] accepted for device-scoped consumer parity;
-     *   the real adapter resolves one enumerated card domain and ignores it.
-     * @returns {{ targetV: number, offsetV: number } | null}
+     * Read the legacy target first. A target is authoritative only when
+     * finite and strictly positive; otherwise use a verified VF LIVE curve.
      */
-    readVoltageOffset(_deviceId = 0) {
-      // Voltage operations are direct consumers too: initialize the loader
-      // and resolve the frequency domain before inspecting freqReady.
+    readVoltageOffsetResult(deviceId = 0) {
       ensure();
-      const fr = freqReady;
-      if (!fr) return null;
-      try {
-        const targetBuf = koffi.alloc('double', 1);
-        const offsetBuf = koffi.alloc('double', 1);
-        const res = fr.lib.zesFrequencyOcGetVoltageTarget(fr.freqHandle, targetBuf, offsetBuf);
-        if (!zeOk(res)) return null;
-        const targetRaw = koffi.decode(targetBuf, 'double');
-        const offsetRaw = koffi.decode(offsetBuf, 'double');
-        if (!Number.isFinite(targetRaw) || !Number.isFinite(offsetRaw) || targetRaw <= 0) return null;
-        // The live A770 driver boundary: raw values are integer mV.
-        // Convert to canonical volts for the public interface.
-        return { targetV: targetRaw / 1000, offsetV: offsetRaw / 1000 };
-      } catch {
-        return null;
+      const fr = freqReady.get(deviceId) ?? null;
+      const lib = fr?.lib ?? ensure()?.lib ?? null;
+      let legacy = null;
+      let legacyReadFailed = false;
+      let legacyInvalid = false;
+
+      // Preserve the legacy target as the primary read whenever its target is
+      // finite and positive. VF is queried afterward only to detect a
+      // USER/LIVE curve that still needs clearing.
+      if (fr && typeof lib?.zesFrequencyOcGetVoltageTarget === 'function') {
+        try {
+          const targetBuf = koffi.alloc('double', 1);
+          const offsetBuf = koffi.alloc('double', 1);
+          const result = lib.zesFrequencyOcGetVoltageTarget(fr.freqHandle, targetBuf, offsetBuf);
+          const target = koffi.decode(targetBuf, 'double');
+          const offset = koffi.decode(offsetBuf, 'double');
+          const rawScale = target > 10 ? 1000 : 1;
+          if (zeOk(result) && Number.isFinite(target) && target > 0 && Number.isFinite(offset)) {
+            legacy = { targetV: target / rawScale, offsetV: offset / rawScale };
+          } else if (!zeOk(result)) {
+            const text = resultText(result);
+            if (!text.includes('UNSUPPORTED') && !text.includes('NOT_SUPPORTED')) legacyReadFailed = true;
+          } else if (!Number.isFinite(target) || !Number.isFinite(offset)) {
+            legacyInvalid = true;
+          }
+        } catch {
+          legacyReadFailed = true;
       }
+      }
+      if (legacyReadFailed) {
+        return { ok: false, errorCode: 'io-failed', message: 'frequency voltage target read failed' };
+      }
+      if (legacyInvalid) {
+        return { ok: false, errorCode: 'unsupported', message: 'frequency voltage target returned invalid values' };
+      }
+
+      const vf = ensureVf(deviceId);
+      if (vf) {
+        try {
+          const curves = readVfCurves(lib ?? vf.lib, vf);
+          if (!curves) {
+            return { ok: false, errorCode: 'io-failed', message: 'VF USER/DEFAULT/LIVE voltage read failed' };
+          }
+          const base = curves.defaults.reduce((sum, value) => sum + value, 0);
+          const user = curves.user.reduce((sum, value) => sum + value, 0);
+          const live = curves.live.reduce((sum, value) => sum + value, 0);
+          const needsClear = curves.user.some((value, index) => value !== curves.defaults[index])
+            || curves.live.some((value, index) => value !== curves.defaults[index]);
+          return {
+            ok: true,
+            targetV: legacy?.targetV ?? live / Math.max(1, vf.pointCount) / 1000,
+            offsetV: legacy?.offsetV ?? (live - base) / vf.pointCount / 1000,
+            userOffsetV: (user - base) / vf.pointCount / 1000,
+            needsClear,
+          };
+        } catch (err) {
+          return { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
+        }
+      }
+      if (freqStatus.get(deviceId) === 'io-failed') {
+        return { ok: false, errorCode: 'io-failed', message: 'frequency voltage target read failed' };
+      }
+      if (vfStatus.get(deviceId) === 'io-failed') {
+        return { ok: false, errorCode: 'io-failed', message: 'VF USER/DEFAULT/LIVE voltage read failed' };
+      }
+      if (legacy) return { ok: true, ...legacy };
+      return { ok: false, errorCode: 'unsupported', message: 'no verified voltage capability' };
+    },
+
+    readVoltageOffset(deviceId = 0) {
+      const result = this.readVoltageOffsetResult(deviceId);
+      return result.ok === true ? { targetV: result.targetV, offsetV: result.offsetV } : null;
     },
 
     /**
-     * M26: set the GPU voltage offset via the Sysman frequency OC setter.
-     * Reads the current target first, converts canonical volts to the
-     * driver's mV boundary with `Math.round(offsetV * 1000)` and rounded
-     * raw target, supplies both as finite inputs, writes, and verifies via
-     * the same getter.
-     *
-     * The adapter enforces the approved Advanced range: [-0.800, +0.234] V.
-     * The stock apply route clamps to -0.500 V before it reaches this method;
-     * live diagnostic probes have a separate -0.300 V hard stop.
-     *
-     * Every successful write is read-back verified; a mismatch is a failed
-     * per-control result.
-     *
-     * @param {{ offsetV: number }} params
-     * @param {number} [_deviceId] accepted for device-scoped consumer parity;
-     *   the real adapter resolves one enumerated card domain and ignores it.
-     * @returns {{ ok: boolean, offsetV?: number, errorCode?: string, message?: string }}
+     * Apply an exact legacy target/offset when the legacy getter is valid;
+     * otherwise apply DEFAULT-baseline unsigned-mV VF points idempotently.
      */
-    setVoltageOffset({ offsetV }, _deviceId = 0) {
-      if (!Number.isFinite(offsetV)) {
-        return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
-      }
-      // A direct first voltage operation must initialize Sysman, just like
-      // the power-limit operations do.
+    setVoltageOffset({ offsetV }, deviceId = 0) {
+      if (!Number.isFinite(offsetV)) return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be finite' };
       ensure();
-      const fr = freqReady;
-      // Safety: direct adapter calls reject values outside the approved
-      // Advanced range. The stock routed path clamps to -0.500 V before it
-      // reaches this method; diagnostic probes have their own -0.300 V cap.
       const clamped = Math.max(SAFE_VOLT_OFFSET_MIN_V, Math.min(SAFE_VOLT_OFFSET_MAX_V, offsetV));
-      if (clamped !== offsetV) {
-        return { ok: false, errorCode: 'out-of-range', message: `offsetV ${offsetV} V is outside the safe range [${SAFE_VOLT_OFFSET_MIN_V}, ${SAFE_VOLT_OFFSET_MAX_V}] V` };
+      if (clamped !== offsetV) return { ok: false, errorCode: 'out-of-range', message: `offsetV ${offsetV} V is outside the safe range` };
+      const fr = freqReady.get(deviceId) ?? null;
+      const lib = fr?.lib ?? ensure()?.lib ?? null;
+      let vf = null;
+      let forceVfClear = false;
+      if (clamped === 0) {
+        vf = ensureVf(deviceId);
+        if (vf) {
+          const current = readVfCurves(lib ?? vf.lib, vf);
+          if (!current) return { ok: false, errorCode: 'io-failed', message: 'VF USER/DEFAULT/LIVE voltage read failed' };
+          forceVfClear = current.user.some((value, index) => value !== current.defaults[index])
+            || current.live.some((value, index) => value !== current.defaults[index]);
+        } else if (vfStatus.get(deviceId) === 'io-failed') {
+          return { ok: false, errorCode: 'io-failed', message: 'VF USER/DEFAULT/LIVE voltage read failed' };
+        }
       }
       try {
-        // Read the current target first (the setter receives both target
-        // and offset as finite inputs per the safety invariant).
-        const targetBuf = koffi.alloc('double', 1);
-        const offsetBuf = koffi.alloc('double', 1);
-        const readRes = fr.lib.zesFrequencyOcGetVoltageTarget(fr.freqHandle, targetBuf, offsetBuf);
-        if (!zeOk(readRes)) {
-          return { ok: false, errorCode: describeZeResult(readRes).split(' ')[0], message: `failed to read current voltage target: ${describeZeResult(readRes)}` };
+        if (!forceVfClear && fr && typeof lib?.zesFrequencyOcGetVoltageTarget === 'function'
+          && typeof lib.zesFrequencyOcSetVoltageTarget === 'function') {
+          const tb = koffi.alloc('double', 1);
+          const ob = koffi.alloc('double', 1);
+          const readResult = lib.zesFrequencyOcGetVoltageTarget(fr.freqHandle, tb, ob);
+          const target = koffi.decode(tb, 'double');
+          const currentOffset = koffi.decode(ob, 'double');
+          if (!zeOk(readResult)) {
+            const text = resultText(readResult);
+            if (!text.includes('UNSUPPORTED') && !text.includes('NOT_SUPPORTED')) {
+              return { ok: false, errorCode: 'io-failed', message: 'frequency voltage target read failed' };
+            }
+          } else if (!Number.isFinite(target) || !Number.isFinite(currentOffset)) {
+            return { ok: false, errorCode: 'unsupported', message: 'frequency voltage target returned invalid values' };
+          }
+          const rawScale = target > 10 ? 1000 : 1;
+          if (zeOk(readResult) && Number.isFinite(target) && target > 0 && Number.isFinite(currentOffset)) {
+            if (typeof lib.zesDeviceSetOverclockWaiver !== 'function') {
+              return { ok: false, errorCode: 'unsupported', message: 'Sysman overclock waiver is unavailable' };
+            }
+            const waiver = ensureWaiver(deviceId);
+            if (!waiver.ok) return waiver;
+            const nativeOffset = rawScale === 1000 ? Math.round(clamped * rawScale) : clamped;
+            const writeResult = lib.zesFrequencyOcSetVoltageTarget(fr.freqHandle, target, nativeOffset);
+            if (!zeOk(writeResult)) return { ok: false, errorCode: resultText(writeResult).split(' ')[0], message: resultText(writeResult) };
+            let verifyTarget = Number.NaN;
+            let verifyOffset = Number.NaN;
+            let verifyResult = 0xffffffff;
+            try {
+              const vb = koffi.alloc('double', 1);
+              const vo = koffi.alloc('double', 1);
+              verifyResult = lib.zesFrequencyOcGetVoltageTarget(fr.freqHandle, vb, vo);
+              verifyTarget = koffi.decode(vb, 'double');
+              verifyOffset = koffi.decode(vo, 'double');
+            } catch {
+              verifyResult = 0xffffffff;
+            }
+            if (!zeOk(verifyResult) || !Number.isFinite(verifyTarget) || !Number.isFinite(verifyOffset)
+              || verifyTarget !== target || verifyOffset !== nativeOffset) {
+              let restored = false;
+              try {
+                const restoreResult = lib.zesFrequencyOcSetVoltageTarget(fr.freqHandle, target, currentOffset);
+                if (zeOk(restoreResult)) {
+                  const rbTarget = koffi.alloc('double', 1);
+                  const rbOffset = koffi.alloc('double', 1);
+                  const rbResult = lib.zesFrequencyOcGetVoltageTarget(fr.freqHandle, rbTarget, rbOffset);
+                  restored = zeOk(rbResult)
+                    && koffi.decode(rbTarget, 'double') === target
+                    && koffi.decode(rbOffset, 'double') === currentOffset;
+                }
+              } catch {
+                restored = false;
+              }
+              return {
+                ok: false,
+                errorCode: restored ? 'io-failed' : 'restoration-failed',
+                message: `legacy voltage target read-back mismatch${restored ? '' : '; legacy voltage restoration verification failed'}`,
+              };
+            }
+            return { ok: true, offsetV: rawScale === 1000 ? Math.round((verifyOffset / rawScale) * 1000) / 1000 : verifyOffset };
+          }
         }
-        const rawTarget = koffi.decode(targetBuf, 'double');
-        const rawGetterOffset = koffi.decode(offsetBuf, 'double');
-        if (!Number.isFinite(rawTarget) || rawTarget <= 0) {
-          return { ok: false, errorCode: 'invalid-argument', message: 'current voltage target must be finite and strictly positive' };
-        }
-        if (!Number.isFinite(rawGetterOffset)) {
-          return { ok: false, errorCode: 'invalid-argument', message: 'current voltage offset must be finite' };
-        }
-        // Preserve the native integer-mV target boundary. Rounding must not
-        // turn a tiny positive getter value into the old unsafe zero target.
-        const finiteTarget = Math.round(rawTarget);
-        if (!Number.isFinite(finiteTarget) || finiteTarget <= 0) {
-          return { ok: false, errorCode: 'invalid-argument', message: 'current voltage target rounds to a non-positive native value' };
-        }
-        // Convert canonical offset to driver mV boundary.
-        const rawOffsetMv = Math.round(clamped * 1000);
-        const writeRes = fr.lib.zesFrequencyOcSetVoltageTarget(fr.freqHandle, finiteTarget, rawOffsetMv);
-        if (!zeOk(writeRes)) {
-          return { ok: false, errorCode: describeZeResult(writeRes).split(' ')[0], message: describeZeResult(writeRes) };
-        }
-        const verifyTargetBuf = koffi.alloc('double', 1);
-        const verifyOffsetBuf = koffi.alloc('double', 1);
-        const verifyRes = fr.lib.zesFrequencyOcGetVoltageTarget(fr.freqHandle, verifyTargetBuf, verifyOffsetBuf);
-        if (!zeOk(verifyRes)) {
-          return { ok: false, errorCode: 'io-failed', message: `write succeeded but read-back failed: ${describeZeResult(verifyRes)}` };
-        }
-        const readBackTarget = koffi.decode(verifyTargetBuf, 'double');
-        const readBackOffset = koffi.decode(verifyOffsetBuf, 'double');
-        if (!Number.isFinite(readBackTarget) || readBackTarget <= 0 || !Number.isFinite(readBackOffset)) {
-          return { ok: false, errorCode: 'io-failed', message: 'write succeeded but read-back voltage values were not finite' };
-        }
-        const readBackV = readBackOffset / 1000;
-        if (!Number.isFinite(readBackV) || Math.abs(readBackV - clamped) > 0.001) {
-          return { ok: false, errorCode: 'io-failed', message: `read-back mismatch: wrote ${clamped} V but read ${readBackV} V` };
-        }
-        return { ok: true, offsetV: readBackV };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        noteDegrade();
-        return { ok: false, errorCode: 'io-failed', message: msg };
+        return { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
       }
+
+      if (!vf) vf = ensureVf(deviceId);
+      if (!vf) {
+        const errorCode = (freqStatus.get(deviceId) === 'io-failed' || vfStatus.get(deviceId) === 'io-failed')
+          ? 'io-failed' : 'unsupported';
+        return {
+          ok: false,
+          errorCode,
+          message: errorCode === 'io-failed'
+            ? 'frequency or VF voltage read failed'
+            : 'legacy voltage target is unavailable and the device has no verified VF voltage capability',
+        };
+      }
+      if (typeof vf.lib.zesOverclockSetVFPointValues !== 'function'
+        || typeof vf.lib.zesDeviceSetOverclockWaiver !== 'function') {
+        return {
+          ok: false,
+          errorCode: 'unsupported',
+          message: 'the device has VF read capability but no verified VF write capability',
+        };
+      }
+      const waiver = ensureWaiver(deviceId);
+      if (!waiver.ok) return waiver;
+      const requestedMagnitude = Math.max(0, -clamped);
+      const written = new Set();
+      const beforeCurves = [];
+      const desired = [];
+      try {
+        const initial = readVfCurves(lib ?? vf.lib, vf);
+        if (!initial) throw new Error('VF USER/DEFAULT/LIVE voltage read failed');
+        beforeCurves.push(initial);
+        for (let i = 0; i < vf.pointCount; i++) {
+          const current = initial.user[i];
+          if (!isUnsignedVoltageMv(current)) throw new Error('VF USER voltage is not unsigned millivolts');
+          desired.push(clamped >= 0
+            ? vf.defaults[i]
+            : transformDefaultVoltageMv(vf.defaults[i], requestedMagnitude, vf));
+        }
+        for (let i = 0; i < desired.length; i++) {
+          if (desired[i] === null || !isUnsignedVoltageMv(desired[i])) {
+            throw new Error('VF voltage transform is outside unsigned-mV bounds');
+          }
+          if (desired[i] === initial.user[i] && desired[i] === initial.live[i]) continue;
+          written.add(i);
+          const writeResult = lib.zesOverclockSetVFPointValues(vf.domain, ZES_VF_TYPE.VOLT, i, desired[i]);
+          if (!zeOk(writeResult)) throw new Error(resultText(writeResult));
+        }
+
+        // Verify every array after the complete write. USER and LIVE must
+        // both be the exact DEFAULT-baseline transform; an averaged LIVE
+        // offset is not sufficient because one stale point can remain active.
+        const after = readVfCurves(lib ?? vf.lib, vf);
+        if (!after) throw new Error('VF USER/DEFAULT/LIVE voltage read-back failed');
+        for (let i = 0; i < vf.pointCount; i++) {
+          if (after.defaults[i] !== vf.defaults[i]
+            || after.user[i] !== desired[i]
+            || after.live[i] !== desired[i]) {
+            throw new Error(`VF voltage read-back mismatch at point ${i}`);
+          }
+        }
+        const liveDeltaMv = after.live.reduce((sum, value, i) => sum + value - after.defaults[i], 0);
+        return {
+          ok: true,
+          offsetV: liveDeltaMv / vf.pointCount / 1000,
+        };
+      } catch (err) {
+        const initial = beforeCurves[0] ?? null;
+        let restored = true;
+        if (initial) {
+          for (const i of written) {
+            if (initial.user[i] === undefined) {
+              restored = false;
+              continue;
+            }
+            try {
+              const rr = lib.zesOverclockSetVFPointValues(vf.domain, ZES_VF_TYPE.VOLT, i, initial.user[i]);
+              if (!zeOk(rr)) restored = false;
+            } catch {
+              restored = false;
+            }
+          }
+          try {
+            const restoredCurves = readVfCurves(lib ?? vf.lib, vf);
+            if (!restoredCurves
+              || restoredCurves.user.some((value, i) => value !== initial.user[i])
+              || restoredCurves.defaults.some((value, i) => value !== initial.defaults[i])
+              || restoredCurves.live.some((value, i) => value !== initial.live[i])) {
+              restored = false;
+            }
+          } catch {
+            restored = false;
+          }
+        }
+        return {
+          ok: false,
+          errorCode: restored ? 'io-failed' : 'restoration-failed',
+          message: `${err instanceof Error ? err.message : String(err)}${restored ? '' : '; VF restoration verification failed'}`,
+        };
+      }
+    },
+
+    setOverclockWaiver(deviceId = 0) {
+      return ensureWaiver(deviceId);
     },
   };
 }

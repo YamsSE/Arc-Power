@@ -787,7 +787,9 @@ export async function runSysmanVoltageOffset({ sysmanPowerLimits, offsetV, devic
   try {
     const res = await sysmanPowerLimits.setVoltageOffset({ offsetV: clamped }, deviceId);
     const verified = res?.ok === true && Number.isFinite(res.offsetV)
-      && Math.abs(res.offsetV - clamped) <= 0.001;
+      && (res.exactReadBack === true
+        ? res.offsetV < 0 && Math.abs(res.offsetV) <= Math.abs(clamped) + 0.001
+        : Math.abs(res.offsetV - clamped) <= 0.001);
     if (verified) {
       log(`[apply] sysman voltage: offset ${res.offsetV} V (read-back verified)`);
       return { ...res, ok: true, offsetV: res.offsetV };
@@ -818,26 +820,56 @@ export async function runSysmanVoltageOffset({ sysmanPowerLimits, offsetV, devic
  *
  * @param {{
  *   sysmanPowerLimits?: {
+ *     readVoltageOffsetResult?: (deviceId?: number) => Promise<{ ok: boolean, targetV?: number, offsetV?: number, errorCode?: string, message?: string }>,
  *     readVoltageOffset?: (deviceId?: number) => Promise<{ offsetV?: number } | null>,
  *     setVoltageOffset?: (p: { offsetV: number }, deviceId?: number) => Promise<{ ok: boolean, errorCode?: string, message?: string }>,
  *   } | null,
- *   deviceId: number,
  *   log?: (s: string) => void,
  * }} deps
  * @returns {Promise<{ ok: boolean, checked: boolean, errorCode?: string, message?: string }>}
  */
 async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = () => {} }) {
-  if (typeof sysmanPowerLimits?.readVoltageOffset !== 'function'
-    || typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
-    return { ok: true, checked: false };
-  }
+  const readWithStatus = typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function';
   let current;
-  try {
-    current = await sysmanPowerLimits.readVoltageOffset(deviceId);
-  } catch {
-    return { ok: true, checked: false };
+  if (readWithStatus) {
+    let status;
+    try {
+      status = await sysmanPowerLimits.readVoltageOffsetResult(deviceId);
+    } catch (err) {
+      return {
+        ok: false,
+        checked: true,
+        errorCode: 'io-failed',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (status?.ok !== true) {
+      // A not-ready helper cannot prove that a prior VF state is absent; only
+      // an explicit unsupported capability is safe to bypass.
+      if (status?.errorCode === 'unsupported') {
+        return { ok: true, checked: false };
+      }
+      return {
+        ok: false,
+        checked: true,
+        errorCode: status?.errorCode ?? 'io-failed',
+        message: status?.message ?? 'the prior negative sysman voltage offset could not be read',
+      };
+    }
+    current = status;
+  } else {
+    if (typeof sysmanPowerLimits?.readVoltageOffset !== 'function'
+      || typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
+      return { ok: true, checked: false };
+    }
+    try {
+      current = await sysmanPowerLimits.readVoltageOffset(deviceId);
+    } catch {
+      return { ok: true, checked: false };
+    }
   }
-  if (!current || typeof current.offsetV !== 'number' || !Number.isFinite(current.offsetV) || current.offsetV >= 0) {
+  if (!current || (current.needsClear !== true
+    && (typeof current.offsetV !== 'number' || !Number.isFinite(current.offsetV) || current.offsetV >= 0))) {
     return { ok: true, checked: true };
   }
   try {

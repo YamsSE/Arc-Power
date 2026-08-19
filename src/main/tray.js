@@ -42,15 +42,15 @@ export function trayBalloonProfileRefused(reason) {
 /**
  * Balloon content for an apply outcome (M2b review F1). The failure balloon
  * claims "defaults restored" ONLY when a restore actually ran
- * (`fallbackApplied !== undefined`); gate refusals get a reason-specific
- * message; a successful apply balloons nothing (returns null).
+ * (`fallbackApplied === true`); gate refusals and failed restores get a
+ * reason-specific message; a successful apply balloons nothing (returns null).
  * @param {{ applied: boolean, reason: string, fallbackApplied?: boolean }} out
  * @param {string} name
  * @returns {string | null}
  */
 export function trayBalloonForOutcome(out, name) {
   if (out.applied) return null;
-  if (out.fallbackApplied !== undefined) return trayBalloonProfileFailed(name);
+  if (out.fallbackApplied === true) return trayBalloonProfileFailed(name);
   return trayBalloonProfileRefused(out.reason);
 }
 

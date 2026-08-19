@@ -1341,14 +1341,37 @@ export function createIpcHandlers({
         }
         // M26: reset-to-defaults must clear a previously routed negative
         // Sysman offset too; backend.resetToDefaults only knows the IGCL
-        // controls. A missing/degraded read is best-effort, but once a
-        // negative offset is observed a failed clear is an honest reset
-        // failure rather than a false all-defaults result.
-        if (typeof sysmanPowerLimits?.readVoltageOffset === 'function'
+        // controls. Explicitly unsupported reads mean there is no known VF
+        // state; not-ready reads fail closed before reset can claim that all
+        // defaults were restored.
+        if ((typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function'
+          || typeof sysmanPowerLimits?.readVoltageOffset === 'function')
           && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
           let voltRead = null;
-          try { voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId); } catch { /* degraded */ }
-          if (voltRead && typeof voltRead.offsetV === 'number' && Number.isFinite(voltRead.offsetV) && voltRead.offsetV < 0) {
+          if (typeof sysmanPowerLimits.readVoltageOffsetResult === 'function') {
+            try {
+              voltRead = await sysmanPowerLimits.readVoltageOffsetResult(deviceId);
+            } catch (err) {
+              throw new Error(`reset-to-defaults Sysman voltage read failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            if (voltRead?.ok !== true) {
+              // Unsupported hardware is safe to bypass; not-ready means the
+              // helper cannot prove that prior VF state is absent.
+              if (voltRead?.errorCode === 'unsupported') {
+                voltRead = null;
+              } else {
+                throw new Error(`reset-to-defaults Sysman voltage read failed: ${voltRead?.message ?? voltRead?.errorCode ?? 'unknown failure'}`);
+              }
+            } else if (!Number.isFinite(voltRead.offsetV)) {
+              throw new Error('reset-to-defaults Sysman voltage read failed: invalid offset read-back');
+            }
+          } else {
+            // Legacy injected seams have no status channel; retain their
+            // historical null-only behavior.
+            try { voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId); } catch { voltRead = null; }
+          }
+          if (voltRead && (voltRead.needsClear === true
+            || (Number.isFinite(voltRead.offsetV) && voltRead.offsetV < 0))) {
             let cleared;
             try {
               cleared = await sysmanPowerLimits.setVoltageOffset({ offsetV: 0 }, deviceId);

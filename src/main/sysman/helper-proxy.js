@@ -981,21 +981,37 @@ export function createSysmanHelperProxy({
     // semantics without auto-upgrade PL intent for voltage.
 
     /**
-     * M26: read the current GPU voltage offset via the Sysman frequency OC
-     * getter. Not-ready or not-connected returns null immediately.
-     * @param {number} [_deviceId] accepted for device-scoped consumer parity;
-     *   the one elevated helper is intentionally device-agnostic.
-     * @returns {Promise<{ targetV: number, offsetV: number } | null>}
+     * Read the current GPU voltage offset with an explicit capability/error
+     * status. Unsupported hardware is distinct from a failed read so callers
+     * can fail closed only when a supported control becomes unreadable.
      */
-    async readVoltageOffset(_deviceId = 0) {
-      if (!(await readyGate())) return null;
-      const { out } = await enqueue({ op: 'read-voltage' });
-      if (out?.ok === true
-        && Number.isFinite(out.targetV)
-        && Number.isFinite(out.offsetV)) {
-        return { targetV: out.targetV, offsetV: out.offsetV };
+    async readVoltageOffsetResult(deviceId = 0) {
+      if (!(await readyGate())) {
+        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
       }
-      return null;
+      const { out, reason } = await enqueue({ op: 'read-voltage', payload: { deviceId } });
+      if (out?.ok === true && Number.isFinite(out.targetV) && Number.isFinite(out.offsetV)) {
+        return {
+          ok: true,
+          targetV: out.targetV,
+          offsetV: out.offsetV,
+          needsClear: out.needsClear === true,
+        };
+      }
+      return {
+        ok: false,
+        errorCode: out?.errorCode ?? 'helper-failed',
+        message: out?.message ?? reason ?? 'the sysman voltage offset read failed',
+      };
+    },
+
+    /**
+     * Read the current GPU voltage offset. Unsupported or failed reads retain
+     * the historical null result for existing telemetry callers.
+     */
+    async readVoltageOffset(deviceId = 0) {
+      const result = await this.readVoltageOffsetResult(deviceId);
+      return result.ok === true ? { targetV: result.targetV, offsetV: result.offsetV } : null;
     },
 
     /**
@@ -1008,7 +1024,7 @@ export function createSysmanHelperProxy({
      *   the one elevated helper is intentionally device-agnostic.
      * @returns {Promise<{ ok: boolean, offsetV?: number, errorCode?: string, message?: string }>}
      */
-    async setVoltageOffset({ offsetV }, _deviceId = 0) {
+    async setVoltageOffset({ offsetV }, deviceId = 0) {
       if (!Number.isFinite(offsetV)) {
         return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
       }
@@ -1016,10 +1032,21 @@ export function createSysmanHelperProxy({
         debugLog({ ts: Date.now(), event: 'resp', op: 'set-voltage', spawnError: NOT_READY_MESSAGE, out: null });
         return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
       }
-      const { out, reason } = await enqueue({ op: 'set-voltage', payload: { offsetV } });
+      const { out, reason } = await enqueue({ op: 'set-voltage', payload: { offsetV, deviceId } });
       if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
       const result = { ok: out.ok === true };
       if (out.offsetV !== undefined) result.offsetV = out.offsetV;
+      if (out.errorCode !== undefined) result.errorCode = out.errorCode;
+      if (out.message !== undefined) result.message = out.message;
+      return result;
+    },
+    async setOverclockWaiver(deviceId = 0) {
+      if (!(await readyGate())) {
+        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
+      }
+      const { out, reason } = await enqueue({ op: 'set-waiver', payload: { deviceId } });
+      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
+      const result = { ok: out.ok === true };
       if (out.errorCode !== undefined) result.errorCode = out.errorCode;
       if (out.message !== undefined) result.message = out.message;
       return result;

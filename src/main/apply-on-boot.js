@@ -371,11 +371,34 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     }
     // M26: the fallback reset also clears a negative Sysman voltage offset;
     // backend.resetToDefaults only resets the IGCL controls.
-    if (typeof sysmanPowerLimits?.readVoltageOffset === 'function'
+    if ((typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function'
+      || typeof sysmanPowerLimits?.readVoltageOffset === 'function')
       && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
       let voltRead = null;
-      try { voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId_); } catch { /* degraded */ }
-      if (voltRead && typeof voltRead.offsetV === 'number' && Number.isFinite(voltRead.offsetV) && voltRead.offsetV < 0) {
+      if (typeof sysmanPowerLimits.readVoltageOffsetResult === 'function') {
+        try {
+          voltRead = await sysmanPowerLimits.readVoltageOffsetResult(deviceId_);
+        } catch (err) {
+          throw new Error(`Sysman voltage read failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (voltRead?.ok !== true) {
+          // Unsupported hardware is safe to bypass; not-ready means the
+          // helper cannot prove that prior VF state is absent.
+          if (voltRead?.errorCode === 'unsupported') {
+            voltRead = null;
+          } else {
+            throw new Error(`Sysman voltage read failed: ${voltRead?.message ?? voltRead?.errorCode ?? 'unknown failure'}`);
+          }
+        } else if (!Number.isFinite(voltRead.offsetV)) {
+          throw new Error('Sysman voltage read failed: invalid offset read-back');
+        }
+      } else {
+        // Legacy injected seams have no status channel; preserve their
+        // historical null/throw degrade rather than guessing support.
+        try { voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId_); } catch { voltRead = null; }
+      }
+      if (voltRead && (voltRead.needsClear === true
+        || (Number.isFinite(voltRead.offsetV) && voltRead.offsetV < 0))) {
         const cleared = await sysmanPowerLimits.setVoltageOffset({ offsetV: 0 }, deviceId_);
         if (cleared?.ok !== true) {
           throw new Error(`Sysman voltage clear failed: ${cleared?.message ?? cleared?.errorCode ?? 'unknown failure'}`);
@@ -395,7 +418,9 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   }
   return {
     applied: false,
-    reason: 'apply failed; defaults restored',
+    reason: fallbackApplied === true
+      ? 'apply failed; defaults restored'
+      : 'apply failed; defaults restore failed',
     fallbackApplied,
     result,
     state: afterFallback,
