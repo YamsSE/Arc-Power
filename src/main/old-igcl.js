@@ -173,11 +173,16 @@ export class OldIgcl {
   }
 
   /**
-   * extendedCapable(): init + enumerate + waiver all SUCCESS on the bundled
-   * runtime. Cached; a failure sets `_capable = false` forever (the old
-   * runtime either works on this driver or it does not).
-   * @returns {Promise<boolean>}
+   * Whether the bundled 2023 runtime is installed and can be handed to an
+   * elevated apply worker. The UI process is intentionally not elevated, so
+   * `isCapable()` can return `false` with ERROR_KMD_CALL even though the DLL
+   * is present and the elevated worker can use it.
+   * @returns {boolean}
    */
+  isAvailable() {
+    const dllPath = this._dllPath ?? this._findDll();
+    return typeof dllPath === 'string' && dllPath.length > 0 && fs.existsSync(dllPath);
+  }
   async isCapable() {
     if (this._capable !== null) return this._capable;
     // M17d (Run E): the latch - concurrent callers share ONE in-flight

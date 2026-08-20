@@ -1121,8 +1121,13 @@ export class IgclBackend {
         // 2023 runtime (apply-routing.js) - and above 315 W to the sysman
         // pair as the primary write. In stock mode the extended maxes
         // are NEVER exposed - the mode gate refuses them before any clamp.
+        // The UI process is normally unelevated. A KMD_CALL during its probe
+        // means "this process cannot initialize the bundled runtime", not
+        // "the runtime is absent"; applies are delegated to the elevated
+        // worker. Prefer the installed-runtime signal when available.
         const extendedCapable = this._extended
-          ? await this._extended.isCapable()
+          ? (await this._extended.isCapable())
+            || (typeof this._extended.isAvailable === 'function' && this._extended.isAvailable())
           : false;
         // M4E: the extended concept is W/C-only (the bundled 2023 runtime
         // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)

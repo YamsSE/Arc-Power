@@ -946,7 +946,12 @@ async function main() {
     kind: mock ? 'mock' : 'igcl',
     igcl: realOldIgcl
       ? {
-          extended: { isCapable: () => realOldIgcl.isCapable() },
+          extended: {
+            isCapable: () => realOldIgcl.isCapable(),
+            // M33: the main UI is unelevated; the elevated apply worker owns
+            // the actual init/waiver/write probe.
+            isAvailable: () => realOldIgcl.isAvailable(),
+          },
           // M4J (A): pass the CACHED CIM data (with .videoControllers) - the
           // pre-fix adapter passed `sysinfo` (the lazy .get() wrapper), so
           // the lookup ALWAYS returned null on the real path and the A770
