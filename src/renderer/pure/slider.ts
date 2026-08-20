@@ -52,6 +52,7 @@ export function formatValue(value: number, units: string, decimals?: number): st
  */
 export function formatDriverValue(value: number | null | undefined, range: RangeInfo): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return 'unavailable';
+  if (range.units === 'V' && value < 0) return 'unavailable';
   const base = range.units === 'V' ? 3 : 0;
   return formatValue(value, range.units, base + (isOffGrid(value, range) ? 1 : 0));
 }
@@ -59,5 +60,6 @@ export function formatDriverValue(value: number | null | undefined, range: Range
 /** True when the driver's current value is off the capability grid. */
 export function isOffGrid(value: number | null | undefined, range: RangeInfo): boolean {
   if (value === null || value === undefined || !Number.isFinite(value)) return false;
+  if (range.units === 'V' && value < 0) return false;
   return snapToRange(value, range) !== value;
 }

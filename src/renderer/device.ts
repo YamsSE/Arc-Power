@@ -27,7 +27,7 @@ import type { ArcPowerApi } from './arcpower.d.ts';
 import type { Store } from './router.ts';
 
 export interface DeviceSwitchDeps {
-  api: Pick<ArcPowerApi, 'telemetryStop' | 'telemetryStart' | 'getCapabilities' | 'getCurrentSettings' | 'deviceSet'>;
+  api: Pick<ArcPowerApi, 'telemetryStop' | 'telemetryStart' | 'getCapabilities' | 'getCurrentSettings' | 'deviceSet'> & Partial<Pick<ArcPowerApi, 'vendorInfo'>>;
   store: Store;
   /** Re-render the current page after the switch lands (app-level). */
   onSwitched: (id: number) => void;
@@ -97,17 +97,40 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
         ]);
       } catch (err) {
         deps.warn('GPU switch', `Could not read device ${id} state: ${errText(err)}`);
+        // The old owner was stopped before the speculative new-device read.
+        // Roll the telemetry handoff back with the selection so the old
+        // session does not keep filtering out samples from a stopped owner.
+        await stopTelemetry(deps.api, id, deps.warn);
+        await startTelemetry(deps.api, oldId, deps.warn);
         return;
+      }
+      let vendorInfo = null;
+      try {
+        vendorInfo = deps.api.vendorInfo ? await deps.api.vendorInfo(id) : null;
+      } catch {
+        vendorInfo = null;
       }
       // latestSample + lastApply reset: the monitoring series and the
       // "OC working" row must never carry the OLD device's values onto the
       // new device ('-' until the first tick / the first apply).
-      deps.store.set({ deviceId: id, caps, state, latestSample: null, lastApply: null });
+      const selected = live.devices.find((d: DeviceInfo) => d.id === id);
+      deps.store.set({
+        deviceId: id,
+        caps,
+        state,
+        latestSample: null,
+        lastApply: null,
+        // M30: noIntel describes the machine-level empty-inventory mode, not
+        // whether this selected row has overclocking controls. Synthetic
+        // AMD/NVIDIA rows stay in the normal dashboard health layout.
+        noIntel: false,
+        osGpu: selected?.osController ?? null,
+        vendorInfo,
+      });
       // Persist AFTER the session switch: a deviceSet failure (N9) keeps
       // the in-session selection - the next boot falls back to devices[0]
       // (or the main-side self-heal re-resolves).
       try {
-        const selected = live.devices.find((d: DeviceInfo) => d.id === id);
         await deps.api.deviceSet({ deviceId: id, deviceKey: selected?.deviceKey });
       } catch (err) {
         deps.warn('GPU selection', `The selection could not be saved - the switch stays for this session (${errText(err)})`);

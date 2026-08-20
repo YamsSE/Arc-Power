@@ -1278,29 +1278,56 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
   //      (both selectors drive the same selectDevice flow).
   if (process.env.RID_MOCK_MULTI_DEVICE === '1' && process.env.RID_MOCK_MULTI_ARC === '1') {
     const mixedNames = ['Mock Arc A770 Graphics (fixture) 16GB GDDR6', 'Mock Arc A750 Graphics (fixture) 8GB GDDR6'];
-    await js(`location.hash = '#/tuning'`);
-    await sleep(250);
-    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 8000))) {
-      fail('M29: mixed A770+A750 Tuning selector is missing');
-    }
-    const mixedOptions = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-mode-row .device-select option')).map((o) => [o.value, o.textContent.trim()]))`));
-    if (mixedOptions.length !== 2 || mixedOptions.some(([id, name]) => !mixedNames.includes(name)) || mixedOptions.map(([id]) => id).sort().join(',') !== '0,1') {
-      fail(`M29: mixed A770+A750 Tuning selector options are ${JSON.stringify(mixedOptions)}`);
-    }
-    step('m29-mixed-arc-selector', `mixed A770+A750: Tuning Arc selector is visible with options ${JSON.stringify(mixedOptions)}`);
-    await js(`location.hash = '#/dashboard'`);
-    await sleep(250);
-  } else if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
-    const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
-    const IGPU_NAME = 'Mock Arc iGPU (fixture)';
-    const driveSelector = (value) => js(`(() => {
-      const s = document.querySelector('.device-select');
+    const mixedSelectorOptions = (selector) => js(`JSON.stringify(Array.from(document.querySelectorAll('${selector} option')).map((o) => [o.value, o.textContent.trim()]))`);
+    const driveMixedSelector = (selector, value) => js(`(() => {
+      const s = document.querySelector('${selector}');
       if (!s) return 'no-select';
       s.value = '${value}';
       s.dispatchEvent(new Event('change', { bubbles: true }));
       return 'ok';
     })()`);
-    const selectorOptions = () => js(`JSON.stringify(Array.from(document.querySelectorAll('.device-select option')).map((o) => [o.value, o.textContent]))`);
+    await js(`location.hash = '#/tuning'`);
+    await sleep(250);
+    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 8000))) {
+      fail('M29: mixed A770+A750 Tuning selector is missing');
+    }
+    const mixedOptions = JSON.parse(await mixedSelectorOptions('.oc-mode-row .device-select'));
+    if (mixedOptions.length !== 2 || mixedOptions.some(([id, name]) => !mixedNames.includes(name)) || mixedOptions.map(([id]) => id).sort().join(',') !== '0,1') {
+      fail(`M29: mixed A770+A750 Tuning selector options are ${JSON.stringify(mixedOptions)}`);
+    }
+    if ((await driveMixedSelector('.oc-mode-row .device-select', '1')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 1 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[1]}')`, 8000))) {
+      fail(`M30: mixed A770+A750 Tuning selector could not select device 1: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
+    }
+    if ((await driveMixedSelector('.oc-mode-row .device-select', '0')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 0 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[0]}')`, 8000))) {
+      fail(`M30: mixed A770+A750 Tuning selector could not select device 0: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
+    }
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(250);
+    if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-select')`, 8000))) {
+      fail('M30: mixed A770+A750 Dashboard selector is missing');
+    }
+    const mixedDashOptions = JSON.parse(await mixedSelectorOptions('.card-grid .device-select'));
+    if (JSON.stringify(mixedDashOptions) !== JSON.stringify(mixedOptions)) {
+      fail(`M30: mixed A770+A750 Dashboard selector options are ${JSON.stringify(mixedDashOptions)} (expected ${JSON.stringify(mixedOptions)})`);
+    }
+    if ((await driveMixedSelector('.card-grid .device-select', '1')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 1 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[1]}')`, 8000))) {
+      fail(`M30: mixed A770+A750 Dashboard selector could not select device 1: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
+    }
+    if ((await driveMixedSelector('.card-grid .device-select', '0')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 0 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[0]}')`, 8000))) {
+      fail(`M30: mixed A770+A750 Dashboard selector could not select device 0: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
+    }
+    step('m30-mixed-selectors', `mixed A770+A750: Dashboard and Tuning expose the same generic selector options ${JSON.stringify(mixedOptions)} and each selects both rows`);
+  } else if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+    const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
+    const IGPU_NAME = 'Mock Arc iGPU (fixture)';
+    const driveSelector = (value, selector = '.device-select') => js(`(() => {
+      const s = document.querySelector('${selector}');
+      if (!s) return 'no-select';
+      s.value = '${value}';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    })()`);
+    const selectorOptions = (selector = '.device-select') => js(`JSON.stringify(Array.from(document.querySelectorAll('${selector} option')).map((o) => [o.value, o.textContent.trim()]))`);
 
     // (1) the dashboard GPU card selector renders BOTH device names, the
     // current selection is device 0.
@@ -1347,12 +1374,19 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
     if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length === 0 && document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
       fail(`M4-F: the Tuning page did not degrade to the no-OC note on device 1 (cards=${await js(`document.querySelectorAll('.oc-card').length`)}; page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
     }
-    // M29: A770 + unrelated iGPU is not a two-Arc session, so Tuning has no
-    // selector even though Dashboard keeps the all-device inspection control.
-    if (await js(`!!document.querySelector('.oc-mode-row .device-select')`)) {
-      fail('M29: Tuning rendered the Arc selector with only one Arc device');
+    // M30: the selector is vendor-neutral. Dashboard and Tuning both expose
+    // all devices, including the unrelated OS-only/synthetic secondary row.
+    const tuningOpts = JSON.parse(await selectorOptions('.oc-mode-row .device-select'));
+    if (tuningOpts.length !== 2 || tuningOpts.some(([id, name]) => ![A770_NAME, IGPU_NAME].includes(name)) || tuningOpts.map(([id]) => id).sort().join(',') !== '0,1') {
+      fail(`M30: Tuning selector options are ${JSON.stringify(tuningOpts)} (expected both '${A770_NAME}' and '${IGPU_NAME}')`);
     }
-    step('m4f-switch', `M29: dashboard Inspect GPU -> device 1: header '${IGPU_NAME}', caps telemetry-only, Tuning no-OC note and no Arc selector`);
+    if ((await driveSelector('0', '.oc-mode-row .device-select')) !== 'ok' || !(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
+      fail(`M30: Tuning selector could not select device 0: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
+    }
+    if ((await driveSelector('1', '.oc-mode-row .device-select')) !== 'ok' || !(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${IGPU_NAME}'`, 8000))) {
+      fail(`M30: Tuning selector could not select device 1: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
+    }
+    step('m30-tuning-selector', `M30: Tuning selector exposes both devices and selects both rows; device 1 is '${IGPU_NAME}' with no-OC controls`);
 
     // (3) F1: a featureset swap while device 1 is selected must re-read the
     // CURRENT device's pair - the Tuning page keeps the no-OC note, never
@@ -1363,6 +1397,9 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
       s.dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
     await swapFsTo('b580');
+    if (!(await waitFor(win, `window.arcPower.listDevices().then((devices) => devices.some((d) => d.synthetic !== true && d.backendKind !== 'os' && (d.name ?? '').includes('B580')))` , 8000))) {
+      fail('M4-F (F1): the b580 featureset swap did not settle on a writable B580 inventory row');
+    }
     if (!(await waitFor(win, `document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
       fail(`M4-F (F1): after a swap to b580 the Tuning page paired device 1 with device-0's ranges (page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
     }
@@ -1370,6 +1407,9 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
       fail('M4-F (F1): b580 control cards rendered for device 1 (the swap must re-read the CURRENT device)');
     }
     await swapFsTo('a770');
+    if (!(await waitFor(win, `window.arcPower.listDevices().then((devices) => devices.some((d) => d.synthetic !== true && d.backendKind !== 'os' && (d.name ?? '').includes('A770')))` , 8000))) {
+      fail('M4-F (F1): the a770 featureset swap did not settle on a writable A770 inventory row');
+    }
     if (!(await waitFor(win, `(document.querySelector('.featureset-select').value) === 'a770' && document.body.textContent.includes('No overclocking controls are available')`, 8000))) {
       fail('M4-F (F1): the swap back to a770 did not restore the session (device 1 must stay the no-OC surface)');
     }
@@ -2158,12 +2198,9 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
   step('m4b-negative', `M4-B: freq range ${freqMin}..${freqMax} MHz, slider -100 -> readout '${negReadout.trim()}', apply -> read-back ${negState.gpuFreqOffsetMhz} MHz`);
   await clearToasts();
 
-  // (1b) NEGATIVE VOLT half-plane: the mirrored volt range -0.234..0.234 V
-  // (a770) - a -0.050 V apply writes + reads back through the clamp (the
-  // finding-5b negative-volt e2e pin; M15 F4-fix: the exposed step is
-  // 0.001, so -0.05 is on-grid). M16 (nit): the step + the 0.234 max
-  // reachability are pinned below - the slider must actually reach +
-  // display the real ceiling (the old 0.005 step maxed at 0.230).
+  // (1b) The negative V-unit half-plane is temporarily hidden until the
+  // Alchemist negative-voltage path is ready. The positive ceiling remains
+  // pinned below; negative frequency offsets remain covered above.
   const setVoltSlider = (value) => js(`(() => {
     const card = document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]');
     const input = card.querySelector('input[type="range"]');
@@ -2173,7 +2210,7 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
   })()`);
   const voltMin = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('min')`);
   const voltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
-  if (voltMin !== '-0.5' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.5..0.234 - the M26 stock floor)`);
+  if (voltMin !== '0' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected 0..0.234 - negative V-unit offsets are temporarily hidden)`);
   // M15 F4-fix / M16 (nit 9a): the slider's step attribute is the pinned
   // 0.001 grid - the old driver-reported 0.005 put the 0.234 ceiling
   // OFF-GRID (the slider maxed at 0.230). The step + the reachability of
@@ -2189,16 +2226,7 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
   if (Math.abs(maxVoltState.gpuVoltOffsetV - 0.234) > 1e-6) fail(`M16: the 0.234 V max apply did not stick: ${maxVoltState.gpuVoltOffsetV} (the 0.001 step must NOT re-snap it to 0.230)`);
   step('m16-volt-max', `M16: volt slider step '${voltStep}', max '${voltMax}' reachable -> readout '${voltMaxReadout.trim()}', apply -> read-back ${maxVoltState.gpuVoltOffsetV} V (the 0.234 ceiling survives the clamp)`);
   await clearToasts();
-  const voltReadout = await setVoltSlider(-0.05);
-  if (voltReadout.trim() !== '-0.050 V') fail(`M4-B: volt slider readout is '${voltReadout}' (expected '-0.050 V' - 3-decimal volt format)`);
-  if (await floatingHidden()) fail('M4-B: floating Apply did not appear for the negative volt move');
-  await clearToasts();
-  await clickApply();
-  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4-B: negative volt apply success toast missing');
-  const negVoltState = await js(`window.arcPower.getCurrentSettings(0)`);
-  if (Math.abs(negVoltState.gpuVoltOffsetV + 0.05) > 1e-6) fail(`M4-B: negative volt apply did not stick: ${negVoltState.gpuVoltOffsetV}`);
-  step('m4b-negative-volt', `M4-B: volt range ${voltMin}..${voltMax} V, slider -0.05 -> readout '${voltReadout.trim()}', apply -> read-back ${negVoltState.gpuVoltOffsetV} V`);
-  await clearToasts();
+  step('m4b-negative-volt-hidden', `M4-B: V-unit voltage slider is ${voltMin}..${voltMax} V; negative voltage input is temporarily hidden while the positive ceiling remains usable`);
 
   // (2) M17e (Run B): the Offset|Lock toggle round trip - the M4-B
   // Offset/Clock toggle DIED with the Clock mode (the pure/clock.ts
@@ -2455,6 +2483,9 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
     // (a fresh device - never a UI 0/0 apply) and pin that the offset apply
     // LANDS normally on the unlocked mock (offset 100, the lock stays (0,0)).
     await lockSwapTo('a750');
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`, 8000))) {
+      fail(`M22 (ii): the intermediate swap to a750 did not settle before the return swap (PL readout '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' - expected '190 W')`);
+    }
     await lockSwapTo('a770');
     if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`, 8000))) {
       fail(`M22 (ii): the swap-back to a770 did not re-render (PL readout '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' - expected '210 W')`);
@@ -2966,7 +2997,14 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
   if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '100 %'`))) {
     fail(`M2D swap: PL readout is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' (expected '100 %')`);
   }
-  const b580Caps = await js(`window.arcPower.getCapabilities(0)`);
+  // M30: stable device ids are intentionally not renumbered when a physical
+  // adapter disappears during a featureset swap. Read the renderer's current
+  // persisted selection instead of assuming session id 0 or the first
+  // writable row names the swapped-in card (a mixed session may retain a
+  // second writable GPU alongside it).
+  const b580DeviceId = (await js(`window.arcPower.deviceGet()`))?.deviceId ?? null;
+  if (!Number.isInteger(b580DeviceId)) fail('M2D swap: no active b580 device row resolved after the swap');
+  const b580Caps = await js(`window.arcPower.getCapabilities(${b580DeviceId})`);
   if (b580Caps.ranges.powerLimitW.units !== '%' || b580Caps.ranges.tempLimitC.units !== '%' || b580Caps.ranges.gpuVoltOffsetV.units !== '%') {
     fail(`M2D swap: b580 percent units not applied: ${JSON.stringify(b580Caps.ranges)}`);
   }
@@ -3010,11 +3048,13 @@ fail(`header version line is '${await js(`document.getElementById('titlebar-vers
   if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`))) {
     fail(`M2D swap-back: PL readout is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' (expected '210 W')`);
   }
-  const a770Caps = await js(`window.arcPower.getCapabilities(0)`);
+  const a770DeviceId = (await js(`window.arcPower.deviceGet()`))?.deviceId ?? null;
+  if (!Number.isInteger(a770DeviceId)) fail('M2D swap-back: no active a770 device row resolved after the swap');
+  const a770Caps = await js(`window.arcPower.getCapabilities(${a770DeviceId})`);
   if (a770Caps.ranges.powerLimitW.units !== 'W') fail(`M2D swap-back: units not back to W: ${JSON.stringify(a770Caps.ranges.powerLimitW)}`);
   const selBack = await js(`document.querySelector('.featureset-select').value`);
   if (selBack !== 'a770') fail(`M2D swap-back: dropdown selection is '${selBack}'`);
-  if ((await js(`window.arcPower.waiverGet(0)`)).accepted !== true) fail('M2D swap: waiver acceptance was lost across the swap');
+  if ((await js(`window.arcPower.waiverGet(${a770DeviceId})`)).accepted !== true) fail('M2D swap: waiver acceptance was lost across the swap');
   // M4J (D): the Advanced section after the swap back to a770 follows the
   // DEVICE surface - the a770 featureset has no vramFreqOffset, so the
   // section (VRAM editor) drops; only a session that carries the control
@@ -6022,7 +6062,195 @@ export async function runLaptopSysinfoVerify(win) {
 /**
  * @param {import('electron').BrowserWindow} win
  */
+export async function runSyntheticOsVerify(win) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const nvidia = process.env.RID_MOCK_VENDOR === 'nvml';
+  const expectedName = nvidia ? 'NVIDIA GeForce GTX 980' : 'AMD Radeon RX 7600';
+  const expectedDriver = nvidia ? '31.0.15.6262' : '31.0.12027.9001';
+  const expectedVram = nvidia ? '4GB' : '8GB';
+
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+    fail('M30 synthetic OS: sidebar did not render');
+  }
+  const devices = await js(`window.arcPower.listDevices()`);
+  if (!Array.isArray(devices) || devices.length !== 1 || devices[0].synthetic !== true || devices[0].backendKind !== 'os') {
+    fail(`M30 synthetic OS: expected one synthetic OS-only device, got ${JSON.stringify(devices)}`);
+  }
+  step('inventory', `M30 synthetic OS: one read-only ${nvidia ? 'NVIDIA' : 'AMD'} OS controller is exposed as device ${devices[0].id}`);
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${expectedName}'`, 10000))) {
+    fail(`M30 synthetic OS: header GPU name is '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' (expected '${expectedName}')`);
+  }
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.device-card');
+    const driver = card?.querySelector('.kv[data-label="Driver version"]');
+    return !!card && !!driver && (driver.textContent ?? '').includes('${expectedDriver}');
+  })()`, 10000))) {
+    fail(`M30 synthetic OS: Dashboard GPU card did not finish rendering the Driver version row (got '${await js(`document.querySelector('.device-card .kv[data-label="Driver version"]')?.textContent ?? ''`)}', expected '${expectedDriver}')`);
+  }
+  if (nvidia && !(await waitFor(win, `(document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? '').trim() === '1965 MHz Core / 7010 MHz Memory'`, 8000))) {
+    fail(`M30 synthetic OS: NVIDIA Clocks readout did not receive live telemetry (got '${await js(`document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? ''`)}', expected '1965 MHz Core / 7010 MHz Memory')`);
+  }
+  const dashboardRows = JSON.parse(await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.device-card .kv')).map((k) => [k.getAttribute('data-label') ?? 'ReBAR', (k.textContent ?? '').trim()])))`));
+  if (dashboardRows.GPU !== expectedName) fail(`M30 synthetic OS: GPU card name is '${dashboardRows.GPU}' (expected '${expectedName}')`);
+  if (!dashboardRows['Driver version']?.includes(expectedDriver)) fail(`M30 synthetic OS: Driver version row is '${dashboardRows['Driver version']}' (expected '${expectedDriver}')`);
+  if (dashboardRows.VRAM !== expectedVram) fail(`M30 synthetic OS: VRAM row is '${dashboardRows.VRAM}' (expected '${expectedVram}')`);
+  if (dashboardRows.ReBAR !== 'ReBAR off') fail(`M30 synthetic OS: ReBAR readout is '${dashboardRows.ReBAR}' (expected 'ReBAR off')`);
+  if (!dashboardRows.Clocks || dashboardRows.Clocks === '-') fail(`M30 synthetic OS: Clocks readout is empty: ${JSON.stringify(dashboardRows)}`);
+  if (nvidia) {
+    if (dashboardRows['Board partner'] !== 'Gigabyte') fail(`M30 synthetic OS: NVIDIA Board partner is '${dashboardRows['Board partner']}' (expected 'Gigabyte')`);
+    if (dashboardRows.Compute !== '2048 Cores') fail(`M30 synthetic OS: NVIDIA Compute readout is '${dashboardRows.Compute}' (expected '2048 Cores')`);
+    if (dashboardRows.Clocks !== '1965 MHz Core / 7010 MHz Memory') fail(`M30 synthetic OS: NVIDIA Clocks readout is '${dashboardRows.Clocks}' (expected live NVML clocks)`);
+  } else if (dashboardRows['Board partner'] !== 'MSI') {
+    fail(`M30 synthetic OS: AMD Board partner is '${dashboardRows['Board partner']}' (expected 'MSI')`);
+  }
+  if (await js(`!!document.querySelector('.device-select')`)) {
+    fail('M30 synthetic OS: a selector is visible with only one GPU');
+  }
+  step('dashboard', `M30 synthetic OS: Dashboard shows '${expectedName}', Driver '${dashboardRows['Driver version']}', Board partner '${dashboardRows['Board partner']}', VRAM '${dashboardRows.VRAM}', Clocks '${dashboardRows.Clocks}', ReBAR '${dashboardRows.ReBAR}'; selector hidden`);
+
+  await js(`location.hash = '#/tuning'`);
+  if (!(await waitFor(win, `(document.querySelector('.page-title')?.textContent ?? '').trim() === 'Tuning'`, 5000))) {
+    fail(`M30 synthetic OS: Tuning page title is '${await js(`document.querySelector('.page-title')?.textContent ?? ''`)}'`);
+  }
+  if (!(await waitFor(win, `document.body.textContent.includes('No overclocking controls are available on this device.')`, 5000))) {
+    fail('M30 synthetic OS: Tuning did not show the read-only unsupported state');
+  }
+  if (await js(`!!document.querySelector('.device-select')`)) fail('M30 synthetic OS: Tuning shows a selector with only one GPU');
+  const tuningShape = await js(`JSON.stringify({ cards: document.querySelectorAll('.oc-card').length, ranges: document.querySelectorAll('input[type="range"]').length, applyButtons: document.querySelectorAll('.oc-card button, .floating-apply').length })`);
+  const shape = JSON.parse(tuningShape);
+  if (shape.cards !== 0 || shape.ranges !== 0 || shape.applyButtons !== 0) {
+    fail(`M30 synthetic OS: Tuning exposed write controls for a read-only device: ${tuningShape}`);
+  }
+  const syntheticState = await js(`window.arcPower.getCurrentSettings(${devices[0].id})`);
+  if (!syntheticState || Object.values(syntheticState).some((value) => value !== null)) {
+    fail(`M30 synthetic OS: read-only device state is not the null-safe no-write state: ${JSON.stringify(syntheticState)}`);
+  }
+  step('tuning', `M30 synthetic OS: Tuning is visible with no OC cards, range inputs, or Apply controls; read-only state is null-safe and no tuning write is attempted`);
+
+  await runCloseToTrayProbe(win);
+  console.log(`\nUI VERIFY OK (synthetic-os${nvidia ? '-nvml' : '-amd'})\n` + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+/**
+ * Verify the explicit empty-inventory fixture. This is deliberately separate
+ * from the historical no-Intel/NVML flow: RID_MOCK_ZERO_GPU=1 means that
+ * sysinfo has no usable controllers at all, so no NVIDIA/AMD identity or
+ * vendor readout may be expected.
+ * @param {import('electron').BrowserWindow} win
+ */
+async function runZeroGpuVerify(win) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => {
+    steps.push(`[${n}] ${msg}`);
+    log(msg);
+  };
+  const fail = (msg) => {
+    throw new UiVerifyFailure(msg);
+  };
+  const js = (code) => win.webContents.executeJavaScript(code);
+
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`, 10000))) {
+    fail('M30 zero-GPU: shell did not render (7 sidebar links expected)');
+  }
+  const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
+  if (!brand.trim().includes('Arc Power')) fail(`M30 zero-GPU: sidebar brand is '${brand}'`);
+  step('shell', `M30 zero-GPU: shell rendered; brand '${brand.trim()}'`);
+
+  const inventory = await js(`window.arcPower.listDevices()`);
+  if (!Array.isArray(inventory) || inventory.length !== 0) {
+    fail(`M30 zero-GPU: expected an empty GPU inventory, got ${JSON.stringify(inventory)}`);
+  }
+  const sysinfo = await js(`window.arcPower.sysinfo()`);
+  if (Array.isArray(sysinfo?.videoControllers) && sysinfo.videoControllers.length !== 0) {
+    fail(`M30 zero-GPU: sysinfo unexpectedly exposed controllers: ${JSON.stringify(sysinfo.videoControllers)}`);
+  }
+  const selected = await js(`window.arcPower.deviceGet()`);
+  if (selected?.deviceId !== null || selected?.deviceKey !== null) {
+    fail(`M30 zero-GPU: a device was selected despite an empty inventory: ${JSON.stringify(selected)}`);
+  }
+  step('inventory', 'M30 zero-GPU: inventory and sysinfo contain no GPU; durable selection is null');
+
+  const headerName = await js(`document.querySelector('.gpu-name')?.textContent ?? ''`);
+  if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === 'No GPU detected'`, 10000))) {
+    fail(`M30 zero-GPU: header is '${headerName}' (expected 'No GPU detected')`);
+  }
+  const headerMeta = await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`);
+  if (headerMeta.trim() !== 'Non supported GPU') {
+    fail(`M30 zero-GPU: header meta is '${headerMeta}' (expected the honest no-device status)`);
+  }
+  step('header', "M30 zero-GPU: header reads 'No GPU detected' with no fabricated GPU identity");
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card') && !!document.querySelector('.health-card')`, 5000))) {
+    fail('M30 zero-GPU: Dashboard cards did not render');
+  }
+  const dashboard = JSON.parse(await js(`JSON.stringify({
+    gpu: document.querySelector('.device-card .kv[data-label="GPU"]')?.textContent?.trim() ?? null,
+    driver: document.querySelector('.device-card .kv[data-label="Driver version"]')?.textContent?.trim() ?? null,
+    compute: document.querySelector('.device-card .kv[data-label="Compute"]')?.textContent?.trim() ?? null,
+    clocks: document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent?.trim() ?? null,
+    vram: document.querySelector('.device-card .kv[data-label="VRAM"]')?.textContent?.trim() ?? null,
+    rebar: document.querySelector('.device-card .rebar-pill')?.textContent?.trim() ?? null,
+    deviceStatus: document.querySelector('.health-card .health-row[data-row="device"] .health-row-detail')?.textContent?.trim() ?? null,
+    driverStatus: document.querySelector('.health-card .health-row[data-row="driver"] .health-row-detail')?.textContent?.trim() ?? null,
+    selector: !!document.querySelector('.device-select')
+  })`));
+  const expectedDashboard = {
+    gpu: '-',
+    driver: '-',
+    rebar: 'ReBAR -',
+    deviceStatus: 'No GPU detected',
+    driverStatus: 'No Intel Driver Found',
+    selector: false,
+  };
+  for (const [key, expected] of Object.entries(expectedDashboard)) {
+    if (dashboard[key] !== expected) {
+      fail(`M30 zero-GPU: Dashboard ${key} is ${JSON.stringify(dashboard[key])} (expected ${JSON.stringify(expected)})`);
+    }
+  }
+  step('dashboard', "M30 zero-GPU: Dashboard shows '-' readouts, 'No GPU detected' status, no selector, and no fabricated device");
+
+  await js(`location.hash = '#/tuning'`);
+  if (!(await waitFor(win, `(document.querySelector('.page-subtitle')?.textContent ?? '').trim() === 'No GPU available.'`, 5000))) {
+    fail(`M30 zero-GPU: Tuning subtitle is '${await js(`document.querySelector('.page-subtitle')?.textContent ?? ''`)}' (expected 'No GPU available.')`);
+  }
+  const tuningShape = JSON.parse(await js(`JSON.stringify({
+    ranges: document.querySelectorAll('input[type="range"]').length,
+    buttons: document.querySelectorAll('.oc-card button, .floating-apply').length,
+    selector: !!document.querySelector('.device-select')
+  })`));
+  if (tuningShape.ranges !== 0 || tuningShape.buttons !== 0 || tuningShape.selector) {
+    fail(`M30 zero-GPU: Tuning exposed write controls: ${JSON.stringify(tuningShape)}`);
+  }
+  step('tuning', "M30 zero-GPU: Tuning reads 'No GPU available.' and exposes no write controls");
+
+  await runCloseToTrayProbe(win);
+  console.log('\nUI VERIFY OK (zero-gpu)\n' + steps.map((s) => '  ' + s).join('\n'));
+  app.exit(0);
+}
+
+/**
+ * @param {import('electron').BrowserWindow} win
+ */
 export async function runNoIntelVerify(win) {
+  // M30: keep the long-standing true zero-GPU/no-Intel verifier on the
+  // explicit zero fixture. A plain NO_INTEL session now has a real Windows
+  // controller, so it must use the compact synthetic-OS flow instead.
+  if (process.env.RID_MOCK_ZERO_GPU === '1') return runZeroGpuVerify(win);
+  return runSyntheticOsVerify(win);
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {

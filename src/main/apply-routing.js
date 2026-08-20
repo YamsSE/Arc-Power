@@ -1253,9 +1253,31 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
  * }} deps
  * @returns {Promise<{ result: { ok: boolean, perControl: Record<string, unknown> }, state: object | null }>}
  */
-export async function executeApply({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null, sysmanPowerLimits = null }) {
+export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expectedDeviceKey = null, physicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null, sysmanPowerLimits = null }) {
+  if (typeof backend.assertDeviceTarget === 'function' && typeof expectedDeviceKey === 'string') {
+    await backend.assertDeviceTarget(deviceId, expectedDeviceKey, physicalTarget);
+  }
   const caps = await backend.getCapabilities(deviceId);
-  const deviceKey = typeof caps.deviceKey === 'string' ? caps.deviceKey : null;
+  // M30: an OS-only inventory entry is a valid read/telemetry target but is
+  // never a write target.  This guard sits before Sysman/IGCL routing so a
+  // profile, tray apply, boot apply, or elevated worker cannot touch a
+  // different adapter as a fallback.
+  if (caps?.overclockingSupported === false) {
+    const perControl = {};
+    for (const key of Object.keys(settings ?? {})) {
+      perControl[key] = { ok: false, errorCode: 'unsupported', message: 'overclocking is not supported on this GPU' };
+    }
+    let state = null;
+    try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
+    return { result: { ok: Object.keys(perControl).length === 0, perControl }, state };
+  }
+  // M30: the inventory's durable key is PNP-first, while OldIgcl selects
+  // against its own PCI/BDF enumeration. The physical proof carries the
+  // legacy key across both the in-process and elevated-worker boundaries;
+  // never feed the PNP key into the legacy setter.
+  const deviceKey = typeof physicalTarget?.legacyDeviceKey === 'string'
+    ? physicalTarget.legacyDeviceKey
+    : null;
   // M3-C step-5 F1: advanced mode + a NOT-capable 2023 runtime (the
   // future-driver degradation) -> refuse extended values BEFORE the clamp,
   // never a silent 252 W / 90 C cap that reports ok:true. The capability

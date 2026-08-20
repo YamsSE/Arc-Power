@@ -80,19 +80,22 @@ export function sortDevicesDiscreteFirst<T extends Pick<DeviceInfo, 'name' | 'pc
   }).map(({ device }) => device);
 }
 
-export function isArcDevice(device: Pick<DeviceInfo, 'name'>): boolean {
-  const name = String(device.name ?? '');
-  return /\barc\b/i.test(name)
-    && !isIntegratedStyleDevice(device)
-    && !/basic|microsoft/i.test(name);
-}
-
-export function showArcDeviceSelector(devices: DeviceInfo[], currentId: number | null = null): boolean {
-  const arcDevices = devices.filter(isArcDevice);
-  return arcDevices.length >= 2
-    && (currentId === null || arcDevices.some((d) => d.id === currentId));
-}
-
-export function arcDeviceSelectorOptions(devices: DeviceInfo[], currentId: number | null): Array<{ id: number; label: string; selected: boolean }> {
-  return devices.filter(isArcDevice).map((d) => ({ id: d.id, label: d.name, selected: d.id === currentId }));
+/**
+ * Resolve a featureset swap. A selected read-only/unsupported device keeps
+ * its stable-key row when it is still present so its no-tuning surface stays
+ * visible; a writable selection follows the newly requested active row.
+ */
+export function resolveFeaturesetSwapSelection(
+  devices: DeviceInfo[],
+  selectedKey: string | null,
+  activeKey: string | null,
+  preserveSelected: boolean,
+): { device: DeviceInfo | null; preserved: boolean } {
+  const selected = preserveSelected && selectedKey
+    ? devices.find((device) => device.deviceKey === selectedKey) ?? null
+    : null;
+  const active = activeKey
+    ? devices.find((device) => device.deviceKey === activeKey) ?? null
+    : null;
+  return { device: selected ?? active ?? devices[0] ?? null, preserved: selected !== null };
 }

@@ -1,19 +1,19 @@
-// Arc Power - compact GPU selectors. Dashboard exposes the all-device
-// inspection control; Tuning gets an Arc-only selector only when two or more
-// Arc adapters are present.
+// Arc Power - the shared compact, vendor-neutral GPU selector. Dashboard and
+// Tuning both use the same all-device options; the selected device's
+// capabilities decide whether Tuning controls are rendered.
 
 import { el } from '../dom.ts';
 import type { Store } from '../router.ts';
-import { showDeviceSelector, deviceSelectorOptions, showArcDeviceSelector, arcDeviceSelectorOptions } from '../pure/device.ts';
+import { showDeviceSelector, deviceSelectorOptions } from '../pure/device.ts';
 
-function buildSelect(store: Store, onSwitch: (id: number) => void, arcOnly: boolean): HTMLElement | null {
+function buildSelect(store: Store, onSwitch: (id: number) => void): HTMLElement | null {
   const s = store.get();
-  if (arcOnly ? !showArcDeviceSelector(s.devices, s.deviceId) : !showDeviceSelector(s.devices)) return null;
-  const options = arcOnly ? arcDeviceSelectorOptions(s.devices, s.deviceId) : deviceSelectorOptions(s.devices, s.deviceId);
+  if (!showDeviceSelector(s.devices)) return null;
+  const options = deviceSelectorOptions(s.devices, s.deviceId);
   return el('select', {
     class: 'device-select',
-    title: arcOnly ? 'Select Arc GPU' : 'Inspect GPU',
-    'aria-label': arcOnly ? 'Select Arc GPU' : 'Inspect GPU',
+    title: 'Select GPU',
+    'aria-label': 'Select GPU',
     onchange: (e: Event) => {
       const id = Number((e.target as HTMLSelectElement).value);
       if (Number.isInteger(id)) onSwitch(id);
@@ -26,9 +26,5 @@ function buildSelect(store: Store, onSwitch: (id: number) => void, arcOnly: bool
 }
 
 export function buildDeviceSelect(store: Store, onSwitch: (id: number) => void): HTMLElement | null {
-  return buildSelect(store, onSwitch, false);
-}
-
-export function buildArcDeviceSelect(store: Store, onSwitch: (id: number) => void): HTMLElement | null {
-  return buildSelect(store, onSwitch, true);
+  return buildSelect(store, onSwitch);
 }

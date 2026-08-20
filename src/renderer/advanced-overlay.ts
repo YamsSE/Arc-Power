@@ -103,6 +103,10 @@ clockEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minut
 // forwards to the panel window). Refreshes the readout strip + the
 // fan editor's RPM marker in place.
 api.onTelemetrySample((sample) => {
+  const live = store.get();
+  if (sample.deviceId !== undefined && sample.deviceId !== live.deviceId) return;
+  const selected = live.devices.find((device) => device.id === live.deviceId);
+  if (sample.deviceKey && selected?.deviceKey && sample.deviceKey !== selected.deviceKey) return;
   store.set({ latestSample: sample });
   renderReadout(sample);
   if (activeTab === 'fan') {
@@ -235,6 +239,7 @@ const SCALAR_CONTROLS = ['powerLimitW', 'gpuFreqOffsetMhz', 'gpuVoltOffsetV', 't
 
 let values: Record<string, number> = {};
 let applied: Record<string, number> = {};
+let hiddenNegativeControls = new Set<string>();
 let applying = false;
 let tuningApplyBtn: HTMLButtonElement | null = null;
 
@@ -255,6 +260,11 @@ async function renderTuning(): Promise<void> {
     contentEl.append(view);
     return;
   }
+  if (caps.overclockingSupported === false) {
+    view.append(el('p', { class: 'page-subtitle', text: 'Tuning is not supported on this GPU. Telemetry remains available.' }));
+    contentEl.append(view);
+    return;
+  }
 
   // The mutable current state (the main Tuning page's pattern): every apply
   // refreshes it from the envelope so the driver readouts + the chips never
@@ -266,10 +276,14 @@ async function renderTuning(): Promise<void> {
   // (gpuFreqOffset/gpuVoltOffset/...), never the canonical range keys; a
   // range only exists for a supported control, so the range check IS the
   // support check and the canonical-keyed cards render).
-  const controls = SCALAR_CONTROLS.filter((key) => caps.ranges[key] !== undefined);
+  const controls = SCALAR_CONTROLS.filter((key) => cardSliderRange(caps, key) !== undefined);
+  hiddenNegativeControls = new Set<string>();
   for (const key of controls) {
     const cur = currentState[key as keyof DeviceState];
-    values[key] = snapToRange(typeof cur === 'number' ? cur : caps.ranges[key].default, caps.ranges[key]);
+    const range = cardSliderRange(caps, key);
+    if (!range) continue;
+    if (key === 'gpuVoltOffsetV' && range.units === 'V' && typeof cur === 'number' && cur < 0) hiddenNegativeControls.add(key);
+    values[key] = snapToRange(typeof cur === 'number' ? cur : range.default, range);
   }
 
   const stack = el('div', { class: 'card-stack oc-stack' });
@@ -277,7 +291,7 @@ async function renderTuning(): Promise<void> {
   const updateFloating = (): void => {
     if (!tuningApplyBtn) return;
     if (applying) { tuningApplyBtn.hidden = false; return; }
-    tuningApplyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values), currentState, applied);
+    tuningApplyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values, { hiddenNegativeControls }), currentState, applied, hiddenNegativeControls);
   };
 
   const setBusy = (busy: boolean): void => {
@@ -304,6 +318,7 @@ async function renderTuning(): Promise<void> {
       oninput: (ev: Event) => {
         const raw = Number((ev.target as HTMLInputElement).value);
         const v = snapToRange(raw, range);
+        hiddenNegativeControls.delete(key);
         values[key] = v;
         valueNode.textContent = formatValue(v, range.units);
         fill.style.width = `${normalizedPosition(v, range) * 100}%`;
@@ -322,7 +337,10 @@ async function renderTuning(): Promise<void> {
       },
     });
     const refreshChip = (k: string): void => {
-      const st = chipState(k, values, applied, currentState[k as keyof DeviceState], true);
+      const rawDriver = currentState[k as keyof DeviceState];
+      const driver = hiddenNegativeControls.has(k) && k === 'gpuVoltOffsetV'
+        && typeof rawDriver === 'number' && rawDriver < 0 && !(k in applied) ? 0 : rawDriver;
+      const st = chipState(k, values, applied, driver, true);
       chip.hidden = st !== 'applied';
       if (st === 'applied') {
         chip.textContent = 'Applied';
@@ -384,9 +402,9 @@ async function renderTuning(): Promise<void> {
     if (deviceId === null || !caps) return;
     let settings;
     if (only !== undefined) {
-      settings = ({ [only]: values[only] } as unknown as ReturnType<typeof buildScalarSettings>);
+      settings = buildScalarSettings({ [only]: values[only] }, { hiddenNegativeControls });
     } else {
-      settings = buildScalarSettings(values);
+      settings = buildScalarSettings(values, { hiddenNegativeControls });
     }
     if (!validateSettingsPayload(settings)) {
       toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -466,7 +484,10 @@ async function renderTuning(): Promise<void> {
       const chip = stack.querySelector<HTMLElement>(`.oc-card[data-control="${key}"] .oc-chip-status`);
       const btn = stack.querySelector<HTMLButtonElement>(`.oc-card[data-control="${key}"] .oc-chip-apply`);
       if (!chip || !btn) continue;
-      const st = chipState(key, values, applied, currentState[key as keyof DeviceState], true);
+      const rawDriver = currentState[key as keyof DeviceState];
+      const driver = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
+        && typeof rawDriver === 'number' && rawDriver < 0 && !(key in applied) ? 0 : rawDriver;
+      const st = chipState(key, values, applied, driver, true);
       chip.hidden = st !== 'applied';
       if (st === 'applied') {
         chip.textContent = 'Applied';

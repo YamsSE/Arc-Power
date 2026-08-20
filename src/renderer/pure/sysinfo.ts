@@ -249,7 +249,7 @@ export interface RebarState {
   level: 'ok' | 'error' | 'unknown';
 }
 
-export function rebarState(controller: VideoControllerInfo | null | undefined): RebarState {
+export function rebarState(controller: Pick<VideoControllerInfo, 'rebarActive'> | null | undefined): RebarState {
   if (controller?.rebarActive === true) return { label: 'ReBAR on', level: 'ok' };
   if (controller?.rebarActive === false) return { label: 'ReBAR off', level: 'error' };
   return { label: 'ReBAR -', level: 'unknown' };

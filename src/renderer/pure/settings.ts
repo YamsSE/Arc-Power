@@ -54,9 +54,10 @@ export const STD_TL_MAX_C = 90;
 // ceiling.
 export const VOLT_OFFSET_MAX_V = 0.234;
 export const VOLT_OFFSET_STEP_V = 0.001;
-// M26: the conservative stock safe floor - the lowest exposed product voltage
-// offset in stock mode. Advanced mode extends to -0.800 V.
-export const SAFE_VOLT_OFFSET_MIN_V = -0.500;
+// Temporary product UI floor: negative V-unit voltage offsets are hidden until
+// the Alchemist negative-voltage path is ready. Backend/profile plumbing keeps
+// its native range so this can be restored without changing the apply contract.
+export const SAFE_VOLT_OFFSET_MIN_V = 0;
 
 /**
  * Clamp the exposed range for tempLimitC to TEMP_LIMIT_MAX_C (F3). Other
@@ -107,26 +108,30 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
       // M17c: the A770-scoped pin - max = min(degraded ceiling, 0.234),
       // NEVER a raise (a session-store degrade below 0.234 is preserved);
       // the step is pinned to 0.001 so the 0.234 ceiling is reachable.
-      // M26: the conservative stock safe floor is enforced as a min pin -
-      // the slider never goes below the safe mV floor.
+      // Temporary UI gate: the slider never exposes the negative half-plane.
       const needsMax = range.max > VOLT_OFFSET_MAX_V;
       const needsStep = range.step !== VOLT_OFFSET_STEP_V;
-      const needsMin = range.min === undefined || range.min > SAFE_VOLT_OFFSET_MIN_V;
+      const needsMin = range.min === undefined || range.min < SAFE_VOLT_OFFSET_MIN_V;
       if (needsMax || needsStep || needsMin) {
         return {
           ...range,
           ...(needsMax ? { max: Math.min(range.max, VOLT_OFFSET_MAX_V) } : {}),
           ...(needsStep ? { step: VOLT_OFFSET_STEP_V } : {}),
-          ...(needsMin ? { min: SAFE_VOLT_OFFSET_MIN_V } : {}),
+          ...(needsMin ? { min: Math.max(SAFE_VOLT_OFFSET_MIN_V, 0) } : {}),
         };
       }
       return range; // already legal - the pass-through identity pins stay green
     }
     if (deviceId === undefined || deviceId === null) {
-      // Legacy M15 (no caps key / an old payload without pciDeviceId): the
-      // both-directions 0.234 pin stays (the pre-M17c renderer behavior).
-      if (range.max !== VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V) {
-        return { ...range, max: VOLT_OFFSET_MAX_V, step: VOLT_OFFSET_STEP_V };
+      // Legacy M15 (no caps key / an old payload without pciDeviceId): retain
+      // the positive ceiling/step pin and hide the negative UI half-plane.
+      if (range.max !== VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V || range.min < 0) {
+        return {
+          ...range,
+          max: VOLT_OFFSET_MAX_V,
+          step: VOLT_OFFSET_STEP_V,
+          ...(range.min < 0 ? { min: 0 } : {}),
+        };
       }
       return range;
     }
@@ -138,8 +143,8 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
     // props max (the same hazard the A770 pin fixed). The 0.234 MAX stays
     // A770-scoped (the M15 probe evidence). A step already 0.001 passes
     // through untouched (the pass-through identity pins stay green).
-    if (range.step !== VOLT_OFFSET_STEP_V) {
-      return { ...range, step: VOLT_OFFSET_STEP_V };
+    if (range.step !== VOLT_OFFSET_STEP_V || range.min < 0) {
+      return { ...range, step: VOLT_OFFSET_STEP_V, ...(range.min < 0 ? { min: 0 } : {}) };
     }
     return range;
   }
@@ -265,9 +270,15 @@ export function validateSettingsPayload(value: unknown): value is Settings {
  * Build a Settings payload from per-control slider values (only supported
  * controls are included). Values are assumed pre-snapped.
  */
-export function buildScalarSettings(values: Record<string, number>): Settings {
+export interface ScalarSettingsOptions {
+  /** V-unit negative driver values are intentionally hidden from the UI. */
+  hiddenNegativeControls?: ReadonlySet<string>;
+}
+
+export function buildScalarSettings(values: Record<string, number>, options: ScalarSettingsOptions = {}): Settings {
   const out: Settings = {};
   for (const [key, v] of Object.entries(values)) {
+    if (options.hiddenNegativeControls?.has(key) && v === 0) continue;
     if (SCALAR_KEYS.has(key) && isFiniteNumber(v)) {
       (out as Record<string, number>)[key] = v;
     }
@@ -304,12 +315,14 @@ function samePointArray(a: unknown, b: unknown): boolean {
  * (the store's state slot was never populated / a refusal never landed a
  * state): missing controls are NOT dirty, never a throw.
  */
-export function isControlDirty(control: string, settings: Settings, state: DeviceState | null): boolean {
+export function isControlDirty(control: string, settings: Settings, state: DeviceState | null, hiddenNegativeControls?: ReadonlySet<string>): boolean {
   if (!(control in settings)) return false;
   if (!state) return false; // nothing applied yet -> not dirty, never throw
   const wanted = (settings as Record<string, unknown>)[control];
   const driver = (state as unknown as Record<string, unknown>)[control];
   if (driver === null || driver === undefined) return true;
+  if (hiddenNegativeControls?.has(control) && control === 'gpuVoltOffsetV'
+    && wanted === 0 && typeof driver === 'number' && driver < 0) return false;
   if (typeof wanted === 'number') return wanted !== driver;
   if (typeof wanted === 'string') return wanted !== driver;
   if (control === 'gpuLock') return !samePair(wanted as { voltageV: number; freqMhz: number }, driver as { voltageV: number; freqMhz: number });
@@ -359,11 +372,11 @@ function sameValue(a: unknown, b: unknown): boolean {
  * lagging driver read-back cannot re-dirty a chip that just applied.
  * M3-C review F2: null-safe via isControlDirty (a null state never throws).
  */
-export function isControlDirtyVsApplied(control: string, settings: Settings, state: DeviceState | null, applied: Record<string, unknown>): boolean {
+export function isControlDirtyVsApplied(control: string, settings: Settings, state: DeviceState | null, applied: Record<string, unknown>, hiddenNegativeControls?: ReadonlySet<string>): boolean {
   if (!(control in settings)) return false;
   const wanted = (settings as Record<string, unknown>)[control];
   if (control in applied) return !sameValue(wanted, applied[control]);
-  return isControlDirty(control, settings, state);
+  return isControlDirty(control, settings, state, hiddenNegativeControls);
 }
 
 /**
@@ -371,9 +384,9 @@ export function isControlDirtyVsApplied(control: string, settings: Settings, sta
  * applied reference + driver state. M3-C review F2: null-safe - a null
  * state (nothing applied yet) is never dirty, never throws.
  */
-export function computeDirtyVsApplied(settings: Settings, state: DeviceState | null, applied: Record<string, unknown>): boolean {
+export function computeDirtyVsApplied(settings: Settings, state: DeviceState | null, applied: Record<string, unknown>, hiddenNegativeControls?: ReadonlySet<string>): boolean {
   for (const key of Object.keys(settings)) {
-    if (isControlDirtyVsApplied(key, settings, state, applied)) return true;
+    if (isControlDirtyVsApplied(key, settings, state, applied, hiddenNegativeControls)) return true;
   }
   return false;
 }

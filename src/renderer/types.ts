@@ -190,6 +190,19 @@ export interface DeviceInfo {
   /** M17c: IGCL subsystem fields carried on the device payload. */
   pciSubsysVendorId?: number | null;
   pciSubsysId?: number | null;
+  /** M30 unified Windows/IGCL inventory metadata. */
+  synthetic?: boolean;
+  backendKind?: string;
+  gpuVendor?: string | null;
+  osController?: {
+    name: string;
+    vramBytes: number | null;
+    pnpDeviceId: string | null;
+    driverVersion: string | null;
+    rebarActive: boolean | null;
+    luid?: unknown;
+  } | null;
+  osLuid?: unknown;
 }
 
 export interface HealthReport {
@@ -417,6 +430,10 @@ export interface ThrottleFlags {
 
 export interface TelemetrySample {
   t: number;
+  /** Main-process session identity; stale handover samples are ignored. */
+  deviceId?: number | null;
+  deviceKey?: string | null;
+  sessionGeneration?: number;
   gpuClockMhz?: number;
   memClockMhz?: number;
   tempC?: number;

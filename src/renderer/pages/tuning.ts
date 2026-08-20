@@ -73,7 +73,7 @@ import { formatPlReadout } from '../pure/pl-readout.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
-import { buildArcDeviceSelect } from '../components/device-select.ts';
+import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 // M4-H (B): the profiles page's prompt modal + id generator + the
@@ -116,6 +116,10 @@ function supportedScalars(caps: Capabilities): string[] {
 let values: Record<string, number> = {};
 let currentState: DeviceState | null = null;
 let applied: Record<string, number> = {};
+// A negative V-unit read-back is a backend/profile-capable value, but it is
+// outside the exposed UI range. Keep that fact separate from the draft so a
+// pristine render does not manufacture an implicit zeroing write.
+let hiddenNegativeControls = new Set<string>();
 let lastRenderedCaps: Capabilities | null = null;
 let renderCaps: Capabilities | null = null;
 // M17e: the M4-B Offset/Clock mode machinery is REMOVED (freqMode /
@@ -183,6 +187,7 @@ let viewContainer: HTMLElement | null = null;
 function resetPageState(state: DeviceState, caps: Capabilities) {
   values = {};
   applied = {};
+  hiddenNegativeControls = new Set<string>();
   currentState = state;
   lastRenderedCaps = caps;
   renderCaps = caps;
@@ -214,7 +219,9 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
 function refreshChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
-  const driverValue = currentState?.[key as keyof DeviceState];
+  const rawDriverValue = currentState?.[key as keyof DeviceState];
+  const driverValue = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
+    && typeof rawDriverValue === 'number' && rawDriverValue < 0 && !(key in applied) ? 0 : rawDriverValue;
   const state = chipState(key, values, applied, driverValue, true);
   chip.hidden = state !== 'applied';
   if (state === 'applied') {
@@ -343,7 +350,7 @@ function updateFloating() {
     applyBtn.hidden = true;
     return;
   }
-  applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values), currentState as DeviceState, applied);
+  applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values, { hiddenNegativeControls }), currentState as DeviceState, applied, hiddenNegativeControls);
 }
 
 export const tuningPage: Page = {
@@ -390,7 +397,14 @@ export const tuningPage: Page = {
     // Slider state: start from the driver's current values, snapped to step.
     for (const key of controls) {
       const cur = state[key as keyof DeviceState];
-      values[key] = snapToRange(typeof cur === 'number' ? cur : caps.ranges[key].default, caps.ranges[key]);
+      // Use the exposed UI range, not the raw backend range. This keeps a
+      // temporarily hidden negative V-unit driver value from becoming a
+      // negative slider draft or readout.
+      const exposedRange = cardSliderRange(caps, key) ?? caps.ranges[key];
+      if (key === 'gpuVoltOffsetV' && exposedRange.units === 'V' && typeof cur === 'number' && cur < 0) {
+        hiddenNegativeControls.add(key);
+      }
+      values[key] = snapToRange(typeof cur === 'number' ? cur : exposedRange.default, exposedRange);
     }
 
     // --- floating Apply (M2b-B): bottom-left, dirty-only -------------------
@@ -398,11 +412,13 @@ export const tuningPage: Page = {
     // just a trigger (a reentry guard swallows a double-click mid-apply).
     // M2C-C: the button shows a transient "Applying…" state while an apply
     // is pending (e.g. waiting on the UAC prompt) - disabled, no retry UI.
-    applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
-    applyBtn.addEventListener('click', () => {
-      if (applying) return;
-      void apply(ctx);
-    });
+    if (controls.length > 0) {
+      applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
+      applyBtn.addEventListener('click', () => {
+        if (applying) return;
+        void apply(ctx);
+      });
+    }
     const setBusy = (busy: boolean) => {
       applying = busy;
       // M9: the per-card Apply buttons share the busy state (disabled while
@@ -728,6 +744,7 @@ export const tuningPage: Page = {
               value: snapToRange(values[key], sliderRange),
               oninput: (e: Event) => {
                 const raw = Number((e.target as HTMLInputElement).value);
+                hiddenNegativeControls.delete(key);
                 values[key] = snapToRange(raw, range);
                 refreshCard(key);
               },
@@ -805,6 +822,7 @@ export const tuningPage: Page = {
               // M17e: the M4-B Clock-mode reset branch is REMOVED (the
               // mode died) - the default is the range default, always.
               values[key] = snapToRange(range.default, range);
+              hiddenNegativeControls.delete(key);
               refreshCard(key);
             },
           }),
@@ -1068,7 +1086,7 @@ export const tuningPage: Page = {
     // the row, right of the selector - its own label-over-button column so
     // its top aligns with the pills' (the pin asserts the bounding tops
     // match). The old full-width Save-as-Profile CARD is REMOVED.
-    const deviceSelect = buildArcDeviceSelect(ctx.store, (id) => void selectDevice(id));
+    const deviceSelect = buildDeviceSelect(ctx.store, (id) => void selectDevice(id));
     const modeRow = el('div', { class: 'oc-mode-row' }, [
       el('div', { class: 'oc-mode-col' }, [
         el('span', { class: 'oc-mode-label', text: 'View' }),
@@ -1163,7 +1181,7 @@ export const tuningPage: Page = {
         // rows are gone per the user (profiles can still apply those values
         // via the state machinery - documented).
 
-        applyBtn as Node,
+        ...(controls.length > 0 && applyBtn ? [applyBtn] : []),
       ];
       viewContainer.append(...body);
       lockCurrentNode = viewContainer.querySelector<HTMLElement>('.gpu-lock-current');
@@ -1203,9 +1221,9 @@ export const tuningPage: Page = {
       // lock-mode branch - the floating apply is force-hidden in Lock mode).
       let settings: Settings;
       if (only !== undefined) {
-        settings = ({ [only]: values[only] } as unknown as Settings);
+        settings = buildScalarSettings({ [only]: values[only] }, { hiddenNegativeControls });
       } else {
-        settings = buildScalarSettings(values);
+        settings = buildScalarSettings(values, { hiddenNegativeControls });
       }
       if (!validateSettingsPayload(settings)) {
         toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -1457,7 +1475,11 @@ export const tuningPage: Page = {
         // too - a raw (drift-wide) range would snap values[key] beyond the
         // exposed slider max and a subsequent apply would send it.
         const range = cardSliderRange(s.caps, key);
-        if (typeof raw === 'number' && range) values[key] = snapToRange(raw, range);
+        if (typeof raw === 'number' && range) {
+          if (key === 'gpuVoltOffsetV' && range.units === 'V' && raw < 0) hiddenNegativeControls.add(key);
+          else if (key === 'gpuVoltOffsetV') hiddenNegativeControls.delete(key);
+          values[key] = snapToRange(raw, range);
+        }
       }
       for (const key of cards.keys()) refreshCard(key);
       // M17d (Run D): the gpuLock card's current-lock read-out refreshes

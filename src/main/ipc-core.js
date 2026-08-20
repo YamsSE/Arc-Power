@@ -40,6 +40,7 @@ import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVE
 // koffi, hook = the no-device telemetry path, mock fixtures under
 // RID_MOCK_VENDOR).
 import { createVendorTelemetry } from './vendor-telemetry/vendor-telemetry.js';
+import { physicalTargetOf } from './gpu-inventory.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -523,6 +524,8 @@ export function assertNoPayload(args, channel) {
  * M29: resolve the boot device by durable PCI/BDF identity. A legacy
  * numeric-only setting is deliberately unverified after reorder, so the
  * sorted preferred device is chosen and both identity fields are healed.
+ * A persisted durable key that disappeared is refused without rewriting it;
+ * boot profile application must never retarget another GPU.
  */
 export async function resolveBootDeviceId(backend, store) {
   const devices = await backend.listDevices();
@@ -536,6 +539,10 @@ export async function resolveBootDeviceId(backend, store) {
   }
   const persistedKey = typeof settings?.deviceKey === 'string' ? settings.deviceKey : null;
   const matched = persistedKey ? keyed.find((d) => d.deviceKey === persistedKey) : null;
+  // A persisted durable identity is an explicit write target. If it has
+  // disappeared, refuse boot resolution rather than self-healing to another
+  // GPU before apply-on-boot gets its stale-target refusal.
+  if (persistedKey && !matched) return null;
   const resolvedDevice = matched ?? keyed[0];
   if (settings && (settings.deviceId !== resolvedDevice.id || settings.deviceKey !== resolvedDevice.deviceKey)) {
     try {
@@ -796,6 +803,19 @@ export function createIpcHandlers({
   const NULL_DEVICE_KEY = -1;
   /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
+  let telemetryGeneration = 0;
+  const cleanupStaleTelemetryStartup = async ({ generation, timer = null, vendor = null, service = null }) => {
+    if (generation === telemetryGeneration) return false;
+    clearInterval(timer);
+    try { await service?.stop?.(); } catch { /* stale startup */ }
+    try { await vendor?.close?.(); } catch { /* stale startup */ }
+    // A deferred slow-lane start can arm its timer after telemetry-stop has
+    // already returned. Pass the startup generation so an adapter that tracks
+    // ownership cannot tear down a newer session's lane.
+    try { await sysStats.stopSlowLane?.(generation); } catch { /* stale startup */ }
+    return true;
+  };
+
 
   /**
    * 1.0.1 no-Intel round: the no-device telemetry mode - a sentinel-keyed
@@ -824,6 +844,7 @@ export function createIpcHandlers({
    */
   const startNullTelemetry = async () => {
     if (telemetry.has(NULL_DEVICE_KEY)) return;
+    const generation = ++telemetryGeneration;
     // M17e (round-2 N3): the no-Intel lane honors the overlay polling-rate
     // slider too - the SAME store read as startTelemetry (the pollMs is
     // read ONCE at start; a change RESTARTS the null push with the new
@@ -835,6 +856,7 @@ export function createIpcHandlers({
     } catch {
       // a store read failure keeps the default cadence
     }
+    if (generation !== telemetryGeneration) return;
     // M17c: the vendor-telemetry lane - the no-device path hook. When the
     // ACTIVE device is non-Intel, the sysinfo controller vendor selects
     // the first available of [NVML, ADL] matching it; the adapter's
@@ -848,6 +870,7 @@ export function createIpcHandlers({
     } catch {
       vendor = null; // a lane failure must never break the no-device timer
     }
+    if (await cleanupStaleTelemetryStartup({ generation, vendor })) return;
     const timer = setInterval(() => {
       void (async () => {
         try {
@@ -863,8 +886,11 @@ export function createIpcHandlers({
           } catch {
             vendorSample = null; // a vendor read failure skips this tick's readouts
           }
+          if (generation !== telemetryGeneration) return;
           emit('telemetry:sample', {
             t: Date.now(),
+            deviceId: null,
+            sessionGeneration: generation,
             ...extra,
             // M17c: the vendor readouts win over the WMI sys-stats (the
             // NVML used-VRAM is the better source on NVIDIA) - the device
@@ -885,7 +911,8 @@ export function createIpcHandlers({
     // background PowerShell cadence refreshing the remaining OS-counter
     // fields; stopped with stopAllTelemetry - the idempotent start in the
     // adapter keeps one timer across the telemetry sessions).
-    try { await sysStats.startSlowLane?.(); } catch { /* best effort */ }
+    try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
+    if (await cleanupStaleTelemetryStartup({ generation, timer, vendor })) return;
     telemetry.set(NULL_DEVICE_KEY, {
       stop: async () => {
         clearInterval(timer);
@@ -896,6 +923,7 @@ export function createIpcHandlers({
 
   const startTelemetry = async (deviceId) => {
     if (telemetry.has(deviceId)) return;
+    const generation = ++telemetryGeneration;
     // M17e (round-2 N4, the overlay polling-rate slider): the telemetry
     // DEFAULT is 400 ms (M17g: the stock polling rate FLIPS 500 -> 400;
     // telemetry-service.js) - the overlay's tick reads
@@ -907,6 +935,50 @@ export function createIpcHandlers({
       pollMs = clampOverlayPollMs(s.overlayPollMs);
     } catch {
       // a store read failure keeps the default cadence
+    }
+    if (generation !== telemetryGeneration) return;
+    // M30: an OS-only inventory row keeps the same selected-device telemetry
+    // contract, but its measurements come from the matching vendor adapter
+    // (or the selected OS stats only).  It must never enter the IGCL service
+    // with another adapter's numeric id.
+    const target = await backend.getDeviceTarget?.(deviceId);
+    if (generation !== telemetryGeneration) return;
+    try { await sysStats.setTarget?.(target); } catch { /* stale OS target degrades to null fields */ }
+    if (generation !== telemetryGeneration) return;
+    if (target?.synthetic || target?.backendKind === 'os') {
+      let vendor = null;
+      try {
+          vendor = typeof vendorTelemetry.startFor === 'function'
+          ? await vendorTelemetry.startFor(target, { owner: 'telemetry' })
+          : await vendorTelemetry.start();
+      } catch { vendor = null; }
+      if (await cleanupStaleTelemetryStartup({ generation, vendor })) return;
+      const timer = setInterval(() => {
+        void (async () => {
+          let extra = {};
+          try { extra = await sysStats.sampleFast(); } catch { /* honest empty OS fields */ }
+          let sample = null;
+          try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
+          if (generation !== telemetryGeneration) return;
+          emit('telemetry:sample', {
+            t: Date.now(),
+            deviceId,
+            deviceKey: target?.deviceKey ?? null,
+            sessionGeneration: generation,
+            ...extra,
+            ...(sample ?? {}),
+          });
+        })();
+      }, pollMs);
+      try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
+      if (await cleanupStaleTelemetryStartup({ generation, timer, vendor })) return;
+      telemetry.set(deviceId, {
+        stop: async () => {
+          clearInterval(timer);
+          try { await vendor?.close?.(); } catch { /* best effort */ }
+        },
+      });
+      return;
     }
     const svc = new TelemetryService(backend, deviceId, { pollMs });
     // M4-D2: the pushed sample carries the system stats (CPU util/freq/
@@ -938,21 +1010,31 @@ export function createIpcHandlers({
         // a stats failure must never break the telemetry push
         extra = {};
       }
+      if (generation !== telemetryGeneration) return;
       emit('telemetry:sample', {
+        deviceId,
+        deviceKey: target?.deviceKey ?? null,
+        sessionGeneration: generation,
         ...extra,
         ...sample,
       });
     });
     svc.onPollError(() => { /* stale readouts recover on the next tick */ });
     await svc.start();
+    if (generation !== telemetryGeneration) {
+      await svc.stop();
+      return;
+    }
     // M17g: the slow lane starts WITH the telemetry session (the
     // background PowerShell cadence; the idempotent start in the adapter
     // keeps ONE timer across the sessions - stopped with stopAllTelemetry).
-    try { await sysStats.startSlowLane?.(); } catch { /* best effort */ }
+    try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
+    if (await cleanupStaleTelemetryStartup({ generation, service: svc })) return;
     telemetry.set(deviceId, svc);
   };
 
   const stopAllTelemetry = async () => {
+    telemetryGeneration += 1;
     for (const svc of telemetry.values()) {
       try { await svc.stop(); } catch { /* best effort */ }
     }
@@ -993,8 +1075,24 @@ export function createIpcHandlers({
    * extendedUnavailable - config refusals, NOT driver ceiling refusals)
    * never record - the store must only degrade on a driver 'out-of-range'.
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
-   */
+  */
   const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
+    const deviceKey = typeof caps?.deviceKey === 'string' ? caps.deviceKey : null;
+    // M30: resolve the inventory row before constructing the proof. The
+    // unified backend's getDeviceTarget() is an enforcing write-time
+    // assertion, so calling it with only the durable key would reject a
+    // valid elevated apply before the worker/in-process runner receives its
+    // physical identity proof. Keep the legacy fallback identical to the
+    // apply-on-boot path: legacy getDeviceTarget(id, null) is non-enforcing
+    // and backends without either resolver can still expose listDevices().
+    const target = typeof backend.getTarget === 'function'
+      ? await backend.getTarget(deviceId)
+      : typeof backend.getDeviceTarget === 'function'
+        ? await backend.getDeviceTarget(deviceId, null)
+        : typeof backend.listDevices === 'function'
+          ? (await backend.listDevices()).find((device) => device.id === deviceId) ?? null
+          : null;
+    const physicalTarget = physicalTargetOf(target);
     const recordRefusals = (result) => {
       if (!result || typeof result !== 'object') return;
       if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
@@ -1021,6 +1119,8 @@ export function createIpcHandlers({
         // parent's portable branch could differ).
         const out = await applyRunner.apply({
           deviceId,
+          deviceKey,
+          physicalTarget,
           settings,
           waiverAccepted,
           ocMode,
@@ -1036,7 +1136,7 @@ export function createIpcHandlers({
         recordRefusals(out.result);
         return out;
       }
-      const out = await executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode, sysmanPowerLimits });
+      const out = await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits });
       recordRefusals(out.result);
       return out;
     };
@@ -1060,7 +1160,7 @@ export function createIpcHandlers({
     // FIRST attempt's envelope - never a fake success, never a crash.
     try {
       if (applyRunner?.needsWorker?.()) {
-        await applyRunner.waiverAccept(deviceId);
+          await applyRunner.waiverAccept(deviceId, deviceKey, physicalTarget);
         await backend.restoreWaiverState(deviceId, true);
       } else {
         await backend.setWaiverAccepted(deviceId);
@@ -1166,6 +1266,8 @@ export function createIpcHandlers({
       // multi-device read-out mismatch fix).
       'power-limits:read': async (deviceId) => {
         assertValidDeviceId(deviceId);
+        const target = await backend.getDeviceTarget?.(deviceId);
+        if (target?.synthetic || target?.backendKind === 'os') return null;
         if (!sysmanPowerLimits) return null;
         try {
           return await sysmanPowerLimits.readLimits(deviceId);
@@ -1196,6 +1298,7 @@ export function createIpcHandlers({
       // getGraphicsSettings read-back for the page's per-control refresh.
       'graphics:apply': async (deviceId, payload) => {
         assertValidDeviceId(deviceId);
+        const target = await backend.getDeviceTarget?.(deviceId);
         // The FPS clamp range: the device's FRESH graphics state (the
         // driver-reported range; the 30-300-1-60 fallback inside the
         // validator when the read degrades).
@@ -1206,8 +1309,12 @@ export function createIpcHandlers({
           // degraded - the validator's fallback applies
         }
         const settings = sanitizeGraphicsSettings(payload, range);
+        if (target?.synthetic || target?.backendKind === 'os') {
+          const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'graphics features are not supported on this GPU' }]));
+          return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: await backend.getGraphicsSettings(deviceId) };
+        }
         if (applyRunner?.needsWorker?.()) {
-          const out = await applyRunner.graphicsApply({ deviceId, settings });
+          const out = await applyRunner.graphicsApply({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings });
           return { ok: out.ok === true, perControl: out.perControl ?? {}, graphicsState: out.graphicsState ?? null };
         }
         const out = await backend.setGraphicsSettings(deviceId, settings);
@@ -1243,6 +1350,10 @@ export function createIpcHandlers({
         // mode still gates the slider applies.
         const ocMode = (await store.loadSettings()).ocMode;
         const caps = await backend.getCapabilities(deviceId);
+        if (caps?.overclockingSupported === false) {
+          const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'overclocking is not supported on this GPU' }]));
+          return { result: { ok: Object.keys(perControl).length === 0, perControl }, state: await backend.getCurrentSettings(deviceId) };
+        }
         // M17c: the device-scoped gate thresholds - the caps carry the
         // device identity (pciDeviceId/aibVendor/aibModel), which the
         // ocModeRefusal limits-key resolves from the pure device-limits
@@ -1330,8 +1441,9 @@ export function createIpcHandlers({
         // ctlOverclockResetToDefault, which works elevated only). The
         // non-elevated app delegates to the elevated self-worker.
         let state = null;
+        const target = await backend.getDeviceTarget?.(deviceId);
         if (applyRunner?.needsWorker?.()) {
-          const out = await applyRunner.reset(deviceId);
+          const out = await applyRunner.reset(deviceId, target?.deviceKey ?? null, physicalTargetOf(target));
           state = out.state;
         } else {
           await backend.resetToDefaults(deviceId);
@@ -1425,7 +1537,8 @@ export function createIpcHandlers({
         // M2C-C: the driver-side waiver write needs elevation like any other
         // OC write - the non-elevated app delegates to the elevated worker.
         if (applyRunner?.needsWorker?.()) {
-          await applyRunner.waiverAccept(deviceId);
+          const target = await backend.getDeviceTarget?.(deviceId);
+          await applyRunner.waiverAccept(deviceId, target?.deviceKey ?? null, physicalTargetOf(target));
           // S2: the worker accepted on the driver - mirror the acceptance
           // into the parent's in-memory flag so getCapabilities/waiver-get
           // reflect it for the whole session (the worker's state is not
@@ -1456,6 +1569,10 @@ export function createIpcHandlers({
         // stop for the no-device mode (sentinel key in the shared Map).
         if (deviceId === null || deviceId === undefined) {
           const svc = telemetry.get(NULL_DEVICE_KEY);
+          // Invalidate an in-flight start even before it installs its
+          // service in the map; otherwise a rollback can be followed by a
+          // stale timer appearing after this stop returns.
+          telemetryGeneration += 1;
           if (svc) {
             await svc.stop();
             telemetry.delete(NULL_DEVICE_KEY);
@@ -1464,6 +1581,9 @@ export function createIpcHandlers({
         }
         assertValidDeviceId(deviceId);
         const svc = telemetry.get(deviceId);
+        // The map can still be empty while target/provider/service startup
+        // awaits. Stop must invalidate that pending start unconditionally.
+        telemetryGeneration += 1;
         if (svc) {
           await svc.stop();
           telemetry.delete(deviceId);
@@ -1479,9 +1599,13 @@ export function createIpcHandlers({
       // lane failure degrades to the honest nulls (the renderer then falls
       // back to the OS controller bytes / the '-' rows).
       'vendor-info:get': async (...args) => {
-        assertNoPayload(args, 'vendor-info:get');
+        if (args.length > 1) throw new Error('vendor-info:get takes at most a device id');
         try {
-          const lane = await vendorTelemetry.start();
+      const target = args.length === 1 && Number.isInteger(args[0])
+            ? await backend.getDeviceTarget?.(args[0]) : null;
+          const lane = target && typeof vendorTelemetry.startFor === 'function'
+            ? await vendorTelemetry.startFor(target, { owner: 'static' })
+            : await vendorTelemetry.start();
           if (!lane || typeof lane.deviceInfo !== 'function') {
             return { vramBytes: null, computeCores: null };
           }

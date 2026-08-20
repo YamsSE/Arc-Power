@@ -95,6 +95,7 @@ import {
 import { createSysmanHelperProxy } from './sysman/helper-proxy.js';
 import { createApplyRunner } from './elevated-apply.js';
 import { createMockOldIgcl } from './backend/mock-backend.js';
+import { createUnifiedGpuBackend } from './gpu-inventory.js';
 // M17f: the sysman power-limits consumer (the PL2 companion + the
 // 'power-limits:read' source). The REAL adapter lazily loads ze_loader.dll;
 // the MOCK seam (mock/ui-verify) answers the fixture limits through the
@@ -416,10 +417,15 @@ async function main() {
         ocMode: 'advanced',
       },
     });
+    // M30: the worker receives the durable key and uses the same routing
+    // wrapper. With no OS snapshot in the short-lived worker, an OS-only key
+    // cannot resolve and therefore refuses closed-loop rather than falling
+    // back to IGCL adapter 0.
+    const workerRoutedBackend = createUnifiedGpuBackend({ backend: workerBackend, sysinfo: null });
     const code = await runApplyWorker({
       reqPath: workerReqFile,
       outPath: workerOutFile,
-      backend: workerBackend,
+      backend: workerRoutedBackend,
       oldIgcl: workerOldIgcl,
       // M17f/M17i: the worker is the ELEVATED apply process - the sysman
       // companion syncs the PL2 burst there too. M17i: the companion
@@ -935,7 +941,7 @@ async function main() {
       },
     };
   }
-  const backend = createBackend({
+  let backend = createBackend({
     kind: mock ? 'mock' : 'igcl',
     igcl: realOldIgcl
       ? {
@@ -961,6 +967,11 @@ async function main() {
     // payload and the caps AIB decode).
     mock: { ...mockOpts, laptopInfoOf: () => (cached && cached.laptop ? cached.laptop : (Object.keys(laptopFixture).length > 0 ? laptopFixture.laptop : null)) },
   });
+  // M30: all later consumers use the same Windows/IGCL inventory.  The
+  // wrapper is intentionally installed before oldIgcl, boot/profile/tray,
+  // IPC, and sysman closures are created so no path can bypass its target
+  // resolution or accidentally apply an OS-only adapter.
+  backend = createUnifiedGpuBackend({ backend, sysinfo });
   // M2C-C: the bundled 2023 IGCL runtime adapter (extended-range writes).
   // Mock mode (incl. --ui-verify) uses the mock adapter - the real DLL is
   // never loaded there. In the real path the OLD runtime is probed lazily
@@ -1014,9 +1025,10 @@ async function main() {
         // the safety-net capability refusal keys on the runtime probe.
         // M17d (Run D): forward the ocMode too - executeApply threads it
         // into splitByRuntime (the V1-call pin: the mode-based W/C routing).
-        apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }),
-        waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
-        reset: async (deviceId) => {
+        apply: async ({ deviceId, deviceKey, physicalTarget, settings, ocMode, profileApply }) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); return executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }); },
+        waiverAccept: async (deviceId, deviceKey, physicalTarget) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); await backend.setWaiverAccepted(deviceId); },
+        reset: async (deviceId, deviceKey, physicalTarget) => {
+          await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
           await backend.resetToDefaults(deviceId);
           const state = await backend.getCurrentSettings(deviceId);
           return { state };
@@ -1024,7 +1036,8 @@ async function main() {
         // M8 (the Graphics tab): the in-process graphics executor - the
         // DEDICATED apply path (no OC waiver, no OC-mode gate). Returns the
         // { ok, perControl, graphicsState } envelope with the FRESH read-back.
-        graphicsApply: async ({ deviceId, settings }) => {
+        graphicsApply: async ({ deviceId, deviceKey, physicalTarget, settings }) => {
+          await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
           const out = await backend.setGraphicsSettings(deviceId, settings);
           let graphicsState = null;
           try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
@@ -1043,14 +1056,16 @@ async function main() {
       needsWorker: () => true,
       // M17f: the fake worker carries the sysman companion too (the real
       // elevated worker wires it - the mock mirrors the apply core).
-      apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }),
-      waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
-      reset: async (deviceId) => {
+      apply: async ({ deviceId, deviceKey, physicalTarget, settings, ocMode, profileApply }) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); return executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }); },
+      waiverAccept: async (deviceId, deviceKey, physicalTarget) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); await backend.setWaiverAccepted(deviceId); },
+      reset: async (deviceId, deviceKey, physicalTarget) => {
+        await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
         await backend.resetToDefaults(deviceId);
         return { ok: true, state: await backend.getCurrentSettings(deviceId) };
       },
       // M8: the fake runner's graphics path (in-process - never spawns).
-      graphicsApply: async ({ deviceId, settings }) => {
+      graphicsApply: async ({ deviceId, deviceKey, physicalTarget, settings }) => {
+        await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
         const out = await backend.setGraphicsSettings(deviceId, settings);
         let graphicsState = null;
         try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
@@ -1079,6 +1094,25 @@ async function main() {
   // (never the real settings.json - F4 above). The real product path never
   // writes at boot.
   if (mock) {
+    // M30: mock sessions are independent verification runs. Always start on
+    // the first writable inventory row (or the first synthetic OS row when
+    // no writable adapter exists) so a previous multi-GPU run's persisted
+    // iGPU selection cannot suppress the boot waiver or change the surface
+    // under test. Real-product durable selection remains untouched.
+    try {
+      const devices = await backend.listDevices();
+      const preferred = devices.find((device) => device.synthetic !== true && device.backendKind !== 'os')
+        ?? devices[0]
+        ?? null;
+      const cur = await store.loadSettings();
+      await store.saveSettings({
+        ...cur,
+        deviceId: preferred?.id ?? null,
+        deviceKey: preferred?.deviceKey ?? null,
+      });
+    } catch (err) {
+      console.log(`[boot] mock device-selection seed skipped: ${err.message}`);
+    }
     try {
       const cur = await store.loadSettings();
       await store.saveSettings({ ...cur, ocMode: process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced' });
@@ -1732,11 +1766,11 @@ async function main() {
   // decision: the mid-session probe leaves the OC row as the boot outcome -
   // the record is the window-path apply's own).
   let bootApplyOutcome = null;
-  // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
-  // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
-  // (self-healing, M7 - a stale selection or an absent field must never
-  // wedge the app on a dead id). The renderer's boot read (device-get) and
-  // the window-path boot apply both consume this resolution.
+  // M4-F (§4 boot resolution): a matching durable key selects its device.
+  // Legacy numeric-only settings remain read-only/self-healed to the
+  // preferred row, but a disappeared persisted key returns null so the
+  // regular boot profile path reaches stale-target refusal rather than
+  // silently writing another GPU.
   let bootDeviceId = null;
   try {
     bootDeviceId = await resolveBootDeviceId(backend, store);
@@ -2220,7 +2254,41 @@ async function main() {
   const mockCtl = mock
     ? {
         listFeaturesets: () => backend.listFeaturesets(),
-        setFeatureset: (id) => backend.setFeatureset(id),
+        setFeatureset: async (id) => {
+          // M30: the proxy fallback invokes the raw MockBackend with its
+          // receiver, so this first response keeps the feature metadata and
+          // health while the device payload is normalized below.
+          const response = await backend.setFeatureset(id);
+          const unifiedDevices = await backend.listDevices();
+          if (!Array.isArray(unifiedDevices) || unifiedDevices.length === 0) {
+            return response;
+          }
+
+          // The raw mock and the unified inventory normalize PCI ids
+          // differently (zero-padded vs canonical). Keep the durable-key
+          // match first, then bridge the response's raw session id to the
+          // unified backendId before falling back to the first writable row.
+          const responseActive = Array.isArray(response?.devices)
+            ? response.devices.find((device) => device.deviceKey === response?.activeDeviceKey)
+            : null;
+          const active = unifiedDevices.find((device) => device.deviceKey === response?.activeDeviceKey)
+            ?? (Number.isInteger(responseActive?.id)
+              ? unifiedDevices.find((device) => device.backendId === responseActive.id)
+              : null)
+            ?? unifiedDevices.find((device) => device.synthetic !== true
+              && device.backendKind !== 'os'
+              && Number.isInteger(device.backendId))
+              ?? unifiedDevices[0];
+          const devices = unifiedDevices.filter((device) => !device.synthetic || device.deviceKey === active.deviceKey);
+
+          return {
+            ...response,
+            devices,
+            activeDeviceKey: active.deviceKey,
+            caps: await backend.getCapabilities(active.id),
+            state: await backend.getCurrentSettings(active.id),
+          };
+        },
         runBootApply: runMockBootApply,
         bootApplyLog: async () => mockBootApplyLog.slice(),
       }
@@ -2435,7 +2503,7 @@ async function main() {
     }
     sysStatsHolder.current = createSysStats({
       deviceIdHex,
-      luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
+      luidOf: async (devId, bdf) => fpsAdapter.adapterLuidOf?.(devId, bdf) ?? null,
       msrReader,
       // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
       // download link included) - logged when the MSR path is unavailable.

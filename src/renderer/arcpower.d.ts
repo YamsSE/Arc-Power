@@ -89,7 +89,7 @@ export interface ArcPowerApi {
    *  dashboard VRAM/Compute rows' source ({ vramBytes, computeCores } - the
    *  NVML total + core count; honest nulls when no vendor adapter resolves:
    *  no lane / absent DLL / a vendor without the field - ADL). */
-  vendorInfo(): Promise<VendorDeviceInfo>;
+  vendorInfo(deviceId?: number): Promise<VendorDeviceInfo>;
   /** M4-D: integrated-title-bar window controls (no payload). */
   windowMinimize(): Promise<void>;
   windowMaximizeToggle(): Promise<void>;

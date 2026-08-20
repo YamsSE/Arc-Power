@@ -1346,9 +1346,11 @@ export class MockBackend {
  */
 export function createMockOldIgcl(backend) {
   return {
-    isCapable: async (deviceId) => deviceId === undefined || deviceId === null
-      ? backend.extendedCapable
-      : backend._entry(deviceId).extendedCapable,
+    isCapable: async (deviceId) => {
+      if (deviceId === undefined || deviceId === null) return backend.extendedCapable;
+      if (typeof backend.getCapabilities === 'function') return (await backend.getCapabilities(deviceId)).extendedRanges === true;
+      return backend._entry(deviceId).extendedCapable;
+    },
     setPowerLimitW: async (w, deviceId) => backend.extendedApply('powerLimitW', w, deviceId),
     setTempLimitC: async (c, deviceId) => backend.extendedApply('tempLimitC', c, deviceId),
     close: async () => {},

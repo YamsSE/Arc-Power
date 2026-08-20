@@ -94,6 +94,11 @@ export function buildSysinfoScript() {
     // M4-I: the video controllers also carry DriverVersion (the no-Intel
     // device card's Driver version row - works on ANY GPU).
     '$vga = @(Get-CimInstance Win32_VideoController | Select-Object DeviceID,Name,AdapterRAM,PNPDeviceID,DriverVersion)',
+    // M30: bridge OS PNP rows to the stable PCI BDF exposed by NVML/ADL.
+    // LocationInfo is optional; an unavailable PnP cmdlet/property simply
+    // leaves the identity bridge absent and telemetry fails closed.
+    '$pnpLocations = @{}',
+    '@(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ForEach-Object { $loc = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Device_LocationInfo -ErrorAction SilentlyContinue).Data; if ($loc) { $pnpLocations[$_.InstanceId] = $loc } }) | Out-Null',
     '$regMem = @(Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; if ($p.\'HardwareInformation.qwMemorySize\' -and $p.MatchingDeviceId) { [pscustomobject]@{ PNPDeviceID = $p.MatchingDeviceId; MemoryBytes = $p.\'HardwareInformation.qwMemorySize\' } } })',
     // M17p: the OS ReBAR sources are LIGHTENED (the measured expensive
     // tail: the per-controller pnputil subprocess spawn - one per video
@@ -108,7 +113,7 @@ export function buildSysinfoScript() {
     // still emit MaxBarBytes (always 0) and the payload still carries
     // allocatedBar (always []) - the parse side is untouched (a
     // functioning multi-GiB OS window can no longer flip the verdict).
-    '$vga = @($vga | ForEach-Object { [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $_.PNPDeviceID; DriverVersion = $_.DriverVersion; MaxBarBytes = 0 } })',
+    '$vga = @($vga | ForEach-Object { [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $_.PNPDeviceID; DriverVersion = $_.DriverVersion; LocationInfo = $pnpLocations[$_.PNPDeviceID]; MaxBarBytes = 0 } })',
     '$barRes = @()',
     '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; systemEnclosure = $enc; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
@@ -833,6 +838,7 @@ export function parseCimOutput(stdout) {
           // GPU - the no-Intel device card's Driver version row source).
           driverVersion: typeof c?.DriverVersion === 'string' && c.DriverVersion ? c.DriverVersion : null,
           rebarActive: null,
+          ...(typeof c?.LocationInfo === 'string' && c.LocationInfo ? { locationInfo: c.LocationInfo } : {}),
           // M4-D2: the pnputil source rides along (merged with the
           // allocated-resource cross-check by applyAllocatedBar).
           _pnputilBarBytes: typeof c?.MaxBarBytes === 'number' && Number.isFinite(c.MaxBarBytes) ? c.MaxBarBytes : 0,
@@ -1061,6 +1067,9 @@ export function vramBytesOfDevice(device, sysinfo) {
  * controller list is filtered through isRealGpuController HERE; only the
  * AMD part survives, proving a non-GPU first controller never wins the GPU
  * card / health row / header name.
+ * M30: RID_MOCK_ZERO_GPU=1 explicitly removes even the synthetic OS
+ * controller, preserving the true empty-inventory verification; NO_INTEL
+ * alone keeps the AMD OS-only controller row.
  * M4-H: the fixture gains SMBIOSMemoryType 34 (DDR5 - the Memory-row type
  * label). M4J (B): the fixture drops the l1-l4 cache fields (the Cache row
  * is REMOVED) and gains the baseboard (the Mainboard row - the ASUSTeK-style
@@ -1073,6 +1082,7 @@ export function vramBytesOfDevice(device, sysinfo) {
  */
 export function createMockSysinfo(overrides = {}) {
   const noIntel = process.env.RID_MOCK_NO_INTEL === '1';
+  const zeroGpu = process.env.RID_MOCK_ZERO_GPU === '1';
   // M17d (Run B): the no-Intel REAL-controller override - the ui-verify
   // no-intel+nvml variant (RID_MOCK_NO_INTEL=1 + RID_MOCK_VENDOR=nvml)
   // replaces the default AMD row with the GTX 980-class shape (the
@@ -1093,7 +1103,7 @@ export function createMockSysinfo(overrides = {}) {
   // path bypasses the parse, so the filter must run HERE (the default +
   // no-Intel fixtures stay green; a Basic Display Adapter first controller
   // is genuinely filtered).
-  const fixtureControllers = noIntel ? [
+  const fixtureControllers = zeroGpu ? [] : noIntel ? [
     {
       // M7b: the FIRST controller is a non-GPU (the "Microsoft Basic
       // Display Adapter" every Windows box can list) - the predicate must

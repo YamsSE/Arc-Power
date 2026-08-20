@@ -33,6 +33,7 @@
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
 import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
+import { physicalTargetOf } from './gpu-inventory.js';
 // M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
 // in-process executeApply clamps profile.settings against
 // extendedRangesFor(caps) internally; the recording must use the SAME
@@ -49,22 +50,29 @@ const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
  * by durable PCI/BDF identity and legacy numeric-only settings fall back to
  * the sorted preferred device.
  */
-export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null) {
+export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null, explicitDeviceKey = undefined) {
   const devices = await backend.listDevices();
   if (devices.length === 0) return null;
   const ids = new Set(devices.map((d) => d.id));
-  if (Number.isInteger(explicitDeviceId) && ids.has(explicitDeviceId)) return explicitDeviceId;
   let settings = null;
   try {
     settings = await store.loadSettings();
   } catch {
     // degraded: never fall back on an unreadable store beyond devices[0]
   }
-  const key = typeof settings?.deviceKey === 'string' ? settings.deviceKey : null;
+  const key = typeof explicitDeviceKey === 'string'
+    ? explicitDeviceKey
+    : (typeof settings?.deviceKey === 'string' ? settings.deviceKey : null);
   const matched = key
     ? devices.find((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key)
     : null;
-  return matched?.id ?? devices[0].id;
+  if (matched) return matched.id;
+  // A supplied key is identity-sensitive. Never pair it with a different
+  // numeric id after reorder/disappearance; fall back to the first current
+  // device and let the caller persist that new selection.
+  if (key) return undefined;
+  if (Number.isInteger(explicitDeviceId) && ids.has(explicitDeviceId)) return explicitDeviceId;
+  return devices[0].id;
 }
 
 /**
@@ -102,14 +110,38 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
 
   let targetDeviceId;
   try {
-    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId);
+    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId, settings.deviceKey);
   } catch (err) {
     return { applied: false, reason: `device enumeration failed: ${err.message}` };
   }
   if (targetDeviceId === null) {
     return { applied: false, reason: 'no devices enumerated' };
   }
+  if (targetDeviceId === undefined) {
+    return { applied: false, reason: 'stale GPU target: the persisted device is no longer enumerated' };
+  }
   const deviceId_ = targetDeviceId;
+  let targetDeviceKey = null;
+  let resolvedTarget = null;
+  try {
+    // Resolve the row without the write-time proof gate. The proof is derived
+    // from this row immediately below and is supplied to the actual apply or
+    // elevated worker call; asking getDeviceTarget with only the persisted key
+    // would reject a valid boot target before its proof can be constructed.
+    const target = typeof backend.getTarget === 'function'
+      ? await backend.getTarget(deviceId_)
+      : typeof backend.getDeviceTarget === 'function'
+        ? await backend.getDeviceTarget(deviceId_, null)
+      : (await backend.listDevices()).find((device) => device.id === deviceId_) ?? null;
+    resolvedTarget = target ?? null;
+    targetDeviceKey = target?.deviceKey ?? (target ? deviceHardwareKey(target) : null);
+    const persistedKey = typeof settings.deviceKey === 'string' ? settings.deviceKey : null;
+    if (typeof backend.getDeviceTarget === 'function' && persistedKey && targetDeviceKey !== persistedKey) {
+      return { applied: false, reason: 'stale GPU target: the persisted device no longer matches the selected session' };
+    }
+  } catch (err) {
+    return { applied: false, reason: `device target resolution failed: ${err.message}` };
+  }
 
   let caps;
   try {
@@ -252,6 +284,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // refusal (>315 W never silently clamps).
       const out = await applyRunner.apply({
         deviceId: deviceId_,
+        deviceKey: targetDeviceKey,
+        physicalTarget: physicalTargetOf(resolvedTarget),
         settings: profile.settings,
         profileName: profile.name,
         waiverAccepted,
@@ -279,7 +313,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
-    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
+    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
     recordRefusals(out.result);
     return out;
   };
@@ -300,7 +334,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       log('[apply-on-boot] apply answered waiver-not-set with a persisted acceptance - silently re-setting the driver waiver and retrying ONCE');
       try {
         if (applyRunner?.needsWorker?.()) {
-          await applyRunner.waiverAccept(deviceId_);
+          await applyRunner.waiverAccept(deviceId_, targetDeviceKey, physicalTargetOf(resolvedTarget));
           await backend.restoreWaiverState(deviceId_, true);
         } else {
           await backend.setWaiverAccepted(deviceId_);
@@ -358,7 +392,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   let fallbackApplied = true;
   try {
     if (applyRunner?.needsWorker?.()) {
-      const out = await applyRunner.reset(deviceId_);
+      const out = await applyRunner.reset(deviceId_, targetDeviceKey, physicalTargetOf(resolvedTarget));
       if (!out.ok) throw new Error('reset via elevated worker failed');
     } else {
       await backend.resetToDefaults(deviceId_);
