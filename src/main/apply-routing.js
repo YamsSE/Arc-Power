@@ -952,6 +952,12 @@ async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = (
       log(`[apply] sysman voltage: cleared prior negative offset ${current.offsetV} V before the non-negative IGCL apply`);
       return { ok: true, checked: true };
     }
+    if (!strict) {
+      // Positive voltage is authoritative; a stale companion cleanup failure
+      // must not turn a valid IGCL apply into an unavailable/refused apply.
+      log(`[apply] sysman voltage: stale negative offset clear did not verify; continuing with the positive IGCL apply`);
+      return { ok: true, checked: true };
+    }
     return {
       ok: false,
       checked: true,
@@ -959,6 +965,10 @@ async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = (
       message: cleared?.message ?? 'the prior negative sysman voltage offset could not be cleared',
     };
   } catch (err) {
+    if (!strict) {
+      log(`[apply] sysman voltage: stale negative offset clear failed; continuing with the positive IGCL apply`);
+      return { ok: true, checked: true };
+    }
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, checked: true, errorCode: 'io-failed', message };
   }
@@ -1387,26 +1397,8 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
-
-  // M26: always inspect the shared Sysman voltage domain for supported
-  // V-unit devices with a finite backend voltage state. Only a finite
-  // negative Sysman offset is authoritative for the overlay; positive/zero
-  // read-back leaves the backend's IGCL value intact.
-  if (caps.ranges?.gpuVoltOffsetV?.units === 'V'
-    && Number.isFinite(state?.gpuVoltOffsetV)
-    && typeof sysmanPowerLimits?.readVoltageOffset === 'function') {
-    try {
-      const voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId);
-      if (voltRead && typeof voltRead === 'object'
-        && Number.isFinite(voltRead.offsetV)
-        && voltRead.offsetV < 0) {
-        state = { ...state, gpuVoltOffsetV: voltRead.offsetV };
-      }
-    } catch {
-      // best-effort overlay - degraded to backend state
-    }
-  }
-
+  // Positive-only voltage UI: never replace the IGCL state with a legacy
+  // negative Sysman companion value.
   return { result: out.result, state };
 }
 
