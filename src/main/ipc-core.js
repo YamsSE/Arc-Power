@@ -1146,9 +1146,14 @@ export function createIpcHandlers({
       recordRefusals(out.result);
       return out;
     };
+    const publicEnvelope = (out) => ({
+      result: out.result,
+      state: out.state,
+      ...(out.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
+    });
     const first = await attempt(caps.waiverAccepted === true);
     if (!hasWaiverNotSet(first.result)) {
-      return { result: first.result, state: first.state };
+      return publicEnvelope(first);
     }
     let persistedAccepted = false;
     try {
@@ -1160,7 +1165,7 @@ export function createIpcHandlers({
     if (!persistedAccepted) {
       // Unaccepted store: current behavior - the renderer's dialog flow
       // re-prompts and re-applies.
-      return { result: first.result, state: first.state };
+      return publicEnvelope(first);
     }
     // M4-D: silent re-set + retry ONCE. A declined re-set (UAC) surfaces the
     // FIRST attempt's envelope - never a fake success, never a crash.
@@ -1172,10 +1177,10 @@ export function createIpcHandlers({
         await backend.setWaiverAccepted(deviceId);
       }
     } catch {
-      return { result: first.result, state: first.state };
+      return publicEnvelope(first);
     }
     const retry = await attempt(true);
-    return { result: retry.result, state: retry.state };
+    return publicEnvelope(retry);
   };
 
   const handlers = {
@@ -1456,18 +1461,30 @@ export function createIpcHandlers({
           const wc = wcUnitControls(settings, caps.ranges);
           if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
         }
+        // The unelevated UI cannot initialize the bundled 2023 runtime
+        // reliably (KMD_CALL); the elevated worker is the authoritative
+        // capability probe and apply path. Let it decide whether extended
+        // W/C values are available. An in-process path still refuses here.
+        const workerOwnsExtendedGate = unavailable !== null && applyRunner?.needsWorker?.() === true;
+        if (workerOwnsExtendedGate) {
+          unavailable = null;
+        }
         if (unavailable) {
           let state = null;
           try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
           return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state, extendedUnavailable: true };
         }
+        // The parent must not standard-clamp a request whose capability
+        // decision belongs to the elevated worker; that would turn 300 W
+        // into 252 W before the worker can inspect its real runtime.
+        const applyRanges = opts?.profileApply === true || workerOwnsExtendedGate
+          ? extendedRangesFor(caps)
+          : caps.ranges;
         // M4O (NEW-1): the pre-clamp must NOT silently clamp a profileApply
         // - a profile applies against the driver's TRUE limits
         // (extendedRangesFor), never the mode-gated caps.ranges (stock max
         // 252 would silently reduce a saved 300 W profile).
-        const clamped = opts?.profileApply === true
-          ? clampSettings(settings, extendedRangesFor(caps))
-          : clampSettings(settings, caps.ranges);
+        const clamped = clampSettings(settings, applyRanges);
         // M2C-C elevation gate: a non-elevated app delegates the apply to
         // the elevated self-worker (one UAC prompt); the elevated app (and
         // mock mode, where applyRunner is null) applies in-process through

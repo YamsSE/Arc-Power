@@ -407,6 +407,7 @@ export function createApplyRunner({
           ...(result.pl2Note && typeof result.pl2Note === 'object' ? { pl2Note: result.pl2Note } : {}),
         },
         state: result.state ?? null,
+        ...(result.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
       };
     },
     /**

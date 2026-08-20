@@ -100,7 +100,7 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
   // mode. Advanced ceilings remain visible when the bundled companion runtime
   // is unavailable; the apply path reports that unavailable capability
   // honestly instead of silently shrinking the sliders to Stock.
-  const advancedMode = caps?.ocMode === 'advanced';
+  const advancedMode = caps?.ocMode === 'advanced' || caps?.extendedRanges === true;
   if (key === 'powerLimitW' && range.units === 'W' && !advancedMode && range.max > STD_PL_MAX_W) {
     return { ...range, max: STD_PL_MAX_W, default: Math.min(range.default, STD_PL_MAX_W) };
   }
