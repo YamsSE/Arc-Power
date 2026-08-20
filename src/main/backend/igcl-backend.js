@@ -1036,6 +1036,11 @@ export class IgclBackend {
       // can bind the old runtime's raw handle to the selected main-backend
       // device instead of assuming both enumerations share an order.
       deviceKey: dev.deviceKey ?? deviceHardwareKey(dev),
+      /** M33 fix: the selected OC mode is part of the capability contract.
+       * `extendedRanges` only reports bundled-runtime availability; the
+       * renderer must not mistake an unavailable companion runtime for Stock
+       * mode and hide the Advanced slider ceilings. */
+      ocMode: this._ocMode,
       // M4-I (S1): the memory type rides the caps payload (the waiver
       // dialogs + the VRAM row's type source - same token-table value the
       // device payload carries).
@@ -1316,6 +1321,7 @@ export class IgclBackend {
    *   a fresh clone)
    */
   _finalizeCaps(deviceId, caps, dev) {
+    caps.ocMode = this._ocMode;
     const identity = {
       pciDeviceId: caps.pciDeviceId ?? dev?.pciDeviceId ?? null,
       aibVendor: caps.aibVendor ?? null,

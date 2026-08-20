@@ -99,6 +99,8 @@ export interface Capabilities {
    *  backend derives it once from the token table; the mock fixture
    *  supplies it). Null when unknown. */
   memType?: string | null;
+  /** M33: selected OC mode; distinct from bundled-runtime availability. */
+  ocMode?: OcMode;
   waiverAccepted: boolean;
   /** M17: FALSE on OC-locked devices (Arc B50-class) - the driver exposes
    *  no OC control and refuses the warranty waiver (ERROR_UNSUPPORTED_FEATURE).

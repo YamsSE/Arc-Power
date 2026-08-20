@@ -403,6 +403,10 @@ export class MockBackend {
       // Mirror the real backend's stable identity so the old-runtime mock
       // and the real apply route exercise the same target contract.
       deviceKey,
+      // M33 fix: expose the selected mode separately from runtime availability
+      // so the renderer can keep Advanced ceilings visible when the bundled
+      // runtime is unavailable.
+      ocMode: this._ocMode,
       // M4-B step-4 F1: the VRAM suffix is formatted HERE too (not only in
       // _buildDevice) - every dialog (boot waiver, apply-time waiver,
       // advanced-mode confirm) renders caps.deviceName, so mock and real
@@ -778,6 +782,8 @@ export class MockBackend {
           if (canonical === 'gpuVoltOffsetV') {
             // The volt maxes are the M15 probe-ceiling PINS (both
             // directions); the store merge below is the only downward force.
+            next = { ...next, max: override.max };
+          } else if (advancedShape) {
             next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };

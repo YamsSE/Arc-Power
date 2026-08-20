@@ -96,10 +96,15 @@ export const SAFE_VOLT_OFFSET_MIN_V = 0;
  */
 export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
   if (!range) return range;
-  if (key === 'powerLimitW' && range.units === 'W' && !caps?.extendedRanges && range.max > STD_PL_MAX_W) {
+  // M33 fix: `extendedRanges` is runtime availability, not the selected OC
+  // mode. Advanced ceilings remain visible when the bundled companion runtime
+  // is unavailable; the apply path reports that unavailable capability
+  // honestly instead of silently shrinking the sliders to Stock.
+  const advancedMode = caps?.ocMode === 'advanced';
+  if (key === 'powerLimitW' && range.units === 'W' && !advancedMode && range.max > STD_PL_MAX_W) {
     return { ...range, max: STD_PL_MAX_W, default: Math.min(range.default, STD_PL_MAX_W) };
   }
-  if (key === 'tempLimitC' && range.units === 'C' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
+  if (key === 'tempLimitC' && range.units === 'C' && !advancedMode && range.max > TEMP_LIMIT_MAX_C) {
     return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
   }
   if (key === 'gpuVoltOffsetV' && range.units === 'V') {
