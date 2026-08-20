@@ -809,6 +809,16 @@ export function createIpcHandlers({
   let latestMainSelectionGeneration = -1;
   /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
+  /** Overlay-only secondary GPU services. The main renderer keeps one
+   * selected-device service; the HUD may additionally subscribe to every
+   * other inventory row without changing the selected-device state flow. */
+  const overlayTelemetry = new Map();
+  const stopOverlayTelemetry = async () => {
+    for (const svc of overlayTelemetry.values()) {
+      try { await svc.stop?.(); } catch { /* best effort */ }
+    }
+    overlayTelemetry.clear();
+  };
   let telemetryGeneration = 0;
   const cleanupStaleTelemetryStartup = async ({ generation, timer = null, vendor = null, service = null }) => {
     if (generation === telemetryGeneration) return false;
@@ -1028,6 +1038,7 @@ export function createIpcHandlers({
     svc.onPollError(() => { /* stale readouts recover on the next tick */ });
     await svc.start();
     if (generation !== telemetryGeneration) {
+
       await svc.stop();
       return;
     }
@@ -1037,6 +1048,68 @@ export function createIpcHandlers({
     try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
     if (await cleanupStaleTelemetryStartup({ generation, service: svc })) return;
     telemetry.set(deviceId, svc);
+  };
+  /**
+   * Start the Basic Overlay's secondary GPU lanes. These lanes deliberately
+   * do not replace the main selected-device service or the shared OS-stats
+   * target; they publish only the secondary adapter's own readings.
+   */
+  const startOverlayTelemetry = async (deviceIds) => {
+    await stopOverlayTelemetry();
+    let pollMs = OVERLAY_POLL_MS_DEFAULT;
+    try {
+      const s = await store.loadSettings();
+      pollMs = clampOverlayPollMs(s.overlayPollMs);
+    } catch { /* retain the default cadence */ }
+    const devices = await backend.listDevices();
+    const wanted = [...new Set(deviceIds)]
+      .filter((id) => Number.isInteger(id) && id >= 0)
+      .filter((id) => devices.some((device) => device.id === id));
+    for (const deviceId of wanted) {
+      const device = devices.find((entry) => entry.id === deviceId);
+      const target = await backend.getDeviceTarget?.(deviceId);
+      if (target?.synthetic || target?.backendKind === 'os') {
+        let vendor = null;
+        try {
+          vendor = typeof vendorTelemetry.startFor === 'function'
+            ? await vendorTelemetry.startFor(target, { owner: 'overlay' })
+            : await vendorTelemetry.start();
+        } catch { vendor = null; }
+        const timer = setInterval(() => {
+          void (async () => {
+            let sample = null;
+            try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
+            emit('telemetry:sample', {
+              t: Date.now(),
+              deviceId,
+              deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
+              sessionGeneration: telemetryGeneration,
+              ...(sample ?? {}),
+            });
+          })();
+        }, pollMs);
+        overlayTelemetry.set(deviceId, {
+          stop: async () => {
+            clearInterval(timer);
+            try { await vendor?.close?.(); } catch { /* best effort */ }
+          },
+        });
+        continue;
+      }
+      const svc = new TelemetryService(backend, deviceId, { pollMs });
+      svc.onSample((sample) => emit('telemetry:sample', {
+        deviceId,
+        deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
+        sessionGeneration: telemetryGeneration,
+        ...sample,
+      }));
+      try {
+        await svc.start();
+        overlayTelemetry.set(deviceId, svc);
+      } catch {
+        try { await svc.stop(); } catch { /* best effort */ }
+      }
+    }
   };
 
   const stopAllTelemetry = async () => {
@@ -1050,6 +1123,7 @@ export function createIpcHandlers({
     // must not outlive the last push; an in-flight query finishes on its
     // own - no new tick starts).
     try { await sysStats.stopSlowLane?.(); } catch { /* best effort */ }
+    await stopOverlayTelemetry();
   };
 
   const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
@@ -1627,6 +1701,10 @@ export function createIpcHandlers({
         }
         assertValidDeviceId(deviceId);
         await startTelemetry(deviceId);
+      },
+      'overlay-telemetry-start': async (deviceIds) => {
+        if (!Array.isArray(deviceIds)) throw new Error('overlay telemetry device list must be an array');
+        await startOverlayTelemetry(deviceIds);
       },
 
       'telemetry-stop': async (deviceId) => {

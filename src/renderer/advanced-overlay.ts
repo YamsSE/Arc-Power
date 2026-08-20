@@ -658,7 +658,6 @@ async function renderGraphics(): Promise<void> {
     contentEl.append(view);
     return;
   }
-  view.append(el('p', { class: 'page-subtitle', text: 'Loading graphics capabilities…' }));
   contentEl.append(view);
   let state: GraphicsState;
   try {

@@ -83,6 +83,8 @@ export interface ArcPowerApi {
    *  (a sentinel-keyed timer pushing sys-stats-ONLY samples). A non-negative
    *  integer starts the per-device telemetry. */
   telemetryStart(deviceId: number | null): Promise<void>;
+  /** Basic Overlay secondary-adapter lanes; an empty list hides GPU2. */
+  overlayTelemetryStart(deviceIds: number[]): Promise<void>;
   /** 1.0.1 no-Intel round: telemetryStop(null) is the symmetric stop for
    *  the no-device mode. */
   telemetryStop(deviceId: number | null): Promise<void>;

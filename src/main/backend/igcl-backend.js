@@ -1121,13 +1121,13 @@ export class IgclBackend {
         // 2023 runtime (apply-routing.js) - and above 315 W to the sysman
         // pair as the primary write. In stock mode the extended maxes
         // are NEVER exposed - the mode gate refuses them before any clamp.
-        // The UI process is normally unelevated. A KMD_CALL during its probe
-        // means "this process cannot initialize the bundled runtime", not
-        // "the runtime is absent"; applies are delegated to the elevated
-        // worker. Prefer the installed-runtime signal when available.
+        // The extended setter path is available only when this process can
+        // initialize the bundled runtime. DLL presence alone is insufficient:
+        // on this driver an elevated probe returns ERROR_KMD_CALL, and V1
+        // writes above the DriverStore 90 C ceiling fail. Expose only values
+        // the selected apply path can actually honor.
         const extendedCapable = this._extended
-          ? (await this._extended.isCapable())
-            || (typeof this._extended.isAvailable === 'function' && this._extended.isAvailable())
+          ? await this._extended.isCapable()
           : false;
         // M4E: the extended concept is W/C-only (the bundled 2023 runtime
         // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
@@ -1332,12 +1332,9 @@ export class IgclBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M31: the renderer's selected OC mode owns the visible safety shape.
-    // The bundled 2023 runtime capability is an apply-path prerequisite, not
-    // the reason Advanced mode should fall back to a 252 W/90 C slider. When
-    // advanced mode is selected, expose the device's documented KMD ceiling;
-    // apply-routing still refuses values above the available runtime ceiling
-    // honestly when the bundled runtime is unavailable.
+    // Advanced mode selects the documented KMD ceiling shape. The separate
+    // extendedRanges flag still reports whether the bundled runtime probe
+    // succeeded, so apply routing can refuse values the runtime cannot honor.
     const advancedShape = this._ocMode === 'advanced';
     const limits = deviceLimitsOf(identity, { advanced: advancedShape });
     if (limits) {

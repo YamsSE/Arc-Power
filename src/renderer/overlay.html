@@ -32,19 +32,17 @@
        --overlay-color pattern). -->
   <div id="overlay-root">
     <div id="overlay-backdrop"></div>
-    <!-- M18/M19b: the header divider - ONE absolutely-positioned 1px line
-         behind the SIX labeled rows (FPS / CPU / RAM / GPU / VRAM / API -
-         M19b: the API row joined the divider column), painted above
-         the backdrop (z-index 0, below the z-index-1 rows). The left comes
-         from the CSS calc carrying the --overlay-label-w var (set per
-         render by overlay.ts); the top/bottom come from the row offsets
-         (the line spans fps -> api; the frametime strip stays below). -->
+    <!-- The divider spans the complete stat stack. GPU/VRAM stay unnumbered
+         for a single adapter; overlay.ts changes the primary labels to
+         GPU1/VRAM1 and reveals GPU2/VRAM2 only when another adapter exists. -->
     <div id="overlay-divider"></div>
     <div class="overlay-line" id="overlay-fps"></div>
     <div class="overlay-line" id="overlay-cpu"></div>
     <div class="overlay-line" id="overlay-memory"></div>
     <div class="overlay-line" id="overlay-gpu"></div>
     <div class="overlay-line" id="overlay-vram"></div>
+    <div class="overlay-line overlay-secondary" id="overlay-gpu2"></div>
+    <div class="overlay-line overlay-secondary" id="overlay-vram2"></div>
     <div class="overlay-line" id="overlay-api"></div>
     <canvas id="overlay-frametime" class="overlay-frametime"></canvas>
     <div class="overlay-line overlay-frametime-value" id="overlay-frametime-value"></div>

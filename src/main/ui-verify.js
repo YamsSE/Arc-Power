@@ -7447,8 +7447,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // section turns the other fields on + off; M18: the units are GLUED;
   // M19/M19b: the 'GPU' label is padded to the 4ch column + the TWO-space
   // separator).
-  if (!(await waitFor(overlayWin, `/GPU   42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
-    fail(`M17g: the overlay GPU line does not match the default-set pattern (Util / Temp / Power - the clock/voltage/fan fields are OFF by default): '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  const multiGpu = process.env.RID_MOCK_MULTI_DEVICE === '1';
+  const gpuPattern = multiGpu ? /GPU1   42%  \d+°C  38\.8W/ : /GPU   42%  \d+°C  38\.8W/;
+  if (!(await waitFor(overlayWin, `(${gpuPattern.toString()}).test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
+    fail(`M17g: the overlay GPU line does not match the default-set pattern: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  }
+  if (multiGpu && !(await waitFor(overlayWin, `(document.getElementById('overlay-gpu2')?.textContent ?? '').startsWith('GPU2') && (document.getElementById('overlay-vram2')?.textContent ?? '').startsWith('VRAM2') && getComputedStyle(document.getElementById('overlay-gpu2')).display !== 'none'`, 15000))) {
+    fail(`M34: the secondary overlay rows are missing or hidden (GPU2='${await ojs(`document.getElementById('overlay-gpu2')?.textContent ?? ''`)}', VRAM2='${await ojs(`document.getElementById('overlay-vram2')?.textContent ?? ''`)}')`);
   }
   // M16: the standalone Voltage row is REMOVED - the #overlay-voltage div
   // must not exist (the voltage is a GPU-row field now).

@@ -79,14 +79,16 @@ body {
    and the background box would bury them - the M4 review fold).
    M13: the #overlay-api row joins the group too (the same backdrop-burying
    rule - a new row must never paint under the box). */
-#overlay-fps,
-#overlay-cpu,
-#overlay-memory,
-#overlay-gpu,
-#overlay-vram,
-#overlay-api,
-#overlay-frametime,
-#overlay-frametime-value {
+ #overlay-fps,
+ #overlay-cpu,
+ #overlay-memory,
+ #overlay-gpu,
+ #overlay-vram,
+ #overlay-gpu2,
+ #overlay-vram2,
+ #overlay-api,
+ #overlay-frametime,
+ #overlay-frametime-value {
   position: relative;
   z-index: 1;
 }
@@ -164,6 +166,9 @@ html[data-overlay-theme="arc"] .overlay-line {
     1px 1px 2px #000,
     -1px -1px 2px #000;
 }
+ .overlay-secondary {
+   display: none;
+ }
 
 /* The frametime polyline strip - a transparent canvas drawing ONLY the
    1.5px line (no grid, no background rect - "no squares"). */
