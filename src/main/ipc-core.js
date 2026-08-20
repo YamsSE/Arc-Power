@@ -1299,29 +1299,9 @@ export function createIpcHandlers({
       'get-current-settings': async (deviceId) => {
         assertValidDeviceId(deviceId);
         const state = await backend.getCurrentSettings(deviceId);
-        // M26: for supported V-unit devices with a finite backend state,
-        // always inspect the shared Sysman domain. Only a finite negative
-        // Sysman offset is authoritative; positive/zero read-back preserves
-        // the backend's IGCL value. Percent-unit/null states stay untouched.
-        let voltageUnits = null;
-        if (state && Number.isFinite(state.gpuVoltOffsetV)
-          && typeof sysmanPowerLimits?.readVoltageOffset === 'function') {
-          try {
-            voltageUnits = (await backend.getCapabilities(deviceId))?.ranges?.gpuVoltOffsetV?.units ?? null;
-          } catch { /* degraded */ }
-        }
-        if (voltageUnits === 'V') {
-          try {
-            const voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId);
-            if (voltRead && typeof voltRead === 'object'
-              && Number.isFinite(voltRead.offsetV)
-              && voltRead.offsetV < 0) {
-              return { ...state, gpuVoltOffsetV: voltRead.offsetV };
-            }
-          } catch {
-            // best-effort overlay
-          }
-        }
+        // Positive-only voltage UI: the IGCL read-back is authoritative.
+        // Do not overlay a legacy negative Sysman offset into renderer state;
+        // that state is intentionally not exposed by the product.
         return state;
       },
 
