@@ -1321,23 +1321,19 @@ export class IgclBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the finalize selects
-    // the ADVANCED shape when caps.extendedRanges is true (the extended
-    // 2023-runtime path is active) and the STOCK shape otherwise - NOT the
-    // same row in both modes. The advanced shape carries the per-card KMD
-    // ceilings (A770 315/115 - the M17c TL cap at 90 REMOVED; A750 270/115 -
-    // the TL 115 probe-verified 2026-08-12: 100 AND 115 C applied via the
-    // app path, the KMD ceiling class the same as the A770's); the stock
-    // shape the per-AIB maxes + the TL 90 caps (the round-3-N3 rule FLIPS
-    // to "listed-row advanced ceiling = the app-verified KMD ceiling").
-    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
+    // M31: the renderer's selected OC mode owns the visible safety shape.
+    // The bundled 2023 runtime capability is an apply-path prerequisite, not
+    // the reason Advanced mode should fall back to a 252 W/90 C slider. When
+    // advanced mode is selected, expose the device's documented KMD ceiling;
+    // apply-routing still refuses values above the available runtime ceiling
+    // honestly when the bundled runtime is unavailable.
+    const advancedShape = this._ocMode === 'advanced';
+    const limits = deviceLimitsOf(identity, { advanced: advancedShape });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
-      // (stock 252/90, extended 315/115 - never null, never the wrong
-      // shape); a LISTED card's row is the ACTIVE shape (stock or
-      // advanced) - the extended maxes of the props/2023 runtime are
-      // capped down to the listed shape's ceilings.
-      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
+      // (stock 252/90, advanced 315/115); a LISTED card's row is the active
+      // shape (stock per-AIB, advanced per-card KMD ceiling).
+      const row = limits.listed ? limits : defaultLimitsOf(advancedShape);
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;
         const range = caps.ranges[canonical];
@@ -1353,6 +1349,11 @@ export class IgclBackend {
             // The volt maxes are the M15 probe-ceiling PINS (both
             // directions - the props may under-report the grid-aligned
             // 0.230); the store merge below is the only downward force.
+            next = { ...next, max: override.max };
+          } else if (advancedShape) {
+            // Advanced W/C controls expose the documented KMD ceiling even
+            // when the bundled V1 runtime is unavailable. The apply route
+            // reports that capability refusal instead of silently clamping.
             next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };

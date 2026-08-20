@@ -637,6 +637,8 @@ function renderFan(): void {
 // Graphics tab - the four M8 cards (the shared option lists EXPORTED from
 // pages/graphics.ts - export, never duplicate)
 // ---------------------------------------------------------------------------
+const GRAPHICS_LOAD_TIMEOUT_MS = 5000;
+
 async function renderGraphics(): Promise<void> {
   clear(contentEl);
   const s = store.get();
@@ -653,7 +655,12 @@ async function renderGraphics(): Promise<void> {
   contentEl.append(view);
   let state: GraphicsState;
   try {
-    state = await api.graphicsGet(deviceId);
+    state = await Promise.race([
+      api.graphicsGet(deviceId),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('graphics capability read timed out')), GRAPHICS_LOAD_TIMEOUT_MS);
+      }),
+    ]);
   } catch (err) {
     if (!panelIdentityMatches(deviceId, deviceKey, generation)
       || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;

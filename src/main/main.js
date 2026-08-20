@@ -859,6 +859,7 @@ async function main() {
         },
       }
     : {};
+  let rawBackend = null;
   if (mock) {
     sysinfo = createMockSysinfo({ ...laptopFixture, ...noIntelVendorFixture });
   } else if (applyProfileId) {
@@ -935,7 +936,7 @@ async function main() {
     sysinfo = {
       get: async () => {
         const result = await sysinfoResult();
-        if (driverReBar === null) driverReBar = createDriverReBar(backend);
+        if (driverReBar === null) driverReBar = createDriverReBar(rawBackend);
         const verdict = await driverReBar();
         return verdict === null ? result : applyDriverReBar(result, verdict);
       },
@@ -967,6 +968,7 @@ async function main() {
     // payload and the caps AIB decode).
     mock: { ...mockOpts, laptopInfoOf: () => (cached && cached.laptop ? cached.laptop : (Object.keys(laptopFixture).length > 0 ? laptopFixture.laptop : null)) },
   });
+  rawBackend = backend;
   // M30: all later consumers use the same Windows/IGCL inventory.  The
   // wrapper is intentionally installed before oldIgcl, boot/profile/tray,
   // IPC, and sysman closures are created so no path can bypass its target
