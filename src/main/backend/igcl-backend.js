@@ -2312,17 +2312,17 @@ export class IgclBackend {
       || (settings.gpuFreqOffsetMhz !== undefined && settings.gpuFreqOffsetMhz !== null);
     if (!lockIsUnlock) {
       // The non-zero lock: zero-offset writes first, then the lock.
-      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
       await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
+      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
       await applyLock(settings.gpuLock);
     } else if (hasLockPair && hasOffsetWrites) {
       // The (0,0) unlock + offsets: the unlock first, then the offsets.
       await applyLock(settings.gpuLock);
-      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
       await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
+      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
     } else {
-      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
       await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
+      await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
       if (hasLockPair) await applyLock(settings.gpuLock);
     }
     await applyFan();

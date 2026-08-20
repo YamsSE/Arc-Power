@@ -9,9 +9,14 @@ contextBridge.exposeInMainWorld('arcPower', {
   listDevices: () => ipcRenderer.invoke('list-devices'),
   // M29: device identity carries the session id plus durable PCI/BDF key.
   deviceGet: () => ipcRenderer.invoke('device-get'),
+  deviceSelectionGenerationGet: () => ipcRenderer.invoke('device-selection-generation-get'),
   deviceSet: (selection) => ipcRenderer.invoke('device-set', selection),
-  getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
+  // M31: the Advanced Overlay requests a durable-key switch; the main
+  // renderer owns the actual telemetry/persistence flow.
+  deviceSelectionRequest: (deviceKey) => ipcRenderer.invoke('device-selection-request', deviceKey),
+  deviceSelectionPush: (payload) => ipcRenderer.invoke('device-selection-push', payload),
   getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
+  getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
   // M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the
   // sysman layer answers, null when absent - the power-limit card's PL2
   // line). M17f (step-4 N2): DEVICE-SCOPED like every read channel (the
@@ -82,6 +87,18 @@ contextBridge.exposeInMainWorld('arcPower', {
   // in mock mode; the log records what it did). Mock mode only.
   mockRunBootApply: () => ipcRenderer.invoke('mock:run-boot-apply'),
   mockBootApplyLog: () => ipcRenderer.invoke('mock:boot-apply-log'),
+  // M31 selection IPC: requests terminate at the main renderer; updates
+  // are delivered atomically to both renderer windows.
+  onDeviceSelectionRequested: (cb) => {
+    const listener = (_event, payload) => cb(payload);
+    ipcRenderer.on('device-selection:request', listener);
+    return () => ipcRenderer.removeListener('device-selection:request', listener);
+  },
+  onDeviceSelectionUpdated: (cb) => {
+    const listener = (_event, payload) => cb(payload);
+    ipcRenderer.on('device-selection:updated', listener);
+    return () => ipcRenderer.removeListener('device-selection:updated', listener);
+  },
   onTelemetrySample: (cb) => {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);

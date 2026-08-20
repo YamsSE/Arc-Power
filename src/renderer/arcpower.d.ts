@@ -34,13 +34,28 @@ import type {
   VendorDeviceInfo,
 } from './types.ts';
 
+export interface DeviceSelectionPayload {
+  deviceId: number;
+  deviceKey: string | null;
+  /** Main-renderer monotonic session generation; omitted by legacy callers. */
+  selectionGeneration?: number;
+  caps: Capabilities;
+  state: DeviceState;
+}
+
 export interface ArcPowerApi {
   health(): Promise<HealthReport>;
   listDevices(): Promise<DeviceInfo[]>;
   /** M29: persisted GPU selection (numeric id + durable PCI/BDF key). */
   deviceGet(): Promise<{ deviceId: number | null; deviceKey: string | null }>;
+  /** Main-renderer monotonic selection generation, for reload-safe handshakes. */
+  deviceSelectionGenerationGet(): Promise<{ generation: number }>;
   /** Persist the selected GPU and its stable identity. */
   deviceSet(selection: number | { deviceId: number; deviceKey?: string }): Promise<{ deviceId: number | null; deviceKey?: string | null }>;
+  /** M31: the Advanced Overlay asks the main renderer to switch by durable key. */
+  deviceSelectionRequest(deviceKey: string): Promise<{ accepted: boolean }>;
+  /** M31: the main renderer publishes its atomic caps/state selection pair. */
+  deviceSelectionPush(payload: DeviceSelectionPayload): Promise<{ accepted: boolean }>;
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
   /** M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the
@@ -142,6 +157,10 @@ export interface ArcPowerApi {
   /** M2D (mock mode only): swap the mock device featureset live; the whole
    *  UI surface (caps/ranges/units/telemetry) re-renders from the response. */
   mockSetFeatureset(id: string): Promise<MockSwapResponse>;
+  /** M31: panel-to-main selection requests, delivered only to the main renderer. */
+  onDeviceSelectionRequested(cb: (payload: { deviceKey: string }) => void): () => void;
+  /** M31: main-owned durable selection/caps/state push delivered to both renderers. */
+  onDeviceSelectionUpdated(cb: (payload: DeviceSelectionPayload) => void): () => void;
   /** M4-D2 (mock mode only): run the REAL window-path boot-apply code path
    *  (applyRunner-less, defaults-fallback skipped) and record the attempt
    *  in the session mock apply log. */

@@ -148,17 +148,87 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
   },
 });
 
-// M4-F: the GPU switch - one instance wired to the app's store, page
-// re-render and toast sink; exported so the Dashboard GPU card + Tuning
-// page selectors drive it. The full flow + the unit-tested core live in
-// device.ts (createDeviceSwitcher).
+// The main renderer owns this sequence. It lets ipc-core distinguish a late
+// push from an older switch even when deviceSet persistence failed. The
+// handshake seeds the counter after a renderer reload, while ipc-core keeps
+// the latest value in the main process.
+let mainSelectionGeneration = -1;
+const mainSelectionGenerationReady = api.deviceSelectionGenerationGet()
+  .then(({ generation }) => {
+    if (!Number.isInteger(generation) || generation < -1) throw new Error('invalid selection generation');
+    mainSelectionGeneration = generation;
+    return true;
+  })
+  .catch((err) => {
+    toast('warn', 'GPU selection', `Could not synchronize selection generation: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  });
 export const selectDevice = createDeviceSwitcher({
   api,
   store,
-  onSwitched: () => {
+  onSwitched: (id) => {
     renderPage(currentPage());
+    void mainSelectionGenerationReady.then((ready) => {
+      if (!ready) return;
+      const live = store.get();
+      // A newer local switch may have completed while the reload handshake
+      // was pending; never publish the superseded device pair.
+      if (live.deviceId !== id || !live.caps || !live.state) return;
+      const selected = live.devices.find((device) => device.id === id);
+      const selectionGeneration = ++mainSelectionGeneration;
+      return api.deviceSelectionPush({
+        deviceId: id,
+        deviceKey: selected?.deviceKey ?? null,
+        selectionGeneration,
+        caps: live.caps,
+        state: live.state,
+      }).catch((err) => toast('warn', 'GPU selection', `The other window could not be updated: ${err instanceof Error ? err.message : String(err)}`));
+    });
   },
   warn: (title, message) => toast('warn', title, message),
+  queueWhileInFlight: true,
+});
+
+// M31: only the main renderer consumes panel requests. Durable-key
+// resolution happens against the current inventory; the existing switcher
+// remains the sole telemetry stop/start + persistence owner. Requests that
+// arrive during boot are coalesced and replayed after the boot owner settles.
+let mainBootComplete = false;
+let queuedDeviceSelectionKey: string | null = null;
+function requestDeviceSelection(deviceKey: string): void {
+  if (!mainBootComplete) {
+    queuedDeviceSelectionKey = deviceKey;
+    return;
+  }
+  const target = store.get().devices.find((device) => device.deviceKey === deviceKey);
+  if (!target) {
+    toast('warn', 'GPU selection', 'The requested GPU is no longer available.');
+    return;
+  }
+  void selectDevice(target.id);
+}
+api.onDeviceSelectionRequested((payload) => {
+  if (!payload || typeof payload.deviceKey !== 'string') return;
+  requestDeviceSelection(payload.deviceKey);
+});
+api.onDeviceSelectionUpdated((payload) => {
+  if (!payload?.caps || !payload?.state || !Number.isInteger(payload.deviceId)) return;
+  const live = store.get();
+  const target = live.devices.find((device) => device.id === payload.deviceId
+    && (payload.deviceKey === null || device.deviceKey === payload.deviceKey));
+  if (!target) return;
+  if (live.deviceId === payload.deviceId
+    && live.caps === payload.caps
+    && live.state === payload.state) return;
+  store.set({
+    deviceId: payload.deviceId,
+    caps: payload.caps,
+    state: payload.state,
+    latestSample: null,
+    lastApply: null,
+    osGpu: target.osController ?? null,
+  });
+  renderPage(currentPage());
 });
 let current: Page | null = null;
 
@@ -169,7 +239,7 @@ function renderPage(id: PageId) {
   current?.leave?.();
   current = PAGES[id] ?? dashboardPage;
   try {
-    current.render(container, { store });
+    current.render(container, { store, selectDevice });
   } catch (err) {
     clear(container);
     container.append(el('p', { class: 'text-error', text: `Page failed to render: ${err instanceof Error ? err.message : String(err)}` }));
@@ -605,4 +675,9 @@ async function boot() {
   }
 }
 
-void boot();
+void boot().finally(() => {
+  mainBootComplete = true;
+  const queuedKey = queuedDeviceSelectionKey;
+  queuedDeviceSelectionKey = null;
+  if (queuedKey !== null) requestDeviceSelection(queuedKey);
+});

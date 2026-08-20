@@ -110,7 +110,12 @@ export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 // ---------------------------------------------------------------------------
 
 function supportedScalars(caps: Capabilities): string[] {
-  return CONTROL_ORDER.filter((k) => caps.ranges[k] !== undefined);
+  return CONTROL_ORDER.filter((k) => {
+    const range = caps.ranges[k];
+    // The range's units drive the card value/readout (% or W); never
+    // relabel a percent-unit power limit as watts.
+    return range !== undefined;
+  });
 }
 
 let values: Record<string, number> = {};
@@ -940,20 +945,18 @@ export const tuningPage: Page = {
     // --- M3-C-E: the OC-mode segmented toggle (near the top) ---------------
     const setMode = async (mode: OcMode): Promise<void> => {
       const live = ctx.store.get();
-      if (mode === live.ocMode) return;
+      const previousMode = live.ocMode;
+      const deviceId = live.deviceId;
+      const selectedDevice = live.devices.find((device) => device.id === deviceId) ?? null;
+      const deviceKey = selectedDevice?.deviceKey ?? null;
+      if (mode === previousMode || deviceId === null) return;
       if (mode === 'advanced') {
         // M3-C-D disclaimer: enabling Advanced warns about beyond-standard
         // limits, card/driver/PSU dependence, and the BiFrost 300 W profile.
-        // M4-B: the warning shows ONLY on the first Stock->Advanced
-        // toggle - the acceptance is persisted (advanced-mode-accepted-set),
-        // so a re-boot never re-asks. Only the toggle click reaches this
-        // code path; nothing else can enable the mode.
         let accepted = false;
         try {
           ({ accepted } = await api.advancedModeAcceptedGet());
         } catch {
-          // A read failure must not dead-click the toggle: over-warn (show
-          // the disclaimer) rather than silently doing nothing.
           accepted = false;
         }
         if (accepted !== true) {
@@ -961,27 +964,45 @@ export const tuningPage: Page = {
           if (!confirmed) return;
           try {
             await api.advancedModeAcceptedSet();
-          } catch (err) {
-            // The warning was shown; a persist failure must not block the
-            // mode change - the dialog simply re-appears on the next toggle.
+          } catch {
             toast('warn', 'Advanced OC Mode', 'The confirmation could not be saved - it will be asked again.');
           }
         }
       }
       try {
         await api.ocModeSet(mode);
-        // M3-C-E: mode change invalidated the backend caps cache - re-fetch
-        // (extended ranges appear/disappear) and let the store subscriber's
-        // onUpdate full-re-render the page via ocCapsChanged.
-        const freshCaps = await api.getCapabilities(s.deviceId as number);
-        ctx.store.set({ ocMode: mode, caps: freshCaps });
+        // Mode changes invalidate both capability ranges and the live
+        // read-back. Pair them from the same device before rendering.
+        const [freshCaps, freshState] = await Promise.all([
+          api.getCapabilities(deviceId),
+          api.getCurrentSettings(deviceId),
+        ]);
+        const current = ctx.store.get();
+        const currentDevice = current.devices.find((device) => device.id === deviceId) ?? null;
+        if (current.deviceId !== deviceId || currentDevice !== selectedDevice
+          || currentDevice?.deviceKey !== deviceKey) return;
+        ctx.store.set({ ocMode: mode, caps: freshCaps, state: freshState });
         if (mode === 'advanced') {
           toast('info', 'Advanced OC Mode enabled', 'Extended power/temperature limits are now available.');
         } else {
           toast('info', 'Advanced OC Mode disabled', 'Only Intel-standard limits are available.');
         }
       } catch (err) {
-        toast('error', 'OC mode could not be changed', err instanceof Error ? err.message : String(err));
+        // ocModeSet changes backend state before the paired reads complete.
+        // Roll it back when either read fails so the renderer and backend do
+        // not silently disagree about the active mode.
+        let rolledBack = false;
+        try {
+          await api.ocModeSet(previousMode);
+          rolledBack = true;
+        } catch {
+          // Keep the honest failure toast below; the backend may need a fresh
+          // mode read on the next normal boot.
+        }
+        const detail = err instanceof Error ? err.message : String(err);
+        toast('error', 'OC mode could not be changed', rolledBack
+          ? `${detail} (the previous mode was restored)`
+          : `${detail} (the previous mode could not be restored)`);
       }
     };
     // M4-I (E2): the compact Save-as-Profile button (btn-sm, in the mode

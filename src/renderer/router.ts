@@ -99,6 +99,7 @@ export function currentPage(): PageId {
 
 export interface PageContext {
   store: Store;
+  selectDevice?: (id: number) => void;
 }
 
 export interface Page {

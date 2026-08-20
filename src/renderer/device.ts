@@ -33,8 +33,9 @@ export interface DeviceSwitchDeps {
   onSwitched: (id: number) => void;
   /** warn toast sink (never throws). */
   warn: (title: string, message: string) => void;
+  /** Queue the latest request when a cross-window request races a switch. */
+  queueWhileInFlight?: boolean;
 }
-
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -69,16 +70,29 @@ export async function startTelemetry(
 
 
 // N10: ONE switch at a time - a second selectDevice while a switch is in
-// flight is a no-op (the in-flight switch's re-render settles the UI).
-let inFlight = false;
-
+// flight is a no-op unless the caller explicitly opts into latest-request
+// queueing (the cross-window panel path).
 export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Promise<void> {
-  return async (id: number): Promise<void> => {
-    if (inFlight) return;
+  let inFlight = false;
+  let queuedId: number | null = null;
+
+  const switchDevice = async (id: number): Promise<void> => {
+    if (inFlight) {
+      if (deps.queueWhileInFlight && Number.isInteger(id) && id >= 0) queuedId = id;
+      return;
+    }
     if (!Number.isInteger(id) || id < 0) return;
     const live = deps.store.get();
     if (id === live.deviceId) return;
-    if (!live.devices.some((d: DeviceInfo) => d.id === id)) return;
+    const selected = live.devices.find((d: DeviceInfo) => d.id === id);
+    if (!selected) return;
+    const hasUnsafeKey = typeof selected.deviceKey !== 'string' || selected.deviceKey.trim().length === 0;
+    const duplicateKey = !hasUnsafeKey
+      && live.devices.some((device) => device.id !== id && device.deviceKey === selected.deviceKey);
+    if (hasUnsafeKey || duplicateKey) {
+      deps.warn('GPU selection', 'This GPU has no unique stable identity and cannot be selected safely.');
+      return;
+    }
     const oldId = live.deviceId;
     inFlight = true;
     try {
@@ -111,33 +125,32 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
         vendorInfo = null;
       }
       // latestSample + lastApply reset: the monitoring series and the
-      // "OC working" row must never carry the OLD device's values onto the
-      // new device ('-' until the first tick / the first apply).
-      const selected = live.devices.find((d: DeviceInfo) => d.id === id);
+      // "OC working" row must never carry the OLD device's values onto
+      // the new device.
       deps.store.set({
         deviceId: id,
         caps,
         state,
         latestSample: null,
         lastApply: null,
-        // M30: noIntel describes the machine-level empty-inventory mode, not
-        // whether this selected row has overclocking controls. Synthetic
-        // AMD/NVIDIA rows stay in the normal dashboard health layout.
         noIntel: false,
-        osGpu: selected?.osController ?? null,
+        osGpu: selected.osController ?? null,
         vendorInfo,
       });
-      // Persist AFTER the session switch: a deviceSet failure (N9) keeps
-      // the in-session selection - the next boot falls back to devices[0]
-      // (or the main-side self-heal re-resolves).
+      // Persist AFTER the session switch: a deviceSet failure keeps the
+      // in-session selection; the next boot resolves the durable fallback.
       try {
-        await deps.api.deviceSet({ deviceId: id, deviceKey: selected?.deviceKey });
+        await deps.api.deviceSet({ deviceId: id, deviceKey: selected.deviceKey });
       } catch (err) {
         deps.warn('GPU selection', `The selection could not be saved - the switch stays for this session (${errText(err)})`);
       }
       deps.onSwitched(id);
     } finally {
       inFlight = false;
+      const nextId = queuedId;
+      queuedId = null;
+      if (nextId !== null) void switchDevice(nextId);
     }
   };
+  return switchDevice;
 }

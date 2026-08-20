@@ -1068,8 +1068,8 @@ export class MockBackend {
     };
 
     applyScalar('powerLimit', 'powerLimitW', settings.powerLimitW);
-    applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', settings.gpuVoltOffsetV);
     applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', settings.gpuFreqOffsetMhz);
+    applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', settings.gpuVoltOffsetV);
     applyScalar('tempLimit', 'tempLimitC', settings.tempLimitC);
     applyScalar('vramFreqOffset', 'vramFreqOffsetGts', settings.vramFreqOffsetGts);
     applyScalar('vramVoltOffset', 'vramVoltOffsetV', settings.vramVoltOffsetV);

@@ -58,6 +58,9 @@ export const DEVICE_STATE_UPDATED_CHANNEL = 'device:state-updated';
 /** M24 (Part B): the pushed post-apply GRAPHICS read-back channel (main ->
  *  renderer; { deviceId, graphicsState } - the ipc.js graphics:apply wrap). */
 export const GRAPHICS_STATE_UPDATED_CHANNEL = 'graphics:state-updated';
+/** M31: explicit panel request and main-owned atomic selection push channels. */
+export const DEVICE_SELECTION_REQUEST_CHANNEL = 'device-selection:request';
+export const DEVICE_SELECTION_UPDATED_CHANNEL = 'device-selection:updated';
 
 const SCALAR_CONTROLS = new Set([
   'powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC',
@@ -801,6 +804,9 @@ export function createIpcHandlers({
    * id is always a non-negative integer, so -1 can never collide.
    */
   const NULL_DEVICE_KEY = -1;
+  // Main-renderer selection pushes carry a monotonic session generation. This
+  // remains in memory even when deviceSet could not persist the new choice.
+  let latestMainSelectionGeneration = -1;
   /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
   let telemetryGeneration = 0;
@@ -1205,6 +1211,13 @@ export function createIpcHandlers({
         const s = await store.loadSettings();
         return { deviceId: s.deviceId, deviceKey: s.deviceKey ?? null };
       },
+      // Main-renderer selection generations survive renderer reloads in this
+      // process. The renderer handshakes before its first selection push so
+      // its local counter cannot restart below the main-owned latest value.
+      'device-selection-generation-get': async (...args) => {
+        assertNoPayload(args, 'device-selection-generation-get');
+        return { generation: latestMainSelectionGeneration };
+      },
 
       'device-set': async (selection) => {
         const isObject = typeof selection === 'object' && selection !== null;
@@ -1221,6 +1234,61 @@ export function createIpcHandlers({
         }
         await store.saveSettings({ ...cur, deviceId, deviceKey });
         return { deviceId, deviceKey };
+      },
+      // M31: panel selection requests are explicit and durable-key based.
+      // This channel only wakes the main renderer; it never owns telemetry,
+      // persistence, or a second device-set flow.
+      'device-selection-request': async (deviceKey) => {
+        if (typeof deviceKey !== 'string' || deviceKey.length === 0) {
+          throw new Error('deviceKey must be a non-empty string');
+        }
+        emit('device-selection:request', { deviceKey });
+        return { accepted: true };
+      },
+
+      'device-selection-push': async (payload) => {
+        if (!payload || typeof payload !== 'object') throw new Error('selection payload must be an object');
+        assertValidDeviceId(payload.deviceId);
+        if (payload.deviceKey !== null && typeof payload.deviceKey !== 'string') {
+          throw new Error('selection deviceKey must be a string or null');
+        }
+        if (payload.selectionGeneration !== undefined
+          && (!Number.isInteger(payload.selectionGeneration) || payload.selectionGeneration < 0)) {
+          throw new Error('selectionGeneration must be a non-negative integer');
+        }
+        if (!payload.caps || typeof payload.caps !== 'object' || !payload.state || typeof payload.state !== 'object') {
+          throw new Error('selection payload must carry caps and state');
+        }
+        const generation = payload.selectionGeneration;
+        if (generation !== undefined) {
+          if (generation <= latestMainSelectionGeneration) {
+            throw new Error('stale device selection payload');
+          }
+          // Reserve the generation before the async store read so concurrent
+          // pushes cannot both pass the initial comparison.
+          latestMainSelectionGeneration = generation;
+        }
+        // The main renderer saves the durable selection before publishing its
+        // atomic pair. A late response from an older switch must not fan out
+        // after a newer persisted selection has won. Sequenced main-renderer
+        // pushes remain valid when deviceSet could not persist the session
+        // switch; the monotonic generation is the in-memory source of truth.
+        const persisted = await store.loadSettings();
+        if (generation !== undefined && generation !== latestMainSelectionGeneration) {
+          throw new Error('stale device selection payload');
+        }
+        if (generation === undefined && persisted.deviceId !== null
+          && (persisted.deviceId !== payload.deviceId
+            || (persisted.deviceKey ?? null) !== (payload.deviceKey ?? null))) {
+          throw new Error('stale device selection payload');
+        }
+        emit('device-selection:updated', {
+          deviceId: payload.deviceId,
+          deviceKey: payload.deviceKey ?? null,
+          caps: payload.caps,
+          state: payload.state,
+        });
+        return { accepted: true };
       },
 
       'get-capabilities': async (deviceId) => {

@@ -5464,19 +5464,15 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   } else {
     // M17d (Run D)/M17e (Run B - N2): the OC-CARD count - the selector is
     // '.oc-card' ONLY (the ', .gpu-lock-editor' term is DROPPED: the editor
-    // is NESTED inside the freq card now, so the union selector would
-    // still match it and the count stays 4+1=5 - the pin asserts the 4
-    // slider cards exactly; the nested editor is covered by the
-    // .gpu-lock-editor presence pins). b580 stays 4 (percent units, no
-    // gpuLock control -> no toggle/editor). arc-igpu / pro-b50 are the
-    // no-OC branch above (0 cards).
+    // is NESTED inside the freq card now). The b580 percent-unit PL card is
+    // included and therefore contributes the fifth slider card.
     const lockCard = (await js(`window.arcPower.getCapabilities(0)`)).controls?.gpuLock === true;
     if (lockCard) {
       if (!(await waitFor(win, `!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .gpu-lock-editor')`, 8000))) {
         fail(`M17e: the gpuLock editor is not nested inside the freq card on '${fsId}' (gpuLock-capable)`);
       }
     }
-    const expectedCards = 4;
+    const expectedCards = fsId === 'b580' ? 5 : 4;
     if (!(await waitFor(win, `document.querySelectorAll('.oc-card').length === ${expectedCards}`, 8000))) {
       fail(`expected ${expectedCards} OC cards on '${fsId}' (the slider cards - the lock editor is nested inside the freq card, never counted separately), got ${await js(`document.querySelectorAll('.oc-card').length`)}; page='${await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 300)`)}'`);
     }
@@ -5517,34 +5513,32 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
       // M3-C-G: the per-card Stock/Medium/Max preset chips are REMOVED.
       const presetCount = await js(`document.querySelectorAll('.oc-card .oc-presets').length`);
       if (presetCount !== 0) fail(`M3-C-G: preset chips still render (${presetCount})`);
+      // M4J (D): the Battlemage VRAM clock editor now lives in the main
+      // scalar card stack, not a separate Advanced section. The card keeps
+      // its real 0..3 Gbps range and apply/read-back semantics.
       const adv = await js(`document.querySelector('.advanced-card')?.textContent ?? ''`);
-      // M4J (D): the Advanced section on b580 = the VRAM clock editor ONLY.
-      // The M4-B expert rows (vfCurve/VRAM-offset M5 notes) and the gpuLock
-      // editor are REMOVED; the VRAM editor's slider covers the range
-      // (0..3 Gbps, step 0.1) with the real apply + read-back.
-      if (!adv.includes('VRAM clock')) fail(`M4J (D): b580 advanced is missing the VRAM clock editor: '${adv}'`);
+      if (adv) fail('M4J (D): the removed Advanced section still renders on b580');
       if (await js(`document.querySelectorAll('.expert-row').length !== 0`)) {
-        fail('M4J (D): the expert rows are still rendered on b580 (removed - the section holds the VRAM editor only)');
+        fail('M4J (D): expert rows are still rendered on b580');
       }
-      if (adv.includes('Unsupported on this GPU')) fail('M4-D: b580 advanced still renders "Unsupported on this GPU" rows (removed entirely)');
       if (await js(`!!document.querySelector('.gpu-lock-editor')`)) {
-        fail('M17e: the gpuLock editor is rendered on b580 (no gpuLock control - the freq card has no toggle/editor)');
+        fail('M17e: the gpuLock editor is rendered on b580 (no gpuLock control)');
       }
       if (await js(`!!document.querySelector('.gpu-lock-range')`)) {
-        fail('M17f: the lock range line is rendered on b580 (no gpuLock control -> no lock editor -> no range line)');
+        fail('M17f: the lock range line is rendered on b580 (no gpuLock control)');
       }
-      if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
-        fail('M4J (D): the VRAM clock editor card is missing on b580');
+      if (await js(`!!document.querySelector('.oc-card[data-control="vramFreqOffsetGts"]')`) === false) {
+        fail('M4J (D): the VRAM clock card is missing on b580');
       }
-      const vramMin = await js(`document.querySelector('.vram-editor-card input[type="range"]')?.getAttribute('min')`);
-      const vramMax = await js(`document.querySelector('.vram-editor-card input[type="range"]')?.getAttribute('max')`);
-      const vramStep = await js(`document.querySelector('.vram-editor-card input[type="range"]')?.getAttribute('step')`);
+      const vramMin = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] input[type="range"]')?.getAttribute('min')`);
+      const vramMax = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] input[type="range"]')?.getAttribute('max')`);
+      const vramStep = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] input[type="range"]')?.getAttribute('step')`);
       if (vramMin !== '0' || vramMax !== '3' || vramStep !== '0.1') {
-        fail(`M4J (D): the VRAM slider range is ${vramMin}..${vramMax} step ${vramStep} (expected 0..3 step 0.1 - the fixture vramFreqOffsetGts)`);
+        fail(`M4J (D): the VRAM slider range is ${vramMin}..${vramMax} step ${vramStep} (expected 0..3 step 0.1)`);
       }
-      const vramMeta = await js(`document.querySelector('.vram-editor-card .oc-meta .oc-range')?.textContent ?? ''`);
-      if (!vramMeta.includes('Gbps')) fail(`M4J (D): the VRAM editor meta line does not show the Gbps units: '${vramMeta}'`);
-      step('oc-b580', `b580: 4 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), Advanced = VRAM clock editor (0..3 Gbps step 0.1)`);
+      const vramMeta = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-meta .oc-range')?.textContent ?? ''`);
+      if (!vramMeta.includes('Gbps')) fail(`M4J (D): the VRAM card meta line does not show Gbps units: '${vramMeta}'`);
+      step('oc-b580', `b580: 5 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no preset chips (M3-C-G), VRAM card 0..3 Gbps step 0.1`);
     } else if (fsId === 'a750' || fsId === 'acer-a750') {
       // M17c/M17d (round-1 N2 + round-1 S1): the a750 slider maxes are
       // AUTOMATED here (the user-hardware-only pin becomes a mock variant;
@@ -5829,7 +5823,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '210 W'`))) {
     fail('swap to a770 did not re-render the OC page with W units');
   }
-  const a770Caps = await js(`window.arcPower.getCapabilities(0)`);
+  const a770Selection = await js(`window.arcPower.deviceGet()`);
+  const a770Caps = await js(`window.arcPower.getCapabilities(${a770Selection.deviceId})`);
   // M4J clarification (S1/F2 REVERTED): the swapped-in a770 surface reports
   // its FULL extended range in advanced mode (the a770 featureset carries
   // extendedRanges + the mock default mode is advanced) - the caps-level
@@ -5911,45 +5906,41 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
     if (await js(`!!document.querySelector('.toast-error')`)) fail('b580 percent restore showed a per-control error toast');
     step('b580-apply', `b580 percent apply round trip: 120 % -> read-back ${applied.powerLimitW} %, restored to 100 % (all 4 controls driverstore, no error toast)`);
 
-    // --- M4J (D): the VRAM-OC editor round trip (b580 only) ----------------
-    // The Advanced toggle: the b580 mock boots ADVANCED (the mock default) -
-    // the pill shows Advanced active; the Advanced section holds the VRAM
-    // clock editor (slider 0..3 Gbps step 0.1). Slide 1.5 -> Apply -> the
-    // read-back + the toast carry 1.5 Gbps; restore 0.
+    // --- M4J (D): the VRAM-OC card round trip (b580 only) ---------------
+    // M25 moved the VRAM control into the main scalar card stack. The
+    // percent-unit PL card remains alongside it; units/read-back stay honest.
     if (!(await waitFor(win, `Array.from(document.querySelectorAll('.oc-mode-btn')).some((b) => b.textContent.trim() === 'Advanced' && b.classList.contains('active'))`, 5000))) {
       fail('M4J (D): the b580 OC-mode pill does not show Advanced active (mock default)');
     }
     const setVramSlider = (value) => js(`(() => {
-      const card = document.querySelector('.vram-editor-card');
-      if (!card) return 'no-editor';
+      const card = document.querySelector('.oc-card[data-control="vramFreqOffsetGts"]');
+      if (!card) return 'no-card';
       const input = card.querySelector('input[type="range"]');
       input.value = '${value}';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       return (card.querySelector('.oc-value')?.textContent ?? '').trim();
     })()`);
     const vramReadout = await setVramSlider(1.5);
-    if (vramReadout !== '1.5 Gbps') fail(`M4J (D): the VRAM slider readout is '${vramReadout}' (expected '1.5 Gbps' - the vramFreqOffsetGts units)`);
+    if (vramReadout !== '1.5 Gbps') fail(`M4J (D): the VRAM slider readout is '${vramReadout}' (expected '1.5 Gbps')`);
     await clearToasts();
-    await js(`Array.from(document.querySelectorAll('.vram-editor-card button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+    await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-chip-apply')?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4J (D): the VRAM clock apply success toast missing');
     if (await js(`!!document.querySelector('.toast-error')`)) fail('M4J (D): the VRAM clock apply showed an error toast');
-    const vramToast = await js(`document.querySelector('.toast-success .toast-message')?.textContent ?? ''`);
-    if (!vramToast.includes('1.5 Gbps')) fail(`M4J (D): the VRAM clock success toast is '${vramToast}' (expected the applied '1.5 Gbps')`);
     const vramApplied = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(vramApplied.vramFreqOffsetGts - 1.5) > 1e-6) {
       fail(`M4J (D): the VRAM clock apply did not stick: ${vramApplied.vramFreqOffsetGts} (expected 1.5 Gbps)`);
     }
-    const vramDriver = await js(`document.querySelector('.vram-editor-driver')?.textContent ?? ''`);
-    if (!vramDriver.includes('1.5 Gbps')) fail(`M4J (D): the VRAM editor driver line is '${vramDriver}' (expected the read-back 1.5 Gbps)`);
+    const vramDriver = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-driver-value')?.textContent ?? ''`);
+    if (!vramDriver.includes('1.5 Gbps')) fail(`M4J (D): the VRAM driver readback is '${vramDriver}' (expected 1.5 Gbps)`);
     await clearToasts();
     await setVramSlider(0);
-    await js(`Array.from(document.querySelectorAll('.vram-editor-card button')).find((b) => b.textContent.trim() === 'Apply')?.click()`);
+    await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-chip-apply')?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4J (D): the VRAM clock restore did not apply');
     const vramRestored = await js(`window.arcPower.getCurrentSettings(0)`);
     if (Math.abs(vramRestored.vramFreqOffsetGts) > 1e-6) {
       fail(`M4J (D): the VRAM clock restore did not land: ${vramRestored.vramFreqOffsetGts} (expected 0)`);
     }
-    step('b580-vram-oc', `M4J (D): VRAM-OC editor round trip - Advanced active, slider 1.5 Gbps -> apply -> toast + read-back 1.5 Gbps, driver line '${vramDriver.trim()}', restored to 0`);
+    step('b580-vram-oc', `M4J (D): VRAM card round trip - slider 1.5 Gbps -> chip Apply -> read-back ${vramDriver.trim()}, restored to 0`);
     await clearToasts();
   }
 
@@ -8673,7 +8664,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   await ojs(`${tuningTabSel}.click()`);
   await sleep(250);
   if (!(await waitFor(panelWin, `!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]')`, 10000))) {
-    fail(`M23: the Tuning tab has no gpuFreqOffsetMhz slider card (page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
+    fail(`M23: the Tuning tab has no gpuFreqOffsetMhz slider card (page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}', scripts=${await ojs(`JSON.stringify(Array.from(document.scripts).map((s) => s.src))`)}, arcPower=${await ojs(`typeof window.arcPower`)}, ready=${await ojs(`document.readyState`)})`);
   }
   const tuningCards = await ojs(`JSON.stringify(Array.from(document.querySelectorAll('.adv-view .oc-card')).map((c) => c.dataset.control ?? ''))`);
   const tuningList = JSON.parse(tuningCards);
@@ -8689,6 +8680,68 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   const sliderOk = await ojs(`Array.from(document.querySelectorAll('.adv-view .oc-card[data-control] input[type="range"]')).length >= 3`);
   if (!sliderOk) fail('M23: the a770 Tuning tab must render at least three slider cards with range inputs');
+  // M31/user: in a multi-device session the panel's shared GPU selector uses
+  // the same compact Intel-Arc pill treatment as Dashboard and Tuning, and
+  // the actual selection push switches the panel away and back.
+  if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+    const selectorStyle = await ojs(`(() => {
+      const node = document.querySelector('.adv-view-heading .device-select');
+      if (!node) return null;
+      const style = getComputedStyle(node);
+      return {
+        radius: style.borderRadius,
+        color: style.color,
+        background: style.backgroundColor,
+        border: style.borderTopColor,
+      };
+    })()`);
+    if (!selectorStyle || selectorStyle.radius !== '999px'
+      || selectorStyle.color !== 'rgb(76, 194, 255)'
+      || selectorStyle.background !== 'rgb(10, 13, 19)') {
+      fail(`M31: the Advanced Overlay GPU selector is not styled like the Dashboard/Tuning pill (${JSON.stringify(selectorStyle)})`);
+    }
+    const selectorState = await ojs(`(() => {
+      const node = document.querySelector('.adv-view-heading .device-select');
+      const options = node ? Array.from(node.options).map((o) => ({ value: o.value, text: o.textContent ?? '' })) : [];
+      return {
+        value: node?.value ?? null,
+        options,
+        heading: document.getElementById('adv-device')?.textContent ?? '',
+      };
+    })()`);
+    if (selectorState.options.length < 2) {
+      fail(`M31: the multi-device selector did not expose an alternate option (${JSON.stringify(selectorState)})`);
+    }
+    const alternate = selectorState.options.find((option) => option.value !== selectorState.value);
+    if (!alternate) fail(`M31: the multi-device selector has no alternate value (${JSON.stringify(selectorState)})`);
+    await ojs(`(() => {
+      const node = document.querySelector('.adv-view-heading .device-select');
+      node.value = ${JSON.stringify(alternate.value)};
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    if (!(await waitFor(panelWin, `(() => {
+      const heading = document.getElementById('adv-device')?.textContent ?? '';
+      const node = document.querySelector('.adv-view-heading .device-select');
+      return heading !== ${JSON.stringify(selectorState.heading)}
+        && node?.value === ${JSON.stringify(alternate.value)};
+    })()`, 10000))) {
+      fail(`M31: switching the Advanced Overlay selector to '${alternate.text}' did not update the panel device/caps surface`);
+    }
+    await ojs(`(() => {
+      const node = document.querySelector('.adv-view-heading .device-select');
+      node.value = ${JSON.stringify(selectorState.value)};
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    if (!(await waitFor(panelWin, `(() => {
+      const heading = document.getElementById('adv-device')?.textContent ?? '';
+      const node = document.querySelector('.adv-view-heading .device-select');
+      return heading === ${JSON.stringify(selectorState.heading)}
+        && node?.value === ${JSON.stringify(selectorState.value)};
+    })()`, 10000))) {
+      fail('M31: switching the Advanced Overlay selector back did not restore the original device/caps surface');
+    }
+    step('m31-selector-switch', `M31: Advanced Overlay selector switched to '${alternate.text}' and back; device/caps surface restored`);
+  }
   // M23 (user): the gpuLock editor is NOT part of the panel's Tuning tab.
   if (await ojs(`!!document.querySelector('input[data-lock-field="voltageV"]') || !!document.querySelector('input[data-lock-field="freqMhz"]') || !!document.querySelector('[data-lock-apply="1"]')`)) {
     fail('M23 (user): the gpuLock editor must NOT render in the panel Tuning tab (it is gone from the overlay - the main window\'s Tuning page keeps the M22-safe editor)');

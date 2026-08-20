@@ -39,8 +39,9 @@ import { api } from './ipc.ts';
 import { toast } from './components/toast.ts';
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
+import { buildDeviceSelect } from './components/device-select.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceState, GraphicsSettings, GraphicsState, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, TelemetrySample } from './types.ts';
 import { snapToRange, normalizedPosition, formatValue } from './pure/slider.ts';
 import {
   buildScalarSettings,
@@ -75,6 +76,25 @@ import {
 
 const store = new Store();
 let activeTab: 'tuning' | 'fan' | 'graphics' = 'tuning';
+
+// A selection push is the panel's ownership boundary. Every device identity
+// change advances this generation so async reads/applies from the old panel
+// cannot commit into the newly selected device.
+type PanelSelection = { deviceId: number; deviceKey: string | null; caps: Capabilities; state: DeviceState };
+let panelGeneration = 0;
+let pendingSelection: PanelSelection | null = null;
+
+function selectedDeviceKey(state: ReturnType<Store['get']>): string | null {
+  const selected = state.devices.find((device) => device.id === state.deviceId);
+  return selected?.deviceKey ?? state.caps?.deviceKey ?? null;
+}
+
+function panelIdentityMatches(deviceId: number, deviceKey: string | null, generation: number): boolean {
+  const live = store.get();
+  return generation === panelGeneration
+    && live.deviceId === deviceId
+    && selectedDeviceKey(live) === deviceKey;
+}
 
 const contentEl = document.getElementById('adv-content') as HTMLElement;
 const deviceEl = document.getElementById('adv-device') as HTMLElement;
@@ -121,20 +141,53 @@ api.onTelemetrySample((sample) => {
 // 'dirty' instead of 'applied'). Just update the store; the next tab
 // switch or explicit render picks up the fresh state.
 api.onStateUpdated((payload) => {
-  if (payload && payload.state) {
-    store.set({ state: payload.state });
-  }
+  const live = store.get();
+  // State pushes carry the originating session id; never let a read-back from
+  // another device overwrite the selected device's state.
+  if (!payload || !payload.state || payload.deviceId !== live.deviceId) return;
+  store.set({ state: payload.state });
+});
+// M31: one atomic main-owned selection push updates the panel's durable
+// selection and its matching caps/state pair. The panel never starts/stops
+// telemetry and never persists directly.
+api.onDeviceSelectionUpdated((payload) => {
+  const live = store.get();
+  const target = live.devices.find((device) => device.id === payload.deviceId
+    && (payload.deviceKey === null || device.deviceKey === payload.deviceKey));
+  const nextKey = payload.deviceKey ?? target?.deviceKey ?? payload.caps.deviceKey ?? null;
+  pendingSelection = payload;
+  if (live.deviceId !== payload.deviceId || selectedDeviceKey(live) !== nextKey) panelGeneration += 1;
+  if (!target || (live.deviceId === payload.deviceId
+    && live.caps === payload.caps && live.state === payload.state)) return;
+  store.set({
+    deviceId: payload.deviceId,
+    caps: payload.caps,
+    state: payload.state,
+    latestSample: null,
+  });
+  deviceEl.textContent = payload.caps.deviceName || target.name || 'Unknown GPU';
+  values = {};
+  applied = {};
+  applying = false;
+  tuningApplyBtn = null;
+  graphicsState = null;
+  graphicsStateGeneration = -1;
+  graphicsDraft = {};
+  graphicsApplied = {};
+  graphicsApplying = false;
+  graphicsApplyBtn = null;
+  renderTab();
 });
 
 // M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
-// onStateUpdated for the graphics surface). M24 (fix): same race as the
-// tuning handler - the panel's own graphics apply already handles state
-// updates; just update the store.
+// onStateUpdated for the graphics surface). Ignore pushes from an older
+// panel generation even when session ids are reused.
 api.onGraphicsStateUpdated((payload) => {
-  if (payload && payload.deviceId === store.get().deviceId) {
+  if (payload && payload.deviceId === store.get().deviceId && graphicsStateGeneration === panelGeneration) {
     graphicsState = payload.graphicsState;
   }
 });
+
 
 function renderReadout(sample: TelemetrySample | null): void {
   const s: Partial<TelemetrySample> = sample ?? {};
@@ -150,27 +203,51 @@ function renderReadout(sample: TelemetrySample | null): void {
 // Boot: deviceGet -> getCapabilities -> getCurrentSettings -> render
 // ---------------------------------------------------------------------------
 
-async function resolveAdvancedOverlayDeviceId(): Promise<number | null> {
+async function resolveAdvancedOverlaySelection(): Promise<{ devices: DeviceInfo[]; deviceId: number | null }> {
   let persisted: { deviceId?: number | null; deviceKey?: string | null } | null = null;
   try {
     persisted = await api.deviceGet();
   } catch {
-    return null;
+    return { devices: [], deviceId: null };
+  }
+  let devices: DeviceInfo[] = [];
+  try {
+    devices = await api.listDevices();
+  } catch {
+    return { devices, deviceId: null };
   }
   const fallback = typeof persisted?.deviceId === 'number' && persisted.deviceId >= 0
     ? persisted.deviceId
     : null;
-  try {
-    const devices = await api.listDevices();
-    return resolveBootDevice(devices, fallback, persisted?.deviceKey ?? null);
-  } catch {
-    return fallback;
-  }
+  return {
+    devices,
+    deviceId: resolveBootDevice(devices, fallback, persisted?.deviceKey ?? null),
+  };
 }
 
 async function boot(): Promise<void> {
-  const deviceId = await resolveAdvancedOverlayDeviceId();
-  store.set({ deviceId });
+  const bootGeneration = panelGeneration;
+  const selection = await resolveAdvancedOverlaySelection();
+  const pushed = pendingSelection;
+  pendingSelection = null;
+  const pushedTarget = pushed && selection.devices.find((device) => device.id === pushed.deviceId
+    && (pushed.deviceKey === null || device.deviceKey === pushed.deviceKey));
+  if (pushed && pushedTarget) {
+    store.set({
+      devices: selection.devices,
+      deviceId: pushed.deviceId,
+      caps: pushed.caps,
+      state: pushed.state,
+    });
+    deviceEl.textContent = pushed.caps.deviceName || pushedTarget.name || 'Unknown GPU';
+    renderTab();
+    return;
+  }
+  // A selection that arrived while the initial enumeration was in flight
+  // invalidates the old boot result; do not overwrite the main-owned push.
+  if (panelGeneration !== bootGeneration) return;
+  const deviceId = selection.deviceId;
+  store.set({ devices: selection.devices, deviceId });
 
   if (deviceId === null) {
     deviceEl.textContent = 'No GPU available.';
@@ -178,6 +255,7 @@ async function boot(): Promise<void> {
     return;
   }
 
+  const deviceKey = selectedDeviceKey(store.get());
   let caps: Capabilities | null = null;
   let state: DeviceState | null = null;
   try {
@@ -187,6 +265,7 @@ async function boot(): Promise<void> {
     caps = null;
     state = null;
   }
+  if (!panelIdentityMatches(deviceId, deviceKey, bootGeneration)) return;
   store.set({ caps, state });
   deviceEl.textContent = caps?.deviceName || 'Unknown GPU';
   renderTab();
@@ -230,11 +309,10 @@ document.querySelectorAll<HTMLButtonElement>('.adv-tab').forEach((t) => {
 // ---------------------------------------------------------------------------
 // Tuning tab - the scalar slider cards (incl. the EDITABLE power limit) +
 // the M22-safe lock editor + the floating Apply (Apply-button model)
-// ---------------------------------------------------------------------------
-
 // The scalar cards (the panel's set - PL IS included: editable like the
 // main Tuning page; the PL1/PL2 sysman readout rides its card's meta line).
-// Gated by caps.controls like the main Tuning page.
+// Gated by caps.controls like the main Tuning page; percent-unit PL is not a
+// wattage control and never receives a fabricated W label.
 const SCALAR_CONTROLS = ['powerLimitW', 'gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV'];
 
 let values: Record<string, number> = {};
@@ -249,19 +327,31 @@ async function renderTuning(): Promise<void> {
   const caps = s.caps;
   const state = s.state;
   const view = el('div', { class: 'adv-view tuning-view' });
+  const deviceSelect = buildDeviceSelect(store, (id) => {
+    const selected = store.get().devices.find((device) => device.id === id);
+    if (selected?.deviceKey) {
+      void api.deviceSelectionRequest(selected.deviceKey);
+    } else {
+      toast('warn', 'GPU selection unavailable', 'This GPU has no stable identity and cannot be selected safely.');
+    }
+  });
+  const tuningHeading = el('div', { class: 'adv-view-heading' }, [
+    el('p', { class: 'adv-view-title', text: 'Tuning' }),
+    ...(deviceSelect ? [deviceSelect] : []),
+  ]);
 
   if (s.deviceId === null) {
-    view.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
+    view.append(tuningHeading, el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
     contentEl.append(view);
     return;
   }
   if (!caps || !state) {
-    view.append(el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
+    view.append(tuningHeading, el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
     contentEl.append(view);
     return;
   }
   if (caps.overclockingSupported === false) {
-    view.append(el('p', { class: 'page-subtitle', text: 'Tuning is not supported on this GPU. Telemetry remains available.' }));
+    view.append(tuningHeading, el('p', { class: 'page-subtitle', text: 'Tuning is not supported on this GPU. Telemetry remains available.' }));
     contentEl.append(view);
     return;
   }
@@ -274,9 +364,12 @@ async function renderTuning(): Promise<void> {
   // Gated on the RANGE presence (the main Tuning page's supportedScalars
   // convention - caps.controls keys are the plain CONTROL names
   // (gpuFreqOffset/gpuVoltOffset/...), never the canonical range keys; a
-  // range only exists for a supported control, so the range check IS the
-  // support check and the canonical-keyed cards render).
-  const controls = SCALAR_CONTROLS.filter((key) => cardSliderRange(caps, key) !== undefined);
+  const controls = SCALAR_CONTROLS.filter((key) => {
+    const range = cardSliderRange(caps, key);
+    // The range's units drive the card value/readout (% or W); never
+    // relabel a percent-unit power limit as watts.
+    return range !== undefined;
+  });
   hiddenNegativeControls = new Set<string>();
   for (const key of controls) {
     const cur = currentState[key as keyof DeviceState];
@@ -399,6 +492,8 @@ async function renderTuning(): Promise<void> {
   const applyScalar = async (only?: string): Promise<void> => {
     const live = store.get();
     const deviceId = live.deviceId;
+    const deviceKey = selectedDeviceKey(live);
+    const generation = panelGeneration;
     if (deviceId === null || !caps) return;
     let settings;
     if (only !== undefined) {
@@ -412,10 +507,11 @@ async function renderTuning(): Promise<void> {
     }
     // M2C-C: a non-elevated product app delegates to the elevated
     // self-worker - explain BEFORE the prompt (the workerApply pattern).
-    if (live.workerApply && !live.elevated) {
+    if (live.workerApply && !live.elevated && panelIdentityMatches(deviceId, deviceKey, generation)) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }
     const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
+    if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
     if (decision === 'cancelled') {
       toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
       return;
@@ -429,11 +525,13 @@ async function renderTuning(): Promise<void> {
     setBusy(true);
     try {
       const { result, state: fresh } = await api.applySettings(deviceId, settings);
+      // A driver write is intentionally not cancelled, but its response is
+      // ignored once the panel moved to another device/generation.
+      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
       // M24 (fix): set the applied reference BEFORE store.set - the M24
       // sync push fires onStateUpdated → renderTuning() which clears +
       // rebuilds the DOM; if applied is not yet set, the rebuilt chips
-      // show 'dirty' instead of 'applied'. Setting applied first ensures
-      // the re-render picks up the correct chip state.
+      // show 'dirty' instead of 'applied'.
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) {
           const wanted = (settings as Record<string, unknown>)[key];
@@ -456,10 +554,16 @@ async function renderTuning(): Promise<void> {
       }
       if (fresh) renderTuningInPlace();
     } catch (err) {
-      toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
+      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
+        toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setBusy(false);
-      updateFloating();
+      // Selection reset the old busy state; do not touch a new panel's Apply
+      // button while balancing a stale response.
+      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
+        setBusy(false);
+        updateFloating();
+      }
     }
   };
 
@@ -502,14 +606,12 @@ async function renderTuning(): Promise<void> {
   };
 
   stack.append(
-    el('p', { class: 'adv-view-title', text: 'Tuning' }),
     ...controls.filter((k) => k !== 'powerLimitW').map(buildCard),
-    buildPlCard(),
+    ...(controls.includes('powerLimitW') ? [buildPlCard()] : []),
     tuningApplyBtn as HTMLElement,
   );
   contentEl.append(view);
-  view.append(stack);
-  updateFloating();
+  view.append(tuningHeading, stack);
 }
 
 // ---------------------------------------------------------------------------
@@ -535,20 +637,14 @@ function renderFan(): void {
 // Graphics tab - the four M8 cards (the shared option lists EXPORTED from
 // pages/graphics.ts - export, never duplicate)
 // ---------------------------------------------------------------------------
-
-let graphicsState: GraphicsState | null = null;
-let graphicsDraft: GraphicsSettings = {};
-let graphicsApplied: GraphicsSettings = {};
-let graphicsApplying = false;
-let graphicsApplyBtn: HTMLButtonElement | null = null;
-
-const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
-
 async function renderGraphics(): Promise<void> {
   clear(contentEl);
   const s = store.get();
+  const deviceId = s.deviceId;
+  const deviceKey = selectedDeviceKey(s);
+  const generation = panelGeneration;
   const view = el('div', { class: 'adv-view graphics-view' });
-  if (s.deviceId === null) {
+  if (deviceId === null) {
     view.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
     contentEl.append(view);
     return;
@@ -557,13 +653,18 @@ async function renderGraphics(): Promise<void> {
   contentEl.append(view);
   let state: GraphicsState;
   try {
-    state = await api.graphicsGet(s.deviceId);
+    state = await api.graphicsGet(deviceId);
   } catch (err) {
+    if (!panelIdentityMatches(deviceId, deviceKey, generation)
+      || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;
     clear(view);
     view.append(el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }));
     return;
   }
+  if (!panelIdentityMatches(deviceId, deviceKey, generation)
+    || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;
   graphicsState = state;
+  graphicsStateGeneration = generation;
   graphicsDraft = normalizeGraphicsSettings(state);
   graphicsApplied = {};
   graphicsApplying = false;
@@ -584,10 +685,18 @@ function graphicsOptionsOf(state: GraphicsState, key: string): string[] {
   }
 }
 
+let graphicsState: GraphicsState | null = null;
+let graphicsStateGeneration = -1;
+let graphicsDraft: GraphicsSettings = {};
+let graphicsApplied: GraphicsSettings = {};
+let graphicsApplying = false;
+let graphicsApplyBtn: HTMLButtonElement | null = null;
+
+const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
+
 function renderGraphicsCards(view: HTMLElement): void {
   const state = graphicsState;
   if (!state) return;
-  clear(view);
 
   const updateFloating = (): void => {
     if (!graphicsApplyBtn) return;
@@ -744,6 +853,8 @@ function renderGraphicsCards(view: HTMLElement): void {
   const applyGraphics = async (only?: string): Promise<void> => {
     const live = store.get();
     const deviceId = live.deviceId;
+    const deviceKey = selectedDeviceKey(live);
+    const generation = panelGeneration;
     if (deviceId === null || !graphicsState) return;
     const payload = only !== undefined
       ? (isGraphicsControlDirtyVsApplied(only, graphicsDraft, graphicsState, graphicsApplied)
@@ -759,7 +870,7 @@ function renderGraphicsCards(view: HTMLElement): void {
       return;
     }
     // The DEDICATED graphics path - NO OC waiver anywhere.
-    if (live.workerApply && !live.elevated) {
+    if (live.workerApply && !live.elevated && panelIdentityMatches(deviceId, deviceKey, generation)) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }
     graphicsApplying = true;
@@ -769,6 +880,7 @@ function renderGraphicsCards(view: HTMLElement): void {
     }
     try {
       const out = await api.graphicsApply(deviceId, payload);
+      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
       if (out.graphicsState) graphicsState = out.graphicsState;
       for (const [key, per] of Object.entries(out.perControl)) {
         if (per.ok) {
@@ -781,14 +893,18 @@ function renderGraphicsCards(view: HTMLElement): void {
       for (const key of GRAPHICS_CONTROLS) refreshChip(key);
       updateFloating();
     } catch (err) {
-      toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
-    } finally {
-      graphicsApplying = false;
-      if (graphicsApplyBtn) {
-        graphicsApplyBtn.disabled = false;
-        graphicsApplyBtn.textContent = 'Apply';
+      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
+        toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
       }
-      updateFloating();
+    } finally {
+      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
+        graphicsApplying = false;
+        if (graphicsApplyBtn) {
+          graphicsApplyBtn.disabled = false;
+          graphicsApplyBtn.textContent = 'Apply';
+        }
+        updateFloating();
+      }
     }
   };
 
@@ -806,6 +922,5 @@ function renderGraphicsCards(view: HTMLElement): void {
 
 // ---------------------------------------------------------------------------
 // Boot
-// ---------------------------------------------------------------------------
-
 void boot();
+

@@ -679,6 +679,8 @@ html, body {
   scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
 
+.page-title-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.page-title-row .device-select { min-width: 180px; }
 .page-title { margin: 0; font-size: 22px; font-weight: 700; }
 .page-subtitle { margin: -8px 0 0; color: var(--text-muted); max-width: 640px; }
 .page-actions {

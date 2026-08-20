@@ -3,8 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL } from './ipc-core.js';
-import { createStartup } from './startup.js';
+import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -87,6 +86,21 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     onAdvancedOverlaySettings,
     sysmanPowerLimits,
     emit: (channel, payload) => {
+      // Push-style selection request goes only to the main renderer. The
+      // panel never receives its own request and cannot recurse through the
+      // device-set persistence channel.
+      if (channel === DEVICE_SELECTION_REQUEST_CHANNEL) {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+        return;
+      }
+      if (channel === DEVICE_SELECTION_UPDATED_CHANNEL) {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+        const advancedOverlayWin = getAdvancedOverlayWindow();
+        if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(channel, payload);
+        return;
+      }
       // Only push-style channels cross the window boundary; request/response
       // channels return their payload via the invoke promise.
       if (channel !== 'telemetry:sample') return;
@@ -106,7 +120,13 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     },
   });
   for (const [channel, fn] of Object.entries(handlers)) {
-    ipcMain.handle(channel, async (_event, ...args) => {
+    ipcMain.handle(channel, async (event, ...args) => {
+      if (channel === 'device-selection-push') {
+        const win = getWindow();
+        if (!win || win.isDestroyed() || event.sender !== win.webContents) {
+          throw new Error('device-selection-push is restricted to the main renderer');
+        }
+      }
       const out = await fn(...args);
       // M24 (Part B): the cross-window settings sync - an apply/reset from
       // ANY renderer (the main window OR the advanced-overlay panel) pushes

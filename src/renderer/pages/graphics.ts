@@ -33,6 +33,7 @@ import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
+import { buildDeviceSelect } from '../components/device-select.ts';
 import { chipState } from '../pure/chip.ts';
 import {
   FRAME_GEN_OPTIONS,
@@ -112,6 +113,7 @@ const toggleNodes = new Map<string, HTMLSelectElement>();
 const selectNodes = new Map<string, HTMLSelectElement>();
 let viewContainer: HTMLElement | null = null;
 let currentCtx: PageContext | null = null;
+let renderGeneration = 0;
 
 // M24 (Part B): subscribe ONCE to the graphics-state push (the ADVANCED
 // overlay panel's graphics apply + any future external graphics write). On a
@@ -201,8 +203,8 @@ export const graphicsPage: Page = {
     const s = ctx.store.get();
     clear(container);
     resetPageState();
+    const generation = ++renderGeneration;
     currentCtx = ctx;
-
     // The deviceId-null guard runs FIRST (plan-review S3): on the no-Intel
     // path deviceId is null and graphics:get must NEVER be called with it
     // (assertValidDeviceId throws) - the honest answer is the Tuning-style
@@ -215,8 +217,13 @@ export const graphicsPage: Page = {
     // The page shell renders immediately; the driver state loads async (the
     // page's ONLY IPC surface - graphicsGet).
     viewContainer = el('div', { class: 'graphics-view' });
-    container.append(
+    const deviceSelect = buildDeviceSelect(ctx.store, (id) => void ctx.selectDevice?.(id));
+    const title = el('div', { class: 'page-title-row' }, [
       el('h1', { class: 'page-title', text: 'Graphics' }),
+      ...(deviceSelect ? [deviceSelect] : []),
+    ]);
+    container.append(
+      title,
       el('p', {
         class: 'page-subtitle',
         text: 'Driver-level graphics settings (the same state the Intel Graphics Software app manages). Changes apply on demand - nothing is applied until you press Apply.',
@@ -250,17 +257,32 @@ export const graphicsPage: Page = {
  *  maps (the S2 re-registration contract). */
 async function renderSettingsView(view: HTMLElement, ctx: PageContext): Promise<void> {
   const s = ctx.store.get();
-  if (s.deviceId === null) return; // the render guard already handled this
+  const deviceId = s.deviceId;
+  if (deviceId === null) return; // the render guard already handled this
+  const selected = s.devices.find((device) => device.id === deviceId);
+  const deviceKey = selected?.deviceKey ?? s.caps?.deviceKey ?? null;
+  const generation = renderGeneration;
+  const isCurrentRender = (): boolean => {
+    const live = ctx.store.get();
+    const liveSelected = live.devices.find((device) => device.id === live.deviceId);
+    return renderGeneration === generation
+      && currentCtx === ctx
+      && view.isConnected
+      && live.deviceId === deviceId
+      && (liveSelected?.deviceKey ?? live.caps?.deviceKey ?? null) === deviceKey;
+  };
   clear(view);
   view.append(el('p', { class: 'page-subtitle', text: 'Loading graphics capabilities…' }));
   let state: GraphicsState;
   try {
-    state = await api.graphicsGet(s.deviceId);
+    state = await api.graphicsGet(deviceId);
   } catch (err) {
+    if (!isCurrentRender()) return;
     clear(view);
     view.append(el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }));
     return;
   }
+  if (!isCurrentRender()) return;
   graphicsState = state;
   draft = normalizeGraphicsSettings(state);
   renderCards(view, ctx);
