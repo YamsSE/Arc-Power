@@ -185,6 +185,13 @@ api.onDeviceSelectionUpdated((payload) => {
 api.onGraphicsStateUpdated((payload) => {
   if (payload && payload.deviceId === store.get().deviceId && graphicsStateGeneration === panelGeneration) {
     graphicsState = payload.graphicsState;
+    // A push can arrive while the initial capability read is resolving or
+    // immediately after an apply. Re-enter the full graphics lifecycle so
+    // the visible panel cannot remain on its loading skeleton or stale cards.
+    // Never rebuild during the panel's own apply: the response handler owns
+    // graphicsApplied/graphicsDraft and a rebuild would erase the Applied chip
+    // before it can be observed.
+    if (activeTab === 'graphics' && !graphicsApplying) void renderGraphics();
   }
 });
 

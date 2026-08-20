@@ -191,6 +191,9 @@ html, body {
   height: 20px;
   object-fit: contain;
   flex-shrink: 0;
+  /* Explicitly draggable: inherited app-region values do not reliably make
+     the top-left corner a hit target in frameless Chromium windows. */
+  -webkit-app-region: drag;
 }
 
 /* M25: the version text next to the corner icon in the titlebar-left. */

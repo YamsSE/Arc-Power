@@ -837,6 +837,33 @@ async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = (
   // With no Sysman consumer at all, there is no companion state that could
   // remain active; ordinary and lock requests may proceed through IGCL.
   if (!sysmanPowerLimits) return { ok: true, checked: false };
+  const setter = typeof sysmanPowerLimits?.setVoltageOffset === 'function'
+    ? sysmanPowerLimits.setVoltageOffset.bind(sysmanPowerLimits)
+    : null;
+  const bestEffortZeroClear = async (reason) => {
+    if (!setter || strict) return;
+    // One bounded cleanup attempt is enough to remove a stale helper-side
+    // offset. Its result is deliberately non-authoritative: the positive
+    // IGCL write must not be blocked by an unreadable companion.
+    let timeoutId;
+    try {
+      const cleared = await Promise.race([
+        setter({ offsetV: 0 }, deviceId),
+        new Promise((resolve) => {
+          timeoutId = setTimeout(() => resolve(null), 500);
+        }),
+      ]);
+      if (cleared?.ok === true) {
+        log(`[apply] sysman voltage: best-effort stale-state clear succeeded (${reason})`);
+      } else {
+        log(`[apply] sysman voltage: best-effort stale-state clear did not verify (${reason})`);
+      }
+    } catch {
+      log(`[apply] sysman voltage: best-effort stale-state clear failed (${reason})`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
   const readWithStatus = typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function';
   let current;
   if (readWithStatus) {
@@ -851,6 +878,7 @@ async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = (
         const message = `gpuLock requires a readable Sysman voltage state before applying the zero-offset lock (${err instanceof Error ? err.message : String(err)})`;
         return { ok: false, checked: false, errorCode: 'io-failed', message };
       }
+      await bestEffortZeroClear('read threw');
       return { ok: true, checked: false };
     }
     if (status?.ok !== true) {
@@ -864,12 +892,24 @@ async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = (
       }
       // Sysman is only a companion cleanup path for ordinary non-negative
       // requests; the IGCL V2 setter remains authoritative.
+      await bestEffortZeroClear('read unavailable');
       return { ok: true, checked: false };
     }
     current = status;
   } else {
-    if (typeof sysmanPowerLimits?.readVoltageOffset !== 'function'
-      || typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
+    if (typeof sysmanPowerLimits?.readVoltageOffset !== 'function') {
+      if (strict) {
+        return {
+          ok: false,
+          checked: false,
+          errorCode: 'unsupported',
+          message: 'gpuLock requires a readable Sysman voltage state before applying the zero-offset lock',
+        };
+      }
+      await bestEffortZeroClear('read unavailable');
+      return { ok: true, checked: false };
+    }
+    if (!setter) {
       return strict
         ? {
             ok: false,
@@ -886,6 +926,7 @@ async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = (
         const message = `gpuLock requires a readable Sysman voltage state before applying the zero-offset lock (${err instanceof Error ? err.message : String(err)})`;
         return { ok: false, checked: false, errorCode: 'io-failed', message };
       }
+      await bestEffortZeroClear('read threw');
       return { ok: true, checked: false };
     }
   }
@@ -898,12 +939,15 @@ async function clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log = (
       message: 'gpuLock requires a readable Sysman voltage state before applying the zero-offset lock',
     };
   }
-  if (!current || (current.needsClear !== true
-    && (typeof current.offsetV !== 'number' || !Number.isFinite(current.offsetV) || current.offsetV >= 0))) {
+  if (!current || typeof current !== 'object' || !Number.isFinite(current.offsetV)) {
+    await bestEffortZeroClear('state unreadable');
+    return { ok: true, checked: false };
+  }
+  if (current.needsClear !== true && current.offsetV >= 0) {
     return { ok: true, checked: true };
   }
   try {
-    const cleared = await sysmanPowerLimits.setVoltageOffset({ offsetV: 0 }, deviceId);
+    const cleared = await setter?.({ offsetV: 0 }, deviceId);
     if (cleared?.ok === true) {
       log(`[apply] sysman voltage: cleared prior negative offset ${current.offsetV} V before the non-negative IGCL apply`);
       return { ok: true, checked: true };

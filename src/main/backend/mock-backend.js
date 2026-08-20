@@ -387,14 +387,15 @@ export class MockBackend {
     };
     for (const c of fs.supportedControls) controls[c] = true;
     const ranges = JSON.parse(JSON.stringify(fs.ranges));
-    // M3-C-E: the extended maxes are exposed ONLY in advanced mode - stock
-    // mode reports the standard ranges (mirrors IgclBackend). M4-F: the
-    // per-device flag (device 0: the session overlay; device 1: its own
-    // featureset - the arc-igpu is never extended-capable).
-    if (extended && this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax) {
+    // M33: the selected OC mode owns the visible W/C capability shape. The
+    // `extended` argument is the bundled-runtime capability signal only; a
+    // capable advanced range remains visible when that runtime is unavailable,
+    // so routing can refuse above-runtime values honestly instead of silently
+    // falling back to the stock slider ceiling.
+    if (this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax > 0) {
       ranges.powerLimitW.max = fs.extended.plMax;
     }
-    if (extended && this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax) {
+    if (this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax > 0) {
       ranges.tempLimitC.max = fs.extended.tlMax;
     }
     const caps = {
@@ -418,8 +419,9 @@ export class MockBackend {
       ranges,
       fan: this._buildFanCaps(fs, fanCanControl),
     };
-    // M2C-C: the bundled-2023-runtime flag - the UI exposes the extended
-    // maxes only when it is set AND the OC mode is advanced (M3-C-E).
+    // M33: the bundled-2023-runtime flag is separate from the visible
+    // capability shape. It is advertised only when the runtime is capable in
+    // the selected advanced mode; routing uses it for honest refusal.
     if (extended && this._ocMode === 'advanced') caps.extendedRanges = true;
     // M17c: the AIB-identity fields - the SAME decode the real backend
     // runs in getCapabilities (pure/aib.ts from the fixture subsystem
@@ -753,17 +755,15 @@ export class MockBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the mock mirror selects
-    // the ADVANCED shape when caps.extendedRanges is true and the STOCK
-    // shape otherwise - NOT the same row in both modes (the round-3-N3 rule
-    // FLIPS to "listed-row advanced ceiling = the app-verified KMD
-    // ceiling": A770 375/115, A750 270/115 - probe-verified 2026-08-12).
-    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
+    // M33: selected persisted OC mode owns the visible capability shape; the
+    // bundled runtime flag remains separate and only reports availability.
+    const advancedShape = this._ocMode === 'advanced';
+    const limits = deviceLimitsOf(identity, { advanced: advancedShape });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
-      // (stock 252/90, extended 315/115); a LISTED card's row is the ACTIVE
+      // (stock 252/90, advanced 315/115); a LISTED card's row is the ACTIVE
       // shape (stock or advanced - round-2 S8).
-      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
+      const row = limits.listed ? limits : defaultLimitsOf(advancedShape);
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;
         const range = caps.ranges[canonical];
