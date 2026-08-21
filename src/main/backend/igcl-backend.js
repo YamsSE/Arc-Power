@@ -2293,11 +2293,12 @@ export class IgclBackend {
       }
     };
 
-    await applyScalar('powerLimit', 'powerLimitW', 'powerLimit', settings.powerLimitW);
-    await applyScalar('tempLimit', 'tempLimitC', 'tempLimit', settings.tempLimitC);
     await applyScalar('vramFreqOffset', 'vramFreqOffsetGts', 'vramFreqOffset', settings.vramFreqOffsetGts);
     await applyScalar('vramVoltOffset', 'vramVoltOffsetV', 'vramVoltOffset', settings.vramVoltOffsetV);
 
+    // M41: Acer-compatible scalar order - VRAM stays in its historical
+    // position, then the GPU offset/lock block, followed by temperature and
+    // power (before fan and VF).
     // M17e (round-1 S1a): the LOCK/OFFSET WRITE ORDER. The driver's lock
     // and offset families genuinely fight (IN_VOLTAGE_LOCKED_MODE refuses
     // offset writes while a lock is set), so the order depends on the
@@ -2335,6 +2336,8 @@ export class IgclBackend {
       await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
       if (hasLockPair) await applyLock(settings.gpuLock);
     }
+    await applyScalar('tempLimit', 'tempLimitC', 'tempLimit', settings.tempLimitC);
+    await applyScalar('powerLimit', 'powerLimitW', 'powerLimit', settings.powerLimitW);
     await applyFan();
 
     // vfCurve write path (Battlemage; not exercised in M1 on Alchemist).

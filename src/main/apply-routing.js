@@ -1030,7 +1030,18 @@ export function isMomentaryLieCandidate(per) {
  * @returns {Promise<object>}
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
-  const { driverstore, extended } = splitByRuntime(settings, ranges, mode);
+  const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode);
+  // M41: only the explicit ADVANCED route uses the Acer phase split. The
+  // mode-less threshold fallback retains its historical single driverstore
+  // call, even when one W/C value happens to route to the bundled runtime.
+  const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
+  const fanKeys = new Set(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve']);
+  const driverstore = {};
+  const postFanDriverstore = {};
+  for (const [key, value] of Object.entries(allDriverstore)) {
+    if (hasExtendedControls && fanKeys.has(key)) postFanDriverstore[key] = value;
+    else driverstore[key] = value;
+  }
   const voltageIsVUnit = ranges === null || ranges?.gpuVoltOffsetV?.units === 'V';
 
   // M26: the backend normalizes a non-zero GPU lock to zero offsets. Do not
@@ -1072,15 +1083,16 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     }
   }
 
-  if (Object.keys(driverstore).length > 0) {
-    log(`[apply] driverstore controls: [${Object.keys(driverstore).join(', ')}] (single attempt)`);
-    const out = await applyOnce({ backend, deviceId, settings: driverstore, opts, log });
+  const applyDriverstore = async (controls) => {
+    if (Object.keys(controls).length === 0) return;
+    log(`[apply] driverstore controls: [${Object.keys(controls).join(', ')}] (single attempt)`);
+    const out = await applyOnce({ backend, deviceId, settings: controls, opts, log });
     Object.assign(perControl, out.result.perControl);
 
-    // Momentary-lie guard for the driverstore part: re-read mismatches once
+    // Momentary-lie guard for each driverstore phase: re-read mismatches once
     // after the delay. A match = the write persisted (lagging read-back);
     // still mismatched = honest fail.
-    const candidates = Object.keys(driverstore).filter((k) => isMomentaryLieCandidate(perControl[k]));
+    const candidates = Object.keys(controls).filter((k) => isMomentaryLieCandidate(perControl[k]));
     if (candidates.length > 0) {
       log(`[apply] delayed re-read for [${candidates.join(', ')}] after ${delayedVerifyMs} ms (momentary-lie guard)`);
       await sleep(delayedVerifyMs);
@@ -1088,7 +1100,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded re-read */ }
       if (state) {
         for (const key of candidates) {
-          const wanted = driverstore[key];
+          const wanted = controls[key];
           const got = state[key];
           if (typeof wanted === 'number' && typeof got === 'number' && nearlyEqual(got, wanted)) {
             log(`[apply] delayed re-read MATCHED ${key} (${got}) - write persisted`);
@@ -1097,11 +1109,16 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
         }
       }
     }
-  }
+  };
+
+  await applyDriverstore(driverstore);
 
   if (Object.keys(extended).length > 0) {
     log(`[apply] extended controls: [${Object.keys(extended).join(', ')}] via the bundled 2023 IGCL runtime`);
-    for (const [key, value] of Object.entries(extended)) {
+    // M41: the Acer path is deterministic regardless of payload key order.
+    for (const key of ['tempLimitC', 'powerLimitW']) {
+      if (!(key in extended)) continue;
+      const value = extended[key];
       // M21: the >315 sysman-PRIMARY gate - the V1 write must NEVER receive
       // a >315 value (oldIgcl.setPowerLimitW silent-clamps to
       // EXTENDED_PL_RANGE 315 and reports { ok: true, readBackEqual: true }
@@ -1140,6 +1157,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       try { await backend.restoreWaiverState(deviceId, false); } catch { /* best effort */ }
     }
   }
+  await applyDriverstore(postFanDriverstore);
 
   // M17g/M40: PL2 note tracking. Stock IGCL writes retain their historical
   // primary-V2 note. Advanced bundled V1 writes are authoritative for PL1:
