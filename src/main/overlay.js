@@ -145,12 +145,16 @@ function normalizeSettings(raw = {}) {
       }
     }
   }
+  const deviceKeys = Array.isArray(raw.deviceKeys)
+    ? [...new Set(raw.deviceKeys.filter((key) => typeof key === 'string' && key.length > 0 && key.length <= 256))]
+    : null;
   return {
     enabled: raw.enabled === true,
     position,
     scale,
     hotkeyLetter,
     color,
+    deviceKeys,
     stats,
     overlayBgEnabled: raw.overlayBgEnabled === true,
     overlayBgColor: bgColor,
@@ -309,6 +313,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
     // re-render the HUD immediately, not on the next telemetry tick).
     color: applied.color,
     stats: applied.stats,
+    deviceKeys: applied.deviceKeys,
     // M7b: the background box rides the same push - without the three
     // fields the renderer would always apply the defaults and the box
     // would never appear (the main.js applyOverlaySettings MUST forward

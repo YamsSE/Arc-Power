@@ -105,6 +105,22 @@ const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 const OVERLAY_POLL_MS_DEFAULT = 400;
 const OVERLAY_POLL_MS_MIN = 100;
 const OVERLAY_POLL_MS_MAX = 2000;
+// M35: durable overlay GPU selection uses stable PCI/BDF device keys. Null
+// means the legacy/default "monitor every enumerated GPU" behavior; an empty
+// array is normalized to null so the overlay always has a useful target.
+function normalizeOverlayDeviceKeys(v) {
+  if (!Array.isArray(v)) return null;
+  const seen = new Set();
+  const out = [];
+  for (const key of v) {
+    if (typeof key === 'string' && key.length > 0 && key.length <= 256 && !seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  return out.length > 0 ? out : null;
+}
+
 
 export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT };
 
@@ -344,15 +360,16 @@ export class ProfileStore {
         // M5: the software-overlay settings. Absent on old files -> the
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
         // absent-field mechanism, NO schema bump).
-        // M6: the color defaults to the stock white '#ffffff' and the stats
-        // to the M17g DEFAULT set (the user's 11 ON / the others OFF - the
-        // M6 full-set default FLIPS) - same absent-field mechanism.
         overlayEnabled: false,
         overlayHotkeyLetter: 'O',
         overlayPosition: 'top-left',
         overlayScale: 1.0,
+        // M6: the color defaults to the stock white '#ffffff' and the stats
+        // to the M17g DEFAULT set (the user's 11 ON / the others OFF - the
+        // M6 full-set default FLIPS) - same absent-field mechanism.
         overlayColor: OVERLAY_COLOR_DEFAULT,
         overlayStats: [...OVERLAY_STATS_DEFAULT],
+        overlayDeviceKeys: null,
         // M7b: the background box - absent -> off, black, 0.5 opacity (the
         // same absent-field mechanism, NO schema bump).
         overlayBgEnabled: false,
@@ -409,13 +426,13 @@ export class ProfileStore {
         ? data.overlayPosition
         : 'top-left',
       overlayScale: clampOverlayScale(data.overlayScale),
-      // M6: the overlay text color - a /^#[0-9a-fA-F]{6}$/ hex or the stock
-      // white default (same absent-field mechanism; a garbage value never
-      // crashes).
       overlayColor: typeof data.overlayColor === 'string'
         && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor)
         ? data.overlayColor
         : OVERLAY_COLOR_DEFAULT,
+      // M35: absent means all enumerated GPUs; a saved list is keyed by
+      // durable hardware identity rather than volatile enumeration indexes.
+      overlayDeviceKeys: normalizeOverlayDeviceKeys(data.overlayDeviceKeys),
       // M6: the enabled stat ids - known ids only, deduped; absent/garbage
       // degrades to the M17g DEFAULT set (the user's 11 ON / the others
       // OFF - the M6 full-set default FLIPS).
@@ -458,7 +475,7 @@ export class ProfileStore {
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -496,6 +513,9 @@ export class ProfileStore {
         && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor)
         ? settings.overlayColor
         : OVERLAY_COLOR_DEFAULT,
+      // M35: null retains the all-GPU default; a non-empty list persists
+      // only the user's selected durable hardware keys.
+      overlayDeviceKeys: normalizeOverlayDeviceKeys(settings.overlayDeviceKeys),
       overlayStats: normalizeOverlayStats(settings.overlayStats),
       // M7b: the background box - validated on save like the rest (the
       // channel validates first; the store fallback covers direct callers).

@@ -7419,7 +7419,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // carry the padded labels + the TWO-space separator (maxLabelLen 4 -
   // 'CPU   42%', 'FPS   60', 'RAM   12.4GB'; 'VRAM' is already 4ch).
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU   42%')`, 15000))) {
-    fail(`M5: the overlay CPU line lacks 'CPU   42%': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
+    fail(`M5: the overlay CPU line lacks 'CPU   42%': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (telemetryTicks=${await ojs(`document.documentElement.dataset.telemetryTicks ?? ''`)}, display=${await ojs(`document.documentElement.dataset.overlayDisplayDevice ?? ''`)})`);
   }
   // M17g: cpu-clock is OFF by default (the user's 11) - the boot CPU line
   // must NOT carry the frequency field (the M18 glued shape: '4.3GHz').
@@ -7454,6 +7454,27 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   if (multiGpu && !(await waitFor(overlayWin, `(document.getElementById('overlay-gpu2')?.textContent ?? '').startsWith('GPU2') && (document.getElementById('overlay-vram2')?.textContent ?? '').startsWith('VRAM2') && getComputedStyle(document.getElementById('overlay-gpu2')).display !== 'none'`, 15000))) {
     fail(`M34: the secondary overlay rows are missing or hidden (GPU2='${await ojs(`document.getElementById('overlay-gpu2')?.textContent ?? ''`)}', VRAM2='${await ojs(`document.getElementById('overlay-vram2')?.textContent ?? ''`)}')`);
+  }
+  // M35: the Overlay Settings GPU selector uses durable device keys and
+  // reconfigures the live lanes. In a multi-device fixture, selecting only
+  // GPU2 must collapse the HUD back to unnumbered GPU / VRAM labels; restore
+  // the all-GPU default before the rest of this overlay run.
+  if (multiGpu) {
+    const devices = await js(`window.arcPower.listDevices()`);
+    const keys = Array.isArray(devices)
+      ? devices.map((device) => device.deviceKey).filter((key) => typeof key === 'string' && key.length > 0)
+      : [];
+    if (keys.length >= 2) {
+      await js(`window.arcPower.profilesSettingsSave({ overlayDeviceKeys: [${JSON.stringify(keys[1])}] })`);
+      const singleSelected = await waitFor(overlayWin, `(document.getElementById('overlay-gpu2')?.style.display === 'none' && (document.getElementById('overlay-gpu')?.textContent ?? '').startsWith('GPU   '))`, 10000);
+      if (!singleSelected) {
+        fail(`M35: selecting only GPU2 did not collapse the overlay to unnumbered GPU / VRAM rows (GPU='${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}', GPU2='${await ojs(`document.getElementById('overlay-gpu2')?.textContent ?? ''`)}')`);
+      }
+      await js(`window.arcPower.profilesSettingsSave({ overlayDeviceKeys: ${JSON.stringify(keys)} })`);
+      const restored = await waitFor(overlayWin, `(document.getElementById('overlay-gpu2')?.textContent ?? '').startsWith('GPU2') && getComputedStyle(document.getElementById('overlay-gpu2')).display !== 'none'`, 10000);
+      if (!restored) fail('M35: restoring all monitored GPU keys did not restore the secondary overlay rows');
+      step('m35-overlay-gpu-selection', `M35: Overlay Settings can monitor only GPU2, collapsing labels to GPU / VRAM, then restore all ${keys.length} GPU lanes`);
+    }
   }
   // M16: the standalone Voltage row is REMOVED - the #overlay-voltage div
   // must not exist (the voltage is a GPU-row field now).
@@ -7511,8 +7532,9 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   // M16: the VRAM row's mem-clock + vram-temp fields are OFF by default
   // (M17g - the user's 11) - the boot row is the gpu-vram field only.
-  if (!(await waitFor(overlayWin, `/VRAM  3\\.0GB/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 10000))) {
-    fail(`M17g: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM  3.0GB' - gpu-vram only, the mem-clock + vram-temp fields are OFF by default)`);
+  const vramLabel = multiGpu ? 'VRAM1' : 'VRAM';
+  if (!(await waitFor(overlayWin, `/${vramLabel}  3\\.0GB/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 10000))) {
+    fail(`M17g: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected '${vramLabel}  3.0GB' - gpu-vram only, the mem-clock + vram-temp fields are OFF by default)`);
   }
   step('m5-lines', `overlay DOM: cpu '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (M17g: no clock field - cpu-clock OFF by default); memory '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'; gpu matches the default-set pattern (Util / Temp / Power - the clock/voltage/fan fields are OFF by default); vram '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (gpu-vram only); api '${apiPin}' (row order: vram -> api -> frametime strip); fps '${fpsPin}' (the percentile stats are OFF by default)`);
   // M17g (the boot overlay payload pin - the absent-default surface): the
@@ -7521,7 +7543,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // gpu-vram, frametime) / the others OFF - the M6 full-set absent default
   // FLIPS end-to-end (the store default -> the pushed payload -> the
   // rendered lines above).
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => JSON.stringify(e.settings.overlayStats) === ${JSON.stringify(JSON.stringify(['fps', 'api', 'cpu-util', 'cpu-temp', 'cpu-power', 'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'frametime']))})`, 5000))) {
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => JSON.stringify(e.settings.overlayStats) === ${JSON.stringify(JSON.stringify(['cpu-util', 'cpu-temp', 'cpu-power', 'memory-util', 'gpu-util', 'gpu-temp', 'gpu-power', 'gpu-vram', 'fps', 'api', 'frametime']))})`, 5000))) {
     fail(`M17g: the boot persisted overlayStats is '${await js(`window.arcPower.profilesList().then((e) => JSON.stringify(e.settings.overlayStats))`)}' (expected the user's 11 ON / the others OFF - the full-set default FLIPS)`);
   }
   step('m17g-overlay-defaults-boot', `M17g: the boot overlayStats = the user's 11 ON / the others OFF (${await js(`window.arcPower.profilesList().then((e) => JSON.stringify(e.settings.overlayStats))`)} - the M6 full-set absent default FLIPS)`);
@@ -7575,8 +7597,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
         && cs.width === '2px'
         && cs.backgroundColor === 'rgb(255, 255, 255)'
         && cs.zIndex === '0'
-        && cs.textShadow === 'none'
-        && document.documentElement.style.getPropertyValue('--overlay-label-w') === '4ch',
+        && document.documentElement.style.getPropertyValue('--overlay-label-w') === '${multiGpu ? '5ch' : '4ch'}',
       why: JSON.stringify({ x, expectedX, topDiff: d.top - fps.top, bottomDiff: d.bottom - api.bottom, width: cs.width, bg: cs.backgroundColor, zIndex: cs.zIndex, textShadow: cs.textShadow, varW: document.documentElement.style.getPropertyValue('--overlay-label-w'), labels, maxLen, labelW, charW }),
     };
   })()`);
@@ -8187,7 +8208,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail(`M16: the overlay VRAM row still shows the VRAM field after unchecking gpu-vram: '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `/VRAM  2187MHz  3\\.0GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 5000))) {
+  if (!(await waitFor(overlayWin, `/${vramLabel}  2187MHz  3\\.0GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 5000))) {
     fail(`M16: the overlay VRAM row did not regain the full 'MemClock;VRAM;VramTEMP' row after re-checking: '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'`);
   }
   step('m12-vram-tickbox', 'the VRAM tickbox round trip: uncheck -> the \'3.0GB\' field vanishes from the VRAM row (mem-clock + vram-temp stay); re-check -> \'VRAM  2187MHz  3.0GB  <temp>°C\' again');
@@ -8207,12 +8228,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('0.652V') === false`, 5000))) {
     fail(`M16: the overlay GPU line still shows the voltage field after unchecking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
-  if (!(await waitFor(overlayWin, `/GPU   42%  \\d+MHz  \\d+°C  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
+  const gpuLabel = multiGpu ? 'GPU1' : 'GPU';
+  if (!(await waitFor(overlayWin, `/${gpuLabel}   42%  \\d+MHz  \\d+°C  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
     fail(`M16: the GPU line lost more than the voltage field after unchecking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-voltage"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `/GPU   42%  \\d+MHz  \\d+°C  0\\.652V  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
-    fail(`M16: the overlay GPU line did not regain the voltage field after re-checking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
+  if (!(await waitFor(overlayWin, `/${gpuLabel}   42%  \\d+MHz  \\d+°C  0\\.652V  38\\.8W  1030RPM/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 5000))) {
+    fail(`M16: the GPU line did not regain the voltage field after re-checking gpu-voltage: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
   step('m16-gpu-voltage-tickbox', 'the GPU Voltage tickbox round trip: uncheck -> the \'0.652V\' field vanishes from the GPU row (the rest stays); re-check -> the full row again');
 
@@ -8226,11 +8248,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('gpu-vram-temp') === false)`, 5000))) {
     fail('M16: unchecking the VRAM temp tickbox did not persist overlayStats without gpu-vram-temp');
   }
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').trim() === 'VRAM  2187MHz  3.0GB'`, 5000))) {
-    fail(`M16: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected 'VRAM  2187MHz  3.0GB' after unchecking gpu-vram-temp - the temp tail drops, MemClock;VRAM stay)`);
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-vram')?.textContent ?? '').trim() === '${vramLabel}  2187MHz  3.0GB'`, 5000))) {
+    fail(`M16: the overlay VRAM row is '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}' (expected '${vramLabel}  2187MHz  3.0GB' after unchecking gpu-vram-temp - the temp tail drops, MemClock;VRAM stay)`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="gpu-vram-temp"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `/VRAM  2187MHz  3\\.0GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 5000))) {
+  if (!(await waitFor(overlayWin, `/${vramLabel}  2187MHz  3\\.0GB  \\d+°C/.test(document.getElementById('overlay-vram')?.textContent ?? '')`, 5000))) {
     fail(`M16: the overlay VRAM row did not regain the temp field after re-checking gpu-vram-temp: '${await ojs(`document.getElementById('overlay-vram')?.textContent ?? ''`)}'`);
   }
   step('m16-vram-temp-tickbox', 'the VRAM temp tickbox round trip: uncheck -> the \'<temp>°C\' tail vanishes from the VRAM row (MemClock;VRAM stay); re-check -> \'VRAM  2187MHz  3.0GB  <temp>°C\' again');

@@ -511,6 +511,8 @@ export interface OverlaySettings {
   /** M6: the ENABLED overlay stat ids (the canonical OVERLAY_STAT_IDS; the
    *  full set the stock default - a stat off -> its field/line vanishes). */
   stats: string[];
+  /** M35: selected overlay GPU durable keys; null means monitor all. */
+  deviceKeys: string[] | null;
   /** M7b (fix 4): the background box behind the HUD - the box is shown
    *  from overlayBgEnabled, the color/opacity become the
    *  --overlay-bg-color / --overlay-bg-opacity CSS vars (black at 0.5 the
@@ -599,6 +601,9 @@ export interface ProfileSettingsState {
    *  DEFAULT set - the user's 11 ON / the others OFF, the M6 full-set
    *  default FLIPS; same absent-field mechanism, NO schema bump). */
   overlayStats: string[];
+  /** M35: the overlay GPU selection keyed by durable hardware identity.
+   *  Null preserves the all-GPU default; an explicit list selects lanes. */
+  overlayDeviceKeys: string[] | null;
   /** M7b (fix 4): the overlay background box (absent on old files -> off /
    *  black / 0.5 opacity - the same absent-field mechanism, NO schema
    *  bump). The Appearance card's Background section persists these; the

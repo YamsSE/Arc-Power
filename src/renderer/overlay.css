@@ -86,6 +86,8 @@ body {
  #overlay-vram,
  #overlay-gpu2,
  #overlay-vram2,
+ #overlay-secondary-rows,
+ #overlay-secondary-rows .overlay-line,
  #overlay-api,
  #overlay-frametime,
  #overlay-frametime-value {

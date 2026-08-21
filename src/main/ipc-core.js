@@ -261,6 +261,26 @@ export function clampOverlayPollMs(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
   return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
 }
+/**
+ * M35: normalize the persisted overlay GPU selection. Device keys are
+ * durable PCI/BDF identities, never enumeration indexes. A missing or empty
+ * list means the backward-compatible all-GPU default.
+ * @param {unknown} v
+ * @returns {string[]|null}
+ */
+export function normalizeOverlayDeviceKeys(v) {
+  if (!Array.isArray(v)) return null;
+  const seen = new Set();
+  const out = [];
+  for (const key of v) {
+    if (typeof key === 'string' && key.length > 0 && key.length <= 256 && !seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  return out.length > 0 ? out : null;
+}
+
 
 /**
  * M6: normalize a raw overlayStats patch value - an array of KNOWN stat
@@ -2214,6 +2234,12 @@ export function createIpcHandlers({
           overlayStats: patch.overlayStats === undefined
             ? cur.overlayStats
             : normalizeOverlayStats(patch.overlayStats),
+          // M35: overlay GPU monitoring selection - null/all is the old
+          // behavior; the UI supplies durable device keys and the renderer
+          // resolves them against the current enumeration.
+          overlayDeviceKeys: patch.overlayDeviceKeys === undefined
+            ? cur.overlayDeviceKeys
+            : normalizeOverlayDeviceKeys(patch.overlayDeviceKeys),
           // M7b: the background box - enabled coerced like overlayEnabled,
           // the color REJECTS outside /^#[0-9a-fA-F]{6}$/ (the swatches +
           // the type=color input can only produce that shape), the opacity
@@ -2330,7 +2356,7 @@ export function createIpcHandlers({
         // persists but onOverlaySettings never fires and the HUD never
         // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme']) {
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

@@ -1998,6 +1998,12 @@ async function main() {
         ? settings.overlayColor
         : '#ffffff',
       stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : undefined,
+      // M35: the selected overlay GPU identities ride the same settings
+      // envelope so the renderer can restart only the requested telemetry
+      // lanes without changing the main window's device selection.
+      deviceKeys: Array.isArray(settings.overlayDeviceKeys)
+        ? settings.overlayDeviceKeys
+        : null,
       // M7b (fix 4, plan-review F2): the background box - the three fields
       // MUST be forwarded here or payload() always pushes the defaults and
       // the box never appears (a required-but-insufficient owner set would

@@ -53,7 +53,17 @@ const FRAMETIME_DRAW_POINTS = 120;
 
  let scale = 1;
  let latestSample: TelemetrySample | null = null;
+// M35: CPU/RAM telemetry remains owned by the main selected-device lane.
+// When the user monitors another GPU, its overlay lane supplies GPU fields
+// while this source keeps CPU/RAM fields populated.
+let latestCpuSource: TelemetrySample | null = null;
  // A secondary lane is keyed by the main-process device id. The primary
+// M35: selected overlay devices are durable hardware keys. Null preserves the
+// legacy all-GPU behavior; the resolved ids are refreshed on every settings
+// push so enumeration order never becomes persisted state.
+let overlayDeviceKeys: string[] | null = null;
+let overlayDevices: Array<{ id: number; name?: string; deviceKey?: string | null }> = [];
+let overlayDisplayDeviceId: number | null = null;
  // lane keeps the existing single-GPU rendering contract.
  let secondaryDeviceIds: number[] = [];
  const secondarySamples = new Map<number, TelemetrySample>();
@@ -103,6 +113,7 @@ let theme: 'classic' | 'arc' = OVERLAY_THEME_DEFAULT;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
+const extraRowsEl = document.getElementById('overlay-secondary-rows') as HTMLElement | null;
 const memoryEl = document.getElementById('overlay-memory') as HTMLElement;
 const gpuEl = document.getElementById('overlay-gpu') as HTMLElement;
 const vramEl = document.getElementById('overlay-vram') as HTMLElement;
@@ -150,6 +161,15 @@ api.onOverlaySettings((settings) => {
     '--overlay-bg-opacity',
     String(clampOverlayBgOpacity(s.overlayBgOpacity)),
   );
+  // M35: monitoring selection is a live setting. Device enumeration is
+  // fetched once at boot and reused here; a later device-selection push still
+  // re-resolves the durable keys in configureOverlayDevices.
+  overlayDeviceKeys = Array.isArray(s.deviceKeys)
+    ? s.deviceKeys.filter((key: unknown): key is string => typeof key === 'string' && key.length > 0)
+    : null;
+  if (overlayDevices.length > 0) {
+    void configureOverlayDevices(fpsDeviceId, overlayDevices);
+  }
   const backdrop = document.getElementById('overlay-backdrop');
   if (backdrop) backdrop.classList.toggle('visible', s.overlayBgEnabled === true);
   // M6: the enabled stats - an absent value means the DEFAULT set (M17g:
@@ -211,10 +231,32 @@ function numberedRow(line: string, label: 'GPU' | 'VRAM', number: number): strin
   return `${label}${number}${line.slice(label.length)}`;
 }
 
+type SecondaryRowElements = { gpu: HTMLElement; vram: HTMLElement };
+const extraRowElements: SecondaryRowElements[] = [];
+
+function ensureExtraRows(count: number): void {
+  if (!extraRowsEl) return;
+  while (extraRowElements.length < count) {
+    const gpu = document.createElement('div');
+    const vram = document.createElement('div');
+    gpu.className = 'overlay-line overlay-secondary';
+    vram.className = 'overlay-line overlay-secondary';
+    extraRowsEl.append(gpu, vram);
+    extraRowElements.push({ gpu, vram });
+  }
+  extraRowElements.forEach((row, index) => {
+    row.gpu.style.display = index < count ? 'block' : 'none';
+    row.vram.style.display = index < count ? 'block' : 'none';
+  });
+}
+
 function render(): void {
+  const displaySample = latestCpuSource
+    ? { ...latestCpuSource, ...(latestSample ?? {}) }
+    : latestSample;
   const lines = overlayLines(
-    latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
-    latestAvgFps, latestLow01Pct, latestSample?.memoryUsedBytes ?? null,
+    displaySample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
+    latestAvgFps, latestLow01Pct, displaySample?.memoryUsedBytes ?? null,
     chipNamesEnabled ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel } } : undefined,
   );
   const hasSecondary = secondaryDeviceIds.length > 0;
@@ -241,6 +283,22 @@ function render(): void {
   } else {
     gpu2El.textContent = '';
     vram2El.textContent = '';
+  }
+  ensureExtraRows(Math.max(0, secondaryDeviceIds.length - 1));
+  for (let i = 1; i < secondaryDeviceIds.length; i += 1) {
+    const row = extraRowElements[i - 1];
+    const secondary = secondarySamples.get(secondaryDeviceIds[i]) ?? null;
+    const secondaryLines = overlayLines(
+      secondary, null, stats, null, null, null, null, null,
+      secondary?.memoryUsedBytes ?? null,
+      chipNamesEnabled
+        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[i] ?? null } }
+        : undefined,
+    );
+    row.gpu.textContent = chipNamesEnabled
+      ? secondaryLines.gpuLine
+      : numberedRow(secondaryLines.gpuLine, 'GPU', i + 1);
+    row.vram.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', i + 1);
   }
   apiEl.textContent = lines.apiLine;
   // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
@@ -324,9 +382,20 @@ api.onTelemetrySample((sample) => {
   telemetryTicks += 1;
   document.documentElement.dataset.telemetryTicks = String(telemetryTicks);
   const sampleDeviceId = typeof sample.deviceId === 'number' ? sample.deviceId : null;
+  const displayId = overlayDisplayDeviceId ?? fpsDeviceId;
+  if (
+    Object.prototype.hasOwnProperty.call(sample, 'cpuUtilPct')
+    || Object.prototype.hasOwnProperty.call(sample, 'memoryUsedBytes')
+  ) {
+    latestCpuSource = sample;
+  }
   if (sampleDeviceId !== null && secondaryDeviceIds.includes(sampleDeviceId)) {
     secondarySamples.set(sampleDeviceId, sample);
-  } else if (sampleDeviceId === fpsDeviceId || (fpsDeviceId === null && sampleDeviceId === null)) {
+  } else if (
+    sampleDeviceId === displayId
+    || (displayId === null && sampleDeviceId === null)
+    || latestSample === null
+  ) {
     latestSample = sample;
   }
   render();
@@ -454,21 +523,43 @@ const overlayFpsBoot = bootFpsLoop();
 // no controllers (the real IGCL device name cuts down the same way).
 // Never throws: a failed fetch leaves the labels null -> the stock
 // 'CPU '/'GPU ' prefixes (the honest degrade).
-async function configureOverlayDevices(primaryId: number | null, devices: Array<{ id: number; name?: string }>): Promise<void> {
-  const primary = devices.find((device) => device.id === primaryId);
-  const secondary = devices.filter((device) => device.id !== primaryId);
+async function configureOverlayDevices(
+  primaryId: number | null,
+  devices: Array<{ id: number; name?: string; deviceKey?: string | null }>,
+): Promise<void> {
+  overlayDevices = devices;
+  const selected = overlayDeviceKeys
+    ? devices.filter((device) => typeof device.deviceKey === 'string' && overlayDeviceKeys!.includes(device.deviceKey))
+    : devices;
+  // A stale hardware-key list must not blank the HUD after a device swap;
+  // degrade to all currently enumerated GPUs until the user selects again.
+  const monitored = selected.length > 0 ? selected : devices;
+  const primary = monitored.find((device) => device.id === primaryId) ?? monitored[0] ?? null;
+  const mainDeviceId = primaryId;
+  overlayDisplayDeviceId = primary?.id ?? null;
+  document.documentElement.dataset.overlayDisplayDevice = String(overlayDisplayDeviceId ?? '');
+  fpsDeviceId = overlayDisplayDeviceId;
   if (primary) gpuChipLabel = chipLabelGpu(primary.name ?? null);
+  const secondary = monitored.filter((device) => device.id !== overlayDisplayDeviceId);
   secondaryDeviceIds = secondary.map((device) => device.id);
   secondaryGpuChipLabels = secondary.map((device) => chipLabelGpu(device.name ?? null));
   secondarySamples.clear();
-  try { await api.overlayTelemetryStart(secondaryDeviceIds); } catch { /* best effort */ }
+  // Keep the existing main telemetry stream as the display lane whenever
+  // possible. Start the display lane here only when the user's selection
+  // excludes the main window's device (for example, GPU2-only monitoring).
+  const overlayLaneIds = mainDeviceId === overlayDisplayDeviceId
+    ? secondaryDeviceIds
+    : monitored.map((device) => device.id);
+  try { await api.overlayTelemetryStart(overlayLaneIds); } catch { /* best effort */ }
   render();
 }
 api.onDeviceSelectionUpdated((payload) => {
   if (!payload || !Number.isInteger(payload.deviceId)) return;
-  fpsDeviceId = payload.deviceId;
   void api.listDevices()
-    .then((devices) => configureOverlayDevices(fpsDeviceId, devices))
+    .then(async (devices) => {
+      const durableId = await resolveOverlayDeviceId();
+      return configureOverlayDevices(durableId ?? payload.deviceId, devices);
+    })
     .catch(() => { /* keep the last working secondary set */ });
 });
 
@@ -477,14 +568,16 @@ async function bootNamesFetch(): Promise<void> {
     await overlayFpsBoot;
     let gpuName: unknown = null;
     let cpuName: unknown = null;
-    let devices: Array<{ id: number; name?: string }> = [];
+    let devices: Array<{ id: number; name?: string; deviceKey?: string | null }> = [];
     try { devices = await api.listDevices(); } catch { devices = []; }
-    const primaryId = fpsDeviceId ?? devices[0]?.id ?? null;
+    const primaryId = await resolveOverlayDeviceId() ?? devices[0]?.id ?? null;
     await configureOverlayDevices(primaryId, devices);
     const sysinfo = await api.sysinfo();
     const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
-    const primaryDevice = devices.find((device) => device.id === primaryId);
-    gpuName = controllers.length > 0 ? controllers[0].name : (primaryDevice?.name ?? null);
+    const primaryDevice = devices.find((device) => device.id === overlayDisplayDeviceId);
+    gpuName = controllers.length > 0 && overlayDisplayDeviceId === primaryId
+      ? controllers[0].name
+      : (primaryDevice?.name ?? null);
     cpuName = sysinfo?.cpu?.name ?? null;
     gpuChipLabel = chipLabelGpu(gpuName);
     cpuChipLabel = chipLabelCpu(cpuName);
