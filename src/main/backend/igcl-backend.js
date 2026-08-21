@@ -158,7 +158,7 @@ export class IgclBackend {
    *   allowAutoWaiver?: boolean,      // smoke/tests only - never in product paths
    *   lib?: object|null,              // injected bound lib (tests); loaded at init() otherwise
    *   findDll?: () => string|null,    // injectable discovery (tests)
-   *   extended?: { isCapable: () => Promise<boolean> },  // M2C-C bundled-2023-runtime probe
+   *   extended?: { isCapable: () => Promise<boolean>, isAvailable?: () => boolean },  // M2C-C/M41 bundled-2023-runtime probe + installed-runtime signal
    *   ocMode?: 'stock'|'advanced',    // M3-C-E: which range set getCapabilities
    *                                   // exposes (default 'stock' - the real
    *                                   // product default; mock passes advanced)
@@ -190,9 +190,9 @@ export class IgclBackend {
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
     this._extended = opts.extended ?? null;
-    // M37: the completed bundled-runtime capability probe is session state,
+    // M37/M41: the bundled-runtime availability signal is session state,
     // separate from the caps cache so cache-hit finalization uses the same
-    // result as the cold read. Start conservatively until the first probe.
+    // result as the cold read. Start conservatively until the first signal.
     this._extendedCapable = false;
     // M4-D: the VRAM provider for formatDeviceName (constructor opt - main.js
     // runs the sysinfo cache BEFORE constructing the backend, so the lookup
@@ -1122,12 +1122,15 @@ export class IgclBackend {
         // A770 and 270 W on A750) and the applicable TL ceiling; the >315 W
         // A770 range uses the sysman pair as its primary write. In stock mode
         // the extended maxes are NEVER exposed - the mode gate refuses them
-        // before any clamp. When the bundled runtime is unavailable, the
-        // finalized Advanced shape remains visible so every Alchemist card
-        // keeps its documented controls; `extendedRanges` stays false and
-        // routing refuses values that runtime cannot honor.
+        // before any clamp. When the bundled runtime is installed but the
+        // unelevated KMD probe returns ERROR_KMD_CALL, the parent still
+        // exposes this shape so the apply can delegate to the elevated
+        // worker. Missing DLLs remain unavailable and keep the refusal honest.
+        const installed = this._extended && typeof this._extended.isAvailable === 'function'
+          ? this._extended.isAvailable() === true
+          : false;
         this._extendedCapable = this._extended
-          ? await this._extended.isCapable()
+          ? installed || await this._extended.isCapable()
           : false;
         const extendedCapable = this._extendedCapable;
         // M4E: the extended concept is W/C-only (the bundled 2023 runtime

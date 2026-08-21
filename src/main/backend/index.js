@@ -11,8 +11,9 @@ import { MockBackend } from './mock-backend.js';
  *   kind 'mock' -> MockBackend (fixtures / demo / tests)
  *   kind 'igcl' -> IgclBackend (koffi -> IntelControlLib.dll)
  * IgclBackend opts (opts.igcl): dllPath / allowAutoWaiver / lib / findDll /
- *   extended - the M2C-C extended-capability probe
- *   ({ extended: { isCapable: () => oldIgcl.isCapable() } }), forwarded
+ *   extended - the M2C-C/M41 bundled-2023-runtime capability adapter
+ *   ({ extended: { isCapable: () => oldIgcl.isCapable(),
+ *                  isAvailable: () => oldIgcl.isAvailable() } }), forwarded
  *   verbatim by this factory.
  * @param {{ kind?: 'igcl'|'mock', igcl?: object, mock?: object }} opts
  * @returns {import('./backend.interface.js').IOCBackend}

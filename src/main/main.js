@@ -800,10 +800,11 @@ async function main() {
   // false (the exact shape a real AMD machine reports after the init
   // degrade); the ui-verify no-intel variant pins the whole no-device flow.
   if (mock && process.env.RID_MOCK_NO_INTEL === '1') mockOpts.noIntel = true;
-  // M2C-C S1: the real bundled-2023-runtime adapter is constructed BEFORE
-  // the backend (mock mode leaves it null - the mock adapter wraps the
-  // backend instead). The backend's extended probe consults it lazily
-  // (isCapable runs on the first caps query).
+  // M2C-C/M41 S1: the real bundled-2023-runtime adapter is constructed
+  // BEFORE the backend (mock mode leaves it null - the mock adapter wraps
+  // the backend instead). The backend's extended signal consults the adapter
+  // lazily: installed availability is enough for the parent caps, while the
+  // elevated worker performs the authoritative isCapable write probe.
   const realOldIgcl = mock ? null : new OldIgcl();
   // M17d (Run E): warm the bundled-2023-runtime probe in parallel with the
   // pre-window sequence - its load + ctlInit + enum + waiver takes hundreds
@@ -979,13 +980,13 @@ async function main() {
   // IPC, and sysman closures are created so no path can bypass its target
   // resolution or accidentally apply an OS-only adapter.
   backend = createUnifiedGpuBackend({ backend, sysinfo });
-  // M2C-C: the bundled 2023 IGCL runtime adapter (extended-range writes).
-  // Mock mode (incl. --ui-verify) uses the mock adapter - the real DLL is
-  // never loaded there. In the real path the OLD runtime is probed lazily
-  // (isCapable runs on the first extended write or caps query) and both
-  // runtimes can coexist in one process (probe-verified, §8c). S1: the real
-  // adapter is constructed BEFORE the backend so the backend's extended
-  // probe (above) can consult it - the extended ranges are wired into
+  // M2C-C/M41: the bundled 2023 IGCL runtime adapter (extended-range
+  // writes). Mock mode (incl. --ui-verify) uses the mock adapter - the real
+  // DLL is never loaded there. In the real path, installed availability
+  // informs the parent caps while the elevated worker's isCapable() probe
+  // remains authoritative for writes; both runtimes can coexist in one
+  // process (probe-verified, §8c). S1: the real adapter is constructed
+  // BEFORE the backend so its availability signal can feed
   // getCapabilities on hardware, never dead code.
   const oldIgcl = mock ? createMockOldIgcl(backend) : realOldIgcl;
   // M17f/M17i: the sysman power-limits source - the PL2 companion + the

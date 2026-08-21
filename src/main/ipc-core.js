@@ -1531,17 +1531,23 @@ export function createIpcHandlers({
         // (the future-driver degradation EXTENDED_UNAVAILABLE_MSG exists
         // for) must refuse extended values BEFORE any clamp - clamping
         // 300 W to 252 W and reporting ok:true would be a false success
-        // claim. Keyed on caps.extendedRanges (the capability probe is
-        // identical on both sides of the worker boundary), never on the
-        // mode. Same refusal envelope as the mode gate: fresh state, never
+        // claim. Same refusal envelope as the mode gate: fresh state, never
         // a defaults-restore downstream.
         // M4O: a profileApply keys the probe on the RUNTIME capability
-        // (oldIgcl.isCapable) instead of the mode-gated caps flag - the
-        // ipc-core ctx has oldIgcl; a genuinely not-capable driver (the
-        // default createNullOldIgcl) still refuses honestly.
+        // instead of the mode-gated caps flag - the ipc-core ctx has oldIgcl;
+        // a genuinely unavailable driver (the default createNullOldIgcl)
+        // still refuses honestly. M41: the unelevated parent may know that
+        // the bundled DLL is installed while isCapable() returns false with
+        // ERROR_KMD_CALL; installed availability is enough to pass this
+        // parent gate and delegate, while the worker's isCapable() probe
+        // remains authoritative for the actual write.
         let unavailableCaps = caps;
-        if (opts?.profileApply === true && oldIgcl?.isCapable) {
-          unavailableCaps = { ...caps, extendedRanges: await oldIgcl.isCapable() };
+        if (opts?.profileApply === true && oldIgcl) {
+          const installed = typeof oldIgcl.isAvailable === 'function'
+            && oldIgcl.isAvailable() === true;
+          const runtimeAvailable = installed
+            || (typeof oldIgcl.isCapable === 'function' && await oldIgcl.isCapable());
+          unavailableCaps = { ...caps, extendedRanges: runtimeAvailable };
         }
         let unavailable = extendedUnavailableRefusal(settings, unavailableCaps);
         if (!unavailable && opts?.profileApply === true && unavailableCaps.extendedRanges !== true) {

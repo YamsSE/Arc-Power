@@ -87,13 +87,11 @@ export function deviceGateThresholds(limitsKey, advanced) {
 // bundled 2023 runtime; when that runtime cannot load on the current
 // driver (the future-driver degradation EXTENDED_UNAVAILABLE_MSG exists
 // for), the clamp layer would silently cap to 252 W / 90 C and report
-// ok:true - a false success claim. The capability refusal keys on
-// caps.extendedRanges (NOT on the mode - a mode-keyed version would be
-// exactly the forbidden caps-keyed gate): the capability probe is
-// identical on both sides of the worker boundary (the worker's backend
-// derives caps from the same isCapable probe), so it is honest in every
-// process. It runs in all four apply paths AFTER getCapabilities and
-// BEFORE any clamp:
+// ok:true - a false success claim. The parent-side capability signal
+// includes an installed bundled DLL so an unelevated UI can delegate; the
+// elevated worker's backend derives caps from its authoritative isCapable()
+// probe. It runs in all four apply paths AFTER getCapabilities and BEFORE
+// any clamp:
 //   - ipc-core 'apply-settings'
 //   - apply-worker
 //   - applyProfile / apply-on-boot (boot + tray)
@@ -207,9 +205,10 @@ export const EXTENDED_UNAVAILABLE_MSG =
  * splitByRuntime never sees the value, so EXTENDED_UNAVAILABLE_MSG is
  * unreachable). The check is unit-aware (M2D): percent-unit ranges
  * (Battlemage mock) are never extended values. Keyed on the CAPABILITY,
- * never the mode - the capability probe is identical on both sides of the
- * worker boundary, so this is a capability refusal, not the caps-keyed
- * mode gate the plan forbids.
+ * never the mode - parent caps may use installed-runtime availability so an
+ * unelevated apply can delegate, while the elevated worker's caps use its
+ * authoritative isCapable() probe. This remains a capability refusal, not
+ * the caps-keyed mode gate the plan forbids.
  * @param {Record<string, unknown>} settings
  * @param {{ extendedRanges?: boolean, ranges?: Record<string, { units?: string }> } | null | undefined} caps
  * @returns {{ controls: string[], message: string } | null}
@@ -1352,11 +1351,12 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   // check is honest on both sides of the worker boundary. The refusal is a
   // config/capability refusal: the fresh state is read back (the device was
   // never touched) and no defaults-restore fallback runs downstream.
-  // M4O: a profileApply keys this safety net on the RUNTIME capability
-  // (oldIgcl.isCapable) instead of the mode-gated caps.extendedRanges - the
-  // callers (applyProfile / the ipc-core profileApply path) gate first;
-  // this is belt-and-suspenders for direct callers. Without it the
-  const extendedCapable = opts.profileApply === true && oldIgcl
+  // M4O/M41: the profileApply and interactive safety nets both use the
+  // authoritative runtime probe whenever an adapter exists.  Installed-DLL
+  // presence is only a parent-side delegation signal; it must never prove
+  // in-process write capability.  Keep the caps fallback for null/test
+  // adapters that intentionally omit the runtime seam.
+  const extendedCapable = oldIgcl
     ? await oldIgcl.isCapable()
     : caps.extendedRanges === true;
   const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: extendedCapable });

@@ -215,16 +215,20 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // Same refusal classification as the mode gate: no defaults-restore
   // fallback, the live OC state survives, and the tray balloon is the
   // reason-specific refusal (fallbackApplied stays undefined).
-  // M4O: the gate keys on the RUNTIME capability, NOT the mode-gated
+  // M4O: the gate keys on the RUNTIME being available, NOT the mode-gated
   // caps.extendedRanges flag - the backends only set that flag in advanced
   // mode, so in stock mode it is false even when the bundled 2023 runtime
-  // IS capable (the second blocker in the report). The true probe is
-  // oldIgcl.isCapable() (mock: createMockOldIgcl -> backend.extendedCapable
-  // - the RAW featureset flag, mode-independent). A genuinely not-capable
-  // driver still refuses honestly with EXTENDED_UNAVAILABLE_MSG.
-  const extendedCapable = oldIgcl ? await oldIgcl.isCapable() : caps.extendedRanges === true;
-  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable });
-  if (!unavailable && !extendedCapable) {
+  // IS capable (the second blocker in the report). M41: the unelevated
+  // parent may see an installed DLL while isCapable() returns false with
+  // ERROR_KMD_CALL; installed availability is enough to delegate to the
+  // elevated worker. A genuinely missing/unavailable runtime still refuses
+  // honestly, while the worker's own isCapable() write probe remains final.
+  const extendedAvailable = oldIgcl
+    ? ((typeof oldIgcl.isAvailable === 'function' && oldIgcl.isAvailable() === true)
+      || (typeof oldIgcl.isCapable === 'function' && await oldIgcl.isCapable()))
+    : caps.extendedRanges === true;
+  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedAvailable });
+  if (!unavailable && !extendedAvailable) {
     // M17d (Run D - the V1-call pin): a profile apply is advanced-gated, so
     // its W/C values route through the bundled 2023 runtime (V1) REGARDLESS
     // of value (the mode-based split). On a driver where that runtime cannot
@@ -263,6 +267,16 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // refused value would never degrade). Gate refusals (ocModeRefused /
   // extendedUnavailable) never record (config refusals, not driver
   // ceiling refusals).
+  const normalizeResult = (out) => {
+    const result = out?.result;
+    // The elevated worker keeps capability refusals on the OUTER envelope.
+    // Fold that marker into the local result used by the shared failure path,
+    // without mutating or reshaping the in-process envelope.
+    if (out?.extendedUnavailable === true && result && typeof result === 'object') {
+      return { ...result, extendedUnavailable: true };
+    }
+    return result;
+  };
   const recordRefusals = (result) => {
     if (!result || typeof result !== 'object') return;
     if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
@@ -279,8 +293,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // worker's in-memory flag matches what the user accepted. M3-C-E: it
       // carries the persisted ocMode so the worker's gate keys on the real
       // mode (its own caps always report extendedRanges). M4O: it carries
-      // profileApply:true so the worker skips the STOCK gate (the profile
-      // is the user's own deliberate state) while keeping the ceiling
+      // profileApply:true so the worker skips the STOCK gate (the
+      // profile is the user's own deliberate state) while keeping the ceiling
       // refusal (>315 W never silently clamps).
       const out = await applyRunner.apply({
         deviceId: deviceId_,
@@ -292,8 +306,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         // M17d (Run D): the runner request carries the APPLY MODE (the same
         // value ocModeRefusal received here - OC_MODE_ADVANCED: a profile
         // applies as saved, so its W/C values route through the V1 runtime
-        // per the V1-call pin; the interactive slider gate never applies to
-        // profile applies).
+        // per the V1-call pin; the interactive slider gate never applies
+        // to profile applies).
         ocMode: OC_MODE_ADVANCED,
         profileApply: true,
         // M17c (step-4 N6): the parent-resolved limits-key rides the worker
@@ -302,14 +316,16 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         // finalized caps carry the laptop branch).
         limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
       });
-      recordRefusals(out.result);
-      return out;
+      const result = normalizeResult(out);
+      recordRefusals(result);
+      return result === out.result ? out : { ...out, result };
     }
     // M4O: opts.profileApply:true - executeApply clamps against the
     // driver's TRUE limits (extendedRangesFor) instead of the mode-gated
     // caps.ranges (stock max 252 would silently reduce a saved 300 W
-    // profile) and keys its safety-net capability refusal on the runtime
-    // probe (oldIgcl.isCapable) instead of caps.extendedRanges.
+    // profile). Its in-process/worker safety-net still uses the actual
+    // oldIgcl.isCapable() write probe; the parent gate above uses installed
+    // availability so an unelevated profile can delegate first.
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
@@ -321,7 +337,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   let state = null;
   try {
     let out = await attempt(caps.waiverAccepted === true);
-    result = out.result;
+    result = normalizeResult(out);
     state = out.state;
     // M4-D: the apply answered waiver-not-set while the persisted acceptance
     // is true (settings.json - the user's permanent consent). Silently
@@ -340,7 +356,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
           await backend.setWaiverAccepted(deviceId_);
         }
         out = await attempt(true);
-        result = out.result;
+        result = normalizeResult(out);
         state = out.state;
       } catch (err) {
         log(`[apply-on-boot] waiver re-set failed: ${err.message} - falling through to the honest failure path`);
@@ -378,6 +394,16 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // elevation refusal in dev, a driver refusal in the product). The honest
   // balloon is the caller's job; the ELEVATED logon applies come from the
   // ArcPowerBootApply task (--boot-apply mode, M4-E).
+  if (result.extendedUnavailable === true) {
+    log('[apply-on-boot] worker reported extended capability unavailable - NO defaults restore');
+    return {
+      applied: false,
+      reason: EXTENDED_UNAVAILABLE_MSG,
+      result,
+      state,
+      extendedUnavailable: true,
+    };
+  }
   if (skipDefaultsFallback) {
     log('[apply-on-boot] boot variant (applyRunner-less, in-process): apply failed - defaults-restore fallback SKIPPED (an app-start apply must never wipe live OC state over a failure; logon applies run elevated via the ArcPowerBootApply task)');
     return {
