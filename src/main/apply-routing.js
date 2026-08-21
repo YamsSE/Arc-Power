@@ -1142,41 +1142,25 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     }
   }
 
-  // M17g: THE V2 COMPANION + the pl2Note (the PL2-on-advanced fix + the
-  // PL1/PL2 read-out's tracking source). After BOTH routed blocks have
-  // run + verified, the companion issues ONE best-effort V2 write of the
-  // same value so the burst (PL2) domain follows the advanced-mode apply
-  // (the V1 write sets PL1 only - the 180 W mystery). The pl2Note rides
-  // the envelope for EVERY W-unit powerLimitW apply in BOTH modes:
-  //   - STOCK: the primary V2 write's verdict is the note ('landed: true' -
-  //     both limits landed per the stock-path behavior; the perControl
-  //     ok already verified it). The companion NEVER fires in stock mode
-  //     (the driverstore block itself wrote the value - a perControl-only
-  //     gate would fire a REDUNDANT second V2 write on every stock apply);
-  //   - ADVANCED: the companion verdict (landed / refused -> the ceiling
-  //     note with ceilingW = the DriverStore ceiling).
-  // The emission gate is precise: ONLY when `typeof settings.powerLimitW
-  // === 'number'` AND the units gate holds (the mirror of the sysman gate
-  // below - the b580 percent device never emits) AND the IGCL write
-  // verified (a failed PL1 write never lands a companion write that leaves
-  // the pair inconsistent, and never feeds a dishonest '(set)').
-  // THE ORDER IS PINNED: the V2 companion runs FIRST, the M17f sysman
-  // companion SECOND (both best-effort, both write the same burst value;
-  // the sysman's sustained write is idempotent with the V1 write - either
-  // order is correct, one is pinned so the implementer never invents a
-  // dependency).
+  // M17g/M40: PL2 note tracking. Stock IGCL writes retain their historical
+  // primary-V2 note. Advanced bundled V1 writes are authoritative for PL1:
+  // the official pair marks PL2 verified, while scalar compatibility leaves
+  // PL2 unknown. The known PL1-only V2 companion is never run after an
+  // advanced bundled write; the Sysman companion below remains independent
+  // and may replace the note only after its own pair read-back.
   const plUnits = ranges?.powerLimitW?.units;
   const wUnits = plUnits === undefined || plUnits === 'W';
   let pl2Note = null;
   if (typeof settings.powerLimitW === 'number' && wUnits && perControl.powerLimitW?.ok === true) {
     if (extended.powerLimitW !== undefined) {
-      // ADVANCED: the V2 companion (the gate rides ALL FOUR apply paths
-      // for free: in-process runApply, the elevated worker, boot,
-      // profile). POWERLIMIT-ONLY - tempLimitC never rides the companion.
-      // The note is built in the PINNED shape order ({ landed, ceilingW?,
-      // valueW } - round-2 N2) so the envelope pins can deepEqual it.
-      const verdict = await runV2Companion({ backend, deviceId, requestedW: settings.powerLimitW, opts, log, limitsKey });
-      pl2Note = { landed: verdict.landed, ...(verdict.ceilingW !== undefined ? { ceilingW: verdict.ceilingW } : {}), valueW: settings.powerLimitW };
+      // Bundled V1 writes are authoritative for PL1. A paired result verifies
+      // PL2; the scalar compatibility result leaves PL2 unknown. Never run
+      // the known PL1-only V2 companion after either bundled V1 write.
+      pl2Note = {
+        landed: perControl.powerLimitW.pairedReadBack === true,
+        valueW: settings.powerLimitW,
+        ...(perControl.powerLimitW.pairedReadBack === true ? {} : { unknown: true }),
+      };
     } else {
       // STOCK: the primary V2 write's verdict (the perControl ok already
       // verified it - both limits landed per the stock-path behavior).

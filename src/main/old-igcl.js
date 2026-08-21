@@ -8,15 +8,19 @@
 // writes 280/300/315 W and 100/110/115 C - SUCCESS and PERSISTED (verified
 // live on this machine, 2026-08-05, docs/igcl-integration.md §8c).
 //
-// This module is the ONLY product-code consumer of that DLL. It uses the V1
-// fixed-unit setters (ctlOverclockPowerLimitSet = mW,
-// ctlOverclockTemperatureLimitSet = C), the 2023-era init args (Size 36,
-// Version 0, AppVersion MAKE_VERSION(1,0), CTL_INIT_FLAG_USE_LEVEL_ZERO,
-// zero UID) and the 2023-era properties struct (ctl_oc_properties_old_t).
+// This module is the ONLY product-code consumer of that DLL. Power writes use
+// the official V1 power-domain pair (ctlPowerSetLimits: sustained + burst)
+// when the complete surface is present and unambiguous; the scalar
+// ctlOverclockPowerLimitSet mW setter is retained for incomplete, absent, or
+// ambiguous compatibility runtimes. Temperature remains the scalar V1 C
+// setter. All paths use the 2023-era init args (Size 36, Version 0,
+// AppVersion MAKE_VERSION(1,0), CTL_INIT_FLAG_USE_LEVEL_ZERO, zero UID) and
+// the 2023-era properties struct (ctl_oc_properties_old_t).
 //
 // Verification lesson (the momentary lie): non-elevated OC writes return
-// SUCCESS with a momentary read-back match and then revert. Every setter
-// here therefore ALWAYS re-reads once after ~400 ms before reporting ok -
+// SUCCESS with a momentary read-back match and then revert. Result fields
+// include `bundledPowerLimit` and `pairedReadBack` for routed PL2 verification.
+// Every setter here therefore ALWAYS re-reads once after ~400 ms before reporting ok -
 // an immediate match is never trusted on this runtime (the lie's shape is
 // match-then-revert); a delayed match is a real persisted write, a mismatch
 // (immediate or delayed) is an honest per-control failure. The DriverStore
@@ -33,7 +37,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, loadIgcl, makeVersion, describeResult,
+  CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, CTL_POWER_LIMITS_SIZE,
+  loadIgcl, makeVersion, describeResult,
 } from './backend/igcl-bindings.js';
 import { igclErrorCode } from './backend/backend.interface.js';
 import { clampAndSnap, nearlyEqual, deviceHardwareKey, sortDevicesDiscreteFirst } from './backend/units.js';
@@ -157,6 +162,9 @@ export class OldIgcl {
     this._devices = [];
     this._identityAvailable = false;
     this._waivedDevices = new Set();
+    // M40: power-domain handles belong to the selected adapter and are
+    // enumerated lazily only when the official V1 symbols are present.
+    this._powerDomains = new Map();
     this._setQueue = Promise.resolve();
     this._capable = null; // tri-state: null = unknown
     this._lastError = null;
@@ -334,7 +342,9 @@ export class OldIgcl {
       // multiple handles, an unbound property API cannot prove even id 0 is
       // the main-backend primary, so refuse before any native write.
       if (!this._identityAvailable && this._devices.length > 1) return null;
-      return this._devices[0] ?? null;
+      const selected = this._devices[0] ?? null;
+      if (selected) this._device = selected.handle;
+      return selected;
     }
     // A keyed request is identity-sensitive. Older bundled runtimes without
     // ctlGetDeviceProperties cannot prove which raw handle is the target.
@@ -357,6 +367,139 @@ export class OldIgcl {
     if (res !== CTL_RESULT.SUCCESS) return null;
     const raw = koffi.decode(buf, 'double');
     return control === 'powerLimitW' ? mwToW(raw) : raw;
+  }
+  _powerDomainSymbolCount() {
+    const names = ['ctlEnumPowerDomains', 'ctlPowerGetLimits', 'ctlPowerSetLimits'];
+    const unavailable = new Set(Array.isArray(this._lib?.unavailable) ? this._lib.unavailable : []);
+    return names.filter((name) => typeof this._lib?.[name] === 'function' && !unavailable.has(name)).length;
+  }
+
+
+  _readPowerLimits(domain) {
+    try {
+      const buf = koffi.alloc('ctl_power_limits_t', 1);
+      koffi.encode(buf, 'ctl_power_limits_t', { Size: CTL_POWER_LIMITS_SIZE, Version: 0 });
+      const res = this._lib.ctlPowerGetLimits(domain, buf);
+      if (res !== CTL_RESULT.SUCCESS) return null;
+      const limits = koffi.decode(buf, 'ctl_power_limits_t');
+      return {
+        limits,
+        sustainedW: mwToW(Number(limits.sustainedPowerLimit.power)),
+        burstW: mwToW(Number(limits.burstPowerLimit.power)),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  _ensurePowerDomain(selected) {
+    const adapter = selected?.handle ?? selected;
+    if (this._powerDomains.has(adapter)) return this._powerDomains.get(adapter);
+    const countBuf = koffi.alloc('uint32', 1);
+    koffi.encode(countBuf, 'uint32', 0);
+    let res = this._lib.ctlEnumPowerDomains(adapter, countBuf, null);
+    if (res !== CTL_RESULT.SUCCESS) {
+      throw new Error(`IGCL power-domain enumeration failed: ${describeResult(res)}`);
+    }
+    const count = koffi.decode(countBuf, 'uint32');
+    if (count !== 1) {
+      const err = new Error(`IGCL power-domain enumeration returned ${count} domains; an unambiguous domain is required`);
+      err.code = 'ambiguous-domain';
+      throw err;
+    }
+    const list = koffi.alloc('void*', count);
+    koffi.encode(countBuf, 'uint32', count);
+    res = this._lib.ctlEnumPowerDomains(adapter, countBuf, list);
+    if (res !== CTL_RESULT.SUCCESS) {
+      throw new Error(`IGCL power-domain enumeration fill failed: ${describeResult(res)}`);
+    }
+    const domain = koffi.decode(list, 0, 'void*');
+    if (!domain) throw new Error('IGCL power-domain enumeration returned a NULL domain handle');
+    this._powerDomains.set(adapter, domain);
+    return domain;
+  }
+
+  async _setPowerLimitPairLocked(target, selected) {
+    let domain;
+    try {
+      domain = this._ensurePowerDomain(selected);
+    } catch (err) {
+      return {
+        ok: false,
+        errorCode: err?.code === 'ambiguous-domain' ? 'ambiguous-domain' : 'io-failed',
+        readBackEqual: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const current = this._readPowerLimits(domain);
+    if (!current) {
+      return {
+        ok: false,
+        errorCode: 'io-failed',
+        readBackEqual: false,
+        message: 'extended power limit: current power-domain limits read failed',
+      };
+    }
+    const payload = {
+      Size: CTL_POWER_LIMITS_SIZE,
+      Version: Number(current.limits.Version) || 0,
+      sustainedPowerLimit: {
+        ...current.limits.sustainedPowerLimit,
+        enabled: true,
+        power: wToMw(target),
+      },
+      burstPowerLimit: {
+        ...current.limits.burstPowerLimit,
+        enabled: true,
+        power: wToMw(target),
+      },
+      // Keep both peak fields exactly as returned by the driver.
+      peakPowerLimits: { ...current.limits.peakPowerLimits },
+    };
+    const buf = koffi.alloc('ctl_power_limits_t', 1);
+    koffi.encode(buf, 'ctl_power_limits_t', payload);
+    let setRes;
+    try {
+      setRes = this._lib.ctlPowerSetLimits(domain, buf);
+    } catch (err) {
+      return {
+        ok: false,
+        errorCode: 'io-failed',
+        readBackEqual: false,
+        message: `IGCL power-domain set failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (setRes !== CTL_RESULT.SUCCESS) {
+      return {
+        ok: false,
+        errorCode: igclErrorCode(setRes) ?? 'io-failed',
+        readBackEqual: false,
+        message: `IGCL ${describeResult(setRes)}`,
+      };
+    }
+    // Keep the existing momentary-lie guard: perform an immediate read, then
+    // delay and require BOTH sustained (PL1) and burst (PL2) to match.
+    this._readPowerLimits(domain);
+    await this._sleep(this._delayedVerifyMs);
+    const readBack = this._readPowerLimits(domain);
+    const sustainedOk = readBack !== null && nearlyEqual(readBack.sustainedW, target);
+    const burstOk = readBack !== null && nearlyEqual(readBack.burstW, target);
+    if (sustainedOk && burstOk) {
+      return {
+        ok: true,
+        readBackEqual: true,
+        pairedPowerLimit: true,
+        pairedReadBack: true,
+      };
+    }
+    return {
+      ok: false,
+      errorCode: 'io-failed',
+      readBackEqual: false,
+      message: readBack === null
+        ? 'extended power limit: set succeeded but power-domain read-back failed'
+        : `extended power limit: read-back PL1 ${readBack.sustainedW} / PL2 ${readBack.burstW} != requested ${target}`,
+    };
   }
 
 
@@ -398,6 +541,20 @@ export class OldIgcl {
     }
     const range = control === 'powerLimitW' ? EXTENDED_PL_RANGE : EXTENDED_TL_RANGE;
     const target = clampAndSnap(value, range);
+    // M40: a complete V1 power-domain surface writes PL1 + PL2 together.
+    // Any missing symbol (including an entirely absent surface) or an
+    // ambiguous domain selection uses the scalar compatibility setter. Once
+    // enumeration identifies exactly one domain, native get/set failures
+    // remain hard failures and never fall back to scalar PL1.
+    if (control === 'powerLimitW') {
+      const symbolCount = this._powerDomainSymbolCount();
+      if (symbolCount === 3) {
+        const pair = await this._setPowerLimitPairLocked(target, selected);
+        if (pair.errorCode !== 'ambiguous-domain') return pair;
+        // An ambiguous domain is not safe to target; use the established
+        // primary scalar path for runtimes that expose no unique domain.
+      }
+    }
     const setFn = control === 'powerLimitW' ? this._lib.ctlOverclockPowerLimitSet : this._lib.ctlOverclockTemperatureLimitSet;
     const igclValue = control === 'powerLimitW' ? wToMw(target) : target;
     const setRes = setFn(this._device, igclValue);
@@ -413,7 +570,9 @@ export class OldIgcl {
     await this._sleep(this._delayedVerifyMs);
     const readBack = this._read(control);
     if (readBack !== null && nearlyEqual(readBack, target)) {
-      return { ok: true, readBackEqual: true };
+      return control === 'powerLimitW'
+        ? { ok: true, readBackEqual: true, bundledPowerLimit: true, pairedPowerLimit: false }
+        : { ok: true, readBackEqual: true };
     }
     const label = control === 'powerLimitW' ? 'power limit' : 'temperature limit';
     return {
@@ -451,5 +610,6 @@ export class OldIgcl {
     }
     this._apiHandle = null;
     this._device = null;
+    this._powerDomains.clear();
   }
 }
