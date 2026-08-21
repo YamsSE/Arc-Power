@@ -190,6 +190,10 @@ export class IgclBackend {
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
     this._extended = opts.extended ?? null;
+    // M37: the completed bundled-runtime capability probe is session state,
+    // separate from the caps cache so cache-hit finalization uses the same
+    // result as the cold read. Start conservatively until the first probe.
+    this._extendedCapable = false;
     // M4-D: the VRAM provider for formatDeviceName (constructor opt - main.js
     // runs the sysinfo cache BEFORE constructing the backend, so the lookup
     // is available at enumeration time; setVramBytesOf re-formats an already
@@ -1126,9 +1130,10 @@ export class IgclBackend {
         // on this driver an elevated probe returns ERROR_KMD_CALL, and V1
         // writes above the DriverStore 90 C ceiling fail. Expose only values
         // the selected apply path can actually honor.
-        const extendedCapable = this._extended
+        this._extendedCapable = this._extended
           ? await this._extended.isCapable()
           : false;
+        const extendedCapable = this._extendedCapable;
         // M4E: the extended concept is W/C-only (the bundled 2023 runtime
         // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
         // must never be overwritten with the 315 W / 115 C maxes nor flip
@@ -1332,10 +1337,10 @@ export class IgclBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // Advanced mode selects the documented KMD ceiling shape. The separate
-    // extendedRanges flag still reports whether the bundled runtime probe
-    // succeeded, so apply routing can refuse values the runtime cannot honor.
-    const advancedShape = this._ocMode === 'advanced';
+    // Advanced device-limit rows are usable only after the bundled runtime
+    // capability probe succeeds. The result is recorded on the instance by
+    // the cold capability read and intentionally reused on cache hits.
+    const advancedShape = this._ocMode === 'advanced' && this._extendedCapable === true;
     const limits = deviceLimitsOf(identity, { advanced: advancedShape });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
@@ -1359,9 +1364,8 @@ export class IgclBackend {
             // 0.230); the store merge below is the only downward force.
             next = { ...next, max: override.max };
           } else if (advancedShape) {
-            // Advanced W/C controls expose the documented KMD ceiling even
-            // when the bundled V1 runtime is unavailable. The apply route
-            // reports that capability refusal instead of silently clamping.
+            // Advanced W/C controls expose the documented KMD ceiling only
+            // when the bundled runtime is capable of honoring it.
             next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };

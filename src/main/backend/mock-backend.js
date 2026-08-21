@@ -387,15 +387,14 @@ export class MockBackend {
     };
     for (const c of fs.supportedControls) controls[c] = true;
     const ranges = JSON.parse(JSON.stringify(fs.ranges));
-    // M33: the selected OC mode owns the visible W/C capability shape. The
-    // `extended` argument is the bundled-runtime capability signal only; a
-    // capable advanced range remains visible when that runtime is unavailable,
-    // so routing can refuse above-runtime values honestly instead of silently
-    // falling back to the stock slider ceiling.
-    if (this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax > 0) {
+    // M37: advanced W/C rows are visible only when the bundled runtime is
+    // capable. The `extended` argument is the recorded probe result, not
+    // merely a separate refusal signal.
+    const advancedShape = this._ocMode === 'advanced' && extended === true;
+    if (advancedShape && ranges.powerLimitW && fs.extended?.plMax > 0) {
       ranges.powerLimitW.max = fs.extended.plMax;
     }
-    if (this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax > 0) {
+    if (advancedShape && ranges.tempLimitC && fs.extended?.tlMax > 0) {
       ranges.tempLimitC.max = fs.extended.tlMax;
     }
     const caps = {
@@ -403,9 +402,8 @@ export class MockBackend {
       // Mirror the real backend's stable identity so the old-runtime mock
       // and the real apply route exercise the same target contract.
       deviceKey,
-      // M33 fix: expose the selected mode separately from runtime availability
-      // so the renderer can keep Advanced ceilings visible when the bundled
-      // runtime is unavailable.
+      // M33 fix: expose the selected mode separately from runtime
+      // availability; advanced W/C ceilings require a capable runtime.
       ocMode: this._ocMode,
       // M4-B step-4 F1: the VRAM suffix is formatted HERE too (not only in
       // _buildDevice) - every dialog (boot waiver, apply-time waiver,
@@ -759,9 +757,10 @@ export class MockBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M33: selected persisted OC mode owns the visible capability shape; the
-    // bundled runtime flag remains separate and only reports availability.
-    const advancedShape = this._ocMode === 'advanced';
+    // M37: advanced device-limit rows are usable only when the bundled
+    // runtime capability probe succeeded; `extendedRanges` records that
+    // completed result on the cached caps shape.
+    const advancedShape = this._ocMode === 'advanced' && caps.extendedRanges === true;
     const limits = deviceLimitsOf(identity, { advanced: advancedShape });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
