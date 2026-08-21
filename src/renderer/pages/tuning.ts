@@ -1453,12 +1453,17 @@ export const tuningPage: Page = {
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
     const s = ctx.store.get();
+    // M37: when the extended runtime is unavailable, Stock and Advanced
+    // intentionally expose the same standard ranges. The capability surface
+    // therefore does not change on a mode flip, but the OC-mode pill still
+    // must re-render to reflect the persisted selection.
+    const modeChanged = lastRenderedCaps?.ocMode !== s.ocMode;
     // M3-C-F: a mode toggle / featureset swap changed the capability
     // SURFACE - full re-render (ranges/units change; the in-place refresh
     // cannot). Content comparison: the page's own post-apply caps re-set
     // ({ ...caps, waiverAccepted }) is NOT a surface change. The re-render
     // keeps the current sub-view (module-level `view`).
-    if (ocCapsChanged(lastRenderedCaps, s.caps)) {
+    if (modeChanged || ocCapsChanged(lastRenderedCaps, s.caps)) {
       tuningPage.render(container, ctx);
       return;
     }
