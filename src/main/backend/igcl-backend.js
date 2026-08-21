@@ -1116,20 +1116,16 @@ export class IgclBackend {
         // now lives in the pure device-limits table and is applied by
         // _finalizeCaps AFTER the extended-ranges block below.
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
-        // this driver AND the OC mode is advanced (M3-C-E), report the FULL
-        // range (PL max 375 W - M21: the sysman-primary ceiling; the >315 W
-        // range applies through the sysman pair mechanism, live-verified
-        // 2026-08-15; TL max 115 C - min/default stay
-        // the DriverStore values) + the extendedRanges flag. The UI exposes
-        // those maxes; applies above the DriverStore clamp route to the
-        // 2023 runtime (apply-routing.js) - and above 315 W to the sysman
-        // pair as the primary write. In stock mode the extended maxes
-        // are NEVER exposed - the mode gate refuses them before any clamp.
-        // The extended setter path is available only when this process can
-        // initialize the bundled runtime. DLL presence alone is insufficient:
-        // on this driver an elevated probe returns ERROR_KMD_CALL, and V1
-        // writes above the DriverStore 90 C ceiling fail. Expose only values
-        // the selected apply path can actually honor.
+        // this Alchemist driver and OC mode is advanced (M3-C-E), expose the
+        // W/C extended path. The per-card device-limits table below selects
+        // each Alchemist SKU's documented PL ceiling (for example 375 W on
+        // A770 and 270 W on A750) and the applicable TL ceiling; the >315 W
+        // A770 range uses the sysman pair as its primary write. In stock mode
+        // the extended maxes are NEVER exposed - the mode gate refuses them
+        // before any clamp. When the bundled runtime is unavailable, the
+        // finalized Advanced shape remains visible so every Alchemist card
+        // keeps its documented controls; `extendedRanges` stays false and
+        // routing refuses values that runtime cannot honor.
         this._extendedCapable = this._extended
           ? await this._extended.isCapable()
           : false;
@@ -1309,17 +1305,13 @@ export class IgclBackend {
    * M17c: the device-scoped caps finalize - runs AFTER the cache read on
    * BOTH getCapabilities paths (the cache-hit path and the cold path):
    *   1. the per-device limits table (pure/device-limits.ts): the listed
-   *      rows' per-control { max, step } overrides (the A770 volt 0.234 +
-   *      step 0.001, the per-AIB PL ceilings, the TL 90 caps, the A750
-   *      unclamp) + the default row for UNLISTED cards (252/90 stock,
-   *      315/115 extended - today's pins exactly, so no stock-mode gap
-   *      opens between the slider and the apply gates). Driver props stay
-   *      the runtime authority; the table only caps to documented ceilings
-   *      (PL/TL maxes apply as min-caps) - EXCEPT the volt maxes, which
-   *      are the LIVE-PROBE ceiling pins (the M15 both-directions
-   *      semantics scoped to the A770: a props under-report of 0.230 is
-   *      raised to the 0.234 ceiling; the session store merge below can
-   *      still degrade it). Percent-unit ranges (Battlemage) are never
+   *      rows' per-control { max, step } overrides for the Alchemist family
+   *      (A770 voltage/PL/TL, A750 per-AIB stock PL plus advanced PL/TL,
+   *      A380/A310 card ceilings) plus the default row for unlisted cards
+   *      (252/90 stock, 315/115 extended). Driver props stay the runtime
+   *      authority; the table only caps to documented ceilings (PL/TL maxes
+   *      apply as min-caps) - except the voltage maxes, which are the
+   *      live-probe ceiling pins. Percent-unit ranges (Battlemage) are never
    *      touched (the M4-E rule).
    *   2. the session refused-ceiling store merge (mergeIntoRanges -
    *      NEVER raises; a refused apply's degraded ceiling caps the max +
@@ -1337,10 +1329,11 @@ export class IgclBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // Advanced device-limit rows are usable only after the bundled runtime
-    // capability probe succeeds. The result is recorded on the instance by
-    // the cold capability read and intentionally reused on cache hits.
-    const advancedShape = this._ocMode === 'advanced' && this._extendedCapable === true;
+    // The OC mode selects the visible KMD/device-limit shape independently
+    // from the bundled-runtime capability signal. `extendedRanges` remains
+    // the honest apply-routing signal; an unavailable runtime must refuse an
+    // out-of-runtime value, not hide the Advanced mode's documented ceiling.
+    const advancedShape = this._ocMode === 'advanced';
     const limits = deviceLimitsOf(identity, { advanced: advancedShape });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
@@ -1364,8 +1357,9 @@ export class IgclBackend {
             // 0.230); the store merge below is the only downward force.
             next = { ...next, max: override.max };
           } else if (advancedShape) {
-            // Advanced W/C controls expose the documented KMD ceiling only
-            // when the bundled runtime is capable of honoring it.
+            // Advanced W/C controls expose the documented KMD ceiling;
+            // `extendedRanges` separately decides whether out-of-runtime
+            // applies are accepted by the selected routing path.
             next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };

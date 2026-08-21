@@ -32,12 +32,11 @@ import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } f
 // under the packaged Electron - Node 22.21 type stripping).
 import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
 // M17c/M17d: the per-device limits table - the MOCK mirrors the real
-// backend's getCapabilities finalize (step-4 N1) with the STOCK/ADVANCED
-// SPLIT (round-1 S1): the listed rows' ceilings per ACTIVE shape (the
-// stock per-AIB maxes + the TL 90 caps; the advanced per-card KMD ceilings
-// - a770 375/115, a750 270/115 - the A750 TL probe-verified 2026-08-12;
-// the round-3-N3 rule flipped) so the mock
-// slider never offers a window the real caps refuse.
+// backend's getCapabilities finalize (step-4 N1) for the Alchemist family
+// (A770/A750/A380/A310) with the STOCK/ADVANCED split. Advanced rows keep
+// each card's documented extended PL/TL ceiling visible even if the
+// bundled-runtime capability flag is false; routing still refuses values
+// that runtime cannot honor.
 import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
 // M17e: the listed-card lockRange fallback table (the mock mirrors the real
 // backend's caps-level fallback when the fixture carries no lockRange row
@@ -387,10 +386,10 @@ export class MockBackend {
     };
     for (const c of fs.supportedControls) controls[c] = true;
     const ranges = JSON.parse(JSON.stringify(fs.ranges));
-    // M37: advanced W/C rows are visible only when the bundled runtime is
-    // capable. The `extended` argument is the recorded probe result, not
-    // merely a separate refusal signal.
-    const advancedShape = this._ocMode === 'advanced' && extended === true;
+    // M33: the selected OC mode owns the visible W/C capability shape. The
+    // `extended` argument remains the bundled-runtime capability signal;
+    // routing refuses values above that runtime when it is unavailable.
+    const advancedShape = this._ocMode === 'advanced';
     if (advancedShape && ranges.powerLimitW && fs.extended?.plMax > 0) {
       ranges.powerLimitW.max = fs.extended.plMax;
     }
@@ -402,8 +401,8 @@ export class MockBackend {
       // Mirror the real backend's stable identity so the old-runtime mock
       // and the real apply route exercise the same target contract.
       deviceKey,
-      // M33 fix: expose the selected mode separately from runtime
-      // availability; advanced W/C ceilings require a capable runtime.
+      // M33: expose the selected mode separately from runtime availability
+      // so the renderer keeps Advanced ceilings visible when routing degrades.
       ocMode: this._ocMode,
       // M4-B step-4 F1: the VRAM suffix is formatted HERE too (not only in
       // _buildDevice) - every dialog (boot waiver, apply-time waiver,
@@ -757,10 +756,9 @@ export class MockBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M37: advanced device-limit rows are usable only when the bundled
-    // runtime capability probe succeeded; `extendedRanges` records that
-    // completed result on the cached caps shape.
-    const advancedShape = this._ocMode === 'advanced' && caps.extendedRanges === true;
+    // M33: selected persisted OC mode owns the visible capability shape;
+    // the bundled-runtime flag remains separate and reports availability.
+    const advancedShape = this._ocMode === 'advanced';
     const limits = deviceLimitsOf(identity, { advanced: advancedShape });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
