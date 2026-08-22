@@ -44,26 +44,6 @@ export const ZES_OVERCLOCK_DOMAIN = {
   128: 'VRAM',
   256: 'ADM',
 };
-// Official zes_overclock_domain_t values. Keep the reverse-name map above for
-// diagnostics, but use these numeric constants whenever selecting a domain.
-export const ZES_OVERCLOCK_DOMAIN_CARD = 1;
-export const ZES_OVERCLOCK_DOMAIN_PACKAGE = 2;
-export const ZES_OVERCLOCK_DOMAIN_GPU_ALL = 4;
-export const ZES_OVERCLOCK_DOMAIN_GPU_RENDER_COMPUTE = 8;
-export const ZES_OVERCLOCK_DOMAIN_GPU_RENDER = 16;
-export const ZES_OVERCLOCK_DOMAIN_GPU_COMPUTE = 32;
-export const ZES_OVERCLOCK_DOMAIN_GPU_MEDIA = 64;
-export const ZES_OVERCLOCK_DOMAIN_VRAM = 128;
-export const ZES_OVERCLOCK_DOMAIN_ADM = 256;
-export const ZES_GPU_OVERCLOCK_DOMAIN_PRIORITY = Object.freeze([
-  ZES_OVERCLOCK_DOMAIN_GPU_ALL,
-  ZES_OVERCLOCK_DOMAIN_GPU_RENDER_COMPUTE,
-  ZES_OVERCLOCK_DOMAIN_GPU_RENDER,
-  ZES_OVERCLOCK_DOMAIN_GPU_COMPUTE,
-  ZES_OVERCLOCK_DOMAIN_GPU_MEDIA,
-]);
-
-export const ZES_OVERCLOCK_CONTROL_VF = 1;
 
 // zes_overclock_control_t - bitmask values.
 export const ZES_OVERCLOCK_CONTROL = {
@@ -96,7 +76,7 @@ export const ZES_CONTROL_STATE = {
   3: 'STATE_DISABLED',
 };
 
-// zes_overclock_mode_t / zes_oc_mode_t
+// zes_overclock_mode_t
 export const ZES_OVERCLOCK_MODE = {
   0: 'MODE_OFF',
   2: 'MODE_STOCK',
@@ -104,16 +84,6 @@ export const ZES_OVERCLOCK_MODE = {
   4: 'MODE_UNAVAILABLE',
   5: 'MODE_DISABLED',
 };
-// zes_oc_mode_t (legacy frequency OC ABI).
-export const ZES_OC_MODE = { OFF: 0, OVERRIDE: 1, INTERPOLATIVE: 2, FIXED: 3 };
-export const ZES_STRUCTURE_TYPE_OVERCLOCK_PROPERTIES = 0x29;
-
-// zes_vf_type_t and zes_vf_array_type_t (zes_api.h v1.32).
-export const ZES_VF_TYPE = { VOLT: 0, FREQ: 1 };
-export const ZES_VF_ARRAY_TYPE = { USER: 0, DEFAULT: 1, LIVE: 2 };
-
-// zes_vf_property_t is six doubles (min/max/step/ref/default/current).
-export const ZES_VF_PROPERTY_SIZE = 48;
 
 export function bitmaskNames(mask, map) {
   const names = [];
@@ -246,180 +216,11 @@ const zes_power_peak_limit_t = koffi.struct('zes_power_peak_limit_t', {
 const zes_overclock_properties_t = koffi.struct('zes_overclock_properties_t', {
   stype: 'uint32',
   pNext: 'void*',
-  domainType: 'uint32',
+  domainType: 'int32',
   AvailableControls: 'uint32',
   VFProgramType: 'uint32',
   NumberOfVFPoints: 'uint32',
 });
-
-// zes_vf_property_t { MinFreq, MaxFreq, StepFreq, MinVolt, MaxVolt, StepVolt } = 48 bytes.
-const zes_vf_property_t = koffi.struct('zes_vf_property_t', {
-  MinFreq: 'double',
-  MaxFreq: 'double',
-  StepFreq: 'double',
-  MinVolt: 'double',
-  MaxVolt: 'double',
-  StepVolt: 'double',
-});
-
-// The validation-result block changed names between old loaders and v1.32.
-// Do not infer an era from a raw result: callers must query the driver version.
-export const ZE_RESULT_NAME_LEGACY = Object.freeze({ ...ZE_RESULT_NAME });
-
-// v1.32 uses the official core/sysman ranges plus this complete validation
-// block. Do not inherit the legacy 0x780000xx meanings: those names belonged
-// to a different header and would mislabel (for example) 0x78000002.
-export const ZE_RESULT_NAME_V132 = Object.freeze({
-  0x00000000: 'SUCCESS',
-  0x00000001: 'NOT_READY',
-  0x70000001: 'ERROR_DEVICE_LOST',
-  0x70000002: 'ERROR_OUT_OF_HOST_MEMORY',
-  0x70000003: 'ERROR_OUT_OF_DEVICE_MEMORY',
-  0x70000004: 'ERROR_MODULE_BUILD_FAILURE',
-  0x70000005: 'ERROR_MODULE_LINK_FAILURE',
-  0x70000006: 'ERROR_DEVICE_REQUIRES_RESET',
-  0x70000007: 'ERROR_DEVICE_IN_LOW_POWER_STATE',
-  0x7ff00001: 'EXP_ERROR_DEVICE_IS_NOT_VERTEX',
-  0x7ff00002: 'EXP_ERROR_VERTEX_IS_NOT_DEVICE',
-  0x7ff00003: 'EXP_ERROR_REMOTE_DEVICE',
-  0x7ff00004: 'EXP_ERROR_OPERANDS_INCOMPATIBLE',
-  0x7ff00005: 'EXP_RTAS_BUILD_RETRY',
-  0x7ff00006: 'EXP_RTAS_BUILD_DEFERRED',
-  0x70010000: 'ERROR_INSUFFICIENT_PERMISSIONS',
-  0x70010001: 'ERROR_NOT_AVAILABLE',
-  0x70020000: 'ERROR_DEPENDENCY_UNAVAILABLE',
-  0x70020001: 'WARNING_DROPPED_DATA',
-  0x78000001: 'ERROR_UNINITIALIZED',
-  0x78000002: 'ERROR_UNSUPPORTED_VERSION',
-  0x78000003: 'ERROR_UNSUPPORTED_FEATURE',
-  0x78000004: 'ERROR_INVALID_ARGUMENT',
-  0x78000005: 'ERROR_INVALID_NULL_HANDLE',
-  0x78000006: 'ERROR_HANDLE_OBJECT_IN_USE',
-  0x78000007: 'ERROR_INVALID_NULL_POINTER',
-  0x78000008: 'ERROR_INVALID_SIZE',
-  0x78000009: 'ERROR_UNSUPPORTED_SIZE',
-  0x7800000a: 'ERROR_UNSUPPORTED_ALIGNMENT',
-  0x7800000b: 'ERROR_INVALID_SYNCHRONIZATION_OBJECT',
-  0x7800000c: 'ERROR_INVALID_ENUMERATION',
-  0x7800000d: 'ERROR_UNSUPPORTED_ENUMERATION',
-  0x7800000e: 'ERROR_UNSUPPORTED_IMAGE_FORMAT',
-  0x7800000f: 'ERROR_INVALID_NATIVE_BINARY',
-  0x78000010: 'ERROR_INVALID_GLOBAL_NAME',
-  0x78000011: 'ERROR_INVALID_KERNEL_NAME',
-  0x78000012: 'ERROR_INVALID_FUNCTION_NAME',
-  0x78000013: 'ERROR_INVALID_GROUP_SIZE_DIMENSION',
-  0x78000014: 'ERROR_INVALID_GLOBAL_WIDTH_DIMENSION',
-  0x78000015: 'ERROR_INVALID_KERNEL_ARGUMENT_INDEX',
-  0x78000016: 'ERROR_INVALID_KERNEL_ARGUMENT_SIZE',
-  0x78000017: 'ERROR_INVALID_KERNEL_ATTRIBUTE_VALUE',
-  0x78000018: 'ERROR_INVALID_MODULE_UNLINKED',
-  0x78000019: 'ERROR_INVALID_COMMAND_LIST_TYPE',
-  0x7800001a: 'ERROR_OVERLAPPING_REGIONS',
-  0x7800001b: 'WARNING_ACTION_REQUIRED',
-  0x7800001c: 'ERROR_INVALID_KERNEL_HANDLE',
-  0x7800001d: 'EXT_RTAS_BUILD_RETRY',
-  0x7800001e: 'EXT_RTAS_BUILD_DEFERRED',
-  0x7800001f: 'EXT_ERROR_OPERANDS_INCOMPATIBLE',
-  0x78000020: 'ERROR_SURVIVABILITY_MODE_DETECTED',
-  0x78000021: 'ERROR_ADDRESS_NOT_FOUND',
-  0x78000022: 'QUERY_TRUE',
-  0x78000023: 'QUERY_FALSE',
-  0x78000024: 'ERROR_INVALID_GRAPH',
-  0x78000025: 'ERROR_GRAPH_CAPTURE_UNSUPPORTED',
-  0x78000026: 'ERROR_GRAPH_CAPTURE_INVALIDATED',
-  0x78000027: 'ERROR_GRAPH_CAPTURE_MERGE_ATTEMPT',
-  0x78000028: 'ERROR_COMMAND_LIST_NOT_CAPTURING',
-  0x78000029: 'ERROR_GRAPH_UNJOINED_FORKS',
-  0x7800002a: 'ERROR_GRAPH_INTERNAL_EVENT',
-  0x7ffffffe: 'ERROR_UNKNOWN',
-});
-
-/** Encode the ze_api_version_t value used by ZE_MAKE_VERSION(major, minor). */
-export function zeApiVersion(major, minor) {
-  return (((major >>> 0) & 0xffff) << 16) | ((minor >>> 0) & 0xffff);
-}
-
-/**
- * Select result names only for a confirmed API version. Unknown/unavailable
- * versions intentionally retain no map so raw codes cannot be mislabelled.
- */
-export function selectZeResultMap(apiVersion) {
-  const version = Number.isInteger(apiVersion) ? (apiVersion >>> 0) : null;
-  if (version !== null) {
-    const major = version >>> 16;
-    const minor = version & 0xffff;
-    if (major > 1 || (major === 1 && minor >= 17)) {
-      return { apiVersion: version, major, minor, known: true, names: ZE_RESULT_NAME_V132 };
-    }
-    if (major === 1 && minor >= 0) {
-      return { apiVersion: version, major, minor, known: true, names: ZE_RESULT_NAME_LEGACY };
-    }
-  }
-  return { apiVersion: version, major: null, minor: null, known: false, names: null };
-}
-
-export function describeZeResultWithMap(code, resultMap) {
-  const c = code >>> 0;
-  const hex = `0x${c.toString(16).padStart(8, '0')}`;
-  const name = resultMap?.known && resultMap.names ? resultMap.names[c] : null;
-  return `${name ?? 'UNKNOWN'} (${hex})`;
-}
-// M26: frequency domain structs (deprecated Level Zero frequency OC APIs,
-// pinned to the live A770 driver's mV boundary). Every [in] struct field
-// (stype, pNext, and all others) is initialized before calls.
-
-// zes_freq_properties_t = 48 bytes (the probe-verified layout on the live
-// A770 driver; the driver uses `type` with ZES_DOMAIN_TYPE_GPU = 0).
-const zes_freq_properties_t = koffi.struct('zes_freq_properties_t', {
-  stype: 'uint32',
-  pNext: 'void*',
-  type: 'int32',
-  onSubdevice: 'uint8',
-  subdeviceId: 'uint32',
-  canControl: 'uint8',
-  isThrottleEventSupported: 'uint8',
-  min: 'double',
-  max: 'double',
-});
-
-// zes_freq_state_t = 64 bytes (the probe-verified layout).
-const zes_freq_state_t = koffi.struct('zes_freq_state_t', {
-  stype: 'uint32',
-  pNext: 'void*',
-  currentVoltage: 'double',
-  request: 'double',
-  tdp: 'double',
-  efficient: 'double',
-  actual: 'double',
-  throttleReasons: 'uint32',
-});
-
-// zes_oc_capabilities_t = 80 bytes (the probe-verified layout).
-const zes_oc_capabilities_t = koffi.struct('zes_oc_capabilities_t', {
-  stype: 'uint32',
-  pNext: 'void*',
-  isOcSupported: 'uint8',
-  maxFactoryDefaultFrequency: 'double',
-  maxFactoryDefaultVoltage: 'double',
-  maxOcFrequency: 'double',
-  minOcVoltageOffset: 'double',
-  maxOcVoltageOffset: 'double',
-  maxOcVoltage: 'double',
-  isTjMaxSupported: 'uint8',
-  isIccMaxSupported: 'uint8',
-  isHighVoltModeCapable: 'uint8',
-  isHighVoltModeEnabled: 'uint8',
-  isExtendedModeSupported: 'uint8',
-  isFixedModeSupported: 'uint8',
-});
-
-// M26: the structure type tag values for [in] initialization (zes_api.h
-// v1.32.0). Every frequency OC struct is initialized with its stype + null
-// pNext before the driver call.
-export const ZES_STRUCTURE_TYPE_FREQ_PROPERTIES = 0x9;
-export const ZES_STRUCTURE_TYPE_FREQ_STATE = 0x1b;
-export const ZES_STRUCTURE_TYPE_OC_CAPABILITIES = 0x1c;
-export const ZES_DOMAIN_TYPE_GPU = 0;
 
 // zes_control_property_t { 5 x double } = 40
 const zes_control_property_t = koffi.struct('zes_control_property_t', {
@@ -435,11 +236,7 @@ const EXPECTED_SIZES = {
   zes_power_burst_limit_t: 8,
   zes_power_peak_limit_t: 8,
   zes_overclock_properties_t: 32,
-  zes_vf_property_t: 48,
   zes_control_property_t: 40,
-  zes_freq_properties_t: 48,
-  zes_freq_state_t: 64,
-  zes_oc_capabilities_t: 80,
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -502,7 +299,6 @@ export function loadSysman(dllPath) {
   // Core (ze_api.h)
   bind('zeInit', 'uint32', ['uint32']); // ze_init_flags_t
   bind('zeDriverGet', 'uint32', ['uint32*', 'void**']); // ze_driver_handle_t*
-  bind('zeDriverGetApiVersion', 'uint32', ['void*', 'uint32*']); // (driver, ze_api_version_t*)
   bind('zeDeviceGet', 'uint32', ['void*', 'uint32*', 'void**']); // (driver, count, ze_device_handle_t*)
 
   // Sysman (zes_api.h)
@@ -520,32 +316,20 @@ export function loadSysman(dllPath) {
 
   // Overclock control values (domain handle based)
   bind('zesOverclockGetDomainProperties', 'uint32', ['void*', 'zes_overclock_properties_t*']);
-  bind('zesOverclockGetDomainVFProperties', 'uint32', ['void*', 'zes_vf_property_t*']);
   bind('zesOverclockGetDomainControlProperties', 'uint32', ['void*', 'int32', 'zes_control_property_t*']);
   bind('zesOverclockGetControlCurrentValue', 'uint32', ['void*', 'int32', 'double*']);
   bind('zesOverclockSetControlUserValue', 'uint32', ['void*', 'int32', 'double', 'int32*']); // zes_pending_action_t*
-  bind('zesOverclockGetVFPointValues', 'uint32', ['void*', 'int32', 'int32', 'uint32', 'uint32*']);
-  bind('zesOverclockSetVFPointValues', 'uint32', ['void*', 'int32', 'uint32', 'uint32']);
+
+  // VF curve point values (zes_api.h - not exposed by IGCL but may be
+  // available via Sysman directly on some drivers)
+  bind('zesOverclockGetVFPointValues', 'uint32', ['void*', 'uint32*', 'void*']); // (device, count*, points)
+  bind('zesOverclockSetVFPointValues', 'uint32', ['void*', 'uint32', 'void*']); // (device, count, points*)
 
   // Power domains + limits
   bind('zesDeviceEnumPowerDomains', 'uint32', ['void*', 'uint32*', 'void**']);
   bind('zesDeviceGetCardPowerDomain', 'uint32', ['void*', 'void**']);
   bind('zesPowerGetLimits', 'uint32', ['void*', 'zes_power_sustained_limit_t*', 'zes_power_burst_limit_t*', 'zes_power_peak_limit_t*']);
   bind('zesPowerSetLimits', 'uint32', ['void*', 'zes_power_sustained_limit_t*', 'zes_power_burst_limit_t*', 'zes_power_peak_limit_t*']);
-
-  // M26: frequency domain + OC voltage-target bindings (optional - callers
-  // degrade per-symbol when the driver's ze_loader.dll lacks them). These
-  // are the deprecated Level Zero frequency OC APIs whose live A770 driver
-  // boundary is integer millivolts despite the public header's volts
-  // wording.
-  bind('zesDeviceEnumFrequencyDomains', 'uint32', ['void*', 'uint32*', 'void**']);
-  bind('zesFrequencyGetProperties', 'uint32', ['void*', 'zes_freq_properties_t*']);
-  bind('zesFrequencyGetState', 'uint32', ['void*', 'zes_freq_state_t*']);
-  bind('zesFrequencyOcGetCapabilities', 'uint32', ['void*', 'zes_oc_capabilities_t*']);
-  bind('zesFrequencyOcGetVoltageTarget', 'uint32', ['void*', 'double*', 'double*']);
-  bind('zesFrequencyOcSetVoltageTarget', 'uint32', ['void*', 'double', 'double']);
-  bind('zesFrequencyOcGetMode', 'uint32', ['void*', 'int32*']);
-  bind('zesFrequencyOcSetMode', 'uint32', ['void*', 'int32']);
 
   return fn;
 }

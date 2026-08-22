@@ -110,21 +110,12 @@ export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 // ---------------------------------------------------------------------------
 
 function supportedScalars(caps: Capabilities): string[] {
-  return CONTROL_ORDER.filter((k) => {
-    const range = caps.ranges[k];
-    // The range's units drive the card value/readout (% or W); never
-    // relabel a percent-unit power limit as watts.
-    return range !== undefined;
-  });
+  return CONTROL_ORDER.filter((k) => caps.ranges[k] !== undefined);
 }
 
 let values: Record<string, number> = {};
 let currentState: DeviceState | null = null;
 let applied: Record<string, number> = {};
-// A negative V-unit read-back is a backend/profile-capable value, but it is
-// outside the exposed UI range. Keep that fact separate from the draft so a
-// pristine render does not manufacture an implicit zeroing write.
-let hiddenNegativeControls = new Set<string>();
 let lastRenderedCaps: Capabilities | null = null;
 let renderCaps: Capabilities | null = null;
 // M17e: the M4-B Offset/Clock mode machinery is REMOVED (freqMode /
@@ -192,7 +183,6 @@ let viewContainer: HTMLElement | null = null;
 function resetPageState(state: DeviceState, caps: Capabilities) {
   values = {};
   applied = {};
-  hiddenNegativeControls = new Set<string>();
   currentState = state;
   lastRenderedCaps = caps;
   renderCaps = caps;
@@ -224,9 +214,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
 function refreshChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
-  const rawDriverValue = currentState?.[key as keyof DeviceState];
-  const driverValue = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
-    && typeof rawDriverValue === 'number' && rawDriverValue < 0 && !(key in applied) ? 0 : rawDriverValue;
+  const driverValue = currentState?.[key as keyof DeviceState];
   const state = chipState(key, values, applied, driverValue, true);
   chip.hidden = state !== 'applied';
   if (state === 'applied') {
@@ -355,7 +343,7 @@ function updateFloating() {
     applyBtn.hidden = true;
     return;
   }
-  applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values, { hiddenNegativeControls }), currentState as DeviceState, applied, hiddenNegativeControls);
+  applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values), currentState as DeviceState, applied);
 }
 
 export const tuningPage: Page = {
@@ -402,14 +390,7 @@ export const tuningPage: Page = {
     // Slider state: start from the driver's current values, snapped to step.
     for (const key of controls) {
       const cur = state[key as keyof DeviceState];
-      // Use the exposed UI range, not the raw backend range. This keeps a
-      // temporarily hidden negative V-unit driver value from becoming a
-      // negative slider draft or readout.
-      const exposedRange = cardSliderRange(caps, key) ?? caps.ranges[key];
-      if (key === 'gpuVoltOffsetV' && exposedRange.units === 'V' && typeof cur === 'number' && cur < 0) {
-        hiddenNegativeControls.add(key);
-      }
-      values[key] = snapToRange(typeof cur === 'number' ? cur : exposedRange.default, exposedRange);
+      values[key] = snapToRange(typeof cur === 'number' ? cur : caps.ranges[key].default, caps.ranges[key]);
     }
 
     // --- floating Apply (M2b-B): bottom-left, dirty-only -------------------
@@ -417,13 +398,11 @@ export const tuningPage: Page = {
     // just a trigger (a reentry guard swallows a double-click mid-apply).
     // M2C-C: the button shows a transient "Applying…" state while an apply
     // is pending (e.g. waiting on the UAC prompt) - disabled, no retry UI.
-    if (controls.length > 0) {
-      applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
-      applyBtn.addEventListener('click', () => {
-        if (applying) return;
-        void apply(ctx);
-      });
-    }
+    applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
+    applyBtn.addEventListener('click', () => {
+      if (applying) return;
+      void apply(ctx);
+    });
     const setBusy = (busy: boolean) => {
       applying = busy;
       // M9: the per-card Apply buttons share the busy state (disabled while
@@ -749,7 +728,6 @@ export const tuningPage: Page = {
               value: snapToRange(values[key], sliderRange),
               oninput: (e: Event) => {
                 const raw = Number((e.target as HTMLInputElement).value);
-                hiddenNegativeControls.delete(key);
                 values[key] = snapToRange(raw, range);
                 refreshCard(key);
               },
@@ -827,7 +805,6 @@ export const tuningPage: Page = {
               // M17e: the M4-B Clock-mode reset branch is REMOVED (the
               // mode died) - the default is the range default, always.
               values[key] = snapToRange(range.default, range);
-              hiddenNegativeControls.delete(key);
               refreshCard(key);
             },
           }),
@@ -945,18 +922,20 @@ export const tuningPage: Page = {
     // --- M3-C-E: the OC-mode segmented toggle (near the top) ---------------
     const setMode = async (mode: OcMode): Promise<void> => {
       const live = ctx.store.get();
-      const previousMode = live.ocMode;
-      const deviceId = live.deviceId;
-      const selectedDevice = live.devices.find((device) => device.id === deviceId) ?? null;
-      const deviceKey = selectedDevice?.deviceKey ?? null;
-      if (mode === previousMode || deviceId === null) return;
+      if (mode === live.ocMode) return;
       if (mode === 'advanced') {
         // M3-C-D disclaimer: enabling Advanced warns about beyond-standard
         // limits, card/driver/PSU dependence, and the BiFrost 300 W profile.
+        // M4-B: the warning shows ONLY on the first Stock->Advanced
+        // toggle - the acceptance is persisted (advanced-mode-accepted-set),
+        // so a re-boot never re-asks. Only the toggle click reaches this
+        // code path; nothing else can enable the mode.
         let accepted = false;
         try {
           ({ accepted } = await api.advancedModeAcceptedGet());
         } catch {
+          // A read failure must not dead-click the toggle: over-warn (show
+          // the disclaimer) rather than silently doing nothing.
           accepted = false;
         }
         if (accepted !== true) {
@@ -964,45 +943,27 @@ export const tuningPage: Page = {
           if (!confirmed) return;
           try {
             await api.advancedModeAcceptedSet();
-          } catch {
+          } catch (err) {
+            // The warning was shown; a persist failure must not block the
+            // mode change - the dialog simply re-appears on the next toggle.
             toast('warn', 'Advanced OC Mode', 'The confirmation could not be saved - it will be asked again.');
           }
         }
       }
       try {
         await api.ocModeSet(mode);
-        // Mode changes invalidate both capability ranges and the live
-        // read-back. Pair them from the same device before rendering.
-        const [freshCaps, freshState] = await Promise.all([
-          api.getCapabilities(deviceId),
-          api.getCurrentSettings(deviceId),
-        ]);
-        const current = ctx.store.get();
-        const currentDevice = current.devices.find((device) => device.id === deviceId) ?? null;
-        if (current.deviceId !== deviceId || currentDevice !== selectedDevice
-          || currentDevice?.deviceKey !== deviceKey) return;
-        ctx.store.set({ ocMode: mode, caps: freshCaps, state: freshState });
+        // M3-C-E: mode change invalidated the backend caps cache - re-fetch
+        // (extended ranges appear/disappear) and let the store subscriber's
+        // onUpdate full-re-render the page via ocCapsChanged.
+        const freshCaps = await api.getCapabilities(s.deviceId as number);
+        ctx.store.set({ ocMode: mode, caps: freshCaps });
         if (mode === 'advanced') {
           toast('info', 'Advanced OC Mode enabled', 'Extended power/temperature limits are now available.');
         } else {
           toast('info', 'Advanced OC Mode disabled', 'Only Intel-standard limits are available.');
         }
       } catch (err) {
-        // ocModeSet changes backend state before the paired reads complete.
-        // Roll it back when either read fails so the renderer and backend do
-        // not silently disagree about the active mode.
-        let rolledBack = false;
-        try {
-          await api.ocModeSet(previousMode);
-          rolledBack = true;
-        } catch {
-          // Keep the honest failure toast below; the backend may need a fresh
-          // mode read on the next normal boot.
-        }
-        const detail = err instanceof Error ? err.message : String(err);
-        toast('error', 'OC mode could not be changed', rolledBack
-          ? `${detail} (the previous mode was restored)`
-          : `${detail} (the previous mode could not be restored)`);
+        toast('error', 'OC mode could not be changed', err instanceof Error ? err.message : String(err));
       }
     };
     // M4-I (E2): the compact Save-as-Profile button (btn-sm, in the mode
@@ -1202,7 +1163,7 @@ export const tuningPage: Page = {
         // rows are gone per the user (profiles can still apply those values
         // via the state machinery - documented).
 
-        ...(controls.length > 0 && applyBtn ? [applyBtn] : []),
+        applyBtn as Node,
       ];
       viewContainer.append(...body);
       lockCurrentNode = viewContainer.querySelector<HTMLElement>('.gpu-lock-current');
@@ -1242,9 +1203,9 @@ export const tuningPage: Page = {
       // lock-mode branch - the floating apply is force-hidden in Lock mode).
       let settings: Settings;
       if (only !== undefined) {
-        settings = buildScalarSettings({ [only]: values[only] }, { hiddenNegativeControls });
+        settings = ({ [only]: values[only] } as unknown as Settings);
       } else {
-        settings = buildScalarSettings(values, { hiddenNegativeControls });
+        settings = buildScalarSettings(values);
       }
       if (!validateSettingsPayload(settings)) {
         toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -1453,17 +1414,12 @@ export const tuningPage: Page = {
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
     const s = ctx.store.get();
-    // M37: when the extended runtime is unavailable, Stock and Advanced
-    // intentionally expose the same standard ranges. The capability surface
-    // therefore does not change on a mode flip, but the OC-mode pill still
-    // must re-render to reflect the persisted selection.
-    const modeChanged = lastRenderedCaps?.ocMode !== s.ocMode;
     // M3-C-F: a mode toggle / featureset swap changed the capability
     // SURFACE - full re-render (ranges/units change; the in-place refresh
     // cannot). Content comparison: the page's own post-apply caps re-set
     // ({ ...caps, waiverAccepted }) is NOT a surface change. The re-render
     // keeps the current sub-view (module-level `view`).
-    if (modeChanged || ocCapsChanged(lastRenderedCaps, s.caps)) {
+    if (ocCapsChanged(lastRenderedCaps, s.caps)) {
       tuningPage.render(container, ctx);
       return;
     }
@@ -1501,11 +1457,7 @@ export const tuningPage: Page = {
         // too - a raw (drift-wide) range would snap values[key] beyond the
         // exposed slider max and a subsequent apply would send it.
         const range = cardSliderRange(s.caps, key);
-        if (typeof raw === 'number' && range) {
-          if (key === 'gpuVoltOffsetV' && range.units === 'V' && raw < 0) hiddenNegativeControls.add(key);
-          else if (key === 'gpuVoltOffsetV') hiddenNegativeControls.delete(key);
-          values[key] = snapToRange(raw, range);
-        }
+        if (typeof raw === 'number' && range) values[key] = snapToRange(raw, range);
       }
       for (const key of cards.keys()) refreshCard(key);
       // M17d (Run D): the gpuLock card's current-lock read-out refreshes

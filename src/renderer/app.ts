@@ -3,7 +3,6 @@
 // hash routing.
 
 import { api } from './ipc.ts';
-import { stopTelemetry, startTelemetry } from './device.ts';
 import { el, clear } from './dom.ts';
 import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
@@ -20,7 +19,7 @@ import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
 import { setMonitorLogToFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
-import { resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
+import { resolveBootDevice } from './pure/device.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
 
@@ -48,7 +47,6 @@ export function applyTheme(theme: string): void {
   document.documentElement.dataset.theme = isValidTheme(theme) ? theme : 'dark';
   redrawMonitoringGraphs();
 }
-let featuresetSwapInFlight = false;
 const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElement, store, {
   // M2D: the mock featureset swap re-reads caps + state + device + health in
   // main (one mock:set-featureset round trip) and re-renders the whole page
@@ -63,66 +61,16 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
     // 1.0.1 no-Intel round (m5): the swap is a NO-OP in the no-device mode -
     // a swap would store caps/state into the no-Intel store and break the
     // presentation (the dropdown itself is hidden there too).
-    const before = store.get();
-    if (before.noIntel || featuresetSwapInFlight) return;
-    featuresetSwapInFlight = true;
-    const warn = (title: string, message: string) => toast('warn', title, message);
-    let swapApplied = false;
-    let targetId: number | null = null;
-    let targetTelemetryStarted = false;
+    if (store.get().noIntel) return;
     try {
-      // Stop the old numeric session before main rebuilds the list. The
-      // returned devices get fresh ids, so leaving this service alive would
-      // keep polling the old id after a stable-key reorder.
-      await stopTelemetry(api, before.deviceId, warn);
-      let out;
-      try {
-        out = await api.mockSetFeatureset(id);
-      } catch (err) {
-        // A failed swap leaves the existing renderer selection in place;
-        // restore its session rather than leaving telemetry stopped.
-        await startTelemetry(api, before.deviceId, warn);
-        throw err;
-      }
-      swapApplied = true;
-      // The returned list has freshly assigned session ids. Read-only or
-      // unsupported selections keep their durable identity so the no-tuning
-      // surface survives; writable selections follow the requested physical
-      // slot instead of sticking to a same-key secondary row.
-      const selected = before.devices.find((device) => device.id === before.deviceId);
-      const selectedKey = selected?.deviceKey ?? null;
-      const preserveSelected = selected?.synthetic === true
-        || selected?.backendKind === 'os'
-        || before.caps?.overclockingSupported === false
-        || (before.caps !== null && !Object.values(before.caps.controls).some(Boolean));
-      const selection = resolveFeaturesetSwapSelection(
-        out.devices,
-        selectedKey,
-        out.activeDeviceKey ?? null,
-        preserveSelected,
-      );
-      const target = selection.device;
-      if (!target) throw new Error('the featureset returned no devices');
-      targetId = target.id;
-      const caps = await api.getCapabilities(target.id);
-      const state = await api.getCurrentSettings(target.id);
-      // Start exactly one service for the freshly resolved session id.
-      targetTelemetryStarted = await startTelemetry(api, target.id, warn);
-      // If the old stable key disappeared, persist the visible fallback so
-      // the next boot does not resurrect the stale selection.
-      if (!selection.preserved) {
-        try {
-          await api.deviceSet({ deviceId: target.id, deviceKey: target.deviceKey });
-        } catch (err) {
-          warn('GPU selection', `The fallback selection could not be saved for this session (${err instanceof Error ? err.message : String(err)})`);
-        }
-      }
+      const out = await api.mockSetFeatureset(id);
+      const curId = store.get().deviceId;
+      const caps = curId !== null && curId !== 0 ? await api.getCapabilities(curId) : out.caps;
+      const state = curId !== null && curId !== 0 ? await api.getCurrentSettings(curId) : out.state;
       store.set({
         devices: out.devices,
-        deviceId: target.id,
         caps,
         state,
-        latestSample: null,
         health: out.health,
         featuresetId: out.featureset.id,
         // M2D: the swap replaces the boot registry date with the featureset's
@@ -132,103 +80,22 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
       });
       renderPage(currentPage());
     } catch (err) {
-      if (swapApplied) {
-        // A post-swap read/start/render failure must not strand the old
-        // session without telemetry. Stop a successfully started target
-        // before restoring the previous session, best effort.
-        if (targetTelemetryStarted && targetId !== null) {
-          await stopTelemetry(api, targetId, warn);
-        }
-        await startTelemetry(api, before.deviceId, warn);
-      }
       toast('error', 'Featureset swap failed', err instanceof Error ? err.message : String(err));
-    } finally {
-      featuresetSwapInFlight = false;
     }
   },
 });
 
-// The main renderer owns this sequence. It lets ipc-core distinguish a late
-// push from an older switch even when deviceSet persistence failed. The
-// handshake seeds the counter after a renderer reload, while ipc-core keeps
-// the latest value in the main process.
-let mainSelectionGeneration = -1;
-const mainSelectionGenerationReady = api.deviceSelectionGenerationGet()
-  .then(({ generation }) => {
-    if (!Number.isInteger(generation) || generation < -1) throw new Error('invalid selection generation');
-    mainSelectionGeneration = generation;
-    return true;
-  })
-  .catch((err) => {
-    toast('warn', 'GPU selection', `Could not synchronize selection generation: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  });
+// M4-F: the GPU switch - one instance wired to the app's store, page
+// re-render and toast sink; exported so the Dashboard GPU card + Tuning
+// page selectors drive it. The full flow + the unit-tested core live in
+// device.ts (createDeviceSwitcher).
 export const selectDevice = createDeviceSwitcher({
   api,
   store,
-  onSwitched: (id) => {
+  onSwitched: () => {
     renderPage(currentPage());
-    void mainSelectionGenerationReady.then((ready) => {
-      if (!ready) return;
-      const live = store.get();
-      // A newer local switch may have completed while the reload handshake
-      // was pending; never publish the superseded device pair.
-      if (live.deviceId !== id || !live.caps || !live.state) return;
-      const selected = live.devices.find((device) => device.id === id);
-      const selectionGeneration = ++mainSelectionGeneration;
-      return api.deviceSelectionPush({
-        deviceId: id,
-        deviceKey: selected?.deviceKey ?? null,
-        selectionGeneration,
-        caps: live.caps,
-        state: live.state,
-      }).catch((err) => toast('warn', 'GPU selection', `The other window could not be updated: ${err instanceof Error ? err.message : String(err)}`));
-    });
   },
   warn: (title, message) => toast('warn', title, message),
-  queueWhileInFlight: true,
-});
-
-// M31: only the main renderer consumes panel requests. Durable-key
-// resolution happens against the current inventory; the existing switcher
-// remains the sole telemetry stop/start + persistence owner. Requests that
-// arrive during boot are coalesced and replayed after the boot owner settles.
-let mainBootComplete = false;
-let queuedDeviceSelectionKey: string | null = null;
-function requestDeviceSelection(deviceKey: string): void {
-  if (!mainBootComplete) {
-    queuedDeviceSelectionKey = deviceKey;
-    return;
-  }
-  const target = store.get().devices.find((device) => device.deviceKey === deviceKey);
-  if (!target) {
-    toast('warn', 'GPU selection', 'The requested GPU is no longer available.');
-    return;
-  }
-  void selectDevice(target.id);
-}
-api.onDeviceSelectionRequested((payload) => {
-  if (!payload || typeof payload.deviceKey !== 'string') return;
-  requestDeviceSelection(payload.deviceKey);
-});
-api.onDeviceSelectionUpdated((payload) => {
-  if (!payload?.caps || !payload?.state || !Number.isInteger(payload.deviceId)) return;
-  const live = store.get();
-  const target = live.devices.find((device) => device.id === payload.deviceId
-    && (payload.deviceKey === null || device.deviceKey === payload.deviceKey));
-  if (!target) return;
-  if (live.deviceId === payload.deviceId
-    && live.caps === payload.caps
-    && live.state === payload.state) return;
-  store.set({
-    deviceId: payload.deviceId,
-    caps: payload.caps,
-    state: payload.state,
-    latestSample: null,
-    lastApply: null,
-    osGpu: target.osController ?? null,
-  });
-  renderPage(currentPage());
 });
 let current: Page | null = null;
 
@@ -239,7 +106,7 @@ function renderPage(id: PageId) {
   current?.leave?.();
   current = PAGES[id] ?? dashboardPage;
   try {
-    current.render(container, { store, selectDevice });
+    current.render(container, { store });
   } catch (err) {
     clear(container);
     container.append(el('p', { class: 'text-error', text: `Page failed to render: ${err instanceof Error ? err.message : String(err)}` }));
@@ -397,25 +264,27 @@ async function boot() {
   // stays exactly as-is for the non-empty path). caps/state stay null there;
   // the boot-level telemetry subscription + telemetryStart(null) (the
   // no-device mode) run on BOTH paths; the noIntel store flag is set after.
-  // M30: an empty unified inventory is the true zero-GPU case. A synthetic
-  // OS-only row is still a selectable GPU and must receive caps/state and
-  // device-scoped telemetry just like an IGCL row.
-  const noDevice = devices.length === 0;
+  const noIntel = devices.length === 0;
   // M4-F: the boot device id - resolved ONLY on the Intel path (S1: the
   // no-Intel path skips the whole resolution block and deviceId stays
   // null). Read by the caps/state block and the final telemetryStart below.
   let deviceId: number | null = null;
-  if (!noDevice) {
+  if (!noIntel) {
+    // M4-F: boot selection - the persisted deviceId wins when it matches an
+    // enumerated id (device-get; the MAIN-side boot resolution is the
+    // authority and has already self-healed the persisted id before this
+    // round trip), else devices[0]. The main-side resolution applies the
+    // same rule to the boot-apply target, so the renderer and the boot
+    // apply can never disagree.
     let persistedDeviceId: number | null = null;
-    let persistedDeviceKey: string | null = null;
     try {
-      const persisted = await api.deviceGet();
-      persistedDeviceId = persisted.deviceId;
-      persistedDeviceKey = persisted.deviceKey ?? null;
+      persistedDeviceId = (await api.deviceGet()).deviceId;
     } catch {
-      persistedDeviceId = null;
+      persistedDeviceId = null; // degraded: devices[0]
     }
-    deviceId = resolveBootDevice(devices, persistedDeviceId, persistedDeviceKey) ?? devices[0].id;
+    // (devices.length > 0 is guaranteed here - the empty enumeration branched
+    // above - so the resolution is always a concrete id).
+    deviceId = resolveBootDevice(devices, persistedDeviceId) ?? devices[0].id;
     store.set({ deviceId });
   }
 
@@ -496,10 +365,7 @@ async function boot() {
   // name; pure helper). Set on the no-Intel path only (the Intel path
   // renders the IGCL device list instead). Lands in the SAME store.set as
   // the noIntel flag below so the dashboard GPU card re-renders once.
-  const selectedAfterSysinfo = store.get().devices.find((d) => d.id === deviceId) ?? null;
-  const osGpu = noDevice
-    ? primaryVideoController(store.get().sysinfo)
-    : selectedAfterSysinfo?.osController ?? null;
+  const osGpu = noIntel ? primaryVideoController(store.get().sysinfo) : null;
 
   // M3-A: the registry-hacks catalog (Tweaks page, read-side). Read-only
   // reg queries; a failure degrades to an empty catalog so the page can
@@ -531,7 +397,7 @@ async function boot() {
     store.set({ ocMode: 'stock' });
   }
 
-  if (noDevice) {
+  if (noIntel) {
     // 1.0.1 no-Intel round: caps/state are SKIPPED on the no-device path
     // (they stay null - there is no IGCL device to read, and the waiver
     // prompt + the OC surface must never render).
@@ -596,10 +462,6 @@ async function boot() {
   // no-device telemetry push (telemetry-start null mode) rides the SAME
   // subscription, so log-file logging works for free there.
   api.onTelemetrySample((sample) => {
-    const live = store.get();
-    const selected = live.devices.find((device) => device.id === live.deviceId) ?? null;
-    if (sample.deviceId !== undefined && sample.deviceId !== live.deviceId) return;
-    if (sample.deviceKey && selected?.deviceKey && sample.deviceKey !== selected.deviceKey) return;
     store.set({ latestSample: sample });
     if (getMonitorLogToFile()) {
       void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
@@ -622,7 +484,7 @@ async function boot() {
     if (live.deviceId === payload.deviceId) store.set({ state: payload.state });
   });
 
-  if (noDevice) {
+  if (noIntel) {
     // 1.0.1 no-Intel round: the no-device telemetry mode -
     // telemetryStart(null) pushes sys-stats-ONLY samples (t: Date.now() +
     // cpuUtilPct/cpuTempC/cpuFreqMhz/gpuMemUsedBytes - all OS-level, they
@@ -657,27 +519,9 @@ async function boot() {
       toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
     }
 
-    const selected = store.get().devices.find((d) => d.id === deviceId) ?? null;
-    // M30: `noIntel` is the machine-level empty-inventory mode, not a
-    // selected-device capability. An OS-only AMD/NVIDIA row beside an IGCL
-    // adapter remains a normal selected GPU with unsupported controls.
-    store.set({ noIntel: false, osGpu: selected?.osController ?? null });
-    // M30: static vendor info is selected-device scoped. It is useful for an
-    // OS-only NVIDIA/AMD row and harmlessly returns null for IGCL rows.
-    try {
-      const info = await api.vendorInfo(deviceId as number);
-      store.set({ vendorInfo: info ?? null });
-    } catch {
-      store.set({ vendorInfo: null });
-    }
     console.log(`[renderer] boot complete - device ${deviceId}${health?.backend === 'mock' ? ' (mock)' : ''}`);
     pb('boot-complete');
   }
 }
 
-void boot().finally(() => {
-  mainBootComplete = true;
-  const queuedKey = queuedDeviceSelectionKey;
-  queuedDeviceSelectionKey = null;
-  if (queuedKey !== null) requestDeviceSelection(queuedKey);
-});
+void boot();

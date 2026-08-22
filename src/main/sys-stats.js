@@ -435,9 +435,9 @@ export function createCpuUtilReader(deps = {}) {
  * (never double-fired).
  * @param {{
  *   execFile?: typeof execFile,
- *   luidOf?: (deviceIdHex: string, bdf?: string|null) => Promise<{ high: number, low: number } | null>,
+ *   powershellExe?: string,
+ *   luidOf?: (deviceIdHex: string) => Promise<{ high: number, low: number } | null>,
  *   deviceIdHex?: string | null,   // e.g. '0x56a0' - the backend device's PCI id
- *   bdf?: string | null,           // durable PCI/BDF bridge for same-model adapters
  *   msrReader?: {                   // M4L: the PawnIO MSR provider (optional)
  *     packageTempC: () => Promise<number | null>,
  *     packagePowerW: () => Promise<number | null>,
@@ -465,9 +465,7 @@ export function createCpuUtilReader(deps = {}) {
 export function createSysStats(deps = {}) {
   const exec = deps.execFile ?? execFile;
   const luidOf = deps.luidOf ?? (async () => null);
-  let deviceIdHex = deps.deviceIdHex ?? null;
-  let deviceBdf = deps.bdf ?? null;
-  let luidOverride = deps.luid ?? null;
+  const deviceIdHex = deps.deviceIdHex ?? null;
   const msrReader = deps.msrReader ?? null;
   const onMsrDegrade = deps.onMsrDegrade ?? null;
   // M17g: the RAM detector (GlobalMemoryStatusEx - native). The DEFAULT is
@@ -506,10 +504,9 @@ export function createSysStats(deps = {}) {
   // through while a fast field is null - the first GetSystemTimes sample
   // or an MSR-less machine).
   let laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
-  // M17g: the shared timer has an optional startup owner so a canceled,
-  // deferred start cannot stop a newer session's lane.
+  // M17g: the slow-lane background timer handle (one per adapter - the
+  // telemetry sessions share it) + the tick-overlap guard.
   let slowHandle = null;
-  let slowOwner = undefined;
   let slowInflight = false;
 
   // M4L (B4): the once-per-session MSR degrade note - fired when the MSR
@@ -619,7 +616,7 @@ export function createSysStats(deps = {}) {
         let gpuUtil = null;
         if (deviceIdHex) {
           try {
-            const luid = luidOverride ?? await luidOf(deviceIdHex, deviceBdf);
+            const luid = await luidOf(deviceIdHex);
             const row = raw.gpuMemRows.find((r) => instanceMatchesLuid(r.name, luid));
             if (row && row.dedicatedUsage !== null && row.dedicatedUsage >= 0) gpuBytes = row.dedicatedUsage;
             // M4-I (D1): the GPUEngine aggregation for the SAME LUID.
@@ -713,19 +710,6 @@ export function createSysStats(deps = {}) {
       };
     },
 
-    setTarget(target = null) {
-      const nextPci = typeof target?.pciDeviceId === 'string' ? target.pciDeviceId : null;
-      const nextBdf = target?.bdf ?? target?.osController?.bdf ?? null;
-      const nextLuid = target?.osLuid ?? target?.osController?.luid ?? null;
-      if (nextPci === deviceIdHex
-        && nextBdf === deviceBdf
-        && JSON.stringify(nextLuid) === JSON.stringify(luidOverride)) return;
-      deviceIdHex = nextPci;
-      deviceBdf = nextBdf;
-      luidOverride = nextLuid;
-      laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
-    },
-
     /**
      * M17g: start the SLOW-lane background timer (the existing PowerShell
      * query on its own cadence - the telemetry push NEVER awaits it
@@ -738,11 +722,9 @@ export function createSysStats(deps = {}) {
      * caller - the tick runs async).
      * @param {number} [cadenceMs] the injectable cadence (tests; the
      *   default is SLOW_LANE_CADENCE_MS)
-     * @param {number} [owner] optional telemetry startup generation
      */
-    startSlowLane(cadenceMs = SLOW_LANE_CADENCE_MS, owner = undefined) {
+    startSlowLane(cadenceMs = SLOW_LANE_CADENCE_MS) {
       if (slowHandle !== null) return; // idempotent - one timer per adapter
-      slowOwner = owner;
       slowHandle = setIntervalFn(() => {
         void slowTick();
       }, cadenceMs);
@@ -755,14 +737,11 @@ export function createSysStats(deps = {}) {
     /**
      * M17g: stop the slow lane (the telemetry teardown). The in-flight
      * query (if any) finishes on its own; no new tick starts. Idempotent.
-     * @param {number} [owner] optional telemetry startup generation
      */
-    stopSlowLane(owner = undefined) {
-      if (owner !== undefined && slowOwner !== owner) return;
+    stopSlowLane() {
       if (slowHandle === null) return;
       clearIntervalFn(slowHandle);
       slowHandle = null;
-      slowOwner = undefined;
     },
   });
 

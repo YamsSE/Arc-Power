@@ -212,43 +212,23 @@ function idleMsFromEnv() {
  * result mapping. The one-shot form writes the payload to the out file;
  * the pipe form writes it as a JSON line on the connection - the payload
  * shape is IDENTICAL so the proxy's consumer contract never diverges.
- * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown, offsetV?: unknown, deviceId?: unknown, physicalTarget?: object }} req
+ * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown }} req
  * @param {{
  *   readLimits: (deviceId?: number) => object | null | Promise<object | null>,
- *   readLimitsForTarget?: (physicalTarget: object, deviceId?: number) => object | null | Promise<object | null>,
- *   setLimits: ({ sustainedW: number, burstW: number }, deviceId?: number) => object | Promise<object>,
- *   setLimitsForTarget?: (physicalTarget: object, limits: { sustainedW: number, burstW: number }, deviceId?: number) => object | Promise<object>,
- *   readVoltageOffsetResult?: (deviceId?: number) => { ok: boolean, targetV?: number, offsetV?: number, errorCode?: string, message?: string },
- *   readVoltageOffset?: (deviceId?: number) => { targetV: number, offsetV: number } | null,
- *   setVoltageOffset?: ({ offsetV: number }, deviceId?: number) => { ok: boolean, offsetV?: number, errorCode?: string, message?: string },
- *   setOverclockWaiver?: (deviceId?: number) => { ok: boolean, errorCode?: string, message?: string },
+ *   setLimits: ({ sustainedW: number, burstW: number }) => object | Promise<object>,
  * }} consumer
  * @param {(s: string) => void} log
  * @returns {Promise<{ payload: object, exitCode: number }>}
  */
 async function dispatchRequest(req, consumer, log) {
   const op = req?.op;
-  if (op === 'read-target') {
-    if (typeof consumer.readLimitsForTarget !== 'function') {
-      return { payload: { ok: false, errorCode: 'unsupported', message: 'target-bound Sysman power read is unavailable' }, exitCode: 0 };
-    }
-    let limits = null;
-    try {
-      limits = await consumer.readLimitsForTarget(req?.physicalTarget, Number.isInteger(req?.deviceId) ? req.deviceId : 0);
-    } catch (err) {
-      log(`readLimitsForTarget failed: ${err.message}`);
-    }
-    if (limits && typeof limits === 'object') return { payload: { ok: true, ...limits }, exitCode: 0 };
-    return { payload: { ok: false, errorCode: 'unavailable', message: 'the target-bound Sysman power read returned no limits' }, exitCode: 0 };
-  }
-
   if (op === 'read') {
     // The read dispatch: readLimits -> { ok: true, sustainedW?, burstW?,
     // peakW? } | { ok: false, errorCode?, message? } - a null read (the
     // consumer's honest degrade) becomes the unavailable refusal.
     let limits = null;
     try {
-      limits = await consumer.readLimits(Number.isInteger(req?.deviceId) ? req.deviceId : 0);
+      limits = await consumer.readLimits();
     } catch (err) {
       log(`readLimits failed: ${err.message}`);
     }
@@ -256,32 +236,6 @@ async function dispatchRequest(req, consumer, log) {
       return { payload: { ok: true, ...limits }, exitCode: 0 };
     }
     return { payload: { ok: false, errorCode: 'unavailable', message: 'the sysman power-limits read returned no limits (the consumer is unavailable)' }, exitCode: 0 };
-  }
-
-  if (op === 'set-target') {
-    if (typeof consumer.setLimitsForTarget !== 'function') {
-      return { payload: { ok: false, errorCode: 'unsupported', message: 'target-bound Sysman power write is unavailable' }, exitCode: 0 };
-    }
-    const sustainedW = req.sustainedW;
-    const burstW = req.burstW;
-    if (!Number.isFinite(sustainedW) || !Number.isFinite(burstW)) {
-      return { payload: { ok: false, errorCode: 'invalid-argument', message: 'sustainedW and burstW must be finite numbers' }, exitCode: 1 };
-    }
-    let result = null;
-    try {
-      result = await consumer.setLimitsForTarget(
-        req?.physicalTarget,
-        { sustainedW, burstW },
-        Number.isInteger(req?.deviceId) ? req.deviceId : 0,
-      );
-    } catch (err) {
-      log(`setLimitsForTarget failed: ${err.message}`);
-      result = { ok: false, errorCode: 'io-failed', message: err.message };
-    }
-    if (!result || typeof result !== 'object') {
-      result = { ok: false, errorCode: 'io-failed', message: 'the target-bound setLimits call returned no result' };
-    }
-    return { payload: result, exitCode: 0 };
   }
 
   if (op === 'set') {
@@ -298,7 +252,7 @@ async function dispatchRequest(req, consumer, log) {
     }
     let result = null;
     try {
-      result = await consumer.setLimits({ sustainedW, burstW }, Number.isInteger(req?.deviceId) ? req.deviceId : 0);
+      result = await consumer.setLimits({ sustainedW, burstW });
     } catch (err) {
       log(`setLimits failed: ${err.message}`);
       result = { ok: false, errorCode: 'io-failed', message: err.message };
@@ -307,74 +261,6 @@ async function dispatchRequest(req, consumer, log) {
       result = { ok: false, errorCode: 'io-failed', message: 'the setLimits call returned no result' };
     }
     return { payload: result, exitCode: 0 };
-  }
-
-  // M26: read-voltage operation - reads the current GPU voltage offset via
-  // the Sysman frequency OC getter. Not-ready voltage must not write
-  // arcpower-sysman-intent.json. Finite guards and verbatim errors.
-  if (op === 'read-voltage') {
-    const hasStatusRead = typeof consumer.readVoltageOffsetResult === 'function';
-    if (!hasStatusRead && typeof consumer.readVoltageOffset !== 'function') {
-      return { payload: { ok: false, errorCode: 'unsupported', message: 'readVoltageOffset is not available on this consumer' }, exitCode: 0 };
-    }
-    let result = null;
-    try {
-      result = hasStatusRead
-        ? await consumer.readVoltageOffsetResult(Number.isInteger(req?.deviceId) ? req.deviceId : 0)
-        : await consumer.readVoltageOffset(Number.isInteger(req?.deviceId) ? req.deviceId : 0);
-    } catch (err) {
-      log(`readVoltageOffset failed: ${err.message}`);
-      result = { ok: false, errorCode: 'unavailable', message: 'the sysman voltage offset read failed' };
-    }
-    if (result?.ok === false) return { payload: result, exitCode: 0 };
-    if (result?.ok === true && Number.isFinite(result.targetV) && Number.isFinite(result.offsetV)) {
-      return {
-        payload: { ok: true, targetV: result.targetV, offsetV: result.offsetV, needsClear: result.needsClear === true },
-        exitCode: 0,
-      };
-    }
-    if (Number.isFinite(result?.targetV) && Number.isFinite(result?.offsetV)) {
-      return { payload: { ok: true, targetV: result.targetV, offsetV: result.offsetV }, exitCode: 0 };
-    }
-    return { payload: { ok: false, errorCode: 'unavailable', message: 'the sysman voltage offset read returned no result (the consumer is unavailable)' }, exitCode: 0 };
-  }
-
-  // M26: set-voltage operation - writes the GPU voltage offset via the
-  // Sysman frequency OC setter. The finite guard runs BEFORE the call;
-  // the result rides VERBATIM (same contract as the PL set dispatch).
-  // Voltage operations NEVER write arcpower-sysman-intent.json.
-  if (op === 'set-voltage') {
-    if (typeof consumer.setVoltageOffset !== 'function') {
-      return { payload: { ok: false, errorCode: 'unsupported', message: 'setVoltageOffset is not available on this consumer' }, exitCode: 0 };
-    }
-    const offsetV = req.offsetV;
-    if (!Number.isFinite(offsetV)) {
-      return { payload: { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' }, exitCode: 1 };
-    }
-    let result = null;
-    try {
-      result = consumer.setVoltageOffset({ offsetV }, Number.isInteger(req?.deviceId) ? req.deviceId : 0);
-    } catch (err) {
-      log(`setVoltageOffset failed: ${err.message}`);
-      result = { ok: false, errorCode: 'io-failed', message: err.message };
-    }
-    if (!result || typeof result !== 'object') {
-      result = { ok: false, errorCode: 'io-failed', message: 'the setVoltageOffset call returned no result' };
-    }
-    return { payload: result, exitCode: 0 };
-  }
-
-  if (op === 'set-waiver') {
-    if (typeof consumer.setOverclockWaiver !== 'function') {
-      return { payload: { ok: false, errorCode: 'unsupported', message: 'setOverclockWaiver is not available on this consumer' }, exitCode: 0 };
-    }
-    let result;
-    try {
-      result = await consumer.setOverclockWaiver(Number.isInteger(req?.deviceId) ? req.deviceId : 0);
-    } catch (err) {
-      result = { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
-    }
-    return { payload: result && typeof result === 'object' ? result : { ok: false, errorCode: 'io-failed', message: 'the waiver call returned no result' }, exitCode: 0 };
   }
 
   return { payload: { ok: false, errorCode: 'invalid-op', message: `invalid request: unknown op '${String(op)}'` }, exitCode: 1 };

@@ -93,14 +93,10 @@ export interface LockRange {
 export interface Capabilities {
   oemName: string;
   deviceName: string;
-  /** Stable PCI/BDF identity shared by device enumeration and apply routing. */
-  deviceKey?: string | null;
   /** M4-I (S1): the memory type carried on the caps payload (the igcl
    *  backend derives it once from the token table; the mock fixture
    *  supplies it). Null when unknown. */
   memType?: string | null;
-  /** M33: selected OC mode; distinct from bundled-runtime availability. */
-  ocMode?: OcMode;
   waiverAccepted: boolean;
   /** M17: FALSE on OC-locked devices (Arc B50-class) - the driver exposes
    *  no OC control and refuses the warranty waiver (ERROR_UNSUPPORTED_FEATURE).
@@ -183,28 +179,22 @@ export interface DeviceInfo {
   driverVersion: string;
   graphicsClockMHz: number;
   numXeCores: number;
-  /** Stable PCI/BDF identity; session `id` is intentionally not durable. */
-  deviceKey?: string;
-  /** M4-B: VRAM in bytes for the display-name suffix. */
+  /** M4-B: VRAM in bytes for the display-name suffix (set by the backend at
+   *  listDevices time; null when unknown - iGPU, real backend until the
+   *  M4-D sysinfo fallback lands). */
   vramBytes?: number | null;
-  /** M4-I: memory type carried by the backend. */
+  /** M4-I (S1): the memory type CARRIED ON THE DEVICE PAYLOAD (the igcl
+   *  backend derives it once from the token table; the mock fixture
+   *  supplies it) - the renderer's VRAM row never re-derives it. Null when
+   *  unknown (the row shows the size only). */
   memType?: string | null;
-  /** M17c: IGCL subsystem fields carried on the device payload. */
+  /** M17c: the IGCL subsystem fields (ctl_device_adapter_properties_t
+   *  pci_subsys_vendor_id / pci_subsys_id - the PNP SUBSYS_ fields) carried
+   *  on the device payload (the mock mirrors the real backend). The AIB
+   *  decode keys on them; the caps response carries the DECODED fields.
+   *  Absent/null when unknown. */
   pciSubsysVendorId?: number | null;
   pciSubsysId?: number | null;
-  /** M30 unified Windows/IGCL inventory metadata. */
-  synthetic?: boolean;
-  backendKind?: string;
-  gpuVendor?: string | null;
-  osController?: {
-    name: string;
-    vramBytes: number | null;
-    pnpDeviceId: string | null;
-    driverVersion: string | null;
-    rebarActive: boolean | null;
-    luid?: unknown;
-  } | null;
-  osLuid?: unknown;
 }
 
 export interface HealthReport {
@@ -432,10 +422,6 @@ export interface ThrottleFlags {
 
 export interface TelemetrySample {
   t: number;
-  /** Main-process session identity; stale handover samples are ignored. */
-  deviceId?: number | null;
-  deviceKey?: string | null;
-  sessionGeneration?: number;
   gpuClockMhz?: number;
   memClockMhz?: number;
   tempC?: number;
@@ -511,8 +497,6 @@ export interface OverlaySettings {
   /** M6: the ENABLED overlay stat ids (the canonical OVERLAY_STAT_IDS; the
    *  full set the stock default - a stat off -> its field/line vanishes). */
   stats: string[];
-  /** M35: selected overlay GPU durable keys; null means monitor all. */
-  deviceKeys: string[] | null;
   /** M7b (fix 4): the background box behind the HUD - the box is shown
    *  from overlayBgEnabled, the color/opacity become the
    *  --overlay-bg-color / --overlay-bg-opacity CSS vars (black at 0.5 the
@@ -576,8 +560,6 @@ export interface ProfileSettingsState {
   ocMode: OcMode;
   /** M4-B: the once-only Advanced OC Mode warning acceptance. */
   advancedModeAccepted: boolean;
-  /** M42: explicit opt-in for the experimental Acer packaged bridge. */
-  acerPackagedApplyEnabled: boolean;
   /** M4-D: the Settings-tab fields (absent on old files -> false). */
   startWithWindows: boolean;
   startMinimized: boolean;
@@ -585,13 +567,15 @@ export interface ProfileSettingsState {
   closeToTray: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
-  /** Persisted GPU selection; numeric ids without deviceKey are unverified. */
+  /** M4-F: the persisted GPU selection (absent on old files -> null - the
+   *  devices[0] fallback resolves at boot; device-set is the ONLY writer). */
   deviceId: number | null;
-  deviceKey: string | null;
   /** 1.0.1: the persisted UI theme ('dark'|'midnight'|'light'; absent on
    *  old files -> 'dark' - the absent-field default, no schema bump). */
   theme: Theme;
-  /** M5: software overlay settings. */
+  /** M5: the software-overlay settings (absent on old files -> the defaults:
+   *  enabled false, letter 'O', position 'top-left', scale 1.0 - the same
+   *  absent-field mechanism, NO schema bump). */
   overlayEnabled: boolean;
   overlayHotkeyLetter: string;
   overlayPosition: OverlayPosition;
@@ -603,9 +587,6 @@ export interface ProfileSettingsState {
    *  DEFAULT set - the user's 11 ON / the others OFF, the M6 full-set
    *  default FLIPS; same absent-field mechanism, NO schema bump). */
   overlayStats: string[];
-  /** M35: the overlay GPU selection keyed by durable hardware identity.
-   *  Null preserves the all-GPU default; an explicit list selects lanes. */
-  overlayDeviceKeys: string[] | null;
   /** M7b (fix 4): the overlay background box (absent on old files -> off /
    *  black / 0.5 opacity - the same absent-field mechanism, NO schema
    *  bump). The Appearance card's Background section persists these; the
@@ -693,8 +674,6 @@ export interface MockFeaturesetsResponse {
 /** mock:set-featureset response - everything the UI renders from one swap. */
 export interface MockSwapResponse {
   featureset: FeaturesetInfo;
-  /** Stable key for the requested physical slot, independent of new ids. */
-  activeDeviceKey: string;
   devices: DeviceInfo[];
   caps: Capabilities;
   state: DeviceState;

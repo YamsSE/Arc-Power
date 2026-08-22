@@ -191,9 +191,6 @@ html, body {
   height: 20px;
   object-fit: contain;
   flex-shrink: 0;
-  /* Explicitly draggable: inherited app-region values do not reliably make
-     the top-left corner a hit target in frameless Chromium windows. */
-  -webkit-app-region: drag;
 }
 
 /* M25: the version text next to the corner icon in the titlebar-left. */
@@ -682,8 +679,6 @@ html, body {
   scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
 
-.page-title-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.page-title-row .device-select { min-width: 180px; }
 .page-title { margin: 0; font-size: 22px; font-weight: 700; }
 .page-subtitle { margin: -8px 0 0; color: var(--text-muted); max-width: 640px; }
 .page-actions {
@@ -1938,17 +1933,6 @@ select {
 .overlay-position-row { margin-top: 10px; }
 .overlay-scale-row { margin-top: 10px; }
 .settings-row-label { font-size: 13px; color: var(--text-dim); min-width: 52px; }
-/* M35: compact per-GPU overlay monitoring controls. They wrap instead of
-   widening the settings card when a machine exposes several adapters. */
-.overlay-device-monitoring {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 7px 12px;
-  margin-top: 10px;
-}
-.overlay-device-monitoring .settings-row-label { margin-right: 2px; }
-.overlay-device-toggle { font-size: 13px; }
 .settings-position-select {
   padding: 4px 8px;
   border-radius: var(--radius-sm);

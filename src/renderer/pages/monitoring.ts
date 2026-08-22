@@ -308,15 +308,17 @@ export const monitoringPage: Page = {
       ]),
     ]);
     viewContainer = el('div', { class: 'mon-view' });
-    // M25: store title/subtitle refs so setMonView can update them.
-    const pageTitle = el('h1', { class: 'page-title', text: monView === 'overlay' ? 'Overlay' : 'Monitoring' });
-    const pageSubtitle = el('p', {
-      class: 'page-subtitle',
-      text: monView === 'overlay'
-        ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
-        : 'Live values and 60-second rolling graphs from the GPU.',
-    });
-    container.append(pageTitle, pageSubtitle, viewToggle, viewContainer);
+    container.append(
+      el('h1', { class: 'page-title', text: monView === 'overlay' ? 'Overlay' : 'Monitoring' }),
+      el('p', {
+        class: 'page-subtitle',
+        text: monView === 'overlay'
+          ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
+          : 'Live values and 60-second rolling graphs from the GPU.',
+      }),
+      viewToggle,
+      viewContainer,
+    );
     // M9: the view switch re-renders ONLY the sub-view container - the
     // telemetry series (module-level mon.series) survive the round trip,
     // and every monitoring-view rebuild re-registers the canvases + the
@@ -332,11 +334,6 @@ export const monitoringPage: Page = {
     const setMonView = (v: 'monitoring' | 'overlay'): void => {
       if (monView === v) return;
       monView = v;
-      // M25: update title + subtitle to match the active view.
-      pageTitle.textContent = monView === 'overlay' ? 'Overlay' : 'Monitoring';
-      pageSubtitle.textContent = monView === 'overlay'
-        ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
-        : 'Live values and 60-second rolling graphs from the GPU.';
       renderMonView();
       viewToggle.querySelectorAll<HTMLButtonElement>('.mon-view-btn').forEach((b) => {
         b.classList.toggle('active', b.dataset.view === monView);

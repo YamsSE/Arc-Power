@@ -33,45 +33,43 @@
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
 import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
-import { physicalTargetOf } from './gpu-inventory.js';
 // M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
 // in-process executeApply clamps profile.settings against
 // extendedRangesFor(caps) internally; the recording must use the SAME
 // clamped values (the worker import pattern - no cycle: ipc-core never
 // imports apply-on-boot).
 import { clampSettings } from './ipc-core.js';
-import { deviceHardwareKey } from './backend/units.js';
 
 /** Any per-control result carrying the waiver-not-set driver answer. */
 const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
   .some((p) => p?.errorCode === 'waiver-not-set');
+
 /**
- * M29: explicit session ids remain authoritative; persisted selections resolve
- * by durable PCI/BDF identity and legacy numeric-only settings fall back to
- * the sorted preferred device.
+ * M4-F (S2): resolve the apply's target device. Priority:
+ *   1. an explicit `deviceId` that matches an enumerated device;
+ *   2. the persisted settings' deviceId (when it matches an enumerated id);
+ *   3. devices[0] (the historical behavior - a 1-device machine is
+ *      unaffected; the persisted/selected device is honored on 2-GPU
+ *      machines so a logon apply never silently targets the iGPU).
+ * Returns null when no devices are enumerated (callers degrade).
+ * @param {import('./backend/backend.interface.js').IOCBackend} backend
+ * @param {import('./store/profile-store.js').ProfileStore} store
+ * @param {number|null|undefined} explicitDeviceId
+ * @returns {Promise<number|null>}
  */
-export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null, explicitDeviceKey = undefined) {
+export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null) {
   const devices = await backend.listDevices();
   if (devices.length === 0) return null;
   const ids = new Set(devices.map((d) => d.id));
+  if (Number.isInteger(explicitDeviceId) && ids.has(explicitDeviceId)) return explicitDeviceId;
   let settings = null;
   try {
     settings = await store.loadSettings();
   } catch {
     // degraded: never fall back on an unreadable store beyond devices[0]
   }
-  const key = typeof explicitDeviceKey === 'string'
-    ? explicitDeviceKey
-    : (typeof settings?.deviceKey === 'string' ? settings.deviceKey : null);
-  const matched = key
-    ? devices.find((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key)
-    : null;
-  if (matched) return matched.id;
-  // A supplied key is identity-sensitive. Never pair it with a different
-  // numeric id after reorder/disappearance; fall back to the first current
-  // device and let the caller persist that new selection.
-  if (key) return undefined;
-  if (Number.isInteger(explicitDeviceId) && ids.has(explicitDeviceId)) return explicitDeviceId;
+  const persisted = settings?.deviceId;
+  if (Number.isInteger(persisted) && ids.has(persisted)) return persisted;
   return devices[0].id;
 }
 
@@ -110,38 +108,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
 
   let targetDeviceId;
   try {
-    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId, settings.deviceKey);
+    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId);
   } catch (err) {
     return { applied: false, reason: `device enumeration failed: ${err.message}` };
   }
   if (targetDeviceId === null) {
     return { applied: false, reason: 'no devices enumerated' };
   }
-  if (targetDeviceId === undefined) {
-    return { applied: false, reason: 'stale GPU target: the persisted device is no longer enumerated' };
-  }
   const deviceId_ = targetDeviceId;
-  let targetDeviceKey = null;
-  let resolvedTarget = null;
-  try {
-    // Resolve the row without the write-time proof gate. The proof is derived
-    // from this row immediately below and is supplied to the actual apply or
-    // elevated worker call; asking getDeviceTarget with only the persisted key
-    // would reject a valid boot target before its proof can be constructed.
-    const target = typeof backend.getTarget === 'function'
-      ? await backend.getTarget(deviceId_)
-      : typeof backend.getDeviceTarget === 'function'
-        ? await backend.getDeviceTarget(deviceId_, null)
-      : (await backend.listDevices()).find((device) => device.id === deviceId_) ?? null;
-    resolvedTarget = target ?? null;
-    targetDeviceKey = target?.deviceKey ?? (target ? deviceHardwareKey(target) : null);
-    const persistedKey = typeof settings.deviceKey === 'string' ? settings.deviceKey : null;
-    if (typeof backend.getDeviceTarget === 'function' && persistedKey && targetDeviceKey !== persistedKey) {
-      return { applied: false, reason: 'stale GPU target: the persisted device no longer matches the selected session' };
-    }
-  } catch (err) {
-    return { applied: false, reason: `device target resolution failed: ${err.message}` };
-  }
 
   let caps;
   try {
@@ -215,20 +189,16 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // Same refusal classification as the mode gate: no defaults-restore
   // fallback, the live OC state survives, and the tray balloon is the
   // reason-specific refusal (fallbackApplied stays undefined).
-  // M4O: the gate keys on the RUNTIME being available, NOT the mode-gated
+  // M4O: the gate keys on the RUNTIME capability, NOT the mode-gated
   // caps.extendedRanges flag - the backends only set that flag in advanced
   // mode, so in stock mode it is false even when the bundled 2023 runtime
-  // IS capable (the second blocker in the report). M41: the unelevated
-  // parent may see an installed DLL while isCapable() returns false with
-  // ERROR_KMD_CALL; installed availability is enough to delegate to the
-  // elevated worker. A genuinely missing/unavailable runtime still refuses
-  // honestly, while the worker's own isCapable() write probe remains final.
-  const extendedAvailable = oldIgcl
-    ? ((typeof oldIgcl.isAvailable === 'function' && oldIgcl.isAvailable() === true)
-      || (typeof oldIgcl.isCapable === 'function' && await oldIgcl.isCapable()))
-    : caps.extendedRanges === true;
-  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedAvailable });
-  if (!unavailable && !extendedAvailable) {
+  // IS capable (the second blocker in the report). The true probe is
+  // oldIgcl.isCapable() (mock: createMockOldIgcl -> backend.extendedCapable
+  // - the RAW featureset flag, mode-independent). A genuinely not-capable
+  // driver still refuses honestly with EXTENDED_UNAVAILABLE_MSG.
+  const extendedCapable = oldIgcl ? await oldIgcl.isCapable() : caps.extendedRanges === true;
+  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable });
+  if (!unavailable && !extendedCapable) {
     // M17d (Run D - the V1-call pin): a profile apply is advanced-gated, so
     // its W/C values route through the bundled 2023 runtime (V1) REGARDLESS
     // of value (the mode-based split). On a driver where that runtime cannot
@@ -267,16 +237,6 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // refused value would never degrade). Gate refusals (ocModeRefused /
   // extendedUnavailable) never record (config refusals, not driver
   // ceiling refusals).
-  const normalizeResult = (out) => {
-    const result = out?.result;
-    // The elevated worker keeps capability refusals on the OUTER envelope.
-    // Fold that marker into the local result used by the shared failure path,
-    // without mutating or reshaping the in-process envelope.
-    if (out?.extendedUnavailable === true && result && typeof result === 'object') {
-      return { ...result, extendedUnavailable: true };
-    }
-    return result;
-  };
   const recordRefusals = (result) => {
     if (!result || typeof result !== 'object') return;
     if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
@@ -293,21 +253,19 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // worker's in-memory flag matches what the user accepted. M3-C-E: it
       // carries the persisted ocMode so the worker's gate keys on the real
       // mode (its own caps always report extendedRanges). M4O: it carries
-      // profileApply:true so the worker skips the STOCK gate (the
-      // profile is the user's own deliberate state) while keeping the ceiling
+      // profileApply:true so the worker skips the STOCK gate (the profile
+      // is the user's own deliberate state) while keeping the ceiling
       // refusal (>315 W never silently clamps).
       const out = await applyRunner.apply({
         deviceId: deviceId_,
-        deviceKey: targetDeviceKey,
-        physicalTarget: physicalTargetOf(resolvedTarget),
         settings: profile.settings,
         profileName: profile.name,
         waiverAccepted,
         // M17d (Run D): the runner request carries the APPLY MODE (the same
         // value ocModeRefusal received here - OC_MODE_ADVANCED: a profile
         // applies as saved, so its W/C values route through the V1 runtime
-        // per the V1-call pin; the interactive slider gate never applies
-        // to profile applies).
+        // per the V1-call pin; the interactive slider gate never applies to
+        // profile applies).
         ocMode: OC_MODE_ADVANCED,
         profileApply: true,
         // M17c (step-4 N6): the parent-resolved limits-key rides the worker
@@ -315,24 +273,19 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         // (the worker's own caps decode the subsystem only; the parent's
         // finalized caps carry the laptop branch).
         limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
-        allowAcerBridge: false,
-        interactiveContext: null,
-        acerPackagedApplyEnabled: false,
       });
-      const result = normalizeResult(out);
-      recordRefusals(result);
-      return result === out.result ? out : { ...out, result };
+      recordRefusals(out.result);
+      return out;
     }
     // M4O: opts.profileApply:true - executeApply clamps against the
     // driver's TRUE limits (extendedRangesFor) instead of the mode-gated
     // caps.ranges (stock max 252 would silently reduce a saved 300 W
-    // profile). Its in-process/worker safety-net still uses the actual
-    // oldIgcl.isCapable() write probe; the parent gate above uses installed
-    // availability so an unelevated profile can delegate first.
+    // profile) and keys its safety-net capability refusal on the runtime
+    // probe (oldIgcl.isCapable) instead of caps.extendedRanges.
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
-    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits, allowAcerBridge: false, interactiveContext: null, acerPackagedApplyEnabled: false });
+    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
     recordRefusals(out.result);
     return out;
   };
@@ -340,7 +293,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   let state = null;
   try {
     let out = await attempt(caps.waiverAccepted === true);
-    result = normalizeResult(out);
+    result = out.result;
     state = out.state;
     // M4-D: the apply answered waiver-not-set while the persisted acceptance
     // is true (settings.json - the user's permanent consent). Silently
@@ -353,13 +306,13 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       log('[apply-on-boot] apply answered waiver-not-set with a persisted acceptance - silently re-setting the driver waiver and retrying ONCE');
       try {
         if (applyRunner?.needsWorker?.()) {
-          await applyRunner.waiverAccept(deviceId_, targetDeviceKey, physicalTargetOf(resolvedTarget));
+          await applyRunner.waiverAccept(deviceId_);
           await backend.restoreWaiverState(deviceId_, true);
         } else {
           await backend.setWaiverAccepted(deviceId_);
         }
         out = await attempt(true);
-        result = normalizeResult(out);
+        result = out.result;
         state = out.state;
       } catch (err) {
         log(`[apply-on-boot] waiver re-set failed: ${err.message} - falling through to the honest failure path`);
@@ -397,16 +350,6 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // elevation refusal in dev, a driver refusal in the product). The honest
   // balloon is the caller's job; the ELEVATED logon applies come from the
   // ArcPowerBootApply task (--boot-apply mode, M4-E).
-  if (result.extendedUnavailable === true) {
-    log('[apply-on-boot] worker reported extended capability unavailable - NO defaults restore');
-    return {
-      applied: false,
-      reason: EXTENDED_UNAVAILABLE_MSG,
-      result,
-      state,
-      extendedUnavailable: true,
-    };
-  }
   if (skipDefaultsFallback) {
     log('[apply-on-boot] boot variant (applyRunner-less, in-process): apply failed - defaults-restore fallback SKIPPED (an app-start apply must never wipe live OC state over a failure; logon applies run elevated via the ArcPowerBootApply task)');
     return {
@@ -417,50 +360,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       fallbackSkipped: true,
     };
   }
-  log('[apply-on-boot] apply failed: ' + JSON.stringify(result.perControl) + ' - restoring defaults');
+  log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} - restoring defaults`);
   let fallbackApplied = true;
   try {
     if (applyRunner?.needsWorker?.()) {
-      const out = await applyRunner.reset(deviceId_, targetDeviceKey, physicalTargetOf(resolvedTarget));
+      const out = await applyRunner.reset(deviceId_);
       if (!out.ok) throw new Error('reset via elevated worker failed');
     } else {
       await backend.resetToDefaults(deviceId_);
-    }
-    // M26: the fallback reset also clears a negative Sysman voltage offset;
-    // backend.resetToDefaults only resets the IGCL controls.
-    if ((typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function'
-      || typeof sysmanPowerLimits?.readVoltageOffset === 'function')
-      && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
-      let voltRead = null;
-      if (typeof sysmanPowerLimits.readVoltageOffsetResult === 'function') {
-        try {
-          voltRead = await sysmanPowerLimits.readVoltageOffsetResult(deviceId_);
-        } catch (err) {
-          throw new Error(`Sysman voltage read failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        if (voltRead?.ok !== true) {
-          // Unsupported hardware is safe to bypass; not-ready means the
-          // helper cannot prove that prior VF state is absent.
-          if (voltRead?.errorCode === 'unsupported') {
-            voltRead = null;
-          } else {
-            throw new Error(`Sysman voltage read failed: ${voltRead?.message ?? voltRead?.errorCode ?? 'unknown failure'}`);
-          }
-        } else if (!Number.isFinite(voltRead.offsetV)) {
-          throw new Error('Sysman voltage read failed: invalid offset read-back');
-        }
-      } else {
-        // Legacy injected seams have no status channel; preserve their
-        // historical null/throw degrade rather than guessing support.
-        try { voltRead = await sysmanPowerLimits.readVoltageOffset(deviceId_); } catch { voltRead = null; }
-      }
-      if (voltRead && (voltRead.needsClear === true
-        || (Number.isFinite(voltRead.offsetV) && voltRead.offsetV < 0))) {
-        const cleared = await sysmanPowerLimits.setVoltageOffset({ offsetV: 0 }, deviceId_);
-        if (cleared?.ok !== true) {
-          throw new Error(`Sysman voltage clear failed: ${cleared?.message ?? cleared?.errorCode ?? 'unknown failure'}`);
-        }
-      }
     }
   } catch (err) {
     fallbackApplied = false;
@@ -475,9 +382,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   }
   return {
     applied: false,
-    reason: fallbackApplied === true
-      ? 'apply failed; defaults restored'
-      : 'apply failed; defaults restore failed',
+    reason: 'apply failed; defaults restored',
     fallbackApplied,
     result,
     state: afterFallback,

@@ -7,16 +7,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('arcPower', {
   health: () => ipcRenderer.invoke('health'),
   listDevices: () => ipcRenderer.invoke('list-devices'),
-  // M29: device identity carries the session id plus durable PCI/BDF key.
+  // M4-F: the persisted GPU selection (device-get reads it at boot;
+  // device-set is the ONLY writer - like oc-mode-set).
   deviceGet: () => ipcRenderer.invoke('device-get'),
-  deviceSelectionGenerationGet: () => ipcRenderer.invoke('device-selection-generation-get'),
-  deviceSet: (selection) => ipcRenderer.invoke('device-set', selection),
-  // M31: the Advanced Overlay requests a durable-key switch; the main
-  // renderer owns the actual telemetry/persistence flow.
-  deviceSelectionRequest: (deviceKey) => ipcRenderer.invoke('device-selection-request', deviceKey),
-  deviceSelectionPush: (payload) => ipcRenderer.invoke('device-selection-push', payload),
-  getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
+  deviceSet: (deviceId) => ipcRenderer.invoke('device-set', deviceId),
   getCapabilities: (deviceId) => ipcRenderer.invoke('get-capabilities', deviceId),
+  getCurrentSettings: (deviceId) => ipcRenderer.invoke('get-current-settings', deviceId),
   // M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the
   // sysman layer answers, null when absent - the power-limit card's PL2
   // line). M17f (step-4 N2): DEVICE-SCOPED like every read channel (the
@@ -35,9 +31,6 @@ contextBridge.exposeInMainWorld('arcPower', {
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
   telemetryStart: (deviceId) => ipcRenderer.invoke('telemetry-start', deviceId),
-  // Basic Overlay secondary adapters; the selected main-device lane remains
-  // owned by telemetryStart.
-  overlayTelemetryStart: (deviceIds) => ipcRenderer.invoke('overlay-telemetry-start', deviceIds),
   telemetryStop: (deviceId) => ipcRenderer.invoke('telemetry-stop', deviceId),
   registryCatalog: () => ipcRenderer.invoke('registry-catalog'),
   registryApply: (entryId, action) => ipcRenderer.invoke('registry-apply', entryId, action),
@@ -47,7 +40,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   // M17d: the vendor-lane static info ({ vramBytes, computeCores } - the
   // no-Intel dashboard VRAM/Compute rows' source; honest nulls when no
   // vendor adapter resolves). No payload.
-  vendorInfo: (deviceId) => ipcRenderer.invoke('vendor-info:get', deviceId),
+  vendorInfo: () => ipcRenderer.invoke('vendor-info:get'),
   // M4-D: the integrated-title-bar window controls (no payload - the
   // channels assert it in main).
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),
@@ -90,18 +83,6 @@ contextBridge.exposeInMainWorld('arcPower', {
   // in mock mode; the log records what it did). Mock mode only.
   mockRunBootApply: () => ipcRenderer.invoke('mock:run-boot-apply'),
   mockBootApplyLog: () => ipcRenderer.invoke('mock:boot-apply-log'),
-  // M31 selection IPC: requests terminate at the main renderer; updates
-  // are delivered atomically to both renderer windows.
-  onDeviceSelectionRequested: (cb) => {
-    const listener = (_event, payload) => cb(payload);
-    ipcRenderer.on('device-selection:request', listener);
-    return () => ipcRenderer.removeListener('device-selection:request', listener);
-  },
-  onDeviceSelectionUpdated: (cb) => {
-    const listener = (_event, payload) => cb(payload);
-    ipcRenderer.on('device-selection:updated', listener);
-    return () => ipcRenderer.removeListener('device-selection:updated', listener);
-  },
   onTelemetrySample: (cb) => {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);

@@ -105,22 +105,6 @@ const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 const OVERLAY_POLL_MS_DEFAULT = 400;
 const OVERLAY_POLL_MS_MIN = 100;
 const OVERLAY_POLL_MS_MAX = 2000;
-// M35: durable overlay GPU selection uses stable PCI/BDF device keys. Null
-// means the legacy/default "monitor every enumerated GPU" behavior; an empty
-// array is normalized to null so the overlay always has a useful target.
-function normalizeOverlayDeviceKeys(v) {
-  if (!Array.isArray(v)) return null;
-  const seen = new Set();
-  const out = [];
-  for (const key of v) {
-    if (typeof key === 'string' && key.length > 0 && key.length <= 256 && !seen.has(key)) {
-      seen.add(key);
-      out.push(key);
-    }
-  }
-  return out.length > 0 ? out : null;
-}
-
 
 export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT };
 
@@ -298,10 +282,11 @@ export class ProfileStore {
   }
 
   /**
-   * PCI/BDF identity. Legacy files with only deviceId remain readable but
-   * are explicitly unverified and are resolved to the sorted preferred GPU.
-   * device-set is the ONLY writer (profiles-settings-save carries both
-   * values read-modify-write so it cannot clobber the selection).
+   * M4-F: `deviceId` - the persisted GPU selection (number | null). Absent
+   * on old files -> null (the devices[0] default resolves at boot); stored
+   * via the device-set channel, NEVER through profiles-settings-save (which
+   * carries it read-modify-write so a Settings/Profiles save can never
+   * clobber it).
    * M5: the software-overlay fields (overlayEnabled/overlayHotkeyLetter/
    * overlayPosition/overlayScale) - absent on old files -> the defaults.
    * M6: overlayColor + overlayStats ride the same mechanism (stock white +
@@ -352,25 +337,27 @@ export class ProfileStore {
       return {
         waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
         ocMode: this.ocModeDefault, advancedModeAccepted: false,
+        // M4-D: absent -> false (the Settings-tab fields ride the
+        // absent-field defaults mechanism - NO schema bump).
         startWithWindows: false, startMinimized: false, closeToTray: false,
-        acerPackagedApplyEnabled: false,
+        // M4-D2: absent -> false (the Monitoring log-to-file toggle).
         monitorLogToFile: false,
+        // M4-F: absent -> null (the devices[0] fallback resolves at boot).
         deviceId: null,
-        deviceKey: null,
+        // 1.0.1 Themes: absent -> 'dark' (same absent-field mechanism).
         theme: 'dark',
         // M5: the software-overlay settings. Absent on old files -> the
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
         // absent-field mechanism, NO schema bump).
+        // M6: the color defaults to the stock white '#ffffff' and the stats
+        // to the M17g DEFAULT set (the user's 11 ON / the others OFF - the
+        // M6 full-set default FLIPS) - same absent-field mechanism.
         overlayEnabled: false,
         overlayHotkeyLetter: 'O',
         overlayPosition: 'top-left',
         overlayScale: 1.0,
-        // M6: the color defaults to the stock white '#ffffff' and the stats
-        // to the M17g DEFAULT set (the user's 11 ON / the others OFF - the
-        // M6 full-set default FLIPS) - same absent-field mechanism.
         overlayColor: OVERLAY_COLOR_DEFAULT,
         overlayStats: [...OVERLAY_STATS_DEFAULT],
-        overlayDeviceKeys: null,
         // M7b: the background box - absent -> off, black, 0.5 opacity (the
         // same absent-field mechanism, NO schema bump).
         overlayBgEnabled: false,
@@ -406,7 +393,6 @@ export class ProfileStore {
       // M4-B: the Advanced OC Mode warning is accepted ONCE and
       // persisted - a re-boot must not re-ask. Absent on old files -> false.
       advancedModeAccepted: data.advancedModeAccepted === true,
-      acerPackagedApplyEnabled: data.acerPackagedApplyEnabled === true,
       // M4-D: the Settings-tab fields. Absent on old files -> false (same
       // absent-field default mechanism as ocMode/advancedModeAccepted).
       startWithWindows: data.startWithWindows === true,
@@ -414,11 +400,17 @@ export class ProfileStore {
       closeToTray: data.closeToTray === true,
       // M4-D2: the Monitoring "Log to file" toggle (same mechanism).
       monitorLogToFile: data.monitorLogToFile === true,
-      // M4-F/M29: numeric-only settings remain readable but unverified until
-      // boot resolution writes the matching durable PCI/BDF key.
+      // M4-F: the persisted GPU selection. Absent on old files -> null
+      // (devices[0] resolves at boot - same absent-field mechanism as
+      // ocMode; a garbage value never crashes, it degrades to null).
       deviceId: Number.isInteger(data.deviceId) && data.deviceId >= 0 ? data.deviceId : null,
-      deviceKey: typeof data.deviceKey === 'string' && data.deviceKey.length > 0 ? data.deviceKey : null,
+      // 1.0.1 Themes: the persisted UI theme. Absent on old files -> 'dark'
+      // (same absent-field mechanism); a garbage value degrades to 'dark'
+      // - never a crash.
       theme: THEMES.includes(data.theme) ? data.theme : 'dark',
+      // M5: the software-overlay settings (same mechanism): enabled off
+      // when absent, the letter 'O', top-left, scale 1.0; a garbage value
+      // degrades to the default - never a crash.
       overlayEnabled: data.overlayEnabled === true,
       overlayHotkeyLetter: typeof data.overlayHotkeyLetter === 'string'
         && /^[A-Za-z]$/.test(data.overlayHotkeyLetter)
@@ -428,13 +420,13 @@ export class ProfileStore {
         ? data.overlayPosition
         : 'top-left',
       overlayScale: clampOverlayScale(data.overlayScale),
+      // M6: the overlay text color - a /^#[0-9a-fA-F]{6}$/ hex or the stock
+      // white default (same absent-field mechanism; a garbage value never
+      // crashes).
       overlayColor: typeof data.overlayColor === 'string'
         && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor)
         ? data.overlayColor
         : OVERLAY_COLOR_DEFAULT,
-      // M35: absent means all enumerated GPUs; a saved list is keyed by
-      // durable hardware identity rather than volatile enumeration indexes.
-      overlayDeviceKeys: normalizeOverlayDeviceKeys(data.overlayDeviceKeys),
       // M6: the enabled stat ids - known ids only, deduped; absent/garbage
       // degrades to the M17g DEFAULT set (the user's 11 ON / the others
       // OFF - the M6 full-set default FLIPS).
@@ -477,7 +469,7 @@ export class ProfileStore {
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -485,16 +477,17 @@ export class ProfileStore {
       waiverAccepted: settings.waiverAccepted === true,
       ocOnBoot: settings.ocOnBoot === true,
       activeProfileId: settings.activeProfileId ?? null,
-      acerPackagedApplyEnabled: settings.acerPackagedApplyEnabled === true,
       ocMode: settings.ocMode === 'advanced' || settings.ocMode === 'stock' ? settings.ocMode : this.ocModeDefault,
       advancedModeAccepted: settings.advancedModeAccepted === true,
       startWithWindows: settings.startWithWindows === true,
       startMinimized: settings.startMinimized === true,
       closeToTray: settings.closeToTray === true,
       monitorLogToFile: settings.monitorLogToFile === true,
-      // Durable PCI/BDF identity; absent/garbage remains unverified.
+      // M4-F: non-negative integers only; anything else (absent, null,
+      // garbage) persists as null - the boot resolution + self-heal then
+      // repersists devices[0].
       deviceId: Number.isInteger(settings.deviceId) && settings.deviceId >= 0 ? settings.deviceId : null,
-      deviceKey: typeof settings.deviceKey === 'string' && settings.deviceKey.length > 0 ? settings.deviceKey : null,
+      // 1.0.1 Themes: validated on save - an absent/garbage theme persists
       // as 'dark' (the channel already guards patch.theme, so the store
       // fallback only ever sees absent fields on direct callers).
       theme: THEMES.includes(settings.theme) ? settings.theme : 'dark',
@@ -516,9 +509,6 @@ export class ProfileStore {
         && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor)
         ? settings.overlayColor
         : OVERLAY_COLOR_DEFAULT,
-      // M35: null retains the all-GPU default; a non-empty list persists
-      // only the user's selected durable hardware keys.
-      overlayDeviceKeys: normalizeOverlayDeviceKeys(settings.overlayDeviceKeys),
       overlayStats: normalizeOverlayStats(settings.overlayStats),
       // M7b: the background box - validated on save like the rest (the
       // channel validates first; the store fallback covers direct callers).

@@ -43,7 +43,6 @@
 import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
@@ -94,11 +93,8 @@ import {
 // poison); the raw consumer is constructed ONLY in the --sysman-helper
 // branch itself (the bare context).
 import { createSysmanHelperProxy } from './sysman/helper-proxy.js';
-import { createAcerPackagedBridge } from './acer-packaged-bridge.js';
-import { createAcerFileMetadataOps } from './acer-file-metadata.js';
 import { createApplyRunner } from './elevated-apply.js';
 import { createMockOldIgcl } from './backend/mock-backend.js';
-import { createUnifiedGpuBackend } from './gpu-inventory.js';
 // M17f: the sysman power-limits consumer (the PL2 companion + the
 // 'power-limits:read' source). The REAL adapter lazily loads ze_loader.dll;
 // the MOCK seam (mock/ui-verify) answers the fixture limits through the
@@ -108,206 +104,7 @@ import { createSysmanPowerLimits, createMockSysmanPowerLimits } from './sysman/p
 // in product runs - see profile-boot.js).
 import { markProfileBoot, bootProfilingEnabled, profileElapsedMs } from './profile-boot.js';
 
-const acerFileMetadata = createAcerFileMetadataOps();
-const canonicalPciId = (value) => {
-  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return `0x${value.toString(16)}`;
-  if (typeof value !== 'string') return null;
-  const raw = value.trim().toLowerCase().replace(/^0x/, '');
-  return /^[0-9a-f]+$/.test(raw) ? `0x${raw.replace(/^0+/, '') || '0'}` : null;
-};
-const isAcerA770Target = (target) => target?.synthetic !== true
-  && target?.backendKind !== 'os'
-  && target?.identityAmbiguous !== true
-  && target?.displayCardIndex === 0
-  && canonicalPciId(target?.pciVendorId ?? target?.vendorId) === '0x8086'
-  && canonicalPciId(target?.pciDeviceId ?? target?.deviceId) === '0x56a0';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-async function assertAcerTarget(adapter, { deviceId, deviceKey = null, physicalTarget = null } = {}) {
-  if (typeof adapter?.assertDeviceTarget !== 'function') throw new Error('Acer physical-target assertion is unavailable');
-  await adapter.assertDeviceTarget(deviceId, deviceKey, physicalTarget);
-}
-// Acer's XML profile stores absolute scalar fields. Those fields must only be
-// verified by an explicit target-bound absolute reader; a driver offset or
-// telemetry value is not an equivalent. Post-transaction checks without an
-// XML expectation still verify the captured live core/voltage state through
-// the target-bound backend.
-async function verifyAcerAbsoluteCoreVoltage(adapter, { expected = null, baseline = null, deviceId, deviceKey = null, physicalTarget = null, readAbsoluteCoreVoltageForTarget = null } = {}) {
-  await assertAcerTarget(adapter, { deviceId, deviceKey, physicalTarget });
-  const explicitExpected = expected && typeof expected === 'object' && !Array.isArray(expected)
-    ? expected
-    : (baseline?.coreVoltageProfile && typeof baseline.coreVoltageProfile === 'object' && !Array.isArray(baseline.coreVoltageProfile)
-      ? baseline.coreVoltageProfile
-      : null);
-  const expectedValues = explicitExpected ?? baseline?.coreVoltage;
-  if (!expectedValues || typeof expectedValues !== 'object' || Array.isArray(expectedValues)
-    || Object.keys(expectedValues).length === 0) {
-    return { ok: false, errorCode: 'readback-unavailable', message: 'Acer core/voltage baseline is unavailable' };
-  }
-  let observed;
-  try {
-    if (explicitExpected) {
-      const reader = readAbsoluteCoreVoltageForTarget ?? adapter?.readAbsoluteCoreVoltageForTarget;
-      if (typeof reader !== 'function') {
-        return { ok: false, errorCode: 'unsupported', message: 'target-bound absolute Acer core/voltage readback is unavailable' };
-      }
-      const readResult = await reader({ expected: expectedValues, physicalTarget, deviceId, deviceKey });
-      if (readResult?.ok === false) {
-        return {
-          ok: false,
-          errorCode: readResult.errorCode ?? 'readback-unavailable',
-          message: readResult.message ?? 'Acer core/voltage readback failed',
-        };
-      }
-      observed = readResult?.ok === true && Object.prototype.hasOwnProperty.call(readResult, 'value')
-        ? readResult.value
-        : readResult;
-    } else if (typeof adapter?.getCurrentSettings === 'function') {
-      observed = await adapter.getCurrentSettings(deviceId);
-    } else {
-      return { ok: false, errorCode: 'unsupported', message: 'target-bound absolute Acer core/voltage readback is unavailable' };
-    }
-  } catch (error) {
-    return { ok: false, errorCode: 'readback-unavailable', message: `Acer core/voltage readback failed: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const ok = observed && typeof observed === 'object' && !Array.isArray(observed)
-    && Object.entries(expectedValues).every(([key, value]) => {
-      if (!(key in observed)) return false;
-      const left = Number(String(value).trim().replace(',', '.'));
-      const right = Number(String(observed[key]).trim().replace(',', '.'));
-      return Number.isFinite(left) && Number.isFinite(right)
-        ? Math.abs(left - right) <= 0.000001
-        : String(value).trim() === String(observed[key]).trim();
-    });
-  return ok
-    ? { ok: true, observed }
-    : { ok: false, errorCode: 'readback-mismatch', message: 'Acer core/voltage readback mismatch' };
-}
-async function acerRecoveryGate(bridge = null) {
-  if (mock) return true;
-  try {
-    const recoveryBridge = bridge ?? createAcerPackagedBridge();
-    const recovery = await recoveryBridge.recover?.();
-    if (recovery?.ok === true) return true;
-    console.error(`[acer-bridge] apply blocked: ${recovery?.message ?? recovery?.errorCode ?? 'recovery failed'}`);
-  } catch (error) {
-    console.error(`[acer-bridge] apply blocked: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  return false;
-}
-/**
- * Build the target-bound hooks required to recover an interrupted Acer
- * transaction. Startup modes must recover with the same physical/Sysman and
- * metadata proofs as the apply path; a bare bridge can only inspect the
- * journal and would permanently block a recoverable launch.
- */
-function createAcerRecoveryBridge({ backend, sysmanPowerLimits }) {
-  const assertTarget = (args) => assertAcerTarget(backend, args);
-  const readPair = async (physicalTarget, deviceId, deviceKey = null) => {
-    if (!isAcerA770Target(physicalTarget)) return null;
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    return sysmanPowerLimits?.readLimitsForTarget?.(physicalTarget, deviceId) ?? null;
-  };
-  const setPair = async (physicalTarget, pair, deviceId, deviceKey = null) => {
-    if (!isAcerA770Target(physicalTarget)) return { ok: false, message: 'physical-target Sysman proof unavailable' };
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    return sysmanPowerLimits?.setLimitsForTarget?.(physicalTarget, pair, deviceId) 
-      ?? { ok: false, message: 'target-bound Sysman setter unavailable' };
-  };
-  const restoreSysmanVoltageOffset = async ({ offsetV, deviceId, deviceKey, physicalTarget }) => {
-    if (!isAcerA770Target(physicalTarget) || typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
-      return { ok: false, message: 'target-bound Sysman voltage offset restore is unavailable' };
-    }
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    const written = await sysmanPowerLimits.setVoltageOffset({ offsetV }, deviceId);
-    if (written?.ok !== true) return written ?? { ok: false, message: 'Sysman voltage offset restore failed' };
-    const observed = typeof sysmanPowerLimits.readVoltageOffsetResult === 'function'
-      ? await sysmanPowerLimits.readVoltageOffsetResult(deviceId)
-      : await sysmanPowerLimits.readVoltageOffset?.(deviceId);
-    const observedOffset = Number.isFinite(observed?.offsetV) ? observed.offsetV : null;
-    return observedOffset !== null && Math.abs(observedOffset - offsetV) <= 0.000001
-      ? { ok: true, offsetV: observedOffset }
-      : { ok: false, message: 'Sysman voltage offset restore read-back mismatch' };
-  };
-  const restoreCoreVoltage = async (coreVoltage, { deviceId, deviceKey, physicalTarget }) => {
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    if (!coreVoltage || typeof coreVoltage !== 'object' || Object.keys(coreVoltage).length === 0) {
-      return { ok: false, message: 'live core/voltage baseline unavailable' };
-    }
-    const out = await backend.applySettings(deviceId, coreVoltage);
-    if (out?.ok === false) return out;
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    const state = await backend.getCurrentSettings(deviceId);
-    return Object.entries(coreVoltage).every(([key, value]) => state?.[key] === value)
-      ? { ok: true }
-      : { ok: false, message: 'core/voltage restore read-back mismatch' };
-  };
-  const restoreTemperature = async (temperatureC, { deviceId, deviceKey, physicalTarget }) => {
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    if (typeof temperatureC !== 'number' || !Number.isFinite(temperatureC)) {
-      return { ok: false, message: 'temperature baseline unavailable' };
-    }
-    const out = await backend.applySettings(deviceId, { tempLimitC: temperatureC });
-    if (out?.ok === false) return out;
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    const state = await backend.getCurrentSettings(deviceId);
-    return state?.tempLimitC === temperatureC
-      ? { ok: true }
-      : { ok: false, message: 'temperature restore read-back mismatch' };
-  };
-  const restoreFanState = async (fan, { deviceId, deviceKey, physicalTarget }) => {
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    if (!fan || typeof fan !== 'object' || Object.keys(fan).length === 0) {
-      return { ok: false, message: 'fan baseline unavailable' };
-    }
-    const out = await backend.applySettings(deviceId, fan);
-    if (out?.ok === false) return out;
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    const state = await backend.getCurrentSettings(deviceId);
-    return Object.entries(fan).every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value))
-      ? { ok: true }
-      : { ok: false, message: 'fan restore read-back mismatch' };
-  };
-  const verifyCoreVoltage = async ({ baseline, deviceId, deviceKey, physicalTarget }) => {
-    await assertTarget({ deviceId, deviceKey, physicalTarget });
-    const state = await backend.getCurrentSettings(deviceId);
-    const values = Object.entries(baseline?.coreVoltage ?? {});
-    return {
-      ok: values.length > 0 && values.every(([key, value]) => state?.[key] === value),
-      message: values.length > 0 ? undefined : 'core/voltage baseline verification unavailable',
-    };
-  };
-  const verifyFinalState = async ({ baseline, expectedPower, deviceId, deviceKey, physicalTarget }) => {
-    const observed = await readPair(physicalTarget, deviceId, deviceKey);
-    const state = await backend.getCurrentSettings(deviceId);
-    const powerOk = !!expectedPower && !!observed
-      && observed.sustainedW === expectedPower.sustainedW
-      && observed.burstW === expectedPower.burstW;
-    const coreValues = Object.entries(baseline?.coreVoltage ?? {});
-    const fanValues = Object.entries(baseline?.fan ?? baseline?.fanState ?? {});
-    const coreOk = coreValues.length > 0 && coreValues.every(([key, value]) => state?.[key] === value);
-    const fanOk = fanValues.length > 0 && fanValues.every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value));
-    const temperatureC = baseline?.tempLimitC ?? baseline?.temperatureLimitC;
-    const temperatureOk = Number.isFinite(temperatureC) && state?.tempLimitC === temperatureC;
-    const ok = powerOk && coreOk && fanOk && temperatureOk;
-    return { ok, message: ok ? undefined : 'final Acer bridge state verification failed' };
-  };
-  return createAcerPackagedBridge({
-    requireProcessIdentity: true,
-    requireFileMetadata: true,
-    captureFileMetadata: acerFileMetadata.capture,
-    restoreFileMetadata: acerFileMetadata.restore,
-    restoreSysmanVoltageOffset,
-    verifyFileMetadata: acerFileMetadata.verify,
-    readSysmanPair: readPair,
-    setSysmanPair: setPair,
-    restoreCoreVoltage,
-    restoreTemperature,
-    restoreFanState,
-    verifyCoreVoltage,
-    verifyFinalState,
-    verifyAcerAbsoluteCoreVoltage: (args) => verifyAcerAbsoluteCoreVoltage(backend, args),
-  });
-}
 
 // M17d (Run E): the harness gate - ARC_POWER_PROFILE_BOOT=1 OR
 // --profile-boot. When on, the boot stages log elapsed-from-launch lines and
@@ -379,14 +176,6 @@ async function boundWarm(proxy) {
   } catch {
     // a warm failure degrades silently - the apply's not-ready retry covers it
   }
-}
-function createMainSysmanProxy() {
-  const options = {
-    execPath: process.execPath,
-    appPath: process.defaultApp ? app.getAppPath() : null,
-    log: (s) => console.log(`[sysman-helper] ${s}`),
-  };
-  return createSysmanHelperProxy(options);
 }
 
 // M23 CHANGE 3 / PART A (the full-close reap): the SYSMAN SHUTDOWN BOUND -
@@ -627,139 +416,10 @@ async function main() {
         ocMode: 'advanced',
       },
     });
-    // M30: the worker receives the durable key and uses the same routing
-    // wrapper. With no OS snapshot in the short-lived worker, an OS-only key
-    // cannot resolve and therefore refuses closed-loop rather than falling
-    // back to IGCL adapter 0.
-    const workerRoutedBackend = createUnifiedGpuBackend({ backend: workerBackend, sysinfo: null });
-    const workerAcerPackagedBridge = mock ? null : createAcerPackagedBridge({
-      authenticatedPath: 'worker',
-      validateInteractiveContext: async (context) => {
-        const secret = process.env.ARC_POWER_ACER_CAPABILITY_SECRET;
-        const mac = context?.capability;
-        if (!secret || typeof mac !== 'string' || context?.applyContext !== 'interactive'
-          || typeof context.owner !== 'string' || typeof context.token !== 'string'
-          || typeof context.requestId !== 'string' || context.requestBinding !== context.requestId) return false;
-        const expected = createHmac('sha256', secret)
-          .update(JSON.stringify({ owner: context.owner, token: context.token, requestId: context.requestId }))
-          .digest('hex');
-        try {
-          return mac.length === expected.length && timingSafeEqual(Buffer.from(mac), Buffer.from(expected));
-        } catch { return false; }
-      },
-      verifyInteractiveContext: async (context) => {
-        const secret = process.env.ARC_POWER_ACER_CAPABILITY_SECRET;
-        const mac = context?.capability;
-        if (!secret || typeof mac !== 'string' || context?.applyContext !== 'interactive'
-          || typeof context.owner !== 'string' || typeof context.token !== 'string'
-          || typeof context.requestId !== 'string' || context.requestBinding !== context.requestId) return false;
-        const expected = createHmac('sha256', secret)
-          .update(JSON.stringify({ owner: context.owner, token: context.token, requestId: context.requestId }))
-          .digest('hex');
-        try {
-          return mac.length === expected.length && timingSafeEqual(Buffer.from(mac), Buffer.from(expected));
-        } catch { return false; }
-      },
-      requireProcessIdentity: true,
-      requireFileMetadata: true,
-      captureFileMetadata: acerFileMetadata.capture,
-      restoreFileMetadata: acerFileMetadata.restore,
-      verifyFileMetadata: acerFileMetadata.verify,
-      captureBaseline: async ({ deviceId, deviceKey, physicalTarget }) => {
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        const state = await workerRoutedBackend.getCurrentSettings(deviceId);
-        const fan = Object.fromEntries(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].filter((key) => key in state).map((key) => [key, state[key]]));
-        const coreVoltage = Object.fromEntries(['gpuFreqOffsetMhz', 'gpuVoltOffsetV'].filter((key) => key in state && typeof state[key] === 'number' && Number.isFinite(state[key])).map((key) => [key, state[key]]));
-        return { ...state, fan, coreVoltage };
-      },
-      readSysmanPair: async (target, deviceId, deviceKey = null) => {
-        if (!isAcerA770Target(target)) return null;
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget: target });
-        return workerSysmanLimits.readLimitsForTarget?.(target, deviceId) ?? null;
-      },
-      setSysmanPair: async (target, pair, deviceId, deviceKey = null) => {
-        if (!isAcerA770Target(target)) return { ok: false, message: 'physical-target Sysman proof unavailable' };
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget: target });
-        return workerSysmanLimits.setLimitsForTarget?.(target, pair, deviceId) ?? { ok: false, message: 'physical-target Sysman setter unavailable' };
-      },
-      restoreSysmanVoltageOffset: async ({ offsetV, deviceId, deviceKey, physicalTarget }) => {
-        if (!isAcerA770Target(physicalTarget) || typeof workerSysmanLimits?.setVoltageOffset !== 'function') {
-          return { ok: false, message: 'target-bound Sysman voltage offset restore is unavailable' };
-        }
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        const written = await workerSysmanLimits.setVoltageOffset({ offsetV }, deviceId);
-        if (written?.ok !== true) return written ?? { ok: false, message: 'Sysman voltage offset restore failed' };
-        const observed = typeof workerSysmanLimits.readVoltageOffsetResult === 'function'
-          ? await workerSysmanLimits.readVoltageOffsetResult(deviceId)
-          : await workerSysmanLimits.readVoltageOffset?.(deviceId);
-        const observedOffset = Number.isFinite(observed?.offsetV) ? observed.offsetV : null;
-        return observedOffset !== null && Math.abs(observedOffset - offsetV) <= 0.000001
-          ? { ok: true, offsetV: observedOffset }
-          : { ok: false, message: 'Sysman voltage offset restore read-back mismatch' };
-      },
-      restoreCoreVoltage: async (coreVoltage, { deviceId, deviceKey, physicalTarget }) => {
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        if (!coreVoltage || typeof coreVoltage !== 'object' || Object.keys(coreVoltage).length === 0) return { ok: false, message: 'live core/voltage baseline unavailable' };
-        const out = await workerRoutedBackend.applySettings(deviceId, coreVoltage);
-        if (out?.ok === false) return out;
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        const state = await workerRoutedBackend.getCurrentSettings(deviceId);
-        return Object.entries(coreVoltage).every(([key, value]) => state?.[key] === value) ? { ok: true } : { ok: false, message: 'core/voltage restore read-back mismatch' };
-      },
-      restoreTemperature: async (temperatureC, { deviceId, deviceKey, physicalTarget }) => {
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        if (typeof temperatureC !== 'number' || !Number.isFinite(temperatureC)) return { ok: false, message: 'temperature baseline unavailable' };
-        const out = await workerRoutedBackend.applySettings(deviceId, { tempLimitC: temperatureC });
-        if (out?.ok === false) return out;
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        const state = await workerRoutedBackend.getCurrentSettings(deviceId);
-        return state?.tempLimitC === temperatureC
-          ? { ok: true }
-          : { ok: false, message: 'temperature restore read-back mismatch' };
-      },
-      restoreFanState: async (fan, { deviceId, deviceKey, physicalTarget }) => {
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        if (!fan || typeof fan !== 'object' || Object.keys(fan).length === 0) return { ok: false, message: 'fan baseline unavailable' };
-        const out = await workerRoutedBackend.applySettings(deviceId, fan);
-        if (out?.ok === false) return out;
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        const state = await workerRoutedBackend.getCurrentSettings(deviceId);
-        return Object.entries(fan).every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value))
-          ? { ok: true } : { ok: false, message: 'fan restore read-back mismatch' };
-      },
-      verifyCoreVoltage: async ({ baseline, deviceId, deviceKey, physicalTarget }) => {
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        const state = await workerRoutedBackend.getCurrentSettings(deviceId);
-        const values = Object.entries(baseline?.coreVoltage ?? {});
-        return {
-          ok: values.length > 0 && values.every(([key, value]) => state?.[key] === value),
-          message: values.length > 0 ? undefined : 'core/voltage baseline verification unavailable',
-        };
-      },
-      verifyFinalState: async ({ baseline, expectedPower, deviceId, deviceKey, physicalTarget }) => {
-        const observed = await workerSysmanLimits.readLimitsForTarget?.(physicalTarget, deviceId) ?? null;
-        await assertAcerTarget(workerRoutedBackend, { deviceId, deviceKey, physicalTarget });
-        const state = await workerRoutedBackend.getCurrentSettings(deviceId);
-        const powerOk = !!expectedPower && !!observed
-          && observed.sustainedW === expectedPower.sustainedW && observed.burstW === expectedPower.burstW;
-        const coreValues = Object.entries(baseline?.coreVoltage ?? {});
-        const fanValues = Object.entries(baseline?.fan ?? {});
-        const coreOk = coreValues.length > 0 && coreValues.every(([key, value]) => state?.[key] === value);
-        const fanOk = fanValues.length > 0 && fanValues.every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value));
-        const temperatureC = baseline?.tempLimitC ?? baseline?.temperatureLimitC;
-        const temperatureOk = typeof temperatureC === 'number'
-          && Number.isFinite(temperatureC)
-          && state?.tempLimitC === temperatureC;
-        const ok = powerOk && coreOk && fanOk && temperatureOk;
-        return { ok, message: ok ? undefined : 'final Acer bridge state verification failed' };
-      },
-      verifyAcerAbsoluteCoreVoltage: (args) => verifyAcerAbsoluteCoreVoltage(workerRoutedBackend, args),
-    });
-    const workerStore = new ProfileStore();
     const code = await runApplyWorker({
       reqPath: workerReqFile,
       outPath: workerOutFile,
-      backend: workerRoutedBackend,
+      backend: workerBackend,
       oldIgcl: workerOldIgcl,
       // M17f/M17i: the worker is the ELEVATED apply process - the sysman
       // companion syncs the PL2 burst there too. M17i: the companion
@@ -769,8 +429,6 @@ async function main() {
       // spawn, no RunAs). M17k: the proxy is the WARMED one above (the
       // same shape as the window path).
       sysmanPowerLimits: workerSysmanLimits,
-      acerPackagedBridge: workerAcerPackagedBridge,
-      store: workerStore,
       log: (s) => console.log(`[apply-worker] ${s}`),
     });
     // M23 CHANGE 3 (Part A): the ELEVATED worker's full close reaps the
@@ -934,20 +592,6 @@ async function main() {
     const bootSysmanLimits = mock
       ? createMockSysmanPowerLimits({ backend: bootBackend })
       : bootRealSysmanLimits;
-    const recoverySysmanLimits = bootSysmanLimits;
-    if (!mock) {
-      const recoveryBackend = createUnifiedGpuBackend({ backend: bootBackend, sysinfo: null });
-      const recoveryBridge = createAcerRecoveryBridge({
-        backend: recoveryBackend,
-        sysmanPowerLimits: recoverySysmanLimits,
-      });
-      if (!await acerRecoveryGate(recoveryBridge)) {
-        await bootBackend.close().catch(() => {});
-        await boundShutdown(bootRealSysmanLimits);
-        app.exit(1);
-        return;
-      }
-    }
     try {
       const out = await runBootApplyMode({
         store: bootStore,
@@ -982,16 +626,11 @@ async function main() {
     // fire-and-forget write would be torn down before the op flushes and
     // the boot task must not leave a helper behind either). The mock seam
     // never built a proxy (bootRealSysmanLimits is null in mock mode).
+    await boundShutdown(bootRealSysmanLimits);
     app.exit(0);
+    return;
   }
-  // Share the single real Sysman proxy between headless recovery and the
-  // normal UI path; only the selected mode warms it.
-  const warmHeadlessSysman = boundWarm;
-  let headlessSysmanLimits = null;
-  if (headless && !mock) {
-    headlessSysmanLimits = createMainSysmanProxy();
-    await warmHeadlessSysman(headlessSysmanLimits);
-  }
+
   if (headless) {
     // M2C-C S1: the smoke path is a real-backend path too - same probe wiring
     // as the app/worker so its caps match the product path. The bundled
@@ -1026,22 +665,6 @@ async function main() {
       },
       mock: {},
     });
-    if (!mock) {
-      try { await backend.init(); } catch { /* runSmoke reports the health-level init failure */ }
-    }
-    if (!mock) {
-      const smokeRecoveryBackend = createUnifiedGpuBackend({ backend, sysinfo: null });
-      const smokeRecoveryBridge = createAcerRecoveryBridge({
-        backend: smokeRecoveryBackend,
-        sysmanPowerLimits: headlessSysmanLimits,
-      });
-      if (!await acerRecoveryGate(smokeRecoveryBridge)) {
-        await backend.close().catch(() => {});
-        await boundShutdown(headlessSysmanLimits);
-        app.exit(1);
-        return;
-      }
-    }
     try {
       // M4-D2 (§13 smoke gate): unelevated smoke runs SKIP the no-op write
       // round trips (reported as "skipped (unelevated)") - the real A770
@@ -1057,7 +680,6 @@ async function main() {
       console.error(`\nSMOKE FAILED: ${err.message}`);
       app.exit(1);
     }
-    await boundShutdown(headlessSysmanLimits);
     return;
   }
 
@@ -1172,11 +794,10 @@ async function main() {
   // false (the exact shape a real AMD machine reports after the init
   // degrade); the ui-verify no-intel variant pins the whole no-device flow.
   if (mock && process.env.RID_MOCK_NO_INTEL === '1') mockOpts.noIntel = true;
-  // M2C-C/M41 S1: the real bundled-2023-runtime adapter is constructed
-  // BEFORE the backend (mock mode leaves it null - the mock adapter wraps
-  // the backend instead). The backend's extended signal consults the adapter
-  // lazily: installed availability is enough for the parent caps, while the
-  // elevated worker performs the authoritative isCapable write probe.
+  // M2C-C S1: the real bundled-2023-runtime adapter is constructed BEFORE
+  // the backend (mock mode leaves it null - the mock adapter wraps the
+  // backend instead). The backend's extended probe consults it lazily
+  // (isCapable runs on the first caps query).
   const realOldIgcl = mock ? null : new OldIgcl();
   // M17d (Run E): warm the bundled-2023-runtime probe in parallel with the
   // pre-window sequence - its load + ctlInit + enum + waiver takes hundreds
@@ -1232,7 +853,6 @@ async function main() {
         },
       }
     : {};
-  let rawBackend = null;
   if (mock) {
     sysinfo = createMockSysinfo({ ...laptopFixture, ...noIntelVendorFixture });
   } else if (applyProfileId) {
@@ -1309,22 +929,17 @@ async function main() {
     sysinfo = {
       get: async () => {
         const result = await sysinfoResult();
-        if (driverReBar === null) driverReBar = createDriverReBar(rawBackend);
+        if (driverReBar === null) driverReBar = createDriverReBar(backend);
         const verdict = await driverReBar();
         return verdict === null ? result : applyDriverReBar(result, verdict);
       },
     };
   }
-  let backend = createBackend({
+  const backend = createBackend({
     kind: mock ? 'mock' : 'igcl',
     igcl: realOldIgcl
       ? {
-          extended: {
-            isCapable: () => realOldIgcl.isCapable(),
-            // M33: the main UI is unelevated; the elevated apply worker owns
-            // the actual init/waiver/write probe.
-            isAvailable: () => realOldIgcl.isAvailable(),
-          },
+          extended: { isCapable: () => realOldIgcl.isCapable() },
           // M4J (A): pass the CACHED CIM data (with .videoControllers) - the
           // pre-fix adapter passed `sysinfo` (the lazy .get() wrapper), so
           // the lookup ALWAYS returned null on the real path and the A770
@@ -1346,19 +961,13 @@ async function main() {
     // payload and the caps AIB decode).
     mock: { ...mockOpts, laptopInfoOf: () => (cached && cached.laptop ? cached.laptop : (Object.keys(laptopFixture).length > 0 ? laptopFixture.laptop : null)) },
   });
-  rawBackend = backend;
-  // M30: all later consumers use the same Windows/IGCL inventory.  The
-  // wrapper is intentionally installed before oldIgcl, boot/profile/tray,
-  // IPC, and sysman closures are created so no path can bypass its target
-  // resolution or accidentally apply an OS-only adapter.
-  backend = createUnifiedGpuBackend({ backend, sysinfo });
-  // M2C-C/M41: the bundled 2023 IGCL runtime adapter (extended-range
-  // writes). Mock mode (incl. --ui-verify) uses the mock adapter - the real
-  // DLL is never loaded there. In the real path, installed availability
-  // informs the parent caps while the elevated worker's isCapable() probe
-  // remains authoritative for writes; both runtimes can coexist in one
-  // process (probe-verified, §8c). S1: the real adapter is constructed
-  // BEFORE the backend so its availability signal can feed
+  // M2C-C: the bundled 2023 IGCL runtime adapter (extended-range writes).
+  // Mock mode (incl. --ui-verify) uses the mock adapter - the real DLL is
+  // never loaded there. In the real path the OLD runtime is probed lazily
+  // (isCapable runs on the first extended write or caps query) and both
+  // runtimes can coexist in one process (probe-verified, §8c). S1: the real
+  // adapter is constructed BEFORE the backend so the backend's extended
+  // probe (above) can consult it - the extended ranges are wired into
   // getCapabilities on hardware, never dead code.
   const oldIgcl = mock ? createMockOldIgcl(backend) : realOldIgcl;
   // M17f/M17i: the sysman power-limits source - the PL2 companion + the
@@ -1378,129 +987,10 @@ async function main() {
   const sysmanPowerLimits = mock
     ? (process.env.RID_MOCK_NO_SYSMAN === '1' ? null : createMockSysmanPowerLimits({ backend }))
     : realSysmanLimits;
-  // The issuer is main-process owned; the bridge never trusts a renderer-
-  // supplied context shape as authorization. IPC receives this issuer and
-  // the bridge consumes the same one-use token after routing.
-  const acerInteractiveAuth = (() => {
-    const issued = new Map();
-    return {
-      issue: async ({ deviceId }) => {
-        const context = { applyContext: 'interactive', owner: `ipc:${deviceId}`, token: randomUUID() };
-        issued.set(context.token, context);
-        return context;
-      },
-      validate: async (context) => {
-        const original = issued.get(context?.token);
-        return !!original
-          && original.owner === context?.owner
-          && context?.applyContext === 'interactive';
-      },
-      verify: async (context) => {
-        const original = issued.get(context?.token);
-        if (!original || original.owner !== context?.owner || context?.applyContext !== 'interactive') return false;
-        issued.delete(context.token);
-        return true;
-      },
-      revoke: (context) => {
-        if (typeof context?.token === 'string') issued.delete(context.token);
-      },
-    };
-  })();
-  // Production rollback deliberately has no guessed Acer/native fallback:
-  // eligibility requires this target-bound Sysman setter, and any failed
-  // write/read-back retains the durable recovery journal.
-  const acerPackagedBridge = mock ? null : createAcerPackagedBridge({
-    authenticatedPath: 'in-process',
-    validateInteractiveContext: acerInteractiveAuth.validate,
-    verifyInteractiveContext: acerInteractiveAuth.verify,
-    readSysmanPair: async (target, deviceId, deviceKey = null) => {
-      if (!isAcerA770Target(target)) return null;
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget: target });
-      return sysmanPowerLimits?.readLimitsForTarget?.(target, deviceId) ?? null;
-    },
-    setSysmanPair: async (target, pair, deviceId, deviceKey = null) => {
-      if (!isAcerA770Target(target)) return { ok: false, message: 'physical-target Sysman proof unavailable' };
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget: target });
-      return sysmanPowerLimits?.setLimitsForTarget?.(target, pair, deviceId) ?? { ok: false, message: 'target-bound Sysman setter unavailable' };
-    },
-    restoreSysmanVoltageOffset: async ({ offsetV, deviceId, deviceKey, physicalTarget }) => {
-      if (!isAcerA770Target(physicalTarget) || typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
-        return { ok: false, message: 'target-bound Sysman voltage offset restore is unavailable' };
-      }
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      const written = await sysmanPowerLimits.setVoltageOffset({ offsetV }, deviceId);
-      if (written?.ok !== true) return written ?? { ok: false, message: 'Sysman voltage offset restore failed' };
-      const observed = typeof sysmanPowerLimits.readVoltageOffsetResult === 'function'
-        ? await sysmanPowerLimits.readVoltageOffsetResult(deviceId)
-        : await sysmanPowerLimits.readVoltageOffset?.(deviceId);
-      const observedOffset = Number.isFinite(observed?.offsetV) ? observed.offsetV : null;
-      return observedOffset !== null && Math.abs(observedOffset - offsetV) <= 0.000001
-        ? { ok: true, offsetV: observedOffset }
-        : { ok: false, message: 'Sysman voltage offset restore read-back mismatch' };
-    },
-    requireProcessIdentity: true,
-    requireFileMetadata: true,
-    captureFileMetadata: acerFileMetadata.capture,
-    restoreFileMetadata: acerFileMetadata.restore,
-    verifyFileMetadata: acerFileMetadata.verify,
-    captureBaseline: async ({ deviceId, deviceKey, physicalTarget }) => {
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      const state = await backend.getCurrentSettings(deviceId);
-      const fan = Object.fromEntries(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].filter((key) => key in state).map((key) => [key, state[key]]));
-      const coreVoltage = Object.fromEntries(['gpuFreqOffsetMhz', 'gpuVoltOffsetV'].filter((key) => key in state && typeof state[key] === 'number' && Number.isFinite(state[key])).map((key) => [key, state[key]]));
-      return { ...state, fan, coreVoltage };
-    },
-    restoreCoreVoltage: async (coreVoltage, { deviceId, deviceKey, physicalTarget }) => {
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      if (!coreVoltage || typeof coreVoltage !== 'object' || Object.keys(coreVoltage).length === 0) return { ok: false, message: 'live core/voltage baseline unavailable' };
-      const out = await backend.applySettings(deviceId, coreVoltage);
-      if (out?.ok === false) return out;
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      const state = await backend.getCurrentSettings(deviceId);
-      return Object.entries(coreVoltage).every(([key, value]) => state?.[key] === value) ? { ok: true } : { ok: false, message: 'core/voltage restore read-back mismatch' };
-    },
-    restoreTemperature: async (temperatureC, { deviceId, deviceKey, physicalTarget }) => {
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      if (typeof temperatureC !== 'number' || !Number.isFinite(temperatureC)) return { ok: false, message: 'temperature baseline unavailable' };
-      const out = await backend.applySettings(deviceId, { tempLimitC: temperatureC });
-      if (out?.ok === false) return out;
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      const state = await backend.getCurrentSettings(deviceId);
-      return state?.tempLimitC === temperatureC ? { ok: true } : { ok: false, message: 'temperature restore read-back mismatch' };
-    },
-    restoreFanState: async (fan, { deviceId, deviceKey, physicalTarget }) => {
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      if (!fan || typeof fan !== 'object' || Object.keys(fan).length === 0) return { ok: false, message: 'fan baseline unavailable' };
-      const out = await backend.applySettings(deviceId, fan);
-      if (out?.ok === false) return out;
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      const state = await backend.getCurrentSettings(deviceId);
-      return Object.entries(fan).every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value))
-        ? { ok: true } : { ok: false, message: 'fan restore read-back mismatch' };
-    },
-    verifyCoreVoltage: async ({ baseline, deviceId, deviceKey, physicalTarget }) => {
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      const state = await backend.getCurrentSettings(deviceId);
-      const values = Object.entries(baseline?.coreVoltage ?? {});
-      return { ok: values.length > 0 && values.every(([key, value]) => state?.[key] === value), message: values.length > 0 ? undefined : 'core/voltage baseline verification unavailable' };
-    },
-    verifyFinalState: async ({ baseline, expectedPower, deviceId, deviceKey, physicalTarget }) => {
-      const observedPower = await sysmanPowerLimits?.readLimitsForTarget?.(physicalTarget, deviceId) ?? null;
-      await assertAcerTarget(backend, { deviceId, deviceKey, physicalTarget });
-      const state = await backend.getCurrentSettings(deviceId);
-      if (!expectedPower || !observedPower) return { ok: false, message: 'target-bound Sysman expected power verification unavailable' };
-      const powerOk = observedPower.sustainedW === expectedPower.sustainedW && observedPower.burstW === expectedPower.burstW;
-      const coreValues = Object.entries(baseline?.coreVoltage ?? {});
-      const fanValues = Object.entries(baseline?.fan ?? {});
-      const coreOk = coreValues.length > 0 && coreValues.every(([key, value]) => state?.[key] === value);
-      const fanOk = fanValues.length > 0 && fanValues.every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value));
-      const temperatureC = baseline?.tempLimitC ?? baseline?.temperatureLimitC;
-      const temperatureOk = typeof temperatureC === 'number' && Number.isFinite(temperatureC) && state?.tempLimitC === temperatureC;
-      const ok = powerOk && coreOk && fanOk && temperatureOk;
-      return { ok, message: ok ? undefined : 'final Acer bridge state verification failed' };
-    },
-    verifyAcerAbsoluteCoreVoltage: (args) => verifyAcerAbsoluteCoreVoltage(backend, args),
-  });
+  // M2C-C elevation probe: real detection in the product path; ui-verify
+  // knobs let the mock report elevated (RID_MOCK_ELEVATED=1) so the
+  // elevated-in-app UI state is verifiable without elevation. Declared HERE
+  // (before the applyRunner block below) - the runner's deps evaluate this
   // identifier eagerly, so any later declaration would be a TDZ crash on the
   // real product path (step-5 S1).
   const isElevated = mock
@@ -1524,27 +1014,9 @@ async function main() {
         // the safety-net capability refusal keys on the runtime probe.
         // M17d (Run D): forward the ocMode too - executeApply threads it
         // into splitByRuntime (the V1-call pin: the mode-based W/C routing).
-        apply: async ({ deviceId, deviceKey, physicalTarget, settings, ocMode, profileApply, allowAcerBridge, interactiveContext, acerPackagedApplyEnabled }) => {
-          await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
-          return executeApply({
-            backend,
-            oldIgcl,
-            deviceId,
-            deviceKey,
-            physicalTarget,
-            settings,
-            opts: { profileApply },
-            ocMode,
-            sysmanPowerLimits,
-            acerPackagedBridge,
-            allowAcerBridge,
-            acerPackagedApplyEnabled,
-            interactiveContext,
-          });
-        },
-        waiverAccept: async (deviceId, deviceKey, physicalTarget) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); await backend.setWaiverAccepted(deviceId); },
-        reset: async (deviceId, deviceKey, physicalTarget) => {
-          await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
+        apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode }),
+        waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
+        reset: async (deviceId) => {
           await backend.resetToDefaults(deviceId);
           const state = await backend.getCurrentSettings(deviceId);
           return { state };
@@ -1552,8 +1024,7 @@ async function main() {
         // M8 (the Graphics tab): the in-process graphics executor - the
         // DEDICATED apply path (no OC waiver, no OC-mode gate). Returns the
         // { ok, perControl, graphicsState } envelope with the FRESH read-back.
-        graphicsApply: async ({ deviceId, deviceKey, physicalTarget, settings }) => {
-          await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
+        graphicsApply: async ({ deviceId, settings }) => {
           const out = await backend.setGraphicsSettings(deviceId, settings);
           let graphicsState = null;
           try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
@@ -1572,16 +1043,14 @@ async function main() {
       needsWorker: () => true,
       // M17f: the fake worker carries the sysman companion too (the real
       // elevated worker wires it - the mock mirrors the apply core).
-      apply: async ({ deviceId, deviceKey, physicalTarget, settings, ocMode, profileApply }) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); return executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }); },
-      waiverAccept: async (deviceId, deviceKey, physicalTarget) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); await backend.setWaiverAccepted(deviceId); },
-      reset: async (deviceId, deviceKey, physicalTarget) => {
-        await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
+      apply: async ({ deviceId, settings, ocMode, profileApply }) => executeApply({ backend, oldIgcl, deviceId, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }),
+      waiverAccept: async (deviceId) => { await backend.setWaiverAccepted(deviceId); },
+      reset: async (deviceId) => {
         await backend.resetToDefaults(deviceId);
         return { ok: true, state: await backend.getCurrentSettings(deviceId) };
       },
       // M8: the fake runner's graphics path (in-process - never spawns).
-      graphicsApply: async ({ deviceId, deviceKey, physicalTarget, settings }) => {
-        await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
+      graphicsApply: async ({ deviceId, settings }) => {
         const out = await backend.setGraphicsSettings(deviceId, settings);
         let graphicsState = null;
         try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
@@ -1610,25 +1079,6 @@ async function main() {
   // (never the real settings.json - F4 above). The real product path never
   // writes at boot.
   if (mock) {
-    // M30: mock sessions are independent verification runs. Always start on
-    // the first writable inventory row (or the first synthetic OS row when
-    // no writable adapter exists) so a previous multi-GPU run's persisted
-    // iGPU selection cannot suppress the boot waiver or change the surface
-    // under test. Real-product durable selection remains untouched.
-    try {
-      const devices = await backend.listDevices();
-      const preferred = devices.find((device) => device.synthetic !== true && device.backendKind !== 'os')
-        ?? devices[0]
-        ?? null;
-      const cur = await store.loadSettings();
-      await store.saveSettings({
-        ...cur,
-        deviceId: preferred?.id ?? null,
-        deviceKey: preferred?.deviceKey ?? null,
-      });
-    } catch (err) {
-      console.log(`[boot] mock device-selection seed skipped: ${err.message}`);
-    }
     try {
       const cur = await store.loadSettings();
       await store.saveSettings({ ...cur, ocMode: process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced' });
@@ -1877,21 +1327,6 @@ async function main() {
       console.log(`[boot] waiver flag pre-seed skipped: ${err.message}`);
     }
     markProfileBoot('seed-waiver');
-    // M42: recovery must run before any window, tray, or IPC surface exists,
-    // but after backend initialization and waiver seeding so hardware restore
-    // hooks have a live driver context.
-    try {
-      const recovery = await acerPackagedBridge.recover?.();
-      if (recovery?.ok !== true) {
-        console.error(`[acer-bridge] startup recovery required: ${recovery?.message ?? recovery?.errorCode ?? 'unknown error'}`);
-        app.exit(1);
-        return;
-      }
-    } catch (err) {
-      console.error(`[acer-bridge] startup recovery failed: ${err.message}`);
-      app.exit(1);
-      return;
-    }
     // M4-B (fix): boot-time driver-truth probe - the persisted
     // acceptance can be STALE (the driver lost the waiver while settings.json
     // still says accepted - the report: "the popup said already
@@ -2095,12 +1530,14 @@ async function main() {
   // --- apply-on-startup (`--apply-profile <id>`): no window, tray only ----
   if (applyProfileId && !uiVerify) {
     await bootBackend();
-    if (!await acerRecoveryGate(acerPackagedBridge)) {
-      app.exit(1);
-      return;
-    }
     // M2b review F2: the flow creates exactly ONE tray (it keeps the app
     // alive in this tray-only mode) and reuses it for the failure balloon.
+    // M2C-C: the boot task runs with /rl highest (elevated) so applies are
+    // in-process here (applyRunner stays null - a manual non-elevated run
+    // fails honestly per control instead of prompting).
+    const bootOldIgcl = mock ? createMockOldIgcl(backend) : new OldIgcl();
+    // M4-F (S2): the logon apply targets the persisted/selected device -
+    // never silently devices[0] (the 2-GPU iGPU trap).
     let applyDeviceId = null;
     try {
       applyDeviceId = await resolveApplyDeviceId(backend, store, null);
@@ -2295,11 +1732,11 @@ async function main() {
   // decision: the mid-session probe leaves the OC row as the boot outcome -
   // the record is the window-path apply's own).
   let bootApplyOutcome = null;
-  // M4-F (§4 boot resolution): a matching durable key selects its device.
-  // Legacy numeric-only settings remain read-only/self-healed to the
-  // preferred row, but a disappeared persisted key returns null so the
-  // regular boot profile path reaches stale-target refusal rather than
-  // silently writing another GPU.
+  // M4-F (§4 boot resolution): the persisted deviceId wins when it matches
+  // an enumerated id; else devices[0] AND the fallback is RE-PERSISTED
+  // (self-healing, M7 - a stale selection or an absent field must never
+  // wedge the app on a dead id). The renderer's boot read (device-get) and
+  // the window-path boot apply both consume this resolution.
   let bootDeviceId = null;
   try {
     bootDeviceId = await resolveBootDeviceId(backend, store);
@@ -2520,12 +1957,6 @@ async function main() {
         ? settings.overlayColor
         : '#ffffff',
       stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : undefined,
-      // M35: the selected overlay GPU identities ride the same settings
-      // envelope so the renderer can restart only the requested telemetry
-      // lanes without changing the main window's device selection.
-      deviceKeys: Array.isArray(settings.overlayDeviceKeys)
-        ? settings.overlayDeviceKeys
-        : null,
       // M7b (fix 4, plan-review F2): the background box - the three fields
       // MUST be forwarded here or payload() always pushes the defaults and
       // the box never appears (a required-but-insufficient owner set would
@@ -2780,7 +2211,6 @@ async function main() {
       profileId: settings.activeProfileId,
       deviceId: mockBootDeviceId,
       oldIgcl,
-      sysmanPowerLimits,
       log: (s) => console.log(`[mock-boot-apply] ${s}`),
     });
     recordBootApply(settings.activeProfileId, out);
@@ -2789,41 +2219,7 @@ async function main() {
   const mockCtl = mock
     ? {
         listFeaturesets: () => backend.listFeaturesets(),
-        setFeatureset: async (id) => {
-          // M30: the proxy fallback invokes the raw MockBackend with its
-          // receiver, so this first response keeps the feature metadata and
-          // health while the device payload is normalized below.
-          const response = await backend.setFeatureset(id);
-          const unifiedDevices = await backend.listDevices();
-          if (!Array.isArray(unifiedDevices) || unifiedDevices.length === 0) {
-            return response;
-          }
-
-          // The raw mock and the unified inventory normalize PCI ids
-          // differently (zero-padded vs canonical). Keep the durable-key
-          // match first, then bridge the response's raw session id to the
-          // unified backendId before falling back to the first writable row.
-          const responseActive = Array.isArray(response?.devices)
-            ? response.devices.find((device) => device.deviceKey === response?.activeDeviceKey)
-            : null;
-          const active = unifiedDevices.find((device) => device.deviceKey === response?.activeDeviceKey)
-            ?? (Number.isInteger(responseActive?.id)
-              ? unifiedDevices.find((device) => device.backendId === responseActive.id)
-              : null)
-            ?? unifiedDevices.find((device) => device.synthetic !== true
-              && device.backendKind !== 'os'
-              && Number.isInteger(device.backendId))
-              ?? unifiedDevices[0];
-          const devices = unifiedDevices.filter((device) => !device.synthetic || device.deviceKey === active.deviceKey);
-
-          return {
-            ...response,
-            devices,
-            activeDeviceKey: active.deviceKey,
-            caps: await backend.getCapabilities(active.id),
-            state: await backend.getCurrentSettings(active.id),
-          };
-        },
+        setFeatureset: (id) => backend.setFeatureset(id),
         runBootApply: runMockBootApply,
         bootApplyLog: async () => mockBootApplyLog.slice(),
       }
@@ -2979,9 +2375,6 @@ async function main() {
     // M17f: the sysman power-limits consumer (the PL2 companion + the
     // 'power-limits:read' source).
     sysmanPowerLimits,
-    acerPackagedBridge,
-    allowAcerBridge: !mock,
-    interactiveContext: acerInteractiveAuth,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach
@@ -3041,7 +2434,7 @@ async function main() {
     }
     sysStatsHolder.current = createSysStats({
       deviceIdHex,
-      luidOf: async (devId, bdf) => fpsAdapter.adapterLuidOf?.(devId, bdf) ?? null,
+      luidOf: async (devId) => fpsAdapter.adapterLuidOf?.(devId) ?? null,
       msrReader,
       // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
       // download link included) - logged when the MSR path is unavailable.

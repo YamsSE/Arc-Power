@@ -1,85 +1,84 @@
 {
-    "name": "arc-power",
-    "version": "1.0.4",
-    "license": "GPL-2.0-only",
-    "private": true,
-    "description": "Overclocking tool for Intel Arc GPUs (M1: core backend, no UI)",
-    "type": "module",
-    "main": "src/main/main.js",
-    "engines": {
-        "node": ">=20"
-    },
-    "scripts": {
-        "test": "node --test",
-        "start": "electron .",
-        "smoke": "electron . --headless",
-        "smoke:mock": "electron . --headless --mock",
-        "make:icon": "node scripts/make-icon.js",
-        "make:og": "electron scripts/make-og.js",
-        "make:banner": "electron scripts/make-banner.js",
-        "build:renderer": "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138 && esbuild src/renderer/advanced-overlay.ts --bundle --outfile=src/renderer/out/advanced-overlay.js --format=iife --target=chrome138",
-        "typecheck": "tsc --noEmit",
-        "dist": "npm run build:renderer && electron-builder --win"
-    },
-    "build": {
-        "appId": "com.rid.arcpower",
-        "productName": "Arc Power",
-        "icon": "build/icon.ico",
-        "files": [
-            "src/**/*",
-            "src/main/backend/IntelMSR.bin",
-            "src/main/backend/AMDFamily17.bin",
-            "src/main/backend/COPYING",
-            "src/main/backend/PawnIO_setup.exe",
-            "src/main/backend/presentmon/PresentMon64.exe",
-            "src/main/backend/presentmon/LICENSE",
-            "THIRD_PARTY_NOTICES.txt",
-            "LICENSE",
-            "package.json"
-        ],
-        "asarUnpack": [
-            "node_modules/koffi/**",
-            "src/main/backend/igcl2023/**",
-            "src/main/backend/PawnIO_setup.exe",
-            "src/main/backend/presentmon/**"
-        ],
-        "win": {
-            "target": [
-                "portable",
-                "nsis"
-            ],
-            "requestedExecutionLevel": "requireAdministrator"
-        },
-        "portable": {
-            "artifactName": "Arc-Power_Portable.exe",
-            "requestExecutionLevel": "admin"
-        },
-        "nsis": {
-            "artifactName": "Arc-Power_Installer.exe",
-            "oneClick": false,
-            "perMachine": false,
-            "shortcutName": "Arc Power",
-            "createDesktopShortcut": false,
-            "include": "build/installer.nsh"
-        },
-        "directories": {
-            "output": "dist"
-        }
-    },
-    "dependencies": {
-        "koffi": "^2.9.0",
-        "sax": "^1.6.1"
-    },
-    "devDependencies": {
-        "@types/node": "^24.13.3",
-        "electron": "^37.0.0",
-        "electron-builder": "^26.15.3",
-        "esbuild": "^0.25.12",
-        "typescript": "^5.9.3"
-    },
-    "allowScripts": {
-        "electron@37.10.3": true,
-        "koffi@2.16.3": true,
-        "esbuild@0.25.12": true
-    }
+    "name":  "arc-power",
+    "version":  "1.0.3",
+    "license":  "GPL-2.0-only",
+    "private":  true,
+    "description":  "Overclocking tool for Intel Arc GPUs (M1: core backend, no UI)",
+    "type":  "module",
+    "main":  "src/main/main.js",
+    "engines":  {
+                    "node":  "\u003e=20"
+                },
+    "scripts":  {
+                    "test":  "node --test",
+                    "start":  "electron .",
+                    "smoke":  "electron . --headless",
+                    "smoke:mock":  "electron . --headless --mock",
+                    "make:icon":  "node scripts/make-icon.js",
+                    "make:og":  "electron scripts/make-og.js",
+                    "make:banner":  "electron scripts/make-banner.js",
+                    "build:renderer":  "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138 && esbuild src/renderer/advanced-overlay.ts --bundle --outfile=src/renderer/out/advanced-overlay.js --format=iife --target=chrome138",
+                    "typecheck":  "tsc --noEmit",
+                    "dist":  "npm run build:renderer \u0026\u0026 electron-builder --win"
+                },
+    "build":  {
+                  "appId":  "com.rid.arcpower",
+                  "productName":  "Arc Power",
+                  "icon":  "build/icon.ico",
+                  "files":  [
+                                "src/**/*",
+                                "src/main/backend/IntelMSR.bin",
+                                "src/main/backend/AMDFamily17.bin",
+                                "src/main/backend/COPYING",
+                                "src/main/backend/PawnIO_setup.exe",
+                                "src/main/backend/presentmon/PresentMon64.exe",
+                                "src/main/backend/presentmon/LICENSE",
+                                "THIRD_PARTY_NOTICES.txt",
+                                "LICENSE",
+                                "package.json"
+                            ],
+                  "asarUnpack":  [
+                                     "node_modules/koffi/**",
+                                     "src/main/backend/igcl2023/**",
+                                     "src/main/backend/PawnIO_setup.exe",
+                                     "src/main/backend/presentmon/**"
+                                 ],
+                  "win":  {
+                              "target":  [
+                                             "portable",
+                                             "nsis"
+                                         ],
+                              "requestedExecutionLevel":  "requireAdministrator"
+                          },
+                  "portable":  {
+                                   "artifactName":  "Arc-Power_Portable.exe",
+                                   "requestExecutionLevel":  "admin"
+                               },
+                  "nsis":  {
+                               "artifactName":  "Arc-Power_Installer.exe",
+                               "oneClick":  false,
+                               "perMachine":  false,
+                               "shortcutName":  "Arc Power",
+                               "createDesktopShortcut":  false,
+                               "include":  "build/installer.nsh"
+                           },
+                  "directories":  {
+                                      "output":  "dist"
+                                  }
+              },
+    "dependencies":  {
+                         "koffi":  "^2.9.0"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "^24.13.3",
+                            "electron":  "^37.0.0",
+                            "electron-builder":  "^26.15.3",
+                            "esbuild":  "^0.25.12",
+                            "typescript":  "^5.9.3"
+                        },
+    "allowScripts":  {
+                         "electron@37.10.3":  true,
+                         "koffi@2.16.3":  true,
+                         "esbuild@0.25.12":  true
+                     }
 }

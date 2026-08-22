@@ -358,36 +358,6 @@ const ctl_voltage_frequency_point_t = koffi.struct('ctl_voltage_frequency_point_
   Voltage: 'uint32',
   Frequency: 'uint32',
 }); // 8 bytes, align 4
-// M40: official IGCL V1 power-domain limits (igcl_api.h). All power fields
-// are signed int32 milliwatts. The bool fields are one-byte C booleans; MSVC
-// x64 pads each nested control to four-byte alignment, giving the exact
-// 36-byte ABI: header 8 + sustained 12 + burst 8 + peak 8.
-const ctl_power_sustained_limit_t = koffi.struct('ctl_power_sustained_limit_t', {
-  enabled: 'bool',
-  power: 'int32',
-  interval: 'int32',
-}); // 12 bytes
-
-const ctl_power_burst_limit_t = koffi.struct('ctl_power_burst_limit_t', {
-  enabled: 'bool',
-  power: 'int32',
-}); // 8 bytes
-
-const ctl_power_peak_limit_t = koffi.struct('ctl_power_peak_limit_t', {
-  powerAC: 'int32',
-  powerDC: 'int32',
-}); // 8 bytes
-
-const ctl_power_limits_t = koffi.struct('ctl_power_limits_t', {
-  Size: 'uint32',
-  Version: 'uint8',
-  sustainedPowerLimit: 'ctl_power_sustained_limit_t',
-  burstPowerLimit: 'ctl_power_burst_limit_t',
-  peakPowerLimits: 'ctl_power_peak_limit_t',
-}); // 36 bytes
-
-export const CTL_POWER_LIMITS_SIZE = 36;
-
 
 // M4-D2 (driver ReBAR state): ctlPciGetProperties structs, transcribed
 // from the IGCL SDK ctl_api.h. LIVE-VERIFIED against the DriverStore runtime
@@ -514,11 +484,6 @@ const EXPECTED_SIZES = {
   ctl_psu_info_t: 56,
   ctl_power_telemetry_t: 1024,
   ctl_voltage_frequency_point_t: 8,
-  // M40: official V1 power-domain payload (exact 36-byte MSVC x64 ABI).
-  ctl_power_sustained_limit_t: 12,
-  ctl_power_burst_limit_t: 8,
-  ctl_power_peak_limit_t: 8,
-  ctl_power_limits_t: CTL_POWER_LIMITS_SIZE,
   // M4-D2 (driver ReBAR state): ctl_pci_address_t 24, ctl_pci_speed_t 20
   // (koffi/MSVC 8-aligns the tail � the DRIVER's real layout is 20 bytes
   // without the tail pad, which is why the flags sit at 52/53), properties 64.
@@ -784,12 +749,6 @@ export function loadIgcl(dllPath) {
   bind('ctlClose', 'ctl_result_t', ['void*']);
   bind('ctlEnumerateDevices', 'ctl_result_t', ['void*', 'uint32*', 'void**']);
   bind('ctlGetDeviceProperties', 'ctl_result_t', ['void*', 'ctl_device_adapter_properties_t*']);
-  // M40: optional official V1 power-domain surface. The payload is the
-  // exact ctl_power_limits_t ABI above; absent exports are recorded by bind()
-  // so bundled OldIgcl can retain its scalar compatibility path.
-  bind('ctlEnumPowerDomains', 'ctl_result_t', ['void*', 'uint32*', 'void**']);
-  bind('ctlPowerGetLimits', 'ctl_result_t', ['void*', 'ctl_power_limits_t*']);
-  bind('ctlPowerSetLimits', 'ctl_result_t', ['void*', 'ctl_power_limits_t*']);
 
   bind('ctlOverclockGetProperties', 'ctl_result_t', ['void*', 'ctl_oc_properties_t*']);
   bind('ctlOverclockWaiverSet', 'ctl_result_t', ['void*']);

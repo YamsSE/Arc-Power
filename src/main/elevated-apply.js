@@ -9,7 +9,7 @@
 //
 // Contract:
 //   request file  (JSON): { requestId, op: 'apply'|'waiver-accept'|'reset',
-//                           deviceId, deviceKey?, physicalTarget?, settings?, profileName?,
+//                           deviceId, settings?, profileName?,
 //                           waiverAccepted? }
 //   token file    (JSON): { requestId, expiresAt } - written by the parent
 //                           BEFORE the request file; the parent-owned
@@ -49,7 +49,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID, createHmac } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { isElevated as detectElevated } from './elevation.js';
 
@@ -59,15 +59,6 @@ export const WORKER_TIMEOUT_MS = 120000;
 // margin for the slowest legit write/verification to land.
 export const TOKEN_TTL_MS = WORKER_TIMEOUT_MS * 2;
 export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const contextCapabilityMac = (secret, context) => createHmac('sha256', secret)
-  .update(JSON.stringify({ owner: context.owner, token: context.token, requestId: context.requestId }))
-  .digest('hex');
-const requestCapabilityMac = (secret, request) => {
-  const unsigned = { ...request };
-  delete unsigned.acerCapability;
-  delete unsigned.acerContextCapability;
-  return createHmac('sha256', secret).update(JSON.stringify(unsigned)).digest('hex');
-};
 
 /**
  * Build the PowerShell launch line that starts OUR executable elevated and
@@ -255,33 +246,35 @@ export function createApplyRunner({
   inProcess = null,
   log = () => {},
 } = {}) {
+  const elevated = isElevated();
+  log(`[apply-runner] process is ${elevated ? 'ELEVATED' : 'not elevated'} - ${elevated ? 'in-process apply' : 'elevated self-worker'}`);
+  const spawn = spawnFn ?? nodeSpawn;
+
   async function runWorker(req) {
     const dir = tmpdir();
-    const capabilitySecret = req.interactiveContext ? randomUUID() : null;
+    // M2: request/result/token files are keyed by the SAME requestId - a
+    // paired cleanup story + the sweep's identity.
     const rid = req.requestId ?? randomUUID();
-    const unsignedRequest = { ...req, requestId: rid };
-    const workerRequest = capabilitySecret
-      ? {
-          ...unsignedRequest,
-          acerCapability: requestCapabilityMac(capabilitySecret, unsignedRequest),
-          acerContextCapability: contextCapabilityMac(capabilitySecret, unsignedRequest.interactiveContext),
-        }
-      : unsignedRequest;
     const reqPath = path.join(dir, `arcpower-req-${rid}.json`);
     const outPath = path.join(dir, `arcpower-out-${rid}.json`);
     const tokPath = path.join(dir, `arcpower-tok-${rid}.json`);
+    // M2: fresh-startup sweep of a crashed parent's leftovers. Only files
+    // whose parent-owned token expired are removed - a live request's fresh
+    // token keeps its files untouched.
     await sweepStaleWorkerFiles(dir, { tokenTtlMs });
+    // M2: the parent-owned token (written BEFORE the request file) marks
+    // this request as live; its expiry bounds how long the worker is
+    // allowed to start after the parent gave up.
     await writeJsonFile(tokPath, { requestId: rid, expiresAt: Date.now() + tokenTtlMs });
-    await writeJsonFile(reqPath, workerRequest);
+    await writeJsonFile(reqPath, req);
     let result = null;
     let killed = false;
     let spawnFailed = false;
     let workerExited = false;
     try {
-      const child = await (spawnFn ?? nodeSpawn)(powershellExe, ['-NoProfile', '-Command', buildWorkerLaunch(execPath, appPath, reqPath, outPath)], {
+      const child = await spawn(powershellExe, ['-NoProfile', '-Command', buildWorkerLaunch(execPath, appPath, reqPath, outPath)], {
         windowsHide: true,
         stdio: 'ignore',
-        ...(capabilitySecret ? { env: { ...process.env, ARC_POWER_ACER_CAPABILITY_SECRET: capabilitySecret } } : {}),
       });
       await new Promise((resolve) => {
         let settled = false;
@@ -331,7 +324,7 @@ export function createApplyRunner({
   return {
     /** True when applies must go through the elevated self-worker. */
     needsWorker() {
-      return !Boolean(isElevated()) && inProcess !== null;
+      return !elevated && inProcess !== null;
     },
     /**
      * Run one apply. Returns the {result, state} envelope the renderer
@@ -345,7 +338,7 @@ export function createApplyRunner({
      *   parent's limits-key makes the worker's gate thresholds MATCH the
      *   user-facing ones. Only present when the caller resolved one.
      */
-    async apply({ deviceId, deviceKey, physicalTarget, settings, profileName, waiverAccepted, ocMode, profileApply, limitsKey, allowAcerBridge = false, interactiveContext = null, acerPackagedApplyEnabled = false }) {
+    async apply({ deviceId, settings, profileName, waiverAccepted, ocMode, profileApply, limitsKey }) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
         // M4O (NEW): the IN-PROCESS branch forwards profileApply too - the
@@ -363,14 +356,9 @@ export function createApplyRunner({
         // executor request - the old request-shape pins stay green).
         const out = await inProcess.apply({
           deviceId,
-          ...(typeof deviceKey === 'string' ? { deviceKey } : {}),
-          ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}),
           settings,
           ...(ocMode !== undefined && ocMode !== null ? { ocMode } : {}),
           ...(profileApply === true ? { profileApply: true } : {}),
-          ...(allowAcerBridge === true ? { allowAcerBridge: true } : {}),
-          ...(interactiveContext && typeof interactiveContext === 'object' ? { applyContext: 'interactive', interactiveContext } : {}),
-          ...(acerPackagedApplyEnabled === true ? { acerPackagedApplyEnabled: true } : {}),
         });
         return { worker: false, ...out };
       }
@@ -382,31 +370,19 @@ export function createApplyRunner({
       // M4O: the parent-side profileApply rides too - the worker skips the
       // STOCK gate for profile applies (the ceiling refusal stays). Only
       // present when true (no undefined own-keys in the request file).
-      const requestId = randomUUID();
-      const boundInteractiveContext = interactiveContext && typeof interactiveContext === 'object'
-        ? { ...interactiveContext, requestId, requestBinding: requestId }
-        : null;
       // M17c (step-4 N6): the parent-resolved limitsKey rides too - the
       // worker's gate thresholds must match the parent's (the laptop
       // branch). Only present when the caller resolved one.
       const { result } = await runWorker({
-        requestId,
+        requestId: randomUUID(),
+        op: 'apply',
         deviceId,
-        ...(typeof deviceKey === 'string' ? { deviceKey } : {}),
-        ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}),
         settings,
         profileName,
         waiverAccepted,
-        // Keep the complete validated gate envelope in the request file.
-        // The worker owns the authoritative capability decision, but it must
-        // receive the parent's mode/consent/context values unchanged.
-        ocMode: typeof ocMode === 'string' ? ocMode : null,
-        profileApply: profileApply === true,
-        applyContext: boundInteractiveContext ? 'interactive' : null,
-        interactiveContext: boundInteractiveContext,
-        limitsKey: limitsKey && typeof limitsKey === 'object' ? limitsKey : null,
-        allowAcerBridge: allowAcerBridge === true,
-        acerPackagedApplyEnabled: acerPackagedApplyEnabled === true,
+        ocMode,
+        ...(profileApply === true ? { profileApply: true } : {}),
+        ...(limitsKey && typeof limitsKey === 'object' ? { limitsKey } : {}),
       });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);
@@ -427,7 +403,6 @@ export function createApplyRunner({
           ...(result.pl2Note && typeof result.pl2Note === 'object' ? { pl2Note: result.pl2Note } : {}),
         },
         state: result.state ?? null,
-        ...(result.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
       };
     },
     /**
@@ -435,13 +410,13 @@ export function createApplyRunner({
      * needs the same elevation as any other OC write).
      * @param {number} deviceId
      */
-    async waiverAccept(deviceId, deviceKey = null, physicalTarget = null) {
+    async waiverAccept(deviceId) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
-        await inProcess.waiverAccept(deviceId, deviceKey, physicalTarget);
+        await inProcess.waiverAccept(deviceId);
         return { ok: true };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'waiver-accept', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'waiver-accept', deviceId });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok !== true) throw new Error(result.error ?? 'waiver acceptance failed');
       return { ok: true };
@@ -451,13 +426,13 @@ export function createApplyRunner({
      * elevated, so cleanup runs ctlOverclockResetToDefault).
      * @param {number} deviceId
      */
-    async reset(deviceId, deviceKey = null, physicalTarget = null) {
+    async reset(deviceId) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
-        const out = await inProcess.reset(deviceId, deviceKey, physicalTarget);
+        const out = await inProcess.reset(deviceId);
         return { ok: true, state: out.state };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'reset', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'reset', deviceId });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok !== true) throw new Error(result.error ?? 'reset failed');
       return { ok: true, state: result.state ?? null };
@@ -473,13 +448,13 @@ export function createApplyRunner({
      * when the UAC prompt was canceled/denied.
      * @param {{ deviceId: number, settings: object }} req
      */
-    async graphicsApply({ deviceId, deviceKey = null, physicalTarget = null, settings }) {
+    async graphicsApply({ deviceId, settings }) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
-        const out = await inProcess.graphicsApply({ deviceId, deviceKey, physicalTarget, settings });
+        const out = await inProcess.graphicsApply({ deviceId, settings });
         return { worker: false, ok: out.ok === true, perControl: out.perControl ?? {}, graphicsState: out.graphicsState ?? null };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'graphics-apply', deviceId, settings, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'graphics-apply', deviceId, settings });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);
       return { worker: true, ok: result.ok === true, perControl: result.perControl ?? {}, graphicsState: result.graphicsState ?? null };

@@ -105,8 +105,8 @@ for (const [name, expected] of Object.entries(NVML_EXPECTED_SIZES)) {
  *   close: () => void,
  * }}
  */
-export function createNvmlAdapter({ lib = null, dllPath = 'nvml.dll', index = 0, physicalToken = null } = {}) {
-  let state = { available: false, error: null, handle: null, fn: null, initialized: false, deviceIndex: index, count: null, identity: null };
+export function createNvmlAdapter({ lib = null, dllPath = 'nvml.dll', index = 0 } = {}) {
+  let state = { available: false, error: null, handle: null, fn: null };
 
   function bind(libObj, name, ret, params) {
     try {
@@ -123,11 +123,7 @@ export function createNvmlAdapter({ lib = null, dllPath = 'nvml.dll', index = 0,
       const fn = {
         init: bind(loaded, 'nvmlInit_v2', 'int', []),
         shutdown: bind(loaded, 'nvmlShutdown', 'int', []),
-        count: bind(loaded, 'nvmlDeviceGetCount_v2', 'int', ['void*']),
         handleByIndex: bind(loaded, 'nvmlDeviceGetHandleByIndex_v2', 'int', ['uint', 'void*']),
-        uuid: bind(loaded, 'nvmlDeviceGetUUID', 'int', ['void*', 'void*', 'uint']),
-        pciInfo: bind(loaded, 'nvmlDeviceGetPciInfo_v3', 'int', ['void*', 'void*'])
-          ?? bind(loaded, 'nvmlDeviceGetPciInfo_v2', 'int', ['void*', 'void*']),
         clock: bind(loaded, 'nvmlDeviceGetClockInfo', 'int', ['void*', 'uint', 'void*']),
         temp: bind(loaded, 'nvmlDeviceGetTemperature', 'int', ['void*', 'uint', 'void*']),
         util: bind(loaded, 'nvmlDeviceGetUtilizationRates', 'int', ['void*', 'void*']),
@@ -147,118 +143,17 @@ export function createNvmlAdapter({ lib = null, dllPath = 'nvml.dll', index = 0,
         state.error = 'nvmlInit_v2 failed (no NVIDIA driver / GPU not supported)';
         return;
       }
-      // A successful nvmlInit_v2 must be paired with nvmlShutdown even when
-      // handle discovery or a later identity query fails.
-      state.fn = fn;
-      state.initialized = true;
       const handleBuf = koffi.alloc('uint8', 8);
       if (fn.handleByIndex(index, handleBuf) !== NVML_SUCCESS) {
         state.error = `nvmlDeviceGetHandleByIndex_v2(${index}) failed (no NVIDIA GPU)`;
         return;
       }
+      state.fn = fn;
       state.handle = koffi.decode(handleBuf, 0, 'void*');
-      if (fn.count) {
-        try {
-          const countBuf = koffi.alloc('uint32', 1);
-          if (fn.count(countBuf) === NVML_SUCCESS) state.count = koffi.decode(countBuf, 0, 'uint32');
-        } catch { /* the identity resolver can still use the selected handle */ }
-      }
-      state.deviceIndex = index;
       state.available = true;
-      state.identity = readIdentity(state.handle, index);
     } catch (err) {
       state.error = err instanceof Error ? err.message : String(err);
     }
-  }
-
-  function configuredToken(deviceIndex) {
-    const value = Array.isArray(physicalToken) ? physicalToken[deviceIndex] : physicalToken;
-    return typeof value === 'string' && value.length > 0 ? `nvml:${value}` : null;
-  }
-
-  function parseBusId(value) {
-    const text = typeof value === 'string' ? value.trim() : '';
-    const match = text.match(/^(?:PCI:)?([0-9a-f]+):([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
-    if (!match) return null;
-    const domain = Number.parseInt(match[1], 16);
-    const bus = Number.parseInt(match[2], 16);
-    const device = Number.parseInt(match[3], 16);
-    const fn = Number.parseInt(match[4], 10);
-    if (![domain, bus, device, fn].every(Number.isFinite)
-      || domain > 0xffff || bus > 0xff || device > 0xff) return null;
-    return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
-  }
-
-  function readIdentity(handle, deviceIndex) {
-    const identity = {};
-    const configured = configuredToken(deviceIndex);
-    if (configured) identity.physicalToken = configured;
-    if (!identity.physicalToken && state.fn?.uuid) {
-      try {
-        const buf = Buffer.alloc(96, 0);
-        if (state.fn.uuid(handle, buf, 96) === NVML_SUCCESS) {
-          const uuid = buf.toString('utf8').split('\0', 1)[0].trim();
-          if (uuid) identity.physicalToken = `nvml:${uuid}`;
-        }
-      } catch { /* try PCI identity */ }
-    }
-    if (state.fn?.pciInfo) {
-      try {
-        const buf = Buffer.alloc(64, 0);
-        if (state.fn.pciInfo(handle, buf) === NVML_SUCCESS) {
-          // nvmlPciInfo_t starts with char busId[32], followed by domain,
-          // bus, device, and subsystem ids. Prefer the canonical busId text
-          // so v2/v3 layouts stay compatible; the numeric fallback uses the
-          // real post-busId offsets, never bytes from the string field.
-          const busId = buf.toString('utf8', 0, 32).split('\0', 1)[0];
-          const parsed = parseBusId(busId);
-          if (parsed) identity.physicalBdf = parsed;
-          else {
-            const domain = buf.readUInt32LE(32);
-            const bus = buf.readUInt32LE(36);
-            const device = buf.readUInt32LE(40);
-            const fn = buf.length >= 48 ? buf.readUInt32LE(44) : 0;
-            if (domain <= 0xffff && bus <= 0xff && device <= 0xff && fn <= 7) {
-              identity.physicalBdf = `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
-            }
-          }
-        }
-      } catch { /* identity remains partially available */ }
-    }
-    return Object.keys(identity).length > 0 ? identity : null;
-  }
-
-  function handleAt(deviceIndex) {
-    if (!state.fn?.handleByIndex || !Number.isInteger(deviceIndex) || deviceIndex < 0) return null;
-    const handleBuf = koffi.alloc('uint8', 8);
-    if (state.fn.handleByIndex(deviceIndex, handleBuf) !== NVML_SUCCESS) return null;
-    return koffi.decode(handleBuf, 0, 'void*');
-  }
-
-  function selectDevice(deviceIndex) {
-    if (!state.available || !Number.isInteger(deviceIndex) || (Number.isInteger(state.count) && deviceIndex >= state.count)) return false;
-    try {
-      const handle = handleAt(deviceIndex);
-      if (!handle) return false;
-      state.handle = handle;
-      state.deviceIndex = deviceIndex;
-      state.identity = readIdentity(handle, deviceIndex);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async function enumerateDevices() {
-    if (!state.available || !Number.isInteger(state.count)) return null;
-    const entries = [];
-    for (let i = 0; i < state.count; i += 1) {
-      try {
-        const handle = handleAt(i);
-        if (handle) entries.push({ index: i, ...(readIdentity(handle, i) ?? {}) });
-      } catch { /* skip a provider entry that cannot be inspected */ }
-    }
-    return entries;
   }
 
   function readU32(fnName, args) {
@@ -354,23 +249,17 @@ export function createNvmlAdapter({ lib = null, dllPath = 'nvml.dll', index = 0,
   }
 
   function close() {
-    if (state.initialized && state.fn?.shutdown) {
+    if (state.available && state.fn?.shutdown) {
       try { state.fn.shutdown(); } catch { /* best effort */ }
     }
-    state = { available: false, error: null, handle: null, fn: null, initialized: false, deviceIndex: index, count: null, identity: null };
+    state = { available: false, error: null, handle: null, fn: null };
   }
 
   return {
     vendor: 'nvidia',
-    get deviceIndex() { return state.deviceIndex; },
-    get physicalToken() { return state.identity?.physicalToken ?? null; },
-    get physicalBdf() { return state.identity?.physicalBdf ?? null; },
-    get physicalUniqueToken() { return state.identity?.physicalToken ?? null; },
     available: () => state.available,
     initError: () => state.error,
     init,
-    enumerateDevices,
-    selectDevice,
     sample,
     deviceInfo,
     close,

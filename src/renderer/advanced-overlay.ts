@@ -39,9 +39,8 @@ import { api } from './ipc.ts';
 import { toast } from './components/toast.ts';
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
-import { buildDeviceSelect } from './components/device-select.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceState, GraphicsSettings, GraphicsState, TelemetrySample } from './types.ts';
 import { snapToRange, normalizedPosition, formatValue } from './pure/slider.ts';
 import {
   buildScalarSettings,
@@ -51,7 +50,6 @@ import {
   cardSliderRange,
 } from './pure/settings.ts';
 import { applyFailureText, CONTROL_LABELS } from './pure/errors.ts';
-import { resolveBootDevice } from './pure/device.ts';
 import { chipState } from './pure/chip.ts';
 import { renderFanEditor, updateFanReadout } from './pages/fan-editor.ts';
 import {
@@ -76,25 +74,6 @@ import {
 
 const store = new Store();
 let activeTab: 'tuning' | 'fan' | 'graphics' = 'tuning';
-
-// A selection push is the panel's ownership boundary. Every device identity
-// change advances this generation so async reads/applies from the old panel
-// cannot commit into the newly selected device.
-type PanelSelection = { deviceId: number; deviceKey: string | null; caps: Capabilities; state: DeviceState };
-let panelGeneration = 0;
-let pendingSelection: PanelSelection | null = null;
-
-function selectedDeviceKey(state: ReturnType<Store['get']>): string | null {
-  const selected = state.devices.find((device) => device.id === state.deviceId);
-  return selected?.deviceKey ?? state.caps?.deviceKey ?? null;
-}
-
-function panelIdentityMatches(deviceId: number, deviceKey: string | null, generation: number): boolean {
-  const live = store.get();
-  return generation === panelGeneration
-    && live.deviceId === deviceId
-    && selectedDeviceKey(live) === deviceKey;
-}
 
 const contentEl = document.getElementById('adv-content') as HTMLElement;
 const deviceEl = document.getElementById('adv-device') as HTMLElement;
@@ -123,10 +102,6 @@ clockEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minut
 // forwards to the panel window). Refreshes the readout strip + the
 // fan editor's RPM marker in place.
 api.onTelemetrySample((sample) => {
-  const live = store.get();
-  if (sample.deviceId !== undefined && sample.deviceId !== live.deviceId) return;
-  const selected = live.devices.find((device) => device.id === live.deviceId);
-  if (sample.deviceKey && selected?.deviceKey && sample.deviceKey !== selected.deviceKey) return;
   store.set({ latestSample: sample });
   renderReadout(sample);
   if (activeTab === 'fan') {
@@ -141,60 +116,20 @@ api.onTelemetrySample((sample) => {
 // 'dirty' instead of 'applied'). Just update the store; the next tab
 // switch or explicit render picks up the fresh state.
 api.onStateUpdated((payload) => {
-  const live = store.get();
-  // State pushes carry the originating session id; never let a read-back from
-  // another device overwrite the selected device's state.
-  if (!payload || !payload.state || payload.deviceId !== live.deviceId) return;
-  store.set({ state: payload.state });
-});
-// M31: one atomic main-owned selection push updates the panel's durable
-// selection and its matching caps/state pair. The panel never starts/stops
-// telemetry and never persists directly.
-api.onDeviceSelectionUpdated((payload) => {
-  const live = store.get();
-  const target = live.devices.find((device) => device.id === payload.deviceId
-    && (payload.deviceKey === null || device.deviceKey === payload.deviceKey));
-  const nextKey = payload.deviceKey ?? target?.deviceKey ?? payload.caps.deviceKey ?? null;
-  pendingSelection = payload;
-  if (live.deviceId !== payload.deviceId || selectedDeviceKey(live) !== nextKey) panelGeneration += 1;
-  if (!target || (live.deviceId === payload.deviceId
-    && live.caps === payload.caps && live.state === payload.state)) return;
-  store.set({
-    deviceId: payload.deviceId,
-    caps: payload.caps,
-    state: payload.state,
-    latestSample: null,
-  });
-  deviceEl.textContent = payload.caps.deviceName || target.name || 'Unknown GPU';
-  values = {};
-  applied = {};
-  applying = false;
-  tuningApplyBtn = null;
-  graphicsState = null;
-  graphicsStateGeneration = -1;
-  graphicsDraft = {};
-  graphicsApplied = {};
-  graphicsApplying = false;
-  graphicsApplyBtn = null;
-  renderTab();
-});
-
-// M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
-// onStateUpdated for the graphics surface). Ignore pushes from an older
-// panel generation even when session ids are reused.
-api.onGraphicsStateUpdated((payload) => {
-  if (payload && payload.deviceId === store.get().deviceId && graphicsStateGeneration === panelGeneration) {
-    graphicsState = payload.graphicsState;
-    // A push can arrive while the initial capability read is resolving or
-    // immediately after an apply. Re-enter the full graphics lifecycle so
-    // the visible panel cannot remain on its loading skeleton or stale cards.
-    // Never rebuild during the panel's own apply: the response handler owns
-    // graphicsApplied/graphicsDraft and a rebuild would erase the Applied chip
-    // before it can be observed.
-    if (activeTab === 'graphics' && !graphicsApplying) void renderGraphics();
+  if (payload && payload.state) {
+    store.set({ state: payload.state });
   }
 });
 
+// M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
+// onStateUpdated for the graphics surface). M24 (fix): same race as the
+// tuning handler - the panel's own graphics apply already handles state
+// updates; just update the store.
+api.onGraphicsStateUpdated((payload) => {
+  if (payload && payload.deviceId === store.get().deviceId) {
+    graphicsState = payload.graphicsState;
+  }
+});
 
 function renderReadout(sample: TelemetrySample | null): void {
   const s: Partial<TelemetrySample> = sample ?? {};
@@ -210,51 +145,15 @@ function renderReadout(sample: TelemetrySample | null): void {
 // Boot: deviceGet -> getCapabilities -> getCurrentSettings -> render
 // ---------------------------------------------------------------------------
 
-async function resolveAdvancedOverlaySelection(): Promise<{ devices: DeviceInfo[]; deviceId: number | null }> {
-  let persisted: { deviceId?: number | null; deviceKey?: string | null } | null = null;
-  try {
-    persisted = await api.deviceGet();
-  } catch {
-    return { devices: [], deviceId: null };
-  }
-  let devices: DeviceInfo[] = [];
-  try {
-    devices = await api.listDevices();
-  } catch {
-    return { devices, deviceId: null };
-  }
-  const fallback = typeof persisted?.deviceId === 'number' && persisted.deviceId >= 0
-    ? persisted.deviceId
-    : null;
-  return {
-    devices,
-    deviceId: resolveBootDevice(devices, fallback, persisted?.deviceKey ?? null),
-  };
-}
-
 async function boot(): Promise<void> {
-  const bootGeneration = panelGeneration;
-  const selection = await resolveAdvancedOverlaySelection();
-  const pushed = pendingSelection;
-  pendingSelection = null;
-  const pushedTarget = pushed && selection.devices.find((device) => device.id === pushed.deviceId
-    && (pushed.deviceKey === null || device.deviceKey === pushed.deviceKey));
-  if (pushed && pushedTarget) {
-    store.set({
-      devices: selection.devices,
-      deviceId: pushed.deviceId,
-      caps: pushed.caps,
-      state: pushed.state,
-    });
-    deviceEl.textContent = pushed.caps.deviceName || pushedTarget.name || 'Unknown GPU';
-    renderTab();
-    return;
+  let deviceId: number | null = null;
+  try {
+    const d = await api.deviceGet();
+    deviceId = d.deviceId;
+  } catch {
+    deviceId = null;
   }
-  // A selection that arrived while the initial enumeration was in flight
-  // invalidates the old boot result; do not overwrite the main-owned push.
-  if (panelGeneration !== bootGeneration) return;
-  const deviceId = selection.deviceId;
-  store.set({ devices: selection.devices, deviceId });
+  store.set({ deviceId });
 
   if (deviceId === null) {
     deviceEl.textContent = 'No GPU available.';
@@ -262,7 +161,6 @@ async function boot(): Promise<void> {
     return;
   }
 
-  const deviceKey = selectedDeviceKey(store.get());
   let caps: Capabilities | null = null;
   let state: DeviceState | null = null;
   try {
@@ -272,7 +170,6 @@ async function boot(): Promise<void> {
     caps = null;
     state = null;
   }
-  if (!panelIdentityMatches(deviceId, deviceKey, bootGeneration)) return;
   store.set({ caps, state });
   deviceEl.textContent = caps?.deviceName || 'Unknown GPU';
   renderTab();
@@ -316,15 +213,15 @@ document.querySelectorAll<HTMLButtonElement>('.adv-tab').forEach((t) => {
 // ---------------------------------------------------------------------------
 // Tuning tab - the scalar slider cards (incl. the EDITABLE power limit) +
 // the M22-safe lock editor + the floating Apply (Apply-button model)
+// ---------------------------------------------------------------------------
+
 // The scalar cards (the panel's set - PL IS included: editable like the
 // main Tuning page; the PL1/PL2 sysman readout rides its card's meta line).
-// Gated by caps.controls like the main Tuning page; percent-unit PL is not a
-// wattage control and never receives a fabricated W label.
+// Gated by caps.controls like the main Tuning page.
 const SCALAR_CONTROLS = ['powerLimitW', 'gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV'];
 
 let values: Record<string, number> = {};
 let applied: Record<string, number> = {};
-let hiddenNegativeControls = new Set<string>();
 let applying = false;
 let tuningApplyBtn: HTMLButtonElement | null = null;
 
@@ -334,31 +231,14 @@ async function renderTuning(): Promise<void> {
   const caps = s.caps;
   const state = s.state;
   const view = el('div', { class: 'adv-view tuning-view' });
-  const deviceSelect = buildDeviceSelect(store, (id) => {
-    const selected = store.get().devices.find((device) => device.id === id);
-    if (selected?.deviceKey) {
-      void api.deviceSelectionRequest(selected.deviceKey);
-    } else {
-      toast('warn', 'GPU selection unavailable', 'This GPU has no stable identity and cannot be selected safely.');
-    }
-  });
-  const tuningHeading = el('div', { class: 'adv-view-heading' }, [
-    el('p', { class: 'adv-view-title', text: 'Tuning' }),
-    ...(deviceSelect ? [deviceSelect] : []),
-  ]);
 
   if (s.deviceId === null) {
-    view.append(tuningHeading, el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
+    view.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
     contentEl.append(view);
     return;
   }
   if (!caps || !state) {
-    view.append(tuningHeading, el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
-    contentEl.append(view);
-    return;
-  }
-  if (caps.overclockingSupported === false) {
-    view.append(tuningHeading, el('p', { class: 'page-subtitle', text: 'Tuning is not supported on this GPU. Telemetry remains available.' }));
+    view.append(el('p', { class: 'page-subtitle', text: 'Loading device capabilities…' }));
     contentEl.append(view);
     return;
   }
@@ -371,19 +251,12 @@ async function renderTuning(): Promise<void> {
   // Gated on the RANGE presence (the main Tuning page's supportedScalars
   // convention - caps.controls keys are the plain CONTROL names
   // (gpuFreqOffset/gpuVoltOffset/...), never the canonical range keys; a
-  const controls = SCALAR_CONTROLS.filter((key) => {
-    const range = cardSliderRange(caps, key);
-    // The range's units drive the card value/readout (% or W); never
-    // relabel a percent-unit power limit as watts.
-    return range !== undefined;
-  });
-  hiddenNegativeControls = new Set<string>();
+  // range only exists for a supported control, so the range check IS the
+  // support check and the canonical-keyed cards render).
+  const controls = SCALAR_CONTROLS.filter((key) => caps.ranges[key] !== undefined);
   for (const key of controls) {
     const cur = currentState[key as keyof DeviceState];
-    const range = cardSliderRange(caps, key);
-    if (!range) continue;
-    if (key === 'gpuVoltOffsetV' && range.units === 'V' && typeof cur === 'number' && cur < 0) hiddenNegativeControls.add(key);
-    values[key] = snapToRange(typeof cur === 'number' ? cur : range.default, range);
+    values[key] = snapToRange(typeof cur === 'number' ? cur : caps.ranges[key].default, caps.ranges[key]);
   }
 
   const stack = el('div', { class: 'card-stack oc-stack' });
@@ -391,7 +264,7 @@ async function renderTuning(): Promise<void> {
   const updateFloating = (): void => {
     if (!tuningApplyBtn) return;
     if (applying) { tuningApplyBtn.hidden = false; return; }
-    tuningApplyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values, { hiddenNegativeControls }), currentState, applied, hiddenNegativeControls);
+    tuningApplyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values), currentState, applied);
   };
 
   const setBusy = (busy: boolean): void => {
@@ -418,7 +291,6 @@ async function renderTuning(): Promise<void> {
       oninput: (ev: Event) => {
         const raw = Number((ev.target as HTMLInputElement).value);
         const v = snapToRange(raw, range);
-        hiddenNegativeControls.delete(key);
         values[key] = v;
         valueNode.textContent = formatValue(v, range.units);
         fill.style.width = `${normalizedPosition(v, range) * 100}%`;
@@ -437,10 +309,7 @@ async function renderTuning(): Promise<void> {
       },
     });
     const refreshChip = (k: string): void => {
-      const rawDriver = currentState[k as keyof DeviceState];
-      const driver = hiddenNegativeControls.has(k) && k === 'gpuVoltOffsetV'
-        && typeof rawDriver === 'number' && rawDriver < 0 && !(k in applied) ? 0 : rawDriver;
-      const st = chipState(k, values, applied, driver, true);
+      const st = chipState(k, values, applied, currentState[k as keyof DeviceState], true);
       chip.hidden = st !== 'applied';
       if (st === 'applied') {
         chip.textContent = 'Applied';
@@ -499,14 +368,12 @@ async function renderTuning(): Promise<void> {
   const applyScalar = async (only?: string): Promise<void> => {
     const live = store.get();
     const deviceId = live.deviceId;
-    const deviceKey = selectedDeviceKey(live);
-    const generation = panelGeneration;
     if (deviceId === null || !caps) return;
     let settings;
     if (only !== undefined) {
-      settings = buildScalarSettings({ [only]: values[only] }, { hiddenNegativeControls });
+      settings = ({ [only]: values[only] } as unknown as ReturnType<typeof buildScalarSettings>);
     } else {
-      settings = buildScalarSettings(values, { hiddenNegativeControls });
+      settings = buildScalarSettings(values);
     }
     if (!validateSettingsPayload(settings)) {
       toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -514,11 +381,10 @@ async function renderTuning(): Promise<void> {
     }
     // M2C-C: a non-elevated product app delegates to the elevated
     // self-worker - explain BEFORE the prompt (the workerApply pattern).
-    if (live.workerApply && !live.elevated && panelIdentityMatches(deviceId, deviceKey, generation)) {
+    if (live.workerApply && !live.elevated) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }
     const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
-    if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
     if (decision === 'cancelled') {
       toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
       return;
@@ -532,13 +398,11 @@ async function renderTuning(): Promise<void> {
     setBusy(true);
     try {
       const { result, state: fresh } = await api.applySettings(deviceId, settings);
-      // A driver write is intentionally not cancelled, but its response is
-      // ignored once the panel moved to another device/generation.
-      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
       // M24 (fix): set the applied reference BEFORE store.set - the M24
       // sync push fires onStateUpdated → renderTuning() which clears +
       // rebuilds the DOM; if applied is not yet set, the rebuilt chips
-      // show 'dirty' instead of 'applied'.
+      // show 'dirty' instead of 'applied'. Setting applied first ensures
+      // the re-render picks up the correct chip state.
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) {
           const wanted = (settings as Record<string, unknown>)[key];
@@ -561,16 +425,10 @@ async function renderTuning(): Promise<void> {
       }
       if (fresh) renderTuningInPlace();
     } catch (err) {
-      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
-        toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
-      }
+      toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
     } finally {
-      // Selection reset the old busy state; do not touch a new panel's Apply
-      // button while balancing a stale response.
-      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
-        setBusy(false);
-        updateFloating();
-      }
+      setBusy(false);
+      updateFloating();
     }
   };
 
@@ -595,10 +453,7 @@ async function renderTuning(): Promise<void> {
       const chip = stack.querySelector<HTMLElement>(`.oc-card[data-control="${key}"] .oc-chip-status`);
       const btn = stack.querySelector<HTMLButtonElement>(`.oc-card[data-control="${key}"] .oc-chip-apply`);
       if (!chip || !btn) continue;
-      const rawDriver = currentState[key as keyof DeviceState];
-      const driver = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
-        && typeof rawDriver === 'number' && rawDriver < 0 && !(key in applied) ? 0 : rawDriver;
-      const st = chipState(key, values, applied, driver, true);
+      const st = chipState(key, values, applied, currentState[key as keyof DeviceState], true);
       chip.hidden = st !== 'applied';
       if (st === 'applied') {
         chip.textContent = 'Applied';
@@ -613,12 +468,14 @@ async function renderTuning(): Promise<void> {
   };
 
   stack.append(
+    el('p', { class: 'adv-view-title', text: 'Tuning' }),
     ...controls.filter((k) => k !== 'powerLimitW').map(buildCard),
-    ...(controls.includes('powerLimitW') ? [buildPlCard()] : []),
+    buildPlCard(),
     tuningApplyBtn as HTMLElement,
   );
   contentEl.append(view);
-  view.append(tuningHeading, stack);
+  view.append(stack);
+  updateFloating();
 }
 
 // ---------------------------------------------------------------------------
@@ -644,40 +501,35 @@ function renderFan(): void {
 // Graphics tab - the four M8 cards (the shared option lists EXPORTED from
 // pages/graphics.ts - export, never duplicate)
 // ---------------------------------------------------------------------------
-const GRAPHICS_LOAD_TIMEOUT_MS = 5000;
+
+let graphicsState: GraphicsState | null = null;
+let graphicsDraft: GraphicsSettings = {};
+let graphicsApplied: GraphicsSettings = {};
+let graphicsApplying = false;
+let graphicsApplyBtn: HTMLButtonElement | null = null;
+
+const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
 
 async function renderGraphics(): Promise<void> {
   clear(contentEl);
   const s = store.get();
-  const deviceId = s.deviceId;
-  const deviceKey = selectedDeviceKey(s);
-  const generation = panelGeneration;
   const view = el('div', { class: 'adv-view graphics-view' });
-  if (deviceId === null) {
+  if (s.deviceId === null) {
     view.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
     contentEl.append(view);
     return;
   }
+  view.append(el('p', { class: 'page-subtitle', text: 'Loading graphics capabilities…' }));
   contentEl.append(view);
   let state: GraphicsState;
   try {
-    state = await Promise.race([
-      api.graphicsGet(deviceId),
-      new Promise<never>((_, reject) => {
-        window.setTimeout(() => reject(new Error('graphics capability read timed out')), GRAPHICS_LOAD_TIMEOUT_MS);
-      }),
-    ]);
+    state = await api.graphicsGet(s.deviceId);
   } catch (err) {
-    if (!panelIdentityMatches(deviceId, deviceKey, generation)
-      || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;
     clear(view);
     view.append(el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }));
     return;
   }
-  if (!panelIdentityMatches(deviceId, deviceKey, generation)
-    || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;
   graphicsState = state;
-  graphicsStateGeneration = generation;
   graphicsDraft = normalizeGraphicsSettings(state);
   graphicsApplied = {};
   graphicsApplying = false;
@@ -698,18 +550,10 @@ function graphicsOptionsOf(state: GraphicsState, key: string): string[] {
   }
 }
 
-let graphicsState: GraphicsState | null = null;
-let graphicsStateGeneration = -1;
-let graphicsDraft: GraphicsSettings = {};
-let graphicsApplied: GraphicsSettings = {};
-let graphicsApplying = false;
-let graphicsApplyBtn: HTMLButtonElement | null = null;
-
-const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
-
 function renderGraphicsCards(view: HTMLElement): void {
   const state = graphicsState;
   if (!state) return;
+  clear(view);
 
   const updateFloating = (): void => {
     if (!graphicsApplyBtn) return;
@@ -866,8 +710,6 @@ function renderGraphicsCards(view: HTMLElement): void {
   const applyGraphics = async (only?: string): Promise<void> => {
     const live = store.get();
     const deviceId = live.deviceId;
-    const deviceKey = selectedDeviceKey(live);
-    const generation = panelGeneration;
     if (deviceId === null || !graphicsState) return;
     const payload = only !== undefined
       ? (isGraphicsControlDirtyVsApplied(only, graphicsDraft, graphicsState, graphicsApplied)
@@ -883,7 +725,7 @@ function renderGraphicsCards(view: HTMLElement): void {
       return;
     }
     // The DEDICATED graphics path - NO OC waiver anywhere.
-    if (live.workerApply && !live.elevated && panelIdentityMatches(deviceId, deviceKey, generation)) {
+    if (live.workerApply && !live.elevated) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }
     graphicsApplying = true;
@@ -893,7 +735,6 @@ function renderGraphicsCards(view: HTMLElement): void {
     }
     try {
       const out = await api.graphicsApply(deviceId, payload);
-      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
       if (out.graphicsState) graphicsState = out.graphicsState;
       for (const [key, per] of Object.entries(out.perControl)) {
         if (per.ok) {
@@ -906,18 +747,14 @@ function renderGraphicsCards(view: HTMLElement): void {
       for (const key of GRAPHICS_CONTROLS) refreshChip(key);
       updateFloating();
     } catch (err) {
-      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
-        toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
-      }
+      toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
     } finally {
-      if (panelIdentityMatches(deviceId, deviceKey, generation)) {
-        graphicsApplying = false;
-        if (graphicsApplyBtn) {
-          graphicsApplyBtn.disabled = false;
-          graphicsApplyBtn.textContent = 'Apply';
-        }
-        updateFloating();
+      graphicsApplying = false;
+      if (graphicsApplyBtn) {
+        graphicsApplyBtn.disabled = false;
+        graphicsApplyBtn.textContent = 'Apply';
       }
+      updateFloating();
     }
   };
 
@@ -935,5 +772,6 @@ function renderGraphicsCards(view: HTMLElement): void {
 
 // ---------------------------------------------------------------------------
 // Boot
-void boot();
+// ---------------------------------------------------------------------------
 
+void boot();

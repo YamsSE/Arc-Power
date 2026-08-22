@@ -74,12 +74,6 @@ export function renderOverlaySettings(container: HTMLElement, ctx: PageContext):
   void mount(ctx, container);
 }
 
-interface OverlayDevice {
-  id: number;
-  name?: string | null;
-  deviceKey?: string | null;
-}
-
 interface PersistedOverlay {
   enabled: boolean;
   hotkeyLetter: string;
@@ -87,9 +81,6 @@ interface PersistedOverlay {
   scale: number;
   color: string;
   stats: string[];
-  // M35: null means every enumerated GPU (the backwards-compatible default);
-  // an explicit list contains durable device keys selected by the user.
-  monitoredDeviceKeys: string[] | null;
   // M24: the overlay THEME ('arc' the product default - the Intel-Arc
   // harness redesign; 'classic' the original HUD, one click away via the
   // Theme row). Persisted as settings.json 'overlayTheme'.
@@ -122,7 +113,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // note never goes stale (M1: a letter-save re-register failure
   // mid-session must surface immediately).
   let overlayState: OverlayState | null = null;
-  let overlayDevices: OverlayDevice[] = [];
   let persisted: PersistedOverlay;
   try {
     const envelope = await api.profilesList();
@@ -137,11 +127,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       scale: clampOverlayScale(s.overlayScale),
       color: isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff',
       stats: Array.isArray(s.overlayStats) ? s.overlayStats : [...OVERLAY_STATS_DEFAULT],
-      // M35: an absent list preserves the all-GPU default; an explicit list
-      // contains durable device keys, never transient enumeration indexes.
-      monitoredDeviceKeys: Array.isArray(s.overlayDeviceKeys)
-        ? s.overlayDeviceKeys.filter((key: unknown): key is string => typeof key === 'string' && key.length > 0)
-        : null,
       // M24: the overlay theme (absent on old files -> 'arc' - the redesign
       // IS the product default; 'classic' stays one click away).
       theme: isValidOverlayTheme(s.overlayTheme) ? s.overlayTheme : OVERLAY_THEME_DEFAULT,
@@ -170,12 +155,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     return;
   }
   try {
-    const listed = await api.listDevices();
-    overlayDevices = Array.isArray(listed) ? listed : [];
-  } catch {
-    overlayDevices = [];
-  }
-  try {
     overlayState = await api.overlayGetState();
   } catch { /* the cards degrade to the persisted state */ }
   // M23: the advanced panel's live state - the Advanced card re-queries it
@@ -200,28 +179,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // M17e: the polling-rate slider's live value label (declared before the
     // General card - the scale-slider pattern).
     const pollMsValue = el('span', { class: 'settings-poll-ms-value', text: `${persisted.pollMs} ms` });
-    const deviceOptions = overlayDevices
-      .filter((device) => typeof device.deviceKey === 'string' && device.deviceKey.length > 0);
-    const monitoredKeys = persisted.monitoredDeviceKeys ?? deviceOptions.map((device) => device.deviceKey!);
-    const monitoringRow = el('div', { class: 'overlay-device-monitoring' }, [
-      el('span', { class: 'settings-row-label', text: 'Monitor GPUs' }),
-      ...(deviceOptions.length > 0
-        ? deviceOptions.map((device, index) => {
-          const key = device.deviceKey!;
-          const model = typeof device.name === 'string' && device.name.length > 0 ? ` - ${device.name}` : '';
-          return el('label', { class: 'boot-toggle overlay-device-toggle', title: `GPU ${index + 1}${model}` }, [
-            el('input', {
-              type: 'checkbox',
-              class: 'settings-checkbox',
-              dataset: { setting: 'overlayDeviceKeys', deviceKey: key },
-              checked: monitoredKeys.includes(key),
-              onchange: (ev: Event) => void onMonitoredDeviceToggle(key, (ev.target as HTMLInputElement).checked),
-            }),
-            el('span', { text: `GPU ${index + 1}` }),
-          ]);
-        })
-        : [el('span', { class: 'settings-hint', text: 'No GPU devices detected' })]),
-    ]);
     // --- General card (M6-amd3): the enable TOGGLE - moved here from the
     // Settings page (the Settings card is button-only now). The
     // .settings-checkbox[data-setting="overlayEnabled"] class + dataset
@@ -240,24 +197,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           el('span', { text: 'Show the overlay' }),
         ]),
       ]),
-      // M25: the "Show Advanced Overlay" toggle moved here from the
-      // Hotkey card (the AMD-Adrenaline-style side panel).
-      el('div', { class: 'settings-row' }, [
-        el('label', { class: 'boot-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox',
-            dataset: { setting: 'advancedOverlayEnabled' },
-            checked: persisted.advEnabled,
-            onchange: (ev: Event) => void onAdvancedEnabledToggle((ev.target as HTMLInputElement).checked),
-          }),
-          el('span', { text: 'Show Advanced Overlay' }),
-        ]),
-      ]),
-      // M35: the overlay owns an independent GPU selection. Multiple checks
-      // keep multiple telemetry lanes; with one checked the renderer returns
-      // to the unnumbered GPU / VRAM labels.
-      monitoringRow,
       // M17b: the chip-name row labels - the overlayEnabled/overlayBgEnabled
       // checkbox pattern (NOT the per-stat .overlay-stat-toggle hook; the
       // ui-verify pin queries [data-setting="overlayChipNames"]).
@@ -454,8 +393,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }),
         scaleValue,
       ]),
-      // M25: Position select moved to the Hotkey card (below Classic
-      // Overlay hotkey, matching the Advanced Overlay layout).
+      // M9: the Position row - the old standalone Position card's select
+      // lives here now (the same settings-row pattern as the Size row).
+      el('div', { class: 'settings-row overlay-position-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Position' }),
+        positionSelect,
+      ]),
       // M7b (fix 4) / M25: the Background section - hidden when the Arc
       // theme is selected (Arc has its own built-in chrome; background box
       // is a Classic-only option).
@@ -533,29 +476,36 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       onchange: (ev: Event) => void onAdvancedPositionChange((ev.target as HTMLSelectElement).value),
     }, ADVANCED_OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: ADVANCED_OVERLAY_POSITION_LABELS[p] })));
     advancedPositionSelect.value = persisted.advPosition;
-    // M25: "Show Advanced Overlay" toggle moved to the General card.
     const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
       el('h2', { class: 'card-title', text: 'Hotkey' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Classic Overlay' }),
+        el('span', { class: 'settings-row-label', text: 'HUD' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         hotkeyInput,
-      ]),
-      el('div', { class: 'settings-row overlay-hotkey-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Position' }),
-        positionSelect,
       ]),
       overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
         ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
         : null,
       el('hr', { class: 'overlay-hotkey-divider' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'advancedOverlayEnabled' },
+            checked: persisted.advEnabled,
+            onchange: (ev: Event) => void onAdvancedEnabledToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Show the side panel' }),
+        ]),
+      ]),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Advanced Overlay' }),
+        el('span', { class: 'settings-row-label', text: 'Panel' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         advancedHotkeyInput,
       ]),
       el('div', { class: 'settings-row overlay-advanced-position-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Position' }),
+        el('span', { class: 'settings-row-label', text: 'Edge' }),
         advancedPositionSelect,
       ]),
       advancedOverlayState && advancedOverlayState.exists && advancedOverlayState.hotkeyRegistered === false
@@ -600,33 +550,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
   };
-  // M35: per-GPU monitoring selection. The first toggle converts the legacy
-  // all-GPU default into an explicit durable-key list; the last checked GPU
-  // is protected so the overlay never becomes an accidental blank panel.
-  const onMonitoredDeviceToggle = async (deviceKey: string, checked: boolean): Promise<void> => {
-    const available = overlayDevices
-      .map((device) => device.deviceKey)
-      .filter((key): key is string => typeof key === 'string' && key.length > 0);
-    const current = persisted.monitoredDeviceKeys ?? available;
-    const next = checked
-      ? (current.includes(deviceKey) ? current : [...current, deviceKey])
-      : current.filter((key) => key !== deviceKey);
-    const box = root.querySelector<HTMLInputElement>(`input[data-setting="overlayDeviceKeys"][data-device-key="${CSS.escape(deviceKey)}"]`);
-    if (next.length === 0) {
-      if (box) box.checked = true;
-      toast('info', 'Keep one GPU selected', 'The overlay needs at least one monitored GPU.');
-      return;
-    }
-    try {
-      await api.profilesSettingsSave({ overlayDeviceKeys: next });
-      persisted.monitoredDeviceKeys = next;
-      toast('success', 'Overlay GPU monitoring updated', `${next.length} GPU${next.length === 1 ? '' : 's'} selected.`);
-    } catch (err) {
-      if (box) box.checked = current.includes(deviceKey);
-      toast('error', 'Overlay GPU monitoring could not be changed', err instanceof Error ? err.message : String(err));
-    }
-  };
-
 
   // M17e (the user addition): the polling-rate slider - the same
   // profiles-settings-save pattern as the scale/opacity handlers (the
@@ -688,9 +611,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const previous = persisted.theme;
     syncThemeButtons(theme);
     persisted.theme = theme;
-    // M25: re-render so the background section hides/shows (Arc has its
-    // own chrome; background box is Classic-only).
-    render();
     try {
       await api.profilesSettingsSave({ overlayTheme: theme });
       toast('success', 'Overlay theme changed', theme === 'arc' ? 'The Arc look is active.' : 'The classic HUD is active.');
@@ -698,7 +618,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('error', 'Overlay theme could not be changed', err instanceof Error ? err.message : String(err));
       persisted.theme = previous;
       syncThemeButtons(previous);
-      render();
     }
   };
 

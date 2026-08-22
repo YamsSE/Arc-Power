@@ -64,11 +64,10 @@
 //     the duplication drain (below) per tick;
 //   - DXGI unavailable (load/factory failure) → poll() returns null.
 //
-// The adapter also exposes adapterLuidOf(deviceIdHex, bdf): GetDesc1 carries
-// the adapter LUID + DeviceId - the display-enumeration link that sys-stats.js
-// uses to match the GPU-perf-counter instance names (the IGCL bindings expose
-// no adapter LUID). M30: duplicate PCI device IDs are disambiguated with the
-// adapter's D3DKMT-reported PCI/BDF address, not enumeration order.
+// The adapter also exposes adapterLuidOf(deviceIdHex): GetDesc1 carries the
+// adapter LUID + DeviceId - the display-enumeration link that sys-stats.js
+// uses to match the GPU-perf-counter instance names (the IGCL bindings
+// expose no adapter LUID).
 //
 // FALLBACK (M4-D2 r2 amendment, implemented as run 1b; folded into the
 // sampler by M7a): on a windowed desktop no output maintains
@@ -179,14 +178,6 @@ export const DXGI_ADAPTER_DESC1_SIZE = 312;
 export const DESC1_DEVICE_ID_OFF = 260;
 export const DESC1_LUID_LOW_OFF = 296;
 export const DESC1_LUID_HIGH_OFF = 300;
-// D3DKMT adapter-address bridge (gdi32.dll). The KMT enum value is the
-// documented KMTQAITYPE_ADAPTERADDRESS member (6); all calls are optional and
-// fail closed when WDDM/GDI does not expose the bridge.
-const KMTQAITYPE_ADAPTERADDRESS = 6;
-const D3DKMT_OPENADAPTERFROMLUID_SIZE = 12; // LUID (8) + UINT handle
-const D3DKMT_QUERYADAPTERINFO_SIZE = 24; // handle + enum + pointer + UINT
-const D3DKMT_CLOSEADAPTER_SIZE = 4;
-const D3DKMT_ADAPTERADDRESS_SIZE = 12;
 
 // M7a: the sampler cadence (the ring's 200 ms entries) + the poll's fps
 // rolling window.
@@ -254,58 +245,6 @@ export function defaultCallSlot(objPtr, slot, proto, ...args) {
   const slotPtr = koffi.decode(vtblPtr, slot * 8, 'void*');
   return koffi.call(slotPtr, proto, ...args);
 }
-/**
- * Resolve a DXGI adapter LUID to the physical PCI/BDF address through the
- * documented D3DKMT bridge. The bridge is deliberately best-effort: a
- * missing export, unsupported WDDM query, or malformed result returns null
- * and duplicate device IDs remain fail-closed.
- * @param {(name: string) => object} load
- * @returns {(low: number, high: number) => string|null}
- */
-function createAdapterBdfResolver(load) {
-  let open;
-  let query;
-  let close;
-  try {
-    const gdi = load('gdi32.dll');
-    open = gdi.func('D3DKMTOpenAdapterFromLuid', 'int32', ['void*']);
-    query = gdi.func('D3DKMTQueryAdapterInfo', 'int32', ['void*']);
-    close = gdi.func('D3DKMTCloseAdapter', 'int32', ['void*']);
-  } catch {
-    return () => null;
-  }
-  return (low, high) => {
-    if (!Number.isFinite(low) || !Number.isFinite(high)) return null;
-    const openBuf = koffi.alloc('uint8', D3DKMT_OPENADAPTERFROMLUID_SIZE);
-    const queryBuf = koffi.alloc('uint8', D3DKMT_QUERYADAPTERINFO_SIZE);
-    const addressBuf = koffi.alloc('uint8', D3DKMT_ADAPTERADDRESS_SIZE);
-    const closeBuf = koffi.alloc('uint8', D3DKMT_CLOSEADAPTER_SIZE);
-    try {
-      koffi.encode(openBuf, 0, 'uint32', low >>> 0);
-      koffi.encode(openBuf, 4, 'int32', high | 0);
-      koffi.encode(openBuf, 8, 'uint32', 0);
-      if (open(openBuf) !== 0) return null;
-      const handle = koffi.decode(openBuf, 8, 'uint32');
-      try {
-        koffi.encode(queryBuf, 0, 'uint32', handle);
-        koffi.encode(queryBuf, 4, 'uint32', KMTQAITYPE_ADAPTERADDRESS);
-        koffi.encode(queryBuf, 8, 'void*', koffi.address(addressBuf));
-        koffi.encode(queryBuf, 16, 'uint32', D3DKMT_ADAPTERADDRESS_SIZE);
-        if (query(queryBuf) !== 0) return null;
-        const bus = koffi.decode(addressBuf, 0, 'uint32');
-        const device = koffi.decode(addressBuf, 4, 'uint32');
-        const fn = koffi.decode(addressBuf, 8, 'uint32');
-        if (![bus, device, fn].every(Number.isInteger) || bus > 0xff || device > 0x1f || fn > 7) return null;
-        return `0000:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
-      } finally {
-        koffi.encode(closeBuf, 0, 'uint32', handle);
-        try { close(closeBuf); } catch { /* best effort */ }
-      }
-    } catch {
-      return null;
-    }
-  };
-}
 
 /**
  * Read the DXGI_FRAME_STATISTICS.PresentCount (uint32 at offset 0).
@@ -346,7 +285,6 @@ export function wrappedDelta(curr, base) {
  *   load?: (name: string) => object,   // injectable koffi load (tests)
  *   now?: () => number,                // injectable wall clock (ms)
  *   callSlot?: Function,               // injectable vtable-slot caller (tests/probe)
- *   adapterBdfOf?: (low: number, high: number) => string|null, // BDF seam
  *   setInterval?: (fn: () => void, ms: number) => unknown,  // injectable sampler timer (tests)
  *   clearInterval?: (id: unknown) => void,                  // injectable sampler timer (tests)
  * }} [deps]
@@ -368,8 +306,8 @@ export function createDxgiFpsAdapter(deps = {}) {
   let availableReason = null;
   let factory = null;
   let outputs = []; // [{ ptr, vtbl }]
-  let adapters = []; // [{ ptr, vtbl, deviceId, bdf }]
-  let luidCache = new Map(); // deviceIdHex|bdf -> { high, low } | null
+  let adapters = []; // [{ ptr, vtbl, deviceId }]
+  let luidCache = new Map(); // deviceIdHex -> { high, low } | null
   let baselineAt = null; // the GFS path's own baseline (ms)
   let baselinePresent = new Map(); // output ptr -> PresentCount baseline
   let dupDevice = null; // the session D3D11 device (DuplicateOutput's pDevice)
@@ -401,7 +339,6 @@ export function createDxgiFpsAdapter(deps = {}) {
       // outputs (IDXGIAdapter.EnumOutputs = slot 7). Hold the refs for the
       // session; released in stop().
       const adapterBuf = koffi.alloc('void*', 1);
-      const resolveAdapterBdf = deps.adapterBdfOf ?? createAdapterBdfResolver(load);
       for (let idx = 0; ; idx++) {
         koffi.encode(adapterBuf, 'void*', 0);
         const hrEnum = slotFn(factory, SLOT_ENUM_ADAPTERS1, HR, factory, idx, adapterBuf);
@@ -410,17 +347,12 @@ export function createDxgiFpsAdapter(deps = {}) {
         const adapter = koffi.decode(adapterBuf, 0, 'void*');
         const desc1 = koffi.alloc('uint8', DXGI_ADAPTER_DESC1_SIZE);
         let deviceId = null;
-        let adapterBdf = null;
         try {
           const hrDesc = slotFn(adapter, SLOT_GET_DESC1, HR1, adapter, desc1);
           if (hrDesc >= 0) {
             deviceId = koffi.decode(desc1, DESC1_DEVICE_ID_OFF, 'uint32');
-            adapterBdf = resolveAdapterBdf(
-              koffi.decode(desc1, DESC1_LUID_LOW_OFF, 'uint32'),
-              koffi.decode(desc1, DESC1_LUID_HIGH_OFF, 'int32'),
-            );
           }
-        } catch { /* GetDesc1 best effort - the LUID/BDF link degrades */ }
+        } catch { /* GetDesc1 best effort - the LUID link degrades */ }
         const outputBuf = koffi.alloc('void*', 1);
         for (let oidx = 0; ; oidx++) {
           koffi.encode(outputBuf, 'void*', 0);
@@ -429,7 +361,7 @@ export function createDxgiFpsAdapter(deps = {}) {
           if (hrOut < 0) break;
           outputs.push(koffi.decode(outputBuf, 0, 'void*'));
         }
-        adapters.push({ ptr: adapter, deviceId, bdf: adapterBdf });
+        adapters.push({ ptr: adapter, deviceId });
       }
       if (adapters.length === 0) {
         availableReason = 'no DXGI adapters enumerated';
@@ -655,37 +587,31 @@ export function createDxgiFpsAdapter(deps = {}) {
      * @param {string} deviceIdHex e.g. '0x56a0'
      * @returns {Promise<{ high: number, low: number } | null>}
      */
-    async adapterLuidOf(deviceIdHex, bdf = null) {
+    async adapterLuidOf(deviceIdHex) {
       if (!init()) return null;
-      const cacheKey = `${String(deviceIdHex ?? '')}|${String(bdf ?? '')}`;
-      if (luidCache.has(cacheKey)) return luidCache.get(cacheKey);
+      if (luidCache.has(deviceIdHex)) return luidCache.get(deviceIdHex);
       let found = null;
       try {
         const want = typeof deviceIdHex === 'string'
           ? Number.parseInt(deviceIdHex.replace(/^0x/i, ''), 16)
           : NaN;
-        const candidates = adapters.filter((adapter) => adapter.deviceId !== null
-          && Number.isFinite(want) && adapter.deviceId === want);
-        // A PCI device id alone is not a durable bridge when same-model
-        // adapters are present. A BDF bridge may select a provider-enriched
-        // adapter; otherwise degrade to null rather than alias adapter 0.
-        const selected = candidates.length === 1
-          ? candidates[0]
-          : candidates.find((adapter) => bdf && adapter.bdf === bdf) ?? null;
-        if (selected) {
-          const desc1 = koffi.alloc('uint8', DXGI_ADAPTER_DESC1_SIZE);
-          const hrDesc = slotFn(selected.ptr, SLOT_GET_DESC1, HR1, selected.ptr, desc1);
-          if (hrDesc >= 0) {
-            found = {
-              low: koffi.decode(desc1, DESC1_LUID_LOW_OFF, 'uint32'),
-              high: koffi.decode(desc1, DESC1_LUID_HIGH_OFF, 'int32'),
-            };
+        for (const adapter of adapters) {
+          if (adapter.deviceId !== null && Number.isFinite(want) && adapter.deviceId === want) {
+            const desc1 = koffi.alloc('uint8', DXGI_ADAPTER_DESC1_SIZE);
+            const hrDesc = slotFn(adapter.ptr, SLOT_GET_DESC1, HR1, adapter.ptr, desc1);
+            if (hrDesc >= 0) {
+              found = {
+                low: koffi.decode(desc1, DESC1_LUID_LOW_OFF, 'uint32'),
+                high: koffi.decode(desc1, DESC1_LUID_HIGH_OFF, 'int32'),
+              };
+            }
+            break;
           }
         }
       } catch {
         found = null;
       }
-      luidCache.set(cacheKey, found);
+      luidCache.set(deviceIdHex, found);
       return found;
     },
 

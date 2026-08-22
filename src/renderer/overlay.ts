@@ -38,7 +38,6 @@ import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, is
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
-import { resolveBootDevice } from './pure/device.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, TelemetrySample } from './types.ts';
@@ -51,22 +50,8 @@ const BASE_FONT_PX = 14;
 const FRAMETIME_WINDOW_S = 120;
 const FRAMETIME_DRAW_POINTS = 120;
 
- let scale = 1;
- let latestSample: TelemetrySample | null = null;
-// M35: CPU/RAM telemetry remains owned by the main selected-device lane.
-// When the user monitors another GPU, its overlay lane supplies GPU fields
-// while this source keeps CPU/RAM fields populated.
-let latestCpuSource: TelemetrySample | null = null;
- // A secondary lane is keyed by the main-process device id. The primary
-// M35: selected overlay devices are durable hardware keys. Null preserves the
-// legacy all-GPU behavior; the resolved ids are refreshed on every settings
-// push so enumeration order never becomes persisted state.
-let overlayDeviceKeys: string[] | null = null;
-let overlayDevices: Array<{ id: number; name?: string; deviceKey?: string | null }> = [];
-let overlayDisplayDeviceId: number | null = null;
- // lane keeps the existing single-GPU rendering contract.
- let secondaryDeviceIds: number[] = [];
- const secondarySamples = new Map<number, TelemetrySample>();
+let scale = 1;
+let latestSample: TelemetrySample | null = null;
 let latestFps: number | null = null;
 // M7a: the latest percentile stats from the fps poll (null until the
 // sampler reports them - the honest '-' fields on the FPS row).
@@ -96,7 +81,6 @@ let stats: unknown = undefined;
 let chipNamesEnabled = false;
 let cpuChipLabel: string | null = null;
 let gpuChipLabel: string | null = null;
-let secondaryGpuChipLabels: Array<string | null> = [];
 // M6-amd2: the latest derived frame time (the value line below the strip;
 // null -> the honest '-').
 let latestFrameTime: number | null = null;
@@ -113,12 +97,11 @@ let theme: 'classic' | 'arc' = OVERLAY_THEME_DEFAULT;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
-const extraRowsEl = document.getElementById('overlay-secondary-rows') as HTMLElement | null;
+// M12: the Memory + VRAM rows (the fixed-div pattern - the renderer only
+// empties them, never removes).
 const memoryEl = document.getElementById('overlay-memory') as HTMLElement;
 const gpuEl = document.getElementById('overlay-gpu') as HTMLElement;
 const vramEl = document.getElementById('overlay-vram') as HTMLElement;
-const gpu2El = document.getElementById('overlay-gpu2') as HTMLElement;
-const vram2El = document.getElementById('overlay-vram2') as HTMLElement;
 // M13: the standalone Graphics-API row (the same fixed-div pattern - the
 // api field LEFT the FPS row and renders here, between the VRAM row and
 // the frametime strip).
@@ -161,15 +144,6 @@ api.onOverlaySettings((settings) => {
     '--overlay-bg-opacity',
     String(clampOverlayBgOpacity(s.overlayBgOpacity)),
   );
-  // M35: monitoring selection is a live setting. Device enumeration is
-  // fetched once at boot and reused here; a later device-selection push still
-  // re-resolves the durable keys in configureOverlayDevices.
-  overlayDeviceKeys = Array.isArray(s.deviceKeys)
-    ? s.deviceKeys.filter((key: unknown): key is string => typeof key === 'string' && key.length > 0)
-    : null;
-  if (overlayDevices.length > 0) {
-    void configureOverlayDevices(fpsDeviceId, overlayDevices);
-  }
   const backdrop = document.getElementById('overlay-backdrop');
   if (backdrop) backdrop.classList.toggle('visible', s.overlayBgEnabled === true);
   // M6: the enabled stats - an absent value means the DEFAULT set (M17g:
@@ -211,95 +185,26 @@ function sizeCanvas(): void {
   if (canvas.height !== h) canvas.height = h;
 }
 
-// Supplementary layout resynchronization for later font/window changes. The
-// render path above remains the authoritative synchronous visibility fix.
-if (typeof ResizeObserver !== 'undefined') {
-  new ResizeObserver(() => {
-    sizeCanvas();
-    draw();
-  }).observe(canvas);
-}
-window.addEventListener('resize', () => {
-  sizeCanvas();
-  draw();
-});
-
-function numberedRow(line: string, label: 'GPU' | 'VRAM', number: number): string {
-  // Chip-name mode keeps the human-readable chip label. Numbered prefixes
-  // are the default surface requested for multi-adapter systems.
-  if (!line.startsWith(`${label} `)) return line;
-  return `${label}${number}${line.slice(label.length)}`;
-}
-
-type SecondaryRowElements = { gpu: HTMLElement; vram: HTMLElement };
-const extraRowElements: SecondaryRowElements[] = [];
-
-function ensureExtraRows(count: number): void {
-  if (!extraRowsEl) return;
-  while (extraRowElements.length < count) {
-    const gpu = document.createElement('div');
-    const vram = document.createElement('div');
-    gpu.className = 'overlay-line overlay-secondary';
-    vram.className = 'overlay-line overlay-secondary';
-    extraRowsEl.append(gpu, vram);
-    extraRowElements.push({ gpu, vram });
-  }
-  extraRowElements.forEach((row, index) => {
-    row.gpu.style.display = index < count ? 'block' : 'none';
-    row.vram.style.display = index < count ? 'block' : 'none';
-  });
-}
-
 function render(): void {
-  const displaySample = latestCpuSource
-    ? { ...latestCpuSource, ...(latestSample ?? {}) }
-    : latestSample;
+  // M7a: the latest percentile stats ride the same fps poll into the FPS
+  // row (null -> the honest '-' fields). M10a/M13: the latest Graphics-API
+  // id rides along into the STANDALONE API row (null -> the row stays
+  // empty - never '-', never a raw id). M12/M14: the AVG / 0.1% Low + the
+  // RAM used-bytes ride along too (the memoryUsedBytes comes from the
+  // telemetry sample's composed field).
+  // M17b (2c): the chip-name row labels ride into overlayLines ONLY when
+  // the pushed overlayChipNames flag is on (absent/empty labels keep the
+  // stock 'CPU '/'GPU ' prefixes - the labels never invent a row).
   const lines = overlayLines(
-    displaySample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
-    latestAvgFps, latestLow01Pct, displaySample?.memoryUsedBytes ?? null,
+    latestSample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
+    latestAvgFps, latestLow01Pct, latestSample?.memoryUsedBytes ?? null,
     chipNamesEnabled ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel } } : undefined,
   );
-  const hasSecondary = secondaryDeviceIds.length > 0;
   fpsEl.textContent = lines.fpsLine;
   cpuEl.textContent = lines.cpuLine;
   memoryEl.textContent = lines.memoryLine;
-  gpuEl.textContent = hasSecondary ? numberedRow(lines.gpuLine, 'GPU', 1) : lines.gpuLine;
-  vramEl.textContent = hasSecondary ? numberedRow(lines.vramLine, 'VRAM', 1) : lines.vramLine;
-  gpu2El.style.display = hasSecondary ? 'block' : 'none';
-  vram2El.style.display = hasSecondary ? 'block' : 'none';
-  if (hasSecondary) {
-    const secondary = secondarySamples.get(secondaryDeviceIds[0]) ?? null;
-    const secondaryLines = overlayLines(
-      secondary, null, stats, null, null, null, null, null,
-      secondary?.memoryUsedBytes ?? null,
-      chipNamesEnabled
-        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[0] ?? null } }
-        : undefined,
-    );
-    gpu2El.textContent = chipNamesEnabled
-      ? secondaryLines.gpuLine
-      : numberedRow(secondaryLines.gpuLine, 'GPU', 2);
-    vram2El.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', 2);
-  } else {
-    gpu2El.textContent = '';
-    vram2El.textContent = '';
-  }
-  ensureExtraRows(Math.max(0, secondaryDeviceIds.length - 1));
-  for (let i = 1; i < secondaryDeviceIds.length; i += 1) {
-    const row = extraRowElements[i - 1];
-    const secondary = secondarySamples.get(secondaryDeviceIds[i]) ?? null;
-    const secondaryLines = overlayLines(
-      secondary, null, stats, null, null, null, null, null,
-      secondary?.memoryUsedBytes ?? null,
-      chipNamesEnabled
-        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[i] ?? null } }
-        : undefined,
-    );
-    row.gpu.textContent = chipNamesEnabled
-      ? secondaryLines.gpuLine
-      : numberedRow(secondaryLines.gpuLine, 'GPU', i + 1);
-    row.vram.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', i + 1);
-  }
+  gpuEl.textContent = lines.gpuLine;
+  vramEl.textContent = lines.vramLine;
   apiEl.textContent = lines.apiLine;
   // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
   // strip's AND the value line's visibility together (a fully-off line
@@ -313,9 +218,10 @@ function render(): void {
   // M18/M19b: the header-divider column - the --overlay-label-w CSS var in
   // ch (WITH the unit - '4ch' / '9ch', never a bare number: a unit-less
   // value inside the calc is invalid at computed-value time) from the max
-  // of every visible row's labels (GPU1/VRAM1 widen the column in a
-  // multi-adapter session).
-  const maxLabelLen = Math.max(...Object.values(lines.labels).map((l) => l.length), hasSecondary ? 5 : 0);
+  // of the SIX labeled rows' labels (the chip-name labels widen the
+  // column; the M19b api entry is 3ch - it never widens it; the CSS
+  // calc's fallback holds the stock 4ch column before the first push).
+  const maxLabelLen = Math.max(...Object.values(lines.labels).map((l) => l.length));
   document.documentElement.style.setProperty('--overlay-label-w', `${maxLabelLen}ch`);
   // M18/M19b: the divider's top/bottom - the FPS row's top to the API
   // row's bottom, relative to the root (measured like sizeCanvas() reads
@@ -330,8 +236,6 @@ function render(): void {
     dividerEl.style.top = `${fpsRect.top - rootRect.top}px`;
     dividerEl.style.bottom = `${rootRect.bottom - apiRect.bottom}px`;
   }
-  // The visibility transition must be ordered display -> backing bitmap -> draw.
-  sizeCanvas();
   draw();
 }
 
@@ -381,23 +285,7 @@ function draw(): void {
 api.onTelemetrySample((sample) => {
   telemetryTicks += 1;
   document.documentElement.dataset.telemetryTicks = String(telemetryTicks);
-  const sampleDeviceId = typeof sample.deviceId === 'number' ? sample.deviceId : null;
-  const displayId = overlayDisplayDeviceId ?? fpsDeviceId;
-  if (
-    Object.prototype.hasOwnProperty.call(sample, 'cpuUtilPct')
-    || Object.prototype.hasOwnProperty.call(sample, 'memoryUsedBytes')
-  ) {
-    latestCpuSource = sample;
-  }
-  if (sampleDeviceId !== null && secondaryDeviceIds.includes(sampleDeviceId)) {
-    secondarySamples.set(sampleDeviceId, sample);
-  } else if (
-    sampleDeviceId === displayId
-    || (displayId === null && sampleDeviceId === null)
-    || latestSample === null
-  ) {
-    latestSample = sample;
-  }
+  latestSample = sample;
   render();
 });
 
@@ -408,30 +296,13 @@ api.onTelemetrySample((sample) => {
 // null via assertValidDeviceId) and the fps line honestly stays '-'.
 // M17f: the cadence follows the overlayPollMs slider - ONE module-level
 // interval, re-armed by the settings handler when the pushed value changes.
-async function resolveOverlayDeviceId(): Promise<number | null> {
-  let persisted: { deviceId?: number | null; deviceKey?: string | null } | null = null;
-  try {
-    persisted = await api.deviceGet();
-  } catch {
-    return null;
-  }
-  const fallback = typeof persisted?.deviceId === 'number' && persisted.deviceId >= 0
-    ? persisted.deviceId
-    : null;
-  try {
-    const devices = await api.listDevices();
-    return resolveBootDevice(
-      devices,
-      fallback,
-      persisted?.deviceKey ?? null,
-    );
-  } catch {
-    return fallback;
-  }
-}
-
 async function bootFpsLoop(): Promise<void> {
-  fpsDeviceId = await resolveOverlayDeviceId();
+  try {
+    const d = await api.deviceGet();
+    fpsDeviceId = typeof d?.deviceId === 'number' && d.deviceId >= 0 ? d.deviceId : null;
+  } catch {
+    fpsDeviceId = null;
+  }
   armFpsLoop();
 }
 
@@ -512,7 +383,7 @@ function applyFpsPollMs(ms: number): void {
   armFpsLoop();
 }
 
-const overlayFpsBoot = bootFpsLoop();
+void bootFpsLoop();
 
 // M17b (2c): the boot NAMES fetch - api.listDevices() + api.sysinfo() ONCE
 // (a NEW fetch - the bootFpsLoop deviceGet above is the FPS poll's device
@@ -523,67 +394,27 @@ const overlayFpsBoot = bootFpsLoop();
 // no controllers (the real IGCL device name cuts down the same way).
 // Never throws: a failed fetch leaves the labels null -> the stock
 // 'CPU '/'GPU ' prefixes (the honest degrade).
-async function configureOverlayDevices(
-  primaryId: number | null,
-  devices: Array<{ id: number; name?: string; deviceKey?: string | null }>,
-): Promise<void> {
-  overlayDevices = devices;
-  const selected = overlayDeviceKeys
-    ? devices.filter((device) => typeof device.deviceKey === 'string' && overlayDeviceKeys!.includes(device.deviceKey))
-    : devices;
-  // A stale hardware-key list must not blank the HUD after a device swap;
-  // degrade to all currently enumerated GPUs until the user selects again.
-  const monitored = selected.length > 0 ? selected : devices;
-  const primary = monitored.find((device) => device.id === primaryId) ?? monitored[0] ?? null;
-  const mainDeviceId = primaryId;
-  overlayDisplayDeviceId = primary?.id ?? null;
-  document.documentElement.dataset.overlayDisplayDevice = String(overlayDisplayDeviceId ?? '');
-  fpsDeviceId = overlayDisplayDeviceId;
-  if (primary) gpuChipLabel = chipLabelGpu(primary.name ?? null);
-  const secondary = monitored.filter((device) => device.id !== overlayDisplayDeviceId);
-  secondaryDeviceIds = secondary.map((device) => device.id);
-  secondaryGpuChipLabels = secondary.map((device) => chipLabelGpu(device.name ?? null));
-  secondarySamples.clear();
-  // Keep the existing main telemetry stream as the display lane whenever
-  // possible. Start the display lane here only when the user's selection
-  // excludes the main window's device (for example, GPU2-only monitoring).
-  const overlayLaneIds = mainDeviceId === overlayDisplayDeviceId
-    ? secondaryDeviceIds
-    : monitored.map((device) => device.id);
-  try { await api.overlayTelemetryStart(overlayLaneIds); } catch { /* best effort */ }
-  render();
-}
-api.onDeviceSelectionUpdated((payload) => {
-  if (!payload || !Number.isInteger(payload.deviceId)) return;
-  void api.listDevices()
-    .then(async (devices) => {
-      const durableId = await resolveOverlayDeviceId();
-      return configureOverlayDevices(durableId ?? payload.deviceId, devices);
-    })
-    .catch(() => { /* keep the last working secondary set */ });
-});
-
 async function bootNamesFetch(): Promise<void> {
   try {
-    await overlayFpsBoot;
     let gpuName: unknown = null;
     let cpuName: unknown = null;
-    let devices: Array<{ id: number; name?: string; deviceKey?: string | null }> = [];
-    try { devices = await api.listDevices(); } catch { devices = []; }
-    const primaryId = await resolveOverlayDeviceId() ?? devices[0]?.id ?? null;
-    await configureOverlayDevices(primaryId, devices);
     const sysinfo = await api.sysinfo();
     const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
-    const primaryDevice = devices.find((device) => device.id === overlayDisplayDeviceId);
-    gpuName = controllers.length > 0 && overlayDisplayDeviceId === primaryId
-      ? controllers[0].name
-      : (primaryDevice?.name ?? null);
+    gpuName = controllers.length > 0 ? controllers[0].name : null;
     cpuName = sysinfo?.cpu?.name ?? null;
+    if (!gpuName) {
+      // The edge fallback: sysinfo without controllers -> the IGCL device
+      // name (its real shape cuts down identically).
+      try {
+        const devices = await api.listDevices();
+        gpuName = Array.isArray(devices) && devices.length > 0 ? devices[0].name : null;
+      } catch { /* best effort */ }
+    }
     gpuChipLabel = chipLabelGpu(gpuName);
     cpuChipLabel = chipLabelCpu(cpuName);
-    render();
+    if (chipNamesEnabled) render();
   } catch {
-    // The labels stay null and the overlay keeps honest '-' readouts.
+    // the labels stay null - the stock prefixes (never a crash at boot)
   }
 }
 

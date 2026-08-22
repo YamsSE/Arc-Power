@@ -78,15 +78,13 @@ export class GpuHeader {
   render(): void {
     const s = this.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-    const osOnly = device?.synthetic === true && device.backendKind === 'os';
-    const noIntelPresentation = s.noIntel || osOnly;
     const health = s.health;
     // 1.0.1 no-Intel round (m5): the featureset dropdown is HIDDEN in the
     // no-device mode (mock mode) - the swap would store caps/state into the
     // no-Intel store and break the presentation (it is also a no-op in
     // app.ts). The mock badge stays (it reports the honest backend kind).
     const mockBadge = health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null;
-    const fsSelect = health?.backend === 'mock' && !noIntelPresentation && s.featuresets.length > 0
+    const fsSelect = health?.backend === 'mock' && !s.noIntel && s.featuresets.length > 0
       ? el('select', {
           class: 'featureset-select',
           title: 'Mock device featureset (dev only)',
@@ -103,16 +101,14 @@ export class GpuHeader {
     // 1.0.1 no-Intel round: the header shows the OS GPU (sysinfo primary
     // controller) with 'Non supported GPU' REPLACING the version line (n10
     // - the exact ask); while the OS GPU is unknown the name reads
-    // '-' (only 'No GPU detected' when sysinfo has nothing at all). M30:
-    // selected synthetic OS-only rows use the same read-only presentation
-    // while the machine still has an Intel-capable row available.
-    const gpuName = noIntelPresentation
+    // '-' (only 'No GPU detected' when sysinfo has nothing at all).
+    const gpuName = s.noIntel
       ? (s.osGpu?.name ?? (s.sysinfo?.videoControllers?.length ? '-' : 'No GPU detected'))
       : device?.name ?? (s.bootError ? 'No GPU detected' : 'Arc Power');
     // M25: the standalone "Arc Power Ver." tag is REMOVED - the version
     // now lives in the titlebar-left next to the corner icon. The gpu-meta
     // shows the boot error when present, otherwise empty.
-    const gpuMeta = noIntelPresentation
+    const gpuMeta = s.noIntel
       ? 'Non supported GPU'
       : s.bootError ?? '';
     clear(this.mount);

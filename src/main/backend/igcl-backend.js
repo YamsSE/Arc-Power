@@ -35,7 +35,7 @@ import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
   GRAPHICS_LOW_LATENCY_OPTIONS,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
 // imports fine under the packaged Electron (Node 22.21 - type stripping is
@@ -80,8 +80,8 @@ const FAN_UNITS_PERCENT = Number(Object.entries(CTL_FAN_SPEED_UNITS).find(([, n]
 // is NEVER trusted - the verdict flips with the IGS service state, and a
 // persisted failure would lock a transiently-failing machine read-only for
 // a whole driver version (the session cache's re-probe self-heals). Key =
-// probeVersion + driverVersion + stable deviceKey; deviceId is retained only
-// as legacy metadata and MUST NOT decide a cache hit after reorder.
+// probeVersion + driverVersion + deviceId; the file is single-entry (the
+// last successful probe wins - the igcl-dll-cache shape).
 export const FAN_PROBE_CACHE_FILENAME = 'fan-probe-cache.json';
 
 // M20-B cache: the probe-LOGIC version. v1 = the pre-M20-B fixed-only probe
@@ -158,7 +158,7 @@ export class IgclBackend {
    *   allowAutoWaiver?: boolean,      // smoke/tests only - never in product paths
    *   lib?: object|null,              // injected bound lib (tests); loaded at init() otherwise
    *   findDll?: () => string|null,    // injectable discovery (tests)
-   *   extended?: { isCapable: () => Promise<boolean>, isAvailable?: () => boolean },  // M2C-C/M41 bundled-2023-runtime probe + installed-runtime signal
+   *   extended?: { isCapable: () => Promise<boolean> },  // M2C-C bundled-2023-runtime probe
    *   ocMode?: 'stock'|'advanced',    // M3-C-E: which range set getCapabilities
    *                                   // exposes (default 'stock' - the real
    *                                   // product default; mock passes advanced)
@@ -190,10 +190,6 @@ export class IgclBackend {
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
     this._extended = opts.extended ?? null;
-    // M37/M41: the bundled-runtime availability signal is session state,
-    // separate from the caps cache so cache-hit finalization uses the same
-    // result as the cold read. Start conservatively until the first signal.
-    this._extendedCapable = false;
     // M4-D: the VRAM provider for formatDeviceName (constructor opt - main.js
     // runs the sysinfo cache BEFORE constructing the backend, so the lookup
     // is available at enumeration time; setVramBytesOf re-formats an already
@@ -441,12 +437,7 @@ export class IgclBackend {
       dev.name = formatDeviceName(plainName, dev.vramBytes);
       devices.push(dev);
     }
-    const ordered = sortDevicesDiscreteFirst(devices);
-    ordered.forEach((dev, id) => {
-      dev.id = id;
-      dev.deviceKey = deviceHardwareKey(dev);
-    });
-    return (this._devices = ordered);
+    return (this._devices = devices);
   }
 
   /**
@@ -469,8 +460,8 @@ export class IgclBackend {
 
   async listDevices() {
     const devices = await this._ensureDevices();
-    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId, deviceKey }) => ({
-      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId, deviceKey,
+    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId }) => ({
+      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId,
     }));
   }
 
@@ -609,13 +600,8 @@ export class IgclBackend {
       const entry = readFanProbeCache(cacheFile);
       if (!entry || entry.probeOk !== true) return null; // SUCCESS-ONLY
       if (entry.probeVersion !== FAN_PROBE_VERSION) return null; // the probe-logic version (an old entry never trusted)
-      const deviceKey = typeof dev?.deviceKey === 'string' ? dev.deviceKey : deviceHardwareKey(dev);
-      if (entry.driverVersion !== driverVersion || entry.deviceKey !== deviceKey) return null; // stable identity + driver are mandatory
-      return {
-        probeOk: true,
-        writeAccepted: entry.writeAccepted === true,
-        fixedOk: entry.fixedOk === true,
-      };
+      if (entry.driverVersion !== driverVersion || entry.deviceId !== deviceId) return null; // the key mismatch
+      return { probeOk: true, writeAccepted: entry.writeAccepted === true, fixedOk: entry.fixedOk === true };
     } catch {
       return null; // a cache read failure never blocks the probe
     }
@@ -638,11 +624,9 @@ export class IgclBackend {
       const driverVersion = typeof dev?.driverVersion === 'string' && dev.driverVersion ? dev.driverVersion : null;
       if (!driverVersion) return;
       const cacheFile = this._fanProbeCacheFile ?? fanProbeCacheFile();
-      const deviceKey = typeof dev?.deviceKey === 'string' ? dev.deviceKey : deviceHardwareKey(dev);
       writeFanProbeCache(cacheFile, {
         driverVersion,
         deviceId,
-        deviceKey,
         probeVersion: FAN_PROBE_VERSION,
         probeOk: result.probeOk === true,
         writeAccepted: result.writeAccepted === true,
@@ -1026,7 +1010,6 @@ export class IgclBackend {
       // store merge run AFTER the cache read on BOTH paths (the store is
       // session state - the merge must never be cached into the caps).
       const out = structuredClone(cached);
-      out.deviceKey = out.deviceKey ?? this._devices?.[deviceId]?.deviceKey ?? deviceHardwareKey(this._devices?.[deviceId]);
       out.waiverAccepted = this._waiverAccepted.get(deviceId) ?? false;
       return this._finalizeCaps(deviceId, out, this._devices?.[deviceId] ?? null);
     }
@@ -1036,15 +1019,6 @@ export class IgclBackend {
     const caps = {
       oemName: 'Intel',
       deviceName: dev.name,
-      // Stable PCI/BDF identity is carried with capabilities so apply routing
-      // can bind the old runtime's raw handle to the selected main-backend
-      // device instead of assuming both enumerations share an order.
-      deviceKey: dev.deviceKey ?? deviceHardwareKey(dev),
-      /** M33 fix: the selected OC mode is part of the capability contract.
-       * `extendedRanges` only reports bundled-runtime availability; the
-       * renderer must not mistake an unavailable companion runtime for Stock
-       * mode and hide the Advanced slider ceilings. */
-      ocMode: this._ocMode,
       // M4-I (S1): the memory type rides the caps payload (the waiver
       // dialogs + the VRAM row's type source - same token-table value the
       // device payload carries).
@@ -1116,23 +1090,18 @@ export class IgclBackend {
         // now lives in the pure device-limits table and is applied by
         // _finalizeCaps AFTER the extended-ranges block below.
         // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
-        // this Alchemist driver and OC mode is advanced (M3-C-E), expose the
-        // W/C extended path. The per-card device-limits table below selects
-        // each Alchemist SKU's documented PL ceiling (for example 375 W on
-        // A770 and 270 W on A750) and the applicable TL ceiling; the >315 W
-        // A770 range uses the sysman pair as its primary write. In stock mode
-        // the extended maxes are NEVER exposed - the mode gate refuses them
-        // before any clamp. When the bundled runtime is installed but the
-        // unelevated KMD probe returns ERROR_KMD_CALL, the parent still
-        // exposes this shape so the apply can delegate to the elevated
-        // worker. Missing DLLs remain unavailable and keep the refusal honest.
-        const installed = this._extended && typeof this._extended.isAvailable === 'function'
-          ? this._extended.isAvailable() === true
+        // this driver AND the OC mode is advanced (M3-C-E), report the FULL
+        // range (PL max 375 W - M21: the sysman-primary ceiling; the >315 W
+        // range applies through the sysman pair mechanism, live-verified
+        // 2026-08-15; TL max 115 C - min/default stay
+        // the DriverStore values) + the extendedRanges flag. The UI exposes
+        // those maxes; applies above the DriverStore clamp route to the
+        // 2023 runtime (apply-routing.js) - and above 315 W to the sysman
+        // pair as the primary write. In stock mode the extended maxes
+        // are NEVER exposed - the mode gate refuses them before any clamp.
+        const extendedCapable = this._extended
+          ? await this._extended.isCapable()
           : false;
-        this._extendedCapable = this._extended
-          ? installed || await this._extended.isCapable()
-          : false;
-        const extendedCapable = this._extendedCapable;
         // M4E: the extended concept is W/C-only (the bundled 2023 runtime
         // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
         // must never be overwritten with the 315 W / 115 C maxes nor flip
@@ -1212,7 +1181,6 @@ export class IgclBackend {
     // null (the honest '-' - the Dashboard AIB row renders it). These are
     // APPENDED caps fields (absent -> null).
     caps.pciDeviceId = dev.pciDeviceId ?? null;
-    caps.deviceKey = dev.deviceKey ?? deviceHardwareKey(dev);
     const laptopInfo = this._laptopInfoOf ? this._laptopInfoOf() : null;
     const laptopDecoded = laptopInfo ? laptopAibOf(laptopInfo) : null;
     const aib = laptopDecoded ?? aibOf(dev.pciSubsysVendorId, dev.pciSubsysId);
@@ -1308,13 +1276,17 @@ export class IgclBackend {
    * M17c: the device-scoped caps finalize - runs AFTER the cache read on
    * BOTH getCapabilities paths (the cache-hit path and the cold path):
    *   1. the per-device limits table (pure/device-limits.ts): the listed
-   *      rows' per-control { max, step } overrides for the Alchemist family
-   *      (A770 voltage/PL/TL, A750 per-AIB stock PL plus advanced PL/TL,
-   *      A380/A310 card ceilings) plus the default row for unlisted cards
-   *      (252/90 stock, 315/115 extended). Driver props stay the runtime
-   *      authority; the table only caps to documented ceilings (PL/TL maxes
-   *      apply as min-caps) - except the voltage maxes, which are the
-   *      live-probe ceiling pins. Percent-unit ranges (Battlemage) are never
+   *      rows' per-control { max, step } overrides (the A770 volt 0.234 +
+   *      step 0.001, the per-AIB PL ceilings, the TL 90 caps, the A750
+   *      unclamp) + the default row for UNLISTED cards (252/90 stock,
+   *      315/115 extended - today's pins exactly, so no stock-mode gap
+   *      opens between the slider and the apply gates). Driver props stay
+   *      the runtime authority; the table only caps to documented ceilings
+   *      (PL/TL maxes apply as min-caps) - EXCEPT the volt maxes, which
+   *      are the LIVE-PROBE ceiling pins (the M15 both-directions
+   *      semantics scoped to the A770: a props under-report of 0.230 is
+   *      raised to the 0.234 ceiling; the session store merge below can
+   *      still degrade it). Percent-unit ranges (Battlemage) are never
    *      touched (the M4-E rule).
    *   2. the session refused-ceiling store merge (mergeIntoRanges -
    *      NEVER raises; a refused apply's degraded ceiling caps the max +
@@ -1326,23 +1298,28 @@ export class IgclBackend {
    *   a fresh clone)
    */
   _finalizeCaps(deviceId, caps, dev) {
-    caps.ocMode = this._ocMode;
     const identity = {
       pciDeviceId: caps.pciDeviceId ?? dev?.pciDeviceId ?? null,
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // The OC mode selects the visible KMD/device-limit shape independently
-    // from the bundled-runtime capability signal. `extendedRanges` remains
-    // the honest apply-routing signal; an unavailable runtime must refuse an
-    // out-of-runtime value, not hide the Advanced mode's documented ceiling.
-    const advancedShape = this._ocMode === 'advanced';
-    const limits = deviceLimitsOf(identity, { advanced: advancedShape });
+    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the finalize selects
+    // the ADVANCED shape when caps.extendedRanges is true (the extended
+    // 2023-runtime path is active) and the STOCK shape otherwise - NOT the
+    // same row in both modes. The advanced shape carries the per-card KMD
+    // ceilings (A770 315/115 - the M17c TL cap at 90 REMOVED; A750 270/115 -
+    // the TL 115 probe-verified 2026-08-12: 100 AND 115 C applied via the
+    // app path, the KMD ceiling class the same as the A770's); the stock
+    // shape the per-AIB maxes + the TL 90 caps (the round-3-N3 rule FLIPS
+    // to "listed-row advanced ceiling = the app-verified KMD ceiling").
+    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
-      // (stock 252/90, advanced 315/115); a LISTED card's row is the active
-      // shape (stock per-AIB, advanced per-card KMD ceiling).
-      const row = limits.listed ? limits : defaultLimitsOf(advancedShape);
+      // (stock 252/90, extended 315/115 - never null, never the wrong
+      // shape); a LISTED card's row is the ACTIVE shape (stock or
+      // advanced) - the extended maxes of the props/2023 runtime are
+      // capped down to the listed shape's ceilings.
+      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;
         const range = caps.ranges[canonical];
@@ -1359,25 +1336,12 @@ export class IgclBackend {
             // directions - the props may under-report the grid-aligned
             // 0.230); the store merge below is the only downward force.
             next = { ...next, max: override.max };
-          } else if (advancedShape) {
-            // Advanced W/C controls expose the documented KMD ceiling;
-            // `extendedRanges` separately decides whether out-of-runtime
-            // applies are accepted by the selected routing path.
-            next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };
           }
           if (typeof range.default === 'number' && Number.isFinite(range.default)) {
             next = { ...next, default: Math.min(range.default, next.max) };
           }
-        }
-        // M26: the device-limits min is authoritative for a V-unit row. A
-        // driver-reported min can be a shallower floor (for example
-        // -0.234 V) or a stale deeper floor from another mode; retaining it
-        // would either hide the approved negative range or expose a floor
-        // outside the active stock/advanced safety row.
-        if (typeof override.min === 'number' && Number.isFinite(override.min)) {
-          next = { ...next, min: override.min };
         }
         if (typeof override.step === 'number' && Number.isFinite(override.step)) {
           next = { ...next, step: override.step };
@@ -1955,14 +1919,6 @@ export class IgclBackend {
         fail(canonicalName, 'unsupported', 'no capability range reported for this control');
         return;
       }
-      // M26: canonical negative volts must never reach the IGCL V2
-      // setter. Battlemage percent-unit voltage values are a different
-      // control domain and remain valid on IGCL (the routed Sysman path is
-      // only for canonical V-unit negatives).
-      if (control === 'gpuVoltOffset' && typeof value === 'number' && value < 0 && range.units !== '%') {
-        fail(canonicalName, 'unsupported', 'negative gpuVoltOffsetV is not supported on the IGCL V2 path - it must be routed through Sysman');
-        return;
-      }
       const clamped = opts.snapToStep === false
         ? Math.min(range.max, Math.max(range.min, Number.isFinite(value) ? value : range.min))
         : clampAndSnap(value, range);
@@ -2293,12 +2249,11 @@ export class IgclBackend {
       }
     };
 
+    await applyScalar('powerLimit', 'powerLimitW', 'powerLimit', settings.powerLimitW);
+    await applyScalar('tempLimit', 'tempLimitC', 'tempLimit', settings.tempLimitC);
     await applyScalar('vramFreqOffset', 'vramFreqOffsetGts', 'vramFreqOffset', settings.vramFreqOffsetGts);
     await applyScalar('vramVoltOffset', 'vramVoltOffsetV', 'vramVoltOffset', settings.vramVoltOffsetV);
 
-    // M41: Acer-compatible scalar order - VRAM stays in its historical
-    // position, then the GPU offset/lock block, followed by temperature and
-    // power (before fan and VF).
     // M17e (round-1 S1a): the LOCK/OFFSET WRITE ORDER. The driver's lock
     // and offset families genuinely fight (IN_VOLTAGE_LOCKED_MODE refuses
     // offset writes while a lock is set), so the order depends on the
@@ -2323,21 +2278,19 @@ export class IgclBackend {
       || (settings.gpuFreqOffsetMhz !== undefined && settings.gpuFreqOffsetMhz !== null);
     if (!lockIsUnlock) {
       // The non-zero lock: zero-offset writes first, then the lock.
-      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
       await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
+      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
       await applyLock(settings.gpuLock);
     } else if (hasLockPair && hasOffsetWrites) {
       // The (0,0) unlock + offsets: the unlock first, then the offsets.
       await applyLock(settings.gpuLock);
-      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
       await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
+      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
     } else {
-      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
       await applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset', settings.gpuVoltOffsetV);
+      await applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset', settings.gpuFreqOffsetMhz);
       if (hasLockPair) await applyLock(settings.gpuLock);
     }
-    await applyScalar('tempLimit', 'tempLimitC', 'tempLimit', settings.tempLimitC);
-    await applyScalar('powerLimit', 'powerLimitW', 'powerLimit', settings.powerLimitW);
     await applyFan();
 
     // vfCurve write path (Battlemage; not exercised in M1 on Alchemist).

@@ -34,28 +34,14 @@ import type {
   VendorDeviceInfo,
 } from './types.ts';
 
-export interface DeviceSelectionPayload {
-  deviceId: number;
-  deviceKey: string | null;
-  /** Main-renderer monotonic session generation; omitted by legacy callers. */
-  selectionGeneration?: number;
-  caps: Capabilities;
-  state: DeviceState;
-}
-
 export interface ArcPowerApi {
   health(): Promise<HealthReport>;
   listDevices(): Promise<DeviceInfo[]>;
-  /** M29: persisted GPU selection (numeric id + durable PCI/BDF key). */
-  deviceGet(): Promise<{ deviceId: number | null; deviceKey: string | null }>;
-  /** Main-renderer monotonic selection generation, for reload-safe handshakes. */
-  deviceSelectionGenerationGet(): Promise<{ generation: number }>;
-  /** Persist the selected GPU and its stable identity. */
-  deviceSet(selection: number | { deviceId: number; deviceKey?: string }): Promise<{ deviceId: number | null; deviceKey?: string | null }>;
-  /** M31: the Advanced Overlay asks the main renderer to switch by durable key. */
-  deviceSelectionRequest(deviceKey: string): Promise<{ accepted: boolean }>;
-  /** M31: the main renderer publishes its atomic caps/state selection pair. */
-  deviceSelectionPush(payload: DeviceSelectionPayload): Promise<{ accepted: boolean }>;
+  /** M4-F: the persisted GPU selection (null when absent - devices[0] resolves at boot). */
+  deviceGet(): Promise<{ deviceId: number | null }>;
+  /** M4-F: persist the selected GPU (non-negative integer; the ONLY writer,
+   *  like oc-mode-set - a Settings/Profiles save never clobbers it). */
+  deviceSet(deviceId: number): Promise<{ deviceId: number | null }>;
   getCapabilities(deviceId: number): Promise<Capabilities>;
   getCurrentSettings(deviceId: number): Promise<DeviceState>;
   /** M17f: the sysman PL2 read-out ({ sustainedW, burstW, peakW } when the
@@ -83,8 +69,6 @@ export interface ArcPowerApi {
    *  (a sentinel-keyed timer pushing sys-stats-ONLY samples). A non-negative
    *  integer starts the per-device telemetry. */
   telemetryStart(deviceId: number | null): Promise<void>;
-  /** Basic Overlay secondary-adapter lanes; an empty list hides GPU2. */
-  overlayTelemetryStart(deviceIds: number[]): Promise<void>;
   /** 1.0.1 no-Intel round: telemetryStop(null) is the symmetric stop for
    *  the no-device mode. */
   telemetryStop(deviceId: number | null): Promise<void>;
@@ -106,7 +90,7 @@ export interface ArcPowerApi {
    *  dashboard VRAM/Compute rows' source ({ vramBytes, computeCores } - the
    *  NVML total + core count; honest nulls when no vendor adapter resolves:
    *  no lane / absent DLL / a vendor without the field - ADL). */
-  vendorInfo(deviceId?: number): Promise<VendorDeviceInfo>;
+  vendorInfo(): Promise<VendorDeviceInfo>;
   /** M4-D: integrated-title-bar window controls (no payload). */
   windowMinimize(): Promise<void>;
   windowMaximizeToggle(): Promise<void>;
@@ -159,10 +143,6 @@ export interface ArcPowerApi {
   /** M2D (mock mode only): swap the mock device featureset live; the whole
    *  UI surface (caps/ranges/units/telemetry) re-renders from the response. */
   mockSetFeatureset(id: string): Promise<MockSwapResponse>;
-  /** M31: panel-to-main selection requests, delivered only to the main renderer. */
-  onDeviceSelectionRequested(cb: (payload: { deviceKey: string }) => void): () => void;
-  /** M31: main-owned durable selection/caps/state push delivered to both renderers. */
-  onDeviceSelectionUpdated(cb: (payload: DeviceSelectionPayload) => void): () => void;
   /** M4-D2 (mock mode only): run the REAL window-path boot-apply code path
    *  (applyRunner-less, defaults-fallback skipped) and record the attempt
    *  in the session mock apply log. */

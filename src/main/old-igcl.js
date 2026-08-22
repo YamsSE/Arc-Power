@@ -8,19 +8,15 @@
 // writes 280/300/315 W and 100/110/115 C - SUCCESS and PERSISTED (verified
 // live on this machine, 2026-08-05, docs/igcl-integration.md §8c).
 //
-// This module is the ONLY product-code consumer of that DLL. Power writes use
-// the official V1 power-domain pair (ctlPowerSetLimits: sustained + burst)
-// when the complete surface is present and unambiguous; the scalar
-// ctlOverclockPowerLimitSet mW setter is retained for incomplete, absent, or
-// ambiguous compatibility runtimes. Temperature remains the scalar V1 C
-// setter. All paths use the 2023-era init args (Size 36, Version 0,
-// AppVersion MAKE_VERSION(1,0), CTL_INIT_FLAG_USE_LEVEL_ZERO, zero UID) and
-// the 2023-era properties struct (ctl_oc_properties_old_t).
+// This module is the ONLY product-code consumer of that DLL. It uses the V1
+// fixed-unit setters (ctlOverclockPowerLimitSet = mW,
+// ctlOverclockTemperatureLimitSet = C), the 2023-era init args (Size 36,
+// Version 0, AppVersion MAKE_VERSION(1,0), CTL_INIT_FLAG_USE_LEVEL_ZERO,
+// zero UID) and the 2023-era properties struct (ctl_oc_properties_old_t).
 //
 // Verification lesson (the momentary lie): non-elevated OC writes return
-// SUCCESS with a momentary read-back match and then revert. Result fields
-// include `bundledPowerLimit` and `pairedReadBack` for routed PL2 verification.
-// Every setter here therefore ALWAYS re-reads once after ~400 ms before reporting ok -
+// SUCCESS with a momentary read-back match and then revert. Every setter
+// here therefore ALWAYS re-reads once after ~400 ms before reporting ok -
 // an immediate match is never trusted on this runtime (the lie's shape is
 // match-then-revert); a delayed match is a real persisted write, a mismatch
 // (immediate or delayed) is an honest per-control failure. The DriverStore
@@ -37,11 +33,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, CTL_POWER_LIMITS_SIZE,
-  loadIgcl, makeVersion, describeResult,
+  CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, loadIgcl, makeVersion, describeResult,
 } from './backend/igcl-bindings.js';
 import { igclErrorCode } from './backend/backend.interface.js';
-import { clampAndSnap, nearlyEqual, deviceHardwareKey, sortDevicesDiscreteFirst } from './backend/units.js';
+import { clampAndSnap, nearlyEqual } from './backend/units.js';
 
 export const OLD_IGCL_VERSION = '1.0.100';
 export const OLD_IGCL_FILENAME = 'IntelControlLib.dll';
@@ -159,16 +154,10 @@ export class OldIgcl {
     this._sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this._apiHandle = null;
     this._device = null;
-    this._devices = [];
-    this._identityAvailable = false;
-    this._waivedDevices = new Set();
-    // M40: power-domain handles belong to the selected adapter and are
-    // enumerated lazily only when the official V1 symbols are present.
-    this._powerDomains = new Map();
-    this._setQueue = Promise.resolve();
     this._capable = null; // tri-state: null = unknown
     this._lastError = null;
     this._props = null;
+    // M17d (Run E): the in-flight latch - isCapable() may now be entered
     // CONCURRENTLY (the boot warm-up + the first caps query + a boot-apply
     // all race for the same probe). The first caller owns the init/enum/
     // waiver sequence; every concurrent caller awaits the SAME promise -
@@ -181,16 +170,11 @@ export class OldIgcl {
   }
 
   /**
-   * Whether the bundled 2023 runtime is installed and can be handed to an
-   * elevated apply worker. The UI process is intentionally not elevated, so
-   * `isCapable()` can return `false` with ERROR_KMD_CALL even though the DLL
-   * is present and the elevated worker can use it.
-   * @returns {boolean}
+   * extendedCapable(): init + enumerate + waiver all SUCCESS on the bundled
+   * runtime. Cached; a failure sets `_capable = false` forever (the old
+   * runtime either works on this driver or it does not).
+   * @returns {Promise<boolean>}
    */
-  isAvailable() {
-    const dllPath = this._dllPath ?? this._findDll();
-    return typeof dllPath === 'string' && dllPath.length > 0 && fs.existsSync(dllPath);
-  }
   async isCapable() {
     if (this._capable !== null) return this._capable;
     // M17d (Run E): the latch - concurrent callers share ONE in-flight
@@ -241,9 +225,7 @@ export class OldIgcl {
     if (!this._apiHandle) throw new Error('bundled 2023 IGCL runtime ctlInit returned SUCCESS but the handle is NULL');
 
     // Enumerate - the old runtime needs the two-pass pattern like any IGCL
-    // runtime: count with a null list, then fill. Keep every raw handle and,
-    // when the property binding exists, derive the same PCI/BDF identity used
-    // by the main backend before applying the stable discrete-first order.
+    // runtime: count with a null list, then fill.
     const countBuf = koffi.alloc('uint32', 1);
     koffi.encode(countBuf, 'uint32', 0);
     let res = this._lib.ctlEnumerateDevices(this._apiHandle, countBuf, null);
@@ -255,60 +237,13 @@ export class OldIgcl {
     if (res !== CTL_RESULT.SUCCESS) {
       throw new Error(`bundled 2023 IGCL runtime device enumeration failed: ${describeResult(res)}`);
     }
-    const rawHandles = [];
-    for (let i = 0; i < count; i++) rawHandles.push(koffi.decode(list, i * 8, 'void*'));
+    this._device = koffi.decode(list, 0, 'void*');
 
-    const getProperties = this._lib.ctlGetDeviceProperties;
-    const entries = [];
-    let identityAvailable = typeof getProperties === 'function';
-    if (identityAvailable) {
-      for (const handle of rawHandles) {
-        let identity = null;
-        try {
-          const propsBuf = koffi.alloc('ctl_device_adapter_properties_t', 1);
-          koffi.encode(propsBuf, 'ctl_device_adapter_properties_t', {
-            Size: koffi.sizeof('ctl_device_adapter_properties_t'),
-            Version: 0,
-          });
-          const propertyRes = getProperties(handle, propsBuf);
-          if (propertyRes === CTL_RESULT.SUCCESS) {
-            const p = koffi.decode(propsBuf, 'ctl_device_adapter_properties_t');
-            const bdf = p.adapter_bdf;
-            const name = String(p.name ?? '').replace(/\0+$/, '').trim();
-            const candidate = {
-              name,
-              pciVendorId: `0x${(Number(p.pci_vendor_id) >>> 0).toString(16).padStart(8, '0')}`,
-              pciDeviceId: `0x${(Number(p.pci_device_id) >>> 0).toString(16).padStart(8, '0')}`,
-              bdf: {
-                bus: Number(bdf?.bus),
-                device: Number(bdf?.device),
-                function: Number(bdf?.function),
-              },
-            };
-            if (name.length > 0 && Number.isFinite(candidate.bdf.bus)
-              && Number.isFinite(candidate.bdf.device)
-              && Number.isFinite(candidate.bdf.function)) {
-              identity = { ...candidate, deviceKey: deviceHardwareKey(candidate) };
-            }
-          }
-        } catch {
-          identity = null;
-        }
-        if (!identity) identityAvailable = false;
-        entries.push({ handle, identity });
-      }
-    } else {
-      for (const handle of rawHandles) entries.push({ handle, identity: null });
+    // Waiver: required before OC writes on the old runtime too.
+    const waiverRes = this._lib.ctlOverclockWaiverSet(this._device);
+    if (waiverRes !== CTL_RESULT.SUCCESS) {
+      throw new Error(`bundled 2023 IGCL runtime waiver failed: ${describeResult(waiverRes)}`);
     }
-    this._identityAvailable = identityAvailable;
-    const ordered = identityAvailable
-      ? sortDevicesDiscreteFirst(entries.map((entry) => entry.identity))
-        .map((identity) => entries.find((entry) => entry.identity === identity))
-      : entries;
-    this._devices = ordered;
-    this._device = ordered[0]?.handle ?? null;
-    if (!this._device) throw new Error('bundled 2023 IGCL runtime returned a NULL device handle');
-    await this._ensureWaiver(this._device, ordered[0]?.identity?.deviceKey ?? 'primary');
 
     // Diagnostics-only props read (2023 struct). Never gates: the verified
     // probes write without reading props.
@@ -324,202 +259,27 @@ export class OldIgcl {
     }
   }
 
-  async _ensureWaiver(device, key = 'primary') {
-    const waiverKey = key ?? 'primary';
-    if (this._waivedDevices.has(waiverKey)) return true;
-    const waiverRes = this._lib.ctlOverclockWaiverSet(device);
-    if (waiverRes !== CTL_RESULT.SUCCESS) {
-      throw new Error(`bundled 2023 IGCL runtime waiver failed: ${describeResult(waiverRes)}`);
-    }
-    this._waivedDevices.add(waiverKey);
-  }
-
-  async _selectDevice(deviceId, deviceKey) {
-    const hasKey = typeof deviceKey === 'string' && deviceKey.length > 0;
-    if (!hasKey) {
-      if (deviceId != null && deviceId !== 0) return null;
-      // Legacy primary behavior remains safe for a single raw handle. With
-      // multiple handles, an unbound property API cannot prove even id 0 is
-      // the main-backend primary, so refuse before any native write.
-      if (!this._identityAvailable && this._devices.length > 1) return null;
-      const selected = this._devices[0] ?? null;
-      if (selected) this._device = selected.handle;
-      return selected;
-    }
-    // A keyed request is identity-sensitive. Older bundled runtimes without
-    // ctlGetDeviceProperties cannot prove which raw handle is the target.
-    if (!this._identityAvailable) return null;
-    const selected = this._devices.find((entry) => entry.identity?.deviceKey === deviceKey);
-    if (!selected) return null;
-    try {
-      await this._ensureWaiver(selected.handle, selected.identity.deviceKey);
-    } catch {
-      return null;
-    }
-    this._device = selected.handle;
-    return selected;
-  }
-
-  _read(control, device = this._device) {
+  _read(control) {
     const getFn = control === 'powerLimitW' ? this._lib.ctlOverclockPowerLimitGet : this._lib.ctlOverclockTemperatureLimitGet;
     const buf = koffi.alloc('double', 1);
-    const res = getFn(device, buf);
+    const res = getFn(this._device, buf);
     if (res !== CTL_RESULT.SUCCESS) return null;
     const raw = koffi.decode(buf, 'double');
     return control === 'powerLimitW' ? mwToW(raw) : raw;
   }
-  _powerDomainSymbolCount() {
-    const names = ['ctlEnumPowerDomains', 'ctlPowerGetLimits', 'ctlPowerSetLimits'];
-    const unavailable = new Set(Array.isArray(this._lib?.unavailable) ? this._lib.unavailable : []);
-    return names.filter((name) => typeof this._lib?.[name] === 'function' && !unavailable.has(name)).length;
-  }
-
-
-  _readPowerLimits(domain) {
-    try {
-      const buf = koffi.alloc('ctl_power_limits_t', 1);
-      koffi.encode(buf, 'ctl_power_limits_t', { Size: CTL_POWER_LIMITS_SIZE, Version: 0 });
-      const res = this._lib.ctlPowerGetLimits(domain, buf);
-      if (res !== CTL_RESULT.SUCCESS) return null;
-      const limits = koffi.decode(buf, 'ctl_power_limits_t');
-      return {
-        limits,
-        sustainedW: mwToW(Number(limits.sustainedPowerLimit.power)),
-        burstW: mwToW(Number(limits.burstPowerLimit.power)),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  _ensurePowerDomain(selected) {
-    const adapter = selected?.handle ?? selected;
-    if (this._powerDomains.has(adapter)) return this._powerDomains.get(adapter);
-    const countBuf = koffi.alloc('uint32', 1);
-    koffi.encode(countBuf, 'uint32', 0);
-    let res = this._lib.ctlEnumPowerDomains(adapter, countBuf, null);
-    if (res !== CTL_RESULT.SUCCESS) {
-      throw new Error(`IGCL power-domain enumeration failed: ${describeResult(res)}`);
-    }
-    const count = koffi.decode(countBuf, 'uint32');
-    if (count !== 1) {
-      const err = new Error(`IGCL power-domain enumeration returned ${count} domains; an unambiguous domain is required`);
-      err.code = 'ambiguous-domain';
-      throw err;
-    }
-    const list = koffi.alloc('void*', count);
-    koffi.encode(countBuf, 'uint32', count);
-    res = this._lib.ctlEnumPowerDomains(adapter, countBuf, list);
-    if (res !== CTL_RESULT.SUCCESS) {
-      throw new Error(`IGCL power-domain enumeration fill failed: ${describeResult(res)}`);
-    }
-    const domain = koffi.decode(list, 0, 'void*');
-    if (!domain) throw new Error('IGCL power-domain enumeration returned a NULL domain handle');
-    this._powerDomains.set(adapter, domain);
-    return domain;
-  }
-
-  async _setPowerLimitPairLocked(target, selected) {
-    let domain;
-    try {
-      domain = this._ensurePowerDomain(selected);
-    } catch (err) {
-      return {
-        ok: false,
-        errorCode: err?.code === 'ambiguous-domain' ? 'ambiguous-domain' : 'io-failed',
-        readBackEqual: false,
-        message: err instanceof Error ? err.message : String(err),
-      };
-    }
-    const current = this._readPowerLimits(domain);
-    if (!current) {
-      return {
-        ok: false,
-        errorCode: 'io-failed',
-        readBackEqual: false,
-        message: 'extended power limit: current power-domain limits read failed',
-      };
-    }
-    const payload = {
-      Size: CTL_POWER_LIMITS_SIZE,
-      Version: Number(current.limits.Version) || 0,
-      sustainedPowerLimit: {
-        ...current.limits.sustainedPowerLimit,
-        enabled: true,
-        power: wToMw(target),
-      },
-      burstPowerLimit: {
-        ...current.limits.burstPowerLimit,
-        enabled: true,
-        power: wToMw(target),
-      },
-      // Keep both peak fields exactly as returned by the driver.
-      peakPowerLimits: { ...current.limits.peakPowerLimits },
-    };
-    const buf = koffi.alloc('ctl_power_limits_t', 1);
-    koffi.encode(buf, 'ctl_power_limits_t', payload);
-    let setRes;
-    try {
-      setRes = this._lib.ctlPowerSetLimits(domain, buf);
-    } catch (err) {
-      return {
-        ok: false,
-        errorCode: 'io-failed',
-        readBackEqual: false,
-        message: `IGCL power-domain set failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-    if (setRes !== CTL_RESULT.SUCCESS) {
-      return {
-        ok: false,
-        errorCode: igclErrorCode(setRes) ?? 'io-failed',
-        readBackEqual: false,
-        message: `IGCL ${describeResult(setRes)}`,
-      };
-    }
-    // Keep the existing momentary-lie guard: perform an immediate read, then
-    // delay and require BOTH sustained (PL1) and burst (PL2) to match.
-    this._readPowerLimits(domain);
-    await this._sleep(this._delayedVerifyMs);
-    const readBack = this._readPowerLimits(domain);
-    const sustainedOk = readBack !== null && nearlyEqual(readBack.sustainedW, target);
-    const burstOk = readBack !== null && nearlyEqual(readBack.burstW, target);
-    if (sustainedOk && burstOk) {
-      return {
-        ok: true,
-        readBackEqual: true,
-        pairedPowerLimit: true,
-        pairedReadBack: true,
-      };
-    }
-    return {
-      ok: false,
-      errorCode: 'io-failed',
-      readBackEqual: false,
-      message: readBack === null
-        ? 'extended power limit: set succeeded but power-domain read-back failed'
-        : `extended power limit: read-back PL1 ${readBack.sustainedW} / PL2 ${readBack.burstW} != requested ${target}`,
-    };
-  }
-
 
   /**
-   * One extended write with the momentary-lie guard. Target selection,
-   * waiver, native write, and both reads are serialized per adapter instance
-   * so concurrent applies cannot cross handles through `this._device`.
+   * One extended write with the momentary-lie guard: set, immediate read,
+   * then ALWAYS one delayed re-read (~400 ms) before reporting ok. The lie's
+   * documented shape is a SUCCESS write with an immediate read-back MATCH
+   * that later reverts - so an immediate match is never trusted; only a
+   * match on the delayed re-read is a real persisted write. Anything else is
+   * an honest per-control failure.
    * @param {'powerLimitW'|'tempLimitC'} control
    * @param {number} value canonical W or C
-   * @param {number|undefined|null} deviceId
-   * @param {string|undefined|null} deviceKey stable PCI/BDF identity
    * @returns {Promise<OldIgclPerControl>}
    */
-  async _setScalar(control, value, deviceId = 0, deviceKey = null) {
-    const run = this._setQueue.then(() => this._setScalarLocked(control, value, deviceId, deviceKey));
-    this._setQueue = run.catch(() => {});
-    return run;
-  }
-
-  async _setScalarLocked(control, value, deviceId = 0, deviceKey = null) {
+  async _setScalar(control, value) {
     if (!(await this.isCapable())) {
       return {
         ok: false,
@@ -528,33 +288,8 @@ export class OldIgcl {
         message: 'extended power/temp limit requires the bundled 2023 IGCL runtime - it failed to load on this driver',
       };
     }
-    const selected = await this._selectDevice(deviceId, deviceKey);
-    if (!selected) {
-      return {
-        ok: false,
-        errorCode: 'unsupported',
-        readBackEqual: false,
-        message: typeof deviceKey === 'string' && deviceKey.length > 0
-          ? 'extended power/temp limit cannot establish the requested PCI/BDF target with the bundled 2023 IGCL runtime'
-          : 'extended power/temp limit cannot target a non-primary device with the bundled 2023 IGCL runtime',
-      };
-    }
     const range = control === 'powerLimitW' ? EXTENDED_PL_RANGE : EXTENDED_TL_RANGE;
     const target = clampAndSnap(value, range);
-    // M40: a complete V1 power-domain surface writes PL1 + PL2 together.
-    // Any missing symbol (including an entirely absent surface) or an
-    // ambiguous domain selection uses the scalar compatibility setter. Once
-    // enumeration identifies exactly one domain, native get/set failures
-    // remain hard failures and never fall back to scalar PL1.
-    if (control === 'powerLimitW') {
-      const symbolCount = this._powerDomainSymbolCount();
-      if (symbolCount === 3) {
-        const pair = await this._setPowerLimitPairLocked(target, selected);
-        if (pair.errorCode !== 'ambiguous-domain') return pair;
-        // An ambiguous domain is not safe to target; use the established
-        // primary scalar path for runtimes that expose no unique domain.
-      }
-    }
     const setFn = control === 'powerLimitW' ? this._lib.ctlOverclockPowerLimitSet : this._lib.ctlOverclockTemperatureLimitSet;
     const igclValue = control === 'powerLimitW' ? wToMw(target) : target;
     const setRes = setFn(this._device, igclValue);
@@ -566,13 +301,14 @@ export class OldIgcl {
         message: `IGCL ${describeResult(setRes)}`,
       };
     }
+    // Immediate read (informational - a match here proves nothing; the lie
+    // matches momentarily and then reverts), then the ALWAYS-delayed re-read
+    // that is the only trusted verification.
     this._read(control);
     await this._sleep(this._delayedVerifyMs);
     const readBack = this._read(control);
     if (readBack !== null && nearlyEqual(readBack, target)) {
-      return control === 'powerLimitW'
-        ? { ok: true, readBackEqual: true, bundledPowerLimit: true, pairedPowerLimit: false }
-        : { ok: true, readBackEqual: true };
+      return { ok: true, readBackEqual: true };
     }
     const label = control === 'powerLimitW' ? 'power limit' : 'temperature limit';
     return {
@@ -586,22 +322,23 @@ export class OldIgcl {
   }
 
   /**
-   * Extended power/temperature limits. The optional deviceId and stable
-   * deviceKey are accepted by the shared apply-routing seam. A keyed target
-   * is selected by PCI/BDF identity; a runtime without property binding
-   * refuses keyed requests rather than risking a write to another adapter.
-   * Writes only values above the DriverStore clamp; routing guarantees that.
-   * @param {number} value
-   * @param {number|undefined|null} deviceId
-   * @param {string|undefined|null} deviceKey
+   * Extended power limit (W). Writes only values above the DriverStore
+   * clamp (>252 W); the routing layer guarantees that.
+   * @param {number} w
    * @returns {Promise<OldIgclPerControl>}
    */
-  async setPowerLimitW(w, deviceId = 0, deviceKey = null) {
-    return this._setScalar('powerLimitW', w, deviceId, deviceKey);
+  async setPowerLimitW(w) {
+    return this._setScalar('powerLimitW', w);
   }
 
-  async setTempLimitC(c, deviceId = 0, deviceKey = null) {
-    return this._setScalar('tempLimitC', c, deviceId, deviceKey);
+  /**
+   * Extended temperature limit (C). Writes only values above the DriverStore
+   * clamp (>90 C); the routing layer guarantees that.
+   * @param {number} c
+   * @returns {Promise<OldIgclPerControl>}
+   */
+  async setTempLimitC(c) {
+    return this._setScalar('tempLimitC', c);
   }
 
   async close() {
@@ -610,6 +347,5 @@ export class OldIgcl {
     }
     this._apiHandle = null;
     this._device = null;
-    this._powerDomains.clear();
   }
 }

@@ -23,7 +23,7 @@
 // table (the same numPoints>=2 + all-equal + PERCENT derivation the real
 // backend runs) - the mock round trip the ui-verify knob variant pins.
 
-import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, sortDevicesDiscreteFirst, deviceHardwareKey } from './units.js';
+import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve } from './units.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
@@ -32,11 +32,12 @@ import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } f
 // under the packaged Electron - Node 22.21 type stripping).
 import { aibOf, laptopAibOf } from '../../renderer/pure/aib.ts';
 // M17c/M17d: the per-device limits table - the MOCK mirrors the real
-// backend's getCapabilities finalize (step-4 N1) for the Alchemist family
-// (A770/A750/A380/A310) with the STOCK/ADVANCED split. Advanced rows keep
-// each card's documented extended PL/TL ceiling visible even if the
-// bundled-runtime capability flag is false; routing still refuses values
-// that runtime cannot honor.
+// backend's getCapabilities finalize (step-4 N1) with the STOCK/ADVANCED
+// SPLIT (round-1 S1): the listed rows' ceilings per ACTIVE shape (the
+// stock per-AIB maxes + the TL 90 caps; the advanced per-card KMD ceilings
+// - a770 375/115, a750 270/115 - the A750 TL probe-verified 2026-08-12;
+// the round-3-N3 rule flipped) so the mock
+// slider never offers a window the real caps refuse.
 import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limits.ts';
 // M17e: the listed-card lockRange fallback table (the mock mirrors the real
 // backend's caps-level fallback when the fixture carries no lockRange row
@@ -133,13 +134,17 @@ export class MockBackend {
    *   telemetryIntervalS?: number,       // mock wall-clock between samples (default 0.5)
    *   energyStepJ?: number,              // energy added per sample (default from the
    *                                      // featureset powerW: powerW * intervalS)
-   *   extendedRanges?: boolean,          // overlay on the featureset extendedRanges flag
-   *   extendedFail?: boolean,            // extended applies fail with the honest unavailable message
-   *   multiDevice?: boolean,             // emit the dGPU + iGPU fixture
-   *   reverseEnumeration?: boolean,      // reverse raw fixture order before sorting
-   *   graphicsUnsupported?: boolean,     // honest all-false graphics surface
-   *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1)
-   *                                      // the multi-device iGPU degrades regardless
+ *   extendedRanges?: boolean,          // overlay on the featureset extendedRanges flag
+ *   extendedFail?: boolean,            // extended applies fail with the honest unavailable message
+ *   multiDevice?: boolean,             // M4-F: emit device ids 0 AND 1 (device 1 =
+   *                                      // the arc-igpu line) - the RID_MOCK_MULTI_DEVICE=1
+   *                                      // ui-verify knob; tests pass the flag directly
+   *  graphicsUnsupported?: boolean,  // M8: overlay - the WHOLE graphics surface
+   *                                      // degrades to the supported-all-false state
+   *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1, the
+   *                                      // RID_MOCK_FAN_READONLY pattern); the
+   *                                      // multi-device iGPU (device 1) degrades
+   *                                      // regardless
    *   laptopInfoOf?: () => object|null,  // M17c: the laptop sysinfo provider
    *                                      // (the real backend's vramBytesOf-style
    *                                      // injection - the caps AIB decode's
@@ -179,7 +184,6 @@ export class MockBackend {
     // RID_MOCK_MULTI_DEVICE=1 knob (or the constructor flag for tests);
     // device 1 is the arc-igpu line with DISTINCT caps/state/telemetry.
     this._multiDevice = opts.multiDevice === true || process.env.RID_MOCK_MULTI_DEVICE === '1';
-    this._reverseEnumeration = opts.reverseEnumeration === true || process.env.RID_MOCK_REVERSED_ENUM === '1';
     // M20-B: the flat-table-fixed session knob (RID_MOCK_FAN_FIXED=1) - the
     // probe's flat-table fallback learned 'fixed' (modes
     // ['auto','curve','fixed']) and the read-back derives 'fixed' from a
@@ -217,9 +221,9 @@ export class MockBackend {
     // mode - the V1 path owns it; a stock-mode apply never records by the
     // same gate). Session-level, never reset by a featureset swap.
     this._v2CompanionCalls = [];
-    // Device ids are session enumeration ids. Consent/subscriptions survive
-    // rebuilds in this durable-keyed registry, never in an id-keyed cache.
-    this._deviceStateByKey = new Map();
+    // Devices > 0 live here; device 0 is the legacy single-device fields
+    // (_device/_caps/_state/_tick/_energyStepJ/_waiverAccepted/
+    // _telemetryCbs - the pre-M4-F mock, pinned directly by tests).
     this._extraDevices = new Map();
     this._applyFeatureset(this._featureset);
     // Constructor-injected failures land AFTER _applyFeatureset (which resets
@@ -252,9 +256,9 @@ export class MockBackend {
         device: this._device,
         caps: this._caps,
         state: this._state,
-        featureset: this._primaryFeatureset,
+        featureset: this._featureset,
+        energyStepJ: this._energyStepJ,
         waiverAccepted: this._waiverAccepted,
-        extendedCapable: this._extended,
         telemetryCbs: this._telemetryCbs,
         // M8: the graphics state (the fixture values the apply mutates).
         graphics: this._graphics,
@@ -265,11 +269,9 @@ export class MockBackend {
     return e;
   }
 
-  /** M29: the second device is Arc iGPU by default; mixed mode uses A750. */
+  /** M4-F: the second device's featureset (the arc-igpu line - fixed). */
   _secondFeatureset() {
-    const { featureset, warning } = loadFeaturesetOrFallback(
-      process.env.RID_MOCK_MULTI_ARC === '1' ? 'a750' : 'arc-igpu',
-    );
+    const { featureset, warning } = loadFeaturesetOrFallback('arc-igpu');
     if (warning) {
       this._featuresetWarning = warning;
       console.error(`[mock-backend] ${warning}`);
@@ -281,34 +283,14 @@ export class MockBackend {
    * Apply one featureset to device 0 (and rebuild device 1 in the
    * multi-device session - the swap re-renders BOTH devices): rebuild caps,
    * device fixture and state. The in-memory waiver acceptance + the
-   * telemetry subscriptions survive per device (the swap rebuilds caps/state/timeline only).
+   * telemetry subscriptions survive per device (they are app/session
+   * consent, not driver state - the swap rebuilds caps/state/timeline only).
    */
   _applyFeatureset(fs) {
-    // Rebuild the capability/state surface without allowing session ids to
-    // rebind consent or telemetry subscriptions to another physical adapter.
-    // Device ids are assigned only after the fresh devices have been sorted;
-    // the durable deviceKey is the sole state/cache identity.
-    const remember = (entry) => {
-      if (!entry?.device?.deviceKey) return;
-      this._deviceStateByKey.set(entry.device.deviceKey, {
-        waiverAccepted: entry.waiverAccepted === true,
-        telemetryCbs: entry.telemetryCbs instanceof Set ? entry.telemetryCbs : new Set(),
-      });
-    };
-    if (this._device) {
-      remember({
-        device: this._device,
-        waiverAccepted: this._waiverAccepted,
-        telemetryCbs: this._telemetryCbs,
-      });
-      for (const entry of this._extraDevices.values()) remember(entry);
-    }
-
-    // Refusal ceilings are session-id keyed. A featureset rebuild creates a
-    // fresh session surface, so discard them rather than applying an old
-    // numeric id's ceiling to a newly sorted adapter.
-    this._refusedCeilings = createRefusedCeilingStore();
     this._featureset = fs;
+    // M2D: the energy step derives from the ACTIVE featureset (powerW *
+    // interval) so the monitoring power readout follows a swap; a
+    // constructor-injected override (test knob) stays a session constant.
     this._energyStepJ = this._energyStepOverride !== null
       ? this._energyStepOverride
       : fs.telemetry.powerW * this._intervalS;
@@ -318,65 +300,46 @@ export class MockBackend {
     this._fanCanControl = fs.hasFan && (this._fanOverlay !== undefined
       ? this._fanOverlay
       : fs.fanCanControl === true);
-
-    const makeEntry = (featureset, rawId, extended = this._extended, fanCanControl = this._fanCanControl) => {
-      const device = this._buildDevice(featureset, rawId);
-      const prior = this._deviceStateByKey.get(device.deviceKey);
-      return {
-        device,
-        caps: this._buildCaps(featureset, extended, fanCanControl, device.deviceKey),
-        state: this._buildState(featureset),
-        featureset,
-        extendedCapable: extended,
-        energyStepJ: this._energyStepOverride !== null
-          ? this._energyStepOverride
-          : featureset.telemetry.powerW * this._intervalS,
-        tick: 0,
-        waiverAccepted: prior?.waiverAccepted === true,
-        telemetryCbs: prior?.telemetryCbs instanceof Set ? prior.telemetryCbs : new Set(),
-        graphics: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
-      };
-    };
-
-    const entries = [makeEntry(fs, 0)];
+    // Carry the per-device consent + subscriptions across the rebuild (the
+    // swap is caps/state/timeline only - never a silent waiver reset).
+    const prevWaiver = this._waiverAccepted;
+    const prevCbs = this._telemetryCbs;
+    const prevExtraWaivers = new Map([...this._extraDevices].map(([id, e]) => [id, e.waiverAccepted]));
+    const prevExtraCbs = new Map([...this._extraDevices].map(([id, e]) => [id, e.telemetryCbs]));
+    this._caps = this._buildCaps(fs, this._extended, this._fanCanControl);
+    this._device = this._buildDevice(fs, 0);
+    this._state = this._buildState(fs);
+    // M8: the graphics state - the fixture values deep-copied per device (the
+    // apply mutates the device's own copy; a swap resets it like the OC
+    // state - a fresh device).
+    this._graphics = JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values));
+    // A swap is a fresh device: the telemetry timeline restarts (one
+    // no-power sample while the energy counter resets, then the new
+    // featureset's wattage - never a blended value).
+    this._tick = 0;
+    this._waiverAccepted = prevWaiver === undefined ? false : prevWaiver;
+    this._telemetryCbs = prevCbs === undefined ? new Set() : prevCbs;
     if (this._multiDevice) {
       const fs2 = this._secondFeatureset();
-      entries.push(makeEntry(fs2, 1, fs2.extendedRanges === true, fs2.hasFan && fs2.fanCanControl === true));
-    }
-    const ordered = this._reverseEnumeration
-      ? sortDevicesDiscreteFirst([...entries].reverse().map((entry) => entry.device))
-      : sortDevicesDiscreteFirst(entries.map((entry) => entry.device));
-    const byDevice = new Map(entries.map((entry) => [entry.device.deviceKey, entry]));
-    const first = byDevice.get(ordered[0].deviceKey);
-    first.device.id = 0;
-    this._device = first.device;
-    this._caps = first.caps;
-    this._state = first.state;
-    // Keep _primaryFeatureset tied to the sorted session-id-0 fixture. The
-    // requested physical primary remains _featureset for listFeaturesets()
-    // and swap identity responses.
-    this._primaryFeatureset = first.featureset;
-    // The legacy extended runtime is also device-0 scoped; after sorting it
-    // must follow the actual primary rather than the requested dropdown fs.
-    this._extended = this._extendedOverlay !== undefined
-      ? this._extendedOverlay
-      : first.featureset.extendedRanges === true;
-    this._energyStepJ = first.energyStepJ;
-    this._tick = first.tick;
-    this._waiverAccepted = first.waiverAccepted;
-    this._telemetryCbs = first.telemetryCbs;
-    this._graphics = first.graphics;
-    this._extraDevices.clear();
-    for (let index = 1; index < ordered.length; index += 1) {
-      const entry = byDevice.get(ordered[index].deviceKey);
-      entry.device.id = index;
-      this._extraDevices.set(index, entry);
+      this._extraDevices.set(1, {
+        device: this._buildDevice(fs2, 1),
+        caps: this._buildCaps(fs2, fs2.extendedRanges === true, fs2.hasFan && fs2.fanCanControl === true),
+        state: this._buildState(fs2),
+        featureset: fs2,
+        energyStepJ: fs2.telemetry.powerW * this._intervalS,
+        tick: 0,
+        waiverAccepted: prevExtraWaivers.get(1) ?? false,
+        telemetryCbs: prevExtraCbs.get(1) ?? new Set(),
+        // M8: the iGPU's graphics state (unused - the iGPU always serves
+        // the degraded surface; kept for shape symmetry).
+        graphics: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
+      });
     }
     this._failOn = {};
     this._failOnce = {};
   }
 
-  _buildCaps(fs, extended, fanCanControl = this._fanCanControl, deviceKey = null) {
+  _buildCaps(fs, extended, fanCanControl = this._fanCanControl) {
     // Parity with IgclBackend: every control key is emitted explicitly
     // (supported -> true, otherwise false) so consumers never see undefined.
     const controls = {
@@ -386,24 +349,18 @@ export class MockBackend {
     };
     for (const c of fs.supportedControls) controls[c] = true;
     const ranges = JSON.parse(JSON.stringify(fs.ranges));
-    // M33: the selected OC mode owns the visible W/C capability shape. The
-    // `extended` argument remains the bundled-runtime capability signal;
-    // routing refuses values above that runtime when it is unavailable.
-    const advancedShape = this._ocMode === 'advanced';
-    if (advancedShape && ranges.powerLimitW && fs.extended?.plMax > 0) {
+    // M3-C-E: the extended maxes are exposed ONLY in advanced mode - stock
+    // mode reports the standard ranges (mirrors IgclBackend). M4-F: the
+    // per-device flag (device 0: the session overlay; device 1: its own
+    // featureset - the arc-igpu is never extended-capable).
+    if (extended && this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax) {
       ranges.powerLimitW.max = fs.extended.plMax;
     }
-    if (advancedShape && ranges.tempLimitC && fs.extended?.tlMax > 0) {
+    if (extended && this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax) {
       ranges.tempLimitC.max = fs.extended.tlMax;
     }
     const caps = {
       oemName: 'Intel (mock)',
-      // Mirror the real backend's stable identity so the old-runtime mock
-      // and the real apply route exercise the same target contract.
-      deviceKey,
-      // M33: expose the selected mode separately from runtime availability
-      // so the renderer keeps Advanced ceilings visible when routing degrades.
-      ocMode: this._ocMode,
       // M4-B step-4 F1: the VRAM suffix is formatted HERE too (not only in
       // _buildDevice) - every dialog (boot waiver, apply-time waiver,
       // advanced-mode confirm) renders caps.deviceName, so mock and real
@@ -413,6 +370,7 @@ export class MockBackend {
       // derive it anyway).
       deviceName: formatDeviceName(fs.deviceName, fs.vramBytes ?? null, fs.memType ?? undefined),
       memType: fs.memType ?? null,
+      waiverAccepted: false,
       controls,
       // M17: mirror IgclBackend - a device with no OC control (pro-b50 /
       // arc-igpu) has no warranty waiver; the UI must not prompt for it.
@@ -420,9 +378,8 @@ export class MockBackend {
       ranges,
       fan: this._buildFanCaps(fs, fanCanControl),
     };
-    // M33: the bundled-2023-runtime flag is separate from the visible
-    // capability shape. It is advertised only when the runtime is capable in
-    // the selected advanced mode; routing uses it for honest refusal.
+    // M2C-C: the bundled-2023-runtime flag - the UI exposes the extended
+    // maxes only when it is set AND the OC mode is advanced (M3-C-E).
     if (extended && this._ocMode === 'advanced') caps.extendedRanges = true;
     // M17c: the AIB-identity fields - the SAME decode the real backend
     // runs in getCapabilities (pure/aib.ts from the fixture subsystem
@@ -467,16 +424,9 @@ export class MockBackend {
       // M4-F: the mode is global (not per-device) - the caps cache of BOTH
       // devices is invalidated (the arc-igpu has no extended ranges either
       // way; rebuilding it keeps its caps honest under the stock flip).
-      const sortedPrimary = this._primaryFeatureset;
-      const primaryExtended = this._extendedOverlay !== undefined
-        ? this._extendedOverlay
-        : sortedPrimary.extendedRanges === true;
-      const primaryFan = sortedPrimary.hasFan && (this._fanOverlay !== undefined
-        ? this._fanOverlay
-        : sortedPrimary.fanCanControl === true);
-      this._caps = this._buildCaps(sortedPrimary, primaryExtended, primaryFan, this._device?.deviceKey ?? null);
+      this._caps = this._buildCaps(this._featureset, this._extended, this._fanCanControl);
       for (const e of this._extraDevices.values()) {
-        e.caps = this._buildCaps(e.featureset, e.featureset.extendedRanges === true, e.featureset.hasFan && e.featureset.fanCanControl === true, e.device.deviceKey);
+        e.caps = this._buildCaps(e.featureset, e.featureset.extendedRanges === true, e.featureset.hasFan && e.featureset.fanCanControl === true);
       }
     }
     return next;
@@ -522,12 +472,9 @@ export class MockBackend {
       numXeCores: fs.numXeCores,
       vramBytes: fs.vramBytes ?? null,
       memType: fs.memType ?? null,
-      bdf: id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 },
-      deviceKey: deviceHardwareKey({
-        pciVendorId: '0x00008086',
-        pciDeviceId: fs.pciDeviceId ?? '0x000056a0',
-        bdf: id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 },
-      }),
+      // M17c: the IGCL subsystem fields ride the DEVICE payload (the mock
+      // mirrors the real backend's _ensureDevices - the AIB decode keys on
+      // them). Null when the fixture carries none (the honest unknown).
       pciSubsysVendorId: typeof fs.pciSubsysVendorId === 'number' ? fs.pciSubsysVendorId : null,
       pciSubsysId: typeof fs.pciSubsysId === 'number' ? fs.pciSubsysId : null,
     };
@@ -558,16 +505,14 @@ export class MockBackend {
    * M2C-C mock of the bundled 2023 runtime's extended setters: applies the
    * value to the mock state when extended ranges are enabled; otherwise (or
    * with extendedFail) answers with the honest unavailable message.
-   * M4-F/M29: the target device id is optional for compatibility with the
-   * historical one-argument adapter calls; omitted means session id 0.
-   * Target caps/featureset/state remain paired after discrete-first sorting.
+   * M4-F: device-0 scoped by construction - the OldIgcl duck type carries no
+   * deviceId (extended values only exist on the primary device; the
+   * arc-igpu line has no PL/TL controls at all).
    * @param {'powerLimitW'|'tempLimitC'} control
    * @param {number} value
-   * @param {number|undefined|null} deviceId
    * @returns {Promise<{ ok: boolean, errorCode?: string, message?: string, readBackEqual?: boolean }>}
    */
-  async extendedApply(control, value, deviceId = 0) {
-    const entry = this._entry(deviceId);
+  async extendedApply(control, value) {
     // M17d (Run E): the injected waiver-not-set fail reaches the V1 path -
     // the bundled 2023 runtime's write answers the SAME driver-state code
     // (0x44000008) any write answers when the driver lost the waiver, so
@@ -582,7 +527,7 @@ export class MockBackend {
       this._consumeFailOnce(control);
       return { ok: false, errorCode, readBackEqual: false, message: `injected failure (${control})` };
     }
-    if (!entry.extendedCapable || this._extendedFail) {
+    if (!this._extended || this._extendedFail) {
       return { ok: false, errorCode: 'unsupported', readBackEqual: false, message: EXTENDED_UNAVAILABLE_MSG };
     }
     // M4O + M21: clamp against the real bundled 2023 runtime's write range -
@@ -597,15 +542,15 @@ export class MockBackend {
     // 2023 runtime clamps mode-independently (old-igcl.js EXTENDED_PL_RANGE/
     // EXTENDED_TL_RANGE). The mock must mirror the real runtime: a stock
     // session's extendedApply accepts the same values the driver does.
-    const fs = entry.featureset;
+    const fs = this._featureset;
     const extendedMax = control === 'powerLimitW' ? MOCK_V1_PL_MAX_W : fs.extended?.tlMax;
-    const base = entry.caps.ranges[control];
+    const base = this._caps.ranges[control];
     const range = {
       ...base,
       max: typeof extendedMax === 'number' ? extendedMax : base?.max,
     };
     const clamped = clampAndSnap(value, range);
-    entry.state[control] = clamped;
+    this._state[control] = clamped;
     return { ok: true, readBackEqual: true };
   }
 
@@ -625,11 +570,12 @@ export class MockBackend {
 
   /**
    * Swap the mock device line. Re-reads the fresh caps/state/device/health so
-   * the renderer can re-render the WHOLE UI surface from one response.
-   * `activeDeviceKey` identifies the requested physical slot even when
-   * discrete-first sorting assigns that device a different session id.
+   * the renderer can re-render the WHOLE UI surface from one response. The
+   * in-memory waiver acceptance is preserved across swaps (it is app
+   * consent, not a driver-side per-device state); state resets to the new
+   * featureset's defaults (a fresh device).
    * @param {string} id
-   * @returns {Promise<{ featureset: {id: string, name: string, tag: string}, activeDeviceKey: string, devices: object[], caps: object, state: object, health: object }>}
+   * @returns {Promise<{ featureset: {id: string, name: string, tag: string}, devices: object[], caps: object, state: object, health: object }>}
    */
   async setFeatureset(id) {
     const { featureset, warning } = loadFeaturesetOrFallback(id);
@@ -638,15 +584,11 @@ export class MockBackend {
       console.error(`[mock-backend] ${warning}`);
     }
     this._applyFeatureset(featureset);
-    const devices = await this.listDevices();
-    const active = devices.find((device) => device.deviceKey === this._buildDevice(featureset, 0).deviceKey);
-    if (!active) throw new Error('mock-backend: active featureset device disappeared');
     return {
       featureset: { id: featureset.id, name: featureset.name, tag: featureset.tag ?? '' },
-      activeDeviceKey: active.deviceKey,
-      devices,
-      caps: await this.getCapabilities(active.id),
-      state: await this.getCurrentSettings(active.id),
+      devices: await this.listDevices(),
+      caps: await this.getCapabilities(0),
+      state: await this.getCurrentSettings(0),
       // M2D: the featureset's own driver date (null when unverified) - the
       // renderer replaces the boot date so the card never pairs the new
       // driver version with a stale boot date.
@@ -692,9 +634,9 @@ export class MockBackend {
     // renderer's no-device boot path (the same shape a real no-Intel
     // machine produces after the init-failure degrade in main).
     if (this._noIntel) return [];
-    const raw = [{ ...this._device }];
-    for (const e of this._extraDevices.values()) raw.push({ ...e.device });
-    return sortDevicesDiscreteFirst(raw).map((device, id) => ({ ...device, id }));
+    const out = [{ ...this._device }];
+    for (const e of this._extraDevices.values()) out.push({ ...e.device });
+    return out;
   }
 
   /**
@@ -756,15 +698,17 @@ export class MockBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M33: selected persisted OC mode owns the visible capability shape;
-    // the bundled-runtime flag remains separate and reports availability.
-    const advancedShape = this._ocMode === 'advanced';
-    const limits = deviceLimitsOf(identity, { advanced: advancedShape });
+    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the mock mirror selects
+    // the ADVANCED shape when caps.extendedRanges is true and the STOCK
+    // shape otherwise - NOT the same row in both modes (the round-3-N3 rule
+    // FLIPS to "listed-row advanced ceiling = the app-verified KMD
+    // ceiling": A770 375/115, A750 270/115 - probe-verified 2026-08-12).
+    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
-      // (stock 252/90, advanced 315/115); a LISTED card's row is the ACTIVE
+      // (stock 252/90, extended 315/115); a LISTED card's row is the ACTIVE
       // shape (stock or advanced - round-2 S8).
-      const row = limits.listed ? limits : defaultLimitsOf(advancedShape);
+      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;
         const range = caps.ranges[canonical];
@@ -780,20 +724,12 @@ export class MockBackend {
             // The volt maxes are the M15 probe-ceiling PINS (both
             // directions); the store merge below is the only downward force.
             next = { ...next, max: override.max };
-          } else if (advancedShape) {
-            next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };
           }
           if (typeof range.default === 'number' && Number.isFinite(range.default)) {
             next = { ...next, default: Math.min(range.default, next.max) };
           }
-        }
-        // M26: mirror the real backend - a device-limits min is authoritative
-        // for a V-unit row, even when the raw fixture already supplies a
-        // shallower or stale min.
-        if (typeof override.min === 'number' && Number.isFinite(override.min)) {
-          next = { ...next, min: override.min };
         }
         if (typeof override.step === 'number' && Number.isFinite(override.step)) {
           next = { ...next, step: override.step };
@@ -1056,7 +992,7 @@ export class MockBackend {
       // the mock's refusal is the honest direction (the M4O 'never silently
       // reduce a saved profile' intent).
       if (canonicalName === 'powerLimitW' && range && range.units === 'W') {
-        const stockMax = this._entry(deviceId).featureset.ranges.powerLimitW?.max;
+        const stockMax = this._featureset.ranges.powerLimitW?.max;
         if (typeof stockMax === 'number' && Number.isFinite(stockMax) && value > stockMax) {
           result.perControl[canonicalName] = { ok: false, errorCode: 'out-of-range', message: `the V2/DriverStore path refuses above the driver ceiling (${stockMax} W)` };
           result.ok = false;
@@ -1071,8 +1007,8 @@ export class MockBackend {
     };
 
     applyScalar('powerLimit', 'powerLimitW', settings.powerLimitW);
-    applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', settings.gpuFreqOffsetMhz);
     applyScalar('gpuVoltOffset', 'gpuVoltOffsetV', settings.gpuVoltOffsetV);
+    applyScalar('gpuFreqOffset', 'gpuFreqOffsetMhz', settings.gpuFreqOffsetMhz);
     applyScalar('tempLimit', 'tempLimitC', settings.tempLimitC);
     applyScalar('vramFreqOffset', 'vramFreqOffsetGts', settings.vramFreqOffsetGts);
     applyScalar('vramVoltOffset', 'vramVoltOffsetV', settings.vramVoltOffsetV);
@@ -1226,7 +1162,7 @@ export class MockBackend {
   async resetToDefaults(deviceId = 0) {
     const e = this._entry(deviceId);
     if (deviceId === undefined || deviceId === null || deviceId === 0) {
-      this._state = this._buildState(this._primaryFeatureset);
+      this._state = this._buildState(this._featureset);
     } else {
       e.state = this._buildState(e.featureset);
     }
@@ -1343,19 +1279,17 @@ export class MockBackend {
 }
 
 /**
- * M2C-C/M29: optional device ids are forwarded through the same seam. The
- * omitted target remains device 0 for old callers.
+ * M2C-C: the mock bundled-2023-runtime adapter (OldIgcl duck type). Routes
+ * extended-range writes back into the MockBackend's extendedApply so the
+ * mock's read-back reflects them. Tests and --ui-verify use this - the real
+ * OldIgcl never loads in mock mode.
  * @param {MockBackend} backend
  */
 export function createMockOldIgcl(backend) {
   return {
-    isCapable: async (deviceId) => {
-      if (deviceId === undefined || deviceId === null) return backend.extendedCapable;
-      if (typeof backend.getCapabilities === 'function') return (await backend.getCapabilities(deviceId)).extendedRanges === true;
-      return backend._entry(deviceId).extendedCapable;
-    },
-    setPowerLimitW: async (w, deviceId) => backend.extendedApply('powerLimitW', w, deviceId),
-    setTempLimitC: async (c, deviceId) => backend.extendedApply('tempLimitC', c, deviceId),
+    isCapable: async () => backend.extendedCapable,
+    setPowerLimitW: async (w) => backend.extendedApply('powerLimitW', w),
+    setTempLimitC: async (c) => backend.extendedApply('tempLimitC', c),
     close: async () => {},
   };
 }

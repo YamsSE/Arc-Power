@@ -165,24 +165,6 @@ import { randomUUID } from 'node:crypto';
 import { spawn as childProcessSpawn } from 'node:child_process';
 import { sweepStaleWorkerFiles } from '../elevated-apply.js';
 import { SYSMAN_PIPE_NAME, resolveIntentFilePath } from './helper-mode.js';
-const normalizePciId = (value) => {
-  const normalized = typeof value === 'number' && Number.isFinite(value)
-    ? Math.trunc(value).toString(16)
-    : typeof value === 'string' ? value.trim().toLowerCase().replace(/^0x/, '') : '';
-  return /^[0-9a-f]{1,8}$/.test(normalized)
-    ? normalized.slice(-4).padStart(4, '0')
-    : null;
-};
-
-const isAcerSysmanTarget = (physicalTarget, deviceId) => Number.isInteger(deviceId)
-  && deviceId >= 0
-  // The native consumer resolves the first Sysman power domain. The only
-  // safe bridge target is the matching Windows display-card ordinal 0;
-  // nonzero ordinals could otherwise read/write another adapter.
-  && physicalTarget?.displayCardIndex === 0
-  && normalizePciId(physicalTarget?.pciVendorId) === '8086'
-  && normalizePciId(physicalTarget?.pciDeviceId) === '56a0';
-
 
 // The per-request answer window: the helper's zesInit + the read/write
 // round trip take ~1-6 s live (round-1 N3); 30 s covers the slowest legit
@@ -961,17 +943,6 @@ export function createSysmanHelperProxy({
       }
       return null;
     },
-    async readLimitsForTarget(physicalTarget, deviceId = 0) {
-      if (!isAcerSysmanTarget(physicalTarget, deviceId) || !(await readyGate())) return null;
-      const { out } = await enqueue({ op: 'read-target', payload: { physicalTarget, deviceId } });
-      if (out?.ok === true
-        && typeof out.sustainedW === 'number'
-        && typeof out.burstW === 'number'
-        && typeof out.peakW === 'number') {
-        return { sustainedW: out.sustainedW, burstW: out.burstW, peakW: out.peakW };
-      }
-      return null;
-    },
     /**
      * Write the sustained + burst pair through the detached helper. The
      * helper's errorCode/message ride VERBATIM (round-1 N2 - no remap, or
@@ -999,98 +970,6 @@ export function createSysmanHelperProxy({
         return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
       }
       const { out, reason } = await enqueue({ op: 'set', payload: { sustainedW, burstW } });
-      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
-      const result = { ok: out.ok === true };
-      if (out.errorCode !== undefined) result.errorCode = out.errorCode;
-      if (out.message !== undefined) result.message = out.message;
-      return result;
-    },
-    async setLimitsForTarget(physicalTarget, { sustainedW, burstW }, deviceId = 0) {
-      if (!isAcerSysmanTarget(physicalTarget, deviceId)) {
-        return { ok: false, errorCode: 'target-mismatch', message: 'Sysman power domain is not proven to be the selected Intel Arc A770' };
-      }
-      if (!(await readyGate())) {
-        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
-      }
-      const { out, reason } = await enqueue({
-        op: 'set-target',
-        payload: { physicalTarget, sustainedW, burstW, deviceId },
-      });
-      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
-      const result = { ok: out.ok === true };
-      if (out.errorCode !== undefined) result.errorCode = out.errorCode;
-      if (out.message !== undefined) result.message = out.message;
-      return result;
-    },
-
-    // M26: voltage offset methods. Reuse readiness/FIFO/timeout/degrade
-    // semantics without auto-upgrade PL intent for voltage.
-
-    /**
-     * Read the current GPU voltage offset with an explicit capability/error
-     * status. Unsupported hardware is distinct from a failed read so callers
-     * can fail closed only when a supported control becomes unreadable.
-     */
-    async readVoltageOffsetResult(deviceId = 0) {
-      if (!(await readyGate())) {
-        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
-      }
-      const { out, reason } = await enqueue({ op: 'read-voltage', payload: { deviceId } });
-      if (out?.ok === true && Number.isFinite(out.targetV) && Number.isFinite(out.offsetV)) {
-        return {
-          ok: true,
-          targetV: out.targetV,
-          offsetV: out.offsetV,
-          needsClear: out.needsClear === true,
-        };
-      }
-      return {
-        ok: false,
-        errorCode: out?.errorCode ?? 'helper-failed',
-        message: out?.message ?? reason ?? 'the sysman voltage offset read failed',
-      };
-    },
-
-    /**
-     * Read the current GPU voltage offset. Unsupported or failed reads retain
-     * the historical null result for existing telemetry callers.
-     */
-    async readVoltageOffset(deviceId = 0) {
-      const result = await this.readVoltageOffsetResult(deviceId);
-      return result.ok === true ? { targetV: result.targetV, offsetV: result.offsetV } : null;
-    },
-
-    /**
-     * M26: set the GPU voltage offset via the Sysman frequency OC setter.
-     * Not-ready or not-connected returns the not-ready verdict immediately.
-     * Finite guards run before the call; the result rides VERBATIM.
-     * Voltage not-ready must NOT write arcpower-sysman-intent.json.
-     * @param {{ offsetV: number }} params
-     * @param {number} [_deviceId] accepted for device-scoped consumer parity;
-     *   the one elevated helper is intentionally device-agnostic.
-     * @returns {Promise<{ ok: boolean, offsetV?: number, errorCode?: string, message?: string }>}
-     */
-    async setVoltageOffset({ offsetV }, deviceId = 0) {
-      if (!Number.isFinite(offsetV)) {
-        return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
-      }
-      if (!(await readyGate())) {
-        debugLog({ ts: Date.now(), event: 'resp', op: 'set-voltage', spawnError: NOT_READY_MESSAGE, out: null });
-        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
-      }
-      const { out, reason } = await enqueue({ op: 'set-voltage', payload: { offsetV, deviceId } });
-      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
-      const result = { ok: out.ok === true };
-      if (out.offsetV !== undefined) result.offsetV = out.offsetV;
-      if (out.errorCode !== undefined) result.errorCode = out.errorCode;
-      if (out.message !== undefined) result.message = out.message;
-      return result;
-    },
-    async setOverclockWaiver(deviceId = 0) {
-      if (!(await readyGate())) {
-        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
-      }
-      const { out, reason } = await enqueue({ op: 'set-waiver', payload: { deviceId } });
       if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
       const result = { ok: out.ok === true };
       if (out.errorCode !== undefined) result.errorCode = out.errorCode;
