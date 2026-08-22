@@ -1597,8 +1597,19 @@ export function createIpcHandlers({
         // (oldIgcl.isCapable) instead of the mode-gated caps flag - the
         // ipc-core ctx has oldIgcl; a genuinely not-capable driver (the
         // default createNullOldIgcl) still refuses honestly.
+        // M46/F1: when the product is unelevated, the elevated worker owns
+        // the bundled 2023-runtime capability decision. The parent can
+        // legitimately report Advanced W/C ranges from its installed/runtime
+        // surface while its own ctlInit probe fails with ERROR_KMD_CALL; do
+        // not reject or clamp the request before it reaches that worker.
+        // An in-process path still keys the refusal on its actual OldIgcl
+        // capability, preserving the honest no-runtime failure.
+        const delegatedAdvancedRuntime = gateMode === OC_MODE_ADVANCED
+          && applyRunner?.needsWorker?.() === true;
         let unavailableCaps = caps;
-        if (opts?.profileApply === true && oldIgcl?.isCapable) {
+        if (delegatedAdvancedRuntime) {
+          unavailableCaps = { ...caps, extendedRanges: true };
+        } else if (oldIgcl?.isCapable) {
           unavailableCaps = { ...caps, extendedRanges: await oldIgcl.isCapable() };
         }
         let unavailable = extendedUnavailableRefusal(settings, unavailableCaps);
@@ -1622,9 +1633,10 @@ export function createIpcHandlers({
         // - a profile applies against the driver's TRUE limits
         // (extendedRangesFor), never the mode-gated caps.ranges (stock max
         // 252 would silently reduce a saved 300 W profile).
-        const clamped = opts?.profileApply === true
-          ? clampSettings(settings, extendedRangesFor(caps))
-          : clampSettings(settings, caps.ranges);
+        const clampRanges = opts?.profileApply === true || delegatedAdvancedRuntime
+          ? extendedRangesFor(caps)
+          : caps.ranges;
+        const clamped = clampSettings(settings, clampRanges);
         // M2C-C elevation gate: a non-elevated app delegates the apply to
         // the elevated self-worker (one UAC prompt); the elevated app (and
         // mock mode, where applyRunner is null) applies in-process through
