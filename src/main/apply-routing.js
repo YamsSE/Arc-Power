@@ -199,6 +199,23 @@ export const EXTENDED_UNAVAILABLE_MSG =
   'extended power/temp limit requires the bundled 2023 IGCL runtime - it failed to load on this driver';
 
 /**
+ * Return whether a settings payload contains the one capability-degraded
+ * request that Sysman can own: a W-unit powerLimitW above the bundled V1
+ * runtime's ceiling. Unknown units are deliberately not eligible for this
+ * bypass.
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, { units?: string }> | null | undefined} ranges
+ * @param {object | null | undefined} sysmanPowerLimits
+ * @returns {boolean}
+ */
+export function isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits) {
+  return Boolean(sysmanPowerLimits)
+    && typeof settings?.powerLimitW === 'number'
+    && settings.powerLimitW > EXTENDED_PL_MAX_W
+    && ranges?.powerLimitW?.units === 'W';
+}
+
+/**
  * M3-C step-5 F1: advanced-mode CAPABILITY refusal - PL > 252 / TL > 90
  * requested while the bundled 2023 runtime is NOT capable on this driver
  * (caps.extendedRanges false). The OC-mode gate allows those values in
@@ -206,15 +223,18 @@ export const EXTENDED_UNAVAILABLE_MSG =
  * them to 252 W / 90 C and report ok:true - a false success claim (and
  * splitByRuntime never sees the value, so EXTENDED_UNAVAILABLE_MSG is
  * unreachable). The check is unit-aware (M2D): percent-unit ranges
- * (Battlemage mock) are never extended values. Keyed on the CAPABILITY,
- * never the mode - the capability probe is identical on both sides of the
- * worker boundary, so this is a capability refusal, not the caps-keyed
- * mode gate the plan forbids.
+ * (Battlemage mock) are never extended values. A W-unit powerLimitW above
+ * EXTENDED_PL_MAX_W may bypass this refusal only when the Sysman primary
+ * seam is present; all other W/C values retain the honest refusal.
+ * Keyed on the CAPABILITY, never the mode - the capability probe is
+ * identical on both sides of the worker boundary, so this is a capability
+ * refusal, not the caps-keyed mode gate the plan forbids.
  * @param {Record<string, unknown>} settings
  * @param {{ extendedRanges?: boolean, ranges?: Record<string, { units?: string }> } | null | undefined} caps
+ * @param {object | null | undefined} [sysmanPowerLimits]
  * @returns {{ controls: string[], message: string } | null}
  */
-export function extendedUnavailableRefusal(settings, caps) {
+export function extendedUnavailableRefusal(settings, caps, sysmanPowerLimits = null) {
   if (!settings || typeof settings !== 'object') return null;
   if (caps?.extendedRanges === true) return null;
   const ranges = caps?.ranges ?? null;
@@ -224,7 +244,9 @@ export function extendedUnavailableRefusal(settings, caps) {
     return key === 'powerLimitW' ? units === 'W' : units === 'C';
   };
   const over = [];
-  if (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W && isWcUnits('powerLimitW')) over.push('powerLimitW');
+  const sysmanPrimary = isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits);
+  if (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W
+    && isWcUnits('powerLimitW') && !sysmanPrimary) over.push('powerLimitW');
   if (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C && isWcUnits('tempLimitC')) over.push('tempLimitC');
   if (over.length === 0) return null;
   return { controls: over, message: EXTENDED_UNAVAILABLE_MSG };
@@ -1082,7 +1104,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   }
   const caps = await backend.getCapabilities(deviceId);
   // M30: an OS-only inventory entry is a valid read/telemetry target but is
-  // never a write target.  This guard sits before Sysman/IGCL routing so a
+  // never a write target. This guard sits before Sysman/IGCL routing so a
   // profile, tray apply, boot apply, or elevated worker cannot touch a
   // different adapter as a fallback.
   if (caps?.overclockingSupported === false) {
@@ -1103,23 +1125,25 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     : null;
   // M3-C/M46: the runtime-write capability is independent from the
   // mode-selected display ranges. An installed DLL can still fail ctlInit
-  // with ERROR_KMD_CALL on this driver; values above the DriverStore ceiling
-  // refuse before any clamp, while in-range values remain writable through
-  // the normal DriverStore path.
+  // with ERROR_KMD_CALL; values above the DriverStore ceiling refuse before
+  // any clamp, while in-range values remain writable through the normal
+  // DriverStore path. M47 exempts only a W-unit Sysman-primary >315 W value.
   const runtimeCapable = oldIgcl
     ? await oldIgcl.isCapable()
     : caps.extendedRanges === true;
-  const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: runtimeCapable });
+  const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: runtimeCapable }, sysmanPowerLimits);
   if (unavailable) {
     log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
     let state = null;
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
     return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state };
   }
-  // M4O: the profileApply clamp uses the driver's TRUE limits
-  // (extendedRangesFor) - the mode-gated caps.ranges would silently reduce
-  // a saved 300 W profile to 252 W in a stock session.
-  const clampRanges = opts.profileApply === true ? extendedRangesFor(caps) : caps.ranges;
+  const sysmanPrimaryRequest = isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits);
+  // M4O: profileApply and the M47 Sysman-primary request clamp against the
+  // driver's true advanced limits, never the mode-gated stock ranges.
+  const clampRanges = opts.profileApply === true || sysmanPrimaryRequest
+    ? extendedRangesFor(caps)
+    : caps.ranges;
   const clamped = {};
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
@@ -1130,11 +1154,14 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   }
   // If the real bundled runtime is installed but cannot initialize, keep
   // Advanced active for the UI while routing <=252 W / <=90 C through
-  // DriverStore. Test/null adapters without an installation seam retain the
-  // explicit unsupported V1 result rather than silently changing semantics.
+  // DriverStore. A Sysman-primary >315 W request stays Advanced so the
+  // existing primary split can reach Sysman instead of being forced Stock.
+  // Test/null adapters without an installation seam retain the explicit
+  // unsupported V1 result rather than silently changing semantics.
   const routeMode = ocMode === OC_MODE_ADVANCED
     && oldIgcl
     && runtimeCapable === false
+    && !sysmanPrimaryRequest
     && typeof oldIgcl.isAvailable === 'function'
     && oldIgcl.isAvailable() === true
     ? OC_MODE_STOCK

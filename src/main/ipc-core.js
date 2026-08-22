@@ -34,7 +34,7 @@ import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
-import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
@@ -1612,16 +1612,16 @@ export function createIpcHandlers({
         } else if (oldIgcl?.isCapable) {
           unavailableCaps = { ...caps, extendedRanges: await oldIgcl.isCapable() };
         }
-        let unavailable = extendedUnavailableRefusal(settings, unavailableCaps);
+        let unavailable = extendedUnavailableRefusal(settings, unavailableCaps, sysmanPowerLimits);
         if (!unavailable && opts?.profileApply === true && unavailableCaps.extendedRanges !== true) {
           // M17d (Run D - the V1-call pin): a profile apply is advanced-
           // gated, so its W/C values route through the bundled 2023 runtime
-          // (V1) REGARDLESS of value (the mode-based split). On a driver
-          // where that runtime cannot load, an IN-RANGE profile W/C value
-          // must refuse with the same capability refusal (the same class as
-          // apply-on-boot - never the per-control-failure defaults restore,
-          // never a fall-through to the V2 setter the pin forbids).
-          const wc = wcUnitControls(settings, caps.ranges);
+          // (V1) REGARDLESS of value. The sole M47 exception is a W-unit
+          // powerLimitW above EXTENDED_PL_MAX_W with an available Sysman
+          // primary seam; in-range W/C values retain the refusal.
+          const wc = wcUnitControls(settings, caps.ranges)
+            .filter((key) => key !== 'powerLimitW'
+              || !isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits));
           if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
         }
         if (unavailable) {
@@ -1632,8 +1632,11 @@ export function createIpcHandlers({
         // M4O (NEW-1): the pre-clamp must NOT silently clamp a profileApply
         // - a profile applies against the driver's TRUE limits
         // (extendedRangesFor), never the mode-gated caps.ranges (stock max
-        // 252 would silently reduce a saved 300 W profile).
+        // 252 would silently reduce a saved 300 W profile). M47 applies the
+        // same true-range clamp to a Sysman-primary >315 W request, whose
+        // seam owns the value when OldIgcl is unavailable.
         const clampRanges = opts?.profileApply === true || delegatedAdvancedRuntime
+          || isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits)
           ? extendedRangesFor(caps)
           : caps.ranges;
         const clamped = clampSettings(settings, clampRanges);

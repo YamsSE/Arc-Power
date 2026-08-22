@@ -32,7 +32,7 @@
 // non-elevated instance fails honestly per control.
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
 import { physicalTargetOf, pnpParts } from './gpu-inventory.js';
 // M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
 // in-process executeApply clamps profile.settings against
@@ -244,18 +244,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // - the RAW featureset flag, mode-independent). A genuinely not-capable
   // driver still refuses honestly with EXTENDED_UNAVAILABLE_MSG.
   const extendedCapable = oldIgcl ? await oldIgcl.isCapable() : caps.extendedRanges === true;
-  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable });
+  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable }, sysmanPowerLimits);
   if (!unavailable && !extendedCapable) {
-    // M17d (Run D - the V1-call pin): a profile apply is advanced-gated, so
-    // its W/C values route through the bundled 2023 runtime (V1) REGARDLESS
-    // of value (the mode-based split). On a driver where that runtime cannot
-    // load, an IN-RANGE profile W/C value (e.g. 240 W - below the old 252
-    // threshold) must refuse with the same capability refusal here - without
-    // it the apply would fail per-control and run the defaults-restore
-    // fallback over a capability degradation (the "silent wipe over a
-    // degradation" class; the pre-pin behavior applied in-range values via
-    // the V2 setter, which is exactly the fall-through the pin forbids).
-    const wc = wcUnitControls(profile.settings, caps.ranges);
+    // M17d (Run D): profile W/C values normally require the bundled V1
+    // runtime even when in range. M47 exempts only a W-unit powerLimitW
+    // above EXTENDED_PL_MAX_W when the Sysman primary seam is available.
+    const wc = wcUnitControls(profile.settings, caps.ranges)
+      .filter((key) => key !== 'powerLimitW'
+        || !isSysmanPrimaryPowerRequest(profile.settings, caps.ranges, sysmanPowerLimits));
     if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
   }
   if (unavailable) {

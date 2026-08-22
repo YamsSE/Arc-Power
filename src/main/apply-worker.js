@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
-import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -280,9 +280,14 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // ipc-core.js - never the per-control 'unsupported' the V1 setter
     // answers, which the parent classifies as a failed apply, not the
     // refusal class).
-    let unavailable = extendedUnavailableRefusal(settings, caps);
+    let unavailable = extendedUnavailableRefusal(settings, caps, sysmanPowerLimits);
     if (!unavailable && req.profileApply === true && caps.extendedRanges !== true) {
-      const wc = wcUnitControls(settings, caps.ranges);
+      // M17d (Run D): profile W/C values normally require the bundled V1
+      // runtime even when in range. M47 exempts only a W-unit powerLimitW
+      // above EXTENDED_PL_MAX_W when the Sysman primary seam is available.
+      const wc = wcUnitControls(settings, caps.ranges)
+        .filter((key) => key !== 'powerLimitW'
+          || !isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits));
       if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
     }
     if (unavailable) {
@@ -292,8 +297,10 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       await finish({ ok: false, perControl: extendedUnavailablePerControl(unavailable.controls), state, extendedUnavailable: true });
       return 0;
     }
-    const clamped = clampSettings(settings, caps.ranges);
-    const out = await executeApply({ backend, oldIgcl, deviceId, deviceKey: req.deviceKey ?? target?.deviceKey, physicalTarget: req.physicalTarget ?? null, settings: clamped, log, ocMode: applyMode, opts: { profileApply: req.profileApply === true }, sysmanPowerLimits });
+    const clampRanges = isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits)
+      ? extendedRangesFor(caps)
+      : caps.ranges;
+    const clamped = clampSettings(settings, clampRanges);
     // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
     // round-3 N1): the attempted values of the 'out-of-range' per-control
     // results - the parent's session refused-ceiling store records from
