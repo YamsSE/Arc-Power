@@ -1093,6 +1093,7 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
   let routeRecoveryPrepared = false;
   let routeRecoveryPending = false;
   let bridgeReservation = null;
+  let bridgeReservationReleased = false;
   let routeReservation = null;
   let bridgePreflightProfileCoreVoltage = null;
   const ambiguousAcerRequest = bridgeInteractive
@@ -1247,6 +1248,7 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
   }
   let bridgeApplyStarted = false;
   let bridgeCommitted = false;
+  let bridgePairApplied = false;
   try {
   const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode);
   // An interactive Acer power request has no safe fallback. Refuse before
@@ -1353,6 +1355,7 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
 
   let priorSysmanVoltageOffsetV = null;
   let sysmanVoltageOffsetCaptured = false;
+  let sysmanVoltageExpectedV = null;
   const readSysmanVoltageOffset = async () => {
     try {
       if (typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function') {
@@ -1425,14 +1428,76 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
       return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
   };
-  const releaseBridgeReservation = async () => {
+  const assertAcerQuiescent = async (phase) => {
+    if (typeof acerPackagedBridge?.assertQuiescent !== 'function') return { ok: true };
+    try {
+      const result = await acerPackagedBridge.assertQuiescent();
+      return result?.ok === false
+        ? { ok: false, message: result.message ?? `Acer process appeared during ${phase}` }
+        : { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const verifyAcerRollbackState = async (recoveryState = bridgeRecoveryBaseline ?? baseline) => {
+    const quietBefore = await assertAcerQuiescent('rollback verification');
+    if (!quietBefore?.ok) return { ok: false, message: quietBefore.message ?? 'Acer process appeared during rollback verification' };
+    let state;
+    try {
+      state = await backend.getCurrentSettings(deviceId);
+    } catch {
+      return { ok: false, message: 'rollback final state read-back unavailable' };
+    }
+    const expected = {
+      ...(recoveryState?.coreVoltage && typeof recoveryState.coreVoltage === 'object' ? recoveryState.coreVoltage : {}),
+      ...(recoveryState?.fan && typeof recoveryState.fan === 'object' ? recoveryState.fan : (recoveryState?.fanState ?? {})),
+      ...(Number.isFinite(recoveryState?.tempLimitC) ? { tempLimitC: recoveryState.tempLimitC } : {}),
+    };
+    for (const key of new Set([...Object.keys(driverstore), ...Object.keys(postFanDriverstore)])) {
+      if (key !== 'powerLimitW' && recoveryState?.[key] !== undefined) expected[key] = recoveryState[key];
+    }
+    if (!Object.entries(expected).every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value))) {
+      return { ok: false, message: 'rollback final state read-back mismatch' };
+    }
+    if (sysmanVoltageOffsetCaptured) {
+      const observedVoltage = await readSysmanVoltageOffset();
+      if (!Number.isFinite(observedVoltage) || !nearlyEqual(observedVoltage, priorSysmanVoltageOffsetV)) {
+        return { ok: false, message: 'rollback final Sysman voltage offset read-back mismatched' };
+      }
+    }
+    if (sysmanPowerLimits) {
+      const reader = sysmanPowerLimits.readLimitsForTarget;
+      const assertTarget = backend?.assertDeviceTarget;
+      if (!bridgePreflightPair || typeof reader !== 'function' || typeof assertTarget !== 'function') {
+        return { ok: false, message: 'rollback final Sysman power-pair verification is unavailable' };
+      }
+      try {
+        await assertTarget.call(backend, deviceId, deviceKey, physicalTarget);
+        const observedPair = await reader.call(sysmanPowerLimits, physicalTarget, deviceId);
+        if (observedPair?.sustainedW !== bridgePreflightPair.sustainedW
+          || observedPair?.burstW !== bridgePreflightPair.burstW) {
+          return { ok: false, message: 'rollback final Sysman power-pair read-back mismatched' };
+        }
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    const quietAfter = await assertAcerQuiescent('rollback verification');
+    return quietAfter?.ok
+      ? { ok: true }
+      : { ok: false, message: quietAfter.message ?? 'Acer process appeared after rollback verification' };
+  };
+  const releaseBridgeReservation = async ({ clearRecovery = false } = {}) => {
     if (!bridgeReservation) return { ok: true };
     if (typeof acerPackagedBridge?.releaseReservation !== 'function') {
       acerPackagedBridge?.markRecoveryRequired?.();
       return { ok: false, message: 'Acer packaged bridge reservation release is unavailable' };
     }
     try {
-      const released = await acerPackagedBridge.releaseReservation(bridgeReservation);
+      const released = await acerPackagedBridge.releaseReservation({
+        ...bridgeReservation,
+        retainRecoveryOnFailure: clearRecovery && routeRecoveryPrepared,
+      });
       if (released?.ok !== true) {
         acerPackagedBridge?.markRecoveryRequired?.();
         return released ?? { ok: false, message: 'Acer packaged bridge reservation release failed' };
@@ -1518,33 +1583,133 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
       return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
   };
-  const clearRouteRecovery = async () => {
+  const clearRouteRecovery = async (reservation = bridgeReservation) => {
     const clear = acerPackagedBridge?.clearRouteRecovery;
     if (typeof clear !== 'function') return { ok: false, message: 'durable Acer route recovery cleanup is unavailable' };
     try {
       return await clear.call(acerPackagedBridge, {
-        ownerNonce: bridgeReservation?.ownerNonce ?? null,
+        ownerNonce: reservation?.ownerNonce ?? null,
         requestId: interactiveContext?.requestId ?? null,
       });
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
   };
+  const releaseBridgeReservationAndClearRecovery = async () => {
+    if (routeRecoveryPrepared) {
+      const cleared = await clearPreparedRouteRecovery();
+      if (cleared?.ok !== true) return cleared ?? { ok: false, message: 'durable route recovery cleanup failed' };
+    }
+    const released = await releaseBridgeReservation({ clearRecovery: true });
+    if (released?.ok === true && routeRecoveryPrepared) routeRecoveryPrepared = false;
+    return released;
+  };
 
 
   const perControl = {};
+  const markBridgeWriteFailure = (phase, keys = [], detail = null) => {
+    routeRecoveryPending = true;
+    acerPackagedBridge?.markRecoveryRequired?.();
+    const failure = {
+      ok: false,
+      readBackEqual: false,
+      errorCode: 'recovery-required',
+      message: `${detail ?? `Acer process state could not be proven quiet before ${phase}`}; recovery is required`,
+    };
+    for (const key of keys) perControl[key] = failure;
+    if (!perControl.powerLimitW) perControl.powerLimitW = failure;
+    return failure;
+  };
+  const checkBridgeWriteBoundary = async (phase, keys = []) => {
+    if (!bridgeRouted) return { ok: true };
+    const quiet = await assertAcerQuiescent(phase);
+    if (!quiet.ok) {
+      markBridgeWriteFailure(phase, keys, quiet.message);
+      return quiet;
+    }
+    return { ok: true };
+  };
+  const verifyAcerPostApplyState = async () => {
+    if (!bridgeRouted) return { ok: true };
+    let quiet;
+    try {
+      quiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
+        ? await acerPackagedBridge.assertQuiescent()
+        : { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+    if (!quiet?.ok) return { ok: false, message: quiet?.message ?? 'Acer process appeared before final verification' };
+    if (typeof backend?.assertDeviceTarget === 'function') {
+      try {
+        await backend.assertDeviceTarget(deviceId, deviceKey, physicalTarget);
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    let state;
+    try {
+      state = await backend.getCurrentSettings(deviceId);
+      if (!state || typeof state !== 'object') return { ok: false, message: 'final Acer state read-back was unavailable' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+    const expectedState = {
+      ...Object.fromEntries(Object.entries(driverstore).filter(([key]) => key !== 'powerLimitW' && key !== 'gpuLock')),
+      ...Object.fromEntries(Object.entries(postFanDriverstore).filter(([key]) => key !== 'powerLimitW' && key !== 'gpuLock')),
+      ...(Object.prototype.hasOwnProperty.call(extended, 'tempLimitC') ? { tempLimitC: extended.tempLimitC } : {}),
+    };
+    for (const [key, value] of Object.entries(expectedState)) {
+      if (perControl[key]?.ok !== true) continue;
+      if (JSON.stringify(state[key]) !== JSON.stringify(value)) {
+        return { ok: false, message: `final Acer ${key} read-back mismatched the requested value` };
+      }
+    }
+    if (sysmanVoltageOffsetCaptured && Number.isFinite(sysmanVoltageExpectedV)) {
+      const observedVoltage = await readSysmanVoltageOffset();
+      if (!Number.isFinite(observedVoltage) || !nearlyEqual(observedVoltage, sysmanVoltageExpectedV)) {
+        return { ok: false, message: `final Acer Sysman voltage offset read-back mismatched (${observedVoltage ?? '?'} V; expected ${sysmanVoltageExpectedV} V)` };
+      }
+    }
+    const reader = typeof sysmanPowerLimits?.readLimitsForTarget === 'function'
+      ? sysmanPowerLimits.readLimitsForTarget.bind(sysmanPowerLimits)
+      : typeof acerPackagedBridge?.readLimitsForTarget === 'function'
+        ? acerPackagedBridge.readLimitsForTarget.bind(acerPackagedBridge)
+        : null;
+    if (!reader) return { ok: false, message: 'final Acer power-pair read-back is unavailable' };
+    let observed;
+    try {
+      observed = await reader(physicalTarget, deviceId);
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+    if (!Number.isFinite(observed?.sustainedW) || !Number.isFinite(observed?.burstW)
+      || observed.sustainedW !== settings.powerLimitW
+      || observed.burstW !== settings.powerLimitW) {
+      return {
+        ok: false,
+        message: `final Acer power-pair read-back mismatched (${observed?.sustainedW ?? '?'} / ${observed?.burstW ?? '?'} W; requested ${settings.powerLimitW} W)`,
+      };
+    }
+    try {
+      const finalQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
+        ? await acerPackagedBridge.assertQuiescent()
+        : { ok: true };
+      return finalQuiet?.ok
+        ? { ok: true }
+        : { ok: false, message: finalQuiet?.message ?? 'Acer process appeared during final verification' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
   const failAcerVoltagePrecondition = async (failure) => {
     if (!bridgeRouted) return null;
     let cleanupIssue = null;
     const restored = await restoreSysmanVoltageOffset();
     if (!restored.ok) cleanupIssue = restored.message ?? 'the prior Sysman voltage offset could not be restored';
-    if (!cleanupIssue && routeRecoveryPrepared) {
-      const cleared = await clearPreparedRouteRecovery();
-      if (cleared?.ok !== true) cleanupIssue = cleared?.message ?? 'durable Acer route recovery cleanup failed';
-    }
     if (!cleanupIssue) {
-      const released = await releaseBridgeReservation();
-      if (released?.ok !== true) cleanupIssue = released?.message ?? 'Acer bridge reservation release failed';
+      const cleaned = await releaseBridgeReservationAndClearRecovery();
+      if (cleaned?.ok !== true) cleanupIssue = cleaned?.message ?? 'Acer bridge cleanup failed';
     }
     if (cleanupIssue) acerPackagedBridge?.markRecoveryRequired?.();
     const resultFailure = {
@@ -1603,7 +1768,12 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
           });
         } catch (err) {
           bridgeApplyStarted = false;
-          await releaseBridgeReservation();
+          if (acerPackagedBridge?.isRecoveryRequired?.() === true) {
+            routeRecoveryPending = true;
+          } else {
+            const released = await releaseBridgeReservation();
+            if (released?.ok !== true) routeRecoveryPending = true;
+          }
           bridgeResult = {
             ok: false,
             requestedW: settings.powerLimitW,
@@ -1614,6 +1784,9 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
         }
       }
       const finalPairResult = bridgeResult;
+      const bridgeRollbackReleased = finalPairResult?.rollback?.ok === true
+        && finalPairResult?.rollback?.untouched !== true;
+      if (bridgeRollbackReleased) bridgeReservationReleased = true;
       const observed = finalPairResult?.observed;
       const observedEqual = Number.isFinite(observed?.sustainedW)
         && Number.isFinite(observed?.burstW)
@@ -1630,6 +1803,7 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
           : {}),
       };
       bridgeCommitted = bridgePairOk;
+      bridgePairApplied = bridgePairOk;
       const bridgeUntouched = finalPairResult?.rollback?.untouched === true;
       const bridgeCleanupVerified = finalPairResult?.rollback?.ok === true;
       if (perControl.powerLimitW.ok !== true && (bridgeCleanupVerified || bridgeUntouched)) {
@@ -1642,30 +1816,33 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
           perControl.powerLimitW.errorCode = 'recovery-required';
           perControl.powerLimitW.message = `${perControl.powerLimitW.message ?? 'Acer packaged bridge failed'}; durable route recovery is pending`;
         } else {
-          const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
-            ? await acerPackagedBridge.assertQuiescent()
-            : { ok: true };
+          const bridgeQuiet = await assertAcerQuiescent('baseline rollback');
           if (!bridgeQuiet.ok) {
             routeRecoveryPending = true;
             perControl.powerLimitW.errorCode = 'recovery-required';
             perControl.powerLimitW.message = `${perControl.powerLimitW.message ?? 'Acer packaged bridge failed'}; ${bridgeQuiet.message ?? 'Acer process appeared before baseline rollback'}`;
             acerPackagedBridge?.markRecoveryRequired?.();
           } else {
-            let restored = await restorePreBridgeBaseline();
-            if (restored.ok && routeRecoveryPrepared) {
-              const cleared = bridgeReservation
-                ? await clearPreparedRouteRecovery()
-                : await clearRouteRecovery();
+            let restored = await restorePreBridgeBaseline(bridgeRecoveryBaseline ?? baseline);
+            if (restored.ok) {
+              const verified = await verifyAcerRollbackState(bridgeRecoveryBaseline ?? baseline);
+              if (!verified.ok) restored = { ok: false, message: verified.message ?? 'final Acer rollback verification failed' };
+            }
+            if (restored.ok && routeRecoveryPrepared && bridgeReservationReleased) {
+              const cleared = await clearRouteRecovery(bridgeReservation);
               if (!cleared.ok) restored = { ok: false, message: cleared.message ?? 'durable Acer route recovery cleanup failed' };
             }
             if (!restored.ok) {
               routeRecoveryPending = true;
-              const durable = await persistRouteRecovery(baseline);
-              if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
+              let durable = null;
+              if (!routeRecoveryPrepared) {
+                durable = await persistRouteRecovery(bridgeRecoveryBaseline ?? baseline);
+                if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
+              }
               perControl.powerLimitW.message = `${perControl.powerLimitW.message ?? 'Acer packaged bridge failed'}; ${restored.message}${durable?.message ? `; ${durable.message}` : ''}`;
               perControl.powerLimitW.errorCode = 'recovery-required';
-            }
           }
+        }
         }
       } else if (perControl.powerLimitW.ok !== true && !bridgeCleanupVerified) {
         routeRecoveryPending = true;
@@ -1704,6 +1881,67 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
       }
     }
   };
+  const abortAcerBeforeBridge = async () => {
+    if (!bridgeRouted) return null;
+    const failedControls = [
+      ...Object.keys(driverstore),
+      ...Object.keys(extended).filter((key) => key !== 'powerLimitW'),
+    ].filter((key) => key !== 'powerLimitW' && perControl[key]?.ok !== true);
+    if (failedControls.length === 0) return null;
+    const failedNames = failedControls.join(', ');
+    let cleanupIssue = null;
+    let bridgeQuiet = { ok: true };
+    try {
+      if (typeof acerPackagedBridge?.assertQuiescent === 'function') {
+        bridgeQuiet = await acerPackagedBridge.assertQuiescent();
+      }
+    } catch (error) {
+      cleanupIssue = error instanceof Error ? error.message : String(error);
+    }
+    if (!cleanupIssue && !bridgeQuiet.ok) {
+      cleanupIssue = bridgeQuiet.message ?? 'Acer process appeared before direct rollback';
+    }
+    if (!cleanupIssue) {
+      try {
+        const restored = await restorePreBridgeBaseline(bridgeRecoveryBaseline ?? baseline);
+        if (!restored.ok) cleanupIssue = restored.message ?? 'pre-bridge rollback failed';
+      } catch (error) {
+        cleanupIssue = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (!cleanupIssue && typeof acerPackagedBridge?.assertQuiescent === 'function') {
+      try {
+        const finalQuiet = await acerPackagedBridge.assertQuiescent();
+        if (!finalQuiet?.ok) cleanupIssue = finalQuiet?.message ?? 'Acer process appeared before direct cleanup commit';
+      } catch (error) {
+        cleanupIssue = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (!cleanupIssue) {
+      const verified = await verifyAcerRollbackState(bridgeRecoveryBaseline ?? baseline);
+      if (!verified.ok) cleanupIssue = verified.message ?? 'final Acer rollback verification failed';
+    }
+    if (!cleanupIssue) {
+      const cleaned = await releaseBridgeReservationAndClearRecovery();
+      if (cleaned?.ok !== true) {
+        cleanupIssue = cleaned?.message ?? 'Acer bridge cleanup failed';
+      }
+    }
+    const cleanupOk = !cleanupIssue;
+    let durable = null;
+    if (!cleanupOk && !routeRecoveryPrepared) {
+      durable = await persistRouteRecovery(bridgeRecoveryBaseline ?? baseline);
+      if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
+    }
+    perControl.powerLimitW = {
+      ok: false,
+      readBackEqual: false,
+      errorCode: cleanupOk ? 'pre-bridge-failed' : 'recovery-required',
+      message: `Acer power was not started because direct control(s) failed: ${failedNames}${cleanupOk ? '' : `; ${cleanupIssue}; recovery is required${durable?.message ? `; ${durable.message}` : ''}`}`,
+    };
+    return { result: { ok: false, perControl }, attempts: 1 };
+  };
+
 
   let acerPowerFailed = false;
   let acerPowerRouted = false;
@@ -1718,6 +1956,7 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
     && (negativeVoltOffsetV !== undefined || nonNegativeVoltOffsetV !== undefined || lockRequestsOffsetZero);
   if (sysmanVoltageMayChange) {
     priorSysmanVoltageOffsetV = await readSysmanVoltageOffset();
+    sysmanVoltageExpectedV = priorSysmanVoltageOffsetV;
     if (!Number.isFinite(priorSysmanVoltageOffsetV)) {
       await releaseBridgeReservation();
       return {
@@ -1739,8 +1978,12 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
   }
   if (bridgeRouted && !routeRecoveryPrepared) {
     const armed = await prepareRouteRecovery();
-    if (armed?.ok !== true) {
-      await releaseBridgeReservation();
+    const durableReady = armed?.ok === true
+      && armed?.durable !== false
+      && typeof acerPackagedBridge?.prepareRouteRecovery === 'function';
+    if (!durableReady) {
+      const released = await releaseBridgeReservation();
+      const releaseMessage = released?.ok === true ? '' : `; ${released?.message ?? 'reservation release failed'}`;
       return {
         result: {
           ok: false,
@@ -1749,19 +1992,20 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
               ok: false,
               readBackEqual: false,
               errorCode: armed?.errorCode ?? 'recovery-required',
-              message: armed?.message ?? 'durable Acer route recovery could not be armed; no controls changed',
+              message: `${armed?.message ?? 'durable Acer route recovery could not be armed; no controls changed'}${releaseMessage}`,
             },
           },
         },
         attempts: 1,
       };
     }
-    routeRecoveryPrepared = armed?.ok === true
-      && armed?.durable !== false
-      && typeof acerPackagedBridge?.prepareRouteRecovery === 'function';
+    routeRecoveryPrepared = true;
   }
   if (voltageIsVUnit && (nonNegativeVoltOffsetV !== undefined || lockRequestsOffsetZero)) {
+    const voltageBoundary = await checkBridgeWriteBoundary('the Sysman voltage clear', ['gpuVoltOffsetV', ...(lockRequestsOffsetZero ? ['gpuLock'] : [])]);
+    if (!voltageBoundary.ok) return { result: { ok: false, perControl }, attempts: 1 };
     const clear = await clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log, strict: lockRequestsOffsetZero || bridgeRouted });
+    if (clear.ok && priorSysmanVoltageOffsetV < 0) sysmanVoltageExpectedV = 0;
     if (!clear.ok) {
       delete driverstore.gpuVoltOffsetV;
       if (lockRequestsOffsetZero) delete driverstore.gpuLock;
@@ -1782,11 +2026,18 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
   // Negative Sysman voltage is verified before any direct control write so
   // the Acer bridge never runs with an unverified voltage precondition.
   if (negativeVoltOffsetV !== undefined && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
+    const voltageBoundary = await checkBridgeWriteBoundary('the Sysman voltage write', ['gpuVoltOffsetV']);
+    if (!voltageBoundary.ok) return { result: { ok: false, perControl }, attempts: 1 };
     const voltResult = await runSysmanVoltageOffset({ sysmanPowerLimits, offsetV: negativeVoltOffsetV, deviceId, log });
     const failure = voltResult.ok === true
       ? null
       : { ok: false, errorCode: voltResult.errorCode ?? 'io-failed', message: voltResult.message ?? 'the sysman voltage offset write did not verify' };
     perControl.gpuVoltOffsetV = failure ?? { ok: true, readBackEqual: true };
+    if (!failure) {
+      sysmanVoltageExpectedV = Number.isFinite(voltResult.offsetV)
+        ? voltResult.offsetV
+        : Math.max(SAFE_VOLT_OFFSET_MIN_V, negativeVoltOffsetV);
+    }
     if (failure && bridgeRouted) {
       const aborted = await failAcerVoltagePrecondition(failure);
       if (aborted) return aborted;
@@ -1799,7 +2050,13 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
       if (aborted) return aborted;
     }
   }
+  if (bridgeRouted && Object.keys(driverstore).length > 0) {
+    const driverstoreBoundary = await checkBridgeWriteBoundary('the direct control write', Object.keys(driverstore));
+    if (!driverstoreBoundary.ok) return { result: { ok: false, perControl }, attempts: 1 };
+  }
   await applyDriverstore(driverstore);
+  const preBridgeAbort = await abortAcerBeforeBridge();
+  if (preBridgeAbort) return preBridgeAbort;
 
   if (Object.keys(extended).length > 0) {
     log(`[apply] extended controls: [${Object.keys(extended).join(', ')}] via the bundled 2023 IGCL runtime`);
@@ -1833,6 +2090,11 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
       perControl[key] = per;
+      if (key === 'tempLimitC' && per?.ok !== true && bridgeRouted) {
+        const aborted = await abortAcerBeforeBridge();
+        if (aborted) return aborted;
+      }
+      if (per?.ok !== true && bridgeRouted) continue;
       if (key === 'tempLimitC' && (bridgeRouted || bridgeRefusal) && !acerPowerRouted) {
         await runAcerBridge();
       }
@@ -1855,14 +2117,16 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
   if (acerPowerFailed) {
     log('[apply] skipping requested fan/VF phase because the Acer power transaction did not complete cleanly');
   } else {
+    if (bridgeRouted && Object.keys(postFanDriverstore).length > 0) {
+      const postFanBoundary = await checkBridgeWriteBoundary('the post-fan control write', Object.keys(postFanDriverstore));
+      if (!postFanBoundary.ok) return { result: { ok: false, perControl }, attempts: 1 };
+    }
     await applyDriverstore(postFanDriverstore);
     const postFanFailed = acerPowerRouted
       && Object.keys(postFanDriverstore).some((key) => perControl[key]?.ok !== true);
     if (postFanFailed) {
       routeRecoveryPending = true;
-      const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
-        ? await acerPackagedBridge.assertQuiescent()
-        : { ok: true };
+      const bridgeQuiet = await assertAcerQuiescent('post-fan rollback');
       let restored = { ok: false, message: bridgeQuiet.message ?? 'Acer process appeared before post-fan rollback' };
       if (bridgeQuiet.ok) {
         try { restored = await restorePreBridgeBaseline(bridgeRecoveryBaseline ?? baseline); } catch (error) {
@@ -1870,8 +2134,12 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
         }
       }
       const pairRestored = restored.ok ? await restoreBridgePowerPair() : { ok: false, message: 'the core/fan rollback did not complete' };
-      if (restored.ok && pairRestored.ok) {
+      const rollbackVerified = restored.ok && pairRestored.ok
+        ? await verifyAcerRollbackState(bridgeRecoveryBaseline ?? baseline)
+        : { ok: false, message: 'the core/fan rollback did not complete' };
+      if (restored.ok && pairRestored.ok && rollbackVerified.ok) {
         routeRecoveryPending = false;
+        bridgePairApplied = false;
         perControl.powerLimitW = {
           ...(perControl.powerLimitW ?? {}),
           ok: false,
@@ -1886,7 +2154,7 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
           ok: false,
           readBackEqual: false,
           errorCode: 'recovery-required',
-          message: `post-fan rollback failed; recovery is required${restored.message ? `: ${restored.message}` : ''}${pairRestored.message ? `; ${pairRestored.message}` : ''}`,
+          message: `post-fan rollback failed; recovery is required${restored.message ? `: ${restored.message}` : ''}${pairRestored.message ? `; ${pairRestored.message}` : ''}${rollbackVerified.message ? `; ${rollbackVerified.message}` : ''}`,
         };
       }
     }
@@ -2034,9 +2302,11 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
 
 
   if (bridgeReservation) {
-    if (routeRecoveryPrepared && !routeRecoveryPending) {
-      const cleared = await clearPreparedRouteRecovery();
-      if (cleared?.ok !== true) {
+    let canRelease = !routeRecoveryPending && !bridgeReservationReleased;
+    if (canRelease && bridgePairApplied) {
+      const finalState = await verifyAcerPostApplyState();
+      if (finalState?.ok !== true) {
+        canRelease = false;
         routeRecoveryPending = true;
         acerPackagedBridge?.markRecoveryRequired?.();
         perControl.powerLimitW = {
@@ -2044,19 +2314,26 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
           ok: false,
           readBackEqual: false,
           errorCode: 'recovery-required',
-          message: `${perControl.powerLimitW?.message ?? 'Acer packaged bridge cleanup failed'}; ${cleared?.message ?? 'durable route recovery cleanup failed'}`,
+          message: `${perControl.powerLimitW?.message ?? 'Acer packaged bridge final verification failed'}; ${finalState?.message ?? 'final target-bound state verification failed'}`,
         };
       }
     }
-    const released = await releaseBridgeReservation();
-    if (released?.ok !== true) {
-      perControl.powerLimitW = {
-        ...(perControl.powerLimitW ?? {}),
-        ok: false,
-        readBackEqual: false,
-        errorCode: 'recovery-required',
-        message: `${perControl.powerLimitW?.message ?? 'Acer packaged bridge cleanup failed'}; ${released.message ?? 'reservation release failed'}`,
-      };
+    // Clear the prepared route journal while the reservation still owns the
+    // writer lock. A release failure then retains/re-writes that journal.
+    if (canRelease) {
+      const cleaned = await releaseBridgeReservationAndClearRecovery();
+      if (cleaned?.ok !== true) {
+        canRelease = false;
+        routeRecoveryPending = true;
+        acerPackagedBridge?.markRecoveryRequired?.();
+        perControl.powerLimitW = {
+          ...(perControl.powerLimitW ?? {}),
+          ok: false,
+          readBackEqual: false,
+          errorCode: 'recovery-required',
+          message: `${perControl.powerLimitW?.message ?? 'Acer packaged bridge cleanup failed'}; ${cleaned?.message ?? 'reservation release failed; route recovery was retained'}`,
+        };
+      }
     }
   }
   if (routeReservation) {
@@ -2079,9 +2356,7 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
   return { result: { ok, perControl, pl2Note }, attempts: 1 };
   } catch (error) {
     if (bridgeCommitted) {
-      const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
-        ? await acerPackagedBridge.assertQuiescent()
-        : { ok: true };
+      const bridgeQuiet = await assertAcerQuiescent('post-bridge rollback');
       let restored = { ok: false, message: bridgeQuiet.message ?? 'Acer process appeared before post-bridge rollback' };
       if (bridgeQuiet.ok) {
         try {
@@ -2093,16 +2368,18 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
       const pairRestored = bridgeQuiet.ok && restored.ok
         ? await restoreBridgePowerPair()
         : { ok: false, message: 'the core/fan rollback did not complete' };
-      let cleanupOk = bridgeQuiet.ok && restored.ok && pairRestored.ok;
-      if (cleanupOk && routeRecoveryPrepared) {
-        const cleared = await clearPreparedRouteRecovery();
-        cleanupOk = cleared?.ok === true;
-        if (!cleanupOk) restored = { ok: false, message: cleared?.message ?? 'durable Acer route recovery cleanup failed' };
+      const rollbackVerified = bridgeQuiet.ok && restored.ok && pairRestored.ok
+        ? await verifyAcerRollbackState(bridgeRecoveryBaseline ?? baseline)
+        : { ok: false, message: 'the core/fan rollback did not complete' };
+      let cleanupOk = bridgeQuiet.ok && restored.ok && pairRestored.ok && rollbackVerified.ok;
+      if (!rollbackVerified.ok && restored.ok) restored = { ok: false, message: rollbackVerified.message };
+      if (cleanupOk) {
+        const cleaned = await releaseBridgeReservationAndClearRecovery();
+        cleanupOk = cleaned?.ok === true;
+        if (!cleanupOk) restored = { ok: false, message: cleaned?.message ?? 'Acer bridge cleanup failed' };
       }
-      const released = await releaseBridgeReservation();
-      if (released?.ok !== true) cleanupOk = false;
       let durable = null;
-      if (!cleanupOk) {
+      if (!cleanupOk && !routeRecoveryPrepared) {
         durable = await persistRouteRecovery(bridgeRecoveryBaseline ?? baseline);
         if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
       }
@@ -2122,40 +2399,34 @@ async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceK
       };
     }
     if (bridgeReservation && !bridgeApplyStarted) {
-      const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
-        ? await acerPackagedBridge.assertQuiescent()
-        : { ok: true };
+      const bridgeQuiet = await assertAcerQuiescent('direct rollback');
       let restored = { ok: false, message: bridgeQuiet.message ?? 'Acer process appeared before direct rollback' };
       if (bridgeQuiet.ok) {
         try { restored = await restorePreBridgeBaseline(); } catch (restoreError) {
           restored = { ok: false, message: restoreError instanceof Error ? restoreError.message : String(restoreError) };
         }
       }
-      let journalCleared = !routeRecoveryPrepared;
-      if (bridgeQuiet.ok && restored.ok && routeRecoveryPrepared) {
-        const cleared = await clearPreparedRouteRecovery();
-        journalCleared = cleared?.ok === true;
-        if (!journalCleared) restored = { ok: false, message: cleared?.message ?? 'durable Acer route recovery cleanup failed' };
-      }
-      const released = await releaseBridgeReservation();
-      const reservationReleased = released?.ok === true;
-      if (!reservationReleased && restored.ok) {
-        restored = { ok: false, message: released?.message ?? 'Acer bridge reservation release failed' };
-      }
+      const rollbackVerified = bridgeQuiet.ok && restored.ok
+        ? await verifyAcerRollbackState(bridgeRecoveryBaseline ?? baseline)
+        : { ok: false, message: 'direct rollback did not complete' };
+      let cleanupIssue = !bridgeQuiet.ok
+        ? (bridgeQuiet.message ?? 'Acer process appeared before direct rollback')
+        : !restored.ok
+          ? restored.message
+          : !rollbackVerified.ok
+            ? rollbackVerified.message
+            : null;
       const recoveryBaseline = bridgeRecoveryBaseline ?? baseline;
       let durable = null;
-      if (!bridgeQuiet.ok || !restored.ok || !journalCleared || !reservationReleased) {
+      if (!cleanupIssue) {
+        const cleaned = await releaseBridgeReservationAndClearRecovery();
+        if (cleaned?.ok !== true) cleanupIssue = cleaned?.message ?? 'Acer bridge cleanup failed';
+      }
+      if (cleanupIssue && !routeRecoveryPrepared) {
         durable = await persistRouteRecovery(recoveryBaseline);
         if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
       }
-      const cleanupOk = bridgeQuiet.ok && restored.ok && journalCleared && reservationReleased;
-      const cleanupIssue = !restored.ok
-        ? restored.message
-        : !journalCleared
-          ? 'durable Acer route recovery cleanup failed'
-          : !reservationReleased
-            ? (released?.message ?? 'Acer bridge reservation release failed')
-            : bridgeQuiet.message;
+      const cleanupOk = !cleanupIssue;
       return {
         result: {
           ok: false,

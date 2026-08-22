@@ -592,6 +592,7 @@ export function createAcerPackagedBridge(deps = {}) {
   let reservationTimer = null;
   let reservationExpired = false;
   let recoveryRequired = false;
+  let retainedRouteRecovery = null;
   const consumedContextTokens = new Set();
   const call = async (fn, ...args) => {
     if (typeof fn !== 'function') return undefined;
@@ -1294,6 +1295,7 @@ export function createAcerPackagedBridge(deps = {}) {
     }
   };
 
+  const cleanupCompleted = Symbol('cleanupCompleted');
   const cleanupFailedTransaction = async ({ payload, ownedPids, deviceId, entries, observed, failure }) => {
     const rollback = { required: true, observed: null };
     if (ownedPids.length > 0) {
@@ -1339,10 +1341,9 @@ export function createAcerPackagedBridge(deps = {}) {
       const finalFile = await verifyRestoredFile(entry);
       if (!finalFile.ok) return { ...failure, rollback, errorCode: C.RESTORE_FAILED, message: finalFile.message };
     }
-    try { await remove(journalPath); } catch (error) {
-      return { ...failure, rollback, errorCode: C.RESTORE_FAILED, message: text(error) };
-    }
-    return { ...failure, rollback };
+    const cleaned = { ...failure, rollback };
+    Object.defineProperty(cleaned, cleanupCompleted, { value: true });
+    return cleaned;
   };
 
   async function recover({ lockHeld = false } = {}) {
@@ -1351,6 +1352,8 @@ export function createAcerPackagedBridge(deps = {}) {
     }
     let recoveryLock = false;
     let recoveryOwnerNonce = null;
+    let recoveryPayload = null;
+    let journalRemovalPending = false;
     try {
       // The journal owner is authoritative even if a crash removed the lock
       // file. Never recover a transaction whose recorded owner is still live.
@@ -1411,6 +1414,7 @@ export function createAcerPackagedBridge(deps = {}) {
         return { ok: false, recovered: false, errorCode: C.JOURNAL_INVALID, message: 'Acer recovery journal is malformed, stale-versioned, or integrity-invalid' };
       }
       const payload = journal.payload;
+      recoveryPayload = clone(payload);
       if (ACER_HARDWARE_MUTATING_PHASES.includes(payload.phase)
         && (payload.ownedPids ?? []).some((item) => !item || typeof item !== 'object'
           || !Number.isInteger(item.pid) || item.pid <= 0
@@ -1535,6 +1539,13 @@ export function createAcerPackagedBridge(deps = {}) {
         recoveryRequired = true;
         return { ok: false, recovered: false, errorCode: C.RECOVERY_REQUIRED, message: finalAbsolute?.message ?? 'Acer recovery absolute core/voltage state changed before journal removal' };
       }
+      if (recoveryLock) {
+        // Keep the recovery journal authoritative until the recovery lock has
+        // been released successfully. Removing it first would leave a
+        // reserve-visible gap if lock cleanup failed.
+        journalRemovalPending = true;
+        return { ok: true, recovered: true };
+      }
       await remove(journalPath);
       recoveryRequired = false;
       return { ok: true, recovered: true };
@@ -1543,15 +1554,43 @@ export function createAcerPackagedBridge(deps = {}) {
       return { ok: false, recovered: false, errorCode: C.RECOVERY_REQUIRED, message: text(error) };
     } finally {
       if (recoveryLock) {
-        const released = await release(recoveryOwnerNonce);
+        let released;
+        try { released = await release(recoveryOwnerNonce); } catch (error) {
+          released = { ok: false, errorCode: C.LOCK_FAILED, message: text(error) };
+        }
         if (!released.ok) {
           recoveryRequired = true;
+          try {
+            const payload = recoveryPayload ? clone(recoveryPayload) : null;
+            if (payload) {
+              payload.phase = 'recovery-required';
+              payload.ownedPids = [];
+              await writeJournal(payload);
+            }
+          } catch {}
           throw new Error(`Acer recovery lock cleanup failed: ${released.message}`);
+        }
+        if (journalRemovalPending) {
+          try {
+            await remove(journalPath);
+            recoveryRequired = false;
+          } catch (error) {
+            recoveryRequired = true;
+            try {
+              const payload = recoveryPayload ? clone(recoveryPayload) : null;
+              if (payload) {
+                payload.phase = 'recovery-required';
+                payload.ownedPids = [];
+                await writeJournal(payload);
+              }
+            } catch {}
+            throw new Error(`Acer recovery journal cleanup failed: ${text(error)}`);
+          }
         }
       }
     }
-  }
 
+  }
   async function preflight({
     deviceId,
     deviceKey = null,
@@ -1742,7 +1781,25 @@ export function createAcerPackagedBridge(deps = {}) {
   }
 
   async function reserve({ requestId = null, requireAcerClosed = true } = {}) {
+    if (recoveryRequired) return { ok: false, errorCode: C.RECOVERY_REQUIRED, message: 'Acer packaged apply is blocked until the previous transaction is recovered' };
     if (active) return { ok: false, errorCode: C.LOCK_BUSY, message: 'another Acer packaged transaction is active' };
+    let journal;
+    try {
+      journal = await readJournal();
+    } catch (error) {
+      recoveryRequired = true;
+      return { ok: false, errorCode: C.RECOVERY_REQUIRED, message: `Acer recovery journal could not be read: ${text(error)}` };
+    }
+    if (!journal.none) {
+      recoveryRequired = true;
+      return {
+        ok: false,
+        errorCode: C.RECOVERY_REQUIRED,
+        message: journal.invalid
+          ? 'Acer recovery journal is invalid; recovery is required before any write'
+          : 'Acer recovery journal is pending; recovery is required before any write',
+      };
+    }
     const ownerNonce = crypto.randomUUID();
     const locked = await acquire({
       ownerNonce,
@@ -1751,7 +1808,29 @@ export function createAcerPackagedBridge(deps = {}) {
       packageFullName: ACER_PACKAGE_FULL_NAME,
       reservation: true,
     });
-    if (!locked.ok) return locked;
+    let journalAfterLock;
+    try {
+      journalAfterLock = await readJournal();
+    } catch (error) {
+      recoveryRequired = true;
+      const released = await release(ownerNonce);
+      return {
+        ok: false,
+        errorCode: released.ok ? C.RECOVERY_REQUIRED : C.LOCK_FAILED,
+        message: released.ok ? `Acer recovery journal could not be read: ${text(error)}` : released.message,
+      };
+    }
+    if (!journalAfterLock.none) {
+      recoveryRequired = true;
+      const released = await release(ownerNonce);
+      return {
+        ok: false,
+        errorCode: released.ok ? C.RECOVERY_REQUIRED : C.LOCK_FAILED,
+        message: released.ok
+          ? (journalAfterLock.invalid ? 'Acer recovery journal is invalid; recovery is required before any write' : 'Acer recovery journal is pending; recovery is required before any write')
+          : released.message,
+      };
+    }
     if (requireAcerClosed) {
       const processes = await snapshot();
       if (!processes || processes.length > 0) {
@@ -1841,7 +1920,7 @@ export function createAcerPackagedBridge(deps = {}) {
       return { ok: false, errorCode: C.RECOVERY_REQUIRED, message: 'an Acer recovery journal already exists' };
     }
     try {
-      await writeJournal({
+      const payload = {
         phase: 'route-recovery',
         ownerNonce,
         ownerPid: processApi.pid,
@@ -1855,7 +1934,9 @@ export function createAcerPackagedBridge(deps = {}) {
         baseline: clone({ ...baseline, power: pair }),
         files: [],
         ownedPids: [],
-      });
+      };
+      await writeJournal(payload);
+      retainedRouteRecovery = clone(payload);
       return { ok: true, recoveryRequired: false, ownerNonce };
     } catch (error) {
       return { ok: false, errorCode: C.RECOVERY_REQUIRED, message: text(error) };
@@ -1873,6 +1954,7 @@ export function createAcerPackagedBridge(deps = {}) {
       || (requestId !== null && journal.payload.requestId !== requestId)) {
       return { ok: false, errorCode: C.RECOVERY_REQUIRED, message: 'Acer route recovery journal ownership changed' };
     }
+    retainedRouteRecovery = clone(journal.payload);
     await remove(journalPath);
     return { ok: true };
   }
@@ -1895,6 +1977,7 @@ export function createAcerPackagedBridge(deps = {}) {
       packageFullName: ACER_PACKAGE_FULL_NAME,
       recovery: true,
     });
+    let removedRouteRecovery = null;
     if (!locked.ok) return locked;
     let outcome;
     try {
@@ -1905,7 +1988,8 @@ export function createAcerPackagedBridge(deps = {}) {
         || (requestId !== null && current.payload.requestId !== requestId)) {
         outcome = { ok: false, errorCode: C.RECOVERY_REQUIRED, message: 'Acer route recovery journal ownership changed' };
       } else {
-        await remove(journalPath);
+        removedRouteRecovery = clone(current.payload);
+        retainedRouteRecovery = clone(removedRouteRecovery);
         outcome = { ok: true };
       }
     } catch (error) {
@@ -1916,16 +2000,55 @@ export function createAcerPackagedBridge(deps = {}) {
       released = { ok: false, errorCode: C.LOCK_FAILED, message: text(error) };
     }
     if (released?.ok !== true && outcome?.ok === true) {
+      recoveryRequired = true;
       return { ok: false, errorCode: C.LOCK_FAILED, message: released?.message ?? 'Acer recovery cleanup lock release failed' };
+    }
+    if (outcome?.ok === true && removedRouteRecovery) {
+      try {
+        await remove(journalPath);
+      } catch (error) {
+        recoveryRequired = true;
+        return { ok: false, errorCode: C.RECOVERY_REQUIRED, message: `Acer route recovery journal cleanup failed: ${text(error)}` };
+      }
     }
     return outcome;
   }
-  async function releaseReservation({ ownerNonce } = {}) {
+  async function releaseReservation({ ownerNonce, retainRecoveryOnFailure = false } = {}) {
     if (typeof ownerNonce !== 'string' || lockNonce !== ownerNonce) return { ok: false, errorCode: C.LOCK_FAILED, message: 'Acer bridge reservation ownership changed' };
     if (reservationTimer) { clearTimeout(reservationTimer); reservationTimer = null; }
-    const released = await release(ownerNonce);
+    const preserveRecovery = retainRecoveryOnFailure && retainedRouteRecovery;
+    if (preserveRecovery) {
+      const payload = clone(retainedRouteRecovery);
+      payload.phase = 'route-recovery';
+      payload.files = [];
+      payload.ownedPids = [];
+      try {
+        await writeJournal(payload);
+      } catch (error) {
+        recoveryRequired = true;
+        return { ok: false, errorCode: C.RECOVERY_REQUIRED, message: `Acer route recovery journal retention failed: ${text(error)}` };
+      }
+    }
+    let released;
+    try {
+      released = await release(ownerNonce);
+    } catch (error) {
+      released = { ok: false, errorCode: C.LOCK_FAILED, message: text(error) };
+    }
     active = false;
     reservationExpired = false;
+    if (released?.ok !== true) {
+      recoveryRequired = true;
+      return released;
+    }
+    if (preserveRecovery) {
+      const cleared = await clearRouteRecovery({ ownerNonce });
+      if (cleared?.ok !== true) {
+        recoveryRequired = true;
+        return cleared;
+      }
+      retainedRouteRecovery = null;
+    }
     return released;
   }
 
@@ -1945,6 +2068,25 @@ export function createAcerPackagedBridge(deps = {}) {
       return result(requestedW, errorCode, message, { rollback: { ok: true, untouched: true } });
     };
     const preJournalResult = (errorCode, message) => result(requestedW, errorCode, message, { rollback: { ok: true, untouched: true } });
+    let journal;
+    try {
+      journal = await readJournal();
+    } catch (error) {
+      recoveryRequired = true;
+      return preJournalResult(C.RECOVERY_REQUIRED, `Acer recovery journal could not be read: ${text(error)}`);
+    }
+    const journalOwnedByReservation = reservationOwnerNonce
+      && journal.payload?.phase === 'route-recovery'
+      && journal.payload.ownerNonce === reservationOwnerNonce;
+    if (journal.invalid || (!journal.none && !journalOwnedByReservation)) {
+      recoveryRequired = true;
+      return preJournalResult(
+        C.RECOVERY_REQUIRED,
+        journal.invalid
+          ? 'Acer recovery journal is invalid; recovery is required before any write'
+          : 'Acer recovery journal is pending; recovery is required before any write',
+      );
+    }
     if (reservationOwnerNonce && (reservationExpired || !active || lockNonce !== reservationOwnerNonce)) {
       return preJournalResult(C.LOCK_BUSY, 'Acer packaged bridge reservation expired or is no longer owned');
     }
@@ -2034,6 +2176,19 @@ export function createAcerPackagedBridge(deps = {}) {
     let cleanupFailure = null;
     let transactionSucceeded = false;
     let journalCommitted = false;
+    let ownerReleased = false;
+    let cleanupComplete = false;
+    let journalRemovalPending = false;
+    let ownerReleaseFailed = false;
+    const finalizeCleaned = (cleaned) => {
+      if (cleaned[cleanupCompleted] === true) {
+        ownedPids = [];
+        cleanupComplete = true;
+        journalRemovalPending = true;
+      } else cleanupFailure = cleaned;
+      return cleaned;
+    };
+    let retainReservationOnCleanupFailure = false;
     try {
       const locked = reservationOwnerNonce
         ? (active && !reservationExpired && lockNonce === reservationOwnerNonce ? { ok: true } : { ok: false, errorCode: C.LOCK_BUSY, message: 'Acer packaged bridge reservation expired or is no longer owned' })
@@ -2314,9 +2469,7 @@ export function createAcerPackagedBridge(deps = {}) {
         const code = observed ? C.READBACK_MISMATCH : C.READBACK_TIMEOUT;
         const failed = result(requestedW, code, observed ? `Acer requested ${requestedW} W but Sysman read back ${observed.sustainedW}/${observed.burstW} W` : 'physical-target Sysman read-back timed out', { readBackEqual: false, observed });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed, failure: failed });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       const terminated = await terminateOwned(ownedPids);
       if (!terminated.ok) { cleanupFailure = terminated; return result(requestedW, C.TERMINATION_FAILED, terminated.message, { observed }); }
@@ -2366,25 +2519,19 @@ export function createAcerPackagedBridge(deps = {}) {
       if (!equalPair(finalObserved, baselinePair)) {
         const failure = result(requestedW, C.READBACK_MISMATCH, 'final physical-target power read-back did not match the restored baseline pair', { observed, finalObserved, readBackEqual: false });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       const verified = await deps.verifyFinalState({ baseline: journalPayload.baseline, expectedPower: baselinePair, deviceId, deviceKey, physicalTarget });
       if (!verificationOk(verified)) {
         const failure = result(requestedW, C.STATE_CHANGED, verified?.message ?? 'final core/voltage/fan verification failed', { observed, finalObserved });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       const absoluteFinalVerified = await verifyAcerAbsolute({ baseline: journalPayload.baseline, deviceId, deviceKey, physicalTarget });
       if (!verificationOk(absoluteFinalVerified)) {
         const failure = result(requestedW, C.STATE_CHANGED, absoluteFinalVerified?.message ?? 'Acer absolute core/voltage final verification failed', { observed, finalObserved });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       if (leaveRequestedPair === true) {
         const requestedPair = { sustainedW: requestedW, burstW: requestedW };
@@ -2392,18 +2539,14 @@ export function createAcerPackagedBridge(deps = {}) {
         if (!quietBeforeRequested.ok) {
           const failure = result(requestedW, quietBeforeRequested.errorCode, quietBeforeRequested.message, { observed, finalObserved, readBackEqual: false });
           const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-          if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-          else cleanupFailure = cleaned;
-          return cleaned;
+          return finalizeCleaned(cleaned);
         }
         const requestedSet = await setPair(physicalTarget, deviceId, requestedPair, deviceKey);
         const quietAfterRequested = await assertQuiescent('requested pair finalization');
         if (!quietAfterRequested.ok) {
           const failure = result(requestedW, quietAfterRequested.errorCode, quietAfterRequested.message, { observed, finalObserved, readBackEqual: false });
           const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-          if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-          else cleanupFailure = cleaned;
-          return cleaned;
+          return finalizeCleaned(cleaned);
         }
         const requestedObserved = await readPair(physicalTarget, deviceId, deviceKey);
         if (requestedSet?.ok !== true || !equalPair(requestedObserved, requestedPair)) {
@@ -2421,9 +2564,7 @@ export function createAcerPackagedBridge(deps = {}) {
             observed: requestedObserved,
             failure,
           });
-          if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-          else cleanupFailure = cleaned;
-          return cleaned;
+          return finalizeCleaned(cleaned);
         }
         observed = requestedObserved;
       }
@@ -2431,69 +2572,53 @@ export function createAcerPackagedBridge(deps = {}) {
       if (!finalFileBoundary.ok) {
         const failure = result(requestedW, finalFileBoundary.errorCode, finalFileBoundary.message, { observed, finalObserved, readBackEqual: true });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       for (const entry of entries) {
         const verifiedFile = await verifyRestoredFile(entry);
         if (!verifiedFile.ok) {
           const failure = result(requestedW, verifiedFile.errorCode, verifiedFile.message, { observed, finalObserved, readBackEqual: true });
           const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-          if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-          else cleanupFailure = cleaned;
-          return cleaned;
+          return finalizeCleaned(cleaned);
         }
       }
       const finalHardwareBoundary = await assertQuiescent('final hardware verification');
       if (!finalHardwareBoundary.ok) {
         const failure = result(requestedW, finalHardwareBoundary.errorCode, finalHardwareBoundary.message, { observed, finalObserved, readBackEqual: true });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       const lastExpectedPower = leaveRequestedPair ? { sustainedW: requestedW, burstW: requestedW } : baselinePair;
       const lastObserved = await readPair(physicalTarget, deviceId, deviceKey);
       if (!equalPair(lastObserved, lastExpectedPower)) {
         const failure = result(requestedW, C.READBACK_MISMATCH, 'final physical-target power read-back changed before journal removal', { observed: lastObserved, finalObserved, readBackEqual: false });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: lastObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       const lastVerified = await deps.verifyFinalState({ baseline: journalPayload.baseline, expectedPower: lastExpectedPower, deviceId, deviceKey, physicalTarget });
       if (!verificationOk(lastVerified)) {
         const failure = result(requestedW, C.STATE_CHANGED, lastVerified?.message ?? 'final hardware state changed before journal removal', { observed: lastObserved, finalObserved });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: lastObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       const lastAbsolute = await verifyAcerAbsolute({ baseline: journalPayload.baseline, deviceId, deviceKey, physicalTarget });
       if (!verificationOk(lastAbsolute)) {
         const failure = result(requestedW, C.STATE_CHANGED, lastAbsolute?.message ?? 'absolute core/voltage state changed before journal removal', { observed: lastObserved, finalObserved });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: lastObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       const finalRemovalBoundary = await assertQuiescent('journal removal');
       if (!finalRemovalBoundary.ok) {
         const failure = result(requestedW, finalRemovalBoundary.errorCode, finalRemovalBoundary.message, { observed, finalObserved, readBackEqual: true });
         const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-        if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-        else cleanupFailure = cleaned;
-        return cleaned;
+        return finalizeCleaned(cleaned);
       }
       for (const entry of entries) {
         const finalFile = await verifyRestoredFile(entry);
         if (!finalFile.ok) {
           const failure = result(requestedW, finalFile.errorCode, finalFile.message, { observed, finalObserved, readBackEqual: true });
           const cleaned = await cleanupFailedTransaction({ payload: journalPayload, ownedPids, deviceId, entries, observed: finalObserved, failure });
-          if (cleaned.rollback?.ok === true) { ownedPids = []; journalPayload = null; }
-          else cleanupFailure = cleaned;
-          return cleaned;
+          return finalizeCleaned(cleaned);
         }
       }
       journalPayload.phase = 'committed';
@@ -2508,16 +2633,19 @@ export function createAcerPackagedBridge(deps = {}) {
         writeLog(`[acer-bridge] applied ${requestedW} W with exact ${observed.sustainedW}/${observed.burstW} W read-back`);
         return success(requestedW, observed, { restoredBaseline: finalObserved });
       }
-      // Keep the owner lock held while removing the committed journal. A
-      // release-first sequence permits a successor transaction to create a
-      // new journal between release and unlink, which this transaction could
-      // then delete accidentally.
-      await remove(journalPath);
-      const released = await release(ownerNonce);
+      // Keep the committed journal authoritative through owner-lock release.
+      // Reservations refuse while any journal exists, so a successor cannot
+      // create a replacement journal before this transaction removes it.
+      let released;
+      try {
+        released = await release(ownerNonce);
+      } catch (error) {
+        released = { ok: false, errorCode: C.LOCK_FAILED, message: text(error) };
+      }
+      ownerReleased = true;
       if (!released.ok) {
         cleanupFailure = released;
         recoveryRequired = true;
-        journalCommitted = false;
         try {
           journalPayload.phase = 'recovery-required';
           journalPayload.ownedPids = ownedPids;
@@ -2525,13 +2653,29 @@ export function createAcerPackagedBridge(deps = {}) {
         } catch {}
         return result(requestedW, C.LOCK_FAILED, released.message, { rollback: { required: true } });
       }
+      try {
+        await remove(journalPath);
+      } catch (error) {
+        cleanupFailure = {
+          ok: false,
+          errorCode: C.RECOVERY_REQUIRED,
+          message: `Acer committed journal cleanup failed: ${text(error)}`,
+        };
+        recoveryRequired = true;
+        try {
+          journalPayload.phase = 'recovery-required';
+          journalPayload.ownedPids = ownedPids;
+          await writeJournal(journalPayload);
+        } catch {}
+        return result(requestedW, C.RECOVERY_REQUIRED, cleanupFailure.message, { rollback: { required: true } });
+      }
       transactionSucceeded = true;
       writeLog(`[acer-bridge] applied ${requestedW} W with exact ${observed.sustainedW}/${observed.burstW} W read-back`);
       return success(requestedW, observed, { restoredBaseline: finalObserved });
     } catch (error) {
       return result(requestedW, C.RECOVERY_REQUIRED, text(error), { rollback: { required: true } });
     } finally {
-      if (journalPayload && !transactionSucceeded && !cleanupFailure && !journalCommitted) {
+      if (journalPayload && !transactionSucceeded && !cleanupFailure && !journalCommitted && !cleanupComplete) {
         if (ownedPids.length > 0) {
           const terminated = await terminateOwned(ownedPids);
           if (!terminated.ok) cleanupFailure = terminated;
@@ -2604,13 +2748,36 @@ export function createAcerPackagedBridge(deps = {}) {
         } catch {}
       }
       if (journalPayload && transactionSucceeded && !cleanupFailure && retainReservation) {
+        const routeRecoveryFiles = journalPayload.files;
         journalPayload.phase = 'route-recovery';
         journalPayload.files = [];
         journalPayload.ownedPids = [];
-        await writeJournal(journalPayload);
+        try {
+          await writeJournal(journalPayload);
+        } catch (error) {
+          cleanupFailure = {
+            ok: false,
+            errorCode: C.RECOVERY_REQUIRED,
+            message: `durable route recovery journal write failed: ${text(error)}`,
+          };
+          recoveryRequired = true;
+          retainReservationOnCleanupFailure = true;
+          try {
+            journalPayload.phase = 'recovery-required';
+            journalPayload.files = routeRecoveryFiles;
+            await writeJournal(journalPayload);
+          } catch {}
+        }
       }
-      if (!(retainReservation && journalPayload && transactionSucceeded)) {
-        const released = await release(ownerNonce);
+      const retainRouteReservation = retainReservation && journalPayload && transactionSucceeded
+        && (!cleanupFailure || retainReservationOnCleanupFailure);
+      if (!retainRouteReservation && !ownerReleased) {
+        let released;
+        try { released = await release(ownerNonce); } catch (error) {
+          released = { ok: false, errorCode: C.LOCK_FAILED, message: text(error) };
+        }
+        ownerReleased = true;
+        ownerReleaseFailed = !released.ok;
         if (!released.ok) {
           recoveryRequired = true;
           cleanupFailure = released;
@@ -2623,6 +2790,31 @@ export function createAcerPackagedBridge(deps = {}) {
           }
         }
         active = false;
+      } else if (!retainRouteReservation) {
+        active = false;
+      }
+      if (journalRemovalPending && journalPayload && ownerReleased && !ownerReleaseFailed && !cleanupFailure) {
+        try {
+          await remove(journalPath);
+          journalPayload = null;
+          journalRemovalPending = false;
+        } catch (error) {
+          cleanupFailure = {
+            ok: false,
+            errorCode: C.RECOVERY_REQUIRED,
+            message: `Acer cleanup journal removal failed: ${text(error)}`,
+          };
+          recoveryRequired = true;
+          try {
+            journalPayload.phase = 'recovery-required';
+            journalPayload.ownedPids = ownedPids;
+            await writeJournal(journalPayload);
+          } catch {}
+          return result(requestedW, C.RECOVERY_REQUIRED, cleanupFailure.message, { rollback: { required: true } });
+        }
+      }
+      if (retainReservationOnCleanupFailure) {
+        throw new Error(cleanupFailure?.message ?? 'durable route recovery journal write failed');
       }
     }
   }
