@@ -173,6 +173,17 @@ export class OldIgcl {
   }
 
   /**
+   * Whether the bundled runtime is installed, independent of whether this
+   * process can initialize it. The UI process can be unelevated while the
+   * elevated apply worker owns the actual V1 write.
+   * @returns {boolean}
+   */
+  isAvailable() {
+    const dllPath = this._dllPath ?? this._findDll();
+    return typeof dllPath === 'string' && dllPath.length > 0 && fs.existsSync(dllPath);
+  }
+
+  /**
    * extendedCapable(): init + enumerate + waiver all SUCCESS on the bundled
    * runtime. Cached; a failure sets `_capable = false` forever (the old
    * runtime either works on this driver or it does not).

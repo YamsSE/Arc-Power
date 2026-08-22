@@ -1106,19 +1106,18 @@ export class IgclBackend {
         // both-directions probe-ceiling semantics, keyed on caps.pciDeviceId)
         // now lives in the pure device-limits table and is applied by
         // _finalizeCaps AFTER the extended-ranges block below.
-        // M2C-C extended ranges: when the bundled 2023 IGCL runtime loads on
-        // this driver AND the OC mode is advanced (M3-C-E), report the FULL
-        // range (PL max 375 W - M21: the sysman-primary ceiling; the >315 W
-        // range applies through the sysman pair mechanism, live-verified
-        // 2026-08-15; TL max 115 C - min/default stay
-        // the DriverStore values) + the extendedRanges flag. The UI exposes
-        // those maxes; applies above the DriverStore clamp route to the
-        // 2023 runtime (apply-routing.js) - and above 315 W to the sysman
-        // pair as the primary write. In stock mode the extended maxes
-        // are NEVER exposed - the mode gate refuses them before any clamp.
+        // M2C-C extended ranges: when the bundled 2023 IGCL runtime is
+        // installed and OC mode is advanced (M3-C-E), expose the documented
+        // W/C ceilings. The parent UI may be unelevated and see ERROR_KMD_CALL
+        // during its probe; the actual apply path still checks isCapable()
+        // before any V1 write. Missing DLLs remain an honest unavailable
+        // signal.
 
+        const installed = this._extended
+          && typeof this._extended.isAvailable === 'function'
+          && this._extended.isAvailable() === true;
         const extendedCapable = this._extended
-          ? await this._extended.isCapable()
+          ? installed || await this._extended.isCapable()
           : false;
         // M4E: the extended concept is W/C-only (the bundled 2023 runtime
         // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
@@ -1317,28 +1316,22 @@ export class IgclBackend {
    *   a fresh clone)
    */
   _finalizeCaps(deviceId, caps, dev) {
+    // M39/M46: the selected OC mode controls the displayed W/C shape.
+    // `extendedRanges` remains the separate runtime-write capability signal;
+    // an installed but KMD-rejected companion must not make Advanced render
+    // as Stock while the apply path reports its honest limitation.
+    caps.ocMode = this._ocMode;
     const identity = {
       pciDeviceId: caps.pciDeviceId ?? dev?.pciDeviceId ?? null,
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the finalize selects
-    // the ADVANCED shape when caps.extendedRanges is true (the extended
-    // 2023-runtime path is active) and the STOCK shape otherwise - NOT the
-    // same row in both modes. The advanced shape carries the per-card KMD
-    // ceilings (A770 315/115 - the M17c TL cap at 90 REMOVED; A750 270/115 -
-    // the TL 115 probe-verified 2026-08-12: 100 AND 115 C applied via the
-    // app path, the KMD ceiling class the same as the A770's); the stock
-    // shape the per-AIB maxes + the TL 90 caps (the round-3-N3 rule FLIPS
-    // to "listed-row advanced ceiling = the app-verified KMD ceiling").
-    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
+    const limits = deviceLimitsOf(identity, { advanced: this._ocMode === 'advanced' });
     if (limits) {
-      // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
-      // (stock 252/90, extended 315/115 - never null, never the wrong
-      // shape); a LISTED card's row is the ACTIVE shape (stock or
-      // advanced) - the extended maxes of the props/2023 runtime are
-      // capped down to the listed shape's ceilings.
-      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
+      // The UNLISTED path gets the DEFAULT row of the selected mode
+      // (stock 252/90, advanced 315/115); a LISTED card's row is the
+      // selected mode's AIB/KMD shape.
+      const row = limits.listed ? limits : defaultLimitsOf(this._ocMode === 'advanced');
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;
         const range = caps.ranges[canonical];
@@ -1354,6 +1347,11 @@ export class IgclBackend {
             // The volt maxes are the M15 probe-ceiling PINS (both
             // directions - the props may under-report the grid-aligned
             // 0.230); the store merge below is the only downward force.
+            next = { ...next, max: override.max };
+          } else if (this._ocMode === 'advanced') {
+            // Advanced W/C controls expose the documented KMD ceiling even
+            // when the bundled V1 runtime is unavailable; the apply gate
+            // separately refuses values that require that runtime.
             next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };

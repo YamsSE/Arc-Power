@@ -795,26 +795,34 @@ export function isMomentaryLieCandidate(per) {
  * }>}
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
-  const { driverstore, extended } = splitByRuntime(settings, ranges, mode);
+  const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode);
+  // M41: keep fan/VF writes after the extended W/C phase. The driver has
+  // different ownership/order rules for those controls in Advanced mode.
+  const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
+  const fanKeys = new Set(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve']);
+  const driverstore = {};
+  const postFanDriverstore = {};
+  for (const [key, value] of Object.entries(allDriverstore)) {
+    if (hasExtendedControls && fanKeys.has(key)) postFanDriverstore[key] = value;
+    else driverstore[key] = value;
+  }
   const perControl = {};
 
-  if (Object.keys(driverstore).length > 0) {
-    log(`[apply] driverstore controls: [${Object.keys(driverstore).join(', ')}] (single attempt)`);
-    const out = await applyOnce({ backend, deviceId, settings: driverstore, opts, log });
+  const applyDriverstore = async (controls) => {
+    if (Object.keys(controls).length === 0) return;
+    log(`[apply] driverstore controls: [${Object.keys(controls).join(', ')}] (single attempt)`);
+    const out = await applyOnce({ backend, deviceId, settings: controls, opts, log });
     Object.assign(perControl, out.result.perControl);
 
-    // Momentary-lie guard for the driverstore part: re-read mismatches once
-    // after the delay. A match = the write persisted (lagging read-back);
-    // still mismatched = honest fail.
-    const candidates = Object.keys(driverstore).filter((k) => isMomentaryLieCandidate(perControl[k]));
+    const candidates = Object.keys(controls).filter((k) => isMomentaryLieCandidate(perControl[k]));
     if (candidates.length > 0) {
-      log(`[apply] delayed re-read for [${candidates.join(', ')}] after ${delayedVerifyMs} ms (momentary-lie guard)`);
+      log(`[apply] delayed re-read for [${candidates.join(', ')}] after ${delayedVerifyMs} ms (the momentary-lie guard)`);
       await sleep(delayedVerifyMs);
       let state = null;
       try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded re-read */ }
       if (state) {
         for (const key of candidates) {
-          const wanted = driverstore[key];
+          const wanted = controls[key];
           const got = state[key];
           if (typeof wanted === 'number' && typeof got === 'number' && nearlyEqual(got, wanted)) {
             log(`[apply] delayed re-read MATCHED ${key} (${got}) - write persisted`);
@@ -823,12 +831,19 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
         }
       }
     }
-  }
+  };
+
+  await applyDriverstore(driverstore);
 
   if (Object.keys(extended).length > 0) {
     log(`[apply] extended controls: [${Object.keys(extended).join(', ')}] via the bundled 2023 IGCL runtime`);
     const missingLegacyTarget = typeof deviceKey !== 'string' && deviceId != null && deviceId !== 0;
-    for (const [key, value] of Object.entries(extended)) {
+    // M41: deterministic Acer-compatible order - temperature before power,
+    // independent of payload key insertion order.
+    const extendedEntries = ['tempLimitC', 'powerLimitW']
+      .filter((key) => Object.prototype.hasOwnProperty.call(extended, key))
+      .map((key) => [key, extended[key]]);
+    for (const [key, value] of extendedEntries) {
       // M45: a secondary device must carry the physical PCI/BDF proof
       // derived by physicalTargetOf(). Never let a missing legacy identity
       // fall through to OldIgcl's primary-device behavior.
@@ -878,6 +893,8 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       try { await backend.restoreWaiverState(deviceId, false); } catch { /* best effort */ }
     }
   }
+  await applyDriverstore(postFanDriverstore);
+
 
   // M17g: THE V2 COMPANION + the pl2Note (the PL2-on-advanced fix + the
   // PL1/PL2 read-out's tracking source). After BOTH routed blocks have
@@ -1084,22 +1101,15 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const deviceKey = typeof physicalTarget?.legacyDeviceKey === 'string'
     ? physicalTarget.legacyDeviceKey
     : null;
-  // M3-C step-5 F1: advanced mode + a NOT-capable 2023 runtime (the
-  // future-driver degradation) -> refuse extended values BEFORE the clamp,
-  // never a silent 252 W / 90 C cap that reports ok:true. The capability
-  // check is honest on both sides of the worker boundary. The refusal is a
-  // config/capability refusal: the fresh state is read back (the device was
-  // never touched) and no defaults-restore fallback runs downstream.
-  // M4O: a profileApply keys this safety net on the RUNTIME capability
-  // (oldIgcl.isCapable) instead of the mode-gated caps.extendedRanges - the
-  // callers (applyProfile / the ipc-core profileApply path) gate first;
-  // this is belt-and-suspenders for direct callers. Without it the
-  // always-elevated packaged app's TRAY apply of a 315 W profile in stock
-  // mode would refuse here (caps.extendedRanges is false in stock mode).
-  const extendedCapable = opts.profileApply === true && oldIgcl
+  // M3-C/M46: the runtime-write capability is independent from the
+  // mode-selected display ranges. An installed DLL can still fail ctlInit
+  // with ERROR_KMD_CALL on this driver; values above the DriverStore ceiling
+  // refuse before any clamp, while in-range values remain writable through
+  // the normal DriverStore path.
+  const runtimeCapable = oldIgcl
     ? await oldIgcl.isCapable()
     : caps.extendedRanges === true;
-  const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: extendedCapable });
+  const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: runtimeCapable });
   if (unavailable) {
     log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
     let state = null;
@@ -1118,7 +1128,18 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
       ? clampAndSnap(value, range)
       : value;
   }
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
+  // If the real bundled runtime is installed but cannot initialize, keep
+  // Advanced active for the UI while routing <=252 W / <=90 C through
+  // DriverStore. Test/null adapters without an installation seam retain the
+  // explicit unsupported V1 result rather than silently changing semantics.
+  const routeMode = ocMode === OC_MODE_ADVANCED
+    && oldIgcl
+    && runtimeCapable === false
+    && typeof oldIgcl.isAvailable === 'function'
+    && oldIgcl.isAvailable() === true
+    ? OC_MODE_STOCK
+    : ocMode;
+  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: routeMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   return { result: out.result, state };
