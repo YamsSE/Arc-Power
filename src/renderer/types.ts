@@ -113,6 +113,9 @@ export interface Capabilities {
    *  >315 W range applies through the sysman pair) and applies above the
    *  DriverStore clamp route to it. */
   extendedRanges?: boolean;
+  /** M46: selected OC mode controls displayed W/C ceilings independently
+   * from the bundled-runtime capability flag. */
+  ocMode?: 'stock' | 'advanced';
   /** M17c: the APPENDED AIB-identity fields (absent -> null). The backend
    *  decodes them from the IGCL subsystem fields (pci_subsys_vendor_id /
    *  pci_subsys_id) at enumeration + the laptop-manufacturer branch from the

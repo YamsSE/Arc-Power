@@ -11,11 +11,10 @@ import { MAX_CURVE_POINTS } from './curve.ts';
 import { A770_PCI_DEVICE_ID, deviceLimitsOf } from './device-limits.ts';
 
 // F3 PT clamp (M2C-A): the driver setter refuses temp limits above 90 C
-// (0x44000005); the exposed max is pinned here on top of the backend clamp so
-// sliders/presets can never offer an un-appliable value. M2C-C: the pin
-// yields to the extended range (115 C) when the device reports
-// caps.extendedRanges - values above 90 C then route to the bundled 2023
-// IGCL runtime.
+// (0x44000005). The exposed max is pinned here on top of the backend clamp
+// for Stock mode. M2C-C/M46: Advanced mode may display the documented 115 C
+// target even when the bundled 2023 runtime is unavailable; the apply gate,
+// not this display clamp, owns that capability refusal.
 export const TEMP_LIMIT_MAX_C = 90;
 // M3-C-D + M21: the V1 write-side PL range max (old-igcl.js
 // EXTENDED_PL_RANGE) - the bundled 2023 runtime's ctlOverclockPowerLimitSet
@@ -93,10 +92,18 @@ export const VOLT_OFFSET_STEP_V = 0.001;
  */
 export function clampExposedRange(range: RangeInfo | undefined, key: string, caps?: Capabilities): RangeInfo | undefined {
   if (!range) return range;
-  if (key === 'powerLimitW' && range.units === 'W' && !caps?.extendedRanges && range.max > STD_PL_MAX_W) {
+  // M46: Advanced display ranges are mode-selected, not proof that the
+  // bundled 2023 runtime loaded. The main backend intentionally exposes the
+  // documented 375 W / 115 C targets in Advanced even when that runtime's
+  // capability probe is unavailable; the apply gate refuses only the values
+  // that require the unavailable runtime. Keep the legacy flag-only behavior
+  // for older capability payloads that do not carry ocMode.
+  const advancedDisplay = caps?.ocMode === 'advanced'
+    || (caps?.ocMode === undefined && caps?.extendedRanges === true);
+  if (key === 'powerLimitW' && range.units === 'W' && !advancedDisplay && range.max > STD_PL_MAX_W) {
     return { ...range, max: STD_PL_MAX_W, default: Math.min(range.default, STD_PL_MAX_W) };
   }
-  if (key === 'tempLimitC' && range.units === 'C' && !caps?.extendedRanges && range.max > TEMP_LIMIT_MAX_C) {
+  if (key === 'tempLimitC' && range.units === 'C' && !advancedDisplay && range.max > TEMP_LIMIT_MAX_C) {
     return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
   }
   if (key === 'gpuVoltOffsetV' && range.units === 'V') {

@@ -753,31 +753,29 @@ export class MockBackend {
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    // M17d: the STOCK/ADVANCED SPLIT (round-1 S1) - the mock mirror selects
-    // the ADVANCED shape when caps.extendedRanges is true and the STOCK
-    // shape otherwise - NOT the same row in both modes (the round-3-N3 rule
-    // FLIPS to "listed-row advanced ceiling = the app-verified KMD
-    // ceiling": A770 375/115, A750 270/115 - probe-verified 2026-08-12).
-    const limits = deviceLimitsOf(identity, { advanced: caps.extendedRanges === true });
+    // M46: displayed Advanced W/C ceilings are mode-selected, independent
+    // from the bundled-runtime capability flag. The real backend exposes the
+    // documented 375 W / 115 C shape in Advanced even when the runtime probe
+    // is unavailable; the apply gate still owns the honest runtime refusal.
+    const advanced = this._ocMode === 'advanced';
+    caps.ocMode = this._ocMode;
+    const limits = deviceLimitsOf(identity, { advanced });
     if (limits) {
-      // The UNLISTED path gets the DEFAULT row of the ACTIVE range set
-      // (stock 252/90, extended 315/115); a LISTED card's row is the ACTIVE
-      // shape (stock or advanced - round-2 S8).
-      const row = limits.listed ? limits : defaultLimitsOf(caps.extendedRanges === true);
+      const row = limits.listed ? limits : defaultLimitsOf(advanced);
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;
         const range = caps.ranges[canonical];
         if (!range) continue;
         // The M4-E units rule: the table speaks W/V/C - percent-unit
-        // ranges (Battlemage) are never touched.
+        // ranges (Battlemage: volt/PL/TL as %) are never touched.
         if (canonical === 'powerLimitW' && range.units !== 'W') continue;
         if (canonical === 'tempLimitC' && range.units !== 'C') continue;
         if (canonical === 'gpuVoltOffsetV' && range.units !== 'V') continue;
         let next = range;
         if (typeof override.max === 'number') {
           if (canonical === 'gpuVoltOffsetV') {
-            // The volt maxes are the M15 probe-ceiling PINS (both
-            // directions); the store merge below is the only downward force.
+            next = { ...next, max: override.max };
+          } else if (advanced) {
             next = { ...next, max: override.max };
           } else {
             next = { ...next, max: Math.min(range.max, override.max) };
