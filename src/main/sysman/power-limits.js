@@ -76,6 +76,30 @@ export const SAFE_VOLT_OFFSET_MAX_V = 0.234;
 // canonical volts to the driver's mV. No live probe may write below -300 mV.
 
 const W = (powerMw) => Math.round((powerMw / 1000) * 10) / 10;
+const normalizePciId = (value) => {
+  const normalized = typeof value === 'number' && Number.isFinite(value)
+    ? Math.trunc(value).toString(16)
+    : typeof value === 'string' ? value.trim().toLowerCase().replace(/^0x/, '') : '';
+  return /^[0-9a-f]{1,8}$/.test(normalized)
+    ? normalized.slice(-4).padStart(4, '0')
+    : null;
+};
+
+// The current native consumer resolves one power domain (the first Sysman
+// adapter). It may therefore serve the Acer bridge only when the caller proves
+// that the selected inventory row is that exact Intel A770 at card index 0.
+// Refusing every other target is safer than silently reading another GPU.
+export function isAcerSysmanTarget(physicalTarget, deviceId) {
+  return Number.isInteger(deviceId)
+    && deviceId >= 0
+    // The native consumer resolves the first Sysman power domain. The only
+    // safe bridge target is the matching Windows display-card ordinal 0;
+    // nonzero ordinals could otherwise read/write another adapter.
+    && physicalTarget?.displayCardIndex === 0
+    && normalizePciId(physicalTarget?.pciVendorId) === '8086'
+    && normalizePciId(physicalTarget?.pciDeviceId) === '56a0';
+}
+
 
 /**
  * The real sysman power-limits adapter. Lazily resolves ze_loader.dll + the
@@ -479,6 +503,10 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
         return null;
       }
     },
+    async readLimitsForTarget(physicalTarget, deviceId = 0) {
+      if (!isAcerSysmanTarget(physicalTarget, deviceId)) return null;
+      return this.readLimits(deviceId);
+    },
 
     /**
      * Write the sustained + burst pair (mW in the structs - the legacy
@@ -519,6 +547,12 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
         noteDegrade();
         return { ok: false, errorCode: 'io-failed', message: msg };
       }
+    },
+    setLimitsForTarget(physicalTarget, limits, deviceId = 0) {
+      if (!isAcerSysmanTarget(physicalTarget, deviceId)) {
+        return { ok: false, errorCode: 'target-mismatch', message: 'Sysman power domain is not proven to be the selected Intel Arc A770' };
+      }
+      return this.setLimits(limits);
     },
 
     /**
@@ -867,6 +901,16 @@ export function createMockSysmanPowerLimits({ backend }) {
         // answer stay unconditional
       }
       return { ok: true };
+    },
+    async readLimitsForTarget(physicalTarget, deviceId = 0) {
+      if (!isAcerSysmanTarget(physicalTarget, deviceId)) return null;
+      return this.readLimits(deviceId);
+    },
+    async setLimitsForTarget(physicalTarget, limits, deviceId = 0) {
+      if (!isAcerSysmanTarget(physicalTarget, deviceId)) {
+        return { ok: false, errorCode: 'target-mismatch', message: 'Sysman power domain is not proven to be the selected Intel Arc A770' };
+      }
+      return this.setLimits(limits, deviceId);
     },
 
     // M26: mock parity methods for voltage offset. Deterministic state

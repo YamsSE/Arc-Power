@@ -315,6 +315,9 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         // (the worker's own caps decode the subsystem only; the parent's
         // finalized caps carry the laptop branch).
         limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
+        allowAcerBridge: false,
+        interactiveContext: null,
+        acerPackagedApplyEnabled: false,
       });
       const result = normalizeResult(out);
       recordRefusals(result);
@@ -329,7 +332,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
-    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
+    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits, allowAcerBridge: false, interactiveContext: null, acerPackagedApplyEnabled: false });
     recordRefusals(out.result);
     return out;
   };

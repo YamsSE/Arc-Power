@@ -74,7 +74,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // M6-amd3: the shrunk Overlay card is BUTTON-ONLY (the enable toggle
   // moved to the Overlay view - M6 the #/overlay page, M9 the Monitoring
   // page's Overlay view; the old #/overlay page is gone).
-  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
+  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; acerPackagedApplyEnabled: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
   let bootState: StartupGetState | null = null;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
@@ -94,6 +94,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // 1.0.1: the persisted theme (the store normalizes - an unexpected
       // value degrades to the dark default defensively).
       theme: isValidTheme(envelope.settings.theme) ? envelope.settings.theme : 'dark',
+      acerPackagedApplyEnabled: envelope.settings.acerPackagedApplyEnabled === true,
     };
   } catch (err) {
     clear(root);
@@ -234,6 +235,27 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           : 'No log file is written.',
       }),
     ]);
+    const acerBridgeCard = el('section', { class: 'card settings-card' }, [
+      el('h2', { class: 'card-title', text: 'Acer packaged apply bridge (experimental)' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'acerPackagedApplyEnabled' },
+            checked: persisted.acerPackagedApplyEnabled,
+            onchange: (ev: Event) => void onAcerBridgeToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Allow extended A770 power-limit applies through the Acer package' }),
+        ]),
+      ]),
+      el('p', {
+        class: 'card-note settings-state',
+        text: persisted.acerPackagedApplyEnabled
+          ? 'Acer must be closed. Arc Power briefly starts it hidden, edits two profile files temporarily, restores them after exit, and hardware may clamp requests.'
+          : 'Disabled. Extended A770 power requests use the normal route and are never silently delegated to Acer.',
+      }),
+    ]);
 
     // 1.0.1 Themes: the Theme card - one swatch per theme
     // (button[data-theme-option="dark|midnight|light"]). The color chips
@@ -289,7 +311,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, overlayCard, themeCard, aboutCard);
+    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, acerBridgeCard, overlayCard, themeCard, aboutCard);
   };
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
@@ -370,6 +392,19 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast(checked ? 'success' : 'info', checked ? 'Log to file enabled' : 'Log to file disabled', '');
     } catch (err) {
       toast('error', 'Log to file could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = !checked;
+      return;
+    }
+    await refresh();
+  };
+  const onAcerBridgeToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="acerPackagedApplyEnabled"]');
+    try {
+      await api.profilesSettingsSave({ acerPackagedApplyEnabled: checked });
+      persisted.acerPackagedApplyEnabled = checked;
+      toast(checked ? 'success' : 'info', checked ? 'Acer packaged apply bridge enabled' : 'Acer packaged apply bridge disabled', '');
+    } catch (err) {
+      toast('error', 'Acer packaged apply bridge could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = !checked;
       return;
     }

@@ -353,6 +353,7 @@ export class ProfileStore {
         waiverAccepted: false, ocOnBoot: false, activeProfileId: null,
         ocMode: this.ocModeDefault, advancedModeAccepted: false,
         startWithWindows: false, startMinimized: false, closeToTray: false,
+        acerPackagedApplyEnabled: false,
         monitorLogToFile: false,
         deviceId: null,
         deviceKey: null,
@@ -405,6 +406,7 @@ export class ProfileStore {
       // M4-B: the Advanced OC Mode warning is accepted ONCE and
       // persisted - a re-boot must not re-ask. Absent on old files -> false.
       advancedModeAccepted: data.advancedModeAccepted === true,
+      acerPackagedApplyEnabled: data.acerPackagedApplyEnabled === true,
       // M4-D: the Settings-tab fields. Absent on old files -> false (same
       // absent-field default mechanism as ocMode/advancedModeAccepted).
       startWithWindows: data.startWithWindows === true,
@@ -483,6 +485,7 @@ export class ProfileStore {
       waiverAccepted: settings.waiverAccepted === true,
       ocOnBoot: settings.ocOnBoot === true,
       activeProfileId: settings.activeProfileId ?? null,
+      acerPackagedApplyEnabled: settings.acerPackagedApplyEnabled === true,
       ocMode: settings.ocMode === 'advanced' || settings.ocMode === 'stock' ? settings.ocMode : this.ocModeDefault,
       advancedModeAccepted: settings.advancedModeAccepted === true,
       startWithWindows: settings.startWithWindows === true,

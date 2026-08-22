@@ -212,9 +212,12 @@ function idleMsFromEnv() {
  * result mapping. The one-shot form writes the payload to the out file;
  * the pipe form writes it as a JSON line on the connection - the payload
  * shape is IDENTICAL so the proxy's consumer contract never diverges.
- * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown, offsetV?: unknown, deviceId?: unknown }} req
+ * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown, offsetV?: unknown, deviceId?: unknown, physicalTarget?: object }} req
  * @param {{
  *   readLimits: (deviceId?: number) => object | null | Promise<object | null>,
+ *   readLimitsForTarget?: (physicalTarget: object, deviceId?: number) => object | null | Promise<object | null>,
+ *   setLimits: ({ sustainedW: number, burstW: number }, deviceId?: number) => object | Promise<object>,
+ *   setLimitsForTarget?: (physicalTarget: object, limits: { sustainedW: number, burstW: number }, deviceId?: number) => object | Promise<object>,
  *   readVoltageOffsetResult?: (deviceId?: number) => { ok: boolean, targetV?: number, offsetV?: number, errorCode?: string, message?: string },
  *   readVoltageOffset?: (deviceId?: number) => { targetV: number, offsetV: number } | null,
  *   setVoltageOffset?: ({ offsetV: number }, deviceId?: number) => { ok: boolean, offsetV?: number, errorCode?: string, message?: string },
@@ -225,6 +228,20 @@ function idleMsFromEnv() {
  */
 async function dispatchRequest(req, consumer, log) {
   const op = req?.op;
+  if (op === 'read-target') {
+    if (typeof consumer.readLimitsForTarget !== 'function') {
+      return { payload: { ok: false, errorCode: 'unsupported', message: 'target-bound Sysman power read is unavailable' }, exitCode: 0 };
+    }
+    let limits = null;
+    try {
+      limits = await consumer.readLimitsForTarget(req?.physicalTarget, Number.isInteger(req?.deviceId) ? req.deviceId : 0);
+    } catch (err) {
+      log(`readLimitsForTarget failed: ${err.message}`);
+    }
+    if (limits && typeof limits === 'object') return { payload: { ok: true, ...limits }, exitCode: 0 };
+    return { payload: { ok: false, errorCode: 'unavailable', message: 'the target-bound Sysman power read returned no limits' }, exitCode: 0 };
+  }
+
   if (op === 'read') {
     // The read dispatch: readLimits -> { ok: true, sustainedW?, burstW?,
     // peakW? } | { ok: false, errorCode?, message? } - a null read (the
@@ -239,6 +256,32 @@ async function dispatchRequest(req, consumer, log) {
       return { payload: { ok: true, ...limits }, exitCode: 0 };
     }
     return { payload: { ok: false, errorCode: 'unavailable', message: 'the sysman power-limits read returned no limits (the consumer is unavailable)' }, exitCode: 0 };
+  }
+
+  if (op === 'set-target') {
+    if (typeof consumer.setLimitsForTarget !== 'function') {
+      return { payload: { ok: false, errorCode: 'unsupported', message: 'target-bound Sysman power write is unavailable' }, exitCode: 0 };
+    }
+    const sustainedW = req.sustainedW;
+    const burstW = req.burstW;
+    if (!Number.isFinite(sustainedW) || !Number.isFinite(burstW)) {
+      return { payload: { ok: false, errorCode: 'invalid-argument', message: 'sustainedW and burstW must be finite numbers' }, exitCode: 1 };
+    }
+    let result = null;
+    try {
+      result = await consumer.setLimitsForTarget(
+        req?.physicalTarget,
+        { sustainedW, burstW },
+        Number.isInteger(req?.deviceId) ? req.deviceId : 0,
+      );
+    } catch (err) {
+      log(`setLimitsForTarget failed: ${err.message}`);
+      result = { ok: false, errorCode: 'io-failed', message: err.message };
+    }
+    if (!result || typeof result !== 'object') {
+      result = { ok: false, errorCode: 'io-failed', message: 'the target-bound setLimits call returned no result' };
+    }
+    return { payload: result, exitCode: 0 };
   }
 
   if (op === 'set') {

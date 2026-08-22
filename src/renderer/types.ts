@@ -576,6 +576,8 @@ export interface ProfileSettingsState {
   ocMode: OcMode;
   /** M4-B: the once-only Advanced OC Mode warning acceptance. */
   advancedModeAccepted: boolean;
+  /** M42: explicit opt-in for the experimental Acer packaged bridge. */
+  acerPackagedApplyEnabled: boolean;
   /** M4-D: the Settings-tab fields (absent on old files -> false). */
   startWithWindows: boolean;
   startMinimized: boolean;

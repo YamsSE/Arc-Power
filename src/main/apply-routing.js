@@ -25,6 +25,43 @@ import { deviceLimitsOf } from '../renderer/pure/device-limits.ts';
 
 export const STD_PL_MAX_W = 252;
 export const STD_TL_MAX_C = 90;
+/** M42: the Acer packaged bridge is restricted to a physical Intel Arc A770. */
+export function hasAcerA770PciIdentity(physicalTarget, limitsKey = null) {
+  const target = physicalTarget && typeof physicalTarget === 'object' ? physicalTarget : {};
+  const limits = limitsKey && typeof limitsKey === 'object' ? limitsKey : {};
+  const normalize = (value) => typeof value === 'string'
+    ? value.toLowerCase().replace(/^0x/, '').replace(/^0+/, '') : '';
+  const rawDevice = target.pciDeviceId ?? limits.pciDeviceId;
+  const rawVendor = target.pciVendorId ?? limits.pciVendorId ?? limits.vendorId ?? limits.aibVendor;
+  return normalize(rawDevice) === '56a0' && normalize(rawVendor) === '8086';
+}
+
+export function isAcerA770Target(physicalTarget, limitsKey = null) {
+  const target = physicalTarget && typeof physicalTarget === 'object' ? physicalTarget : {};
+  if (target.synthetic === true || target.backendKind === 'os' || target.identityAmbiguous === true) return false;
+  // The native Sysman consumer resolves the first power domain. Require the
+  // matching display-card ordinal 0; accepting a nonzero ordinal could mutate
+  // a different adapter while the PCI IDs still look like an A770.
+  if (target.displayCardIndex !== 0) return false;
+  // PCI IDs are vendor-scoped. Missing vendor proof is not an authorization.
+  return hasAcerA770PciIdentity(physicalTarget, limitsKey);
+}
+
+/** M42: only a validated parent context may authorize the packaged route. */
+export function isInteractiveApplyContext(context) {
+  return context?.applyContext === 'interactive'
+    && typeof context.owner === 'string' && context.owner.length > 0
+    && typeof context.token === 'string' && context.token.length >= 16
+    && typeof context.requestId === 'string' && context.requestId.length >= 8
+    && context.requestBinding === context.requestId;
+}
+
+export function acerBridgePowerRequest({ settings, mode, physicalTarget, limitsKey = null }) {
+  return mode === OC_MODE_ADVANCED
+    && typeof settings?.powerLimitW === 'number'
+    && settings.powerLimitW > STD_PL_MAX_W
+    && isAcerA770Target(physicalTarget, limitsKey);
+}
 
 /**
  * M17c: resolve the DEVICE-SCOPED gate thresholds from the pure limits
@@ -496,7 +533,7 @@ export function requiresExtendedRange(settings, ranges = null) {
  *   the KMD-arbitration refusal, 'not-ready' for the persistent not-ready,
  *   'io-failed' for threw/no-movement). Never throws.
  */
-export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, deviceKey = null, limitsKey = null, clampAdvanced = false, extendedW, sysmanPrimary = false, oldIgcl = null, sleep = defaultSleep, delayedVerifyMs = DELAYED_VERIFY_MS }) {
+export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, deviceKey = null, legacyDeviceKey = deviceKey, limitsKey = null, clampAdvanced = false, extendedW, sysmanPrimary = false, oldIgcl = null, sleep = defaultSleep, delayedVerifyMs = DELAYED_VERIFY_MS }) {
   if (!sysmanPowerLimits) return null;
   let res;
   try {
@@ -597,7 +634,7 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
           let reV1;
           if (oldIgcl && typeof oldIgcl.setPowerLimitW === 'function') {
             try {
-              reV1 = await callOldSetter(oldIgcl, 'setPowerLimitW', requestedW, deviceId, deviceKey);
+              reV1 = await callOldSetter(oldIgcl, 'setPowerLimitW', requestedW, deviceId, legacyDeviceKey);
             } catch (err) {
               log(`[apply] sysman companion: the V2-CLAMP wrote PL2 = ${valueW} W but the re-V1 (PL1 = ${requestedW} W) threw (${err instanceof Error ? err.message : String(err)}) - PL1 is uncertain - the honest { landed: false } (no '(set)' claim)`);
               return { landed: false };
@@ -1026,11 +1063,217 @@ export function isMomentaryLieCandidate(per) {
  *   mode?: string | null,
  *   sysmanPowerLimits?: object | null,
  *   limitsKey?: object | null,
+ *   acerPackagedBridge?: { apply: (request: object) => Promise<object> } | null,
+ *   allowAcerBridge?: boolean,
+ *   acerPackagedApplyEnabled?: boolean,
+ *   interactiveContext?: object | null,
+ *   baseline?: object | null,
+ *   currentSettings?: object | null,
  * }} deps
- * @returns {Promise<object>}
  */
-export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
+async function applySettingsRoutedUnlocked({ backend, oldIgcl, deviceId, deviceKey = null, legacyDeviceKey = deviceKey, physicalTarget: routePhysicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null, acerPackagedBridge = null, allowAcerBridge = false, acerPackagedApplyEnabled = false, interactiveContext = null, baseline = null, currentSettings = null }) {
+  const physicalTarget = opts.physicalTarget ?? routePhysicalTarget;
+  const bridgeRequest = acerBridgePowerRequest({ settings, mode, physicalTarget, limitsKey });
+  const bridgeContext = allowAcerBridge === true && isInteractiveApplyContext(interactiveContext);
+  const bridgeInteractive = bridgeRequest && bridgeContext;
+  const bridgeEnabled = bridgeInteractive && acerPackagedApplyEnabled === true;
+  const bridgeRouted = bridgeEnabled && acerPackagedBridge && typeof acerPackagedBridge.apply === 'function';
+  if (acerPackagedBridge?.isRecoveryRequired?.() === true) {
+    const perControl = Object.fromEntries(Object.keys(settings ?? {}).map((key) => [key, {
+      ok: false,
+      readBackEqual: false,
+      errorCode: 'recovery-required',
+      message: 'Acer packaged bridge recovery is required before any control can be changed',
+    }]));
+    return { result: { ok: false, perControl }, attempts: 1 };
+  }
+  const bridgeRefusal = bridgeInteractive && !bridgeRouted;
+  let bridgePreflightPair = null;
+  let bridgeRecoveryBaseline = null;
+  let routeRecoveryPrepared = false;
+  let routeRecoveryPending = false;
+  let bridgeReservation = null;
+  let routeReservation = null;
+  let bridgePreflightProfileCoreVoltage = null;
+  const ambiguousAcerRequest = bridgeInteractive
+    && acerPackagedApplyEnabled === true
+    && mode === OC_MODE_ADVANCED
+    && typeof settings?.powerLimitW === 'number'
+    && settings.powerLimitW > STD_PL_MAX_W
+    && hasAcerA770PciIdentity(physicalTarget, limitsKey)
+    && !isAcerA770Target(physicalTarget, limitsKey);
+  if (ambiguousAcerRequest) {
+    log(`[apply] Acer packaged bridge refusal for ${settings.powerLimitW} W - physical display-card proof is missing`);
+    return {
+      result: {
+        ok: false,
+        perControl: {
+          powerLimitW: {
+            ok: false,
+            readBackEqual: false,
+            errorCode: 'target-mismatch',
+            message: 'the Intel Arc A770 display-card index proof is unavailable; no controls changed',
+          },
+        },
+      },
+      attempts: 1,
+    };
+  }
+  // The bridge preflight is deliberately read-only and must complete before
+  // any DriverStore, Sysman voltage, temperature, or fan/VF write.
+  if (bridgeRouted) {
+    let bridgePreflight;
+    if (typeof acerPackagedBridge.preflight !== 'function') {
+      bridgePreflight = {
+        ok: false,
+        errorCode: 'acer-bridge-preflight-unavailable',
+        message: 'Acer packaged bridge preflight is unavailable; no controls changed.',
+      };
+    } else {
+      try {
+        bridgePreflight = await acerPackagedBridge.preflight({
+          deviceId,
+          deviceKey,
+          physicalTarget,
+          requestedW: settings.powerLimitW,
+          baseline,
+          interactiveContext,
+          allowAcerBridge: true,
+          acerPackagedApplyEnabled: true,
+        });
+      } catch (error) {
+        bridgePreflight = {
+          ok: false,
+          errorCode: 'acer-bridge-preflight-error',
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    if (bridgePreflight?.ok !== true) {
+      log(`[apply] Acer packaged bridge preflight refusal for ${settings.powerLimitW} W - no controls changed`);
+      let reservationMessage = '';
+      if (bridgeReservation) {
+        try {
+          const released = await acerPackagedBridge.releaseReservation(bridgeReservation);
+          if (released?.ok !== true) {
+            acerPackagedBridge.markRecoveryRequired?.();
+            reservationMessage = `; ${released?.message ?? 'reservation release failed'}`;
+          } else {
+            bridgeReservation = null;
+          }
+        } catch (error) {
+          acerPackagedBridge.markRecoveryRequired?.();
+          reservationMessage = `; ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              requestedW: settings.powerLimitW,
+              errorCode: bridgePreflight?.errorCode ?? 'acer-bridge-preflight-failed',
+              message: `${bridgePreflight?.message ?? 'Acer packaged bridge preflight failed; no controls changed.'}${reservationMessage}`,
+            },
+          },
+        },
+        attempts: 1,
+      };
+    }
+    bridgePreflightPair = bridgePreflight.physicalPair;
+    bridgePreflightProfileCoreVoltage = bridgePreflight.profileCoreVoltage ?? null;
+  }
+  // Reserve the shared Acer transaction lock after the read-only preflight.
+  // Ordinary routed writes take the same lock without requiring Acer to be
+  // closed; this prevents a second Arc Power process from changing hardware
+  // while the bridge owns the rollback baseline and temporary files.
+  if (bridgeRouted) {
+    if (typeof acerPackagedBridge.reserve !== 'function') {
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              requestedW: settings.powerLimitW,
+              errorCode: 'acer-bridge-reservation-unavailable',
+              message: 'Acer packaged bridge reservation is unavailable; no controls changed.',
+            },
+          },
+        },
+        attempts: 1,
+      };
+    }
+    const reservation = await acerPackagedBridge.reserve({
+      requestId: interactiveContext?.requestId ?? null,
+      requireAcerClosed: true,
+    });
+    if (reservation?.ok !== true) {
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              requestedW: settings.powerLimitW,
+              errorCode: reservation?.errorCode ?? 'acer-bridge-reservation-failed',
+              message: reservation?.message ?? 'Acer packaged bridge reservation failed; no controls changed.',
+            },
+          },
+        },
+        attempts: 1,
+      };
+    }
+    bridgeReservation = reservation;
+  } else if (!bridgeRefusal && acerPackagedBridge && typeof acerPackagedBridge.reserve === 'function') {
+    const reservation = await acerPackagedBridge.reserve({
+      requestId: interactiveContext?.requestId ?? null,
+      requireAcerClosed: false,
+    });
+    if (reservation?.ok !== true) {
+      const perControl = Object.fromEntries(Object.keys(settings ?? {}).map((key) => [key, {
+        ok: false,
+        readBackEqual: false,
+        errorCode: reservation?.errorCode ?? 'acer-bridge-reservation-failed',
+        message: reservation?.message ?? 'another Arc Power transaction is active; no controls changed',
+      }]));
+      return { result: { ok: false, perControl }, attempts: 1 };
+    }
+    routeReservation = reservation;
+  }
+  let bridgeApplyStarted = false;
+  let bridgeCommitted = false;
+  try {
   const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode);
+  // An interactive Acer power request has no safe fallback. Refuse before
+  // DriverStore, voltage, or fan/VF phases when the opt-in bridge is absent
+  // or disabled; ordinary controls must not partially apply around it.
+  if (bridgeRefusal) {
+    const errorCode = acerPackagedBridge ? 'acer-bridge-disabled' : 'acer-bridge-unavailable';
+    const message = acerPackagedBridge
+      ? 'Acer packaged apply bridge is disabled; enable the experimental setting before applying extended A770 power.'
+      : 'Acer packaged apply bridge is unavailable; extended A770 power was not changed.';
+    log(`[apply] Acer packaged bridge refusal for ${settings.powerLimitW} W - no controls changed`);
+    return {
+      result: {
+        ok: false,
+        perControl: {
+          powerLimitW: {
+            ok: false,
+            readBackEqual: false,
+            errorCode,
+            message,
+            requestedW: settings.powerLimitW,
+          },
+        },
+      },
+      attempts: 1,
+    };
+  }
   // M41: only the explicit ADVANCED route uses the Acer phase split. The
   // mode-less threshold fallback retains its historical single driverstore
   // call, even when one W/C value happens to route to the bundled runtime.
@@ -1058,30 +1301,381 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     delete driverstore.gpuVoltOffsetV;
   }
 
-  const perControl = {};
-
-  // M26: a non-negative voltage request is the transition back to the IGCL
-  // control. A lock request also normalizes the IGCL offsets to zero (even
-  // when the voltage key is absent), so it must clear a previously routed
-  // Sysman offset before the lock lands.
-  const lockRequestsOffsetZero = !!(settings.gpuLock && typeof settings.gpuLock === 'object');
-  const nonNegativeVoltOffsetV = typeof settings.gpuVoltOffsetV === 'number' && settings.gpuVoltOffsetV >= 0
-    ? settings.gpuVoltOffsetV
-    : undefined;
-  if (voltageIsVUnit && (nonNegativeVoltOffsetV !== undefined || lockRequestsOffsetZero)) {
-    const clear = await clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log, strict: lockRequestsOffsetZero });
-    if (!clear.ok) {
-      delete driverstore.gpuVoltOffsetV;
-      if (lockRequestsOffsetZero) delete driverstore.gpuLock;
-      const failure = {
-        ok: false,
-        errorCode: clear.errorCode ?? 'io-failed',
-        message: clear.message ?? 'the prior negative sysman voltage offset could not be cleared',
-      };
-      perControl.gpuVoltOffsetV = failure;
-      if (lockRequestsOffsetZero) perControl.gpuLock = failure;
+  const bridgeBaselineAfterDirect = async () => {
+    if (!baseline || typeof baseline !== 'object') return null;
+    let state = null;
+    try {
+      const observed = await backend.getCurrentSettings(deviceId);
+      if (observed && typeof observed === 'object' && !Array.isArray(observed)) state = observed;
+    } catch { /* post-direct state is mandatory for the bridge baseline */ }
+    if (!state) return null;
+    const coreVoltage = Object.fromEntries(
+      ['gpuFreqOffsetMhz', 'gpuVoltOffsetV']
+        .filter((key) => key in state && Number.isFinite(state[key]))
+        .map((key) => [key, state[key]]),
+    );
+    const fan = Object.fromEntries(
+      ['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve']
+        .filter((key) => key in state)
+        .map((key) => [key, state[key]]),
+    );
+    const tempLimitC = Number.isFinite(state.tempLimitC) ? state.tempLimitC : null;
+    if (Object.keys(coreVoltage).length === 0 || Object.keys(fan).length === 0 || !Number.isFinite(tempLimitC)) return null;
+    if (!bridgePreflightPair
+      || !Number.isFinite(bridgePreflightPair.sustainedW) || !Number.isFinite(bridgePreflightPair.burstW)) return null;
+    let freshPair = bridgePreflightPair;
+    try {
+      const readPair = sysmanPowerLimits?.readLimitsForTarget;
+      if (typeof readPair === 'function') {
+        freshPair = await readPair.call(sysmanPowerLimits, physicalTarget, deviceId);
+        if (!freshPair
+          || freshPair.sustainedW !== bridgePreflightPair.sustainedW
+          || freshPair.burstW !== bridgePreflightPair.burstW) return null;
+      }
+    } catch { return null; }
+    let currentSysmanVoltageOffsetV = null;
+    if (sysmanVoltageOffsetCaptured) {
+      currentSysmanVoltageOffsetV = await readSysmanVoltageOffset();
+      if (!Number.isFinite(currentSysmanVoltageOffsetV)) return null;
     }
-  }
+    return {
+      ...baseline,
+      ...state,
+      power: { sustainedW: freshPair.sustainedW, burstW: freshPair.burstW },
+      coreVoltage,
+      fan,
+      tempLimitC,
+      ...(sysmanVoltageOffsetCaptured
+        ? { sysmanVoltageOffsetV: currentSysmanVoltageOffsetV }
+        : {}),
+    };
+  };
+
+  let priorSysmanVoltageOffsetV = null;
+  let sysmanVoltageOffsetCaptured = false;
+  const readSysmanVoltageOffset = async () => {
+    try {
+      if (typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function') {
+        const status = await sysmanPowerLimits.readVoltageOffsetResult(deviceId);
+        if (status?.ok === true && Number.isFinite(status.offsetV)) return status.offsetV;
+      } else if (typeof sysmanPowerLimits?.readVoltageOffset === 'function') {
+        const state = await sysmanPowerLimits.readVoltageOffset(deviceId);
+        if (Number.isFinite(state?.offsetV)) return state.offsetV;
+      }
+    } catch {}
+    return null;
+  };
+  const restoreSysmanVoltageOffset = async () => {
+    if (!sysmanVoltageOffsetCaptured) return { ok: true };
+    if (typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
+      return { ok: false, message: 'the prior Sysman voltage offset cannot be restored' };
+    }
+    try {
+      const written = await sysmanPowerLimits.setVoltageOffset({ offsetV: priorSysmanVoltageOffsetV }, deviceId);
+      if (written?.ok !== true) return { ok: false, message: written?.message ?? 'the prior Sysman voltage offset restore did not verify' };
+      const observed = await readSysmanVoltageOffset();
+      return Number.isFinite(observed) && nearlyEqual(observed, priorSysmanVoltageOffsetV)
+        ? { ok: true }
+        : { ok: false, message: 'the prior Sysman voltage offset restore read-back mismatched' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const restorePreBridgeBaseline = async (recoveryState = baseline) => {
+    const settingsToRestore = {
+      ...(recoveryState?.coreVoltage && typeof recoveryState.coreVoltage === 'object' ? recoveryState.coreVoltage : {}),
+      ...(recoveryState?.fan && typeof recoveryState.fan === 'object' ? recoveryState.fan : (recoveryState?.fanState ?? {})),
+      ...(Number.isFinite(recoveryState?.tempLimitC) ? { tempLimitC: recoveryState.tempLimitC } : {}),
+    };
+    for (const key of new Set([...Object.keys(driverstore), ...Object.keys(postFanDriverstore)])) {
+      if (key !== 'powerLimitW' && recoveryState?.[key] !== undefined) settingsToRestore[key] = recoveryState[key];
+    }
+    const restored = await applyOnce({ backend, deviceId, settings: settingsToRestore, opts, log });
+    if (restored?.result?.ok === false) return { ok: false, message: 'pre-bridge rollback write failed' };
+    let state;
+    try { state = await backend.getCurrentSettings(deviceId); } catch { return { ok: false, message: 'pre-bridge rollback read-back unavailable' }; }
+    if (!Object.entries(settingsToRestore).every(([key, value]) => JSON.stringify(state?.[key]) === JSON.stringify(value))) {
+      return { ok: false, message: 'pre-bridge rollback read-back mismatch' };
+    }
+    const voltageRestored = await restoreSysmanVoltageOffset();
+    if (!voltageRestored.ok) return voltageRestored;
+    return { ok: true };
+  };
+  const restoreBridgePowerPair = async () => {
+    const pair = bridgePreflightPair;
+    const setter = sysmanPowerLimits?.setLimitsForTarget;
+    const reader = sysmanPowerLimits?.readLimitsForTarget;
+    const assertTarget = backend?.assertDeviceTarget;
+    if (!pair || typeof setter !== 'function' || typeof reader !== 'function') {
+      return { ok: false, message: 'the pre-bridge Sysman power pair cannot be restored' };
+    }
+    if (typeof assertTarget !== 'function') {
+      return { ok: false, message: 'the pre-bridge Sysman target assertion is unavailable' };
+    }
+    try {
+      await assertTarget.call(backend, deviceId, deviceKey, physicalTarget);
+      const written = await setter.call(sysmanPowerLimits, physicalTarget, pair, deviceId);
+      if (written?.ok !== true) return { ok: false, message: written?.message ?? 'the pre-bridge Sysman power pair restore failed' };
+      await assertTarget.call(backend, deviceId, deviceKey, physicalTarget);
+      const observed = await reader.call(sysmanPowerLimits, physicalTarget, deviceId);
+      return observed?.sustainedW === pair.sustainedW && observed?.burstW === pair.burstW
+        ? { ok: true }
+        : { ok: false, message: 'the pre-bridge Sysman power pair restore read-back mismatched' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const releaseBridgeReservation = async () => {
+    if (!bridgeReservation) return { ok: true };
+    if (typeof acerPackagedBridge?.releaseReservation !== 'function') {
+      acerPackagedBridge?.markRecoveryRequired?.();
+      return { ok: false, message: 'Acer packaged bridge reservation release is unavailable' };
+    }
+    try {
+      const released = await acerPackagedBridge.releaseReservation(bridgeReservation);
+      if (released?.ok !== true) {
+        acerPackagedBridge?.markRecoveryRequired?.();
+        return released ?? { ok: false, message: 'Acer packaged bridge reservation release failed' };
+      }
+      bridgeReservation = null;
+      return released;
+    } catch (error) {
+      acerPackagedBridge?.markRecoveryRequired?.();
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const releaseRouteReservation = async () => {
+    if (!routeReservation) return { ok: true };
+    if (typeof acerPackagedBridge?.releaseReservation !== 'function') {
+      return { ok: false, message: 'Acer transaction reservation release is unavailable' };
+    }
+    try {
+      const released = await acerPackagedBridge.releaseReservation(routeReservation);
+      if (released?.ok === true) routeReservation = null;
+      return released?.ok === true ? released : (released ?? { ok: false, message: 'Acer transaction reservation release failed' });
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const persistRouteRecovery = async (recoveryBaseline = bridgeRecoveryBaseline ?? baseline) => {
+    const persist = acerPackagedBridge?.persistRecovery;
+    if (typeof persist !== 'function') return { ok: false, message: 'durable Acer route recovery is unavailable' };
+    const durableBaseline = {
+      ...(recoveryBaseline && typeof recoveryBaseline === 'object' ? recoveryBaseline : {}),
+      ...(bridgePreflightPair ? { power: bridgePreflightPair } : {}),
+      ...(bridgePreflightProfileCoreVoltage ? { coreVoltageProfile: bridgePreflightProfileCoreVoltage } : {}),
+      ...(sysmanVoltageOffsetCaptured && Number.isFinite(priorSysmanVoltageOffsetV)
+        ? { sysmanVoltageOffsetV: priorSysmanVoltageOffsetV }
+        : {}),
+    };
+    try {
+      return await persist.call(acerPackagedBridge, {
+        deviceId,
+        deviceKey,
+        physicalTarget,
+        baseline: durableBaseline,
+        requestedW: settings?.powerLimitW,
+        requestId: interactiveContext?.requestId ?? null,
+      });
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const prepareRouteRecovery = async () => {
+    const prepare = acerPackagedBridge?.prepareRouteRecovery;
+    if (typeof prepare !== 'function') return { ok: true, durable: false };
+    const recoveryBaseline = {
+      ...(baseline && typeof baseline === 'object' ? baseline : {}),
+      ...(bridgePreflightProfileCoreVoltage ? { coreVoltageProfile: bridgePreflightProfileCoreVoltage } : {}),
+      ...(bridgePreflightPair ? { power: bridgePreflightPair } : {}),
+      ...(sysmanVoltageOffsetCaptured && Number.isFinite(priorSysmanVoltageOffsetV)
+        ? { sysmanVoltageOffsetV: priorSysmanVoltageOffsetV }
+        : {}),
+    };
+    try {
+      return await prepare.call(acerPackagedBridge, {
+        deviceId,
+        deviceKey,
+        physicalTarget,
+        baseline: recoveryBaseline,
+        requestedW: settings?.powerLimitW,
+        requestId: interactiveContext?.requestId ?? null,
+        reservation: bridgeReservation,
+      });
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const clearPreparedRouteRecovery = async () => {
+    const clear = acerPackagedBridge?.clearPreparedRouteRecovery;
+    if (typeof clear !== 'function') return { ok: false, message: 'durable Acer route recovery cleanup is unavailable' };
+    try {
+      return await clear.call(acerPackagedBridge, {
+        reservation: bridgeReservation,
+        requestId: interactiveContext?.requestId ?? null,
+      });
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const clearRouteRecovery = async () => {
+    const clear = acerPackagedBridge?.clearRouteRecovery;
+    if (typeof clear !== 'function') return { ok: false, message: 'durable Acer route recovery cleanup is unavailable' };
+    try {
+      return await clear.call(acerPackagedBridge, {
+        ownerNonce: bridgeReservation?.ownerNonce ?? null,
+        requestId: interactiveContext?.requestId ?? null,
+      });
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+
+  const perControl = {};
+  const failAcerVoltagePrecondition = async (failure) => {
+    if (!bridgeRouted) return null;
+    let cleanupIssue = null;
+    const restored = await restoreSysmanVoltageOffset();
+    if (!restored.ok) cleanupIssue = restored.message ?? 'the prior Sysman voltage offset could not be restored';
+    if (!cleanupIssue && routeRecoveryPrepared) {
+      const cleared = await clearPreparedRouteRecovery();
+      if (cleared?.ok !== true) cleanupIssue = cleared?.message ?? 'durable Acer route recovery cleanup failed';
+    }
+    if (!cleanupIssue) {
+      const released = await releaseBridgeReservation();
+      if (released?.ok !== true) cleanupIssue = released?.message ?? 'Acer bridge reservation release failed';
+    }
+    if (cleanupIssue) acerPackagedBridge?.markRecoveryRequired?.();
+    const resultFailure = {
+      ...failure,
+      readBackEqual: false,
+      ...(cleanupIssue ? {
+        errorCode: 'recovery-required',
+        message: `${failure.message ?? 'Acer voltage precondition failed'}; ${cleanupIssue}; recovery is required`,
+      } : {}),
+    };
+    perControl.powerLimitW = resultFailure;
+    return { result: { ok: false, perControl }, attempts: 1 };
+  };
+  const runAcerBridge = async () => {
+    if (bridgeRefusal) {
+      perControl.powerLimitW = {
+        ok: false,
+        message: acerPackagedBridge
+          ? 'Acer packaged apply bridge is disabled; enable the experimental setting before applying extended A770 power.'
+          : 'Acer packaged apply bridge is unavailable; extended A770 power was not changed.',
+      };
+      log(`[apply] Acer packaged bridge refusal for ${settings.powerLimitW} W - nothing changed`);
+    } else if (bridgeRouted) {
+      let bridgeResult;
+      const bridgeBaseline = await bridgeBaselineAfterDirect();
+      bridgeRecoveryBaseline = bridgeBaseline;
+      if (!bridgeBaseline) {
+        bridgeResult = {
+          ok: false,
+          requestedW: settings.powerLimitW,
+          observed: null,
+          errorCode: 'readback-unavailable',
+          message: 'Acer packaged apply requires a verified post-direct core/voltage/fan/temperature/power state',
+          rollback: { ok: true, untouched: true },
+        };
+        acerPackagedBridge?.markRecoveryRequired?.();
+        await releaseBridgeReservation();
+      } else {
+        try {
+          bridgeApplyStarted = true;
+          bridgeResult = await acerPackagedBridge.apply({
+            deviceId,
+            deviceKey,
+            physicalTarget,
+            requestedW: settings.powerLimitW,
+            temperatureC: typeof settings.tempLimitC === 'number' ? settings.tempLimitC : currentSettings?.tempLimitC,
+            baseline: bridgeBaseline,
+            currentSettings: bridgeBaseline,
+            log,
+            allowAcerBridge: true,
+            acerPackagedApplyEnabled: true,
+            interactiveContext,
+            leaveRequestedPair: true,
+            reservation: bridgeReservation,
+            retainReservation: true,
+          });
+        } catch (err) {
+          bridgeApplyStarted = false;
+          await releaseBridgeReservation();
+          bridgeResult = {
+            ok: false,
+            requestedW: settings.powerLimitW,
+            observed: null,
+            errorCode: 'acer-bridge-error',
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+      const finalPairResult = bridgeResult;
+      const observed = finalPairResult?.observed;
+      const observedEqual = Number.isFinite(observed?.sustainedW)
+        && Number.isFinite(observed?.burstW)
+        && observed.sustainedW === settings.powerLimitW
+        && observed.burstW === settings.powerLimitW;
+      const bridgePairOk = finalPairResult?.ok === true && observedEqual;
+      perControl.powerLimitW = {
+        ...(finalPairResult && typeof finalPairResult === 'object' ? finalPairResult : {}),
+        ok: bridgePairOk,
+        readBackEqual: bridgePairOk,
+        requestedW: settings.powerLimitW,
+        ...(!bridgePairOk && finalPairResult?.ok === true
+          ? { errorCode: 'readback-mismatch', message: 'Acer packaged bridge did not verify the requested power pair' }
+          : {}),
+      };
+      bridgeCommitted = bridgePairOk;
+      const bridgeUntouched = finalPairResult?.rollback?.untouched === true;
+      const bridgeCleanupVerified = finalPairResult?.rollback?.ok === true;
+      if (perControl.powerLimitW.ok !== true && (bridgeCleanupVerified || bridgeUntouched)) {
+        const durableRoutePending = routeRecoveryPrepared
+          && !bridgeReservation
+          && !bridgeApplyStarted
+          && acerPackagedBridge?.isRecoveryRequired?.() === true;
+        if (durableRoutePending) {
+          routeRecoveryPending = true;
+          perControl.powerLimitW.errorCode = 'recovery-required';
+          perControl.powerLimitW.message = `${perControl.powerLimitW.message ?? 'Acer packaged bridge failed'}; durable route recovery is pending`;
+        } else {
+          const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
+            ? await acerPackagedBridge.assertQuiescent()
+            : { ok: true };
+          if (!bridgeQuiet.ok) {
+            routeRecoveryPending = true;
+            perControl.powerLimitW.errorCode = 'recovery-required';
+            perControl.powerLimitW.message = `${perControl.powerLimitW.message ?? 'Acer packaged bridge failed'}; ${bridgeQuiet.message ?? 'Acer process appeared before baseline rollback'}`;
+            acerPackagedBridge?.markRecoveryRequired?.();
+          } else {
+            let restored = await restorePreBridgeBaseline();
+            if (restored.ok && routeRecoveryPrepared) {
+              const cleared = bridgeReservation
+                ? await clearPreparedRouteRecovery()
+                : await clearRouteRecovery();
+              if (!cleared.ok) restored = { ok: false, message: cleared.message ?? 'durable Acer route recovery cleanup failed' };
+            }
+            if (!restored.ok) {
+              routeRecoveryPending = true;
+              const durable = await persistRouteRecovery(baseline);
+              if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
+              perControl.powerLimitW.message = `${perControl.powerLimitW.message ?? 'Acer packaged bridge failed'}; ${restored.message}${durable?.message ? `; ${durable.message}` : ''}`;
+              perControl.powerLimitW.errorCode = 'recovery-required';
+            }
+          }
+        }
+      } else if (perControl.powerLimitW.ok !== true && !bridgeCleanupVerified) {
+        routeRecoveryPending = true;
+        perControl.powerLimitW.errorCode = 'recovery-required';
+        perControl.powerLimitW.message = `${perControl.powerLimitW.message ?? 'Acer packaged bridge cleanup failed'}; recovery is required before further writes`;
+      }
+    }
+    if (perControl.powerLimitW?.ok !== true) acerPowerFailed = true;
+    acerPowerRouted = true;
+  };
 
   const applyDriverstore = async (controls) => {
     if (Object.keys(controls).length === 0) return;
@@ -1092,7 +1686,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     // Momentary-lie guard for each driverstore phase: re-read mismatches once
     // after the delay. A match = the write persisted (lagging read-back);
     // still mismatched = honest fail.
-    const candidates = Object.keys(controls).filter((k) => isMomentaryLieCandidate(perControl[k]));
+    const candidates = Object.keys(controls).filter((key) => isMomentaryLieCandidate(perControl[key]));
     if (candidates.length > 0) {
       log(`[apply] delayed re-read for [${candidates.join(', ')}] after ${delayedVerifyMs} ms (momentary-lie guard)`);
       await sleep(delayedVerifyMs);
@@ -1111,6 +1705,100 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     }
   };
 
+  let acerPowerFailed = false;
+  let acerPowerRouted = false;
+
+  // Non-negative voltage requests clear the prior Sysman companion only after
+  // the packaged transaction has passed its all-or-nothing preflight.
+  const lockRequestsOffsetZero = !!(settings.gpuLock && typeof settings.gpuLock === 'object');
+  const nonNegativeVoltOffsetV = typeof settings.gpuVoltOffsetV === 'number' && settings.gpuVoltOffsetV >= 0
+    ? settings.gpuVoltOffsetV
+    : undefined;
+  const sysmanVoltageMayChange = bridgeRouted && sysmanPowerLimits
+    && (negativeVoltOffsetV !== undefined || nonNegativeVoltOffsetV !== undefined || lockRequestsOffsetZero);
+  if (sysmanVoltageMayChange) {
+    priorSysmanVoltageOffsetV = await readSysmanVoltageOffset();
+    if (!Number.isFinite(priorSysmanVoltageOffsetV)) {
+      await releaseBridgeReservation();
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              errorCode: 'readback-unavailable',
+              message: 'the prior Sysman voltage offset could not be captured before the Acer transaction',
+            },
+          },
+        },
+        attempts: 1,
+      };
+    }
+    sysmanVoltageOffsetCaptured = true;
+  }
+  if (bridgeRouted && !routeRecoveryPrepared) {
+    const armed = await prepareRouteRecovery();
+    if (armed?.ok !== true) {
+      await releaseBridgeReservation();
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              errorCode: armed?.errorCode ?? 'recovery-required',
+              message: armed?.message ?? 'durable Acer route recovery could not be armed; no controls changed',
+            },
+          },
+        },
+        attempts: 1,
+      };
+    }
+    routeRecoveryPrepared = armed?.ok === true
+      && armed?.durable !== false
+      && typeof acerPackagedBridge?.prepareRouteRecovery === 'function';
+  }
+  if (voltageIsVUnit && (nonNegativeVoltOffsetV !== undefined || lockRequestsOffsetZero)) {
+    const clear = await clearNegativeSysmanVoltage({ sysmanPowerLimits, deviceId, log, strict: lockRequestsOffsetZero || bridgeRouted });
+    if (!clear.ok) {
+      delete driverstore.gpuVoltOffsetV;
+      if (lockRequestsOffsetZero) delete driverstore.gpuLock;
+      const failure = {
+        ok: false,
+        errorCode: clear.errorCode ?? 'io-failed',
+        message: clear.message ?? 'the prior negative sysman voltage offset could not be cleared',
+      };
+      perControl.gpuVoltOffsetV = failure;
+      if (lockRequestsOffsetZero) perControl.gpuLock = failure;
+      if (bridgeRouted) {
+        const aborted = await failAcerVoltagePrecondition(failure);
+        if (aborted) return aborted;
+      }
+    }
+  }
+
+  // Negative Sysman voltage is verified before any direct control write so
+  // the Acer bridge never runs with an unverified voltage precondition.
+  if (negativeVoltOffsetV !== undefined && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
+    const voltResult = await runSysmanVoltageOffset({ sysmanPowerLimits, offsetV: negativeVoltOffsetV, deviceId, log });
+    const failure = voltResult.ok === true
+      ? null
+      : { ok: false, errorCode: voltResult.errorCode ?? 'io-failed', message: voltResult.message ?? 'the sysman voltage offset write did not verify' };
+    perControl.gpuVoltOffsetV = failure ?? { ok: true, readBackEqual: true };
+    if (failure && bridgeRouted) {
+      const aborted = await failAcerVoltagePrecondition(failure);
+      if (aborted) return aborted;
+    }
+  } else if (negativeVoltOffsetV !== undefined) {
+    const failure = { ok: false, errorCode: 'unsupported', message: 'negative gpuVoltOffsetV requires the sysman voltage offset setter' };
+    perControl.gpuVoltOffsetV = failure;
+    if (bridgeRouted) {
+      const aborted = await failAcerVoltagePrecondition(failure);
+      if (aborted) return aborted;
+    }
+  }
   await applyDriverstore(driverstore);
 
   if (Object.keys(extended).length > 0) {
@@ -1119,6 +1807,10 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     for (const key of ['tempLimitC', 'powerLimitW']) {
       if (!(key in extended)) continue;
       const value = extended[key];
+      if (key === 'powerLimitW' && (bridgeRouted || bridgeRefusal)) {
+        if (!acerPowerRouted) await runAcerBridge();
+        continue;
+      }
       // M21: the >315 sysman-PRIMARY gate - the V1 write must NEVER receive
       // a >315 value (oldIgcl.setPowerLimitW silent-clamps to
       // EXTENDED_PL_RANGE 315 and reports { ok: true, readBackEqual: true }
@@ -1135,12 +1827,15 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       let per;
       if (oldIgcl) {
         per = key === 'powerLimitW'
-          ? await callOldSetter(oldIgcl, 'setPowerLimitW', value, deviceId, deviceKey)
-          : await callOldSetter(oldIgcl, 'setTempLimitC', value, deviceId, deviceKey);
+          ? await callOldSetter(oldIgcl, 'setPowerLimitW', value, deviceId, legacyDeviceKey)
+          : await callOldSetter(oldIgcl, 'setTempLimitC', value, deviceId, legacyDeviceKey);
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
       perControl[key] = per;
+      if (key === 'tempLimitC' && (bridgeRouted || bridgeRefusal) && !acerPowerRouted) {
+        await runAcerBridge();
+      }
     }
     // M17d (Run E): the V1-path G2 mirror - the DriverStore runtime's own
     // applySettings clears the stale in-memory waiver flag when a write
@@ -1157,7 +1852,45 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       try { await backend.restoreWaiverState(deviceId, false); } catch { /* best effort */ }
     }
   }
-  await applyDriverstore(postFanDriverstore);
+  if (acerPowerFailed) {
+    log('[apply] skipping requested fan/VF phase because the Acer power transaction did not complete cleanly');
+  } else {
+    await applyDriverstore(postFanDriverstore);
+    const postFanFailed = acerPowerRouted
+      && Object.keys(postFanDriverstore).some((key) => perControl[key]?.ok !== true);
+    if (postFanFailed) {
+      routeRecoveryPending = true;
+      const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
+        ? await acerPackagedBridge.assertQuiescent()
+        : { ok: true };
+      let restored = { ok: false, message: bridgeQuiet.message ?? 'Acer process appeared before post-fan rollback' };
+      if (bridgeQuiet.ok) {
+        try { restored = await restorePreBridgeBaseline(bridgeRecoveryBaseline ?? baseline); } catch (error) {
+          restored = { ok: false, message: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      const pairRestored = restored.ok ? await restoreBridgePowerPair() : { ok: false, message: 'the core/fan rollback did not complete' };
+      if (restored.ok && pairRestored.ok) {
+        routeRecoveryPending = false;
+        perControl.powerLimitW = {
+          ...(perControl.powerLimitW ?? {}),
+          ok: false,
+          readBackEqual: false,
+          errorCode: 'post-fan-rollback',
+          message: 'Acer power was rolled back because the requested fan/VF phase did not verify',
+        };
+      } else {
+        acerPackagedBridge?.markRecoveryRequired?.();
+        perControl.powerLimitW = {
+          ...(perControl.powerLimitW ?? {}),
+          ok: false,
+          readBackEqual: false,
+          errorCode: 'recovery-required',
+          message: `post-fan rollback failed; recovery is required${restored.message ? `: ${restored.message}` : ''}${pairRestored.message ? `; ${pairRestored.message}` : ''}`,
+        };
+      }
+    }
+  }
 
   // M17g/M40: PL2 note tracking. Stock IGCL writes retain their historical
   // primary-V2 note. Advanced bundled V1 writes are authoritative for PL1:
@@ -1232,7 +1965,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   // <=315 errorCode-bearing failure class leaves the pl2Note UNTOUCHED -
   // the STOCK not-ready pin keeps { landed: true, valueW }).
   const sysmanPrimary = typeof extended.powerLimitW === 'number' && extended.powerLimitW > EXTENDED_PL_MAX_W;
-  if (sysmanPrimary) {
+  if (!acerPowerRouted && !bridgeRefusal && sysmanPrimary) {
     if (sysmanPowerLimits && wUnits) {
       const sysmanNote = await runSysmanCompanion({
         sysmanPowerLimits,
@@ -1241,6 +1974,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
         backend,
         deviceId,
         deviceKey,
+        legacyDeviceKey,
         limitsKey,
         clampAdvanced: false, // >315 NEVER fires the V2-CLAMP (it would silently reduce to 252)
         extendedW: true,
@@ -1264,7 +1998,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       perControl.powerLimitW = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       log(`[apply] sysman companion: >${EXTENDED_PL_MAX_W} W requested but the sysman layer is ABSENT - the honest 'unsupported' refusal (never a silent clamp)`);
     }
-  } else if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits && wUnits) {
+  } else if (!acerPowerRouted && !bridgeRefusal && typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits && wUnits) {
     const sysmanNote = await runSysmanCompanion({
       sysmanPowerLimits,
       requestedW: settings.powerLimitW,
@@ -1272,6 +2006,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       backend,
       deviceId,
       deviceKey,
+      legacyDeviceKey,
       limitsKey,
       // M21: the clampAdvanced computation is PINNED (R2-F3): the V2-CLAMP
       // fires ONLY for an extended control AT OR BELOW the V1 write range
@@ -1293,26 +2028,173 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   } else if (typeof settings.powerLimitW === 'number' && perControl.powerLimitW?.ok === true && sysmanPowerLimits && plUnits !== 'W') {
     log(`[apply] sysman companion: SKIPPED - the powerLimitW units are '${plUnits}' (the sysman layer is W-only; the percent apply stays IGCL-verified)`);
   }
-
-  // M26: route negative gpuVoltOffsetV through Sysman after normal controls.
-  // The negative value was removed from the IGCL driverstore payload above;
-  // it is applied here via the Sysman frequency OC setter, and the
-  // perControl.gpuVoltOffsetV is set from the Sysman read-back. Report
-  // per-control success only after Sysman read-back verification.
-  if (negativeVoltOffsetV !== undefined && typeof sysmanPowerLimits?.setVoltageOffset === 'function') {
-    const voltResult = await runSysmanVoltageOffset({ sysmanPowerLimits, offsetV: negativeVoltOffsetV, deviceId, log });
-    perControl.gpuVoltOffsetV = voltResult.ok === true
-      ? { ok: true, readBackEqual: true }
-      : { ok: false, errorCode: voltResult.errorCode ?? 'io-failed', message: voltResult.message ?? 'the sysman voltage offset write did not verify' };
-  } else if (negativeVoltOffsetV !== undefined) {
-    // Missing Sysman or failed verification is an honest per-control failure.
-    perControl.gpuVoltOffsetV = { ok: false, errorCode: 'unsupported', message: 'negative gpuVoltOffsetV requires the sysman voltage offset setter' };
+  if (acerPowerRouted && perControl.powerLimitW?.ok === true) {
+    pl2Note = { landed: true, valueW: settings.powerLimitW };
   }
 
+
+  if (bridgeReservation) {
+    if (routeRecoveryPrepared && !routeRecoveryPending) {
+      const cleared = await clearPreparedRouteRecovery();
+      if (cleared?.ok !== true) {
+        routeRecoveryPending = true;
+        acerPackagedBridge?.markRecoveryRequired?.();
+        perControl.powerLimitW = {
+          ...(perControl.powerLimitW ?? {}),
+          ok: false,
+          readBackEqual: false,
+          errorCode: 'recovery-required',
+          message: `${perControl.powerLimitW?.message ?? 'Acer packaged bridge cleanup failed'}; ${cleared?.message ?? 'durable route recovery cleanup failed'}`,
+        };
+      }
+    }
+    const released = await releaseBridgeReservation();
+    if (released?.ok !== true) {
+      perControl.powerLimitW = {
+        ...(perControl.powerLimitW ?? {}),
+        ok: false,
+        readBackEqual: false,
+        errorCode: 'recovery-required',
+        message: `${perControl.powerLimitW?.message ?? 'Acer packaged bridge cleanup failed'}; ${released.message ?? 'reservation release failed'}`,
+      };
+    }
+  }
+  if (routeReservation) {
+    const released = await releaseRouteReservation();
+    if (released?.ok !== true) {
+      for (const key of Object.keys(settings ?? {})) {
+        perControl[key] = {
+          ...(perControl[key] ?? {}),
+          ok: false,
+          readBackEqual: false,
+          errorCode: 'recovery-required',
+          message: `${perControl[key]?.message ?? 'apply completed but transaction cleanup failed'}; ${released?.message ?? 'reservation release failed'}`,
+        };
+      }
+    }
+  }
   const ok = Object.keys(perControl).length === 0
     ? true
     : Object.values(perControl).every((p) => p.ok === true);
   return { result: { ok, perControl, pl2Note }, attempts: 1 };
+  } catch (error) {
+    if (bridgeCommitted) {
+      const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
+        ? await acerPackagedBridge.assertQuiescent()
+        : { ok: true };
+      let restored = { ok: false, message: bridgeQuiet.message ?? 'Acer process appeared before post-bridge rollback' };
+      if (bridgeQuiet.ok) {
+        try {
+          restored = await restorePreBridgeBaseline(bridgeRecoveryBaseline ?? baseline);
+        } catch (restoreError) {
+          restored = { ok: false, message: restoreError instanceof Error ? restoreError.message : String(restoreError) };
+        }
+      }
+      const pairRestored = bridgeQuiet.ok && restored.ok
+        ? await restoreBridgePowerPair()
+        : { ok: false, message: 'the core/fan rollback did not complete' };
+      let cleanupOk = bridgeQuiet.ok && restored.ok && pairRestored.ok;
+      if (cleanupOk && routeRecoveryPrepared) {
+        const cleared = await clearPreparedRouteRecovery();
+        cleanupOk = cleared?.ok === true;
+        if (!cleanupOk) restored = { ok: false, message: cleared?.message ?? 'durable Acer route recovery cleanup failed' };
+      }
+      const released = await releaseBridgeReservation();
+      if (released?.ok !== true) cleanupOk = false;
+      let durable = null;
+      if (!cleanupOk) {
+        durable = await persistRouteRecovery(bridgeRecoveryBaseline ?? baseline);
+        if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
+      }
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              errorCode: cleanupOk ? 'apply-error' : 'recovery-required',
+              message: `${error instanceof Error ? error.message : String(error)}${cleanupOk ? '' : `; bridge success cleanup requires recovery${durable?.message ? `: ${durable.message}` : ''}`}`,
+            },
+          },
+        },
+        attempts: 1,
+      };
+    }
+    if (bridgeReservation && !bridgeApplyStarted) {
+      const bridgeQuiet = typeof acerPackagedBridge?.assertQuiescent === 'function'
+        ? await acerPackagedBridge.assertQuiescent()
+        : { ok: true };
+      let restored = { ok: false, message: bridgeQuiet.message ?? 'Acer process appeared before direct rollback' };
+      if (bridgeQuiet.ok) {
+        try { restored = await restorePreBridgeBaseline(); } catch (restoreError) {
+          restored = { ok: false, message: restoreError instanceof Error ? restoreError.message : String(restoreError) };
+        }
+      }
+      let journalCleared = !routeRecoveryPrepared;
+      if (bridgeQuiet.ok && restored.ok && routeRecoveryPrepared) {
+        const cleared = await clearPreparedRouteRecovery();
+        journalCleared = cleared?.ok === true;
+        if (!journalCleared) restored = { ok: false, message: cleared?.message ?? 'durable Acer route recovery cleanup failed' };
+      }
+      const released = await releaseBridgeReservation();
+      const reservationReleased = released?.ok === true;
+      if (!reservationReleased && restored.ok) {
+        restored = { ok: false, message: released?.message ?? 'Acer bridge reservation release failed' };
+      }
+      const recoveryBaseline = bridgeRecoveryBaseline ?? baseline;
+      let durable = null;
+      if (!bridgeQuiet.ok || !restored.ok || !journalCleared || !reservationReleased) {
+        durable = await persistRouteRecovery(recoveryBaseline);
+        if (durable?.ok !== true) acerPackagedBridge?.markRecoveryRequired?.();
+      }
+      const cleanupOk = bridgeQuiet.ok && restored.ok && journalCleared && reservationReleased;
+      const cleanupIssue = !restored.ok
+        ? restored.message
+        : !journalCleared
+          ? 'durable Acer route recovery cleanup failed'
+          : !reservationReleased
+            ? (released?.message ?? 'Acer bridge reservation release failed')
+            : bridgeQuiet.message;
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              errorCode: cleanupOk ? 'apply-error' : 'recovery-required',
+              message: `${error instanceof Error ? error.message : String(error)}${cleanupOk ? '' : `; ${cleanupIssue}; recovery is required${durable?.message ? `: ${durable.message}` : ''}`}`,
+            },
+          },
+        },
+        attempts: 1,
+      };
+    }
+    if (routeReservation) {
+      const released = await releaseRouteReservation();
+      const perControl = Object.fromEntries(Object.keys(settings ?? {}).map((key) => [key, {
+        ok: false,
+        readBackEqual: false,
+        errorCode: released?.ok === true ? 'apply-error' : 'recovery-required',
+        message: `${error instanceof Error ? error.message : String(error)}${released?.ok === true ? '' : `; ${released?.message ?? 'reservation release failed'}`}`,
+      }]));
+      return { result: { ok: false, perControl }, attempts: 1 };
+    }
+    throw error;
+  }
+}
+let routedApplyTail = Promise.resolve();
+export async function applySettingsRouted(args) {
+  const previous = routedApplyTail;
+  let release;
+  routedApplyTail = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await applySettingsRoutedUnlocked(args);
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -1338,8 +2220,8 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
  * }} deps
  * @returns {Promise<{ result: { ok: boolean, perControl: Record<string, unknown> }, state: object | null }>}
  */
-export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expectedDeviceKey = null, physicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null, sysmanPowerLimits = null }) {
-  if (typeof backend.assertDeviceTarget === 'function' && typeof expectedDeviceKey === 'string') {
+export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expectedDeviceKey = null, physicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null, sysmanPowerLimits = null, acerPackagedBridge = null, allowAcerBridge = false, acerPackagedApplyEnabled = false, interactiveContext = null }) {
+  if (typeof backend.assertDeviceTarget === 'function') {
     await backend.assertDeviceTarget(deviceId, expectedDeviceKey, physicalTarget);
   }
   const caps = await backend.getCapabilities(deviceId);
@@ -1360,10 +2242,82 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   // against its own PCI/BDF enumeration. The physical proof carries the
   // legacy key across both the in-process and elevated-worker boundaries;
   // never feed the PNP key into the legacy setter.
-  const deviceKey = typeof physicalTarget?.legacyDeviceKey === 'string'
+  const legacyDeviceKey = typeof physicalTarget?.legacyDeviceKey === 'string'
     ? physicalTarget.legacyDeviceKey
-    : null;
-  // M3-C step-5 F1: advanced mode + a NOT-capable 2023 runtime (the
+    : expectedDeviceKey;
+  const limitsKey = {
+    pciDeviceId: caps.pciDeviceId ?? null,
+    aibVendor: caps.aibVendor ?? null,
+    aibModel: caps.aibModel ?? null,
+  };
+  const bridgeRequest = acerBridgePowerRequest({ settings, mode: ocMode, physicalTarget, limitsKey });
+  const bridgeInteractive = bridgeRequest
+    && allowAcerBridge === true
+    && isInteractiveApplyContext(interactiveContext);
+  const ambiguousAcerRequest = allowAcerBridge === true
+    && acerPackagedApplyEnabled === true
+    && ocMode === OC_MODE_ADVANCED
+    && typeof settings?.powerLimitW === 'number'
+    && settings.powerLimitW > STD_PL_MAX_W
+    && hasAcerA770PciIdentity(physicalTarget, limitsKey)
+    && !isAcerA770Target(physicalTarget, limitsKey);
+  if (ambiguousAcerRequest) {
+    let state = null;
+    try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+    return {
+      result: {
+        ok: false,
+        perControl: {
+          powerLimitW: {
+            ok: false,
+            readBackEqual: false,
+            errorCode: 'target-mismatch',
+            message: 'the Intel Arc A770 display-card index proof is unavailable; no controls changed',
+          },
+        },
+      },
+      state,
+    };
+  }
+  // Capture and validate the complete rollback baseline before any routed
+  // phase. A failed read is a refusal, never permission to mutate first and
+  // hope that the bridge can capture a post-write substitute.
+  let baseline = null;
+  let baselineState = null;
+  if (bridgeInteractive) {
+    try { baselineState = await backend.getCurrentSettings(deviceId); } catch { baselineState = null; }
+    if (baselineState && typeof baselineState === 'object' && !Array.isArray(baselineState)) {
+      const coreVoltage = Object.fromEntries(
+        ['gpuFreqOffsetMhz', 'gpuVoltOffsetV'].filter((key) => key in baselineState).map((key) => [key, baselineState[key]]),
+      );
+      const fan = Object.fromEntries(
+        ['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve'].filter((key) => key in baselineState).map((key) => [key, baselineState[key]]),
+      );
+      const temperatureC = baselineState.tempLimitC ?? baselineState.temperatureLimitC;
+      const coreOk = Object.keys(coreVoltage).length > 0 && Object.values(coreVoltage).every((value) => Number.isFinite(value));
+      const fanOk = Object.keys(fan).length > 0;
+      const temperatureOk = Number.isFinite(temperatureC);
+      if (coreOk && fanOk && temperatureOk) {
+        baseline = { ...baselineState, coreVoltage, fan, tempLimitC: temperatureC };
+      }
+    }
+    if (!baseline) {
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            powerLimitW: {
+              ok: false,
+              readBackEqual: false,
+              errorCode: 'readback-unavailable',
+              message: 'Acer packaged apply requires a complete pre-write rollback baseline; no controls changed',
+            },
+          },
+        },
+        state: baselineState,
+      };
+    }
+  }
   // future-driver degradation) -> refuse extended values BEFORE the clamp,
   // never a silent 252 W / 90 C cap that reports ok:true. The capability
   // check is honest on both sides of the worker boundary. The refusal is a
@@ -1374,20 +2328,20 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   // presence is only a parent-side delegation signal; it must never prove
   // in-process write capability.  Keep the caps fallback for null/test
   // adapters that intentionally omit the runtime seam.
-  const extendedCapable = oldIgcl
-    ? await oldIgcl.isCapable()
-    : caps.extendedRanges === true;
+  let extendedCapable = caps.extendedRanges === true;
+  if (oldIgcl && typeof oldIgcl.isCapable === 'function') {
+    try { extendedCapable = await oldIgcl.isCapable(); } catch { extendedCapable = false; }
+  }
   const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: extendedCapable });
-  if (unavailable) {
-    log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
+  const unavailableControls = unavailable?.controls?.filter((key) => !(bridgeInteractive && key === 'powerLimitW')) ?? [];
+  if (unavailableControls.length > 0) {
+    log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailableControls.join(', ')}) - nothing applied`);
     let state = null;
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
-    return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state };
+    return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailableControls) }, state };
   }
   // M4O: the profileApply clamp uses the driver's TRUE limits
-  // (extendedRangesFor) - the mode-gated caps.ranges would silently reduce
-  // a saved 300 W profile to 252 W in a stock session.
-  const clampRanges = opts.profileApply === true ? extendedRangesFor(caps) : caps.ranges;
+  const clampRanges = opts.profileApply === true || bridgeInteractive ? extendedRangesFor(caps) : caps.ranges;
   const clamped = {};
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
@@ -1396,7 +2350,28 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
       ? clampAndSnap(value, range)
       : value;
   }
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
+  const out = await applySettingsRouted({
+    backend,
+    oldIgcl,
+    deviceId,
+    deviceKey: expectedDeviceKey,
+    legacyDeviceKey,
+    physicalTarget,
+    settings: clamped,
+    opts,
+    log,
+    delayedVerifyMs,
+    sleep,
+    ranges: caps.ranges,
+    mode: ocMode,
+    sysmanPowerLimits,
+    acerPackagedBridge,
+    allowAcerBridge,
+    acerPackagedApplyEnabled,
+    interactiveContext,
+    baseline,
+    currentSettings: baseline,
+  });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   // Positive-only voltage UI: never replace the IGCL state with a legacy

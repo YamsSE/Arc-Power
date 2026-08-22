@@ -22,6 +22,7 @@
 //     apply ONCE on a waiver-not-set answer - the persisted consent stands,
 //     the store is never flipped back to false (persistWaiverLost removed).
 
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
@@ -32,8 +33,8 @@ import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
+import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED, acerBridgePowerRequest, isInteractiveApplyContext } from './apply-routing.js';
 import { createMockSysStats } from './sys-stats.js';
-import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
@@ -736,12 +737,14 @@ export function createIpcHandlers({
   // injects the session record; null when no boot apply ran this session -
   // the DEFAULT is null, tests never have a boot apply).
   bootApplyOutcome = () => null,
-  // M2C-C: the 2023-runtime adapter + the elevation-aware apply runner.
-  // Defaults: a no-op old runtime (never loads the DLL) and no runner
-  // (applies run in-process) - safe for tests and mock mode.
   oldIgcl = createNullOldIgcl(),
   applyRunner = null,
   isElevated = detectElevated,
+  // M42: the Acer packaged route is opt-in and only the normal interactive
+  // IPC path receives a parent-created context.
+  acerPackagedBridge = null,
+  allowAcerBridge = false,
+  interactiveContext = null,
   mock = null,
   // M5: the injected overlay-window ops. The DEFAULT is the honest
   // "no overlay window" state (tests + non-overlay variants never have one);
@@ -823,6 +826,43 @@ export function createIpcHandlers({
    * mode (telemetry-start(null)) in the shared telemetry Map. A real device
    * id is always a non-negative integer, so -1 can never collide.
    */
+  // M42: contexts are created by this main-process handler, never accepted
+  // from renderer payloads. Tokens are consumed once per IPC apply request.
+  const issuedInteractiveContexts = new Map();
+  const issueInteractiveContext = async (deviceId) => {
+    let candidate = null;
+    const issuer = typeof interactiveContext === 'function'
+      ? interactiveContext
+      : interactiveContext?.issue ?? interactiveContext?.create;
+    if (typeof issuer === 'function') {
+      try { candidate = await issuer({ deviceId, owner: `ipc:${deviceId}` }); } catch { candidate = null; }
+    }
+    const context = candidate && typeof candidate === 'object'
+      ? { ...candidate }
+      : { applyContext: 'interactive', owner: `ipc:${deviceId}`, token: randomUUID() };
+    if (!isInteractiveApplyContext({ ...context, requestId: context.requestId ?? 'pending-request', requestBinding: context.requestBinding ?? context.requestId ?? 'pending-request' })) {
+      context.applyContext = 'interactive';
+      context.owner = `ipc:${deviceId}`;
+      context.token = randomUUID();
+    }
+    const requestId = typeof context.requestId === 'string' && context.requestId.length >= 8 ? context.requestId : randomUUID();
+    context.requestId = requestId;
+    context.requestBinding = requestId;
+    issuedInteractiveContexts.set(context.token, context);
+    return context;
+  };
+  const consumeInteractiveContext = (context) => {
+    if (!isInteractiveApplyContext(context) || issuedInteractiveContexts.get(context.token) !== context) return false;
+    issuedInteractiveContexts.delete(context.token);
+    return true;
+  };
+  const revokeInteractiveContext = async (context) => {
+    const revoker = typeof interactiveContext === 'function'
+      ? interactiveContext.revoke
+      : interactiveContext?.revoke ?? interactiveContext?.release;
+    if (typeof revoker !== 'function') return;
+    try { await revoker(context); } catch { /* cleanup is best effort */ }
+  };
   const NULL_DEVICE_KEY = -1;
   // Main-renderer selection pushes carry a monotonic session generation. This
   // remains in memory even when deviceSet could not persist the new choice.
@@ -1176,7 +1216,7 @@ export function createIpcHandlers({
    * never record - the store must only degrade on a driver 'out-of-range'.
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
   */
-  const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
+  const runApply = async ({ deviceId, settings, caps, ocMode, profileApply, allowAcerBridge = false, interactiveContext = null, acerPackagedApplyEnabled = false }) => {
     const deviceKey = typeof caps?.deviceKey === 'string' ? caps.deviceKey : null;
     // M30: resolve the inventory row before constructing the proof. The
     // unified backend's getDeviceTarget() is an enforcing write-time
@@ -1211,7 +1251,7 @@ export function createIpcHandlers({
         // a store failure must never break the apply flow
       }
     };
-    const attempt = async (waiverAccepted) => {
+    const attempt = async (waiverAccepted, attemptContext = interactiveContext, attemptAllowAcerBridge = allowAcerBridge) => {
       if (applyRunner?.needsWorker?.()) {
         // M17c (step-4 N6): the parent-resolved limits-key rides the worker
         // request - the worker's gate thresholds must match the parent's
@@ -1225,6 +1265,9 @@ export function createIpcHandlers({
           waiverAccepted,
           ocMode,
           profileApply,
+          ...(attemptAllowAcerBridge === true ? { allowAcerBridge: true } : {}),
+          ...(attemptContext ? { interactiveContext: attemptContext } : {}),
+          ...(acerPackagedApplyEnabled === true ? { acerPackagedApplyEnabled: true } : {}),
           limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
         });
         // S2 G2 mirror: when the driver lost the waiver, the worker's
@@ -1236,7 +1279,7 @@ export function createIpcHandlers({
         recordRefusals(out.result);
         return out;
       }
-      const out = await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits });
+      const out = await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits, acerPackagedBridge, allowAcerBridge: attemptAllowAcerBridge, acerPackagedApplyEnabled, interactiveContext: attemptContext });
       recordRefusals(out.result);
       return out;
     };
@@ -1273,8 +1316,23 @@ export function createIpcHandlers({
     } catch {
       return publicEnvelope(first);
     }
-    const retry = await attempt(true);
-    return publicEnvelope(retry);
+    let retryContext = interactiveContext;
+    let retryAllowAcerBridge = allowAcerBridge;
+    let issuedRetry = null;
+    if (interactiveContext && allowAcerBridge === true) {
+      issuedRetry = await issueInteractiveContext(deviceId);
+      retryContext = issuedRetry;
+      retryAllowAcerBridge = issuedRetry !== null;
+    }
+    try {
+      const retry = await attempt(caps.waiverAccepted === true, retryContext, retryAllowAcerBridge);
+      return publicEnvelope(retry);
+    } finally {
+      if (issuedRetry) {
+        await revokeInteractiveContext(issuedRetry);
+        consumeInteractiveContext(issuedRetry);
+      }
+    }
   };
 
   const handlers = {
@@ -1495,8 +1553,17 @@ export function createIpcHandlers({
         // A770) must refuse with OC_CEILING_REFUSAL_MSG, never a
         // silent clamp. The flagless interactive path is UNCHANGED - the
         // mode still gates the slider applies.
-        const ocMode = (await store.loadSettings()).ocMode;
+        const persistedSettings = await store.loadSettings();
+        const ocMode = persistedSettings.ocMode;
         const caps = await backend.getCapabilities(deviceId);
+        const bridgeTarget = await backend.getDeviceTarget?.(deviceId);
+        const bridgePhysicalTarget = physicalTargetOf(bridgeTarget);
+        const bridgeCandidate = acerBridgePowerRequest({
+          settings,
+          mode: opts?.profileApply === true ? OC_MODE_ADVANCED : ocMode,
+          physicalTarget: bridgePhysicalTarget,
+          limitsKey: caps,
+        });
         if (caps?.overclockingSupported === false) {
           const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'overclocking is not supported on this GPU' }]));
           return { result: { ok: Object.keys(perControl).length === 0, perControl }, state: await backend.getCurrentSettings(deviceId) };
@@ -1527,6 +1594,7 @@ export function createIpcHandlers({
           try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
           return { result: { ok: false, perControl: refusalPerControl(refusal) }, state, ocModeRefused: true };
         }
+        const interactiveRequest = opts?.profileApply !== true && bridgeCandidate && allowAcerBridge === true;
         // M3-C step-5 F1: advanced mode + a NOT-capable bundled 2023 runtime
         // (the future-driver degradation EXTENDED_UNAVAILABLE_MSG exists
         // for) must refuse extended values BEFORE any clamp - clamping
@@ -1561,6 +1629,10 @@ export function createIpcHandlers({
           const wc = wcUnitControls(settings, caps.ranges);
           if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
         }
+        if (unavailable && interactiveRequest) {
+          const controls = unavailable.controls.filter((key) => key !== 'powerLimitW');
+          unavailable = controls.length > 0 ? { ...unavailable, controls } : null;
+        }
         // The unelevated UI cannot initialize the bundled 2023 runtime
         // reliably (KMD_CALL); the elevated worker is the authoritative
         // capability probe and apply path. Let it decide whether extended
@@ -1577,7 +1649,7 @@ export function createIpcHandlers({
         // The parent must not standard-clamp a request whose capability
         // decision belongs to the elevated worker; that would turn 300 W
         // into 252 W before the worker can inspect its real runtime.
-        const applyRanges = opts?.profileApply === true || workerOwnsExtendedGate
+        const applyRanges = opts?.profileApply === true || workerOwnsExtendedGate || interactiveRequest
           ? extendedRangesFor(caps)
           : caps.ranges;
         // M4O (NEW-1): the pre-clamp must NOT silently clamp a profileApply
@@ -1594,9 +1666,25 @@ export function createIpcHandlers({
         // extendedRanges, so a caps-keyed gate there would silently clamp).
         // M4-D (PERMANENT acceptance): runApply silently re-sets the
         // driver waiver + retries ONCE when the driver answers waiver-not-set
-        // while the persisted acceptance is true (the consent stands - never
-        // a dialog, never a dead-end, never a persisted false).
-        return runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true });
+        const issuedContext = interactiveRequest ? await issueInteractiveContext(deviceId) : null;
+        const validatedContext = issuedContext;
+        try {
+          return await runApply({
+            deviceId,
+            settings: clamped,
+            caps,
+            ocMode: gateMode,
+            profileApply: opts?.profileApply === true,
+            allowAcerBridge: validatedContext !== null,
+            interactiveContext: validatedContext,
+            acerPackagedApplyEnabled: persistedSettings.acerPackagedApplyEnabled === true,
+          });
+        } finally {
+          if (issuedContext) {
+            await revokeInteractiveContext(issuedContext);
+            consumeInteractiveContext(issuedContext);
+          }
+        }
       },
 
       'reset-to-defaults': async (deviceId) => {
@@ -2179,6 +2267,11 @@ export function createIpcHandlers({
           // M4-B: the once-only Advanced-mode warning acceptance is never
           // touched by the profiles patch either.
           advancedModeAccepted: cur.advancedModeAccepted,
+          // M42: experimental Acer bridge opt-in; read-modify-write keeps
+          // the persisted choice when unrelated Settings fields are saved.
+          acerPackagedApplyEnabled: patch.acerPackagedApplyEnabled === undefined
+            ? cur.acerPackagedApplyEnabled === true
+            : patch.acerPackagedApplyEnabled === true,
           // M4-D: the Settings-tab fields (startWithWindows/startMinimized)
           // - the Settings page persists them through this channel (absent
           // -> keep the current value, same read-modify-write rule).

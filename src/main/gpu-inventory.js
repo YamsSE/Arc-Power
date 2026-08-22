@@ -158,7 +158,16 @@ function osControllerOf(controller) {
     rebarActive: controller.rebarActive === true ? true : controller.rebarActive === false ? false : null,
     luid: controller.luid ?? controller.adapterLuid ?? null,
     physicalToken: controller.physicalToken ?? controller.uniqueToken ?? controller.adapterUuid ?? controller.uuid ?? null,
+    displayCardIndex: Number.isInteger(controller.displayCardIndex) ? controller.displayCardIndex : null,
   };
+}
+
+function displayCardIndexOf(device, controller, matchedControllerIndex = -1) {
+  if (Number.isInteger(device?.displayCardIndex)) return device.displayCardIndex;
+  if (Number.isInteger(controller?.displayCardIndex)) return controller.displayCardIndex;
+  // Only a unique match can prove this Acer card ordinal: matchedControllerIndex
+  // is the filtered real Win32 display-controller ordering, not raw OS order.
+  return matchedControllerIndex >= 0 ? matchedControllerIndex : null;
 }
 
 function mergedPhysicalParts(device, controller) {
@@ -213,6 +222,7 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
       sessionId: rows.length,
       backendId: Number.isInteger(device?.id) ? device.id : backendIndex,
       backendKind,
+      displayCardIndex: displayCardIndexOf(device, controller, best),
       synthetic: false,
       deviceKey: null,
       identityBase: base,
@@ -242,6 +252,7 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
       sessionId: rows.length,
       backendId: null,
       backendKind: 'os',
+      displayCardIndex: displayCardIndexOf(null, controller),
       synthetic: true,
       deviceKey: null,
       identityBase: base,
@@ -396,6 +407,13 @@ export function physicalTargetOf(device) {
     controllerBdf: bdfKey(controller?.bdf),
     controllerLuid: controller?.luid ?? controller?.adapterLuid ?? null,
     physicalToken: device.physicalToken ?? controller?.physicalToken ?? device.uniqueToken ?? device.adapterUuid ?? device.uuid ?? null,
+    // Acer's XML is card-indexed; omit this proof rather than guessing a
+    // selected card on multi-adapter systems.
+    displayCardIndex: Number.isInteger(device.displayCardIndex)
+      ? device.displayCardIndex
+      : (Number.isInteger(controller?.displayCardIndex) ? controller.displayCardIndex : null),
+    backendKind: device.backendKind ?? null,
+    identityAmbiguous: device.identityAmbiguous === true,
     legacyDeviceKey,
     synthetic: device.synthetic === true,
   };
@@ -414,6 +432,17 @@ export function physicalTargetMatches(device, proof, inventory = [device]) {
     luid: proof?.osLuid ?? proof?.controllerLuid ?? proof?.luid ?? proof?.adapterLuid,
     physicalToken: proof?.physicalToken ?? proof?.uniqueToken,
   });
+  const expectedDisplayIndex = Number.isInteger(proof?.displayCardIndex)
+    ? proof.displayCardIndex
+    : (Number.isInteger(proof?.index)
+      ? proof.index
+      : (Number.isInteger(proof?.osController?.displayCardIndex) ? proof.osController.displayCardIndex : null));
+  const actualDisplayIndex = Number.isInteger(device?.displayCardIndex)
+    ? device.displayCardIndex
+    : (Number.isInteger(device?.index)
+      ? device.index
+      : (Number.isInteger(device?.osController?.displayCardIndex) ? device.osController.displayCardIndex : null));
+  if (expectedDisplayIndex !== null && actualDisplayIndex !== null && actualDisplayIndex !== expectedDisplayIndex) return false;
   // PNP is the strongest identity when both sides expose it. A worker-side
   // IGCL row can legitimately omit PNP even though the parent Windows row
   // supplied it in the proof, so a missing actual PNP is resolved by the
@@ -588,7 +617,7 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       const hasPhysicalProof = physicalProof !== null && typeof physicalProof === 'object' && !Array.isArray(physicalProof);
       const writableTarget = target.synthetic !== true && target.backendKind !== 'os'
         && Number.isInteger(target.backendId) && target.identityAmbiguous !== true;
-      if (target.identityAmbiguous === true && (hasPhysicalProof || typeof expectedKey === 'string')) {
+      if (target.identityAmbiguous === true) {
         throw new Error('selected GPU has ambiguous physical identity');
       }
       if (hasPhysicalProof && !physicalTargetMatches(target, physicalProof, rows)) {

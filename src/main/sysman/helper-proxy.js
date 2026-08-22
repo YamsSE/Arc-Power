@@ -165,6 +165,24 @@ import { randomUUID } from 'node:crypto';
 import { spawn as childProcessSpawn } from 'node:child_process';
 import { sweepStaleWorkerFiles } from '../elevated-apply.js';
 import { SYSMAN_PIPE_NAME, resolveIntentFilePath } from './helper-mode.js';
+const normalizePciId = (value) => {
+  const normalized = typeof value === 'number' && Number.isFinite(value)
+    ? Math.trunc(value).toString(16)
+    : typeof value === 'string' ? value.trim().toLowerCase().replace(/^0x/, '') : '';
+  return /^[0-9a-f]{1,8}$/.test(normalized)
+    ? normalized.slice(-4).padStart(4, '0')
+    : null;
+};
+
+const isAcerSysmanTarget = (physicalTarget, deviceId) => Number.isInteger(deviceId)
+  && deviceId >= 0
+  // The native consumer resolves the first Sysman power domain. The only
+  // safe bridge target is the matching Windows display-card ordinal 0;
+  // nonzero ordinals could otherwise read/write another adapter.
+  && physicalTarget?.displayCardIndex === 0
+  && normalizePciId(physicalTarget?.pciVendorId) === '8086'
+  && normalizePciId(physicalTarget?.pciDeviceId) === '56a0';
+
 
 // The per-request answer window: the helper's zesInit + the read/write
 // round trip take ~1-6 s live (round-1 N3); 30 s covers the slowest legit
@@ -943,6 +961,17 @@ export function createSysmanHelperProxy({
       }
       return null;
     },
+    async readLimitsForTarget(physicalTarget, deviceId = 0) {
+      if (!isAcerSysmanTarget(physicalTarget, deviceId) || !(await readyGate())) return null;
+      const { out } = await enqueue({ op: 'read-target', payload: { physicalTarget, deviceId } });
+      if (out?.ok === true
+        && typeof out.sustainedW === 'number'
+        && typeof out.burstW === 'number'
+        && typeof out.peakW === 'number') {
+        return { sustainedW: out.sustainedW, burstW: out.burstW, peakW: out.peakW };
+      }
+      return null;
+    },
     /**
      * Write the sustained + burst pair through the detached helper. The
      * helper's errorCode/message ride VERBATIM (round-1 N2 - no remap, or
@@ -970,6 +999,23 @@ export function createSysmanHelperProxy({
         return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
       }
       const { out, reason } = await enqueue({ op: 'set', payload: { sustainedW, burstW } });
+      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
+      const result = { ok: out.ok === true };
+      if (out.errorCode !== undefined) result.errorCode = out.errorCode;
+      if (out.message !== undefined) result.message = out.message;
+      return result;
+    },
+    async setLimitsForTarget(physicalTarget, { sustainedW, burstW }, deviceId = 0) {
+      if (!isAcerSysmanTarget(physicalTarget, deviceId)) {
+        return { ok: false, errorCode: 'target-mismatch', message: 'Sysman power domain is not proven to be the selected Intel Arc A770' };
+      }
+      if (!(await readyGate())) {
+        return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
+      }
+      const { out, reason } = await enqueue({
+        op: 'set-target',
+        payload: { physicalTarget, sustainedW, burstW, deviceId },
+      });
       if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
       const result = { ok: out.ok === true };
       if (out.errorCode !== undefined) result.errorCode = out.errorCode;

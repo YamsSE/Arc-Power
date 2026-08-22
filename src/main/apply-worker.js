@@ -14,8 +14,41 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
-import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, wcUnitControls, extendedRangesFor, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, wcUnitControls, extendedRangesFor, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED, acerBridgePowerRequest, isInteractiveApplyContext } from './apply-routing.js';
+import { sanitizeGraphicsSettings, sanitizeSettings, clampSettings } from './ipc-core.js';
+const consumedInteractiveTokens = new Set();
+
+function unsignedCapabilityRequest(req) {
+  const unsigned = { ...(req ?? {}) };
+  delete unsigned.acerCapability;
+  delete unsigned.acerContextCapability;
+  return unsigned;
+}
+
+function validCapability(req, context, requestId) {
+  const secret = process.env.ARC_POWER_ACER_CAPABILITY_SECRET;
+  const mac = req?.acerCapability;
+  if (!secret || typeof mac !== 'string' || !context || context.requestId !== requestId) return false;
+  const expected = createHmac('sha256', secret)
+    .update(JSON.stringify(unsignedCapabilityRequest(req)))
+    .digest('hex');
+  try {
+    return mac.length === expected.length && timingSafeEqual(Buffer.from(mac), Buffer.from(expected));
+  } catch { return false; }
+}
+
+function validContextCapability(req, context, requestId) {
+  const secret = process.env.ARC_POWER_ACER_CAPABILITY_SECRET;
+  const mac = req?.acerContextCapability;
+  if (!secret || typeof mac !== 'string' || !context || context.requestId !== requestId) return false;
+  const expected = createHmac('sha256', secret)
+    .update(JSON.stringify({ owner: context.owner, token: context.token, requestId }))
+    .digest('hex');
+  try {
+    return mac.length === expected.length && timingSafeEqual(Buffer.from(mac), Buffer.from(expected));
+  } catch { return false; }
+}
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -65,16 +98,16 @@ export async function findStaleSiblingToken(dir, requestId, now = Date.now(), to
 /**
  * @param {{
  *   reqPath: string,
- *   outPath: string,
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   oldIgcl: object,
  *   log?: (s: string) => void,
  *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion -
  *   // null -> no companion (tests); main.js wires the real adapter
+ *   acerPackagedBridge?: object | null,
+ *   store?: object | null,
  * }} deps
- * @returns {Promise<number>} process exit code (0 = result written)
  */
-export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log = () => {}, sysmanPowerLimits = null }) {
+export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log = () => {}, sysmanPowerLimits = null, acerPackagedBridge = null, store = null }) {
   let req;
   try {
     const raw = await fs.promises.readFile(reqPath, 'utf8');
@@ -94,6 +127,55 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     await finish({ ok: false, error: 'invalid request: deviceId must be a non-negative integer' });
     return 1;
   }
+  // M42: authenticate Acer-capable requests before resolving any
+  // request-controlled target. A malformed or forged interactive envelope
+  // must fail closed, never downgrade into an ordinary write.
+  let persistedAcerEnabled = false;
+  if (store && typeof store.loadSettings === 'function') {
+    try { persistedAcerEnabled = (await store.loadSettings()).acerPackagedApplyEnabled === true; } catch { persistedAcerEnabled = false; }
+  }
+  const requestContext = req?.interactiveContext;
+  const contextValid = persistedAcerEnabled
+    && req?.applyContext === 'interactive'
+    && req?.allowAcerBridge === true
+    && isInteractiveApplyContext(requestContext)
+    && requestContext.requestId === requestId
+    && requestContext.requestBinding === requestId
+    && validCapability(req, requestContext, requestId)
+    && validContextCapability(req, requestContext, requestId)
+    && !consumedInteractiveTokens.has(requestContext.token);
+  const capabilityFieldsPresent = typeof req?.acerCapability === 'string'
+    || typeof req?.acerContextCapability === 'string';
+  const interactiveRequest = req?.applyContext === 'interactive'
+    || req?.allowAcerBridge === true
+    || requestContext != null
+    || capabilityFieldsPresent;
+  if (interactiveRequest && !contextValid) {
+    const requestedW = req?.settings?.powerLimitW;
+    if (!persistedAcerEnabled && req?.allowAcerBridge === true
+      && typeof requestedW === 'number' && Number.isFinite(requestedW) && requestedW > 252) {
+      await finish({
+        ok: false,
+        perControl: {
+          powerLimitW: {
+            ok: false,
+            readBackEqual: false,
+            requestedW,
+            errorCode: 'acer-bridge-disabled',
+            message: 'Acer packaged apply bridge is disabled; enable the experimental setting before applying extended A770 power.',
+          },
+        },
+      });
+      return 0;
+    }
+    await finish({ ok: false, error: 'invalid Acer interactive capability' });
+    return 0;
+  }
+  if (contextValid) consumedInteractiveTokens.add(requestContext.token);
+  const allowAcerBridge = contextValid;
+  const authenticatedContext = contextValid
+    ? { ...requestContext, capability: req.acerContextCapability }
+    : null;
   // M30: inventory-aware backends expose a resolver so the worker can reject
   // stale keys and synthetic OS-only adapters before any write. Keep the
   // legacy injected-backend seam usable when it has no resolver at all: those
@@ -141,11 +223,19 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
   const tokenRequestId = requestId ?? (reqNameMatch ? reqNameMatch[1] : null);
   const staleToken = await findStaleSiblingToken(path.dirname(reqPath), tokenRequestId);
   if (staleToken) {
-    log(`[apply-worker] refusing to run: stale parent token ${path.basename(staleToken)} (the parent gave up)`);
+    log(`[apply-worker] refusing to run: stale parent token ${path.basename(staleToken)} (the parent gave up before this worker started)`);
     await finish({ ok: false, error: 'request superseded: the parent process gave up before this worker started' });
     return 1;
   }
 
+  if (typeof acerPackagedBridge?.recover === 'function') {
+    let recovery;
+    try { recovery = await acerPackagedBridge.recover(); } catch (error) { recovery = { ok: false, message: error instanceof Error ? error.message : String(error) }; }
+    if (recovery?.ok !== true) {
+      await finish({ ok: false, error: `Acer recovery required: ${recovery?.message ?? 'recovery failed'}` });
+      return 1;
+    }
+  }
   try {
     await backend.init();
     // The parent already accepted the waiver through the user dialog; the
@@ -251,6 +341,13 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // advanced-mode PL/TL apply must route through the bundled 2023
     // runtime's V1 setters, never fall through to the DriverStore path).
     const applyMode = req.profileApply === true ? OC_MODE_ADVANCED : (req.ocMode === OC_MODE_ADVANCED ? OC_MODE_ADVANCED : OC_MODE_STOCK);
+    const bridgeCandidate = acerBridgePowerRequest({
+      settings,
+      mode: applyMode,
+      physicalTarget: req.physicalTarget ?? target ?? null,
+      limitsKey,
+    });
+    const bridgeInteractive = bridgeCandidate && allowAcerBridge;
     const refusal = ocModeRefusal(applyMode, settings, caps.ranges, limitsKey ?? caps);
     if (refusal) {
       log(`[apply-worker] oc-mode refusal: ${refusal.message} (${refusal.controls.join(', ')})`);
@@ -285,6 +382,10 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       const wc = wcUnitControls(settings, caps.ranges);
       if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
     }
+    if (unavailable && bridgeInteractive) {
+      const controls = unavailable.controls.filter((key) => key !== 'powerLimitW');
+      unavailable = controls.length > 0 ? { ...unavailable, controls } : null;
+    }
     if (unavailable) {
       log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
       let state = null;
@@ -292,9 +393,24 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       await finish({ ok: false, perControl: extendedUnavailablePerControl(unavailable.controls), state, extendedUnavailable: true });
       return 0;
     }
-    const clampRanges = req.profileApply === true ? extendedRangesFor(caps) : caps.ranges;
+    const clampRanges = req.profileApply === true || bridgeInteractive ? extendedRangesFor(caps) : caps.ranges;
     const clamped = clampSettings(settings, clampRanges);
-    const out = await executeApply({ backend, oldIgcl, deviceId, deviceKey: req.deviceKey ?? target?.deviceKey, physicalTarget: req.physicalTarget ?? null, settings: clamped, log, ocMode: applyMode, opts: { profileApply: req.profileApply === true }, sysmanPowerLimits });
+    const out = await executeApply({
+      backend,
+      oldIgcl,
+      deviceId,
+      deviceKey: req.deviceKey ?? target?.deviceKey,
+      physicalTarget: req.physicalTarget ?? target ?? null,
+      settings: clamped,
+      log,
+      ocMode: applyMode,
+      sysmanPowerLimits,
+      acerPackagedBridge,
+      interactiveContext: authenticatedContext,
+      opts: { profileApply: req.profileApply === true },
+      acerPackagedApplyEnabled: persistedAcerEnabled,
+      allowAcerBridge,
+    });
     // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
     // round-3 N1): the attempted values of the 'out-of-range' per-control
     // results - the parent's session refused-ceiling store records from
