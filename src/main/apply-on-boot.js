@@ -33,7 +33,7 @@
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
 import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
-import { physicalTargetOf } from './gpu-inventory.js';
+import { physicalTargetOf, pnpParts } from './gpu-inventory.js';
 // M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
 // in-process executeApply clamps profile.settings against
 // extendedRangesFor(caps) internally; the recording must use the SAME
@@ -67,6 +67,27 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
     ? devices.find((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key)
     : null;
   if (matched) return matched.id;
+  // M45: a raw boot backend may expose PCI/BDF rows while the persisted
+  // inventory key is PNP-first. Reconcile only a unique writable row with
+  // the same PNP vendor/device pair; never use enumeration order.
+  if (key) {
+    const pnp = pnpParts(key);
+    if (pnp) {
+      const normalizePciId = (value) => {
+        const text = typeof value === 'number' && Number.isInteger(value)
+          ? value.toString(16)
+          : typeof value === 'string' ? value.trim().replace(/^0x/i, '') : '';
+        return /^[0-9a-f]{1,8}$/i.test(text) ? `0x${text.toLowerCase().slice(-4).padStart(4, '0')}` : null;
+      };
+      const candidates = devices.filter((device) => device.synthetic !== true
+        && device.backendKind !== 'os'
+        && device.identityAmbiguous !== true
+        && normalizePciId(device.pciVendorId) === pnp.ven
+        && normalizePciId(device.pciDeviceId) === pnp.dev);
+      if (candidates.length === 1) return candidates[0].id;
+      if (candidates.length > 1) return undefined;
+    }
+  }
   // A supplied key is identity-sensitive. Never pair it with a different
   // numeric id after reorder/disappearance; fall back to the first current
   // device and let the caller persist that new selection.

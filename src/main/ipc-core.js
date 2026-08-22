@@ -27,6 +27,7 @@ import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey } from './backend/units.js';
+import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
@@ -561,15 +562,48 @@ export async function resolveBootDeviceId(backend, store) {
     // degraded: never re-persist over an unreadable store
   }
   const persistedKey = typeof settings?.deviceKey === 'string' ? settings.deviceKey : null;
-  const matched = persistedKey ? keyed.find((d) => d.deviceKey === persistedKey) : null;
+  let matched = persistedKey ? keyed.find((d) => d.deviceKey === persistedKey) : null;
+  let reconciledPnp = false;
+  // M45: the raw --boot-apply backend enumerates PCI/BDF rows, while the
+  // window path persists a PNP-first inventory key. Reconcile only a PNP
+  // key whose vendor/device pair identifies exactly one current writable
+  // row. A missing or ambiguous pair is stale: choosing by ordinal would
+  // risk applying the profile to another adapter.
+  if (!matched && persistedKey) {
+    const pnp = pnpParts(persistedKey);
+    if (pnp) {
+      const normalizePciId = (value) => {
+        const text = typeof value === 'number' && Number.isInteger(value)
+          ? value.toString(16)
+          : typeof value === 'string' ? value.trim().replace(/^0x/i, '') : '';
+        return /^[0-9a-f]{1,8}$/i.test(text) ? `0x${text.toLowerCase().slice(-4).padStart(4, '0')}` : null;
+      };
+      const candidates = keyed.filter((device) => device.synthetic !== true
+        && device.backendKind !== 'os'
+        && device.identityAmbiguous !== true
+        && normalizePciId(device.pciVendorId) === pnp.ven
+        && normalizePciId(device.pciDeviceId) === pnp.dev);
+      if (candidates.length === 1) {
+        matched = candidates[0];
+        reconciledPnp = true;
+      } else if (candidates.length > 1) return null;
+      else return null;
+    }
+  }
   // A persisted durable identity is an explicit write target. If it has
   // disappeared, refuse boot resolution rather than self-healing to another
   // GPU before apply-on-boot gets its stale-target refusal.
   if (persistedKey && !matched) return null;
   const resolvedDevice = matched ?? keyed[0];
-  if (settings && (settings.deviceId !== resolvedDevice.id || settings.deviceKey !== resolvedDevice.deviceKey)) {
+  if (settings && (settings.deviceId !== resolvedDevice.id || (!reconciledPnp && settings.deviceKey !== resolvedDevice.deviceKey))) {
     try {
-      await store.saveSettings({ ...settings, deviceId: resolvedDevice.id, deviceKey: resolvedDevice.deviceKey });
+      await store.saveSettings({
+        ...settings,
+        deviceId: resolvedDevice.id,
+        // Keep the PNP-first inventory identity durable even though this
+        // raw backend selected a PCI/BDF row for this boot.
+        deviceKey: reconciledPnp ? settings.deviceKey : resolvedDevice.deviceKey,
+      });
     } catch (err) {
       console.log(`[boot] device selection self-heal persist skipped: ${err.message}`);
     }

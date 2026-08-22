@@ -76,6 +76,21 @@ function bdfKey(value) {
   }
   return null;
 }
+function legacyKeyOf(vendorId, deviceId, rawBdf) {
+  const normalized = bdfKey(rawBdf);
+  const match = normalized?.match(/^([0-9a-f]{4}):([0-9a-f]{2}):([0-9a-f]{2})\.([0-7])$/i);
+  if (!match) return null;
+  return deviceHardwareKey({
+    pciVendorId: vendorId,
+    pciDeviceId: deviceId,
+    bdf: {
+      bus: Number.parseInt(match[2], 16),
+      device: Number.parseInt(match[3], 16),
+      function: Number.parseInt(match[4], 10),
+    },
+  });
+}
+
 
 function physicalParts(value) {
   const pnp = pnpParts(value?.pnpDeviceId);
@@ -377,16 +392,24 @@ export function nullDeviceState() {
 export function physicalTargetOf(device) {
   if (!device) return null;
   const controller = device.osController ?? null;
-  const rawBdf = device.bdf ?? device.location ?? device.locationPath ?? controller?.bdf;
+  // Accept raw IGCL object BDFs, already-normalized strings, and Windows
+  // LocationInfo strings at this boundary. The elevated worker may receive
+  // any of these shapes after JSON serialization.
+  const rawBdf = device.bdf
+    ?? device.location
+    ?? device.locationInfo
+    ?? device.locationPath
+    ?? controller?.bdf
+    ?? controller?.location
+    ?? controller?.locationInfo
+    ?? controller?.locationPath;
   const rawVendorId = device.pciVendorId ?? controller?.pciVendorId;
   const rawDeviceId = device.pciDeviceId ?? controller?.pciDeviceId;
   // The unified inventory key is PNP-first, but the bundled 2023 runtime
   // still enumerates its own PCI/BDF key. Preserve that legacy key in the
   // physical proof so extended PL/TL writes can target the same adapter
   // after the M30 identity migration (including the elevated JSON boundary).
-  const legacyDeviceKey = rawBdf && typeof rawBdf === 'object'
-    ? deviceHardwareKey({ pciVendorId: rawVendorId, pciDeviceId: rawDeviceId, bdf: rawBdf })
-    : null;
+  const legacyDeviceKey = legacyKeyOf(rawVendorId, rawDeviceId, rawBdf);
   return {
     pnpDeviceId: normalizePnpDeviceId(device.pnpDeviceId ?? controller?.pnpDeviceId),
     pciVendorId: pciId(rawVendorId),

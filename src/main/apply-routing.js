@@ -827,7 +827,19 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
 
   if (Object.keys(extended).length > 0) {
     log(`[apply] extended controls: [${Object.keys(extended).join(', ')}] via the bundled 2023 IGCL runtime`);
+    const missingLegacyTarget = typeof deviceKey !== 'string' && deviceId != null && deviceId !== 0;
     for (const [key, value] of Object.entries(extended)) {
+      // M45: a secondary device must carry the physical PCI/BDF proof
+      // derived by physicalTargetOf(). Never let a missing legacy identity
+      // fall through to OldIgcl's primary-device behavior.
+      if (missingLegacyTarget) {
+        perControl[key] = {
+          ok: false,
+          errorCode: 'unsupported',
+          message: 'extended power/temp limit cannot establish the requested PCI/BDF target with the bundled 2023 IGCL runtime',
+        };
+        continue;
+      }
       // M21: the >315 sysman-PRIMARY gate - the V1 write must NEVER receive
       // a >315 value (oldIgcl.setPowerLimitW silent-clamps to
       // EXTENDED_PL_RANGE 315 and reports { ok: true, readBackEqual: true }

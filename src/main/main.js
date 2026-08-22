@@ -579,12 +579,13 @@ async function main() {
     } catch (err) {
       console.log(`[boot-apply] oc-mode seeding skipped: ${err.message}`);
     }
-    // M4-F (S2): resolve the persisted/selected device the SAME way the
-    // window path does (persisted ?? devices[0]) - the logon apply must
-    // target the selected GPU, never silently devices[0] (the 2-GPU iGPU trap).
+    // M45: --boot-apply uses the raw IGCL backend, whose rows carry PCI/BDF
+    // keys while the window path persists PNP-first inventory keys. Resolve
+    // through the raw-aware boot resolver so a PNP vendor/device pair is
+    // reconciled only when it identifies exactly one writable row.
     let bootDeviceId = null;
     try {
-      bootDeviceId = await resolveApplyDeviceId(bootBackend, bootStore, null);
+      bootDeviceId = await resolveBootDeviceId(bootBackend, bootStore);
     } catch (err) {
       console.log(`[boot-apply] deviceId resolution skipped: ${err.message}`);
     }
