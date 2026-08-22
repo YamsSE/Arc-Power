@@ -105,7 +105,7 @@
  * @typedef {{
  *   oemName: string,
  *   deviceName: string,
- *   waiverAccepted: boolean,
+ *   deviceKey?: string | null, // Stable PCI/BDF identity shared by device enumeration and apply routing.
  *   controls: {
  *     gpuFreqOffset?: boolean, gpuVoltOffset?: boolean, gpuLock?: boolean,
  *     vramFreqOffset?: boolean, vramVoltOffset?: boolean,

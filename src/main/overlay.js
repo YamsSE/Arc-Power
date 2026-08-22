@@ -145,12 +145,16 @@ function normalizeSettings(raw = {}) {
       }
     }
   }
+  const deviceKeys = Array.isArray(raw.deviceKeys)
+    ? [...new Set(raw.deviceKeys.filter((key) => typeof key === 'string' && key.length > 0 && key.length <= 256))]
+    : null;
   return {
     enabled: raw.enabled === true,
     position,
     scale,
     hotkeyLetter,
     color,
+    deviceKeys,
     stats,
     overlayBgEnabled: raw.overlayBgEnabled === true,
     overlayBgColor: bgColor,
@@ -206,6 +210,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
   // 'overlay:settings' payload both derive from - M7: the push and the
   // resize are applied together, never a race).
   let applied = normalizeSettings(getOverlaySettings());
+  let measuredDeviceCount = 1;
 
   const build = () => {
     if (win && !win.isDestroyed()) return win;
@@ -280,11 +285,21 @@ export function createOverlayWindow({ getOverlaySettings }) {
     win.loadFile(path.join(__dirname, '..', 'renderer', 'overlay.html'));
     return win;
   };
-
-  const sizeFor = (scale) => ({
-    width: Math.round(OVERLAY_BASE_WIDTH * scale),
-    height: Math.round(OVERLAY_BASE_HEIGHT * scale),
-  });
+  const sizeFor = (scale) => {
+    // M36: each monitored secondary GPU adds a GPU + VRAM pair. Keep the
+    // stock 170px geometry unchanged until the renderer reports the actual
+    // all-devices inventory; explicit per-GPU selections are still known
+    // synchronously from the persisted keys.
+    const configuredCount = Array.isArray(applied.deviceKeys)
+      ? applied.deviceKeys.length
+      : 1;
+    const deviceCount = Math.max(configuredCount, measuredDeviceCount);
+    const secondaryCount = Math.max(0, deviceCount - 1);
+    return {
+      width: Math.round(OVERLAY_BASE_WIDTH * scale),
+      height: Math.round((OVERLAY_BASE_HEIGHT + secondaryCount * 28) * scale),
+    };
+  };
 
   const xFor = (position, bounds, width) => (
     position === 'top-right' || position === 'bottom-right'
@@ -309,6 +324,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
     // re-render the HUD immediately, not on the next telemetry tick).
     color: applied.color,
     stats: applied.stats,
+    deviceKeys: applied.deviceKeys,
     // M7b: the background box rides the same push - without the three
     // fields the renderer would always apply the defaults and the box
     // would never appear (the main.js applyOverlaySettings MUST forward
@@ -348,6 +364,19 @@ export function createOverlayWindow({ getOverlaySettings }) {
         // Overlay page re-queries get-state on every render).
         hotkeyRegistered,
       };
+    },
+    resize(deviceCount) {
+      if (!Number.isInteger(deviceCount) || deviceCount < 1) return;
+      measuredDeviceCount = Math.min(32, deviceCount);
+      if (!win || win.isDestroyed()) return;
+      const { bounds } = screen.getPrimaryDisplay();
+      const size = sizeFor(applied.scale);
+      win.setBounds({
+        x: xFor(applied.position, bounds, size.width),
+        y: yFor(applied.position, bounds, size.height),
+        width: size.width,
+        height: size.height,
+      });
     },
 
     /**

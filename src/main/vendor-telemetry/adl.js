@@ -33,6 +33,14 @@
 import koffi from 'koffi';
 
 const ADL_OK = 0;
+// ADLAdapterInfo (ADL SDK, sequential x86 layout): Size, AdapterIndex,
+// UDID[256], BusNumber, DeviceNumber, FunctionNumber, ... . The BDF is the
+// stable bridge to Windows PnP LocationInfo; adapter ordinal is never used
+// when more than one AMD adapter exists.
+const ADL_ADAPTER_INFO_SIZE = 1572;
+const ADL_INFO_BUS_OFFSET = 264;
+const ADL_INFO_DEVICE_OFFSET = 268;
+const ADL_INFO_FUNCTION_OFFSET = 272;
 
 // ADLPMActivity: 11 x int32 = 44 bytes (adl_sdk.h, MSVC x64).
 koffi.struct('adl_pm_activity_t', {
@@ -79,8 +87,8 @@ for (const [name, expected] of Object.entries(ADL_EXPECTED_SIZES)) {
  *   close: () => void,
  * }}
  */
-export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) {
-  let state = { available: false, error: null, fn: null, adapterIndex: -1 };
+export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll', index = null, physicalToken = null } = {}) {
+  let state = { available: false, error: null, fn: null, initialized: false, adapterIndex: -1, count: 0, identity: null };
 
   function bind(libObj, name, ret, params) {
     try {
@@ -98,6 +106,8 @@ export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) 
         create: bind(loaded, 'ADL_Main_Control_Create', 'int', ['void*', 'int']),
         destroy: bind(loaded, 'ADL_Main_Control_Destroy', 'int', []),
         count: bind(loaded, 'ADL_Adapter_NumberOfAdapters_Get', 'int', ['void*']),
+        adapterId: bind(loaded, 'ADL_Adapter_ID_Get', 'int', ['int', 'void*']),
+        adapterInfo: bind(loaded, 'ADL_Adapter_AdapterInfo_Get', 'int', ['void*', 'int']),
         active: bind(loaded, 'ADL_Adapter_Active_Get', 'int', ['int', 'void*']),
         activity: bind(loaded, 'ADL_Overdrive5_CurrentActivity_Get', 'int', ['int', 'void*']),
         fan: bind(loaded, 'ADL_Overdrive5_FanSpeed_Get', 'int', ['int', 'void*', 'void*']),
@@ -111,6 +121,11 @@ export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) 
         state.error = 'ADL_Main_Control_Create failed (no AMD driver / adapter)';
         return;
       }
+      // Keep the bound destroy function visible even if a later startup
+      // query fails; startFor() closes rejected candidates as well as live
+      // owners, including this partially initialized ADL context.
+      state.fn = fn;
+      state.initialized = true;
       const countBuf = koffi.alloc('int32', 1);
       if (fn.count(countBuf) !== ADL_OK) {
         state.error = 'ADL_Adapter_NumberOfAdapters_Get failed';
@@ -119,7 +134,12 @@ export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) 
       const count = koffi.decode(countBuf, 0, 'int32') | 0;
       let pick = -1;
       const activeBuf = koffi.alloc('int32', 1);
-      for (let i = 0; i < count; i++) {
+      if (Number.isInteger(index) && index >= 0 && index < count) {
+        try {
+          if (!fn.active || fn.active(index, activeBuf) === ADL_OK) pick = index;
+        } catch { pick = -1; }
+      }
+      for (let i = 0; i < count && pick < 0; i++) {
         try {
           if (fn.active(i, activeBuf) === ADL_OK && (koffi.decode(activeBuf, 0, 'int32') | 0) !== 0) {
             pick = i;
@@ -128,12 +148,58 @@ export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) 
         } catch { /* try the next index */ }
       }
       if (pick < 0 && count > 0) pick = 0; // no active flag -> the first adapter
-      state.fn = fn;
+      state.count = Math.max(0, count);
       state.adapterIndex = pick;
       state.available = true;
+      state.identity = readIdentity(pick);
     } catch (err) {
       state.error = err instanceof Error ? err.message : String(err);
     }
+  }
+
+  function readIdentity(adapterIndex) {
+    const identity = {};
+    if (state.fn?.adapterInfo && adapterIndex >= 0 && Number.isInteger(state.count) && state.count > 0) {
+      try {
+        const buf = Buffer.alloc(ADL_ADAPTER_INFO_SIZE * state.count);
+        if (state.fn.adapterInfo(buf, ADL_ADAPTER_INFO_SIZE * state.count) === ADL_OK) {
+          const offset = adapterIndex * ADL_ADAPTER_INFO_SIZE;
+          const size = buf.readInt32LE(offset);
+          const bus = buf.readInt32LE(offset + ADL_INFO_BUS_OFFSET);
+          const device = buf.readInt32LE(offset + ADL_INFO_DEVICE_OFFSET);
+          const fn = buf.readInt32LE(offset + ADL_INFO_FUNCTION_OFFSET);
+          if (size > 0 && bus >= 0 && bus <= 0xff && device >= 0 && device <= 0xff && fn >= 0 && fn <= 7 && (bus !== 0 || device !== 0)) {
+            identity.physicalBdf = `0000:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+          }
+        }
+      } catch { /* fall back to the ADL adapter token */ }
+    }
+    if (typeof physicalToken === 'string' && physicalToken.length > 0) identity.physicalToken = `adl:${physicalToken}`;
+    if (!identity.physicalToken && state.fn?.adapterId && adapterIndex >= 0) {
+      try {
+        const idBuf = koffi.alloc('int32', 1);
+        if (state.fn.adapterId(adapterIndex, idBuf) === ADL_OK) {
+          const id = koffi.decode(idBuf, 0, 'int32');
+          if (Number.isInteger(id)) identity.physicalToken = `adl:${id}`;
+        }
+      } catch { /* identity remains BDF-only or absent */ }
+    }
+    return Object.keys(identity).length > 0 ? identity : null;
+  }
+
+  function selectDevice(adapterIndex) {
+    if (!state.available || !Number.isInteger(adapterIndex) || adapterIndex < 0 || adapterIndex >= state.count) return false;
+    state.adapterIndex = adapterIndex;
+    state.identity = readIdentity(adapterIndex);
+    return true;
+  }
+
+  async function enumerateDevices() {
+    if (!state.available) return [];
+    return Array.from({ length: state.count }, (_, i) => ({
+      index: i,
+      ...(readIdentity(i) ?? {}),
+    }));
   }
 
   async function sample() {
@@ -167,10 +233,10 @@ export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) 
   }
 
   function close() {
-    if (state.fn?.destroy) {
+    if (state.initialized && state.fn?.destroy) {
       try { state.fn.destroy(); } catch { /* best effort */ }
     }
-    state = { available: false, error: null, fn: null, adapterIndex: -1 };
+    state = { available: false, error: null, fn: null, initialized: false, adapterIndex: -1, count: 0, identity: null };
   }
 
   /**
@@ -186,9 +252,15 @@ export function createAdlAdapter({ lib = null, dllPath = 'atiadlxx.dll' } = {}) 
 
   return {
     vendor: 'amd',
+    get deviceIndex() { return state.adapterIndex >= 0 ? state.adapterIndex : (Number.isInteger(index) ? index : undefined); },
+    get physicalToken() { return state.identity?.physicalToken ?? null; },
+    get physicalBdf() { return state.identity?.physicalBdf ?? null; },
+    get physicalUniqueToken() { return state.identity?.physicalToken ?? null; },
     available: () => state.available,
     initError: () => state.error,
     init,
+    enumerateDevices,
+    selectDevice,
     sample,
     deviceInfo,
     close,

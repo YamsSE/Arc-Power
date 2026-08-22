@@ -78,7 +78,7 @@ export function vendorOf(sysinfoPayload) {
  * @param {'nvml'|'adl'} vendorId
  * @returns {object} the fixture adapter duck type
  */
-export function createVendorFixtureAdapter(vendorId) {
+export function createVendorFixtureAdapter(vendorId, index = 0) {
   const file = path.join(VENDOR_FIXTURES_DIR, `${vendorId}.json`);
   let fixture = null;
   let error = null;
@@ -125,6 +125,10 @@ export function createVendorFixtureAdapter(vendorId) {
       return { vramBytes, computeCores };
     },
     close: () => {},
+    deviceIndex: index,
+    physicalPnp: typeof fixture?.pnpDeviceId === 'string' ? fixture.pnpDeviceId : null,
+    physicalBdf: fixture?.bdf ?? null,
+    physicalToken: typeof fixture?.physicalToken === 'string' ? fixture.physicalToken : null,
   };
 }
 
@@ -148,48 +152,177 @@ export function createVendorFixtureAdapter(vendorId) {
 export function createVendorTelemetry({ sysinfo = null, adapters = null } = {}) {
   let adapter = null;
   let started = false;
+  let liveBoundDeviceKey = null;
+
+  const normalizeIdentity = (value) => typeof value === 'string' ? value.trim().toUpperCase() : null;
+  const targetIdentity = (target) => ({
+    pnp: normalizeIdentity(target?.pnpDeviceId ?? target?.osController?.pnpDeviceId),
+    bdf: normalizeIdentity(target?.bdf ?? target?.osController?.bdf),
+    token: normalizeIdentity(target?.physicalToken ?? target?.uniqueToken ?? target?.osController?.physicalToken),
+    luid: target?.osLuid ?? target?.osController?.luid ?? target?.luid ?? target?.adapterLuid ?? null,
+  });
+  const sameLuid = (left, right) => left !== null && left !== undefined && right !== null && right !== undefined
+    && JSON.stringify(left) === JSON.stringify(right);
+  const identityMatches = (candidate, identity) => (
+    (identity.pnp && normalizeIdentity(candidate?.physicalPnp) === identity.pnp)
+    || (identity.bdf && normalizeIdentity(candidate?.physicalBdf) === identity.bdf)
+    || (identity.token && normalizeIdentity(candidate?.physicalToken ?? candidate?.physicalUniqueToken) === identity.token)
+    || sameLuid(candidate?.physicalLuid, identity.luid)
+  );
+  const release = (released) => {
+    if (adapter !== released) return;
+    adapter = null;
+    started = false;
+    liveBoundDeviceKey = null;
+  };
+  const manage = (candidate, targetKey, owner) => {
+    if (!candidate) return null;
+    if (!candidate.__vendorTelemetryManaged) {
+      const rawClose = typeof candidate.close === 'function' ? candidate.close.bind(candidate) : null;
+      candidate.__vendorTelemetryManaged = true;
+      candidate.close = () => {
+        try { rawClose?.(); } finally { release(candidate); }
+      };
+    }
+    candidate.boundDeviceKey = targetKey;
+    if (owner === 'telemetry') liveBoundDeviceKey = targetKey;
+    adapter = candidate;
+    started = true;
+    return candidate;
+  };
+
+  async function startFor(target = null, { owner = 'static' } = {}) {
+    const knob = process.env.RID_MOCK_VENDOR;
+    const wantedVendor = target?.gpuVendor === 'nvidia' || target?.gpuVendor === 'amd'
+      ? target.gpuVendor
+      : vendorOf({ videoControllers: [target?.osController ?? target] })
+        ?? (target == null && (knob === 'nvml' ? 'nvidia' : knob === 'adl' ? 'amd' : null));
+    const wantedKey = typeof target?.deviceKey === 'string' ? target.deviceKey : null;
+    const wantedIndex = Number.isInteger(target?.vendorIndex) ? target.vendorIndex : 0;
+    const identity = targetIdentity(target);
+    const hasPhysicalTarget = Boolean(identity.pnp || identity.bdf || identity.token || identity.luid !== null);
+    const matchesPhysicalTarget = (candidate) => {
+      if (wantedKey && candidate?.deviceKey === wantedKey) return true;
+      return identityMatches(candidate, identity);
+    };
+    const providerIdentityComparable = (candidate) => Boolean(
+      normalizeIdentity(candidate?.physicalPnp)
+      || normalizeIdentity(candidate?.physicalBdf)
+      || sameLuid(candidate?.physicalLuid, identity.luid)
+      || (identity.token && normalizeIdentity(candidate?.physicalToken ?? candidate?.physicalUniqueToken)),
+    );
+    const closeRejectedCandidate = (candidate) => {
+      // The selected telemetry owner is closed by the telemetry stop path.
+      // Every candidate that does not become the owner must release any
+      // native library state acquired by init(), including partial init.
+      if (!candidate || candidate === adapter && liveBoundDeviceKey !== null) return;
+      try { candidate.close?.(); } catch { /* best effort */ }
+    };
+    if (started && adapter && ((wantedKey && adapter.boundDeviceKey === wantedKey)
+      || (!hasPhysicalTarget && adapter.deviceIndex === wantedIndex && liveBoundDeviceKey === null)
+      || (hasPhysicalTarget && matchesPhysicalTarget(adapter)))) return adapter;
+    // Static info may observe a live adapter, but must never close it while
+    // its telemetry timer still owns the sampling object.
+    if (liveBoundDeviceKey !== null && owner !== 'telemetry') return null;
+    if (adapter?.close) { try { adapter.close(); } catch { /* best effort */ } }
+    started = true;
+    adapter = null;
+    liveBoundDeviceKey = null;
+    try {
+      if ((knob === 'nvml' && wantedVendor === 'nvidia') || (knob === 'adl' && wantedVendor === 'amd')) {
+        adapter = createVendorFixtureAdapter(knob, wantedIndex);
+        adapter.deviceKey = wantedKey;
+        return manage(adapter, wantedKey, owner);
+      }
+      if (!wantedVendor) return null;
+      const candidates = adapters ?? [
+        wantedVendor === 'nvidia' ? createNvmlAdapter({ index: wantedIndex }) : createAdlAdapter({ index: wantedIndex }),
+      ];
+      for (const a of candidates) {
+        let selected = false;
+        try {
+          if (a?.vendor !== wantedVendor) continue;
+          try { a.init(); } catch { continue; }
+          if (!a.available?.()) continue;
+          let resolved = false;
+          let provenSingle = false;
+          const directMatched = hasPhysicalTarget && matchesPhysicalTarget(a);
+          const enumerated = directMatched ? null : await a.enumerateDevices?.();
+          if (directMatched) {
+            resolved = true;
+          } else if (Array.isArray(enumerated)) {
+            provenSingle = enumerated.length === 1 && wantedIndex === 0;
+            if (hasPhysicalTarget) {
+              const matches = enumerated.filter((entry) => identityMatches(entry, identity));
+              if (matches.length === 1) {
+                const selectedOk = typeof a.selectDevice === 'function'
+                  ? a.selectDevice(matches[0].index)
+                  : true;
+                resolved = selectedOk !== false;
+              } else if (provenSingle && (target?.vendorCount === 1 || !providerIdentityComparable(enumerated[0]))) {
+                // A real NVML adapter commonly exposes PCI BDF while the
+                // Windows inventory exposes only PNP. When both sides prove
+                // there is exactly one adapter for this vendor, the sole
+                // provider row is a safe physical join even though its
+                // identity is comparable but not equal. Never use this path
+                // for a multi-adapter vendor inventory.
+                const selectedOk = typeof a.selectDevice === 'function'
+                  ? a.selectDevice(enumerated[0].index)
+                  : true;
+                resolved = selectedOk !== false;
+              }
+            } else if (enumerated.length > 1) {
+              // No durable target identity means an ordinal would be unsafe.
+              continue;
+            }
+          } else if (enumerated === null && target?.vendorCount === 1 && wantedIndex === 0) {
+            // A provider that cannot enumerate still has a safe sole-vendor
+            // join when the unified inventory proves there is one adapter.
+            provenSingle = true;
+            resolved = true;
+          }
+          const physicallyMatched = matchesPhysicalTarget(a);
+          if (hasPhysicalTarget && !resolved && !physicallyMatched) continue;
+          if (!hasPhysicalTarget && (!provenSingle || (Number.isInteger(a?.deviceIndex) && a.deviceIndex !== wantedIndex))) continue;
+          selected = true;
+          return manage(a, wantedKey, owner);
+        } finally {
+          if (!selected) closeRejectedCandidate(a);
+        }
+      }
+      return null;
+    } catch {
+      adapter = null;
+      liveBoundDeviceKey = null;
+      return null;
+    }
+  }
 
   async function start() {
     if (started) return adapter;
-    started = true;
     try {
-      const knob = process.env.RID_MOCK_VENDOR;
-      if (knob === 'nvml' || knob === 'adl') {
-        adapter = createVendorFixtureAdapter(knob);
-        return adapter;
-      }
       let payload = null;
       try {
         payload = await sysinfo?.get?.();
       } catch {
         payload = null; // degraded - no vendor readouts
       }
-      const vendor = vendorOf(payload);
-      if (!vendor) return (adapter = null);
-      const candidates = adapters ?? [
-        createNvmlAdapter(),
-        createAdlAdapter(),
-      ];
-      for (const a of candidates) {
-        if (a?.vendor !== vendor) continue;
-        try {
-          a.init();
-        } catch {
-          continue;
-        }
-        if (a.available?.()) {
-          adapter = a;
-          return adapter;
-        }
-      }
-      return (adapter = null);
+      const knob = process.env.RID_MOCK_VENDOR;
+      const vendor = vendorOf(payload)
+        ?? (knob === 'nvml' ? 'nvidia' : knob === 'adl' ? 'amd' : null);
+      const row = payload?.videoControllers?.find((c) => controllerVendorOf(c?.pnpDeviceId));
+      return startFor({ gpuVendor: vendor, osController: row, vendorIndex: 0 }, { owner: 'telemetry' });
     } catch {
-      return (adapter = null);
+      adapter = null;
+      liveBoundDeviceKey = null;
+      return null;
     }
   }
 
   return {
     start,
+    startFor,
+    close: () => { try { adapter?.close?.(); } catch { /* best effort */ } },
     /** The resolved adapter (null before start / when none matched). */
     get adapter() {
       return adapter;

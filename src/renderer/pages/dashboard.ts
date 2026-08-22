@@ -23,8 +23,8 @@ import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue, ghzFreq } from '../pure/sysinfo.ts';
+import { selectedDashboardController } from '../pure/dashboard.ts';
 import { aibOfPnpDeviceId } from '../pure/aib.ts';
-import { stripVramSuffix } from '../pure/device.ts';
 import type { TelemetrySample } from '../types.ts';
 
 /** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half - the current
@@ -168,6 +168,7 @@ async function openWaiverFromRow(ctx: PageContext) {
 function healthCard(ctx: PageContext): HTMLElement {
   const s = ctx.store.get();
   const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
+  const osOnly = device?.synthetic === true && device.backendKind === 'os';
   const rows = healthRows({
     health: s.health,
     device,
@@ -175,15 +176,17 @@ function healthCard(ctx: PageContext): HTMLElement {
     bootError: s.bootError,
     driverDate: s.driverDate,
     waiverAccepted: s.caps?.waiverAccepted ?? null,
-    // M17 (B50-class): OC-locked devices carry no waiver - the row must read
-    // the neutral text, never the clickable Not Accepted error.
+    // M17 (B50-class): OC-locked devices carry no waiver - the row must
+    // read the neutral text, never the clickable Not Accepted error.
     overclockingSupported: s.caps?.overclockingSupported ?? null,
     // M16: the stock-state source (the OC status row).
     state: s.state,
     caps: s.caps,
     // 1.0.1 no-Intel round: the rows swap to the honest no-Intel texts on
     // the no-device path ('No Intel Driver Found' / the OS GPU name).
-    hasIntelGpu: s.noIntel !== true,
+    // M30: a selected synthetic OS-only row is also non-Intel for health
+    // purposes, even when an Intel row remains in the machine inventory.
+    hasIntelGpu: !osOnly && s.noIntel !== true,
     osGpuName: s.osGpu?.name ?? null,
   });
 
@@ -200,24 +203,22 @@ export const dashboardPage: Page = {
     lastSig = currentSig(ctx);
     const s = ctx.store.get();
     const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
-    // M4-D: the GPU-card PCIe/ReBAR rows read the sysinfo video
-    // controller matched to the device (name-family match - same rules as
-    // the main-side VRAM lookup; null when unmatched -> honest '-' rows).
-    const matchedController = s.sysinfo?.videoControllers
-      .find((c) => c.name && device?.name && stripVramSuffix(c.name) === stripVramSuffix(device.name))
-      ?? s.sysinfo?.videoControllers[0] ?? null;
-    // M4-I (D3): the no-Intel branch's controller - the OS GPU's own sysinfo
-    // row (the OS pnputil/allocated ReBAR sources are GPU-agnostic, so the
-    // verdict is REAL there too; the Driver version row + the VRAM row read
-    // it as well).
-    const osController = s.sysinfo?.videoControllers
-      .find((c) => c.name && s.osGpu?.name && c.name === s.osGpu.name)
-      ?? s.sysinfo?.videoControllers[0] ?? null;
+    const osOnly = device?.synthetic === true && device.backendKind === 'os';
+    const noIntelPresentation = s.noIntel || osOnly;
+    // M30: static GPU rows are sourced only from the selected inventory row.
+    // The explicit no-device presentation uses the already-selected OS GPU
+    // object; no name match may attach another controller's facts here.
+    const selectedController = selectedDashboardController(device?.osController, s.osGpu, s.deviceId !== null);
+    const matchedController = selectedController;
+    const osController = selectedController;
+    const rebarController = selectedController
+      ? { ...selectedController, rebarActive: selectedController.rebarActive ?? null }
+      : null;
     // M17d: the no-Intel Board-partner decode - the controller's PNPDeviceID
     // SUBSYS through pure/aib.ts (works for ANY GPU); null -> the honest '-'.
-    const osAib = aibOfPnpDeviceId(osController?.pnpDeviceId ?? s.osGpu?.pnpDeviceId);
-    const rebar = rebarState(matchedController);
-    const osRebar = rebarState(osController);
+    const osAib = aibOfPnpDeviceId(osController?.pnpDeviceId);
+    const rebar = rebarState(rebarController);
+    const osRebar = rebarState(rebarController);
     const sysRows = cpuCardRows(s.sysinfo);
 
     clear(container);
@@ -289,12 +290,11 @@ export const dashboardPage: Page = {
             el('h2', { class: 'card-title', text: 'GPU' }),
             buildDeviceSelect(ctx.store, (id) => void selectDevice(id)),
           ]),
-          ...(s.noIntel
+          ...(noIntelPresentation
             ? [
                 // M4-I (D3)/M17d: the no-Intel branch renders the REAL rows
                 // the OS + the vendor lane have: Driver version (the NEW
                 // videoControllers driverVersion field - works on any GPU),
-                // the Board-partner row BELOW the GPU row (the controller
                 // PNPDeviceID SUBSYS decode through pure/aib.ts
                 // aibOfPnpDeviceId - works for ANY GPU; '<vendor>
                 // (<model-stripped>)'; unknown -> the honest grey '-'),
@@ -427,14 +427,15 @@ export const dashboardPage: Page = {
     if (clocksValue) {
       const live = ctx.store.get();
       const mem = live.latestSample?.memClockMhz;
-      if (live.noIntel) {
+      const liveDevice = live.devices.find((d) => d.id === live.deviceId) ?? null;
+      const osOnly = liveDevice?.synthetic === true && liveDevice.backendKind === 'os';
+      if (live.noIntel || osOnly) {
         const core = live.latestSample?.gpuClockMhz;
         const coreText = typeof core === 'number' && Number.isFinite(core) ? core : '-';
         const memText = typeof mem === 'number' && Number.isFinite(mem) ? mem : '-';
         clocksValue.textContent = `${coreText} MHz Core / ${memText} MHz Memory`;
       } else {
-        const dev = live.devices.find((d) => d.id === live.deviceId) ?? null;
-        const core = dev?.graphicsClockMHz;
+        const core = liveDevice?.graphicsClockMHz;
         clocksValue.textContent = `${core !== undefined ? core : '--'} MHz Core / ${mem !== undefined ? mem : '--'} MHz Memory`;
       }
     }

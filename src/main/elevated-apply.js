@@ -9,7 +9,7 @@
 //
 // Contract:
 //   request file  (JSON): { requestId, op: 'apply'|'waiver-accept'|'reset',
-//                           deviceId, settings?, profileName?,
+//                           deviceId, deviceKey?, physicalTarget?, settings?, profileName?,
 //                           waiverAccepted? }
 //   token file    (JSON): { requestId, expiresAt } - written by the parent
 //                           BEFORE the request file; the parent-owned
@@ -338,7 +338,7 @@ export function createApplyRunner({
      *   parent's limits-key makes the worker's gate thresholds MATCH the
      *   user-facing ones. Only present when the caller resolved one.
      */
-    async apply({ deviceId, settings, profileName, waiverAccepted, ocMode, profileApply, limitsKey }) {
+    async apply({ deviceId, deviceKey, physicalTarget, settings, profileName, waiverAccepted, ocMode, profileApply, limitsKey }) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
         // M4O (NEW): the IN-PROCESS branch forwards profileApply too - the
@@ -356,6 +356,8 @@ export function createApplyRunner({
         // executor request - the old request-shape pins stay green).
         const out = await inProcess.apply({
           deviceId,
+          ...(typeof deviceKey === 'string' ? { deviceKey } : {}),
+          ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}),
           settings,
           ...(ocMode !== undefined && ocMode !== null ? { ocMode } : {}),
           ...(profileApply === true ? { profileApply: true } : {}),
@@ -377,6 +379,8 @@ export function createApplyRunner({
         requestId: randomUUID(),
         op: 'apply',
         deviceId,
+        ...(typeof deviceKey === 'string' ? { deviceKey } : {}),
+        ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}),
         settings,
         profileName,
         waiverAccepted,
@@ -410,13 +414,13 @@ export function createApplyRunner({
      * needs the same elevation as any other OC write).
      * @param {number} deviceId
      */
-    async waiverAccept(deviceId) {
+    async waiverAccept(deviceId, deviceKey = null, physicalTarget = null) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
-        await inProcess.waiverAccept(deviceId);
+        await inProcess.waiverAccept(deviceId, deviceKey, physicalTarget);
         return { ok: true };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'waiver-accept', deviceId });
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'waiver-accept', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok !== true) throw new Error(result.error ?? 'waiver acceptance failed');
       return { ok: true };
@@ -426,13 +430,13 @@ export function createApplyRunner({
      * elevated, so cleanup runs ctlOverclockResetToDefault).
      * @param {number} deviceId
      */
-    async reset(deviceId) {
+    async reset(deviceId, deviceKey = null, physicalTarget = null) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
-        const out = await inProcess.reset(deviceId);
+        const out = await inProcess.reset(deviceId, deviceKey, physicalTarget);
         return { ok: true, state: out.state };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'reset', deviceId });
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'reset', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok !== true) throw new Error(result.error ?? 'reset failed');
       return { ok: true, state: result.state ?? null };
@@ -448,13 +452,13 @@ export function createApplyRunner({
      * when the UAC prompt was canceled/denied.
      * @param {{ deviceId: number, settings: object }} req
      */
-    async graphicsApply({ deviceId, settings }) {
+    async graphicsApply({ deviceId, deviceKey = null, physicalTarget = null, settings }) {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
-        const out = await inProcess.graphicsApply({ deviceId, settings });
+        const out = await inProcess.graphicsApply({ deviceId, deviceKey, physicalTarget, settings });
         return { worker: false, ok: out.ok === true, perControl: out.perControl ?? {}, graphicsState: out.graphicsState ?? null };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'graphics-apply', deviceId, settings });
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'graphics-apply', deviceId, settings, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);
       return { worker: true, ok: result.ok === true, perControl: result.perControl ?? {}, graphicsState: result.graphicsState ?? null };

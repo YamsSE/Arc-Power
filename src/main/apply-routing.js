@@ -485,7 +485,7 @@ export function requiresExtendedRange(settings, ranges = null) {
  *   the KMD-arbitration refusal, 'not-ready' for the persistent not-ready,
  *   'io-failed' for threw/no-movement). Never throws.
  */
-export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, limitsKey = null, clampAdvanced = false, extendedW, sysmanPrimary = false, oldIgcl = null, sleep = defaultSleep, delayedVerifyMs = DELAYED_VERIFY_MS }) {
+export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = () => {}, backend = null, deviceId = 0, deviceKey = null, limitsKey = null, clampAdvanced = false, extendedW, sysmanPrimary = false, oldIgcl = null, sleep = defaultSleep, delayedVerifyMs = DELAYED_VERIFY_MS }) {
   if (!sysmanPowerLimits) return null;
   let res;
   try {
@@ -586,7 +586,7 @@ export async function runSysmanCompanion({ sysmanPowerLimits, requestedW, log = 
           let reV1;
           if (oldIgcl && typeof oldIgcl.setPowerLimitW === 'function') {
             try {
-              reV1 = await oldIgcl.setPowerLimitW(requestedW);
+              reV1 = await oldIgcl.setPowerLimitW(requestedW, deviceId, deviceKey);
             } catch (err) {
               log(`[apply] sysman companion: the V2-CLAMP wrote PL2 = ${valueW} W but the re-V1 (PL1 = ${requestedW} W) threw (${err instanceof Error ? err.message : String(err)}) - PL1 is uncertain - the honest { landed: false } (no '(set)' claim)`);
               return { landed: false };
@@ -794,7 +794,7 @@ export function isMomentaryLieCandidate(per) {
  *   attempts: number,
  * }>}
  */
-export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
+export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
   const { driverstore, extended } = splitByRuntime(settings, ranges, mode);
   const perControl = {};
 
@@ -844,8 +844,8 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
       let per;
       if (oldIgcl) {
         per = key === 'powerLimitW'
-          ? await oldIgcl.setPowerLimitW(value)
-          : await oldIgcl.setTempLimitC(value);
+          ? await oldIgcl.setPowerLimitW(value, deviceId, deviceKey)
+          : await oldIgcl.setTempLimitC(value, deviceId, deviceKey);
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
@@ -964,6 +964,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
         log,
         backend,
         deviceId,
+        deviceKey,
         limitsKey,
         clampAdvanced: false, // >315 NEVER fires the V2-CLAMP (it would silently reduce to 252)
         extendedW: true,
@@ -994,6 +995,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
       log,
       backend,
       deviceId,
+      deviceKey,
       limitsKey,
       // M21: the clampAdvanced computation is PINNED (R2-F3): the V2-CLAMP
       // fires ONLY for an extended control AT OR BELOW the V1 write range
@@ -1045,8 +1047,31 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, settings
  * }} deps
  * @returns {Promise<{ result: { ok: boolean, perControl: Record<string, unknown> }, state: object | null }>}
  */
-export async function executeApply({ backend, oldIgcl, deviceId, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null, sysmanPowerLimits = null }) {
+export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expectedDeviceKey = null, physicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs, sleep, ocMode = null, sysmanPowerLimits = null }) {
+  if (typeof backend.assertDeviceTarget === 'function' && typeof expectedDeviceKey === 'string') {
+    await backend.assertDeviceTarget(deviceId, expectedDeviceKey, physicalTarget);
+  }
   const caps = await backend.getCapabilities(deviceId);
+  // M30: an OS-only inventory entry is a valid read/telemetry target but is
+  // never a write target.  This guard sits before Sysman/IGCL routing so a
+  // profile, tray apply, boot apply, or elevated worker cannot touch a
+  // different adapter as a fallback.
+  if (caps?.overclockingSupported === false) {
+    const perControl = {};
+    for (const key of Object.keys(settings ?? {})) {
+      perControl[key] = { ok: false, errorCode: 'unsupported', message: 'overclocking is not supported on this GPU' };
+    }
+    let state = null;
+    try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
+    return { result: { ok: Object.keys(perControl).length === 0, perControl }, state };
+  }
+  // M30: the inventory's durable key is PNP-first, while OldIgcl selects
+  // against its own PCI/BDF enumeration. The physical proof carries the
+  // legacy key across both the in-process and elevated-worker boundaries;
+  // never feed the PNP key into the legacy setter.
+  const deviceKey = typeof physicalTarget?.legacyDeviceKey === 'string'
+    ? physicalTarget.legacyDeviceKey
+    : null;
   // M3-C step-5 F1: advanced mode + a NOT-capable 2023 runtime (the
   // future-driver degradation) -> refuse extended values BEFORE the clamp,
   // never a silent 252 W / 90 C cap that reports ok:true. The capability
@@ -1081,7 +1106,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, settings, opts 
       ? clampAndSnap(value, range)
       : value;
   }
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
+  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: ocMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   return { result: out.result, state };
