@@ -71,6 +71,21 @@ const ARC_TOOL_UID = {
   Data3: 0x4b27,
   Data4: [0x9c, 0xcf, 0x02, 0x01, 0x02, 0x64, 0xe9, 0xc8],
 };
+function normalizePciId(value) {
+  const text = String(value ?? '').trim().replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]+$/.test(text) ? text.slice(-4).padStart(4, '0') : null;
+}
+
+function pciIdsFromTargetKey(deviceKey) {
+  if (typeof deviceKey !== 'string') return null;
+  const pnp = deviceKey.match(/^pnp:.*?\bVEN_([0-9a-f]{4}).*?\bDEV_([0-9a-f]{4})/i);
+  if (pnp) return { vendor: pnp[1].toLowerCase(), device: pnp[2].toLowerCase() };
+  const pci = deviceKey.match(/^pci:([^:]+):([^@]+)@/i);
+  if (!pci) return null;
+  const vendor = normalizePciId(pci[1]);
+  const device = normalizePciId(pci[2]);
+  return vendor && device ? { vendor, device } : null;
+}
 
 
 // 2023-era ctl_oc_properties_t (igcl repo ~v109/v127): 6 controls, Size 296,
@@ -393,11 +408,22 @@ export class OldIgcl {
       if (!this._identityAvailable && this._devices.length > 1) return null;
       return this._devices[0] ?? null;
     }
+    // The parent inventory now uses a PNP-first durable key. The bundled
+    // runtime exposes only PCI vendor/device properties on this driver, and
+    // some runtimes expose those properties for only a subset of enumerated
+    // handles. Accept a PNP key when exactly one known legacy identity has
+    // the same PCI pair; never guess between duplicate adapters.
+    const exact = this._devices.find((entry) => entry.identity?.deviceKey === deviceKey);
+    const pci = exact ? null : pciIdsFromTargetKey(deviceKey);
+    const pciMatches = pci
+      ? this._devices.filter((entry) => entry.identity
+        && normalizePciId(entry.identity.pciVendorId) === pci.vendor
+        && normalizePciId(entry.identity.pciDeviceId) === pci.device)
+      : [];
+    const selected = exact ?? (pciMatches.length === 1 ? pciMatches[0] : null);
     // A keyed request is identity-sensitive. Older bundled runtimes without
-    // ctlGetDeviceProperties cannot prove which raw handle is the target.
-    if (!this._identityAvailable) return null;
-    const selected = this._devices.find((entry) => entry.identity?.deviceKey === deviceKey);
-    if (!selected) return null;
+    // any usable property identity still cannot prove the requested handle.
+    if (!selected || !selected.identity) return null;
     try {
       await this._ensureWaiver(selected.handle, selected.identity.deviceKey);
     } catch {
@@ -406,7 +432,6 @@ export class OldIgcl {
     this._device = selected.handle;
     return selected;
   }
-
   _read(control, device = this._device) {
     const getFn = control === 'powerLimitW' ? this._lib.ctlOverclockPowerLimitGet : this._lib.ctlOverclockTemperatureLimitGet;
     const buf = koffi.alloc('double', 1);
@@ -457,7 +482,8 @@ export class OldIgcl {
     const target = clampAndSnap(value, range);
     const setFn = control === 'powerLimitW' ? this._lib.ctlOverclockPowerLimitSet : this._lib.ctlOverclockTemperatureLimitSet;
     const igclValue = control === 'powerLimitW' ? wToMw(target) : target;
-    const setRes = setFn(this._device, igclValue);
+    const targetHandle = selected.handle;
+    const setRes = setFn(targetHandle, igclValue);
     if (setRes !== CTL_RESULT.SUCCESS) {
       return {
         ok: false,
@@ -466,9 +492,9 @@ export class OldIgcl {
         message: `IGCL ${describeResult(setRes)}`,
       };
     }
-    this._read(control);
+    this._read(control, targetHandle);
     await this._sleep(this._delayedVerifyMs);
-    const readBack = this._read(control);
+    const readBack = this._read(control, targetHandle);
     if (readBack !== null && nearlyEqual(readBack, target)) {
       return { ok: true, readBackEqual: true };
     }
@@ -486,8 +512,9 @@ export class OldIgcl {
   /**
    * Extended power/temperature limits. The optional deviceId and stable
    * deviceKey are accepted by the shared apply-routing seam. A keyed target
-   * is selected by PCI/BDF identity; a runtime without property binding
-   * refuses keyed requests rather than risking a write to another adapter.
+   * is selected by exact PCI/BDF identity or a unique PNP vendor/device pair;
+   * a runtime without any usable property identity refuses keyed requests
+   * rather than risking a write to another adapter.
    * Writes only values above the DriverStore clamp; routing guarantees that.
    * @param {number} value
    * @param {number|undefined|null} deviceId
