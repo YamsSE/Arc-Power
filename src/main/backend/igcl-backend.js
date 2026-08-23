@@ -56,7 +56,7 @@ import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
-import { createRefusedCeilingStore, mergeIntoRanges, recordRefusalEnvelope } from './refused-ceilings.js';
+import { createRefusedCeilingStore, mergeIntoRanges, recordedCeilingsFor, recordRefusalEnvelope } from './refused-ceilings.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -1430,6 +1430,8 @@ export class IgclBackend {
       };
     }
     caps.ranges = mergeIntoRanges(this._refusedCeilings, deviceId, caps.ranges);
+    const learnedCeilings = recordedCeilingsFor(this._refusedCeilings, deviceId);
+    if (Object.keys(learnedCeilings).length > 0) caps.learnedCeilings = learnedCeilings;
     return caps;
   }
 

@@ -313,6 +313,25 @@ export function extendedUnavailablePerControl(controls) {
   return perControl;
 }
 
+/** Return true only for a finite learned ceiling on the finite range grid. */
+function isValidLearnedTempCeiling(learnedMax, range) {
+  if (typeof learnedMax !== 'number' || !Number.isFinite(learnedMax)
+    || typeof range?.min !== 'number' || !Number.isFinite(range.min)
+    || typeof range.max !== 'number' || !Number.isFinite(range.max)
+    || range.max < range.min
+    || typeof range.step !== 'number' || !Number.isFinite(range.step)
+    || range.step <= 0
+    || learnedMax < range.min
+    || learnedMax > EXTENDED_TL_MAX_C) return false;
+
+  const gridIndex = (learnedMax - range.min) / range.step;
+  if (!Number.isFinite(gridIndex)) return false;
+  const snapped = range.min + Math.round(gridIndex) * range.step;
+  if (!Number.isFinite(snapped)) return false;
+  const scale = Math.max(1, Math.abs(learnedMax), Math.abs(snapped), Math.abs(range.min));
+  const tolerance = Number.EPSILON * 16 * scale;
+  return Math.abs(learnedMax - snapped) <= tolerance;
+}
 /**
  * M4O: the clamp ranges for PROFILE applies - the driver's TRUE limits
  * (the extended W/C maxes, NOT the
@@ -331,10 +350,12 @@ export function extendedUnavailablePerControl(controls) {
  * Overrides ONLY when the range key exists with the matching unit: a
  * W-unit device without a tempLimitC key yields undefined for it (no own
  * keys are added - the conditional spread never invents a key); percent-
- * unit devices (Battlemage) keep their own ranges (their max IS the
- * ceiling and splitByRuntime never routes them to the 2023 runtime).
- * Null-guarded - the helper is exported and standalone-tested.
- * @param {{ ranges?: Record<string, { units?: string }>, pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null | undefined} caps
+ * unit devices (Battlemage) keep their own ranges (their max IS the ceiling
+ * and splitByRuntime never routes them to the 2023 runtime).
+ * `learnedCeilings` is an explicit session/native ceiling marker emitted by
+ * the backends' refused-ceiling store; the range max alone cannot distinguish
+ * an ordinary Stock 90 C shape from a learned 90 C ceiling.
+ * @param {{ ranges?: Record<string, { units?: string, min?: number, max?: number }>, pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null, extendedRanges?: boolean, learnedCeilings?: Record<string, number> } | null | undefined} caps
  * @returns {Record<string, unknown>}
  */
 export function extendedRangesFor(caps) {
@@ -356,8 +377,107 @@ export function extendedRangesFor(caps) {
     out.powerLimitW = { ...pl, max: plMax };
   }
   const tl = ranges.tempLimitC;
-  if (tl && tl.units === 'C') out.tempLimitC = { ...tl, max: EXTENDED_TL_MAX_C };
+  if (tl && tl.units === 'C') {
+    // M50: the range max alone is ambiguous: ordinary Stock caps also expose
+    // 90 C. Only the explicit backend marker may preserve a lower learned or
+    // native/session ceiling; malformed or off-grid markers are ignored.
+    const learnedMax = caps?.learnedCeilings?.tempLimitC;
+    const hasLearnedCeiling = isValidLearnedTempCeiling(learnedMax, tl);
+    out.tempLimitC = { ...tl, max: hasLearnedCeiling ? learnedMax : EXTENDED_TL_MAX_C };
+  }
   return out;
+}
+
+/**
+ * Refuse a Celsius request that exceeds the effective range already exposed
+ * by the backend. This MUST run before clampAndSnap: clamping would turn a
+ * request such as 115 C into a successful 90 C write after the driver has
+ * learned that 90 C is its ceiling.
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, { units?: string, max?: unknown }> | null | undefined} ranges
+ * @returns {{ controls: string[], capabilityCeiling: number, message: string } | null}
+ */
+export function tempCapabilityRefusal(settings, ranges = null) {
+  const value = settings?.tempLimitC;
+  const range = ranges?.tempLimitC;
+  if (typeof value !== 'number' || !Number.isFinite(value)
+    || !range || range.units !== 'C'
+    || typeof range.min !== 'number' || !Number.isFinite(range.min)
+    || typeof range.max !== 'number' || !Number.isFinite(range.max)
+    || range.max < range.min
+    || value <= range.max) return null;
+  return {
+    controls: ['tempLimitC'],
+    capabilityCeiling: range.max,
+    message: `temperature limit ${value} °C exceeds the effective capability ceiling of ${range.max} °C. Nothing was changed.`,
+  };
+}
+
+/**
+ * Build the per-control result for a learned/native capability refusal.
+ * @param {{ controls: string[], capabilityCeiling: number, message: string }} refusal
+ * @returns {Record<string, { ok: false, errorCode: string, capabilityCeiling: number, message: string }>}
+ */
+export function tempCapabilityPerControl(refusal) {
+  return Object.fromEntries(refusal.controls.map((control) => [control, {
+    ok: false,
+    errorCode: 'out-of-range',
+    capabilityCeiling: refusal.capabilityCeiling,
+    message: refusal.message,
+  }]));
+}
+/**
+ * Classify native capability markers without coercing malformed values.
+ * A marker is valid only when it is an own finite-number property on a
+ * per-control result. The status distinguishes no marker, valid markers,
+ * malformed markers, and a mixture of both.
+ * @param {unknown} perControl
+ * @returns {{ status: 'absent'|'valid'|'invalid'|'mixed', validControls: string[], invalidControls: string[], controls: string[] }}
+ */
+export function classifyCapabilityMarkers(perControl) {
+  if (!perControl || typeof perControl !== 'object' || Array.isArray(perControl)) {
+    return { status: 'absent', validControls: [], invalidControls: [], controls: [] };
+  }
+  const validControls = [];
+  const invalidControls = [];
+  const controls = Object.keys(perControl);
+  for (const control of controls) {
+    const result = perControl[control];
+    if (!result || typeof result !== 'object' || !Object.prototype.hasOwnProperty.call(result, 'capabilityCeiling')) continue;
+    if (result.ok === false && result.errorCode === 'out-of-range'
+      && typeof result.capabilityCeiling === 'number' && Number.isFinite(result.capabilityCeiling)) {
+      validControls.push(control);
+    } else {
+      invalidControls.push(control);
+    }
+  }
+  const status = validControls.length > 0
+    ? (invalidControls.length > 0 ? 'mixed' : 'valid')
+    : (invalidControls.length > 0 ? 'invalid' : 'absent');
+  return { status, validControls, invalidControls, controls };
+}
+
+/**
+ * Normalize an apply envelope at a process boundary. Capability flags are
+ * derived solely from valid native markers, so malformed markers neither
+ * become capability refusals nor leak stale flags from an upstream process.
+ * Partial means another per-control result was present beside a refused
+ * capability control.
+ * @param {Record<string, unknown>} envelope
+ * @returns {Record<string, unknown>}
+ */
+export function withCapabilityFlags(envelope) {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return envelope;
+  const { capabilityCeilingRefused: _refused, capabilityCeilingPartial: _partial, ...rest } = envelope;
+  const classification = classifyCapabilityMarkers(rest.result?.perControl);
+  if (classification.validControls.length === 0) return rest;
+  return {
+    ...rest,
+    capabilityCeilingRefused: true,
+    ...(classification.controls.length > classification.validControls.length
+      ? { capabilityCeilingPartial: true }
+      : {}),
+  };
 }
 
 // The momentary-lie re-read delay (default 400 ms, injectable in tests).
@@ -1136,13 +1256,29 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
     return { result: { ok: Object.keys(perControl).length === 0, perControl }, state };
   }
-  // M30: the inventory's durable key is PNP-first, while OldIgcl selects
-  // against its own PCI/BDF enumeration. The physical proof carries the
-  // legacy key across both the in-process and elevated-worker boundaries;
-  // never feed the PNP key into the legacy setter.
+  // M50: OldIgcl can select a unique legacy handle from the PNP vendor/device
+  // pair even when Windows cannot provide a usable BDF (-1:-1.-1 on some
+  // Intel runtimes). Prefer the exact PCI/BDF key, then pass the durable PNP
+  // key; never fall back to an unkeyed primary handle for a proven target.
   const deviceKey = typeof physicalTarget?.legacyDeviceKey === 'string'
     ? physicalTarget.legacyDeviceKey
-    : null;
+    : typeof physicalTarget?.pnpDeviceId === 'string' && physicalTarget.pnpDeviceId.length > 0
+      ? `pnp:${physicalTarget.pnpDeviceId}`
+      : typeof expectedDeviceKey === 'string' && expectedDeviceKey.length > 0
+        ? expectedDeviceKey
+        : null;
+  const sysmanPrimaryRequest = isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits);
+  const clampRanges = opts.profileApply === true || sysmanPrimaryRequest
+    ? extendedRangesFor(caps)
+    : caps.ranges;
+  const capabilityRefusal = tempCapabilityRefusal(settings, clampRanges);
+  const capabilityControls = capabilityRefusal?.controls ?? [];
+  const capabilityPerControl = capabilityRefusal
+    ? tempCapabilityPerControl(capabilityRefusal)
+    : {};
+  const capabilityRoutedSettings = capabilityControls.length > 0
+    ? Object.fromEntries(Object.entries(settings).filter(([key]) => !capabilityControls.includes(key)))
+    : settings;
   // M3-C/M46: the runtime-write capability is independent from the
   // mode-selected display ranges. An installed DLL can still fail ctlInit
   // with ERROR_KMD_CALL; values above the DriverStore ceiling refuse before
@@ -1151,31 +1287,41 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const runtimeCapable = oldIgcl
     ? await oldIgcl.isCapable()
     : caps.extendedRanges === true;
-  const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: runtimeCapable }, sysmanPowerLimits);
+  const unavailable = extendedUnavailableRefusal(
+    capabilityRoutedSettings,
+    { ...caps, extendedRanges: runtimeCapable },
+    sysmanPowerLimits,
+  );
   const unavailableControls = unavailable?.controls ?? [];
   // A mixed payload may contain a Sysman-primary power control alongside a
-  // V1-only control. Refuse only the unavailable control and still route the
-  // controls whose writer is available; an all-unavailable payload keeps the
-  // historical no-touch capability refusal envelope.
-  const routedSettings = unavailableControls.length > 0
-    ? Object.fromEntries(Object.entries(settings).filter(([key]) => !unavailableControls.includes(key)))
-    : settings;
-  if (unavailable && Object.keys(routedSettings).length === 0) {
-    log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
+  // V1-only control. Refuse only unavailable controls and still route the
+  // controls whose writer is available; an all-refused payload is a no-op.
+  const refusedControls = [...new Set([...capabilityControls, ...unavailableControls])];
+  const routedSettings = refusedControls.length > 0
+    ? Object.fromEntries(Object.entries(capabilityRoutedSettings).filter(([key]) => !unavailableControls.includes(key)))
+    : capabilityRoutedSettings;
+  if (Object.keys(routedSettings).length === 0 && (capabilityRefusal || unavailableControls.length > 0)) {
+    const perControl = {
+      ...capabilityPerControl,
+      ...(unavailable ? extendedUnavailablePerControl(unavailable.controls) : {}),
+    };
+    log(`[apply] capability refusal: ${Object.keys(perControl).join(', ')} - nothing applied`);
     let state = null;
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
-    return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state, extendedUnavailable: true };
+    return withCapabilityFlags({
+      result: { ok: false, perControl },
+      state,
+      ...(unavailable ? { extendedUnavailable: true } : {}),
+    });
   }
   const partialUnavailable = unavailableControls.length > 0;
+  const partialCapability = capabilityControls.length > 0;
   if (partialUnavailable) {
     log(`[apply] mixed extended capability: routing available controls; refusing unavailable controls (${unavailableControls.join(', ')})`);
   }
-  const sysmanPrimaryRequest = isSysmanPrimaryPowerRequest(routedSettings, caps.ranges, sysmanPowerLimits);
-  // M4O: profileApply and the M47 Sysman-primary request clamp against the
-  // driver's true advanced limits, never the mode-gated stock ranges.
-  const clampRanges = opts.profileApply === true || sysmanPrimaryRequest
-    ? extendedRangesFor(caps)
-    : caps.ranges;
+  if (partialCapability) {
+    log(`[apply] mixed capability ceiling: routing available controls; refusing ${capabilityControls.join(', ')}`);
+  }
   const clamped = {};
   for (const [key, value] of Object.entries(routedSettings)) {
     if (value === null || value === undefined) continue;
@@ -1201,23 +1347,23 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: routeMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
-  if (partialUnavailable) {
+  if (partialUnavailable || partialCapability) {
     const perControl = {
       ...out.result.perControl,
-      ...extendedUnavailablePerControl(unavailableControls),
+      ...capabilityPerControl,
+      ...(unavailable ? extendedUnavailablePerControl(unavailable.controls) : {}),
     };
-    return {
+    return withCapabilityFlags({
       result: {
         ...out.result,
         ok: Object.values(perControl).every((per) => per?.ok === true),
         perControl,
       },
       state,
-      extendedUnavailable: true,
-      extendedUnavailablePartial: true,
-    };
+      ...(partialUnavailable ? { extendedUnavailable: true, extendedUnavailablePartial: true } : {}),
+    });
   }
-  return { result: out.result, state };
+  return withCapabilityFlags({ result: out.result, state });
 }
 
 /**

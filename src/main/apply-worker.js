@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
-import { executeApply, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, withCapabilityFlags, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -329,18 +329,21 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
         refused[control] = clamped[control];
       }
     }
-    await finish({
-      ok: out.result.ok,
-      perControl: out.result.perControl,
+    const normalized = withCapabilityFlags({
+      result: { ok: out.result.ok, perControl: out.result.perControl },
       state: out.state,
       ...(out.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
       ...(out.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
+    });
+    await finish({
+      ok: normalized.result.ok,
+      perControl: normalized.result.perControl,
+      state: normalized.state,
+      ...(normalized.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
+      ...(normalized.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
+      ...(normalized.capabilityCeilingRefused === true ? { capabilityCeilingRefused: true } : {}),
+      ...(normalized.capabilityCeilingPartial === true ? { capabilityCeilingPartial: true } : {}),
       ...(Object.keys(refused).length > 0 ? { refused } : {}),
-      // M17g (round-3 S1): the pl2Note rides the worker envelope the same
-      // way as `refused` - ABSENT when null (the old envelope-shape pins
-      // stay green). The parent's elevated-apply normalization forwards it
-      // into the renderer envelope - without the forwarding the real
-      // worker path would silently show '-' on the PL card.
       ...(out.result.pl2Note ? { pl2Note: out.result.pl2Note } : {}),
     });
     return 0;

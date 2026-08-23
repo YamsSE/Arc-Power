@@ -958,8 +958,12 @@ async function main() {
       get: async () => {
         const result = await sysinfoResult();
         if (driverReBar === null) driverReBar = createDriverReBar(rawBackend);
+        // Bind the raw driver query to the controller in this exact sysinfo
+        // snapshot before the memoized promise starts.  The raw runtime may
+        // enumerate property-less handles or reorder adapters.
+        driverReBar.setTarget?.(result);
         const verdict = await driverReBar();
-        return verdict === null ? result : applyDriverReBar(result, verdict);
+        return verdict === null ? result : applyDriverReBar(result, verdict, driverReBar.target);
       },
     };
   }

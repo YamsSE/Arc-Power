@@ -43,11 +43,15 @@ export const OLD_IGCL_FILENAME = 'IntelControlLib.dll';
 
 // Verified ceilings (docs/igcl-integration.md §8c): the KMD accepts 315 W
 // and 115 C; 125 C clamps to 115. These are the ONLY extended range bounds
-// the old runtime ever writes.
 // M3-C-D: the exposed extended PL ceiling. LIVE-VERIFIED 2026-08-06:
 // 400/350/330 W are refused by the runtime (0x44000004), 315 W persists -
 // 315 W IS the ceiling on this card. Requests above it are refused honestly
 // (never clamped) - the refusal regression test pins that.
+// M50: the active DriverStore package observed on this product rejects V1
+// temperatures above 90 C with ERROR_INVALID_ARGUMENT, even though the
+// bundled runtime advertises the historical 115 C shape. Keep the bundled
+// write range intact so the native result can be surfaced honestly.
+export const DRIVER_TEMP_LIMIT_MAX_C = 90;
 export const EXTENDED_PL_MAX_W = 315;
 export const EXTENDED_PL_MIN_W = 105;
 export const EXTENDED_TL_MAX_C = 115;
@@ -485,11 +489,20 @@ export class OldIgcl {
     const targetHandle = selected.handle;
     const setRes = setFn(targetHandle, igclValue);
     if (setRes !== CTL_RESULT.SUCCESS) {
+      const temperatureRangeRefusal = control === 'tempLimitC'
+        && target > DRIVER_TEMP_LIMIT_MAX_C
+        && setRes === CTL_RESULT.ERROR_INVALID_ARGUMENT;
       return {
         ok: false,
-        errorCode: igclErrorCode(setRes) ?? 'io-failed',
+        // ERROR_INVALID_ARGUMENT is a capability/refusal for this native
+        // temperature route once target selection has succeeded; classify it
+        // as a refusal instead of a misleading target/contract failure.
+        errorCode: temperatureRangeRefusal ? 'out-of-range' : (igclErrorCode(setRes) ?? 'io-failed'),
         readBackEqual: false,
-        message: `IGCL ${describeResult(setRes)}`,
+        ...(temperatureRangeRefusal ? { capabilityCeiling: DRIVER_TEMP_LIMIT_MAX_C } : {}),
+        message: temperatureRangeRefusal
+          ? `Intel graphics driver/runtime rejected ${target} °C; this active runtime supports temperature limits up to ${DRIVER_TEMP_LIMIT_MAX_C} °C (native IGCL ERROR_INVALID_ARGUMENT). Nothing was changed.`
+          : `IGCL ${describeResult(setRes)}`,
       };
     }
     this._read(control, targetHandle);

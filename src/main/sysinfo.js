@@ -647,59 +647,136 @@ export function ramBrandOf(manufacturer, partNumber) {
 }
 
 /**
- * M4-D2 ("read the driver's BAR state"): the DRIVER's Resizable BAR
- * verdict (ctlPciGetProperties.resizable_bar_enabled - the same state IGS +
- * GPU-Z show) is the PRIMARY ReBAR source. Live-verified on this machine:
- * the driver reports enabled=1 while the OS resource map has no large BAR
- * window (Z97 platform) - the tools and the driver agree, the OS window
- * never engaged. The verdict is applied to the FIRST video controller (the
- * primary GPU); a definitive driver verdict (true/false) WINS over the OS
- * resource check; a null driver verdict (unbound symbol / ctl error /
- * no device) keeps the OS verdict unchanged. Pure.
+ * Return the canonical four-digit PCI vendor/device pair from a PNP id or
+ * backend field.  PNP is the durable Windows identity; the numeric fields are
+ * the fallback exposed by IGCL.  A missing pair is never treated as a match.
+ */
+function pciPairOf(value) {
+  const pnp = typeof value?.pnpDeviceId === 'string' ? value.pnpDeviceId : '';
+  const vendor = pnp.match(/(?:^|\\|&)VEN_([0-9A-F]{4})/i)?.[1]
+    ?? String(value?.pciVendorId ?? '').replace(/^0x/i, '').slice(-4);
+  const device = pnp.match(/(?:^|\\|&)DEV_([0-9A-F]{4})/i)?.[1]
+    ?? String(value?.pciDeviceId ?? '').replace(/^0x/i, '').slice(-4);
+  return /^[0-9A-F]{4}$/i.test(vendor) && /^[0-9A-F]{4}$/i.test(device)
+    ? { vendor: vendor.toLowerCase(), device: device.toLowerCase() }
+    : null;
+}
+
+function samePciPair(left, right) {
+  const a = pciPairOf(left);
+  const b = pciPairOf(right);
+  return Boolean(a && b && a.vendor === b.vendor && a.device === b.device);
+}
+
+function rebarTargetOf(target) {
+  if (target && Array.isArray(target.videoControllers)) {
+    const identified = target.videoControllers.filter((controller) => pciPairOf(controller));
+    return identified.length === 1 ? identified[0] : null;
+  }
+  return target && typeof target === 'object' ? target : null;
+}
+
+/**
+ * M4-D2 ("read the driver's BAR state"): merge the driver's verdict onto the
+ * controller that supplied the matching PCI/PNP identity.  The optional
+ * target is the identity selected by the raw IGCL reader; with no target the
+ * historical single-controller behavior remains for electron-free callers.
+ * An identity mismatch or collision is fail-closed and leaves the OS payload
+ * untouched.
  * @param {object} sysinfo the cached sysinfo shape
  * @param {boolean|null} driverEnabled the driver's resizable_bar_enabled
+ * @param {object|null} target raw backend identity selected for the verdict
  * @returns {object} a NEW sysinfo object with the driver verdict merged
  */
-export function applyDriverReBar(sysinfo, driverEnabled) {
+export function applyDriverReBar(sysinfo, driverEnabled, target = null) {
   if (driverEnabled === null || driverEnabled === undefined || typeof sysinfo !== 'object' || sysinfo === null) {
     return sysinfo;
   }
   if (!Array.isArray(sysinfo.videoControllers) || sysinfo.videoControllers.length === 0) {
     return sysinfo;
   }
-  const controllers = sysinfo.videoControllers.map((c, i) => (
-    i === 0 ? { ...c, rebarActive: driverEnabled } : c
-  ));
-  return { ...sysinfo, videoControllers: controllers };
+  const controllers = sysinfo.videoControllers;
+  let index = 0;
+  const wanted = rebarTargetOf(target);
+  if (Array.isArray(target?.videoControllers) && !wanted) return sysinfo;
+  if (wanted) {
+    const exactPnp = typeof wanted.pnpDeviceId === 'string'
+      ? controllers.map((controller, i) => ({ controller, i }))
+        .filter(({ controller }) => typeof controller?.pnpDeviceId === 'string'
+          && controller.pnpDeviceId.trim().toUpperCase() === wanted.pnpDeviceId.trim().toUpperCase())
+      : [];
+    const pairMatches = controllers.map((controller, i) => ({ controller, i }))
+      .filter(({ controller }) => samePciPair(controller, wanted));
+    const matches = exactPnp.length > 0 ? exactPnp : pairMatches;
+    if (matches.length !== 1) return sysinfo;
+    index = matches[0].i;
+  }
+  return {
+    ...sysinfo,
+    videoControllers: controllers.map((controller, i) => (
+      i === index ? { ...controller, rebarActive: driverEnabled } : controller
+    )),
+  };
 }
 
 /**
- * M19: the memoized-promise driver-BAR reader - the REPLACEMENT for the
- * one-shot latch (the boot race: the main renderer app.ts:347 and the
- * overlay overlay.ts:372 fire sysinfo:get CONCURRENTLY at boot; caller A
- * set the latch + awaited listDevices while caller B saw the latch and
- * returned the STILL-NULL cache -> the merged payload kept rebarActive
- * null -> the dashboard pill rendered gray for the whole session). The
- * seam shares ONE in-flight promise: every caller awaits the SAME
- * resolving verdict, so both boot callers get `true` (the green pill on
- * the first landing). Semantics unchanged from the latch: the query runs
- * ONCE per session, `backend.listDevices()` -> empty -> null; else
- * `backend.pciProperties(devices[0].id)` -> `resizableBarEnabled` ->
- * true/false/null; ANY throw resolves null (the honest gray + the OS
- * fallback stays), cached for the session.
- * @param {{ listDevices: () => Promise<Array<{ id: string }>>, pciProperties: (id: string) => Promise<object|null> }} backend
- * @returns {() => Promise<boolean | null>}
+ * @param {{ listDevices: () => Promise<Array<object>>, pciProperties: (id: unknown) => Promise<object|null> }} backend
+ * @param {object|null} target sysinfo payload or controller identity
+ * @returns {(() => Promise<boolean|null>) & { target?: object|null, setTarget?: (value: object|null) => void }}
  */
-export function createDriverReBar(backend) {
+export function createDriverReBar(backend, target = null) {
   let promise = null;
-  return () => {
+  let selectedTarget = null;
+  let requestedTarget = target;
+  const read = () => {
     if (!promise) {
       promise = (async () => {
         try {
           const devices = await backend.listDevices();
-          if (devices.length === 0) return null;
-          const p = await backend.pciProperties(devices[0].id);
-          return p ? (p.resizableBarEnabled ? true : false) : null;
+          let candidates = devices;
+          const wanted = rebarTargetOf(requestedTarget);
+          const fullCim = Array.isArray(requestedTarget?.videoControllers)
+            && (Object.prototype.hasOwnProperty.call(requestedTarget, 'cpu')
+              || Object.prototype.hasOwnProperty.call(requestedTarget, 'ram')
+              || Object.prototype.hasOwnProperty.call(requestedTarget, 'baseboard')
+              || Object.prototype.hasOwnProperty.call(requestedTarget, 'laptop'));
+          if (fullCim) {
+            // A full CIM snapshot is an inventory, not permission to retarget
+            // to whichever identity happens to appear in that inventory.
+            // listDevices() is discrete-first on the raw backend; require
+            // that selected handle to carry one unique identity. A
+            // property-less first handle therefore fails closed instead of
+            // querying a later adapter.
+            const selected = devices[0];
+            const selectedPair = pciPairOf(selected);
+            if (!selectedPair) return null;
+            const targetMatches = requestedTarget.videoControllers.filter((controller) => samePciPair(controller, selected));
+            const rawMatches = devices.filter((device) => samePciPair(device, selected));
+            if (targetMatches.length !== 1 || rawMatches.length !== 1) return null;
+            candidates = rawMatches;
+          } else if (wanted && pciPairOf(wanted)) {
+            candidates = devices.filter((device) => samePciPair(device, wanted));
+            if (candidates.length !== 1) return null;
+          } else if (Array.isArray(requestedTarget?.videoControllers)) {
+            const controllerPairs = requestedTarget.videoControllers.filter((controller) => pciPairOf(controller));
+            candidates = devices.filter((device) => controllerPairs.some((controller) => samePciPair(device, controller)));
+            if (candidates.length === 0) return null;
+            const firstPair = pciPairOf(candidates[0]);
+            if (firstPair && candidates.filter((device) => samePciPair(device, candidates[0])).length !== 1) return null;
+          } else if (!wanted) {
+            // Prefer identity-bearing rows over property-less handles. More
+            // than one identity-bearing row is ambiguous without a target.
+            const identified = devices.filter((device) => pciPairOf(device));
+            if (identified.length === 1) candidates = identified;
+            else if (identified.length > 1) return null;
+          } else {
+            return null;
+          }
+          const selected = candidates[0];
+          const p = await backend.pciProperties(selected.id);
+          if (!p || typeof p.resizableBarEnabled !== 'boolean') return null;
+          selectedTarget = selected;
+          return p.resizableBarEnabled;
         } catch {
           return null;
         }
@@ -707,6 +784,11 @@ export function createDriverReBar(backend) {
     }
     return promise;
   };
+  read.setTarget = (value) => {
+    if (promise === null) requestedTarget = value;
+  };
+  Object.defineProperty(read, 'target', { enumerable: true, get: () => selectedTarget });
+  return read;
 }
 
 /**

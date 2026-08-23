@@ -42,6 +42,33 @@ function deviceMapOf(store, deviceId, create) {
 }
 
 /**
+ * Record a native capability ceiling directly. This is used when a runtime
+ * returns a capability-refusal error whose known ceiling is not derivable
+ * from the attempted value and the normal one-step snap.
+ */
+export function recordCapabilityCeiling(store, deviceId, control, ceiling, range) {
+  if (typeof control !== 'string' || control.length === 0) return;
+  if (typeof ceiling !== 'number' || !Number.isFinite(ceiling)) return;
+  if (!range || typeof range !== 'object') return;
+  const min = range.min;
+  const max = range.max;
+  const step = range.step;
+  if (typeof min !== 'number' || !Number.isFinite(min)
+    || typeof max !== 'number' || !Number.isFinite(max)
+    || typeof step !== 'number' || !Number.isFinite(step) || step <= 0
+    || max < min || ceiling < min || ceiling > max) return;
+  const gridIndex = (ceiling - min) / step;
+  const nearestGridIndex = Math.round(gridIndex);
+  const tolerance = Number.EPSILON * 256 * Math.max(1, Math.abs(gridIndex), Math.abs(nearestGridIndex));
+  if (!Number.isFinite(gridIndex) || Math.abs(gridIndex - nearestGridIndex) > tolerance) return;
+  const deviceMap = deviceMapOf(store, deviceId, true);
+  if (!deviceMap) return;
+  const existing = deviceMap.get(control);
+  if (existing !== undefined && existing <= ceiling) return;
+  deviceMap.set(control, ceiling);
+}
+
+/**
  * M17c: the core recording - snap the exposed ceiling DOWN one step from
  * the refused value (refusedValue - range.step), clamped to the range floor.
  * MONOTONE: only ever lowered - a higher (or equal) ceiling than the
@@ -70,7 +97,6 @@ export function recordRefusal(store, deviceId, control, refusedValue, range) {
   const deviceMap = deviceMapOf(store, deviceId, true);
   if (!deviceMap) return;
   const existing = deviceMap.get(control);
-  // Monotone: only ever lowered - a higher (or equal) ceiling never raises.
   if (existing !== undefined && existing <= snapped) return;
   deviceMap.set(control, snapped);
 }
@@ -100,9 +126,16 @@ export function recordRefusalEnvelope(store, deviceId, perControl, settings, ran
   const rangeTable = ranges && typeof ranges === 'object' ? ranges : {};
   for (const [control, result] of Object.entries(perControl)) {
     if (!result || typeof result !== 'object' || result.ok !== false || result.errorCode !== 'out-of-range') continue;
+    const range = rangeTable[control];
+    if (Object.prototype.hasOwnProperty.call(result, 'capabilityCeiling')) {
+      if (typeof result.capabilityCeiling === 'number' && Number.isFinite(result.capabilityCeiling)) {
+        recordCapabilityCeiling(store, deviceId, control, result.capabilityCeiling, range);
+      }
+      continue;
+    }
     const value = settings[control];
     if (typeof value !== 'number' || !Number.isFinite(value)) continue;
-    recordRefusal(store, deviceId, control, value, rangeTable[control]);
+    recordRefusal(store, deviceId, control, value, range);
   }
 }
 
@@ -136,4 +169,19 @@ export function mergeIntoRanges(store, deviceId, ranges) {
     out[control] = degraded;
   }
   return out ?? ranges;
+}
+/**
+ * Return the session ceilings recorded for one device as a plain object.
+ * This is an explicit marker for consumers that must distinguish a
+ * session-learned lower ceiling from an ordinary stock-shaped range.
+ * @param {Map} store the session store
+ * @param {number|string} deviceId the device id
+ * @returns {Record<string, number>}
+ */
+export function recordedCeilingsFor(store, deviceId) {
+  const deviceMap = deviceMapOf(store, deviceId, false);
+  if (!deviceMap || deviceMap.size === 0) return {};
+  return Object.fromEntries([...deviceMap].filter(([, ceiling]) => (
+    typeof ceiling === 'number' && Number.isFinite(ceiling)
+  )));
 }

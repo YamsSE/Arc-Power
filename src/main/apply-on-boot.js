@@ -32,7 +32,7 @@
 // non-elevated instance fails honestly per control.
 
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
-import { executeApply, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, withCapabilityFlags, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
 import { physicalTargetOf, pnpParts } from './gpu-inventory.js';
 // M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
 // in-process executeApply clamps profile.settings against
@@ -283,6 +283,34 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // refused value would never degrade). Gate refusals (ocModeRefused /
   // extendedUnavailable) never record (config refusals, not driver
   // ceiling refusals).
+  // M50: profile/boot applies share the same pre-clamp learned-ceiling
+  // refusal as interactive applies. This must run in the parent before an
+  // elevated worker can clamp the profile request down to 90 C.
+  const profileClampRanges = extendedRangesFor(caps);
+  const capabilityRefusal = tempCapabilityRefusal(profile.settings, profileClampRanges);
+  const capabilityControls = capabilityRefusal?.controls ?? [];
+  const capabilityPerControl = capabilityRefusal
+    ? tempCapabilityPerControl(capabilityRefusal)
+    : {};
+  const routedProfileSettings = capabilityControls.length > 0
+    ? Object.fromEntries(Object.entries(profile.settings).filter(([key]) => !capabilityControls.includes(key)))
+    : profile.settings;
+  const withCapabilityRefusal = (out) => {
+    if (!capabilityRefusal) return withCapabilityFlags(out);
+    const perControl = {
+      ...(out?.result?.perControl ?? {}),
+      ...capabilityPerControl,
+    };
+    return withCapabilityFlags({
+      ...(out ?? {}),
+      result: {
+        ...(out?.result ?? {}),
+        ok: Object.values(perControl).every((per) => per?.ok === true),
+        perControl,
+      },
+    });
+  };
+
   const recordRefusals = (result) => {
     if (!result || typeof result !== 'object') return;
     if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
@@ -294,6 +322,15 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     }
   };
   const attempt = async (waiverAccepted) => {
+    if (capabilityRefusal && Object.keys(routedProfileSettings).length === 0) {
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId_); } catch { /* degraded */ }
+      return {
+        result: { ok: false, perControl: capabilityPerControl },
+        state,
+        capabilityCeilingRefused: true,
+      };
+    }
     if (applyRunner?.needsWorker?.()) {
       // S2: the runner request carries the device-side waiver state so the
       // worker's in-memory flag matches what the user accepted. M3-C-E: it
@@ -302,11 +339,11 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // profileApply:true so the worker skips the STOCK gate (the profile
       // is the user's own deliberate state) while keeping the ceiling
       // refusal (>315 W never silently clamps).
-      const out = await applyRunner.apply({
+      const out = withCapabilityRefusal(await applyRunner.apply({
         deviceId: deviceId_,
         deviceKey: targetDeviceKey,
         physicalTarget: physicalTargetOf(resolvedTarget),
-        settings: profile.settings,
+        settings: routedProfileSettings,
         profileName: profile.name,
         waiverAccepted,
         // M17d (Run D): the runner request carries the APPLY MODE (the same
@@ -321,7 +358,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         // (the worker's own caps decode the subsystem only; the parent's
         // finalized caps carry the laptop branch).
         limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
-      });
+      }));
       if (out.extendedUnavailable !== true && out.extendedUnavailablePartial !== true) recordRefusals(out.result);
       return out;
     }
@@ -333,24 +370,34 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
-    const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
+    const out = withCapabilityRefusal(await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: routedProfileSettings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits }));
     if (out.extendedUnavailable !== true && out.extendedUnavailablePartial !== true) recordRefusals(out.result);
     return out;
+  };
+  const profileResultOf = (out) => {
+    const normalized = withCapabilityFlags(out);
+    return {
+      ...normalized.result,
+      ...(normalized.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
+      ...(normalized.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
+      ...(normalized.capabilityCeilingRefused === true ? { capabilityCeilingRefused: true } : {}),
+      ...(normalized.capabilityCeilingPartial === true ? { capabilityCeilingPartial: true } : {}),
+    };
   };
   let result;
   let state = null;
   let extendedUnavailable = false;
   let extendedUnavailablePartial = false;
+  let capabilityCeilingRefused = false;
+  let capabilityCeilingPartial = false;
   try {
     let out = await attempt(caps.waiverAccepted === true);
-    result = {
-      ...out.result,
-      ...(out.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
-      ...(out.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
-    };
+    result = profileResultOf(out);
     state = out.state;
     extendedUnavailable = out.extendedUnavailable === true;
     extendedUnavailablePartial = out.extendedUnavailablePartial === true;
+    capabilityCeilingRefused = out.capabilityCeilingRefused === true;
+    capabilityCeilingPartial = out.capabilityCeilingPartial === true;
     // M4-D: the apply answered waiver-not-set while the persisted acceptance
     // is true (settings.json - the user's permanent consent). Silently
     // re-set the driver waiver (in-process on the elevated boot task;
@@ -368,14 +415,12 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
           await backend.setWaiverAccepted(deviceId_);
         }
         out = await attempt(true);
-        result = {
-          ...out.result,
-          ...(out.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
-          ...(out.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
-        };
+        result = profileResultOf(out);
         state = out.state;
         extendedUnavailable = out.extendedUnavailable === true;
         extendedUnavailablePartial = out.extendedUnavailablePartial === true;
+        capabilityCeilingRefused = out.capabilityCeilingRefused === true;
+        capabilityCeilingPartial = out.capabilityCeilingPartial === true;
       } catch (err) {
         log(`[apply-on-boot] waiver re-set failed: ${err.message} - falling through to the honest failure path`);
       }
@@ -409,8 +454,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // path; only the dev tree can be unelevated. The fallback-skip is keyed
   // on the SESSION (skipDefaultsFallback), REGARDLESS of errorCode: an
   // app-start apply must NEVER wipe the live OC state over a failure (an
-  if (skipDefaultsFallback || extendedUnavailable) {
-    if (extendedUnavailable && !extendedUnavailablePartial) {
+  if (skipDefaultsFallback || extendedUnavailable || capabilityCeilingRefused) {
+    if (extendedUnavailable && !extendedUnavailablePartial && !capabilityCeilingRefused) {
       return {
         applied: false,
         reason: EXTENDED_UNAVAILABLE_MSG,
@@ -420,20 +465,35 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         extendedUnavailable: true,
       };
     }
+    if (capabilityCeilingRefused && !capabilityCeilingPartial) {
+      return {
+        applied: false,
+        reason: capabilityRefusal?.message ?? 'temperature capability ceiling refused',
+        result: { ...result, capabilityCeilingRefused: true },
+        state,
+        fallbackSkipped: true,
+        capabilityCeilingRefused: true,
+      };
+    }
     if (extendedUnavailablePartial && !skipDefaultsFallback) {
       log('[apply-on-boot] mixed extended capability failure - defaults-restore fallback SKIPPED so available controls remain landed');
+    } else if (capabilityCeilingPartial && !skipDefaultsFallback) {
+      log('[apply-on-boot] mixed capability ceiling refusal - defaults-restore fallback SKIPPED so available controls remain landed');
     } else if (skipDefaultsFallback) {
-      log('[apply-on-boot] boot variant (applyRunner-less, in-process): apply failed - defaults-restore fallback SKIPPED (an app-start apply must never wipe live OC state over a failure; logon applies run elevated via the ArcPowerBootApply task)');
+      log('[apply-on-boot] boot variant (applyRunner-less, in-process): apply failed - defaults-restore fallback SKIPPED (an app-start apply must never wipe live OC state; logon applies run elevated via the ArcPowerBootApply task)');
     }
     return {
       applied: false,
       reason: extendedUnavailablePartial
         ? 'apply failed; unavailable controls skipped (available controls may have landed)'
-        : 'apply failed; defaults restore skipped (app-start applies never restore defaults)',
+        : capabilityCeilingPartial
+          ? 'apply failed; capability-ceiling controls skipped (available controls may have landed)'
+          : 'apply failed; defaults restore skipped (app-start applies never restore defaults)',
       result,
       state,
       fallbackSkipped: true,
       ...(extendedUnavailable ? { extendedUnavailable: true } : {}),
+      ...(capabilityCeilingRefused ? { capabilityCeilingRefused: true } : {}),
     };
   }
   log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} - restoring defaults`);

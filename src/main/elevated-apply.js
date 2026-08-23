@@ -52,6 +52,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { isElevated as detectElevated } from './elevation.js';
+import { withCapabilityFlags } from './apply-routing.js';
 
 export const APPLY_CANCELED_ERROR = 'Apply requires administrator approval.';
 export const WORKER_TIMEOUT_MS = 120000;
@@ -362,7 +363,8 @@ export function createApplyRunner({
           ...(ocMode !== undefined && ocMode !== null ? { ocMode } : {}),
           ...(profileApply === true ? { profileApply: true } : {}),
         });
-        return { worker: false, ...out };
+        const normalized = withCapabilityFlags(out);
+        return { worker: false, ...normalized };
       }
       // S2: the parent-side waiver flag rides in the request so the worker
       // restores it into its own in-memory state (apply-worker.js).
@@ -398,8 +400,7 @@ export function createApplyRunner({
       // present -> forwarded into the renderer envelope (the PL card's
       // '(set)' session state feeds from it on the real worker path),
       // absent -> omitted (the old envelope-shape pins stay green).
-      return {
-        worker: true,
+      const normalized = withCapabilityFlags({
         result: {
           ok: result.ok === true,
           perControl: result.perControl ?? {},
@@ -409,6 +410,15 @@ export function createApplyRunner({
         state: result.state ?? null,
         ...(result.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
         ...(result.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
+      });
+      return {
+        worker: true,
+        result: normalized.result,
+        state: normalized.state,
+        ...(normalized.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
+        ...(normalized.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
+        ...(normalized.capabilityCeilingRefused === true ? { capabilityCeilingRefused: true } : {}),
+        ...(normalized.capabilityCeilingPartial === true ? { capabilityCeilingPartial: true } : {}),
       };
     },
     /**

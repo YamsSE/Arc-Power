@@ -34,7 +34,7 @@ import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
-import { executeApply, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
@@ -1244,6 +1244,7 @@ export function createIpcHandlers({
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
   */
   const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
+    const normalizeApply = (out) => withCapabilityFlags(out);
     // Resolve the durable target first. The capability payload is a renderer
     // snapshot and older sessions can carry a null deviceKey even though the
     // authoritative inventory row is keyed. Extended writes must use that
@@ -1300,17 +1301,18 @@ export function createIpcHandlers({
         // in-memory flag so getCapabilities reports unaccepted and the
         // dialog re-shows - the wedge (stale-true parent flag with failing
         // applies) must never happen.
-        if (hasWaiverNotSet(out.result)) await backend.restoreWaiverState(deviceId, false);
-        recordRefusals(out.result);
-        return out;
+        const normalized = normalizeApply(out);
+        if (hasWaiverNotSet(normalized.result)) await backend.restoreWaiverState(deviceId, false);
+        recordRefusals(normalized.result);
+        return normalized;
       }
-      const out = await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits });
-      recordRefusals(out.result);
-      return out;
+      const normalized = normalizeApply(await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }));
+      recordRefusals(normalized.result);
+      return normalized;
     };
     const first = await attempt(caps.waiverAccepted === true);
     if (!hasWaiverNotSet(first.result)) {
-      return { result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
+      return normalizeApply({ result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) });
     }
     let persistedAccepted = false;
     try {
@@ -1322,7 +1324,7 @@ export function createIpcHandlers({
     if (!persistedAccepted) {
       // Unaccepted store: current behavior - the renderer's dialog flow
       // re-prompts and re-applies.
-      return { result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
+      return normalizeApply({ result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) });
     }
     // M4-D: silent re-set + retry ONCE. A declined re-set (UAC) surfaces the
     // FIRST attempt's envelope - never a fake success, never a crash.
@@ -1334,10 +1336,10 @@ export function createIpcHandlers({
         await backend.setWaiverAccepted(deviceId);
       }
     } catch {
-      return { result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
+      return normalizeApply({ result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) });
     }
     const retry = await attempt(true);
-    return { result: retry.result, state: retry.state, ...(retry.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(retry.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
+    return normalizeApply({ result: retry.result, state: retry.state, ...(retry.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(retry.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) });
   };
 
   const handlers = {
@@ -1646,7 +1648,26 @@ export function createIpcHandlers({
           || isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits)
           ? extendedRangesFor(caps)
           : caps.ranges;
-        const clamped = clampSettings(settings, clampRanges);
+        // M50: reject a learned/native temperature ceiling before this
+        // parent clamps settings for either the in-process or elevated path.
+        const capabilityRefusal = tempCapabilityRefusal(settings, clampRanges);
+        const capabilityControls = capabilityRefusal?.controls ?? [];
+        const capabilityPerControl = capabilityRefusal
+          ? tempCapabilityPerControl(capabilityRefusal)
+          : {};
+        const routedSettings = capabilityControls.length > 0
+          ? Object.fromEntries(Object.entries(settings).filter(([key]) => !capabilityControls.includes(key)))
+          : settings;
+        if (capabilityRefusal && Object.keys(routedSettings).length === 0) {
+          let state = null;
+          try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+          return {
+            result: { ok: false, perControl: capabilityPerControl },
+            state,
+            capabilityCeilingRefused: true,
+          };
+        }
+        const clamped = clampSettings(routedSettings, clampRanges);
         // M2C-C elevation gate: a non-elevated app delegates the apply to
         // the elevated self-worker (one UAC prompt); the elevated app (and
         // mock mode, where applyRunner is null) applies in-process through
@@ -1658,7 +1679,17 @@ export function createIpcHandlers({
         // driver waiver + retries ONCE when the driver answers waiver-not-set
         // while the persisted acceptance is true (the consent stands - never
         // a dialog, never a dead-end, never a persisted false).
-        return runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true });
+        const out = await runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true });
+        if (!capabilityRefusal) return out;
+        const perControl = { ...out.result.perControl, ...capabilityPerControl };
+        return withCapabilityFlags({
+          ...out,
+          result: {
+            ...out.result,
+            ok: Object.values(perControl).every((per) => per?.ok === true),
+            perControl,
+          },
+        });
       },
 
       'reset-to-defaults': async (deviceId) => {

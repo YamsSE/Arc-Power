@@ -106,6 +106,7 @@
  *   oemName: string,
  *   deviceName: string,
  *   deviceKey?: string | null, // Stable PCI/BDF identity shared by device enumeration and apply routing.
+ *   learnedCeilings?: Record<string, number>, // Session/native lower ceilings retained for profile-range transforms.
  *   controls: {
  *     gpuFreqOffset?: boolean, gpuVoltOffset?: boolean, gpuLock?: boolean,
  *     vramFreqOffset?: boolean, vramVoltOffset?: boolean,

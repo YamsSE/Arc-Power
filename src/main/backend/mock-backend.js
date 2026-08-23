@@ -46,7 +46,7 @@ import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 // M17c: the session refused-ceiling store (the mock mirrors the real
 // backend's parent-side merge - getCapabilities merges the store so the
 // mock-refusal fixture exercises the same merge the renderer sees).
-import { createRefusedCeilingStore, mergeIntoRanges, recordRefusalEnvelope } from './refused-ceilings.js';
+import { createRefusedCeilingStore, mergeIntoRanges, recordedCeilingsFor, recordRefusalEnvelope } from './refused-ceilings.js';
 
 // M21: the mock V1 (extendedApply) PL write-range max - a SEPARATE 315
 // constant mirroring the real bundled-2023-runtime V1 clamp (old-igcl.js
@@ -816,6 +816,8 @@ export class MockBackend {
     // backend's caps.
     this._finalizeCaps(deviceId, caps);
     caps.ranges = mergeIntoRanges(this._refusedCeilings, deviceId, caps.ranges);
+    const learnedCeilings = recordedCeilingsFor(this._refusedCeilings, deviceId);
+    if (Object.keys(learnedCeilings).length > 0) caps.learnedCeilings = learnedCeilings;
     return caps;
   }
 
