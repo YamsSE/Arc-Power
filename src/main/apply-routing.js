@@ -211,7 +211,7 @@ export const EXTENDED_UNAVAILABLE_MSG =
 export function isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits) {
   return Boolean(sysmanPowerLimits)
     && typeof settings?.powerLimitW === 'number'
-    && settings.powerLimitW > EXTENDED_PL_MAX_W
+    && settings.powerLimitW > STD_PL_MAX_W
     && ranges?.powerLimitW?.units === 'W';
 }
 
@@ -236,20 +236,35 @@ export function isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits)
  */
 export function extendedUnavailableRefusal(settings, caps, sysmanPowerLimits = null) {
   if (!settings || typeof settings !== 'object') return null;
-  if (caps?.extendedRanges === true) return null;
   const ranges = caps?.ranges ?? null;
   const isWcUnits = (key) => {
     const units = ranges?.[key]?.units ?? null;
-    if (units === null || units === undefined) return true; // unknown -> historical behavior
+    if (units === null || units === undefined) return true;
     return key === 'powerLimitW' ? units === 'W' : units === 'C';
   };
-  const over = [];
+  const explicit = caps?.extendedControls;
+  if (explicit && typeof explicit === 'object') {
+    const over = [];
+    if (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W
+      && isWcUnits('powerLimitW')
+      && (explicit.powerLimitW !== true
+        || (settings.powerLimitW > EXTENDED_PL_MAX_W && !sysmanPowerLimits))
+      && !isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits)) over.push('powerLimitW');
+    if (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C
+      && isWcUnits('tempLimitC') && explicit.tempLimitC !== true) over.push('tempLimitC');
+    return over.length > 0 ? { controls: over, message: EXTENDED_UNAVAILABLE_MSG } : null;
+  }
   const sysmanPrimary = isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits);
+  if (caps?.extendedRanges === true
+    && !(typeof settings.powerLimitW === 'number' && settings.powerLimitW > EXTENDED_PL_MAX_W && !sysmanPowerLimits)) return null;
+  const over = [];
+  if (typeof settings.powerLimitW === 'number' && settings.powerLimitW > EXTENDED_PL_MAX_W
+    && isWcUnits('powerLimitW') && !sysmanPowerLimits) over.push('powerLimitW');
   if (typeof settings.powerLimitW === 'number' && settings.powerLimitW > STD_PL_MAX_W
     && isWcUnits('powerLimitW') && !sysmanPrimary) over.push('powerLimitW');
   if (typeof settings.tempLimitC === 'number' && settings.tempLimitC > STD_TL_MAX_C && isWcUnits('tempLimitC')) over.push('tempLimitC');
   if (over.length === 0) return null;
-  return { controls: over, message: EXTENDED_UNAVAILABLE_MSG };
+  return { controls: [...new Set(over)], message: EXTENDED_UNAVAILABLE_MSG };
 }
 
 /**
@@ -388,7 +403,6 @@ const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * ONLY through the V1 mW setters. Non-W/C controls (percent-unit Battlemage,
  * volt, freq, vram...) route exactly as before (the units check unchanged).
  * `mode` is optional: absent (null/undefined) -> the threshold-based split
- * stays (the UNLISTED/no-caps fallback - the existing pins); the four apply
  * paths always pass the mode (the same value ocModeRefusal receives at the
  * same site - the persisted ocMode for interactive applies, OC_MODE_ADVANCED
  * for profile applies; never caps/extendedRanges, the M3-C-E prohibition).
@@ -398,7 +412,7 @@ const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *   the historical threshold behavior)
  * @returns {{ driverstore: Record<string, unknown>, extended: Record<string, unknown> }}
  */
-export function splitByRuntime(settings, ranges = null, mode = null) {
+export function splitByRuntime(settings, ranges = null, mode = null, sysmanPowerLimits = null) {
   const driverstore = {};
   const extended = {};
   const isWcUnits = (key) => {
@@ -409,11 +423,15 @@ export function splitByRuntime(settings, ranges = null, mode = null) {
   const isWcControl = (key) => key === 'powerLimitW' || key === 'tempLimitC';
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
-    // M17d (Run D): the MODE-BASED routing for the W/C controls - the
-    // V1-call pin. Percent-unit controls (Battlemage) never route extended
-    // in either mode (the M2D rule - the units check is the gate).
-    if (mode === OC_MODE_ADVANCED && isWcControl(key) && isWcUnits(key)) extended[key] = value;
-    else if (mode === OC_MODE_STOCK && isWcControl(key) && isWcUnits(key)) driverstore[key] = value;
+    const advancedWControl = mode === OC_MODE_ADVANCED
+      && key === 'powerLimitW' && isWcUnits(key);
+    const advancedTempControl = mode === OC_MODE_ADVANCED
+      && key === 'tempLimitC' && isWcUnits(key) && value > STD_TL_MAX_C;
+    if (advancedWControl || advancedTempControl) {
+      if (!(key === 'powerLimitW' && isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits))) {
+        extended[key] = value;
+      }
+    } else if (mode === OC_MODE_STOCK && isWcControl(key) && isWcUnits(key)) driverstore[key] = value;
     else if (key === 'powerLimitW' && value > STD_PL_MAX_W && isWcUnits('powerLimitW')) extended[key] = value;
     else if (key === 'tempLimitC' && value > STD_TL_MAX_C && isWcUnits('tempLimitC')) extended[key] = value;
     else driverstore[key] = value;
@@ -807,8 +825,6 @@ export function isMomentaryLieCandidate(per) {
  *                         // the V1-call pin (splitByRuntime's mode routing);
  *                         // absent -> the historical threshold split
  *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion
- *                         // consumer (src/main/sysman/power-limits.js) -
- *                         // runs AFTER the IGCL PL write; best-effort
  *   limitsKey?: { pciDeviceId?: string | null, aibVendor?: string | null, aibModel?: string | null } | null, // M17g: the caps identity for the V2 companion's ceiling note (the device-limits STOCK row's PL max - the DriverStore ceiling; absent -> the 252 default)
  * }} deps
  * @returns {Promise<{
@@ -817,7 +833,7 @@ export function isMomentaryLieCandidate(per) {
  * }>}
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
-  const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode);
+  const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode, sysmanPowerLimits);
   // M41: keep fan/VF writes after the extended W/C phase. The driver has
   // different ownership/order rules for those controls in Advanced mode.
   const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
@@ -891,7 +907,10 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       // 'unsupported' refusal, the same shape the runtime itself reports
       // when it cannot load.
       let per;
-      if (oldIgcl) {
+      if (oldIgcl && key === 'tempLimitC' && typeof oldIgcl.isTempCapable === 'function'
+        && !(await oldIgcl.isTempCapable())) {
+        per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
+      } else if (oldIgcl) {
         per = key === 'powerLimitW'
           ? await oldIgcl.setPowerLimitW(value, deviceId, deviceKey)
           : await oldIgcl.setTempLimitC(value, deviceId, deviceKey);
@@ -1006,7 +1025,8 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   // message } shapes fold when extended.powerLimitW > EXTENDED_PL_MAX_W (a
   // <=315 errorCode-bearing failure class leaves the pl2Note UNTOUCHED -
   // the STOCK not-ready pin keeps { landed: true, valueW }).
-  const sysmanPrimary = typeof extended.powerLimitW === 'number' && extended.powerLimitW > EXTENDED_PL_MAX_W;
+  const sysmanPrimary = mode !== OC_MODE_STOCK
+    && isSysmanPrimaryPowerRequest(settings, ranges, sysmanPowerLimits);
   if (sysmanPrimary) {
     if (sysmanPowerLimits && wUnits) {
       const sysmanNote = await runSysmanCompanion({
@@ -1132,20 +1152,32 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     ? await oldIgcl.isCapable()
     : caps.extendedRanges === true;
   const unavailable = extendedUnavailableRefusal(settings, { ...caps, extendedRanges: runtimeCapable }, sysmanPowerLimits);
-  if (unavailable) {
+  const unavailableControls = unavailable?.controls ?? [];
+  // A mixed payload may contain a Sysman-primary power control alongside a
+  // V1-only control. Refuse only the unavailable control and still route the
+  // controls whose writer is available; an all-unavailable payload keeps the
+  // historical no-touch capability refusal envelope.
+  const routedSettings = unavailableControls.length > 0
+    ? Object.fromEntries(Object.entries(settings).filter(([key]) => !unavailableControls.includes(key)))
+    : settings;
+  if (unavailable && Object.keys(routedSettings).length === 0) {
     log(`[apply] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
     let state = null;
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
-    return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state };
+    return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state, extendedUnavailable: true };
   }
-  const sysmanPrimaryRequest = isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits);
+  const partialUnavailable = unavailableControls.length > 0;
+  if (partialUnavailable) {
+    log(`[apply] mixed extended capability: routing available controls; refusing unavailable controls (${unavailableControls.join(', ')})`);
+  }
+  const sysmanPrimaryRequest = isSysmanPrimaryPowerRequest(routedSettings, caps.ranges, sysmanPowerLimits);
   // M4O: profileApply and the M47 Sysman-primary request clamp against the
   // driver's true advanced limits, never the mode-gated stock ranges.
   const clampRanges = opts.profileApply === true || sysmanPrimaryRequest
     ? extendedRangesFor(caps)
     : caps.ranges;
   const clamped = {};
-  for (const [key, value] of Object.entries(settings)) {
+  for (const [key, value] of Object.entries(routedSettings)) {
     if (value === null || value === undefined) continue;
     const range = clampRanges[key];
     clamped[key] = range && typeof value === 'number'
@@ -1169,6 +1201,22 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: routeMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+  if (partialUnavailable) {
+    const perControl = {
+      ...out.result.perControl,
+      ...extendedUnavailablePerControl(unavailableControls),
+    };
+    return {
+      result: {
+        ...out.result,
+        ok: Object.values(perControl).every((per) => per?.ok === true),
+        perControl,
+      },
+      state,
+      extendedUnavailable: true,
+      extendedUnavailablePartial: true,
+    };
+  }
   return { result: out.result, state };
 }
 
@@ -1180,6 +1228,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
 export function createNullOldIgcl() {
   return {
     isCapable: async () => false,
+    isTempCapable: async () => false,
     setPowerLimitW: async () => ({ ok: false, errorCode: 'unsupported', readBackEqual: false, message: EXTENDED_UNAVAILABLE_MSG }),
     setTempLimitC: async () => ({ ok: false, errorCode: 'unsupported', readBackEqual: false, message: EXTENDED_UNAVAILABLE_MSG }),
     close: async () => {},

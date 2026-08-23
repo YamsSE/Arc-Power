@@ -412,10 +412,12 @@ async function main() {
     const workerOldIgcl = new OldIgcl();
     const workerBackend = createBackend({
       kind: 'igcl',
-      igcl: {
-        extended: { isCapable: () => workerOldIgcl.isCapable() },
+        extended: {
+          isCapable: () => workerOldIgcl.isCapable(),
+          isTempCapable: () => workerOldIgcl.isTempCapable(),
+        },
+        sysmanPowerLimits: workerSysmanLimits,
         ocMode: 'advanced',
-      },
     });
     // M30: the worker receives the durable key and uses the same routing
     // wrapper. With no OS snapshot in the short-lived worker, an OS-only key
@@ -557,13 +559,22 @@ async function main() {
       log: (s) => console.log(`[sysman-helper] ${s}`),
     });
     // M19: the warm is BOUND-AWAITED (not fire-and-forget) - the boot
-    // apply's helper must be ready before the boot backend load.
+    // helper must be ready before THIS process loads its backend/IGCL.
     if (!mock) await boundWarm(bootRealSysmanLimits);
+    // Construct the V1 capability probe before backend creation, matching
+    // the window and worker paths while leaving the mock seam untouched.
     const bootOldIgcl = mock ? null : new OldIgcl();
+    const bootSysmanCapable = mock ? process.env.RID_MOCK_NO_SYSMAN !== '1' : bootRealSysmanLimits !== null;
     const bootBackend = createBackend({
       kind: mock ? 'mock' : 'igcl',
-      igcl: bootOldIgcl ? { extended: { isCapable: () => bootOldIgcl.isCapable() } } : {},
-      mock: {},
+      igcl: bootOldIgcl ? {
+        extended: {
+          isCapable: () => bootOldIgcl.isCapable(),
+          isTempCapable: () => bootOldIgcl.isTempCapable(),
+        },
+        sysmanPowerLimits: bootRealSysmanLimits,
+      } : {},
+      mock: { sysmanPowerCapable: bootSysmanCapable },
     });
     // Mirror the window/apply-profile boot seeding (bootBackend): the
     // persisted waiver acceptance + OC mode must ride into the in-process
@@ -664,13 +675,19 @@ async function main() {
       kind: mock ? 'mock' : 'igcl',
       igcl: {
         allowAutoWaiver: true, // smoke/tests only (plan §9 M1 waiver clause)
-        extended: smokeOldIgcl ? { isCapable: () => smokeOldIgcl.isCapable() } : undefined,
+        extended: smokeOldIgcl
+          ? {
+              isCapable: () => smokeOldIgcl.isCapable(),
+              isTempCapable: () => smokeOldIgcl.isTempCapable(),
+            }
+          : undefined,
+        sysmanPowerCapable: !mock,
         // M3-C-E: the smoke's no-op round trips must never clamp a device
         // that currently holds an extended value - expose the full range.
         ocMode: 'advanced',
         ...(smokeVramBytesOf ? { vramBytesOf: smokeVramBytesOf } : {}),
       },
-      mock: {},
+      mock: { sysmanPowerCapable: true },
     });
     try {
       // M4-D2 (§13 smoke gate): unelevated smoke runs SKIP the no-op write
@@ -789,6 +806,7 @@ async function main() {
   if (uiVerify && process.env.RID_MOCK_OFFGRID_FREQ_MHZ !== undefined) {
     mockOpts.offGridFreqMhz = Number(process.env.RID_MOCK_OFFGRID_FREQ_MHZ);
   }
+  mockOpts.sysmanPowerCapable = process.env.RID_MOCK_NO_SYSMAN !== '1';
   if (uiVerify && process.env.RID_MOCK_EXTENDED_RANGES === '1') mockOpts.extendedRanges = true;
   if (uiVerify && process.env.RID_MOCK_EXTENDED_FAIL === '1') mockOpts.extendedFail = true;
   // M3-C-E: RID_MOCK_STOCK_MODE=1 flips the mock's OC mode to stock - the
@@ -944,9 +962,12 @@ async function main() {
   }
   let backend = createBackend({
     kind: mock ? 'mock' : 'igcl',
-    igcl: realOldIgcl
-      ? {
-          extended: { isCapable: () => realOldIgcl.isCapable() },
+    igcl: realOldIgcl ? {
+        extended: {
+          isCapable: () => realOldIgcl.isCapable(),
+          isTempCapable: () => realOldIgcl.isTempCapable(),
+        },
+        sysmanPowerLimits: realSysmanLimits,
           // M4J (A): pass the CACHED CIM data (with .videoControllers) - the
           // pre-fix adapter passed `sysinfo` (the lazy .get() wrapper), so
           // the lookup ALWAYS returned null on the real path and the A770

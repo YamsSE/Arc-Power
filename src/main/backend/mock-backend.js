@@ -150,6 +150,8 @@ export class MockBackend {
   constructor(opts = {}) {
     this.kind = 'mock';
     this._failOnce = {};
+    this._hasSysmanCapabilitySeam = Object.prototype.hasOwnProperty.call(opts, 'sysmanPowerCapable');
+    this._sysmanPowerCapable = this._hasSysmanCapabilitySeam ? opts.sysmanPowerCapable === true : null;
     this._intervalS = opts.telemetryIntervalS ?? 0.5;
     this._extendedFail = opts.extendedFail === true;
     this._featuresetWarning = null;
@@ -417,6 +419,11 @@ export class MockBackend {
       overclockingSupported: Object.values(controls).some(Boolean),
       ranges,
       fan: this._buildFanCaps(fs, fanCanControl),
+    };
+    const powerCapable = this._hasSysmanCapabilitySeam ? this._sysmanPowerCapable : extended;
+    caps.extendedControls = {
+      powerLimitW: Boolean(powerCapable && ranges.powerLimitW?.units === 'W'),
+      tempLimitC: Boolean(extended && ranges.tempLimitC?.units === 'C'),
     };
     // M2C-C: the bundled-2023-runtime flag - the UI exposes the extended
     // maxes only when it is set AND the OC mode is advanced (M3-C-E).
@@ -1342,6 +1349,12 @@ export function createMockOldIgcl(backend) {
       if (deviceId === undefined || deviceId === null) return backend.extendedCapable;
       if (typeof backend.getCapabilities === 'function') return (await backend.getCapabilities(deviceId)).extendedRanges === true;
       return backend._entry(deviceId).extendedCapable;
+    },
+    isTempCapable: async (deviceId) => {
+      if (typeof backend.getCapabilities === 'function') {
+        return (await backend.getCapabilities(deviceId ?? 0)).extendedControls?.tempLimitC === true;
+      }
+      return backend.extendedCapable;
     },
     setPowerLimitW: async (w, deviceId) => backend.extendedApply('powerLimitW', w, deviceId),
     setTempLimitC: async (c, deviceId) => backend.extendedApply('tempLimitC', c, deviceId),

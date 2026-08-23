@@ -290,7 +290,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
           || !isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits));
       if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
     }
-    if (unavailable) {
+    if (unavailable && Object.keys(settings).every((key) => unavailable.controls.includes(key))) {
       log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
       let state = null;
       try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
@@ -301,6 +301,18 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       ? extendedRangesFor(caps)
       : caps.ranges;
     const clamped = clampSettings(settings, clampRanges);
+    const out = await executeApply({
+      backend,
+      oldIgcl,
+      deviceId,
+      deviceKey: req.deviceKey ?? null,
+      physicalTarget: req.physicalTarget ?? null,
+      settings: clamped,
+      opts: { profileApply: req.profileApply === true },
+      ocMode: applyMode,
+      sysmanPowerLimits,
+      log,
+    });
     // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
     // round-3 N1): the attempted values of the 'out-of-range' per-control
     // results - the parent's session refused-ceiling store records from
@@ -321,6 +333,8 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       ok: out.result.ok,
       perControl: out.result.perControl,
       state: out.state,
+      ...(out.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
+      ...(out.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
       ...(Object.keys(refused).length > 0 ? { refused } : {}),
       // M17g (round-3 S1): the pl2Note rides the worker envelope the same
       // way as `refused` - ABSENT when null (the old envelope-shape pins

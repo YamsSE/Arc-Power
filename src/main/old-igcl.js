@@ -159,6 +159,7 @@ export class OldIgcl {
     this._waivedDevices = new Set();
     this._setQueue = Promise.resolve();
     this._capable = null; // tri-state: null = unknown
+    this._tempCapable = null; // cached V1 temperature-symbol capability
     this._lastError = null;
     this._props = null;
     // CONCURRENTLY (the boot warm-up + the first caps query + a boot-apply
@@ -166,10 +167,43 @@ export class OldIgcl {
     // waiver sequence; every concurrent caller awaits the SAME promise -
     // the 2023 runtime is never ctlInit'd twice in one process.
     this._capablePromise = null;
+    this._tempCapablePromise = null;
   }
 
   get lastError() {
     return this._lastError;
+  }
+
+  /**
+   * Whether the V1 temperature writer is usable. This deliberately requires
+   * the initialized runtime plus BOTH temperature symbols; the power
+   * capability probe is not sufficient because some bundled runtimes expose
+   * only the power APIs.
+   * @returns {Promise<boolean>}
+   */
+  async isTempCapable() {
+    if (this._tempCapable !== null) return this._tempCapable;
+    if (!this._tempCapablePromise) {
+      this._tempCapablePromise = (async () => {
+        try {
+          // Share the capability probe's readiness promise. Calling
+          // _ensureReady() directly here can overlap isCapable() during
+          // startup and issue duplicate ctlInit/enumeration/waiver calls;
+          // that race can falsely hide the working 115 C V1 path.
+          if (!(await this.isCapable())) {
+            this._tempCapable = false;
+            return this._tempCapable;
+          }
+          this._tempCapable = typeof this._lib?.ctlOverclockTemperatureLimitGet === 'function'
+            && typeof this._lib?.ctlOverclockTemperatureLimitSet === 'function';
+        } catch (err) {
+          this._tempCapable = false;
+          this._lastError = err.message;
+        }
+        return this._tempCapable;
+      })();
+    }
+    return this._tempCapablePromise;
   }
 
   /**
@@ -183,6 +217,7 @@ export class OldIgcl {
     return typeof dllPath === 'string' && dllPath.length > 0 && fs.existsSync(dllPath);
   }
 
+
   /**
    * extendedCapable(): init + enumerate + waiver all SUCCESS on the bundled
    * runtime. Cached; a failure sets `_capable = false` forever (the old
@@ -191,9 +226,6 @@ export class OldIgcl {
    */
   async isCapable() {
     if (this._capable !== null) return this._capable;
-    // M17d (Run E): the latch - concurrent callers share ONE in-flight
-    // init/enum/waiver sequence (a second ctlInit of the same runtime in
-    // one process is never entered; the result stays tri-state-cached).
     if (!this._capablePromise) {
       this._capablePromise = (async () => {
         try {
@@ -383,7 +415,7 @@ export class OldIgcl {
   }
 
   async _setScalarLocked(control, value, deviceId = 0, deviceKey = null) {
-    if (!(await this.isCapable())) {
+    if (control === 'tempLimitC' ? !(await this.isTempCapable()) : !(await this.isCapable())) {
       return {
         ok: false,
         errorCode: 'unsupported',

@@ -113,6 +113,8 @@ export interface Capabilities {
    *  >315 W range applies through the sysman pair) and applies above the
    *  DriverStore clamp route to it. */
   extendedRanges?: boolean;
+  /** M48: independent Advanced writers (Sysman W, bundled V1 C). */
+  extendedControls?: { powerLimitW?: boolean; tempLimitC?: boolean };
   /** M46: selected OC mode controls displayed W/C ceilings independently
    * from the bundled-runtime capability flag. */
   ocMode?: 'stock' | 'advanced';

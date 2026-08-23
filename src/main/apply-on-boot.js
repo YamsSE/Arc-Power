@@ -243,18 +243,21 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // oldIgcl.isCapable() (mock: createMockOldIgcl -> backend.extendedCapable
   // - the RAW featureset flag, mode-independent). A genuinely not-capable
   // driver still refuses honestly with EXTENDED_UNAVAILABLE_MSG.
-  const extendedCapable = oldIgcl ? await oldIgcl.isCapable() : caps.extendedRanges === true;
-  let unavailable = extendedUnavailableRefusal(profile.settings, { ...caps, extendedRanges: extendedCapable }, sysmanPowerLimits);
-  if (!unavailable && !extendedCapable) {
-    // M17d (Run D): profile W/C values normally require the bundled V1
-    // runtime even when in range. M47 exempts only a W-unit powerLimitW
-    // above EXTENDED_PL_MAX_W when the Sysman primary seam is available.
+  const delegatedAdvancedRuntime = applyRunner?.needsWorker?.() === true;
+  const extendedCapable = delegatedAdvancedRuntime
+    ? true
+    : (oldIgcl ? await oldIgcl.isCapable() : caps.extendedRanges === true);
+  const gateCaps = delegatedAdvancedRuntime
+    ? { ...caps, extendedRanges: true, extendedControls: { powerLimitW: true, tempLimitC: true } }
+    : { ...caps, extendedRanges: extendedCapable };
+  let unavailable = extendedUnavailableRefusal(profile.settings, gateCaps, sysmanPowerLimits);
+  if (!unavailable && !extendedCapable && !delegatedAdvancedRuntime) {
     const wc = wcUnitControls(profile.settings, caps.ranges)
       .filter((key) => key !== 'powerLimitW'
         || !isSysmanPrimaryPowerRequest(profile.settings, caps.ranges, sysmanPowerLimits));
     if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
   }
-  if (unavailable) {
+  if (unavailable && Object.keys(profile.settings).every((key) => unavailable.controls.includes(key))) {
     log(`[apply-on-boot] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied, NO defaults restore`);
     return { applied: false, reason: unavailable.message, extendedUnavailable: true };
   }
@@ -319,7 +322,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         // finalized caps carry the laptop branch).
         limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
       });
-      recordRefusals(out.result);
+      if (out.extendedUnavailable !== true && out.extendedUnavailablePartial !== true) recordRefusals(out.result);
       return out;
     }
     // M4O: opts.profileApply:true - executeApply clamps against the
@@ -331,15 +334,23 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
     const out = await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: profile.settings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
-    recordRefusals(out.result);
+    if (out.extendedUnavailable !== true && out.extendedUnavailablePartial !== true) recordRefusals(out.result);
     return out;
   };
   let result;
   let state = null;
+  let extendedUnavailable = false;
+  let extendedUnavailablePartial = false;
   try {
     let out = await attempt(caps.waiverAccepted === true);
-    result = out.result;
+    result = {
+      ...out.result,
+      ...(out.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
+      ...(out.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
+    };
     state = out.state;
+    extendedUnavailable = out.extendedUnavailable === true;
+    extendedUnavailablePartial = out.extendedUnavailablePartial === true;
     // M4-D: the apply answered waiver-not-set while the persisted acceptance
     // is true (settings.json - the user's permanent consent). Silently
     // re-set the driver waiver (in-process on the elevated boot task;
@@ -357,8 +368,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
           await backend.setWaiverAccepted(deviceId_);
         }
         out = await attempt(true);
-        result = out.result;
+        result = {
+          ...out.result,
+          ...(out.extendedUnavailable === true ? { extendedUnavailable: true } : {}),
+          ...(out.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}),
+        };
         state = out.state;
+        extendedUnavailable = out.extendedUnavailable === true;
+        extendedUnavailablePartial = out.extendedUnavailablePartial === true;
       } catch (err) {
         log(`[apply-on-boot] waiver re-set failed: ${err.message} - falling through to the honest failure path`);
       }
@@ -392,17 +409,31 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // path; only the dev tree can be unelevated. The fallback-skip is keyed
   // on the SESSION (skipDefaultsFallback), REGARDLESS of errorCode: an
   // app-start apply must NEVER wipe the live OC state over a failure (an
-  // elevation refusal in dev, a driver refusal in the product). The honest
-  // balloon is the caller's job; the ELEVATED logon applies come from the
-  // ArcPowerBootApply task (--boot-apply mode, M4-E).
-  if (skipDefaultsFallback) {
-    log('[apply-on-boot] boot variant (applyRunner-less, in-process): apply failed - defaults-restore fallback SKIPPED (an app-start apply must never wipe live OC state over a failure; logon applies run elevated via the ArcPowerBootApply task)');
+  if (skipDefaultsFallback || extendedUnavailable) {
+    if (extendedUnavailable && !extendedUnavailablePartial) {
+      return {
+        applied: false,
+        reason: EXTENDED_UNAVAILABLE_MSG,
+        result: { ...result, extendedUnavailable: true },
+        state,
+        fallbackSkipped: true,
+        extendedUnavailable: true,
+      };
+    }
+    if (extendedUnavailablePartial && !skipDefaultsFallback) {
+      log('[apply-on-boot] mixed extended capability failure - defaults-restore fallback SKIPPED so available controls remain landed');
+    } else if (skipDefaultsFallback) {
+      log('[apply-on-boot] boot variant (applyRunner-less, in-process): apply failed - defaults-restore fallback SKIPPED (an app-start apply must never wipe live OC state over a failure; logon applies run elevated via the ArcPowerBootApply task)');
+    }
     return {
       applied: false,
-      reason: 'apply failed; defaults restore skipped (app-start applies never restore defaults)',
+      reason: extendedUnavailablePartial
+        ? 'apply failed; unavailable controls skipped (available controls may have landed)'
+        : 'apply failed; defaults restore skipped (app-start applies never restore defaults)',
       result,
       state,
       fallbackSkipped: true,
+      ...(extendedUnavailable ? { extendedUnavailable: true } : {}),
     };
   }
   log(`[apply-on-boot] apply failed: ${JSON.stringify(result.perControl)} - restoring defaults`);

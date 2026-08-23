@@ -100,10 +100,15 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
   // for older capability payloads that do not carry ocMode.
   const advancedDisplay = caps?.ocMode === 'advanced'
     || (caps?.ocMode === undefined && caps?.extendedRanges === true);
-  if (key === 'powerLimitW' && range.units === 'W' && !advancedDisplay && range.max > STD_PL_MAX_W) {
+  const explicitExtended = key === 'powerLimitW'
+    ? caps?.extendedControls?.powerLimitW
+    : key === 'tempLimitC' ? caps?.extendedControls?.tempLimitC : undefined;
+  if (key === 'powerLimitW' && range.units === 'W'
+    && (!advancedDisplay || explicitExtended === false) && range.max > STD_PL_MAX_W) {
     return { ...range, max: STD_PL_MAX_W, default: Math.min(range.default, STD_PL_MAX_W) };
   }
-  if (key === 'tempLimitC' && range.units === 'C' && !advancedDisplay && range.max > TEMP_LIMIT_MAX_C) {
+  if (key === 'tempLimitC' && range.units === 'C'
+    && (!advancedDisplay || explicitExtended === false) && range.max > TEMP_LIMIT_MAX_C) {
     return { ...range, max: TEMP_LIMIT_MAX_C, default: Math.min(range.default, TEMP_LIMIT_MAX_C) };
   }
   if (key === 'gpuVoltOffsetV' && range.units === 'V') {
@@ -112,8 +117,13 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
       // M17c: the A770-scoped pin - max = min(degraded ceiling, 0.234),
       // NEVER a raise (a session-store degrade below 0.234 is preserved);
       // the step is pinned to 0.001 so the 0.234 ceiling is reachable.
-      if (range.max > VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V) {
-        return { ...range, max: Math.min(range.max, VOLT_OFFSET_MAX_V), step: VOLT_OFFSET_STEP_V };
+      if (range.max > VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V || range.min < 0) {
+        return {
+          ...range,
+          max: Math.min(range.max, VOLT_OFFSET_MAX_V),
+          step: VOLT_OFFSET_STEP_V,
+          ...(range.min < 0 ? { min: 0 } : {}),
+        };
       }
       return range; // already legal - the pass-through identity pins stay green
     }
@@ -460,6 +470,7 @@ export function ocCapsChanged(prev: Capabilities | null, next: Capabilities | nu
   if (!prev || !next) return true;
   return JSON.stringify(prev.ranges) !== JSON.stringify(next.ranges)
     || JSON.stringify(prev.controls) !== JSON.stringify(next.controls)
+    || JSON.stringify(prev.extendedControls ?? null) !== JSON.stringify(next.extendedControls ?? null)
     || prev.extendedRanges !== next.extendedRanges;
 }
 
@@ -467,7 +478,6 @@ export function ocCapsChanged(prev: Capabilities | null, next: Capabilities | nu
  * M24 (Part B): the FAN-STATE SIGNATURE - a stable string over the store
  * state's fan fields (fanMode / fanCurve / fixedFanPct). The Tuning page's
  * fan view re-renders its editor when the signature CHANGES (an external
- * push - the advanced-overlay panel's fan apply - changed the store's fan
  * fields), and stays untouched when it is equal (the user's own apply, the
  * telemetry ticks). Absent fields degrade to null in the JSON (a state
  * without a field and a state with an explicit null are the SAME

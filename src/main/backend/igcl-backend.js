@@ -190,7 +190,13 @@ export class IgclBackend {
     this._lib = opts.lib ?? null;
     this._findDll = opts.findDll ?? findIgclDll;
     this._extended = opts.extended ?? null;
-    // M4-D: the VRAM provider for formatDeviceName (constructor opt - main.js
+    // M48: an explicit Sysman seam owns the W-unit Advanced extension. The
+    // absent-option case preserves older injected backends whose aggregate
+    // V1 capability was the only available contract.
+    this._hasSysmanCapabilitySeam = Object.prototype.hasOwnProperty.call(opts, 'sysmanPowerLimits')
+      || Object.prototype.hasOwnProperty.call(opts, 'sysmanPowerCapable');
+    this._sysmanPowerLimits = opts.sysmanPowerLimits ?? null;
+    this._sysmanPowerCapable = opts.sysmanPowerCapable;
     // runs the sysinfo cache BEFORE constructing the backend, so the lookup
     // is available at enumeration time; setVramBytesOf re-formats an already
     // enumerated device list).
@@ -1011,6 +1017,16 @@ export class IgclBackend {
     }
   }
 
+  async _sysmanPowerCapability() {
+    if (!this._hasSysmanCapabilitySeam) return null;
+    if (typeof this._sysmanPowerCapable === 'function') {
+      try { return (await this._sysmanPowerCapable()) === true; } catch { return false; }
+    }
+    return this._sysmanPowerCapable !== undefined
+      ? this._sysmanPowerCapable === true
+      : this._sysmanPowerLimits !== null;
+  }
+
   async getCapabilities(deviceId) {
     await this._device(deviceId);
     if (this._caps.has(deviceId)) {
@@ -1047,6 +1063,8 @@ export class IgclBackend {
         powerLimit: false, tempLimit: false, vfCurve: false,
       },
       ranges: {},
+      // M48: independent W Sysman and C V1 extension capabilities.
+      extendedControls: { powerLimitW: false, tempLimitC: false },
       fan: { canControl: false, modes: [], maxRpm: -1, maxCurvePoints: 0 },
     };
 
@@ -1116,26 +1134,50 @@ export class IgclBackend {
         const installed = this._extended
           && typeof this._extended.isAvailable === 'function'
           && this._extended.isAvailable() === true;
-        const extendedCapable = this._extended
+        const runtimeCapable = this._extended
           ? installed || await this._extended.isCapable()
           : false;
-        // M4E: the extended concept is W/C-only (the bundled 2023 runtime
-        // speaks W/C). Percent-unit ranges (Battlemage: volt/PL/TL as %)
-        // must never be overwritten with the 315 W / 115 C maxes nor flip
-        // the flag - their range max is the ceiling. Each override is
-        // guarded by its own units; the flag is set only when a genuine
-        // W/C extended range was exposed.
-        const wcExtended = extendedCapable && this._ocMode === 'advanced'
-          && ((caps.ranges.powerLimitW && caps.ranges.powerLimitW.units === 'W')
-            || (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C'));
-        if (wcExtended) {
-          if (caps.ranges.powerLimitW && caps.ranges.powerLimitW.units === 'W') {
-            caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
+        const explicitControlContract = this._hasSysmanCapabilitySeam
+          || typeof this._extended?.isTempCapable === 'function';
+        if (!explicitControlContract) {
+          delete caps.extendedControls;
+          if (runtimeCapable && this._ocMode === 'advanced'
+            && ((caps.ranges.powerLimitW?.units === 'W') || (caps.ranges.tempLimitC?.units === 'C'))) {
+            if (caps.ranges.powerLimitW?.units === 'W') {
+              caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
+            }
+            if (caps.ranges.tempLimitC?.units === 'C') {
+              caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
+            }
+            caps.extendedRanges = true;
           }
-          if (caps.ranges.tempLimitC && caps.ranges.tempLimitC.units === 'C') {
-            caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
+        } else {
+          const tempCapable = this._extended
+            ? (typeof this._extended.isTempCapable === 'function'
+              ? await this._extended.isTempCapable()
+              : runtimeCapable)
+            : false;
+          const explicitSysmanPower = await this._sysmanPowerCapability();
+          const powerCapable = explicitSysmanPower === null ? runtimeCapable : explicitSysmanPower;
+          const hasW = caps.ranges.powerLimitW?.units === 'W';
+          const hasC = caps.ranges.tempLimitC?.units === 'C';
+          caps.extendedControls = {
+            powerLimitW: Boolean(powerCapable && hasW),
+            tempLimitC: Boolean(tempCapable && hasC),
+          };
+          if (this._ocMode === 'advanced' && (caps.extendedControls.powerLimitW || caps.extendedControls.tempLimitC)) {
+            if (caps.extendedControls.powerLimitW) {
+              caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
+            }
+            if (caps.extendedControls.tempLimitC) {
+              caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: EXTENDED_TL_MAX_C };
+            } else if (hasC) {
+              caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
+            }
+            caps.extendedRanges = true;
+          } else if (this._ocMode === 'advanced' && hasC) {
+            caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
           }
-          caps.extendedRanges = true;
         }
         // gpuLock: supported when the symbol pair exists (0,0 pair = dynamic,
         // still supported).
@@ -1365,6 +1407,27 @@ export class IgclBackend {
         }
         if (next !== range) caps.ranges[canonical] = next;
       }
+    }
+    // M48: finalize the independent control ceilings after device-scoped
+    // limits. A false seam must never leave an Advanced slider at an
+    // unwriteable extended maximum.
+    if (caps.extendedControls && caps.ranges.powerLimitW?.units === 'W'
+      && caps.extendedControls.powerLimitW !== true) {
+      const range = caps.ranges.powerLimitW;
+      caps.ranges.powerLimitW = {
+        ...range,
+        max: Math.min(range.max, 252),
+        ...(typeof range.default === 'number' ? { default: Math.min(range.default, 252) } : {}),
+      };
+    }
+    if (caps.extendedControls && caps.ranges.tempLimitC?.units === 'C'
+      && caps.extendedControls.tempLimitC !== true) {
+      const range = caps.ranges.tempLimitC;
+      caps.ranges.tempLimitC = {
+        ...range,
+        max: Math.min(range.max, TEMP_LIMIT_MAX_C),
+        ...(typeof range.default === 'number' ? { default: Math.min(range.default, TEMP_LIMIT_MAX_C) } : {}),
+      };
     }
     caps.ranges = mergeIntoRanges(this._refusedCeilings, deviceId, caps.ranges);
     return caps;

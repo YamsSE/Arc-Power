@@ -1309,7 +1309,7 @@ export function createIpcHandlers({
     };
     const first = await attempt(caps.waiverAccepted === true);
     if (!hasWaiverNotSet(first.result)) {
-      return { result: first.result, state: first.state };
+      return { result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
     }
     let persistedAccepted = false;
     try {
@@ -1321,7 +1321,7 @@ export function createIpcHandlers({
     if (!persistedAccepted) {
       // Unaccepted store: current behavior - the renderer's dialog flow
       // re-prompts and re-applies.
-      return { result: first.result, state: first.state };
+      return { result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
     }
     // M4-D: silent re-set + retry ONCE. A declined re-set (UAC) surfaces the
     // FIRST attempt's envelope - never a fake success, never a crash.
@@ -1333,10 +1333,10 @@ export function createIpcHandlers({
         await backend.setWaiverAccepted(deviceId);
       }
     } catch {
-      return { result: first.result, state: first.state };
+      return { result: first.result, state: first.state, ...(first.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(first.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
     }
     const retry = await attempt(true);
-    return { result: retry.result, state: retry.state };
+    return { result: retry.result, state: retry.state, ...(retry.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(retry.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) };
   };
 
   const handlers = {
@@ -1608,7 +1608,13 @@ export function createIpcHandlers({
           && applyRunner?.needsWorker?.() === true;
         let unavailableCaps = caps;
         if (delegatedAdvancedRuntime) {
-          unavailableCaps = { ...caps, extendedRanges: true };
+          unavailableCaps = {
+            ...caps,
+            extendedRanges: true,
+            // M48: the elevated worker recomputes both controls; the parent
+            // must not pre-refuse on its unelevated probe.
+            extendedControls: { powerLimitW: true, tempLimitC: true },
+          };
         } else if (oldIgcl?.isCapable) {
           unavailableCaps = { ...caps, extendedRanges: await oldIgcl.isCapable() };
         }
@@ -1624,7 +1630,7 @@ export function createIpcHandlers({
               || !isSysmanPrimaryPowerRequest(settings, caps.ranges, sysmanPowerLimits));
           if (wc.length > 0) unavailable = { controls: wc, message: EXTENDED_UNAVAILABLE_MSG };
         }
-        if (unavailable) {
+        if (unavailable && Object.keys(settings).every((key) => unavailable.controls.includes(key))) {
           let state = null;
           try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
           return { result: { ok: false, perControl: extendedUnavailablePerControl(unavailable.controls) }, state, extendedUnavailable: true };
