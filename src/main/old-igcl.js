@@ -1,18 +1,18 @@
 // Arc Power - M2C-C bundled 2023 IGCL runtime (extended-range unlock).
 //
-// The DriverStore IGCL runtime (v1.2.x) clamps OC writes CLIENT-SIDE: the
-// power limit is refused above 252 W (0x44000004) and the temp limit above
-// 90 C (0x44000005) for any zero-UID client. The bundled 2023 runtime
-// (IntelControlLib.dll v1.0.100, from the Arc OC Tool distribution - see
-// THIRD_PARTY_NOTICES.txt) + AppVersion 1.0 + zero UID + waiver + ELEVATION
-// writes 280/300/315 W and 100/110/115 C - SUCCESS and PERSISTED (verified
-// live on this machine, 2026-08-05, docs/igcl-integration.md §8c).
+// The DriverStore IGCL runtime clamps OC writes CLIENT-SIDE: the power limit
+// is refused above 252 W (0x44000004) and the temp limit above 90 C
+// (0x44000005). The bundled 2023 runtime (IntelControlLib.dll v1.0.100,
+// from the Arc OC Tool distribution - see THIRD_PARTY_NOTICES.txt) writes
+// 280/300/315 W and 100/110/115 C when initialized with a supported
+// application UID + AppVersion 1.0 + waiver + elevation.
 //
 // This module is the ONLY product-code consumer of that DLL. It uses the V1
 // fixed-unit setters (ctlOverclockPowerLimitSet = mW,
 // ctlOverclockTemperatureLimitSet = C), the 2023-era init args (Size 36,
 // Version 0, AppVersion MAKE_VERSION(1,0), CTL_INIT_FLAG_USE_LEVEL_ZERO,
-// zero UID) and the 2023-era properties struct (ctl_oc_properties_old_t).
+// zero UID with the registered ArcTool UID fallback) and the 2023-era
+// properties struct (ctl_oc_properties_old_t).
 //
 // Verification lesson (the momentary lie): non-elevated OC writes return
 // SUCCESS with a momentary read-back match and then revert. Every setter
@@ -62,6 +62,16 @@ export const EXTENDED_PL_RANGE = Object.freeze({ min: EXTENDED_PL_MIN_W, max: EX
 export const EXTENDED_TL_RANGE = Object.freeze({ min: EXTENDED_TL_MIN_C, max: EXTENDED_TL_MAX_C, step: EXTENDED_STEP });
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
+// ArcTool's bundled runtime registers this application UID. Newer driver
+// packages can reject the zero UID with ERROR_KMD_CALL even though the same
+// runtime accepts the registered ArcTool identity and its extended controls.
+const ARC_TOOL_UID = {
+  Data1: 0xe8e10f95,
+  Data2: 0x1a70,
+  Data3: 0x4b27,
+  Data4: [0x9c, 0xcf, 0x02, 0x01, 0x02, 0x64, 0xe9, 0xc8],
+};
+
 
 // 2023-era ctl_oc_properties_t (igcl repo ~v109/v127): 6 controls, Size 296,
 // Version 0. Uses the ctl_oc_control_info_t layout already defined by
@@ -254,6 +264,7 @@ export class OldIgcl {
       throw new Error('bundled 2023 IGCL runtime has no ctlInit symbol');
     }
     const initArgs = koffi.alloc('ctl_init_args_t', 1);
+    const apiBuf = koffi.alloc('void*', 1);
     koffi.encode(initArgs, 'ctl_init_args_t', {
       Size: 36,
       Version: 0,
@@ -262,8 +273,16 @@ export class OldIgcl {
       SupportedVersion: 0,
       ApplicationUID: ZERO_UID,
     });
-    const apiBuf = koffi.alloc('void*', 1);
-    const initRes = this._lib.ctlInit(initArgs, apiBuf);
+    let initRes = this._lib.ctlInit(initArgs, apiBuf);
+    // The bundled ArcTool runtime on newer driver packages rejects the
+    // zero UID with ERROR_KMD_CALL/ERROR_UNKNOWN_APPLICATION_UID, although
+    // its registered ArcTool UID is accepted and unlocks the V1 115 C
+    // temperature path. Keep zero-UID behavior first for older runtimes,
+    // then use the known registered identity only for this failure.
+    if (initRes === CTL_RESULT.ERROR_KMD_CALL || initRes === CTL_RESULT.ERROR_UNKNOWN_APPLICATION_UID) {
+      koffi.encode(initArgs, koffi.offsetof('ctl_init_args_t', 'ApplicationUID'), 'ctl_application_id_t', ARC_TOOL_UID);
+      initRes = this._lib.ctlInit(initArgs, apiBuf);
+    }
     if (initRes !== CTL_RESULT.SUCCESS) {
       throw new Error(`bundled 2023 IGCL runtime init failed: ${describeResult(initRes)}`);
     }

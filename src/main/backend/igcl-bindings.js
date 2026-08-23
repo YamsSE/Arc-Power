@@ -63,6 +63,9 @@ export const CTL_RESULT = {
   ERROR_CORE_OVERCLOCK_VRAM_MEMORY_SPEED_OUTSIDE_RANGE: 0x4400000d,
   ERROR_CORE_OVERCLOCK_INVALID_CUSTOM_VF_CURVE: 0x4400000e,
 } ;
+// ctl_power_limits_t is the fixed V1 power-pair layout used by the bundled
+// runtime and its regression seam.
+export const CTL_POWER_LIMITS_SIZE = 36;
 
 export const RESULT_NAME = {};
 for (const [k, v] of Object.entries(CTL_RESULT)) RESULT_NAME[v] = k;
