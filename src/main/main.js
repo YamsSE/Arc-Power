@@ -849,6 +849,8 @@ async function main() {
   // with no .videoControllers), so the real-path VRAM lookup ALWAYS
   // returned null (the device never gained "8GB GDDR6").
   let cached = null;
+  // The lazy ReBAR seam captures this raw backend before unified wrapping.
+  let rawBackend = null;
   // M17c: the laptop-sysinfo ui-verify knob (RID_MOCK_LAPTOP=1) - the mock
   // sysinfo fixture gains the PORTABLE shape (the MSI Claw: 'Micro-Star
   // International Co., Ltd.' + a portable chassis) AND the backend's
@@ -948,13 +950,14 @@ async function main() {
     // return before it, so every harness stayed green). get() is only
     // reachable once the whole boot body has run, so `backend` exists by
     // then; the null-guard creates the seam exactly once and its returned
-    // reader memoizes its own in-flight promise (the M19 boot-race
-    // semantics stay intact).
+    // The ReBAR reader must bind to the raw backend. The unified inventory
+    // wrapper's listDevices() can consult sysinfo.get(), which is this getter;
+    // binding it here would recurse while the first sysinfo read is landing.
     let driverReBar = null;
     sysinfo = {
       get: async () => {
         const result = await sysinfoResult();
-        if (driverReBar === null) driverReBar = createDriverReBar(backend);
+        if (driverReBar === null) driverReBar = createDriverReBar(rawBackend);
         const verdict = await driverReBar();
         return verdict === null ? result : applyDriverReBar(result, verdict);
       },
@@ -989,6 +992,9 @@ async function main() {
     // payload and the caps AIB decode).
     mock: { ...mockOpts, laptopInfoOf: () => (cached && cached.laptop ? cached.laptop : (Object.keys(laptopFixture).length > 0 ? laptopFixture.laptop : null)) },
   });
+  // Capture the concrete backend before the unified inventory wrapper is
+  // installed. The lazy ReBAR seam above is first reached after this point.
+  rawBackend = backend;
   // M30: all later consumers use the same Windows/IGCL inventory.  The
   // wrapper is intentionally installed before oldIgcl, boot/profile/tray,
   // IPC, and sysman closures are created so no path can bypass its target

@@ -1244,14 +1244,10 @@ export function createIpcHandlers({
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
   */
   const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
-    const deviceKey = typeof caps?.deviceKey === 'string' ? caps.deviceKey : null;
-    // M30: resolve the inventory row before constructing the proof. The
-    // unified backend's getDeviceTarget() is an enforcing write-time
-    // assertion, so calling it with only the durable key would reject a
-    // valid elevated apply before the worker/in-process runner receives its
-    // physical identity proof. Keep the legacy fallback identical to the
-    // apply-on-boot path: legacy getDeviceTarget(id, null) is non-enforcing
-    // and backends without either resolver can still expose listDevices().
+    // Resolve the durable target first. The capability payload is a renderer
+    // snapshot and older sessions can carry a null deviceKey even though the
+    // authoritative inventory row is keyed. Extended writes must use that
+    // row key or the bundled runtime will reject the request before writing.
     const target = typeof backend.getTarget === 'function'
       ? await backend.getTarget(deviceId)
       : typeof backend.getDeviceTarget === 'function'
@@ -1259,6 +1255,11 @@ export function createIpcHandlers({
         : typeof backend.listDevices === 'function'
           ? (await backend.listDevices()).find((device) => device.id === deviceId) ?? null
           : null;
+    const deviceKey = typeof target?.deviceKey === 'string'
+      ? target.deviceKey
+      : typeof caps?.deviceKey === 'string'
+        ? caps.deviceKey
+        : null;
     const physicalTarget = physicalTargetOf(target);
     const recordRefusals = (result) => {
       if (!result || typeof result !== 'object') return;
