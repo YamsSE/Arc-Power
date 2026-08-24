@@ -326,6 +326,8 @@ export const DISPLAY_QUANTIZATION_OPTIONS = ['default', 'limited', 'full'];
 export const DISPLAY_WIRE_FORMAT_OPTIONS = ['RGB', 'YCbCr420', 'YCbCr422', 'YCbCr444'];
 export const DISPLAY_BPC_OPTIONS = [6, 8, 10, 12];
 export const DISPLAY_SCALING_MODE_OPTIONS = ['identity', 'centered', 'stretched', 'aspect-ratio-centered-max', 'custom'];
+export const DISPLAY_RETRO_SCALING_METHOD_OPTIONS = ['integer', 'nearest-neighbour'];
+export const DISPLAY_ARC_SYNC_PROFILE_OPTIONS = ['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'];
 
 /**
  * The honest modeset-flash note the scaling apply carries (the M10b probe

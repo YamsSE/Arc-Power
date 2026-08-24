@@ -764,6 +764,8 @@ export interface DisplaySettings {
   quantizationRange?: 'default' | 'limited' | 'full';
   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444'; depth: number };
   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom';
+  scalingMethod?: { enabled: boolean; method: 'integer' | 'nearest-neighbour' };
+  vrrMode?: 'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom';
 }
 
 export interface GameProfileGraphics {
@@ -778,6 +780,19 @@ export interface GameApplication {
   displayName: string;
   source: 'scan' | 'manual';
   artwork?: string;
+}
+
+export interface GameCatalogEntry extends GameApplication {
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameSettingsRecord {
+  exePath: string;
+  enabled: boolean;
+  graphics: GameProfileGraphics;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface GameAssociation {
@@ -795,6 +810,7 @@ export interface GameAssociation {
 }
 
 export interface GameProfilesEnvelope { associations: GameAssociation[]; }
+export interface GameCatalogEnvelope { catalog: GameCatalogEntry[]; settings: GameSettingsRecord[]; }
 
 /** A capability/value pair used for Display rows that may be exposed by one
  * driver family but not another. `controllable` is never inferred from a
@@ -829,8 +845,8 @@ export interface DisplayState {
     colorFormat: string | null;
     quantizationRange: 'default' | 'limited' | 'full' | null;
     scalingMode: string | null;
-    scalingMethod?: DisplayCapability<string>;
-    vrrMode?: DisplayCapability<string>;
+    scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' }>;
+    vrrMode?: DisplayCapability<'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom'>;
     variableRefreshRate?: DisplayCapability<boolean>;
     vrrCurrentRange?: DisplayCapability<string>;
     vrrMaximumRange?: DisplayCapability<string>;
@@ -844,6 +860,7 @@ export interface DisplayState {
     supportedOptions: {
       scalingModes: string[];
       scalingMethods: string[];
+      vrrModes: string[];
       wireFormats: string[];
       bpcDepths: number[];
       quantizationRanges: string[];

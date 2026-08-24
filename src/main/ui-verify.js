@@ -4221,10 +4221,31 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const remainingFixtureApps = await js(`window.arcPower.gameProfilesList().then((e) => e.associations.map((a) => a.exePath).join('|'))`);
     if (remainingFixtureApps.includes('rid-verify-two.exe') || !remainingFixtureApps.includes('rid-verify-one.exe')) fail(`D2 fixture: association removal read-back was wrong (${remainingFixtureApps})`);
     step('profiles-game-fixture', 'D2 fixture: zero-profile scan showed results/Add Profile; destination selection, two-association detail editing, read-back, and selected-association removal all passed');
+
+    // M55b: the explicit Profiles-level Game Profile view is catalog-backed,
+    // not process-list-backed. It must show both installed fixture cards,
+    // open an in-page detail route, and persist settings without a profileId.
     await js(`location.hash = '#/dashboard'`);
     await sleep(150);
     await js(`location.hash = '#/profiles'`);
-    await sleep(250);
+    if (!(await waitFor(win, `!!document.querySelector('.profiles-mode-toggle')`))) fail('M55: Profiles view toggle did not render');
+    const modeLabels = await js(`Array.from(document.querySelectorAll('.profiles-mode-toggle button')).map((b) => b.textContent.trim())`);
+    if (JSON.stringify(modeLabels) !== JSON.stringify(['OC Profile', 'Game Profile'])) fail(`M55: view toggle labels were ${JSON.stringify(modeLabels)}`);
+    await js(`Array.from(document.querySelectorAll('.profiles-mode-toggle button')).find((b) => b.textContent.trim() === 'Game Profile')?.click()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.game-catalog-card').length === 2`, 8000))) fail('M55: Game Profile view did not show the installed mock catalog');
+    await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('rid-verify-two.exe'))?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.game-profile-back') && (document.body.textContent ?? '').includes('Back to catalog')`))) fail('M55: clicking a catalog card did not open the in-page detail view');
+    const gameLabels = await js(`Array.from(document.querySelectorAll('.game-profile-detail .profile-setting-label strong')).map((x) => x.textContent.trim()).concat(Array.from(document.querySelectorAll('.game-use-profile')).map(() => 'Use Profile'))`);
+    for (const label of ['Frame Synchronization', 'FPS Limiter', 'Low Latency', 'Use Profile']) if (!gameLabels.includes(label)) fail(`M55: Game Profile detail is missing ${label}`);
+    await js(`(() => { const s = document.querySelector('.game-profile-detail select.game-setting-control'); s.value = 'vsync-off'; s.dispatchEvent(new Event('change', { bubbles: true })); const l = document.querySelectorAll('.game-profile-detail select.game-setting-control')[1]; l.value = 'on'; l.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    if (!(await waitFor(win, `window.arcPower.gameCatalogList().then((e) => e.settings.some((s) => s.exePath.endsWith('rid-verify-two.exe') && s.graphics.flipMode === 'vsync-off' && s.graphics.lowLatency === 'on'))`, 8000))) fail('M55: Game Profile settings did not read back independently from the catalog');
+    await js(`document.querySelector('.game-profile-back')?.click()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.game-catalog-card').length === 2`))) fail('M55: Back to catalog did not restore the installed-game cards');
+    const settingsAfterAssociationDelete = await js(`window.arcPower.gameCatalogList()`);
+    if (!settingsAfterAssociationDelete.settings.some((s) => s.exePath.endsWith('rid-verify-two.exe'))) fail('M55: OC association deletion removed the independent game settings record');
+    await js(`document.querySelector('.profiles-mode-toggle button')?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.profile-create')`))) fail('M55: OC Profile toggle did not restore the legacy profile browser');
+    step('profiles-game-catalog', 'M55: Game Profile toggle showed both installed mock games, detail/back worked, executable-keyed settings read back, and OC association deletion did not remove game settings');
   }
 
   // After the OC flow the waiver is accepted (either this run or persisted):
@@ -5064,8 +5085,9 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
 // @param {import('electron').BrowserWindow} win
 // @param {object} backend the active (mock) backend
 /** D1 Display verification: title/view contract, compact IGS rows, stable
- * target identity, successful quantization/scaling readbacks, and honest
- * wire-format refusal when the mock is configured read-only. */
+ * target identity, successful quantization/scaling/retro-scaling/Arc Sync
+ * readbacks, and honest wire-format refusal when the mock is configured
+ * read-only. */
 export async function runDisplayVerify(win, backend) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
@@ -5121,6 +5143,14 @@ export async function runDisplayVerify(win, backend) {
   if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: scaling change did not expose its Apply action');
   await js(`document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply').click()`);
   if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].scalingMode !== 'identity')`, 8000))) fail('D1: scaling apply did not update the fresh driver readback');
+  await js(`(() => { const row = document.querySelector('.display-control[data-control="scalingMethod"]'); const s = row?.querySelector('.display-select[data-display-select="scalingMethod"]'); const t = row?.querySelector('input[type="checkbox"]'); if (!row || !s || !t) return false; s.value = s.value === 'integer' ? 'nearest-neighbour' : 'integer'; s.dispatchEvent(new Event('change', { bubbles: true })); t.checked = !t.checked; t.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="scalingMethod"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: retro scaling change did not expose its Apply action');
+  await js(`document.querySelector('.display-control[data-control="scalingMethod"] .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].scalingMethod?.value?.method === 'nearest-neighbour' && s.displays[0].scalingMethod?.value?.enabled === false)`, 8000))) fail('D1: retro scaling apply did not update the fresh driver readback');
+  await js(`(() => { const s = document.querySelector('.display-select[data-display-select="vrrMode"]'); if (!s || s.options.length < 2) return false; s.value = s.options[1].value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="vrrMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: Arc Sync profile change did not expose its Apply action');
+  await js(`document.querySelector('.display-control[data-control="vrrMode"] .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].vrrMode?.value === 'excellent')`, 8000))) fail('D1: Arc Sync profile apply did not update the fresh driver readback');
   const stale = await js(`window.arcPower.displayApply(0, { deviceKey: 'stale-device', displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default' } }).then(() => 'accepted').catch((e) => String(e.message ?? e))`);
   if (stale === 'accepted' || !String(stale).toLowerCase().includes('stale')) fail(`D1: stale display target was not rejected honestly: ${stale}`);
   if (process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1') {
@@ -5128,8 +5158,8 @@ export async function runDisplayVerify(win, backend) {
     if (wire.ok === true || wire.perControl?.wireFormat?.ok === true) fail(`D1: read-only wire-format apply reported success: ${JSON.stringify(wire)}`);
   }
   // Restore the mock fixture so later checks start from known state.
-  await js(`window.arcPower.displayApply(0, { deviceKey: ${JSON.stringify(before.deviceKey)}, displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default', scalingMode: 'identity' } })`);
-  step('d1-display-readback', `D1: Display title/rows rendered; stable key '${target.displayKey}' targeted quantization '${quant}' -> '${quantValue}' and scaling with fresh readbacks; stale targets refused`);
+  await js(`window.arcPower.displayApply(0, { deviceKey: ${JSON.stringify(before.deviceKey)}, displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default', scalingMode: 'identity', scalingMethod: { enabled: true, method: 'integer' }, vrrMode: 'recommended' } })`);
+  step('d1-display-readback', `D1: Display title/rows rendered; stable key '${target.displayKey}' targeted quantization '${quant}' -> '${quantValue}', scaling, retro scaling and Arc Sync with fresh readbacks; stale targets refused`);
 }
 
 export async function runGraphicsVerify(win, backend) {

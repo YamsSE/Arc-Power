@@ -92,13 +92,7 @@ const PAGE_NOTE = 'These settings are applied via the Intel driver\'s control in
 // M10b: the Display view's honest notes (plan 2.4 - the IGS "Display" tab
 // mirror; the M10b checkpoint-1 probe recorded what this driver exposes).
 const DISPLAY_SCALING_NOTE = 'Changing the scaling mode causes a brief screen flash (a physical modeset).';
-// DECISION (documented): the Scaling Method row ALWAYS renders the honest
-// note - the driver's scalingMethods list is EMPTY on this driver build
-// (the probe record) and the apply interface defines no scaling-method
-// patch key, so a control would be un-appliable on every current driver.
-// The scope's alternative (hiding the row) would silently drop an IGS
-// section to be mirrored.
-const DISPLAY_SCALING_METHOD_NOTE = 'Not exposed by the driver interface.';
+const DISPLAY_SCALING_METHOD_NOTE = 'Retro scaling changes can briefly modeset the display; the control is enabled only after driver read-back confirms support.';
 // The VRR fields render only when the driver reports a VRR surface - this
 // driver reports none (the DisplayState interface has no VRR fields), so
 // the honest note is unconditional. The plain VRR on/off is OS-controlled
@@ -133,6 +127,19 @@ const SCALING_MODE_LABELS: Record<string, string> = {
   centered: 'Centered',
   stretched: 'Stretched',
   'aspect-ratio-centered-max': 'Aspect Ratio Centered Max',
+  custom: 'Custom',
+};
+const RETRO_SCALING_LABELS: Record<string, string> = {
+  integer: 'Integer Scaling',
+  'nearest-neighbour': 'Nearest Neighbour',
+};
+const ARC_SYNC_LABELS: Record<string, string> = {
+  recommended: 'Recommended',
+  excellent: 'Excellent',
+  good: 'Good',
+  compatible: 'Compatible',
+  off: 'Off',
+  vesa: 'VESA',
   custom: 'Custom',
 };
 
@@ -743,7 +750,7 @@ function buildDisplayDropdownRow(
   if (!supported || options.length === 0) {
     return el('div', { class: 'display-control display-control-readonly', dataset: { control: key } }, [
       el('h3', { class: 'display-control-title', text: title }),
-      el('p', { class: 'card-note', text: 'Not supported on this GPU.' }),
+      el('p', { class: 'card-note', text: key === 'vrrMode' ? (display?.vrrMode?.reason ?? 'Not supported on this GPU.') : 'Not supported on this GPU.' }),
     ]);
   }
   const current = (displayDraft as Record<string, unknown>)[key] as string;
@@ -794,6 +801,66 @@ function buildDisplayDropdownRow(
   chipNodes.set(key, row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
   chipApplyNodes.set(key, row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
   refreshDisplayChip(key);
+  return row;
+}
+
+/** The retro-scaling setting is a compound driver value: enabled plus the
+ * selected method. Keep both parts in one card and one atomic payload so an
+ * apply can never accidentally reset the other half. */
+function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
+  const display = selectedDisplay();
+  const capability = display?.scalingMethod;
+  const options = display?.supportedOptions.scalingMethods ?? [];
+  const supported = display !== null && isDisplayControlSupported(display, 'scalingMethod') && options.length > 0;
+  if (!supported) {
+    const value = capability?.value;
+    const valueText = value ? `${value.enabled ? 'Enabled' : 'Disabled'} · ${RETRO_SCALING_LABELS[value.method] ?? value.method}` : 'Not available';
+    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'scalingMethod' }, title: capability?.reason ?? DISPLAY_SCALING_METHOD_NOTE }, [
+      el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
+      el('div', { class: 'display-readonly-value', text: valueText }),
+      el('p', { class: 'card-note', text: capability?.reason ?? (capability?.supported === false ? 'Not supported on this GPU.' : DISPLAY_SCALING_METHOD_NOTE) }),
+    ]);
+  }
+  const current = displayDraft.scalingMethod ?? capability?.value ?? { enabled: false, method: options[0] as 'integer' | 'nearest-neighbour' };
+  const methodSelect = el('select', {
+    class: 'graphics-select display-select',
+    dataset: { displaySelect: 'scalingMethod' },
+    onchange: (e: Event) => {
+      displayDraft.scalingMethod = { enabled: enabledToggle.checked, method: (e.target as HTMLSelectElement).value as 'integer' | 'nearest-neighbour' };
+      refreshDisplayChip('scalingMethod');
+    },
+  }, options.map((option) => el('option', { value: option, text: RETRO_SCALING_LABELS[option] ?? option, selected: option === current.method })));
+  const enabledToggle = el('input', {
+    type: 'checkbox',
+    class: 'display-inline-toggle',
+    checked: current.enabled,
+    onchange: () => {
+      displayDraft.scalingMethod = { enabled: enabledToggle.checked, method: methodSelect.value as 'integer' | 'nearest-neighbour' };
+      refreshDisplayChip('scalingMethod');
+    },
+  });
+  const row = el('div', { class: 'display-control', dataset: { control: 'scalingMethod' } }, [
+    el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
+    el('p', { class: 'card-note', text: DISPLAY_SCALING_METHOD_NOTE }),
+    el('div', { class: 'graphics-control display-compound-control' }, [
+      el('label', { class: 'display-inline-field' }, [enabledToggle, el('span', { text: 'Enabled' })]),
+      methodSelect,
+    ]),
+    el('div', { class: 'graphics-card-actions' }, [
+      el('span', { class: 'chip oc-chip-status', hidden: true }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMethod'); } }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
+        const method = options[0] as 'integer' | 'nearest-neighbour';
+        enabledToggle.checked = true;
+        methodSelect.value = method;
+        displayDraft.scalingMethod = { enabled: true, method };
+        refreshDisplayChip('scalingMethod');
+      } }),
+    ]),
+  ]);
+  chipNodes.set('scalingMethod', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+  chipApplyNodes.set('scalingMethod', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+  refreshDisplayChip('scalingMethod');
   return row;
 }
 
@@ -979,8 +1046,8 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   const general = el('section', { class: 'card display-group', dataset: { displayGroup: 'general' } }, [
     el('h2', { class: 'card-title', text: 'General' }),
     buildDisplayDropdownRow(ctx, 'scalingMode', 'Scaling Mode', DISPLAY_SCALING_NOTE, display.supportedOptions.scalingModes, SCALING_MODE_LABELS),
-    buildDisplayReadonlyRow('Scaling Method', display.scalingMethod, DISPLAY_SCALING_METHOD_NOTE),
-    buildDisplayReadonlyRow('Variable Refresh Rate Mode', display.vrrMode, DISPLAY_VRR_NOTE),
+    buildDisplayScalingMethodRow(ctx),
+    buildDisplayDropdownRow(ctx, 'vrrMode', 'Variable Refresh Rate Mode', DISPLAY_VRR_NOTE, display.supportedOptions.vrrModes ?? [], ARC_SYNC_LABELS),
     buildDisplayReadonlyRow('Variable Refresh Rate', display.variableRefreshRate, DISPLAY_VRR_NOTE),
   ]);
 

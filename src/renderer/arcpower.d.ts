@@ -172,7 +172,11 @@ export interface ArcPowerApi {
   profilesDelete(id: string): Promise<ProfilesEnvelope>;
   profilesRename(id: string, name: string): Promise<ProfilesEnvelope>;
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
-  gamesScan(): Promise<{ apps: GameApplication[]; error?: string }>;
+  gamesScan(): Promise<{ apps: GameApplication[]; error?: string; sidecarError?: string }>;
+  gameCatalogList(): Promise<GameCatalogEnvelope>;
+  gameCatalogSync(apps: GameApplication[]): Promise<{ catalog: GameCatalogEntry[] }>;
+  gameSettingsSave(settings: Partial<GameSettingsRecord> & { exePath: string }): Promise<{ settings: GameSettingsRecord }>;
+  gameSettingsDelete(settings: { exePath: string }): Promise<GameCatalogEnvelope>;
   gameProfilesList(): Promise<GameProfilesEnvelope>;
   gameProfileSave(association: Partial<GameAssociation> & { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;
   gameProfileDelete(association: { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;

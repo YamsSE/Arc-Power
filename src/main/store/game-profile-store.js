@@ -4,8 +4,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { canonicalExePath, validateSafeGameCandidate } from '../game-candidate.js';
 
-export const GAME_PROFILE_SCHEMA_VERSION = 1;
+// Backward-compatible export for existing store callers/tests.
+export { canonicalExePath } from '../game-candidate.js';
+
+export const GAME_PROFILE_SCHEMA_VERSION = 2;
 
 export function deterministicArtworkKey(value) {
   const text = String(value ?? '').toLowerCase();
@@ -29,23 +33,6 @@ function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
 }
 
-export function canonicalExePath(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.length > 32768) return null;
-  let winPath = trimmed.replaceAll('/', '\\');
-  // The scanner and Windows APIs can return an extended prefix for the same
-  // ordinary drive path.  Keep the user-facing spelling out of identity and
-  // reduce only the two supported drive forms to a Win32 drive path.
-  winPath = winPath.replace(/^\\\\[?.]\\(?=[a-z]:\\)/i, '');
-  // UNC extended paths and device namespaces are not safe to treat as a
-  // normal executable identity.  Standard UNC paths remain supported below.
-  if (/^\\\\(?:[?.]|Device|GlobalRoot)(?:\\|$)/i.test(winPath)) return null;
-  const normalized = path.win32.normalize(winPath);
-  if ((!/^[a-z]:\\/i.test(normalized) && !normalized.startsWith('\\\\')) || !/\.exe$/i.test(normalized)) return null;
-  return normalized.toLowerCase();
-}
-
 function cleanText(value, max, fallback = '') {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim().slice(0, max) : fallback;
 }
@@ -60,6 +47,83 @@ function cleanGraphics(value) {
   }
   if (['off', 'on', 'on-boost'].includes(value.lowLatency)) out.lowLatency = value.lowLatency;
   return out;
+}
+
+function cleanTime(value, fallback) {
+  return typeof value === 'string' && value.length <= 80 ? value : fallback;
+}
+
+export function normalizeGameSettings(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const exePath = canonicalExePath(raw.exePath);
+  if (!exePath) return null;
+  const now = new Date().toISOString();
+  return {
+    exePath,
+    enabled: raw.enabled !== false,
+    graphics: cleanGraphics(raw.graphics),
+    createdAt: cleanTime(raw.createdAt, now),
+    updatedAt: cleanTime(raw.updatedAt, now),
+  };
+}
+
+export function normalizeCatalogEntry(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const exePath = canonicalExePath(raw.exePath);
+  if (!exePath) return null;
+  const now = new Date().toISOString();
+  const processName = cleanText(raw.processName, 260, path.win32.basename(exePath));
+  const displayName = cleanText(raw.displayName, 260, path.win32.basename(exePath, '.exe'));
+  return {
+    exePath,
+    processName,
+    displayName,
+    artwork: sanitizeArtwork(raw.artwork, deterministicArtworkKey(exePath)),
+    source: raw.source === 'manual' ? 'manual' : 'scan',
+    createdAt: cleanTime(raw.createdAt, now),
+    updatedAt: cleanTime(raw.updatedAt, now),
+  };
+}
+
+function normalizeCatalog(raw) {
+  const byPath = new Map();
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const entry = normalizeCatalogEntry(item);
+    if (!entry) continue;
+    const previous = byPath.get(entry.exePath);
+    // New scanner metadata wins, but never discard a previously enriched icon.
+    byPath.set(entry.exePath, previous ? {
+      ...previous,
+      ...entry,
+      artwork: isValidArtwork(item.artwork) && !/^fallback-/.test(item.artwork) ? entry.artwork : previous.artwork,
+      createdAt: previous.createdAt || entry.createdAt,
+    } : entry);
+  }
+  return [...byPath.values()].sort((a, b) => `${a.displayName}\0${a.exePath}`.localeCompare(`${b.displayName}\0${b.exePath}`, undefined, { sensitivity: 'base' }));
+}
+
+function normalizeSettings(raw) {
+  const byPath = new Map();
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const settings = normalizeGameSettings(item);
+    if (!settings) continue;
+    const previous = byPath.get(settings.exePath);
+    byPath.set(settings.exePath, previous ? { ...previous, ...settings, graphics: { ...previous.graphics, ...settings.graphics }, createdAt: previous.createdAt || settings.createdAt } : settings);
+  }
+  return [...byPath.values()].sort((a, b) => a.exePath.localeCompare(b.exePath));
+}
+
+function safeCatalogRecords(raw) {
+  return (Array.isArray(raw) ? raw : []).filter((item) => Boolean(validateSafeGameCandidate(item?.exePath)));
+}
+
+function canKeepLegacyAssociationOnly(association) {
+  if (!validateSafeGameCandidate(association?.exePath, { requireExists: false })) return false;
+  try {
+    return !fs.existsSync(association.exePath);
+  } catch {
+    return false;
+  }
 }
 
 export function normalizeAssociation(raw) {
@@ -96,6 +160,10 @@ export function normalizeAssociations(raw, validProfileIds = null) {
     out.push(association);
   }
   return out.sort((a, b) => `${a.displayName}\0${a.exePath}`.localeCompare(`${b.displayName}\0${b.exePath}`, undefined, { sensitivity: 'base' }));
+}
+
+function emptyData() {
+  return { schemaVersion: GAME_PROFILE_SCHEMA_VERSION, associations: [], catalog: [], settings: [] };
 }
 
 export class GameProfileStore {
@@ -137,8 +205,8 @@ export class GameProfileStore {
     finally { try { fs.rmSync(tmp, { force: true }); } catch { /* already renamed */ } }
   }
 
-  _loadUnlocked(validProfileIds = null) {
-    if (!fs.existsSync(this.filePath)) return [];
+  _loadDataUnlocked(validProfileIds = null) {
+    if (!fs.existsSync(this.filePath)) return emptyData();
     const raw = fs.readFileSync(this.filePath, 'utf8');
     let data;
     try { data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw); }
@@ -154,15 +222,48 @@ export class GameProfileStore {
       throw new Error('Cannot load game-profiles.json: associations must be an array');
     }
     const associations = normalizeAssociations(data.associations, validProfileIds);
-    if (validProfileIds && associations.length !== data.associations.length) {
-      this._saveUnlocked(associations);
+    const migratedCatalog = data.schemaVersion === 1 ? data.associations : data.catalog;
+    const migratedSettings = data.schemaVersion === 1
+      ? data.associations.map((item) => ({ ...item, exePath: item.exePath, graphics: item.graphics, enabled: item.enabled }))
+      : data.settings;
+    const clean = {
+      schemaVersion: GAME_PROFILE_SCHEMA_VERSION,
+      associations,
+      catalog: normalizeCatalog(safeCatalogRecords(migratedCatalog)).map((entry) => {
+        const association = associations.find((item) => item.exePath === entry.exePath);
+        return association ? { ...entry, processName: association.processName, displayName: association.displayName, artwork: isValidArtwork(association.artwork) ? association.artwork : entry.artwork } : entry;
+      }),
+      settings: normalizeSettings(safeCatalogRecords(migratedSettings)),
+    };
+    // A v1 association is promoted to a catalog entry/settings record while
+    // its legacy row remains intact for the OC profile browser.
+    for (const association of associations) {
+      if (!validateSafeGameCandidate(association.exePath)) continue;
+      if (!clean.catalog.some((item) => item.exePath === association.exePath)) {
+        clean.catalog.push(normalizeCatalogEntry(association));
+      }
+      if (!clean.settings.some((item) => item.exePath === association.exePath)) {
+        clean.settings.push(normalizeGameSettings(association));
+      }
     }
-    return associations;
+    clean.catalog = normalizeCatalog(clean.catalog);
+    clean.settings = normalizeSettings(clean.settings);
+    const hasUnsafeCatalogRecord = (Array.isArray(data.catalog) ? data.catalog : []).some((item) => !validateSafeGameCandidate(item?.exePath));
+    const hasUnsafeSettingsRecord = (Array.isArray(data.settings) ? data.settings : []).some((item) => !validateSafeGameCandidate(item?.exePath));
+    const needsWrite = data.schemaVersion !== GAME_PROFILE_SCHEMA_VERSION
+      || associations.length !== data.associations.length
+      || hasUnsafeCatalogRecord
+      || hasUnsafeSettingsRecord
+      || JSON.stringify(clean.catalog) !== JSON.stringify(normalizeCatalog(safeCatalogRecords(data.catalog)))
+      || JSON.stringify(clean.settings) !== JSON.stringify(normalizeSettings(safeCatalogRecords(data.settings)));
+    if (needsWrite) this._writeAtomic(clean);
+    return clean;
   }
 
+  _loadUnlocked(validProfileIds = null) { return this._loadDataUnlocked(validProfileIds).associations; }
+
   async load(validProfileIds = null) {
-    await this._mutation;
-    return this._loadUnlocked(validProfileIds);
+    return this._mutate(() => this._loadUnlocked(validProfileIds));
   }
 
   _mutate(work) {
@@ -171,10 +272,21 @@ export class GameProfileStore {
     return next;
   }
 
-  _saveUnlocked(associations) {
-    const clean = normalizeAssociations(associations);
-    this._writeAtomic({ schemaVersion: GAME_PROFILE_SCHEMA_VERSION, associations: clean });
+  _saveDataUnlocked(data) {
+    const clean = {
+      schemaVersion: GAME_PROFILE_SCHEMA_VERSION,
+      associations: normalizeAssociations(data.associations),
+      catalog: normalizeCatalog(safeCatalogRecords(data.catalog)),
+      settings: normalizeSettings(safeCatalogRecords(data.settings)),
+    };
+    this._writeAtomic(clean);
     return clean;
+  }
+
+  _saveUnlocked(associations) {
+    const data = this._loadDataUnlocked();
+    data.associations = associations;
+    return this._saveDataUnlocked(data).associations;
   }
 
   async save(associations) {
@@ -185,12 +297,28 @@ export class GameProfileStore {
     const association = normalizeAssociation(raw);
     if (!association) throw new Error('game-profile-save: invalid association');
     if (validProfileIds && !validProfileIds.has(association.profileId)) throw new Error('game-profile-save: profile not found');
+    const safePath = validateSafeGameCandidate(association.exePath);
+    if (!safePath && !canKeepLegacyAssociationOnly(association)) {
+      throw new Error('game-profile-save: executable is not a safe existing game candidate');
+    }
     return this._mutate(() => {
-      const current = this._loadUnlocked(validProfileIds);
+      const data = this._loadDataUnlocked(validProfileIds);
+      const current = data.associations;
       const key = `${association.profileId}|${association.exePath}`;
       const next = current.filter((item) => `${item.profileId}|${item.exePath}` !== key);
       next.push(association);
-      return this._saveUnlocked(next);
+      data.associations = next;
+      if (safePath) {
+        const existingCatalog = data.catalog.find((item) => item.exePath === association.exePath);
+        data.catalog = data.catalog.filter((item) => item.exePath !== association.exePath);
+        data.catalog.push(normalizeCatalogEntry({ ...(existingCatalog ?? {}), ...association,
+          artwork: isValidArtwork(association.artwork) && !/^fallback-/.test(association.artwork)
+            ? association.artwork : existingCatalog?.artwork }));
+        const existingSettings = data.settings.find((item) => item.exePath === association.exePath);
+        data.settings = data.settings.filter((item) => item.exePath !== association.exePath);
+        data.settings.push(normalizeGameSettings({ ...(existingSettings ?? {}), ...association, graphics: { ...(existingSettings?.graphics ?? {}), ...(association.graphics ?? {}) } }));
+      }
+      return this._saveDataUnlocked(data).associations;
     });
   }
 
@@ -199,19 +327,84 @@ export class GameProfileStore {
     const canonical = canonicalExePath(exePath);
     if (!canonical) throw new Error('game-profile-delete: invalid executable path');
     return this._mutate(() => {
-      const current = this._loadUnlocked(validProfileIds);
+      const data = this._loadDataUnlocked(validProfileIds);
+      const current = data.associations;
       const next = current.filter((item) => !(item.profileId === profileId && item.exePath === canonical));
-      if (next.length !== current.length) this._saveUnlocked(next);
+      if (next.length !== current.length) { data.associations = next; this._saveDataUnlocked(data); }
       return next;
     });
   }
 
   async cleanupProfile(profileId, validProfileIds = null) {
     return this._mutate(() => {
-      const current = this._loadUnlocked(validProfileIds);
+      const data = this._loadDataUnlocked(validProfileIds);
+      const current = data.associations;
       const next = current.filter((item) => item.profileId !== profileId);
-      if (next.length !== current.length) this._saveUnlocked(next);
+      if (next.length !== current.length) { data.associations = next; this._saveDataUnlocked(data); }
       return next;
+    });
+  }
+
+  async loadCatalog() {
+    return this._mutate(() => {
+      const data = this._loadDataUnlocked();
+      return { catalog: data.catalog, settings: data.settings };
+    });
+  }
+
+  async syncCatalog(entries) {
+    return this._mutate(() => {
+      if (!Array.isArray(entries)) throw new Error('game-catalog-sync: entries must be an array');
+      for (const entry of entries) {
+        if (!validateSafeGameCandidate(entry?.exePath ?? entry?.ExecutablePath)) {
+          throw new Error('game-catalog-sync: executable is not a safe existing game candidate');
+        }
+      }
+      const data = this._loadDataUnlocked();
+      const incoming = normalizeCatalog(entries);
+      const byPath = new Map(data.catalog.map((item) => [item.exePath, item]));
+      for (const entry of incoming) {
+        const previous = byPath.get(entry.exePath);
+        byPath.set(entry.exePath, previous ? {
+          ...previous,
+          ...entry,
+          // Icon extraction is best-effort. A transient failure yields a
+          // deterministic fallback and must not erase a prior real artwork.
+          artwork: isValidArtwork(entry.artwork) && !/^fallback-/.test(entry.artwork)
+            ? entry.artwork : previous.artwork,
+          createdAt: previous.createdAt || entry.createdAt,
+        } : entry);
+      }
+      data.catalog = [...byPath.values()];
+      return this._saveDataUnlocked(data).catalog;
+    });
+  }
+
+  async saveSettings(raw) {
+    const settings = normalizeGameSettings(raw);
+    if (!settings) throw new Error('game-settings-save: invalid executable settings');
+    const safePath = validateSafeGameCandidate(settings.exePath);
+    if (!safePath) throw new Error('game-settings-save: executable is not a safe existing game candidate');
+    return this._mutate(() => {
+      const data = this._loadDataUnlocked();
+      if (!data.catalog.some((item) => item.exePath === safePath)) {
+        throw new Error('game-settings-save: executable is not present in the game catalog');
+      }
+      const previous = data.settings.find((item) => item.exePath === settings.exePath);
+      data.settings = data.settings.filter((item) => item.exePath !== settings.exePath);
+      data.settings.push({ ...settings, createdAt: previous?.createdAt ?? settings.createdAt });
+      return this._saveDataUnlocked(data).settings.find((item) => item.exePath === settings.exePath);
+    });
+  }
+
+  async deleteSettings(exePath) {
+    const canonical = canonicalExePath(exePath);
+    if (!canonical) throw new Error('game-settings-delete: invalid executable path');
+    return this._mutate(() => {
+      const data = this._loadDataUnlocked();
+      data.settings = data.settings.filter((item) => item.exePath !== canonical);
+      this._saveDataUnlocked(data);
+      return { catalog: data.catalog, settings: data.settings };
     });
   }
 }

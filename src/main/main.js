@@ -43,6 +43,7 @@
 import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
 import { resolveArcPowerCachePath, shouldClearCache, filterRelaunchArgs, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
@@ -1157,19 +1158,31 @@ async function main() {
   // variant isolation is kept by the explicit session seed below (each mock
   // session seeds its own mode into the isolated store before anything
   // reads it).
-  const mockDataDir = mock ? path.join(os.tmpdir(), 'arcpower-mock') : null;
+  const mockDataDir = mock
+    ? path.join(os.tmpdir(), process.env.RID_MOCK_GAME_SCAN === '1' ? `arcpower-mock-ui-${process.pid}` : 'arcpower-mock')
+    : null;
   const store = new ProfileStore({
     dir: mockDataDir ?? undefined,
     ocModeDefault: mock ? (process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced') : 'stock',
   });
   const gameProfiles = new GameProfileStore({ dir: store.dir });
+  const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
+    ? path.join(os.tmpdir(), 'arcpower-mock-games')
+    : null;
+  if (mockGameDir) {
+    fs.mkdirSync(mockGameDir, { recursive: true });
+    for (const name of ['RID-Verify-One.exe', 'RID-Verify-Two.exe']) {
+      const fixturePath = path.join(mockGameDir, name);
+      if (!fs.existsSync(fixturePath)) fs.writeFileSync(fixturePath, 'Arc Power UI verification fixture');
+    }
+  }
   const gameScan = mock
     ? {
       scan: async () => process.env.RID_MOCK_GAME_SCAN === '1'
         ? {
           apps: [
-            { exePath: 'C:\\Games\\RID-Verify-One.exe', processName: 'RID-Verify-One.exe', displayName: 'RID Verify One', artwork: 'data:image/png;base64,AA==', source: 'scan' },
-            { exePath: 'C:\\Games\\RID-Verify-Two.exe', processName: 'RID-Verify-Two.exe', displayName: 'RID Verify Two', source: 'scan' },
+            { exePath: path.join(mockGameDir, 'RID-Verify-One.exe'), processName: 'RID-Verify-One.exe', displayName: 'RID Verify One', artwork: 'data:image/png;base64,AA==', source: 'scan' },
+            { exePath: path.join(mockGameDir, 'RID-Verify-Two.exe'), processName: 'RID-Verify-Two.exe', displayName: 'RID Verify Two', source: 'scan' },
           ],
         }
         : { apps: [] },

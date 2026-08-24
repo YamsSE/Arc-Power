@@ -42,8 +42,9 @@ import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVE
 // RID_MOCK_VENDOR).
 import { createVendorTelemetry } from './vendor-telemetry/vendor-telemetry.js';
 import { physicalTargetOf } from './gpu-inventory.js';
-import { GameProfileStore, canonicalExePath, normalizeAssociation } from './store/game-profile-store.js';
+import { GameProfileStore, canonicalExePath, normalizeAssociation, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
+import { validateSafeGameCandidate } from './game-candidate.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -167,6 +168,18 @@ export function sanitizeDisplaySettings(payload) {
       out[key] = { model: value.model, depth: value.depth };
     } else if (key === 'scalingMode') {
       if (!DISPLAY_SCALING_MODE_OPTIONS.includes(value)) throw new Error(`scalingMode must be one of: ${DISPLAY_SCALING_MODE_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else if (key === 'scalingMethod') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || typeof value.enabled !== 'boolean'
+        || !['integer', 'nearest-neighbour'].includes(value.method)) {
+        throw new Error('scalingMethod must be { enabled: boolean, method: integer|nearest-neighbour }');
+      }
+      out[key] = { enabled: value.enabled, method: value.method };
+    } else if (key === 'vrrMode') {
+      if (!['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'].includes(value)) {
+        throw new Error('vrrMode must be one of: recommended, excellent, good, compatible, off, vesa, custom');
+      }
       out[key] = value;
     } else {
       throw new Error(`unknown display setting: ${key}`);
@@ -877,10 +890,16 @@ export function createIpcHandlers({
   if (!gameProfiles) {
     gameProfiles = store?.dir ? new GameProfileStore({ dir: store.dir }) : {
       _items: [],
+      _catalog: [],
+      _settings: [],
       async load(validIds) { return this._items.filter((item) => !validIds || validIds.has(item.profileId)); },
       async upsert(item) { this._items = [...this._items.filter((x) => !(x.profileId === item.profileId && x.exePath === item.exePath)), item]; return this._items; },
       async delete(profileId, exePath) { this._items = this._items.filter((x) => !(x.profileId === profileId && x.exePath === exePath)); return this._items; },
       async cleanupProfile(profileId) { this._items = this._items.filter((x) => x.profileId !== profileId); return this._items; },
+      async loadCatalog() { return { catalog: this._catalog, settings: this._settings }; },
+      async syncCatalog(entries) { this._catalog = [...this._catalog, ...entries.filter((entry) => !this._catalog.some((x) => x.exePath === entry.exePath))]; return this._catalog; },
+      async saveSettings(item) { this._settings = [...this._settings.filter((x) => x.exePath !== item.exePath), item]; return item; },
+      async deleteSettings(exePath) { this._settings = this._settings.filter((x) => x.exePath !== exePath); return { catalog: this._catalog, settings: this._settings }; },
     };
   }
   // D2: legacy profile deletion and sidecar association mutations share one
@@ -2274,12 +2293,53 @@ export function createIpcHandlers({
         return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
       },
 
-      // D2: scan is read-only and transient. The adapter returns only
-      // currently running executable paths; no PID is accepted or persisted.
+      // M55a: scan is read-only. The adapter combines installed metadata and
+      // running-process fallback; the catalog sidecar keeps non-running games.
       'games-scan': async (...args) => {
         assertNoPayload(args, 'games-scan');
         const result = await gameScan.scan();
-        return { ...(result ?? {}), apps: normalizeScannedApps(result?.apps ?? []) };
+        const apps = normalizeScannedApps(result?.apps ?? []);
+        let catalog = null;
+        let sidecarError;
+        try { catalog = await gameProfiles.syncCatalog(apps); }
+        catch (err) { sidecarError = `Game catalog unavailable: ${err instanceof Error ? err.message : String(err)}`; }
+        return { ...(result ?? {}), apps, ...(catalog ? { catalog } : {}), ...(sidecarError ? { sidecarError } : {}) };
+      },
+
+      'game-catalog-list': async (...args) => {
+        assertNoPayload(args, 'game-catalog-list');
+        try { return await gameProfiles.loadCatalog(); }
+        catch (err) { throw new Error(`game-catalog-list: ${err instanceof Error ? err.message : String(err)}`); }
+      },
+
+      'game-catalog-sync': async (payload) => {
+        if (!Array.isArray(payload)) throw new Error('game-catalog-sync: payload must be an array');
+        for (const row of payload) {
+          if (!validateSafeGameCandidate(row?.exePath ?? row?.ExecutablePath)) {
+            throw new Error('game-catalog-sync: executable is not a safe existing game candidate');
+          }
+        }
+        return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { requireExists: true })) };
+      },
+
+      'game-settings-save': async (payload) => {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-save: payload must be an object');
+        const clean = normalizeGameSettings(payload);
+        if (!clean) throw new Error('game-settings-save: exePath must be an absolute Windows path');
+        const safePath = validateSafeGameCandidate(clean.exePath);
+        if (!safePath) throw new Error('game-settings-save: executable is not a safe existing game candidate');
+        const catalog = await gameProfiles.loadCatalog();
+        if (!catalog?.catalog?.some((entry) => entry.exePath === safePath)) {
+          throw new Error('game-settings-save: executable is not present in the game catalog');
+        }
+        return { settings: await gameProfiles.saveSettings({ ...payload, ...clean, exePath: safePath }) };
+      },
+
+      'game-settings-delete': async (payload) => {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-delete: payload must be an object');
+        const exePath = canonicalExePath(payload.exePath);
+        if (!exePath) throw new Error('game-settings-delete: exePath must be an absolute Windows path');
+        return await gameProfiles.deleteSettings(exePath);
       },
 
       'game-profiles-list': async (...args) => {

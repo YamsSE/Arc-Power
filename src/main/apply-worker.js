@@ -95,34 +95,6 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     await finish({ ok: false, error: 'invalid request: deviceId must be a non-negative integer' });
     return 1;
   }
-  // M30: inventory-aware backends expose a resolver so the worker can reject
-  // stale keys and synthetic OS-only adapters before any write. Keep the
-  // legacy injected-backend seam usable when it has no resolver at all: those
-  // backends predate durable target routing and must continue through the
-  // normal worker behavior. A resolver that exists remains authoritative - a
-  // missing/unsupported target is never treated as writable.
-  let target = null;
-  if (typeof backend?.getDeviceTarget === 'function') {
-    try {
-      target = await backend.getDeviceTarget(
-        deviceId,
-        typeof req?.deviceKey === 'string' ? req.deviceKey : null,
-        req?.physicalTarget && typeof req.physicalTarget === 'object' ? req.physicalTarget : null,
-      );
-    } catch (err) {
-      await finish({ ok: false, error: `stale or unsupported GPU target: ${err instanceof Error ? err.message : String(err)}` });
-      return 1;
-    }
-    if (!target || target.synthetic === true || target.backendKind === 'os' || target.identityAmbiguous === true) {
-      await finish({ ok: false, error: 'selected GPU is read-only and does not support elevated writes' });
-      return 1;
-    }
-    const hasPhysicalProof = req?.physicalTarget && typeof req.physicalTarget === 'object' && !Array.isArray(req.physicalTarget);
-    if (!hasPhysicalProof) {
-      await finish({ ok: false, error: 'missing physical proof for elevated GPU target' });
-      return 1;
-    }
-  }
   if (!['apply', 'waiver-accept', 'reset', 'graphics-apply', 'display-apply'].includes(op)) {
     await finish({ ok: false, error: `invalid request: unknown op '${op}'` });
     return 1;
@@ -147,8 +119,55 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     return 1;
   }
 
+  const displayIdentityFailure = (errorCode, message) => {
+    const settings = req?.settings && typeof req.settings === 'object' && !Array.isArray(req.settings) ? req.settings : {};
+    const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode, message }]));
+    return { ok: false, perControl };
+  };
+
+  // Initialize before the resolver can refresh the real backend inventory.
+  // The stale-token and request gates above intentionally remain pre-init.
   try {
     await backend.init();
+    // M30: inventory-aware backends expose a resolver so the worker can reject
+    // stale keys and synthetic OS-only adapters before any write. Keep the
+    // legacy injected-backend seam usable when it has no resolver at all.
+    let target = null;
+    if (typeof backend?.getDeviceTarget === 'function') {
+      try {
+        target = await backend.getDeviceTarget(
+          deviceId,
+          typeof req?.deviceKey === 'string' ? req.deviceKey : null,
+          req?.physicalTarget && typeof req.physicalTarget === 'object' ? req.physicalTarget : null,
+        );
+      } catch (err) {
+        const message = `stale or unsupported GPU target: ${err instanceof Error ? err.message : String(err)}`;
+        if (op === 'display-apply') {
+          const errorCode = /ambiguous/i.test(message) ? 'ambiguous-target' : 'stale-target';
+          await finish(displayIdentityFailure(errorCode, message));
+        } else {
+          await finish({ ok: false, error: message });
+        }
+        return 1;
+      }
+      if (!target || target.synthetic === true || target.backendKind === 'os' || target.identityAmbiguous === true) {
+        if (op === 'display-apply') {
+          await finish(displayIdentityFailure('unsupported', 'selected GPU is read-only and does not support elevated display writes'));
+        } else {
+          await finish({ ok: false, error: 'selected GPU is read-only and does not support elevated writes' });
+        }
+        return 1;
+      }
+      const hasPhysicalProof = req?.physicalTarget && typeof req.physicalTarget === 'object' && !Array.isArray(req.physicalTarget);
+      if (!hasPhysicalProof) {
+        if (op === 'display-apply') {
+          await finish(displayIdentityFailure('stale-target', 'missing physical proof for elevated display target'));
+        } else {
+          await finish({ ok: false, error: 'missing physical proof for elevated GPU target' });
+        }
+        return 1;
+      }
+    }
     // The parent already accepted the waiver through the user dialog; the
     // worker only ever seeds the IN-MEMORY flag (restoreWaiverState - never
     // ctlOverclockWaiverSet, which runs only on explicit user acceptance

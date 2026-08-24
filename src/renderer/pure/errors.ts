@@ -23,6 +23,9 @@ export const CONTROL_LABELS: Record<string, string> = {
   flipMode: 'Frame sync',
   frameLimit: 'FPS limit',
   lowLatency: 'Low latency',
+  scalingMode: 'Scaling mode',
+  scalingMethod: 'Scaling method',
+  vrrMode: 'Variable refresh-rate mode',
 };
 
 const ERROR_MESSAGES: Record<OcErrorCode, string> = {

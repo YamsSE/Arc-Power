@@ -29,7 +29,8 @@ import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
 import {
   DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS,
-  DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_FLASH_WARNING,
+  DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_RETRO_SCALING_METHOD_OPTIONS,
+  DISPLAY_ARC_SYNC_PROFILE_OPTIONS, DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch) - the SAME decode
 // the real backend runs in getCapabilities (the renderer TS imports fine
@@ -113,8 +114,8 @@ const DISPLAY_FIXTURE = Object.freeze({
     colorFormat: 'RGB',
     quantizationRange: 'default',
     scalingMode: 'identity',
-    scalingMethod: displayCapability('Maintain Display Scaling', true, false, 'Read-only fixture capability', 'mock-fixture'),
-    vrrMode: displayCapability('Fullscreen', true, false, 'VRR mode is controlled by the display/OS path', 'mock-fixture'),
+    scalingMethod: displayCapability({ enabled: true, method: 'integer' }, true, true, null, 'mock-fixture'),
+    vrrMode: displayCapability('recommended', true, true, null, 'mock-fixture'),
     variableRefreshRate: displayCapability(true, true, false, 'VRR toggle is controlled by the display/OS path', 'mock-fixture'),
     vrrCurrentRange: displayCapability('90 Hz - 180 Hz', true, false, 'Read-only fixture capability', 'mock-fixture'),
     vrrMaximumRange: displayCapability('48 Hz - 180 Hz', true, false, 'Read-only fixture capability', 'mock-fixture'),
@@ -127,7 +128,8 @@ const DISPLAY_FIXTURE = Object.freeze({
     contrast: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
     supportedOptions: {
       scalingModes: [...DISPLAY_SCALING_MODE_OPTIONS],
-      scalingMethods: [],
+      scalingMethods: [...DISPLAY_RETRO_SCALING_METHOD_OPTIONS],
+      vrrModes: [...DISPLAY_ARC_SYNC_PROFILE_OPTIONS],
       wireFormats: [...DISPLAY_WIRE_FORMAT_OPTIONS],
       bpcDepths: [...DISPLAY_BPC_OPTIONS].filter((depth) => depth === 8 || depth === 10),
       quantizationRanges: [...DISPLAY_QUANTIZATION_OPTIONS],
@@ -137,10 +139,25 @@ const DISPLAY_FIXTURE = Object.freeze({
   }],
 });
 
-function displayFixtureFor(deviceKey, adapterName) {
+function displayFixtureFor(deviceKey, adapterName, options = {}) {
   const displays = JSON.parse(JSON.stringify(DISPLAY_FIXTURE.displays));
   displays[0].displayKey = typeof deviceKey === 'string' ? `${deviceKey}|display|mock-encoder-0` : null;
   displays[0].adapterName = adapterName ?? null;
+  if (options.displayDuplicateIdentity === true) {
+    displays.push({ ...JSON.parse(JSON.stringify(displays[0])), id: 1, name: `${displays[0].name} (duplicate identity)` });
+  }
+  if (options.displayRetroSymbolsMissing === true) {
+    displays.forEach((display) => {
+      display.scalingMethod = displayCapability(null, false, false, 'The retro-scaling API is missing in the IGCL runtime.', 'mock-missing-symbol');
+      display.supportedOptions.scalingMethods = [];
+    });
+  }
+  if (options.displayArcSyncSymbolsMissing === true) {
+    displays.forEach((display) => {
+      display.vrrMode = displayCapability(null, false, false, 'The Arc Sync profile API is missing in the IGCL runtime.', 'mock-missing-symbol');
+      display.supportedOptions.vrrModes = [];
+    });
+  }
   return displays;
 }
 
@@ -193,6 +210,13 @@ export class MockBackend {
    *   displayUnsupported?: boolean,     // honest empty Display surface
    *   displayWireReadonly?: boolean,    // simulate the real driver's
    *                                      // silent/no-readback wire-format surface
+   *   displayRetroSymbolsMissing?: boolean, // retro-scaling API unavailable
+   *   displayArcSyncSymbolsMissing?: boolean, // Arc Sync API unavailable
+   *   displayDuplicateIdentity?: boolean, // duplicate stable display key
+   *   displayRetroSilentNoop?: boolean, // setter succeeds, read-back unchanged
+   *   displayArcSyncSilentNoop?: boolean, // setter succeeds, read-back unchanged
+   *   displayRetroReadbackFailure?: boolean, // setter succeeds, read-back fails
+   *   displayArcSyncReadbackFailure?: boolean, // setter succeeds, read-back fails
    *   laptopInfoOf?: () => object|null,  // M17c: the laptop sysinfo provider
    *                                      // (the real backend's vramBytesOf-style
    *                                      // injection - the caps AIB decode's
@@ -260,6 +284,13 @@ export class MockBackend {
     this._graphicsUnsupported = opts.graphicsUnsupported === true || process.env.RID_MOCK_GRAPHICS_UNSUPPORTED === '1';
     this._displayUnsupported = opts.displayUnsupported === true || process.env.RID_MOCK_DISPLAY_UNSUPPORTED === '1';
     this._displayWireReadonly = opts.displayWireReadonly === true || process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1';
+    this._displayRetroSymbolsMissing = opts.displayRetroSymbolsMissing === true;
+    this._displayArcSyncSymbolsMissing = opts.displayArcSyncSymbolsMissing === true;
+    this._displayDuplicateIdentity = opts.displayDuplicateIdentity === true;
+    this._displayRetroSilentNoop = opts.displayRetroSilentNoop === true;
+    this._displayArcSyncSilentNoop = opts.displayArcSyncSilentNoop === true;
+    this._displayRetroReadbackFailure = opts.displayRetroReadbackFailure === true;
+    this._displayArcSyncReadbackFailure = opts.displayArcSyncReadbackFailure === true;
     // M17c: the laptop sysinfo provider (the caps AIB decode's laptop
     // branch - mirrors the real backend's injection).
     this._laptopInfoOf = typeof opts.laptopInfoOf === 'function' ? opts.laptopInfoOf : null;
@@ -399,7 +430,11 @@ export class MockBackend {
         waiverAccepted: prior?.waiverAccepted === true,
         telemetryCbs: prior?.telemetryCbs instanceof Set ? prior.telemetryCbs : new Set(),
         graphics: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
-        displays: displayFixtureFor(device.deviceKey, device.name),
+        displays: displayFixtureFor(device.deviceKey, device.name, {
+          displayDuplicateIdentity: this._displayDuplicateIdentity,
+          displayRetroSymbolsMissing: this._displayRetroSymbolsMissing,
+          displayArcSyncSymbolsMissing: this._displayArcSyncSymbolsMissing,
+        }),
       };
     };
 
@@ -1035,7 +1070,7 @@ export class MockBackend {
     const e = this._entry(id);
     const patch = request?.patch && typeof request.patch === 'object' ? request.patch : {};
     const result = { ok: true, perControl: {} };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'scalingMethod', 'vrrMode']
       .filter((key) => patch[key] !== null && patch[key] !== undefined);
     const fail = (key, errorCode, message) => {
       result.perControl[key] = { ok: false, errorCode, message };
@@ -1049,11 +1084,14 @@ export class MockBackend {
       for (const key of controls) fail(key, 'stale-target', 'the selected graphics adapter identity is stale');
       return result;
     }
-    const display = (e.displays ?? []).find((candidate) => candidate.displayKey === request.displayKey && candidate.identityVerified === true);
-    if (!display) {
-      for (const key of controls) fail(key, 'stale-target', 'the selected display is no longer connected');
+    const matches = (e.displays ?? []).filter((candidate) => candidate.displayKey === request.displayKey && candidate.identityVerified === true);
+    if (matches.length !== 1) {
+      const errorCode = matches.length > 1 ? 'ambiguous-target' : 'stale-target';
+      const message = matches.length > 1 ? 'the selected display identity is ambiguous' : 'the selected display is no longer connected';
+      for (const key of controls) fail(key, errorCode, message);
       return result;
     }
+    const display = matches[0];
     if (patch.quantizationRange !== undefined && patch.quantizationRange !== null) {
       if (!DISPLAY_QUANTIZATION_OPTIONS.includes(patch.quantizationRange)) fail('quantizationRange', 'out-of-range', `unknown quantization range '${patch.quantizationRange}'`);
       else if (!display.supportedOptions.quantizationRanges.includes(patch.quantizationRange)) fail('quantizationRange', 'unsupported', 'quantization range is not supported by this display');
@@ -1078,6 +1116,47 @@ export class MockBackend {
       else {
         display.scalingMode = patch.scalingMode;
         result.perControl.scalingMode = { ok: true, readBackEqual: true, warning: DISPLAY_SCALING_FLASH_WARNING };
+      }
+    }
+    if (patch.scalingMethod !== undefined && patch.scalingMethod !== null) {
+      const value = patch.scalingMethod;
+      if (typeof value !== 'object' || typeof value.enabled !== 'boolean' || !DISPLAY_RETRO_SCALING_METHOD_OPTIONS.includes(value.method)) fail('scalingMethod', 'out-of-range', 'unknown retro-scaling method');
+      else if (this._displayRetroSymbolsMissing) fail('scalingMethod', 'unavailable-symbol', 'the retro-scaling API is missing in the IGCL runtime');
+      else if (!display.supportedOptions.scalingMethods.includes(value.method) || display.scalingMethod?.controllable !== true) fail('scalingMethod', 'unsupported', 'retro scaling is not supported by this display');
+      else if (this._displayRetroSilentNoop || this._displayRetroReadbackFailure) {
+        result.perControl.scalingMethod = {
+          ok: false,
+          errorCode: 'io-failed',
+          message: this._displayRetroReadbackFailure ? 'set succeeded but retro-scaling read-back failed' : 'retro-scaling set succeeded but read-back was unchanged',
+          readBackEqual: false,
+          silentNoop: true,
+          warning: DISPLAY_SCALING_FLASH_WARNING,
+        };
+        result.ok = false;
+      }
+      else {
+        display.scalingMethod.value = { enabled: value.enabled, method: value.method };
+        result.perControl.scalingMethod = { ok: true, readBackEqual: display.scalingMethod.value.enabled === value.enabled && display.scalingMethod.value.method === value.method, warning: DISPLAY_SCALING_FLASH_WARNING };
+      }
+    }
+    if (patch.vrrMode !== undefined && patch.vrrMode !== null) {
+      if (!DISPLAY_ARC_SYNC_PROFILE_OPTIONS.includes(patch.vrrMode)) fail('vrrMode', 'out-of-range', `unknown Arc Sync profile '${patch.vrrMode}'`);
+      else if (this._displayArcSyncSymbolsMissing) fail('vrrMode', 'unavailable-symbol', 'the Arc Sync profile API is missing in the IGCL runtime');
+      else if (!display.supportedOptions.vrrModes.includes(patch.vrrMode) || display.vrrMode?.controllable !== true) fail('vrrMode', 'unsupported', 'Arc Sync profile control is not supported by this display');
+      else if (this._displayArcSyncSilentNoop || this._displayArcSyncReadbackFailure) {
+        result.perControl.vrrMode = {
+          ok: false,
+          errorCode: 'io-failed',
+          message: this._displayArcSyncReadbackFailure ? 'set succeeded but Arc Sync read-back failed' : 'Arc Sync set succeeded but read-back was unchanged',
+          readBackEqual: false,
+          silentNoop: true,
+        };
+        result.ok = false;
+      }
+      else {
+        display.vrrMode.value = patch.vrrMode;
+        display.arcSync.profile = patch.vrrMode;
+        result.perControl.vrrMode = { ok: display.vrrMode.value === patch.vrrMode, readBackEqual: display.vrrMode.value === patch.vrrMode };
       }
     }
     if (controls.length > 0) {

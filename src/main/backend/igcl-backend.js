@@ -35,13 +35,16 @@ import {
   displayFlagNames, encodeDisplayProperties, decodeDisplayProperties,
   encodeWireFormatConfig, decodeWireFormatConfig, encodeDisplaySettings,
   decodeDisplaySettings, encodeScalingSettings, decodeScalingSettings,
-  decodeArcSyncMonitor, decodeArcSyncProfile, encodeEdidManagementArgs,
+  encodeRetroScalingCaps, decodeRetroScalingCaps, encodeRetroScalingSettings,
+  decodeRetroScalingSettings, decodeArcSyncMonitor, decodeArcSyncProfile,
+  encodeArcSyncProfile, encodeEdidManagementArgs,
   encodePanelDescriptorArgs, edidMonitorName,
 } from './igcl-bindings.js';
 import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
   GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS,
   DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS,
+  DISPLAY_RETRO_SCALING_METHOD_OPTIONS, DISPLAY_ARC_SYNC_PROFILE_OPTIONS,
   DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey } from './units.js';
@@ -184,6 +187,11 @@ const DISPLAY_SCALING_NAME_TO_CANONICAL = {
 };
 const DISPLAY_ARC_SYNC_PROFILE_CANONICAL = {
   1: 'recommended', 2: 'excellent', 3: 'good', 4: 'compatible', 5: 'off', 6: 'vesa', 7: 'custom',
+};
+const DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL = { 1: 'integer', 2: 'nearest-neighbour' };
+const DISPLAY_RETRO_SCALING_METHOD_TO_IGCL = { integer: 1, 'nearest-neighbour': 2 };
+const DISPLAY_ARC_SYNC_PROFILE_TO_IGCL = {
+  recommended: 1, excellent: 2, good: 3, compatible: 4, off: 5, vesa: 6, custom: 7,
 };
 const displayCapability = (value, supported, controllable = false, reason = null, source = 'igcl') => ({
   value, supported, controllable, reason, source,
@@ -2115,8 +2123,8 @@ export class IgclBackend {
       colorFormat: null,
       quantizationRange: null,
       scalingMode: null,
-      scalingMethod: displayCapability(null, false, false, 'Scaling method is not exposed by the driver interface.'),
-      vrrMode: displayCapability(null, null, false, 'Variable refresh-rate mode is read-only on this driver surface.'),
+      scalingMethod: displayCapability(null, false, false, 'Retro scaling is not exposed by the driver interface.'),
+      vrrMode: displayCapability(null, null, false, 'Arc Sync profile control is not exposed by the driver interface.'),
       variableRefreshRate: displayCapability(null, null, false, 'Variable refresh rate is controlled by Windows/the display path.'),
       vrrCurrentRange: displayCapability(null, null, false, 'The current variable refresh-rate range is not exposed by the driver interface.'),
       vrrMaximumRange: displayCapability(null, null, false, 'The maximum variable refresh-rate range is not exposed by the driver interface.'),
@@ -2130,6 +2138,7 @@ export class IgclBackend {
       supportedOptions: {
         scalingModes: [],
         scalingMethods: [],
+        vrrModes: [],
         wireFormats: [],
         bpcDepths: [],
         quantizationRanges: [],
@@ -2249,9 +2258,46 @@ export class IgclBackend {
       // degrade the scaling surface
     }
 
-    // Arc Sync - READ-ONLY in the app (the monitor params + profile are
-    // recorded for the INFORMATION section; the probe: 48-180 Hz monitor
-    // range + the RECOMMENDED 90-180 profile on the A770).
+    // Retro scaling is a separate driver surface from ordinary scaling. Read
+    // both the capability bitmask and the current enabled/type pair so the
+    // renderer can expose it only when a complete verified contract exists.
+    try {
+      if (!this._isUnavailable(lib.ctlGetSupportedRetroScalingCapability)
+        && !this._isUnavailable(lib.ctlGetSetRetroScaling)) {
+        const caps = encodeRetroScalingCaps();
+        const capsResult = lib.ctlGetSupportedRetroScalingCapability(handle, caps.buf);
+        if (capsResult === CTL_RESULT.SUCCESS) {
+          const flags = decodeRetroScalingCaps(caps.buf).supportedRetroScaling;
+          d.supportedOptions.scalingMethods = displayFlagNames(flags, CTL_RETRO_SCALING_TYPE)
+            .map((name) => Object.entries(DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL).find(([, value]) => value && name === value.toUpperCase().replace('-', '_'))?.[1])
+            .filter(Boolean);
+          // The driver exposes these as the two canonical flag values. Keep
+          // the mapping explicit so an unexpected future flag cannot become a
+          // writable option by accident.
+          d.supportedOptions.scalingMethods = [...new Set(d.supportedOptions.scalingMethods)];
+          const current = encodeRetroScalingSettings({ get: true });
+          const currentResult = lib.ctlGetSetRetroScaling(handle, current.buf);
+          if (currentResult === CTL_RESULT.SUCCESS) {
+            const value = decodeRetroScalingSettings(current.buf);
+            const method = DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL[value.retroScalingType] ?? null;
+            d.scalingMethod = displayCapability(
+              method ? { enabled: value.enable, method } : null,
+              d.supportedOptions.scalingMethods.length > 0,
+              d.supportedOptions.scalingMethods.length > 0,
+              method ? null : 'The driver returned an unknown retro-scaling method.',
+            );
+          } else {
+            d.scalingMethod = displayCapability(null, d.supportedOptions.scalingMethods.length > 0, false, 'Retro scaling read-back failed.');
+          }
+        }
+      }
+    } catch {
+      // degrade the retro-scaling surface
+    }
+
+    // Arc Sync - read the monitor capability and current profile. The setter
+    // is advertised as controllable only when both GET and SET symbols exist;
+    // every write still performs a same-output read-back.
     try {
       if (!this._isUnavailable(lib.ctlGetIntelArcSyncInfoForMonitor)) {
         const buf = koffi.alloc('uint8', koffi.sizeof('ctl_intel_arc_sync_monitor_params_t') + 16);
@@ -2272,14 +2318,21 @@ export class IgclBackend {
     }
     try {
       if (!this._isUnavailable(lib.ctlGetIntelArcSyncProfile)) {
-        const buf = koffi.alloc('uint8', koffi.sizeof('ctl_intel_arc_sync_profile_params_t') + 16);
-        koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_intel_arc_sync_profile_params_t'));
-        koffi.encode(buf, 4, 'uint8', 0);
+        const current = encodeArcSyncProfile();
+        const buf = current.buf;
         const r = lib.ctlGetIntelArcSyncProfile(handle, buf);
         if (r === CTL_RESULT.SUCCESS) {
           const p = decodeArcSyncProfile(buf);
           d.arcSync.profile = DISPLAY_ARC_SYNC_PROFILE_CANONICAL[p.profile] ?? null;
-          d.vrrMode = displayCapability(d.arcSync.profile, d.arcSync.supported, false, 'Variable refresh-rate mode is read-only on this driver surface.');
+          const canControl = d.arcSync.supported
+            && !this._isUnavailable(lib.ctlSetIntelArcSyncProfile);
+          d.vrrMode = displayCapability(
+            d.arcSync.profile,
+            d.arcSync.supported,
+            canControl,
+            d.arcSync.supported && d.arcSync.profile ? (canControl ? null : 'Arc Sync setter is not available in this driver runtime.') : 'Arc Sync is not supported by this display.',
+          );
+          if (d.arcSync.supported && d.arcSync.profile) d.supportedOptions.vrrModes = [...DISPLAY_ARC_SYNC_PROFILE_OPTIONS];
         }
       }
     } catch {
@@ -2356,7 +2409,7 @@ export class IgclBackend {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'scalingMethod', 'vrrMode']
       .filter((c) => patch[c] !== null && patch[c] !== undefined);
 
     // The whole-surface gate (the M8 setGraphicsSettings pattern): when NO
@@ -2365,7 +2418,9 @@ export class IgclBackend {
     // runtime cannot even resolve display ids).
     if (this._isUnavailable(lib.ctlGetSetDisplaySettings)
       && this._isUnavailable(lib.ctlGetSetWireFormat)
-      && this._isUnavailable(lib.ctlSetCurrentScaling)) {
+      && this._isUnavailable(lib.ctlSetCurrentScaling)
+      && this._isUnavailable(lib.ctlGetSetRetroScaling)
+      && this._isUnavailable(lib.ctlSetIntelArcSyncProfile)) {
       for (const c of controls) {
         fail(c, 'unavailable-symbol', 'the display-settings API is missing in the IGCL runtime');
       }
@@ -2539,6 +2594,99 @@ export class IgclBackend {
               warning: DISPLAY_SCALING_FLASH_WARNING,
             };
             if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
+    if (patch.scalingMethod !== null && patch.scalingMethod !== undefined) {
+      if (this._isUnavailable(lib.ctlGetSetRetroScaling)) {
+        fail('scalingMethod', 'unavailable-symbol', 'the retro-scaling API is missing in the IGCL runtime');
+      } else {
+        const requested = patch.scalingMethod;
+        const type = requested && DISPLAY_RETRO_SCALING_METHOD_TO_IGCL[requested.method];
+        if (!requested || typeof requested.enabled !== 'boolean' || type === undefined) {
+          fail('scalingMethod', 'out-of-range', 'unknown retro-scaling method or enable value');
+        } else {
+          const gs = encodeRetroScalingSettings({ get: false, enable: requested.enabled, retroScalingType: type });
+          const setResult = lib.ctlGetSetRetroScaling(handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('scalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            await new Promise((r) => setTimeout(r, 400));
+            const rb = encodeRetroScalingSettings({ get: true });
+            const getResult = lib.ctlGetSetRetroScaling(handle, rb.buf);
+            let readBackEqual = false;
+            let message;
+            if (getResult !== CTL_RESULT.SUCCESS) {
+              message = `set succeeded but read-back failed (${describeResult(getResult)})`;
+            } else {
+              const got = decodeRetroScalingSettings(rb.buf);
+              readBackEqual = got.enable === requested.enabled && got.retroScalingType === type;
+              message = readBackEqual ? undefined : `read-back enabled=${got.enable} type=${got.retroScalingType} != requested enabled=${requested.enabled} type=${type}`;
+            }
+            result.perControl.scalingMethod = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message,
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              warning: DISPLAY_SCALING_FLASH_WARNING,
+            };
+            if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
+    if (patch.vrrMode !== null && patch.vrrMode !== undefined) {
+      if (this._isUnavailable(lib.ctlGetIntelArcSyncProfile) || this._isUnavailable(lib.ctlSetIntelArcSyncProfile)) {
+        fail('vrrMode', 'unavailable-symbol', 'the Arc Sync profile API is missing in the IGCL runtime');
+      } else {
+        const profile = DISPLAY_ARC_SYNC_PROFILE_TO_IGCL[patch.vrrMode];
+        if (profile === undefined) {
+          fail('vrrMode', 'out-of-range', `unknown Arc Sync profile '${patch.vrrMode}'`);
+        } else {
+          // Preserve the driver's current timing parameters; only the profile
+          // enum is being changed by this control.
+          const current = encodeArcSyncProfile();
+          const currentResult = lib.ctlGetIntelArcSyncProfile(handle, current.buf);
+          if (currentResult !== CTL_RESULT.SUCCESS) {
+            fail('vrrMode', igclErrorCode(currentResult) ?? 'io-failed', `Arc Sync read-back failed (${describeResult(currentResult)})`);
+          } else {
+            const now = decodeArcSyncProfile(current.buf);
+            const set = encodeArcSyncProfile({
+              profile,
+              minRefreshHz: now.minRefreshHz,
+              maxRefreshHz: now.maxRefreshHz,
+              maxFrameTimeIncreaseUs: now.maxFrameTimeIncreaseUs,
+              maxFrameTimeDecreaseUs: now.maxFrameTimeDecreaseUs,
+            });
+            const setResult = lib.ctlSetIntelArcSyncProfile(handle, set.buf);
+            if (setResult !== CTL_RESULT.SUCCESS) {
+              fail('vrrMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+            } else {
+              await new Promise((r) => setTimeout(r, 400));
+              const rb = encodeArcSyncProfile();
+              const getResult = lib.ctlGetIntelArcSyncProfile(handle, rb.buf);
+              let readBackEqual = false;
+              let message;
+              if (getResult !== CTL_RESULT.SUCCESS) {
+                message = `set succeeded but read-back failed (${describeResult(getResult)})`;
+              } else {
+                const got = decodeArcSyncProfile(rb.buf);
+                readBackEqual = got.profile === profile;
+                message = readBackEqual ? undefined : `read-back profile ${got.profile} != requested ${profile}`;
+              }
+              result.perControl.vrrMode = {
+                ok: readBackEqual,
+                errorCode: readBackEqual ? undefined : 'io-failed',
+                message,
+                readBackEqual,
+                silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              };
+              if (!readBackEqual) result.ok = false;
+            }
           }
         }
       }

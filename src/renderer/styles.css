@@ -2217,6 +2217,20 @@ select {
 .profile-filter, .profile-setting-control, .profile-setting-number { padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: inherit; }
 .profile-view-toggle { display: inline-flex; margin-left: auto; }
 .profile-view-toggle .active { border-color: var(--accent); color: var(--accent); }
+.profiles-mode-toggle { display: inline-flex; gap: 4px; margin-bottom: 14px; }
+.profiles-mode-toggle .active { border-color: var(--accent); color: var(--accent); background: var(--bg-inset); }
+.game-catalog-browser { margin-top: 2px; }
+.game-catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
+.game-catalog-card { display: flex; min-height: 210px; flex-direction: column; overflow: hidden; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-inset); color: var(--text); text-align: left; cursor: pointer; }
+.game-catalog-card:hover, .game-catalog-card:focus-visible { border-color: var(--accent); outline: none; }
+.game-catalog-artwork { display: block; width: 100%; height: 150px; border-radius: 0; }
+.game-catalog-artwork img { width: 100%; height: 100%; object-fit: cover; }
+.game-catalog-copy { display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; }
+.game-catalog-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-catalog-copy small { color: var(--text-dim); }
+.game-catalog-empty { padding: 24px 0; }
+.game-profile-detail { margin-top: 2px; }
+.game-setting-control { max-width: 240px; }
 .profile-cards { gap: 10px; }
 .profile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .profile-grid .profile-row { min-height: 150px; align-content: space-between; }

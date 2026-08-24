@@ -27,7 +27,7 @@ import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
-import type { Capabilities, DeviceState, FlipMode, GameApplication, GameAssociation, GameProfileGraphics, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
+import type { Capabilities, DeviceState, FlipMode, GameApplication, GameAssociation, GameCatalogEntry, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 
@@ -237,6 +237,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let bootState: StartupGetState | null = null;
   let associations: GameAssociation[] = [];
   let scannedApps: GameApplication[] = [];
+  let gameCatalog: GameCatalogEntry[] = [];
+  let gameSettings: GameSettingsRecord[] = [];
+  let viewMode: 'oc' | 'game' = 'oc';
+  let selectedGameExePath: string | null = null;
   let selectedProfileId: string | null = null;
   let selectedAssociationExePath: string | null = null;
   let sidecarWarning: string | null = null;
@@ -265,6 +269,87 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     sidecarAvailable = false;
     sidecarWarning = `Per-game settings unavailable: ${err instanceof Error ? err.message : String(err)}`;
   }
+
+  const modeToggle = (): HTMLElement => el('div', { class: 'profiles-mode-toggle', role: 'group', 'aria-label': 'Profiles view' }, [
+    el('button', { class: `btn btn-ghost btn-sm${viewMode === 'oc' ? ' active' : ''}`, text: 'OC Profile', onclick: () => { viewMode = 'oc'; selectedGameExePath = null; renderList(); } }),
+    el('button', { class: `btn btn-ghost btn-sm${viewMode === 'game' ? ' active' : ''}`, text: 'Game Profile', onclick: () => void openGameView() }),
+  ]);
+
+  const loadGameCatalog = async (): Promise<void> => {
+    const result = await api.gameCatalogList();
+    gameCatalog = Array.isArray(result.catalog) ? result.catalog : [];
+    gameSettings = Array.isArray(result.settings) ? result.settings : [];
+  };
+
+  const gameSettingFor = (exePath: string): GameSettingsRecord | null => gameSettings.find((item) => item.exePath === exePath) ?? null;
+
+  const renderGameCatalog = (): void => {
+    const cards = gameCatalog.map((game) => {
+      const settings = gameSettingFor(game.exePath);
+      return el('button', { class: 'game-catalog-card', dataset: { exePath: game.exePath }, onclick: () => { selectedGameExePath = game.exePath; renderGameDetail(game); } }, [
+        artworkTile(game.artwork, game.displayName, 'game-catalog-artwork'),
+        el('span', { class: 'game-catalog-copy' }, [el('strong', { text: game.displayName }), el('small', { text: settings?.enabled === false ? 'Use Profile off' : 'Installed game' })]),
+      ]);
+    });
+    clear(root);
+    root.append(modeToggle(), el('section', { class: 'profile-browser game-catalog-browser' }, [
+      el('div', { class: 'profile-browser-head' }, [
+        el('div', { class: 'profile-browser-title' }, [el('h2', { class: 'card-title', text: 'Installed Games' }), el('p', { class: 'card-note', text: 'Installed games remain here even when they are not running.' })]),
+        el('button', { class: 'btn btn-ghost btn-sm game-catalog-refresh', text: 'Refresh', onclick: () => void openGameView() }),
+      ]),
+      gameCatalog.length ? el('div', { class: 'game-catalog-grid' }, cards) : el('p', { class: 'card-note game-catalog-empty', text: 'No installed games were found.' }),
+    ]));
+  };
+
+  const renderGameDetail = (game: GameCatalogEntry): void => {
+    const current = gameSettingFor(game.exePath);
+    const graphics: GameProfileGraphics = current?.graphics ?? {};
+    const frame = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.flipMode ?? 'application-default' }, [
+      el('option', { value: 'application-default', text: 'Application Choice' }), el('option', { value: 'vsync-on', text: 'VSync On' }), el('option', { value: 'vsync-off', text: 'VSync Off' }), el('option', { value: 'smooth-sync', text: 'Smooth Sync' }), el('option', { value: 'speed-frame', text: 'Speed / Frame' }),
+    ]) as HTMLSelectElement;
+    const fps = el('input', { class: 'profile-setting-check game-setting-control', type: 'checkbox', checked: graphics.frameLimit?.enabled === true }) as HTMLInputElement;
+    const fpsValue = el('input', { class: 'profile-setting-number game-setting-control', type: 'number', min: 1, max: 1000, value: graphics.frameLimit?.value ?? 60 }) as HTMLInputElement;
+    const latency = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.lowLatency ?? 'off' }, [
+      el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }), el('option', { value: 'on-boost', text: 'On + Boost' }),
+    ]) as HTMLSelectElement;
+    const save = (patch: Partial<GameSettingsRecord>): void => { void onGameSettingsSave(game, patch); };
+    const detail = el('div', { class: 'profile-detail game-profile-detail' }, [
+      el('div', { class: 'profile-detail-head' }, [el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }), el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
+      el('div', { class: 'profile-app-badge' }, [artworkTile(game.artwork, game.displayName, 'profile-artwork-small'), el('span', { text: `${game.displayName}  ·  ${game.exePath}` })]),
+      el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled !== false, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Keep this game-specific setting enabled for the installed game.' })]),
+      el('section', { class: 'profile-settings-section' }, [
+        el('h3', { class: 'profile-section-title', text: 'Game Profile Settings' }),
+        settingRow('Frame Synchronization', 'Saved independently for this executable.', frame),
+        settingRow('FPS Limiter', 'Saved independently for this executable.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
+        settingRow('Low Latency', 'Saved independently for this executable.', latency),
+      ]),
+      el('p', { class: 'profile-capability-note', text: 'These values are persisted per executable. Driver per-app IGCL application is not available yet, so no global graphics setting is changed.' }),
+    ]);
+    frame.addEventListener('change', () => save({ graphics: { flipMode: frame.value as FlipMode } }));
+    latency.addEventListener('change', () => save({ graphics: { lowLatency: latency.value as LowLatency } }));
+    fps.addEventListener('change', () => save({ graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));
+    fpsValue.addEventListener('change', () => save({ graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));
+    clear(root); root.append(modeToggle(), detail);
+  };
+
+  const openGameView = async (): Promise<void> => {
+    viewMode = 'game';
+    try {
+      const scan = await api.gamesScan();
+      if (scan.error) toast('warn', 'Game scan unavailable', scan.error);
+      if (scan.sidecarError) toast('warn', 'Game catalog unavailable', scan.sidecarError);
+      await loadGameCatalog();
+      if (selectedGameExePath) {
+        const selected = gameCatalog.find((item) => item.exePath === selectedGameExePath);
+        if (selected) { renderGameDetail(selected); return; }
+        selectedGameExePath = null;
+      }
+      renderGameCatalog();
+    } catch (err) {
+      toast('error', 'Game catalog unavailable', err instanceof Error ? err.message : String(err));
+      try { await loadGameCatalog(); renderGameCatalog(); } catch { clear(root); root.append(modeToggle(), el('p', { class: 'text-error', text: 'Installed game catalog is unavailable.' })); }
+    }
+  };
 
   const refresh = async (): Promise<void> => {
     try {
@@ -356,7 +441,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     clear(root);
     if (sidecarWarning) root.append(el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: sidecarWarning }));
     if (startupWarning) root.append(el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: startupWarning }));
-    root.append(bootCard, listCard);
+    root.append(modeToggle(), bootCard, listCard);
   };
 
   const profileRow = (p: Profile, active: boolean, activeId: string | null): HTMLElement => {
@@ -507,6 +592,29 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }
     });
     gameSaveQueue = operation.catch(() => {});
+    await operation;
+  };
+
+  let gameSettingsSaveQueue: Promise<void> = Promise.resolve();
+  const onGameSettingsSave = async (game: GameCatalogEntry, patch: Partial<GameSettingsRecord>): Promise<void> => {
+    const operation = gameSettingsSaveQueue.then(async () => {
+      try {
+        const current = gameSettingFor(game.exePath);
+        const result = await api.gameSettingsSave({
+          ...current,
+          ...patch,
+          exePath: game.exePath,
+          graphics: patch.graphics ? { ...(current?.graphics ?? {}), ...patch.graphics } : (current?.graphics ?? {}),
+        });
+        gameSettings = [...gameSettings.filter((item) => item.exePath !== game.exePath), result.settings];
+        toast('success', 'Game settings saved', 'Saved independently for this executable.');
+        if (selectedGameExePath === game.exePath) renderGameDetail(game);
+      } catch (err) {
+        toast('error', 'Game settings save failed', err instanceof Error ? err.message : String(err));
+        try { await loadGameCatalog(); if (selectedGameExePath === game.exePath) renderGameDetail(game); } catch { /* retain last known state */ }
+      }
+    });
+    gameSettingsSaveQueue = operation.catch(() => {});
     await operation;
   };
 

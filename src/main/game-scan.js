@@ -2,7 +2,10 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
-import { canonicalExePath, deterministicArtworkKey, isValidArtwork } from './store/game-profile-store.js';
+import { canonicalExePath, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
+import { deterministicArtworkKey, isValidArtwork } from './store/game-profile-store.js';
+
+export { canonicalExePath, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -10,30 +13,46 @@ const ARTWORK_RESOLVE_TIMEOUT_MS = 1200;
 const ARTWORK_MAX_ITEMS = 64;
 const ARTWORK_MAX_BYTES = 4 * 1024 * 1024;
 const ARTWORK_CONCURRENCY = 4;
+const SCAN_MAX_START_MENU_ITEMS = 256;
+const SCAN_MAX_REGISTRY_ITEMS = 512;
+const SCAN_MAX_INSTALL_CANDIDATES = 16;
 
 const withTimeout = (promise, timeoutMs) => Promise.race([
   promise,
   new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
 ]);
 
-export function normalizeScannedApps(rows, excludedPaths = []) {
+function candidateScore(item, row) {
+  const base = path.win32.basename(item.exePath, '.exe').toLowerCase();
+  const display = item.displayName.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const baseWords = base.replace(/[^a-z0-9]+/g, ' ').trim();
+  let score = row?.source === 'registry' ? 20 : 0;
+  if (baseWords === display || display.startsWith(`${baseWords} `)) score += 1000;
+  if (/\\game\\/i.test(item.exePath)) score += 100;
+  if (/\\bin\\(?:x64|win64)\\/i.test(item.exePath)) score += 40;
+  if (/(?:client|ux|render|service|helper|tray|runtime|bootstrap|launcher|crash|report|setup|assistant)$/i.test(base)) score -= 300;
+  return score;
+}
+
+export function normalizeScannedApps(rows, excludedPaths = [], opts = {}) {
   const excluded = new Set(excludedPaths.map(canonicalExePath).filter(Boolean));
-  const seen = new Set();
   const apps = [];
+  const byDisplay = new Map();
   for (const row of Array.isArray(rows) ? rows : []) {
     const exePath = canonicalExePath(row?.exePath ?? row?.ExecutablePath);
     const executableName = exePath ? path.win32.basename(exePath) : '';
     // A packaged Arc Power process is excluded by its exact path below; the
     // basename guard also covers a restarted packaged copy whose process path
     // is not available to the scanner fixture.
-    if (!exePath || excluded.has(exePath) || /^arc[ ._-]*power(?:\.exe)?$/i.test(executableName) || seen.has(exePath)) continue;
+    if (!exePath || !isVerifiedExecutablePath(exePath) || excluded.has(exePath) || !validateSafeGameCandidate(exePath, { excludedPaths, requireExists: opts.requireExists === true })) continue;
     const processName = typeof (row?.processName ?? row?.Name) === 'string'
       ? (row.processName ?? row.Name).trim().slice(0, 260) : path.win32.basename(exePath);
+    const explicitDisplayName = typeof row?.displayName === 'string' && row.displayName.trim().length > 0;
     const displayNameRaw = typeof row?.displayName === 'string' && row.displayName.trim()
       ? row.displayName.trim()
       : processName || path.win32.basename(exePath);
-    seen.add(exePath);
-    apps.push({
+    const existing = apps.find((item) => item.exePath === exePath);
+    const normalized = {
       exePath,
       processName: processName || path.win32.basename(exePath),
       // Preserve the process/display casing for the UI.  `exePath` is the
@@ -42,7 +61,25 @@ export function normalizeScannedApps(rows, excludedPaths = []) {
       artwork: isValidArtwork(row?.artwork)
         ? row.artwork : deterministicArtworkKey(exePath),
       source: 'scan',
-    });
+    };
+    if (existing) {
+      Object.assign(existing, {
+        processName: existing.processName || normalized.processName,
+        displayName: explicitDisplayName ? normalized.displayName : existing.displayName,
+        artwork: isValidArtwork(existing.artwork) && !/^fallback-/.test(existing.artwork) ? existing.artwork : normalized.artwork,
+      });
+    } else {
+      const displayKey = normalized.displayName.toLocaleLowerCase();
+      const sameDisplay = byDisplay.get(displayKey);
+      if (sameDisplay && candidateScore(normalized, row) <= candidateScore(sameDisplay, sameDisplay.__sourceRow)) continue;
+      if (sameDisplay) {
+        const index = apps.indexOf(sameDisplay);
+        if (index >= 0) apps.splice(index, 1);
+      }
+      Object.defineProperty(normalized, '__sourceRow', { value: row, enumerable: false });
+      byDisplay.set(displayKey, normalized);
+      apps.push(normalized);
+    }
   }
   return apps.sort((a, b) => `${a.displayName}\0${a.exePath}`.localeCompare(`${b.displayName}\0${b.exePath}`, undefined, { sensitivity: 'base' }));
 }
@@ -79,11 +116,76 @@ export function createGameScanAdapter(opts = {}) {
   const excluded = [process.execPath, ...(opts.excludedPaths ?? [])];
   return {
     async scan() {
-      const script = "$ErrorActionPreference='Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.Name -like '*.exe' } | Select-Object Name,ExecutablePath | ConvertTo-Json -Compress";
+      // This script is deliberately read-only. It reads shortcut/registry
+      // metadata and verifies candidate files; it never reads or invokes an
+      // UninstallString, and no discovered path is executed.
+      const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$rows = [System.Collections.Generic.List[object]]::new()
+function Add-VerifiedRow([string]$path, [string]$name, [string]$source) {
+  if (-not $path) { return }
+  $expanded = [Environment]::ExpandEnvironmentVariables($path.Trim().Trim('"'))
+  if (-not [IO.Path]::IsPathFullyQualified($expanded) -or [IO.Path]::GetExtension($expanded) -ne '.exe') { return }
+  if (-not (Test-Path -LiteralPath $expanded -PathType Leaf)) { return }
+  $item = Get-Item -LiteralPath $expanded
+  if (-not $item -or $item.Extension -ne '.exe') { return }
+  $rows.Add([pscustomobject]@{ exePath=$item.FullName; displayName=$name; processName=$item.Name; source=$source })
+}
+
+# Installed applications from the two standard uninstall hives. Only
+# DisplayName, InstallLocation, DisplayIcon and DisplayVersion are read.
+$uninstallRoots = @(
+  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+  'HKLM:\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'
+)
+$registryCount = 0
+foreach ($root in $uninstallRoots) {
+  foreach ($app in @(Get-ItemProperty -Path $root)) {
+    if ($registryCount -ge ${SCAN_MAX_REGISTRY_ITEMS}) { break }
+    $registryCount++
+    $display = [string]$app.DisplayName
+    if (-not $display) { continue }
+    $icon = [string]$app.DisplayIcon
+    if ($icon) { Add-VerifiedRow (($icon -split ',')[0]) $display 'registry' }
+    $install = [Environment]::ExpandEnvironmentVariables(([string]$app.InstallLocation).Trim('"'))
+    if ($install -and (Test-Path -LiteralPath $install -PathType Container)) {
+      foreach ($candidate in @(Get-ChildItem -LiteralPath $install -Filter '*.exe' -File -Recurse -Depth 2 | Select-Object -First ${SCAN_MAX_INSTALL_CANDIDATES})) {
+        Add-VerifiedRow $candidate.FullName $display 'registry'
+      }
+    }
+  }
+}
+
+# Start-menu shortcuts are a useful source for games that do not publish an
+# uninstall entry. WScript.Shell only resolves the .lnk metadata; it does not
+# run the target. Bound both roots and item count to keep scans predictable.
+$shortcutRoots = @(
+  (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'),
+  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs')
+)
+$shortcutCount = 0
+$shell = New-Object -ComObject WScript.Shell
+foreach ($shortcutRoot in $shortcutRoots) {
+  foreach ($lnk in @(Get-ChildItem -LiteralPath $shortcutRoot -Filter '*.lnk' -File -Recurse -Depth 4 | Select-Object -First ${SCAN_MAX_START_MENU_ITEMS})) {
+    if ($shortcutCount -ge ${SCAN_MAX_START_MENU_ITEMS}) { break }
+    $shortcutCount++
+    $shortcut = $shell.CreateShortcut($lnk.FullName)
+    Add-VerifiedRow $shortcut.TargetPath ([IO.Path]::GetFileNameWithoutExtension($lnk.Name)) 'start-menu'
+  }
+}
+
+# Running processes remain a fallback for portable games and apps with no
+# registration or shortcut. Executable paths are verified in the same helper.
+foreach ($process in @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.Name -like '*.exe' } | Select-Object -First ${SCAN_MAX_REGISTRY_ITEMS})) {
+  Add-VerifiedRow $process.ExecutablePath ([IO.Path]::GetFileNameWithoutExtension($process.Name)) 'process'
+}
+      $rows | ConvertTo-Json -Compress
+`;
       try {
-        const { stdout } = await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
+        const { stdout } = await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
         const parsed = stdout.trim() ? JSON.parse(stdout) : [];
-        const apps = normalizeScannedApps(Array.isArray(parsed) ? parsed : [parsed], excluded);
+        const apps = normalizeScannedApps(Array.isArray(parsed) ? parsed : [parsed], excluded, { requireExists: true });
         if (typeof opts.getArtwork !== 'function') return { apps };
         const enriched = await enrichScannedApps(apps, opts.getArtwork, opts.artworkBudget);
         return { apps: enriched };

@@ -1511,6 +1511,23 @@ export function decodeScalingSettings(buf) {
   };
 }
 
+/** Allocate a zeroed ctl_retro_scaling_caps_t raw buffer for the supported
+ * retro-scaling capability query. The returned SupportedRetroScaling member
+ * is a bitmask whose bits are represented by CTL_RETRO_SCALING_TYPE. */
+export function encodeRetroScalingCaps() {
+  const buf = koffi.alloc('uint8', koffi.sizeof('ctl_retro_scaling_caps_t') + DISPLAY_HEADROOM);
+  koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_retro_scaling_caps_t'));
+  koffi.encode(buf, 4, 'uint8', 0);
+  return { buf };
+}
+
+/** Decode the supported retro-scaling bitmask. */
+export function decodeRetroScalingCaps(buf) {
+  return {
+    supportedRetroScaling: Number(koffi.decode(buf, koffi.offsetof('ctl_retro_scaling_caps_t', 'SupportedRetroScaling'), 'uint32')) >>> 0,
+  };
+}
+
 /**
  * Allocate a zeroed ctl_retro_scaling_settings_t raw buffer (Size 12 = the
  * v290 size AND this driver's ceiling - ONLY 12 is accepted; the 20-byte
@@ -1578,6 +1595,21 @@ export function decodeArcSyncProfile(buf) {
     maxFrameTimeIncreaseUs: Number(koffi.decode(buf, koffi.offsetof('ctl_intel_arc_sync_profile_params_t', 'MaxFrameTimeIncreaseInUs'), 'uint32')) >>> 0,
     maxFrameTimeDecreaseUs: Number(koffi.decode(buf, koffi.offsetof('ctl_intel_arc_sync_profile_params_t', 'MaxFrameTimeDecreaseInUs'), 'uint32')) >>> 0,
   };
+}
+
+/** Allocate a ctl_intel_arc_sync_profile_params_t buffer. GET callers leave
+ * the values at their defaults; SET callers provide the complete profile
+ * record so the driver can preserve its monitor timing parameters. */
+export function encodeArcSyncProfile({ profile = 0, minRefreshHz = 0, maxRefreshHz = 0, maxFrameTimeIncreaseUs = 0, maxFrameTimeDecreaseUs = 0 } = {}) {
+  const buf = koffi.alloc('uint8', koffi.sizeof('ctl_intel_arc_sync_profile_params_t') + DISPLAY_HEADROOM);
+  koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_intel_arc_sync_profile_params_t'));
+  koffi.encode(buf, 4, 'uint8', 0);
+  koffi.encode(buf, koffi.offsetof('ctl_intel_arc_sync_profile_params_t', 'IntelArcSyncProfile'), 'int32', Number.isInteger(profile) ? profile : 0);
+  koffi.encode(buf, koffi.offsetof('ctl_intel_arc_sync_profile_params_t', 'MaxRefreshRateInHz'), 'float', Number.isFinite(maxRefreshHz) ? maxRefreshHz : 0);
+  koffi.encode(buf, koffi.offsetof('ctl_intel_arc_sync_profile_params_t', 'MinRefreshRateInHz'), 'float', Number.isFinite(minRefreshHz) ? minRefreshHz : 0);
+  koffi.encode(buf, koffi.offsetof('ctl_intel_arc_sync_profile_params_t', 'MaxFrameTimeIncreaseInUs'), 'uint32', Number.isInteger(maxFrameTimeIncreaseUs) ? maxFrameTimeIncreaseUs : 0);
+  koffi.encode(buf, koffi.offsetof('ctl_intel_arc_sync_profile_params_t', 'MaxFrameTimeDecreaseInUs'), 'uint32', Number.isInteger(maxFrameTimeDecreaseUs) ? maxFrameTimeDecreaseUs : 0);
+  return { buf };
 }
 
 /**
