@@ -84,6 +84,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let themeSelectionGeneration = 0;
   let committedTheme: Theme;
   let bootState: StartupGetState | null = null;
+  let clearCachePending = false;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
     // (settings.json via ProfileStore - the same read the Profiles page uses).
@@ -273,6 +274,19 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }, [el('span', { text: 'Overlay settings' })]),
       ]),
     ]);
+    const maintenanceCard = el('section', { class: 'card settings-card maintenance-card' }, [
+      el('h2', { class: 'card-title', text: 'Maintenance' }),
+      el('p', { class: 'card-note', text: 'Remove temporary Arc Power cache files without deleting profiles or saved settings, then restart the software.' }),
+      el('div', { class: 'settings-row maintenance-row' }, [
+        el('button', {
+          type: 'button',
+          class: 'maintenance-action',
+          dataset: { action: 'clear-cache-restart' },
+          disabled: clearCachePending,
+          onclick: () => void onClearCacheAndRestart(),
+        }, [el('span', { text: 'Clear cache & restart software' })]),
+      ]),
+    ]);
 
     const themeCard = el('section', { class: 'card settings-card theme-card' }, [
       el('h2', { class: 'card-title', text: 'Theme' }),
@@ -298,7 +312,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, overlayCard, themeCard, aboutCard);
+    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, overlayCard, maintenanceCard, themeCard, aboutCard);
   };
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
@@ -385,10 +399,29 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     await refresh();
   };
 
+  const onClearCacheAndRestart = async (): Promise<void> => {
+    if (clearCachePending) return;
+    clearCachePending = true;
+    const button = root.querySelector<HTMLButtonElement>('[data-action="clear-cache-restart"]');
+    if (button) button.disabled = true;
+    try {
+      const result = await api.appClearCacheAndRestart();
+      if (!result || result.ok !== true) {
+        throw new Error('The cache could not be cleared');
+      }
+      toast('success', 'Cache cleared', result.restarting ? 'Arc Power is restarting.' : 'Restart request completed.');
+    } catch (err) {
+      toast('error', 'Cache clear failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      clearCachePending = false;
+      if (button && button.isConnected) button.disabled = false;
+    }
+  };
   // 1.0.1 Themes: one swatch selected - apply IMMEDIATELY (the <html>
   // attribute + the canvas recolor via app.ts) and persist through
   // profiles-settings-save. A failed save rolls back only when its request
   // is still the newest live selection; a newer queued selection always wins.
+
   const onThemeSelect = async (theme: string): Promise<void> => {
     if (!isValidTheme(theme) || theme === persisted.theme) return;
     const requestGeneration = ++themeSelectionGeneration;

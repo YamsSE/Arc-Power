@@ -636,6 +636,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
+ *   appLifecycle?: { clearCacheAndRestart: () => Promise<{ ok: boolean, restarting: boolean }> },
  *   buildKind?: 'installed' | 'portable' | 'dev',  // M4-E: app:build-info
  *   bootApplyOutcome?: () => ({ ok: boolean, detail: string, at: number } | null),  // M4N: the window-path boot apply's outcome record (main.js injects it; null when no boot apply ran this session)
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
@@ -763,6 +764,8 @@ export function createIpcHandlers({
   memoryUtil = { detect: async () => null },
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
+  // M52: injected app lifecycle seam; default/test action does not exit.
+  appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) },
   // M4-E: the distribution kind for the app:build-info channel ('dev' in
   // tests; main.js injects 'installed' | 'portable' | 'dev').
   buildKind = 'dev',
@@ -2032,6 +2035,18 @@ export function createIpcHandlers({
       'app:build-info': async (...args) => {
         assertNoPayload(args, 'app:build-info');
         return { kind: buildKind };
+      },
+
+      // M52: clear the dedicated disposable user-data cache and restart.
+      // The lifecycle operation is injected by main.js; tests and default
+      // handlers use its honest no-op result.
+      'app:clear-cache-restart': async (...args) => {
+        assertNoPayload(args, 'app:clear-cache-restart');
+        const out = await appLifecycle.clearCacheAndRestart();
+        if (!out || typeof out.ok !== 'boolean' || typeof out.restarting !== 'boolean') {
+          throw new Error('app lifecycle returned an invalid clear-cache result');
+        }
+        return out;
       },
 
       // M4N (A.1): the window-path boot apply's outcome record ({ ok,

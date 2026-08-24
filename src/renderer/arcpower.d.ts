@@ -123,6 +123,8 @@ export interface ArcPowerApi {
   /** M4-E: the distribution kind - 'installed' (elevated logon task story),
    *  'portable' (unelevated in-app applies), 'dev' (dev tree). */
   appBuildInfo(): Promise<{ kind: 'installed' | 'portable' | 'dev' }>;
+  /** M52: clear disposable cache and request a graceful application restart. */
+  appClearCacheAndRestart(): Promise<{ ok: boolean; restarting: boolean }>;
   /** M4N (A.1): the window-path boot apply's outcome record ({ ok, detail,
    *  at }) or null when no boot apply ran this session. M16: the dashboard
    *  OC status row no longer displays the record - the row's stock-state

@@ -92,6 +92,9 @@
   ; --- path gets the defaulted-var behavior; removed again on the finish
   ; --- page when an interactive user unchecks the box) ----------------------
   !macro customInstall
+    ; M52: cache is disposable; durable %APPDATA%\ArcPower profiles remain.
+    RMDir /r "$APPDATA\ArcPowerCache"
+    ClearErrors
     ${If} $desktopShortcutChecked == 1
       CreateShortCut "$DESKTOP\Arc Power.lnk" "$INSTDIR\${PRODUCT_FILENAME}.exe" "" "$INSTDIR\${PRODUCT_FILENAME}.exe" 0 "" "" "${APP_DESCRIPTION}"
       ClearErrors
@@ -158,6 +161,8 @@
   ; --- (c) the uninstaller removes the desktop .lnk --------------------------
   !macro customUnInstall
     Delete "$DESKTOP\Arc Power.lnk"
+    ; M52: remove only the disposable cache, never durable ArcPower data.
+    RMDir /r "$APPDATA\ArcPowerCache"
     ClearErrors
   !macroend
 !endif

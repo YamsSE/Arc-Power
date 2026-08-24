@@ -1850,6 +1850,18 @@ select {
 .settings-card { padding: 12px 16px; }
 .settings-card .card-title { margin-bottom: 4px; }
 .settings-row { display: flex; align-items: center; gap: 8px; }
+.maintenance-card .card-note { max-width: 58ch; }
+.maintenance-row { margin-top: 10px; }
+.maintenance-action {
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.maintenance-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.maintenance-action:disabled { cursor: wait; opacity: .6; }
 .settings-state { margin-top: 4px; }
 /* M17c (user request): the settings checkboxes are restyled as real
    controls - appearance:none + the shared --control-bg surface + a border,

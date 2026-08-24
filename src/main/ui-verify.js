@@ -354,7 +354,7 @@ export class UiVerifyFailure extends Error {}
  *   (main.js wires it under the no-sysman knob) - the new >315
  *   sysman-primary pin asserts its recorded setLimits calls.
  */
-export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null, applyHandler: null, doubleClickHandler: null }), sysmanPowerLimits = null) {
+export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0, getFpsPolls = () => 0, getWindowOpCounts = () => ({ minimize: 0, maximizeToggle: 0, close: 0 }), getOpenExternalCount = () => 0, getTrayProbe = () => ({ builds: 0, toggleHandler: null, applyHandler: null, doubleClickHandler: null }), sysmanPowerLimits = null, getAppClearCacheRestarts = () => 0) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -921,6 +921,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   await expectControlBg('.settings-checkbox[data-setting="startMinimized"]', bootTheme);
+  // M52: Settings maintenance action must be the real rendered control and
+  // invoke exactly once; the ui-verify lifecycle seam returns without quit.
+  if (!(await waitFor(win, `!!document.querySelector('[data-action="clear-cache-restart"]')`, 5000))) {
+    fail('M52: Settings is missing the Clear cache & restart software action');
+  }
+  const maintenanceText = await js(`document.querySelector('[data-action="clear-cache-restart"]')?.closest('.maintenance-card')?.textContent ?? ''`);
+  if (!maintenanceText.includes('Clear cache & restart software')) {
+    fail(`M52: maintenance card text is '${maintenanceText}'`);
+  }
+  await js(`document.querySelector('[data-action="clear-cache-restart"]').click()`);
+  await sleep(200);
+  if (getAppClearCacheRestarts() !== 1) {
+    fail(`M52: expected one app:clear-cache-restart seam call, got ${getAppClearCacheRestarts()}`);
+  }
+  if (win.isDestroyed()) fail('M52: ui-verify window exited after the maintenance action');
+  step('m52-maintenance', 'M52: Settings maintenance card rendered, click dispatched one app:clear-cache-restart call, verifier remained alive');
   // Flip to light: the theme chip applies + persists immediately.
   if (!(await js(`document.querySelectorAll('button.theme-option').length === 5`))) {
     fail('M51: Settings must expose exactly five software theme swatches');

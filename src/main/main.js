@@ -43,6 +43,7 @@
 import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
+import { resolveArcPowerCachePath, shouldClearCache, filterRelaunchArgs, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
@@ -380,6 +381,52 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysm
 }
 
 async function main() {
+  // M52: acquire the UI lock while Electron still has its default
+  // %APPDATA%\arc-power userData identity. Switching to ArcPowerCache first
+  // would let a legacy process and this process acquire different locks.
+  const instanceLockMode = { headless, uiVerify, bootApply, applyProfileId, workerReqFile, mock };
+  let windowForInstance = null;
+  let pendingSecondInstance = false;
+  let instanceLockAcquired = false;
+  if (shouldUseInstanceLock(instanceLockMode)) {
+    const { acquired } = acquireInstanceLock({
+      requestSingleInstanceLock: () => app.requestSingleInstanceLock(),
+      mode: instanceLockMode,
+    });
+    if (!acquired) {
+      console.log('[boot] another Arc Power instance is running - quitting');
+      app.quit();
+      return;
+    }
+    instanceLockAcquired = true;
+    app.on('second-instance', () => {
+      // The event may arrive while synchronous cache setup or later async
+      // boot work is still in progress. Defer the restore until the window
+      // exists; launches after that use the same focus path immediately.
+      if (windowForInstance) {
+        focusExistingWindow(windowForInstance);
+      } else {
+        pendingSecondInstance = true;
+      }
+    });
+  }
+
+  // M52: the dedicated ArcPowerCache root is synchronously created and
+  // selected before any await, app.whenReady(), or window boot. This keeps
+  // Electron initialization out of the legacy userData path. --clear-cache
+  // synchronously removes and recreates only this disposable tree.
+  const cachePath = resolveArcPowerCachePath(app.getPath('appData'));
+  try {
+    ensureCacheDirectorySync(cachePath);
+    app.setPath('userData', cachePath);
+    if (shouldClearCache(process.argv)) {
+      resetCacheDirectorySync(cachePath);
+    }
+  } catch (err) {
+    console.error(`[cache] unable to prepare ${cachePath}: ${err.message}`);
+    app.exit(1);
+    return;
+  }
   // --- M2C-C apply-worker mode (`--apply-worker <req> <out>`): ------------
   // hidden (no window, no tray), never re-elevates, exits after writing the
   // result file. Runs the SAME routed instant-apply core as the UI path.
@@ -717,38 +764,6 @@ async function main() {
   await app.whenReady();
   markProfileBoot('when-ready');
 
-  // --- M4-F single-instance lock (UI WINDOW mode ONLY) ---------------------
-  // Helpers (--headless / --ui-verify / --boot-apply / --apply-profile /
-  // --apply-worker) + mock-UI skip the lock BY CONSTRUCTION
-  // (shouldUseInstanceLock) - the gate decides per mode, so this block sits
-  // EARLY (right after ready) and the second UI instance quits FAST instead
-  // of booting the backend first (~20 s). --apply-worker is the hard case
-  // (M2C-C S1): the elevated-apply worker is a SECOND instance spawned
-  // WHILE the UI runs - if it failed the lock it would quit without writing
-  // the out file and every elevated apply would hang. When the lock is NOT
-  // acquired, another instance holds it: quit immediately (the holder's
-  // second-instance event restores its window). The lock is userData-based:
-  // portable + installed builds share %APPDATA%\ArcPower -> mutually
-  // exclusive; the dev tree + the packaged app also share the userData
-  // (expected - close one before launching the other).
-  const instanceLockMode = { headless, uiVerify, bootApply, applyProfileId, workerReqFile, mock };
-  let windowForInstance = null;
-  if (shouldUseInstanceLock(instanceLockMode)) {
-    const { acquired } = acquireInstanceLock({
-      requestSingleInstanceLock: () => app.requestSingleInstanceLock(),
-      mode: instanceLockMode,
-    });
-    if (!acquired) {
-      console.log('[boot] another Arc Power instance is running - quitting');
-      app.quit();
-      return;
-    }
-    app.on('second-instance', () => {
-      // Focus/restore the existing window (the tray-restore pattern: a
-      // MINIMIZED window reports isVisible() === true - restore first).
-      focusExistingWindow(windowForInstance);
-    });
-  }
   markProfileBoot('instance-lock');
   // M17k + M19: the EARLY helper warm-up (the boot-order fix for the 30-90 s
   // apply hangs - the M17j debug log: the persistent helper CONNECTED but
@@ -1878,6 +1893,10 @@ async function main() {
   const win = createWindow(windowBackground, !startMinimizedAtBoot);
   stealthVerifyWindow(win);
   windowForInstance = win;
+  if (pendingSecondInstance) {
+    pendingSecondInstance = false;
+    focusExistingWindow(win);
+  }
   markProfileBoot('window');
   // M17d (Run E): the profile window run exits by itself - after the
   // renderer's boot-complete mark lands, dwell briefly (the trailing main
@@ -2409,6 +2428,26 @@ async function main() {
         },
         close: async () => { if (!win.isDestroyed()) win.close(); },
       };
+  // M52: product restarts relaunch with a one-shot reset flag; ui-verify
+  // counts the request and deliberately remains alive for the next pin.
+  let appClearCacheRestarts = 0;
+  const appLifecycle = {
+    clearCacheAndRestart: async () => {
+      if (uiVerify) {
+        appClearCacheRestarts += 1;
+        return { ok: true, restarting: false };
+      }
+      try {
+        const args = [...filterRelaunchArgs(process.argv.slice(1)), '--clear-cache'];
+        app.relaunch({ args });
+        app.quit();
+        return { ok: true, restarting: true };
+      } catch (err) {
+        console.error(`[cache] restart scheduling failed: ${err.message}`);
+        return { ok: false, restarting: false };
+      }
+    },
+  };
   // M4-H (D1): the open-external op - shell.openExternal in the product
   // path; --ui-verify injects a COUNTING probe (opening a real browser
   // mid-verify would disrupt the assertions) - the GitHub-link pin asserts
@@ -2467,6 +2506,7 @@ async function main() {
     windowOps,
     openExternal,
     registryCatalog,
+    appLifecycle,
     registryApply,
     fpsAdapter,
     presentMonLane,
@@ -2665,7 +2705,7 @@ async function main() {
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides
       // too (the GitHub-link pin asserts the counting op ticked). M4J (G):
       // the tray probe rides as well (the tray-start pin).
-      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts, () => openExternalCount, () => trayProbe, sysmanPowerLimits);
+      await runUiVerify(win, backend, store, () => trayRebuilds, () => fpsPolls, () => windowOpCounts, () => openExternalCount, () => trayProbe, sysmanPowerLimits, () => appClearCacheRestarts);
     }
     return;
   }
