@@ -4147,6 +4147,85 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   await js(`location.hash = '#/profiles'`);
   if (!(await waitFor(win, `!!document.querySelector('.profile-create')`))) fail('profiles page did not render the create button');
   if (!(await waitFor(win, `!!document.querySelector('.boot-checkbox')`))) fail('start-at-boot checkbox did not render');
+  // D2: the reconstructed browser surface keeps the legacy profile hooks
+  // while exposing the screenshot-inspired search/filter/view controls and
+  // the transient game/app scan entry point.
+  if (!(await js(`!!document.querySelector('.profile-scan') && !!document.querySelector('.profile-search') && document.querySelectorAll('.profile-filter').length >= 2 && document.querySelectorAll('.profile-view-toggle button').length === 2`))) {
+    fail('D2: reconstructed Profiles browser controls are missing');
+  }
+  step('profiles-browser', 'D2: Profiles browser renders Scan for Games / Apps, search, Show/Sort filters, and Grid/List controls');
+
+  // D2: a deterministic scan fixture exercises the complete transient scan
+  // -> destination selection -> association -> detail lifecycle.  It also
+  // starts with zero profiles so the top-level scan cannot silently vanish.
+  if (process.env.RID_MOCK_GAME_SCAN === '1') {
+    const fixtureRowByName = (name) => `Array.from(document.querySelectorAll('.profile-row')).find((r) => (r.querySelector('.profile-name')?.textContent ?? '') === '${name}')`;
+    const clickProfileScan = async (label) => {
+      if (!(await waitFor(win, `!!document.querySelector('.profile-scan')`))) fail(`D2 fixture: ${label} Scan button did not render`);
+      const clicked = await js(`(() => { const b = document.querySelector('.profile-scan'); if (!b) return false; b.click(); return true; })()`);
+      if (!clicked) fail(`D2 fixture: ${label} Scan button disappeared before click`);
+    };
+    const fixtureProfiles = await js(`window.arcPower.profilesList()`);
+    for (const p of fixtureProfiles.profiles) await js(`window.arcPower.profilesDelete(${JSON.stringify(p.id)})`).catch(() => {});
+    await js(`window.arcPower.profilesSettingsSave({ activeProfileId: null, ocOnBoot: false })`).catch(() => {});
+    // Direct API cleanup does not drive the page's local envelope; force a
+    // fresh mount before asserting the zero-profile scan state.
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(150);
+    await js(`location.hash = '#/profiles'`);
+    if (!(await waitFor(win, `!!document.querySelector('.profile-scan')`))) fail('D2 fixture: Profiles did not remount after isolated cleanup');
+    await clickProfileScan('initial');
+    if (!(await waitFor(win, `!!document.querySelector('.profile-scan-modal')`))) fail('D2 fixture: top-level scan modal did not open with zero profiles');
+    if (!(await js(`document.querySelectorAll('.profile-scan-result').length === 2 && !!document.querySelector('.profile-scan-no-profile') && !!document.querySelector('.profile-scan-modal button.btn-primary') && Array.from(document.querySelectorAll('.profile-scan-result img')).some((img) => (img.getAttribute('src') ?? '').startsWith('data:image/')) && Array.from(document.querySelectorAll('.profile-scan-result img')).some((img) => (img.getAttribute('src') ?? '').includes('game-cover-fallback.png'))`))) {
+      fail('D2 fixture: zero-profile scan did not show transient results and Add Profile');
+    }
+    await js(`document.querySelector('.profile-scan-modal button.btn-primary').click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.modal-input')`))) fail('D2 fixture: Add Profile from scan did not open the profile dialog');
+    await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'ui-verify profile'; })()`);
+    await js(`document.querySelector('.modal button.btn-primary').click()`);
+    if (!(await waitFor(win, `!!${fixtureRowByName('ui-verify profile')}`))) fail('D2 fixture: Add Profile from scan did not create the profile');
+    // A second profile makes the destination choice observable rather than a
+    // hidden first/active-profile default.
+    await js(`document.querySelector('.profile-create').click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.modal-input')`))) fail('D2 fixture: destination profile dialog did not open');
+    await js(`(() => { const i = document.querySelector('.modal-input'); i.value = 'ui-verify destination'; })()`);
+    await js(`document.querySelector('.modal button.btn-primary').click()`);
+    if (!(await waitFor(win, `!!${fixtureRowByName('ui-verify destination')}`))) fail('D2 fixture: destination profile was not created');
+    const destinationId = await js(`window.arcPower.profilesList().then((e) => e.profiles.find((p) => p.name === 'ui-verify destination')?.id)`);
+    await clickProfileScan('first association');
+    if (!(await waitFor(win, `!!document.querySelector('.profile-scan-profile')`))) fail('D2 fixture: scan did not expose a destination profile selector');
+    const selectedDestination = await js(`(() => { const s = document.querySelector('.profile-scan-profile'); s.value = ${JSON.stringify(destinationId)}; return s.value; })()`);
+    if (selectedDestination !== destinationId) fail('D2 fixture: destination profile selector did not accept the chosen profile');
+    await js(`Array.from(document.querySelectorAll('.profile-scan-result')).find((b) => (b.textContent ?? '').includes('RID Verify One'))?.click()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.profile-associated-app').length === 1`))) fail('D2 fixture: first scan result was not associated with the selected profile');
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(150);
+    await js(`location.hash = '#/profiles'`);
+    await sleep(250);
+    await clickProfileScan('second association');
+    if (!(await waitFor(win, `document.querySelectorAll('.profile-scan-result').length === 2`))) fail('D2 fixture: second scan did not show the transient results');
+    await js(`(() => { const s = document.querySelector('.profile-scan-profile'); if (s) s.value = ${JSON.stringify(destinationId)}; })()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.profile-scan-result').length === 2`))) fail('D2 fixture: detail association scan did not reopen results');
+    await js(`Array.from(document.querySelectorAll('.profile-scan-result')).find((b) => (b.textContent ?? '').includes('RID Verify Two'))?.click()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.profile-associated-app').length === 2`))) fail('D2 fixture: second association was not persisted');
+    await js(`Array.from(document.querySelectorAll('.profile-associated-app')).find((b) => (b.dataset.exePath ?? '').endsWith('rid-verify-two.exe'))?.click()`);
+    if (!(await js(`document.querySelector('.profile-app-badge')?.textContent.includes('RID Verify Two')`))) fail('D2 fixture: second association could not be selected');
+    await js(`(() => { const controls = document.querySelectorAll('.profile-setting-control'); if (controls.length < 2) throw new Error('missing per-game graphics controls'); controls[0].value = 'vsync-on'; controls[0].dispatchEvent(new Event('change', { bubbles: true })); controls[1].value = 'on-boost'; controls[1].dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    if (!(await waitFor(win, `window.arcPower.gameProfilesList().then((e) => e.associations.some((a) => a.exePath.endsWith('rid-verify-two.exe') && a.graphics.flipMode === 'vsync-on' && a.graphics.lowLatency === 'on-boost'))`))) fail('D2 fixture: rapid Frame Synchronization + Low Latency edits did not both read back');
+    await js(`(() => { const i = document.querySelector('.profile-setting-check'); i.checked = true; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    if (!(await waitFor(win, `window.arcPower.gameProfilesList().then((e) => e.associations.some((a) => a.exePath.endsWith('rid-verify-two.exe') && a.graphics.frameLimit?.enabled === true))`))) fail('D2 fixture: FPS Limiter enabled state did not read back');
+    await js(`(() => { const i = document.querySelector('.profile-setting-number'); i.value = '144'; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    if (!(await waitFor(win, `window.arcPower.gameProfilesList().then((e) => e.associations.some((a) => a.exePath.endsWith('rid-verify-two.exe') && a.graphics.frameLimit?.value === 144))`))) fail('D2 fixture: FPS Limiter value did not read back');
+    await js(`Array.from(document.querySelectorAll('.profile-detail-footer button')).find((b) => b.textContent.trim() === 'Remove association')?.click()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.profile-associated-app').length === 1`))) fail('D2 fixture: removing the selected association removed the wrong item or did not re-render');
+    const remainingFixtureApps = await js(`window.arcPower.gameProfilesList().then((e) => e.associations.map((a) => a.exePath).join('|'))`);
+    if (remainingFixtureApps.includes('rid-verify-two.exe') || !remainingFixtureApps.includes('rid-verify-one.exe')) fail(`D2 fixture: association removal read-back was wrong (${remainingFixtureApps})`);
+    step('profiles-game-fixture', 'D2 fixture: zero-profile scan showed results/Add Profile; destination selection, two-association detail editing, read-back, and selected-association removal all passed');
+    await js(`location.hash = '#/dashboard'`);
+    await sleep(150);
+    await js(`location.hash = '#/profiles'`);
+    await sleep(250);
+  }
 
   // After the OC flow the waiver is accepted (either this run or persisted):
   // the toggle must be enabled now.

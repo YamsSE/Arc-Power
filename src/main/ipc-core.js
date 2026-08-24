@@ -42,6 +42,8 @@ import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVE
 // RID_MOCK_VENDOR).
 import { createVendorTelemetry } from './vendor-telemetry/vendor-telemetry.js';
 import { physicalTargetOf } from './gpu-inventory.js';
+import { GameProfileStore, canonicalExePath, normalizeAssociation } from './store/game-profile-store.js';
+import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -866,7 +868,31 @@ export function createIpcHandlers({
   // degrades to the null adapter - honest no vendor readouts, never a
   // crash.
   vendorTelemetry = createVendorTelemetry({ sysinfo }),
+  gameProfiles = null,
+  gameScan = createGameScanAdapter(),
 }) {
+  // D2: the real app injects its sidecar store, while tests can provide an
+  // in-memory adapter. The fallback is isolated to the ProfileStore data
+  // directory and is never consulted unless a game-profile channel is used.
+  if (!gameProfiles) {
+    gameProfiles = store?.dir ? new GameProfileStore({ dir: store.dir }) : {
+      _items: [],
+      async load(validIds) { return this._items.filter((item) => !validIds || validIds.has(item.profileId)); },
+      async upsert(item) { this._items = [...this._items.filter((x) => !(x.profileId === item.profileId && x.exePath === item.exePath)), item]; return this._items; },
+      async delete(profileId, exePath) { this._items = this._items.filter((x) => !(x.profileId === profileId && x.exePath === exePath)); return this._items; },
+      async cleanupProfile(profileId) { this._items = this._items.filter((x) => x.profileId !== profileId); return this._items; },
+    };
+  }
+  // D2: legacy profile deletion and sidecar association mutations share one
+  // main-process gate.  The two stores remain separate files, but no queued
+  // association save can validate a profile and then land after that profile
+  // has been deleted.
+  let gameProfileMutation = Promise.resolve();
+  const serializeGameProfileMutation = (work) => {
+    const next = gameProfileMutation.then(work, work);
+    gameProfileMutation = next.catch(() => {});
+    return next;
+  };
   // M17p: the sysStats by-value capture fix (S4/N1-r2) - THE ONE NORMALIZE
   // at the top (the plan's unwrap expression): main.js passes a MUTABLE
   // HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc,
@@ -2248,6 +2274,43 @@ export function createIpcHandlers({
         return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
       },
 
+      // D2: scan is read-only and transient. The adapter returns only
+      // currently running executable paths; no PID is accepted or persisted.
+      'games-scan': async (...args) => {
+        assertNoPayload(args, 'games-scan');
+        const result = await gameScan.scan();
+        return { ...(result ?? {}), apps: normalizeScannedApps(result?.apps ?? []) };
+      },
+
+      'game-profiles-list': async (...args) => {
+        assertNoPayload(args, 'game-profiles-list');
+        const profiles = await store.loadProfiles();
+        return { associations: await gameProfiles.load(new Set(profiles.map((p) => p.id))) };
+      },
+
+      'game-profile-save': async (payload) => {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-profile-save: payload must be an object');
+        return serializeGameProfileMutation(async () => {
+          const profiles = await store.loadProfiles();
+          const profile = profiles.find((p) => p.id === payload.profileId);
+          if (!profile) throw new Error('game-profile-save: profile not found');
+          const exePath = canonicalExePath(payload.exePath);
+          if (!exePath) throw new Error('game-profile-save: exePath must be an absolute Windows path');
+          const clean = normalizeAssociation({ ...payload, exePath, profileId: profile.id });
+          if (!clean) throw new Error('game-profile-save: invalid association');
+          return { associations: await gameProfiles.upsert(clean, new Set(profiles.map((p) => p.id))) };
+        });
+      },
+
+      'game-profile-delete': async (payload) => {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-profile-delete: payload must be an object');
+        return serializeGameProfileMutation(async () => {
+          const profiles = await store.loadProfiles();
+          if (!profiles.some((p) => p.id === payload.profileId)) throw new Error('game-profile-delete: profile not found');
+          return { associations: await gameProfiles.delete(payload.profileId, payload.exePath, new Set(profiles.map((p) => p.id))) };
+        });
+      },
+
       'profiles-save': async (profile) => {
         if (typeof profile !== 'object' || profile === null || Array.isArray(profile)) {
           throw new Error('profiles-save: profile must be an object');
@@ -2282,8 +2345,14 @@ export function createIpcHandlers({
         if (typeof id !== 'string' || id.length === 0) {
           throw new Error('profiles-delete: id must be a non-empty string');
         }
-        await store.deleteProfile(id);
-        return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
+        return serializeGameProfileMutation(async () => {
+          await store.deleteProfile(id);
+          const remaining = await store.loadProfiles();
+          // The optional sidecar is best-effort cleanup.  A corrupt/future
+          // sidecar must not make the legacy profile delete action fail.
+          try { await gameProfiles.cleanupProfile(id, new Set(remaining.map((p) => p.id))); } catch { /* surfaced by game-profiles-list */ }
+          return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
+        });
       },
 
       'profiles-rename': async (id, name) => {

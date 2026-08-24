@@ -90,6 +90,10 @@ contextBridge.exposeInMainWorld('arcPower', {
   profilesDelete: (id) => ipcRenderer.invoke('profiles-delete', id),
   profilesRename: (id, name) => ipcRenderer.invoke('profiles-rename', id, name),
   profilesSettingsSave: (patch) => ipcRenderer.invoke('profiles-settings-save', patch),
+  gamesScan: () => ipcRenderer.invoke('games-scan'),
+  gameProfilesList: () => ipcRenderer.invoke('game-profiles-list'),
+  gameProfileSave: (association) => ipcRenderer.invoke('game-profile-save', association),
+  gameProfileDelete: (association) => ipcRenderer.invoke('game-profile-delete', association),
   trayRebuild: () => ipcRenderer.invoke('tray-rebuild'),
   // M2D: mock-only featureset control. The channels exist ONLY in mock mode
   // (real mode rejects with "No handler registered" - the renderer never

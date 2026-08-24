@@ -52,6 +52,8 @@ import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
 import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
+import { GameProfileStore } from './store/game-profile-store.js';
+import { createGameScanAdapter } from './game-scan.js';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
 // M23 (Part B): the ADVANCED overlay module (the AMD-Adrenaline-style
@@ -1160,6 +1162,27 @@ async function main() {
     dir: mockDataDir ?? undefined,
     ocModeDefault: mock ? (process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced') : 'stock',
   });
+  const gameProfiles = new GameProfileStore({ dir: store.dir });
+  const gameScan = mock
+    ? {
+      scan: async () => process.env.RID_MOCK_GAME_SCAN === '1'
+        ? {
+          apps: [
+            { exePath: 'C:\\Games\\RID-Verify-One.exe', processName: 'RID-Verify-One.exe', displayName: 'RID Verify One', artwork: 'data:image/png;base64,AA==', source: 'scan' },
+            { exePath: 'C:\\Games\\RID-Verify-Two.exe', processName: 'RID-Verify-Two.exe', displayName: 'RID Verify Two', source: 'scan' },
+          ],
+        }
+        : { apps: [] },
+    }
+    : createGameScanAdapter({
+      getArtwork: async (exePath) => {
+        try {
+          const icon = await app.getFileIcon(exePath, { size: 'small' });
+          const dataUrl = icon.toDataURL();
+          return /^data:image\/(?:png|jpeg|webp);base64,/.test(dataUrl) ? dataUrl : null;
+        } catch { return null; }
+      },
+    });
   // Mock/ui-verify sessions seed the session mode into the ISOLATED store
   // (never the real settings.json - F4 above). The real product path never
   // writes at boot.
@@ -2571,6 +2594,8 @@ async function main() {
     // M17f: the sysman power-limits consumer (the PL2 companion + the
     // 'power-limits:read' source).
     sysmanPowerLimits,
+    gameProfiles,
+    gameScan,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach

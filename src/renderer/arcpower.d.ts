@@ -10,6 +10,9 @@ import type {
   Capabilities,
   DeviceInfo,
   DeviceState,
+  GameApplication,
+  GameAssociation,
+  GameProfilesEnvelope,
   DisplayApplyResponse,
   DisplaySettings,
   DisplayState,
@@ -169,6 +172,10 @@ export interface ArcPowerApi {
   profilesDelete(id: string): Promise<ProfilesEnvelope>;
   profilesRename(id: string, name: string): Promise<ProfilesEnvelope>;
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
+  gamesScan(): Promise<{ apps: GameApplication[]; error?: string }>;
+  gameProfilesList(): Promise<GameProfilesEnvelope>;
+  gameProfileSave(association: Partial<GameAssociation> & { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;
+  gameProfileDelete(association: { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;
   trayRebuild(): Promise<{ ok: boolean }>;
   /** M2D (mock mode only): the featureset list + current selection for the
    *  header dropdown. The channel is absent in real mode (invoke rejects). */

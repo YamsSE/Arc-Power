@@ -766,6 +766,36 @@ export interface DisplaySettings {
   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom';
 }
 
+export interface GameProfileGraphics {
+  flipMode?: FlipMode;
+  frameLimit?: { enabled: boolean; value: number };
+  lowLatency?: LowLatency;
+}
+
+export interface GameApplication {
+  exePath: string;
+  processName: string;
+  displayName: string;
+  source: 'scan' | 'manual';
+  artwork?: string;
+}
+
+export interface GameAssociation {
+  id: string;
+  profileId: string;
+  exePath: string;
+  processName: string;
+  displayName: string;
+  source: 'scan' | 'manual';
+  artwork?: string;
+  enabled: boolean;
+  graphics: GameProfileGraphics;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameProfilesEnvelope { associations: GameAssociation[]; }
+
 /** A capability/value pair used for Display rows that may be exposed by one
  * driver family but not another. `controllable` is never inferred from a
  * value: it is only true when the backend has a verified write + read-back
