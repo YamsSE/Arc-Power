@@ -175,7 +175,8 @@ export async function startupUpdateCheck(): Promise<void> {
       setUpdateBtn('idle');
     }
   } catch {
-    // Silent fail on startup - button stays hidden
-    setUpdateBtn('idle');
+    // Keep a retry affordance visible. A transient GitHub/API/network failure
+    // must not look identical to "no update available".
+    setUpdateBtn('error');
   }
 }

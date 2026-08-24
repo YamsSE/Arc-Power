@@ -189,7 +189,8 @@ function normalizeSettings(raw = {}) {
  * @returns {{
  *   getWindow: () => import('electron').BrowserWindow | null,
  *   getState: () => { exists: boolean, visible: boolean, bounds: object | null, position: string, scale: number, enabled: boolean, hotkeyRegistered: boolean },
- *   apply: (settings: object) => void,   // idempotent geometry + visibility
+ *   apply: (settings: object, options?: { preserveVisibility?: boolean }) => void,
+ *                                        // idempotent geometry + visibility
  *                                        // application (boot + every change)
  *   toggle: () => Promise<void>,         // the SHORTCUT flip - gated on the
  *                                        // enabled master; never persists
@@ -385,7 +386,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
      * renderer happen TOGETHER (M7) - the renderer re-renders against the
      * SAME pushed scale the window was resized with (no race, no clipping).
      */
-    apply(rawSettings) {
+    apply(rawSettings, { preserveVisibility = false } = {}) {
       applied = normalizeSettings(rawSettings);
       if (!win) build();
       if (win && !win.isDestroyed()) {
@@ -401,7 +402,11 @@ export function createOverlayWindow({ getOverlaySettings }) {
         // + push settings but do NOT show the window. The hotkey still works
         // (toggle() checks applied.enabled, not visible). Subsequent applies
         // (Settings toggle) show/hide normally.
-        if (bootApply) {
+        if (preserveVisibility) {
+          // Geometry/content changes must not turn a shortcut-hidden HUD
+          // back on. The master overlayEnabled change is the only settings
+          // reaction that owns session visibility.
+        } else if (bootApply) {
           bootApply = false;
         } else if (applied.enabled) {
           if (!win.isVisible()) win.show();

@@ -25,7 +25,7 @@
 import { createRequire } from 'node:module';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
-import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS } from './backend/backend.interface.js';
+import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey } from './backend/units.js';
 import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
@@ -128,6 +128,46 @@ export function sanitizeGraphicsSettings(payload, range = null) {
       out[key] = { enabled: value.enabled, value: Math.min(r.max, Math.max(r.min, snapped)) };
     } else {
       throw new Error(`unknown graphics setting: ${key}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * M10b: validate a display-settings payload and return a clean copy - the
+ * DEDICATED display validator (plan-review S1, the graphics twin: the OC
+ * sanitizeSettings keeps rejecting display keys - display settings have no
+ * OC waiver and no OC-mode gate, so they never ride the OC machinery).
+ * Throws on anything illegal (unknown keys, bad options, a malformed
+ * wireFormat pair). The wire-format depth is validated against the
+ * canonical BPC list (6/8/10/12 - the driver's bpc-flag bit values). The
+ * per-display supported-list gating stays in the backend (the M10b-fix
+ * lesson: no caps pre-gate - the driver's ACTUAL answer decides).
+ * @param {unknown} payload
+ * @returns {import('./backend/backend.interface.js').DisplaySettings}
+ */
+export function sanitizeDisplaySettings(payload) {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error('display-settings payload must be a plain object');
+  }
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === 'quantizationRange') {
+      if (!DISPLAY_QUANTIZATION_OPTIONS.includes(value)) throw new Error(`quantizationRange must be one of: ${DISPLAY_QUANTIZATION_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else if (key === 'wireFormat') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || !DISPLAY_WIRE_FORMAT_OPTIONS.includes(value.model)
+        || !DISPLAY_BPC_OPTIONS.includes(value.depth)) {
+        throw new Error(`wireFormat must be { model: one of ${DISPLAY_WIRE_FORMAT_OPTIONS.join(', ')}, depth: one of ${DISPLAY_BPC_OPTIONS.join(', ')} }`);
+      }
+      out[key] = { model: value.model, depth: value.depth };
+    } else if (key === 'scalingMode') {
+      if (!DISPLAY_SCALING_MODE_OPTIONS.includes(value)) throw new Error(`scalingMode must be one of: ${DISPLAY_SCALING_MODE_OPTIONS.join(', ')}`);
+      out[key] = value;
+    } else {
+      throw new Error(`unknown display setting: ${key}`);
     }
   }
   return out;
@@ -1532,6 +1572,56 @@ export function createIpcHandlers({
         let graphicsState = null;
         try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
         return { ok: out.ok, perControl: out.perControl, graphicsState };
+      },
+
+      // M10b (the Graphics "Display" view): the display-output surface.
+      // 'display:get' is the page's Display-view load read
+      // (assertValidDeviceId-guarded like graphics:get - the renderer NEVER
+      // calls it with a null deviceId: the no-Intel page guard renders
+      // 'No GPU available.' first). The backend never throws - the
+      // { displays: [] } shape is the honest no-controls degrade.
+      'display:get': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        return backend.getDisplaySettings(deviceId);
+      },
+
+      // M10b: the DEDICATED display apply path (plan-review S1, the
+      // graphics-apply twin - the OC machinery cannot carry a display
+      // payload: display settings have no OC waiver and no OC-mode gate).
+      // No ocModeRefusal, no extendedUnavailableRefusal, no OC waiver
+      // retry. The elevation-aware runner mirrors graphics:apply: the
+      // in-process branch + the elevated 'display-apply' worker branch (the
+      // elevation toast pattern stays on the page). The response envelope
+      // is { ok, perControl, displayState } with the FRESH
+      // getDisplaySettings read-back for the page's per-control refresh.
+      'display:apply': async (deviceId, request) => {
+        assertValidDeviceId(deviceId);
+        if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+          throw new Error('display apply request must be a plain object');
+        }
+        if (typeof request.deviceKey !== 'string' || request.deviceKey.length === 0
+          || typeof request.displayKey !== 'string' || request.displayKey.length === 0) {
+          throw new Error('display apply request requires stable deviceKey and displayKey');
+        }
+        const target = await backend.getDeviceTarget?.(deviceId);
+        if (!target || target.deviceKey !== request.deviceKey) {
+          throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
+        }
+        const settings = sanitizeDisplaySettings(request.patch);
+        if (target.synthetic || target.backendKind === 'os') {
+          const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'display settings are not supported on this GPU' }]));
+          return { ok: Object.keys(perControl).length === 0, perControl, displayState: await backend.getDisplaySettings(deviceId) };
+        }
+        const applyRequest = { deviceId, deviceKey: request.deviceKey, displayKey: request.displayKey, physicalTarget: physicalTargetOf(target), settings };
+        if (applyRunner) {
+          const out = await applyRunner.displayApply(applyRequest);
+          return { ok: out.ok === true, perControl: out.perControl ?? {}, displayState: out.displayState ?? null };
+        }
+        await backend.assertDeviceTarget?.(deviceId, request.deviceKey, physicalTargetOf(target));
+        const out = await backend.setDisplaySettings(deviceId, { deviceKey: request.deviceKey, displayKey: request.displayKey, patch: settings });
+        let displayState = null;
+        try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+        return { ok: out.ok, perControl: out.perControl, displayState };
       },
 
       'apply-settings': async (deviceId, payload, opts) => {

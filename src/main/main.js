@@ -1097,6 +1097,15 @@ async function main() {
           try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
           return { ok: out.ok, perControl: out.perControl, graphicsState };
         },
+        // Display writes use a stable adapter key + driver encoder key and
+        // are verified by the backend against a fresh enumeration.
+        displayApply: async ({ deviceId, deviceKey, physicalTarget, displayKey, settings }) => {
+          await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
+          const out = await backend.setDisplaySettings(deviceId, { deviceKey, displayKey, patch: settings });
+          let displayState = null;
+          try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+          return { ok: out.ok, perControl: out.perControl, displayState };
+        },
       },
       log: (s) => console.log(s),
     });
@@ -1124,6 +1133,13 @@ async function main() {
         let graphicsState = null;
         try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
         return { ok: out.ok, perControl: out.perControl, graphicsState };
+      },
+      displayApply: async ({ deviceId, deviceKey, physicalTarget, displayKey, settings }) => {
+        await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
+        const out = await backend.setDisplaySettings(deviceId, { deviceKey, displayKey, patch: settings });
+        let displayState = null;
+        try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+        return { ok: out.ok, perControl: out.perControl, displayState };
       },
     };
   }
@@ -1230,7 +1246,8 @@ async function main() {
     // touch the theme).
     try {
       const cur = await store.loadSettings();
-      const overlayOn = process.env.RID_MOCK_OVERLAY === '1';
+      const overlayOn = process.env.RID_MOCK_OVERLAY === '1'
+        || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1';
       await store.saveSettings({
         ...cur,
         overlayEnabled: overlayOn,
@@ -1243,6 +1260,11 @@ async function main() {
         overlayBgColor: overlayOn ? '#000000' : cur.overlayBgColor,
         overlayBgOpacity: overlayOn ? 0.5 : cur.overlayBgOpacity,
         overlayTheme: overlayOn ? 'classic' : cur.overlayTheme,
+        // M53: reset the HUD device-name/multi-GPU fields with the rest of
+        // the overlay seed so a failed verifier cannot bleed state forward.
+        overlayChipNames: overlayOn ? false : cur.overlayChipNames,
+        overlayDeviceKeys: overlayOn ? null : cur.overlayDeviceKeys,
+        overlayPollMs: overlayOn ? 400 : cur.overlayPollMs,
       });
     } catch (err) {
       console.log(`[boot] overlay session seed skipped: ${err.message}`);
@@ -1261,11 +1283,18 @@ async function main() {
     try {
       const cur = await store.loadSettings();
       const advOn = process.env.RID_MOCK_ADV_OVERLAY === '1';
-      const hudOn = process.env.RID_MOCK_OVERLAY === '1';
+      const hudOn = process.env.RID_MOCK_OVERLAY === '1'
+        || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1';
       await store.saveSettings({
         ...cur,
         overlayEnabled: hudOn,
         overlayHotkeyLetter: 'O',
+        // Reset HUD fields for either overlay verifier variant. They share
+        // the isolated mock store, so an advanced-only run must not inherit
+        // state left by a prior stock-HUD run.
+        overlayChipNames: hudOn || advOn ? false : cur.overlayChipNames,
+        overlayDeviceKeys: hudOn || advOn ? null : cur.overlayDeviceKeys,
+        overlayPollMs: hudOn || advOn ? 400 : cur.overlayPollMs,
         advancedOverlayEnabled: advOn,
         advancedOverlayHotkeyLetter: advOn ? 'P' : cur.advancedOverlayHotkeyLetter,
         advancedOverlayPosition: advOn ? 'right' : cur.advancedOverlayPosition,
@@ -2022,12 +2051,15 @@ async function main() {
   // ipc.js's emit stays telemetry-only (N1).
   const onOverlaySettings = async (patch) => {
     if (!overlayHandle) return;
-    applyOverlaySettings();
+    const masterChanged = patch
+      && typeof patch === 'object'
+      && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
+    applyOverlaySettings({ preserveVisibility: !masterChanged });
     if (patch && typeof patch.overlayHotkeyLetter === 'string') {
       registerOverlayHotkey(patch.overlayHotkeyLetter);
     }
   };
-  const applyOverlaySettings = () => {
+  const applyOverlaySettings = ({ preserveVisibility = false } = {}) => {
     if (!overlayHandle) return;
     let settings = {};
     try {
@@ -2093,9 +2125,12 @@ async function main() {
       theme: OVERLAY_THEMES.includes(settings.overlayTheme)
         ? settings.overlayTheme
         : OVERLAY_THEME_DEFAULT,
-    });
+    }, { preserveVisibility });
   };
-  if (uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true) {
+  if (uiVerify
+    ? (process.env.RID_MOCK_OVERLAY === '1'
+      || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1')
+    : true) {
     overlayHandle = createOverlayWindow({
       // The CURRENT persisted settings - the sync cache (the same cache the
       // close handler reads; a read failure degrades to the defaults).
@@ -2187,11 +2222,10 @@ async function main() {
   // panel window (webContents.send).
   const onAdvancedOverlaySettings = async (patch) => {
     if (!advancedOverlayHandle) return;
-    const themeOnly = patch
+    const masterChanged = patch
       && typeof patch === 'object'
-      && patch.theme !== undefined
-      && Object.keys(patch).length === 1;
-    applyAdvancedOverlaySettings({ preserveVisibility: themeOnly });
+      && Object.prototype.hasOwnProperty.call(patch, 'advancedOverlayEnabled');
+    applyAdvancedOverlaySettings({ preserveVisibility: !masterChanged });
     if (patch && typeof patch.advancedOverlayHotkeyLetter === 'string') {
       registerAdvancedOverlayHotkey(patch.advancedOverlayHotkeyLetter);
     }
@@ -2477,6 +2511,7 @@ async function main() {
       ? {
           getState: async () => overlayHandle.getState(),
           toggle: async () => { await overlayHandle.toggle(); },
+          resize: async (deviceCount) => { await overlayHandle.resize(deviceCount); },
         }
       : undefined,
     // M23 (Part B): the injected ADVANCED-overlay ops - the REAL panel
@@ -2679,7 +2714,8 @@ async function main() {
       // status row IN PLACE (the D2 regression: the tray path used to
       // leave the stale pre-apply verdict for the rest of the session).
       await runTrayApplyVerify(win, backend, store, () => trayProbe);
-    } else if (process.env.RID_MOCK_OVERLAY === '1') {
+    } else if (process.env.RID_MOCK_OVERLAY === '1'
+      || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1') {
       // M5: the overlay variant - the overlay window is REAL (created above
       // under the knob, seeded overlayEnabled:true); the hotkey is the
       // counting probe (never a real registration). Three matrix configs:
@@ -2690,7 +2726,12 @@ async function main() {
       // 'API   DX12' - M13: the api field LEFT the FPS row; M19b: the
       // SIXTH labeled row with the 'API' header after the divider).
       // M8: the graphics block runs FIRST (runOverlayVerify exits the app).
-      await runGraphicsVerify(win, backend);
+      // M53's duplicate-PNP fixture adds an intentionally ambiguous OS row;
+      // it is scoped to the overlay identity regression and does not run the
+      // unrelated single-primary graphics flow.
+      if (process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY !== '1') {
+        await runGraphicsVerify(win, backend);
+      }
       await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe, () => fpsPolls);
     } else if (process.env.RID_MOCK_ADV_OVERLAY === '1') {
       // M23 (Part B): the ADVANCED-overlay variant - the panel window is

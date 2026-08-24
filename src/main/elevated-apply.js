@@ -226,12 +226,13 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
  *   killOnTimeout?: boolean,
  *   workerTimeoutMs?: number,
  *   tokenTtlMs?: number,         // parent-owned token lifetime (default TOKEN_TTL_MS)
-  *   inProcess?: {
-  *     apply: (req: { deviceId: number, settings: object, profileApply?: boolean }) => Promise<{ result: object, state: object | null }>,
-  *     waiverAccept: (deviceId: number) => Promise<void>,
-  *     reset: (deviceId: number) => Promise<{ state: object | null }>,
-  *     graphicsApply: (req: { deviceId: number, settings: object }) => Promise<{ ok: boolean, perControl: object, graphicsState: object | null }>,
-  *   },
+ *   inProcess?: {
+ *     apply: (req: { deviceId: number, settings: object, profileApply?: boolean }) => Promise<{ result: object, state: object | null }>,
+ *     waiverAccept: (deviceId: number) => Promise<void>,
+ *     reset: (deviceId: number) => Promise<{ state: object | null }>,
+ *     graphicsApply: (req: { deviceId: number, settings: object }) => Promise<{ ok: boolean, perControl: object, graphicsState: object | null }>,
+ *     displayApply: (req: { deviceId: number, displayId: number, settings: object }) => Promise<{ ok: boolean, perControl: object, displayState: object | null }>,
+ *   },
  *   log?: (s: string) => void,
  * }} deps
  */
@@ -474,6 +475,29 @@ export function createApplyRunner({
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);
       return { worker: true, ok: result.ok === true, perControl: result.perControl ?? {}, graphicsState: result.graphicsState ?? null };
+    },
+    /**
+     * M10b (the Graphics "Display" view): run one display apply - the
+     * DEDICATED path mirroring graphicsApply() (the in-process branch +
+      * the elevated worker branch carrying op: 'display-apply' + the
+      * stable adapter/display keys). Display settings have NO OC waiver and NO OC-mode gate,
+     * so the request carries no waiverAccepted/ocMode and the worker's
+     * display-apply op never touches the OC machinery. Returns the
+     * { ok, perControl, displayState } envelope the renderer expects
+     * (displayState = the FRESH read-back), or throws APPLY_CANCELED_ERROR
+     * when the UAC prompt was canceled/denied.
+      * @param {{ deviceId: number, deviceKey: string, physicalTarget: object, displayKey: string, settings: object }} req
+     */
+    async displayApply({ deviceId, deviceKey = null, physicalTarget = null, displayKey, settings }) {
+      if (!this.needsWorker()) {
+        if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
+        const out = await inProcess.displayApply({ deviceId, deviceKey, physicalTarget, displayKey, settings });
+        return { worker: false, ok: out.ok === true, perControl: out.perControl ?? {}, displayState: out.displayState ?? null };
+      }
+      const { result } = await runWorker({ requestId: randomUUID(), op: 'display-apply', deviceId, deviceKey, physicalTarget, displayKey, settings });
+      if (!result) throw new Error(APPLY_CANCELED_ERROR);
+      if (result.ok === false && result.error) throw new Error(result.error);
+      return { worker: true, ok: result.ok === true, perControl: result.perControl ?? {}, displayState: result.displayState ?? null };
     },
   };
 }

@@ -144,7 +144,11 @@ export function isRealGpuController(c) {
   // NEVER basic|microsoft by name - the belt-and-braces exclusion (a
   // vendor-matching pnpDeviceId on a Microsoft fallback adapter must not
   // slip a non-GPU through).
-  if (/basic|microsoft/i.test(name)) return false;
+  // Vendor words also occur on virtual, remote, mirror and USB display
+  // adapters.  They are not physical GPU rows and must never receive a
+  // registry VRAM correction merely because their name contains NVIDIA,
+  // AMD, Intel or Radeon.
+  if (/basic|microsoft|virtual|remote|displaylink|indirect|mirror/i.test(name)) return false;
   const pnp = typeof c.pnpDeviceId === 'string' ? c.pnpDeviceId : '';
   return /VEN_(8086|1002|10DE)/i.test(pnp) || /intel|nvidia|radeon|geforce|arc|ati/i.test(name);
 }
@@ -184,36 +188,51 @@ export function applyRegistryMemory(controllers, registryMemory) {
   const rows = Array.isArray(registryMemory) ? registryMemory : [];
   return controllers.map((c) => {
     if (!c.pnpDeviceId) return c;
-    const row = rows.find((r) => {
+    const controllerId = normalizeIdentity(c.pnpDeviceId);
+    const candidates = rows.filter((r) => {
       const devId = typeof r?.PNPDeviceID === 'string' ? r.PNPDeviceID : '';
       const mem = r?.MemoryBytes;
-      return devId.length > 0
+      const normalizedId = normalizeIdentity(devId);
+      return controllerId && normalizedId
+        && normalizedId.length > 0
         && typeof mem === 'number' && Number.isFinite(mem) && mem > 0
-        && (devId === c.pnpDeviceId || c.pnpDeviceId.startsWith(devId));
+        && (normalizedId === controllerId || controllerId.startsWith(normalizedId));
     });
+    // Prefer the most specific match.  An exact match must still be unique;
+    // duplicate or equally-specific registry rows are ambiguous and must not
+    // attach an arbitrary VRAM value.
+    const exact = candidates.filter((r) => normalizeIdentity(r.PNPDeviceID) === controllerId);
+    const specific = exact.length > 0
+      ? exact
+      : candidates.filter((r) => normalizeIdentity(r.PNPDeviceID).length === Math.max(...candidates.map((row) => normalizeIdentity(row.PNPDeviceID).length)));
+    const row = specific.length === 1 ? specific[0] : null;
     // The registry UInt64 is the RELIABLE source - it wins over the
-    // 32-bit AdapterRAM whenever it exists. Apply the exact A770 correction
-    // here, before the carried value reaches backend/device-name consumers.
+    // 32-bit AdapterRAM whenever it exists. Normalize the known generic
+    // one-GiB under-report signatures before the value reaches every
+    // backend/device-name consumer.
     return row
-      ? { ...c, vramBytes: normalizeA770RegistryMemory(c, Math.floor(row.MemoryBytes)) }
+      ? { ...c, vramBytes: normalizeRegistryMemory(c, Math.floor(row.MemoryBytes)) }
       : c;
   });
 }
 /**
- * Normalize the two documented Windows under-report shapes for the physical
- * Intel Arc A770 SKUs. The controller identity is mandatory: a name or byte
- * count alone must never turn an unrelated adapter into an A770.
+ * Normalize the known Windows display-driver under-report shapes for any
+ * real PCI GPU. Some drivers expose an 8/16-GiB board through the registry as
+ * exactly 7/15 GiB while AdapterRAM is saturated or otherwise unusable. Keep
+ * this deliberately narrow: arbitrary values are not rounded or guessed,
+ * and non-GPU display rows are left untouched.
  * @param {object} controller
  * @param {number} memoryBytes
  * @returns {number}
  */
-export function normalizeA770RegistryMemory(controller, memoryBytes) {
+export function normalizeRegistryMemory(controller, memoryBytes) {
   if (!controller || typeof controller !== 'object') return memoryBytes;
-  const name = typeof controller.name === 'string' ? controller.name : '';
-  const pnp = typeof controller.pnpDeviceId === 'string' ? controller.pnpDeviceId : '';
-  if (!/a770/i.test(name) || !/VEN_8086&DEV_56A0/i.test(pnp)) return memoryBytes;
-  if (memoryBytes === 7 * 1024 ** 3) return 8 * 1024 ** 3;
-  if (memoryBytes === 15 * 1024 ** 3) return 16 * 1024 ** 3;
+  if (!isRealGpuController(controller)) return memoryBytes;
+  const correction = new Map([
+    [7 * 1024 ** 3, 8 * 1024 ** 3],
+    [15 * 1024 ** 3, 16 * 1024 ** 3],
+  ]);
+  if (correction.has(memoryBytes)) return correction.get(memoryBytes);
   return memoryBytes;
 }
 
@@ -668,6 +687,68 @@ function samePciPair(left, right) {
   return Boolean(a && b && a.vendor === b.vendor && a.device === b.device);
 }
 
+function explicitPciPairOf(value) {
+  const vendor = String(value?.pciVendorId ?? value?.osController?.pciVendorId ?? '').replace(/^0x/i, '').slice(-4);
+  const device = String(value?.pciDeviceId ?? value?.osController?.pciDeviceId ?? '').replace(/^0x/i, '').slice(-4);
+  return /^[0-9A-F]{4}$/i.test(vendor) && /^[0-9A-F]{4}$/i.test(device)
+    ? { vendor: vendor.toLowerCase(), device: device.toLowerCase() }
+    : null;
+}
+
+function pciPairFromPnp(value) {
+  const pnp = normalizeIdentity(value);
+  const vendor = pnp?.match(/(?:^|\\|&)VEN_([0-9A-F]{4})/i)?.[1];
+  const device = pnp?.match(/(?:^|\\|&)DEV_([0-9A-F]{4})/i)?.[1];
+  return vendor && device ? { vendor: vendor.toLowerCase(), device: device.toLowerCase() } : null;
+}
+
+function equalPciPair(left, right) {
+  return Boolean(left && right && left.vendor === right.vendor && left.device === right.device);
+}
+
+function stableIdentityParts(value) {
+  const pnpValues = [value?.pnpDeviceId, value?.osController?.pnpDeviceId]
+    .map(normalizeIdentity)
+    .filter((v) => v !== null);
+  const bdfValues = [
+    value?.bdf,
+    value?.locationInfo,
+    value?.osController?.bdf,
+    value?.osController?.locationInfo,
+  ].map(bdfOf).filter((v) => v !== null);
+  const explicitPci = [explicitPciPairOf(value), explicitPciPairOf(value?.osController)]
+    .filter((v) => v !== null);
+  const pnpPci = pnpValues.map(pciPairFromPnp).filter((v) => v !== null);
+  const pciValues = [...explicitPci, ...pnpPci];
+  const pnp = pnpValues[0] ?? null;
+  const bdf = bdfValues[0] ?? null;
+  const pci = pciValues[0] ?? null;
+  return {
+    pnp,
+    bdf,
+    pci,
+    invalid: new Set(pnpValues).size > 1
+      || new Set(bdfValues).size > 1
+      || pciValues.some((pair) => !equalPciPair(pair, pci)),
+  };
+}
+
+function stableIdentitiesAgree(device, controller) {
+  const left = stableIdentityParts(device);
+  const right = stableIdentityParts(controller);
+  if (left.invalid || right.invalid) return false;
+  if (left.pnp && right.pnp && left.pnp !== right.pnp) return false;
+  if (left.bdf && right.bdf && left.bdf !== right.bdf) return false;
+  if (left.pci && right.pci && !equalPciPair(left.pci, right.pci)) return false;
+  return true;
+}
+
+function stableIdentityEvidenceMatches(deviceParts, controllerParts) {
+  return (deviceParts.pnp && controllerParts.pnp && deviceParts.pnp === controllerParts.pnp)
+    || (deviceParts.bdf && controllerParts.bdf && deviceParts.bdf === controllerParts.bdf)
+    || (deviceParts.pci && controllerParts.pci && equalPciPair(deviceParts.pci, controllerParts.pci));
+}
+
 function rebarTargetOf(target) {
   if (target && Array.isArray(target.videoControllers)) {
     const identified = target.videoControllers.filter((controller) => pciPairOf(controller));
@@ -1042,8 +1123,9 @@ export function resetSysinfoCache() {
 }
 
 // ---------------------------------------------------------------------------
-// VRAM enrichment (M4-D user addition) - matching the IGCL device name
-// against the CIM video-controller list, with the honest fallback chain.
+// VRAM enrichment (M4-D user addition) - matching a backend adapter against
+// the CIM video-controller list by stable physical identity first, with a
+// unique name fallback for older provider payloads.
 // ---------------------------------------------------------------------------
 
 // Family tokens that identify a GPU product line in a controller name.
@@ -1085,20 +1167,24 @@ export function matchVideoController(deviceName, videoControllers) {
   if (!target) return null;
 
   // 1. exact normalized equality.
-  const exact = list.find((c) => c.name && normalize(c.name) === target);
-  if (exact) return exact;
+  const exact = list.filter((c) => c.name && normalize(c.name) === target);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
 
   // 2. GPU-family token match: the family token is NOT enough - a shared
   // NON-family token (a real model token like 'a770') is required too.
   const targetTokens = tokensOf(deviceName);
+  const familyMatches = [];
   for (const c of list) {
     if (!c.name) continue;
     const cTokens = tokensOf(c.name);
     const shared = [...targetTokens].filter((t) => cTokens.has(t) && !GENERIC_TOKENS.has(t));
     const familyShared = [...targetTokens].filter((t) => cTokens.has(t) && GPU_FAMILY_TOKENS.has(t));
     const modelShared = shared.filter((t) => !GPU_FAMILY_TOKENS.has(t));
-    if (familyShared.length > 0 && modelShared.length >= 1) return c;
+    if (familyShared.length > 0 && modelShared.length >= 1) familyMatches.push(c);
   }
+  if (familyMatches.length === 1) return familyMatches[0];
+  if (familyMatches.length > 1) return null;
 
   // 3. primary non-basic adapter - only for a MODEL-LESS device name (all
   // tokens generic/family). A name carrying a model token that matched no
@@ -1107,10 +1193,72 @@ export function matchVideoController(deviceName, videoControllers) {
   const hasModelToken = [...targetTokens]
     .some((t) => !GENERIC_TOKENS.has(t) && !GPU_FAMILY_TOKENS.has(t));
   if (!hasModelToken) {
-    const primary = list.find((c) => c.name && !/basic|microsoft/i.test(c.name));
-    if (primary) return primary;
+    const primary = list.filter((c) => c.name && !/basic|microsoft/i.test(c.name));
+    if (primary.length === 1) return primary[0];
   }
   return null;
+}
+
+function normalizeIdentity(value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim().replace(/[\u0000\s]+/g, '').toUpperCase()
+    : null;
+}
+
+function bdfOf(value) {
+  if (typeof value === 'string') {
+    const direct = value.trim().match(/^(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+    if (direct) {
+      return `${Number.parseInt(direct[1] ?? '0', 16).toString(16).padStart(4, '0')}:${Number.parseInt(direct[2], 16).toString(16).padStart(2, '0')}:${Number.parseInt(direct[3], 16).toString(16).padStart(2, '0')}.${direct[4]}`;
+    }
+    const location = value.match(/\bbus\s*(\d+)\s*,?\s*device\s*(\d+)\s*,?\s*function\s*(\d+)/i);
+    if (location) return `0000:${Number(location[1]).toString(16).padStart(2, '0')}:${Number(location[2]).toString(16).padStart(2, '0')}.${location[3]}`;
+  }
+  if (value && typeof value === 'object') {
+    const bus = Number(value.bus);
+    const device = Number(value.device);
+    const fn = Number(value.function ?? value.func ?? 0);
+    const domain = Number(value.domain ?? value.segment ?? 0);
+    if ([bus, device, fn, domain].every(Number.isInteger) && bus >= 0 && device >= 0 && fn >= 0 && domain >= 0) {
+      return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+    }
+  }
+  return null;
+}
+
+function stableControllerMatch(device, controllers) {
+  const target = stableIdentityParts(device);
+  const hasStableIdentity = Boolean(target.pnp || target.bdf || target.pci);
+  if (!hasStableIdentity || target.invalid) return { matched: hasStableIdentity, controller: null };
+
+  const byPnp = target.pnp ? controllers.filter((c) => stableIdentityParts(c).pnp === target.pnp) : [];
+  // A PNP group is authoritative when present. Secondary identities can
+  // disambiguate a duplicate group, but every supplied identity must agree
+  // before a candidate is allowed through.
+  if (byPnp.length > 0) {
+    const consistent = byPnp.filter((c) => stableIdentitiesAgree(device, c));
+    if (consistent.length === 1 && byPnp.length === 1) return { matched: true, controller: consistent[0] };
+    const byBdf = target.bdf ? consistent.filter((c) => stableIdentityParts(c).bdf === target.bdf) : [];
+    if (byBdf.length === 1) return { matched: true, controller: byBdf[0] };
+    const byPci = target.pci ? consistent.filter((c) => equalPciPair(stableIdentityParts(c).pci, target.pci)) : [];
+    if (byPci.length === 1) return { matched: true, controller: byPci[0] };
+    return { matched: true, controller: null };
+  }
+
+  // A controller without PNP may still be joined by a unique BDF/PCI proof.
+  // A controller carrying a different PNP is rejected by the same predicate.
+  const candidates = controllers.filter((c) => {
+    const parts = stableIdentityParts(c);
+    return stableIdentitiesAgree(device, c) && stableIdentityEvidenceMatches(target, parts);
+  });
+  const byBdf = target.bdf ? candidates.filter((c) => stableIdentityParts(c).bdf === target.bdf) : [];
+  if (byBdf.length === 1) return { matched: true, controller: byBdf[0] };
+  const byPci = target.pci ? candidates.filter((c) => equalPciPair(stableIdentityParts(c).pci, target.pci)) : [];
+  if (byPci.length === 1) return { matched: true, controller: byPci[0] };
+  // Once the device carries any stable identity, a failed or conflicting
+  // join is authoritative.  Falling through to a similar-looking name can
+  // assign another GPU's VRAM to this device.
+  return { matched: hasStableIdentity, controller: null };
 }
 
 /**
@@ -1118,13 +1266,19 @@ export function matchVideoController(deviceName, videoControllers) {
  * match the device against the cached sysinfo and return its vramBytes
  * (null when unmatched/degraded - formatDeviceName then keeps the plain
  * name).
- * @param {{ name?: string }} device
- * @param {{ videoControllers?: Array<{ name: string|null, vramBytes: number|null, pnpDeviceId: string|null }> } | null} sysinfo
+ * @param {{ name?: string, pnpDeviceId?: string|null, pciVendorId?: string|null, pciDeviceId?: string|null, bdf?: object|string, osController?: object|null }} device
+ * @param {{ videoControllers?: Array<{ name: string|null, vramBytes: number|null, pnpDeviceId: string|null, locationInfo?: string|null }> } | null} sysinfo
  * @returns {number | null}
  */
 export function vramBytesOfDevice(device, sysinfo) {
   const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
   if (controllers.length === 0) return null;
+  const stable = stableControllerMatch(device, controllers);
+  if (stable.matched) {
+    return stable.controller && Number.isInteger(stable.controller.vramBytes) && stable.controller.vramBytes > 0
+      ? stable.controller.vramBytes
+      : null;
+  }
   const match = matchVideoController(device?.name ?? '', controllers);
   return match && Number.isInteger(match.vramBytes) && match.vramBytes > 0 ? match.vramBytes : null;
 }
@@ -1165,6 +1319,7 @@ export function vramBytesOfDevice(device, sysinfo) {
 export function createMockSysinfo(overrides = {}) {
   const noIntel = process.env.RID_MOCK_NO_INTEL === '1';
   const zeroGpu = process.env.RID_MOCK_ZERO_GPU === '1';
+  const duplicatePnpOverlay = process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1';
   // M17d (Run B): the no-Intel REAL-controller override - the ui-verify
   // no-intel+nvml variant (RID_MOCK_NO_INTEL=1 + RID_MOCK_VENDOR=nvml)
   // replaces the default AMD row with the GTX 980-class shape (the
@@ -1185,7 +1340,32 @@ export function createMockSysinfo(overrides = {}) {
   // path bypasses the parse, so the filter must run HERE (the default +
   // no-Intel fixtures stay green; a Basic Display Adapter first controller
   // is genuinely filtered).
-  const fixtureControllers = zeroGpu ? [] : noIntel ? [
+  const fixtureControllers = zeroGpu ? [] : duplicatePnpOverlay ? [
+    {
+      name: 'Intel(R) Arc(TM) A770 Graphics',
+      vramBytes: 17179869184,
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_DUPLICATE',
+      bdf: { bus: 3, device: 0, function: 0 },
+      driverVersion: '32.0.101.8861',
+      rebarActive: true,
+    },
+    {
+      name: 'Intel(R) Arc(TM) A770 Secondary Graphics',
+      vramBytes: 8589934592,
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_DUPLICATE',
+      bdf: { bus: 0, device: 2, function: 0 },
+      driverVersion: '32.0.101.8861',
+      rebarActive: null,
+    },
+    {
+      name: 'Intel(R) Arc(TM) Ambiguous Graphics',
+      vramBytes: null,
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_DUPLICATE',
+      luid: 'duplicate-pnp-ambiguous-luid',
+      driverVersion: '32.0.101.8861',
+      rebarActive: null,
+    },
+  ] : noIntel ? [
     {
       // M7b: the FIRST controller is a non-GPU (the "Microsoft Basic
       // Display Adapter" every Windows box can list) - the predicate must

@@ -5,6 +5,7 @@
 // PNP id is deliberately the primary identity: PCI/BDF is only a fallback.
 
 import { deviceHardwareKey } from './backend/units.js';
+import { displayKeyInNamespace, displayKeySuffix } from './display-identity.js';
 
 const NULL_STATE = Object.freeze({
   powerLimitW: null,
@@ -155,9 +156,13 @@ function uniqueKey(base, used) {
 function isRealController(controller) {
   const p = physicalParts(controller);
   const name = String(controller?.name ?? '');
+  // Vendor words also occur on virtual, remote, mirror and USB display
+  // adapters. Keep those rows out of the physical GPU inventory even when a
+  // vendor-looking name or a copied PCI id is present.
+  if (/basic|microsoft|virtual|remote|displaylink|indirect|mirror/i.test(name)) return false;
   return Boolean(p?.ven === '0x8086' || p?.ven === '0x1002' || p?.ven === '0x10de'
     || /\bintel\b|arc|iris|uhd|radeon|amd|nvidia|geforce|quadro|tesla/i.test(name))
-    && !/microsoft basic|displaylink/i.test(name);
+    ;
 }
 
 function osControllerOf(controller) {
@@ -425,6 +430,9 @@ export function physicalTargetOf(device) {
 }
 
 export function physicalTargetMatches(device, proof, inventory = [device]) {
+  if (Number.isInteger(proof?.displayCardIndex)
+    && Number.isInteger(device?.displayCardIndex)
+    && proof.displayCardIndex !== device.displayCardIndex) return false;
   const actual = physicalParts({
     ...device,
     bdf: device.bdf ?? device.osController?.bdf,
@@ -646,6 +654,40 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
     async getCurrentSettings(id) { const d = await route(id); return d.synthetic ? nullDeviceState() : backend.getCurrentSettings(d.backendId); },
     async getGraphicsSettings(id) { const d = await route(id); return d.synthetic ? { supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false }, supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] }, frameLimitRange: null, values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null } } : backend.getGraphicsSettings(d.backendId); },
     async setGraphicsSettings(id, settings) { const d = await route(id); return d.synthetic ? unsupportedResult(settings) : backend.setGraphicsSettings((await writeTarget(id)).backendId, settings); },
+    async getDisplaySettings(id) {
+      const d = await route(id);
+      if (d.synthetic) return { deviceKey: d.deviceKey ?? null, adapterName: d.name ?? null, displays: [] };
+      const state = await backend.getDisplaySettings(d.backendId);
+      return {
+        ...state,
+        deviceKey: d.deviceKey ?? state.deviceKey ?? null,
+        adapterName: d.name ?? state.adapterName ?? null,
+        displays: (state.displays ?? []).map((display) => ({ ...display, displayKey: displayKeyInNamespace(display.displayKey, d.deviceKey), adapterName: d.name ?? display.adapterName ?? null })),
+      };
+    },
+    async setDisplaySettings(id, request) {
+      const d = await writeTarget(id);
+      if (!request || request.deviceKey !== d.deviceKey) {
+        const perControl = Object.fromEntries(Object.keys(request?.patch ?? {}).map((key) => [key, { ok: false, errorCode: 'stale-target', message: 'the selected graphics adapter identity is stale' }]));
+        return { ok: Object.keys(perControl).length === 0, perControl };
+      }
+      const current = await backend.getDisplaySettings(d.backendId);
+      const suffix = displayKeySuffix(request.displayKey);
+      const suffixMatches = suffix === null
+        ? []
+        : (Array.isArray(current.displays) ? current.displays : [])
+          .filter((display) => displayKeySuffix(display?.displayKey) === suffix);
+      if (!current.deviceKey || suffixMatches.length !== 1 || suffixMatches[0].identityVerified !== true) {
+        const errorCode = suffixMatches.length > 1 ? 'ambiguous-target' : 'stale-target';
+        const message = errorCode === 'ambiguous-target'
+          ? 'the selected display identity is ambiguous; refresh Display and try again'
+          : 'the selected display is stale or unverified; refresh Display and try again';
+        const perControl = Object.fromEntries(Object.keys(request.patch ?? {}).map((key) => [key, { ok: false, errorCode, message }]));
+        return { ok: Object.keys(perControl).length === 0, perControl };
+      }
+      const match = suffixMatches[0];
+      return backend.setDisplaySettings(d.backendId, { ...request, deviceKey: current.deviceKey, displayKey: match.displayKey });
+    },
     async applySettings(id, settings, opts) { const d = await writeTarget(id); return backend.applySettings(d.backendId, settings, opts); },
     async resetToDefaults(id) { return call('resetToDefaults', id); },
     async setWaiverAccepted(id) { return call('setWaiverAccepted', id); },

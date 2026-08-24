@@ -454,12 +454,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }),
         scaleValue,
       ]),
-      // M9: the Position row - the old standalone Position card's select
-      // lives here now (the same settings-row pattern as the Size row).
-      el('div', { class: 'settings-row overlay-position-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Position' }),
-        positionSelect,
-      ]),
       // M7b (fix 4) / M25: the Background section - hidden when the Arc
       // theme is selected (Arc has its own built-in chrome; background box
       // is a Classic-only option).
@@ -540,28 +534,22 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
       el('h2', { class: 'card-title', text: 'Hotkey' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
-        el('span', { class: 'settings-row-label', text: 'HUD' }),
+        el('span', { class: 'settings-row-label', text: 'Monitor' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         hotkeyInput,
+      ]),
+      // M9: keep the stock Monitor position directly below its hotkey,
+      // matching the Advanced overlay's hotkey/edge grouping.
+      el('div', { class: 'settings-row overlay-position-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Position' }),
+        positionSelect,
       ]),
       overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
         ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
         : null,
       el('hr', { class: 'overlay-hotkey-divider' }),
-      el('div', { class: 'settings-row' }, [
-        el('label', { class: 'boot-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox',
-            dataset: { setting: 'advancedOverlayEnabled' },
-            checked: persisted.advEnabled,
-            onchange: (ev: Event) => void onAdvancedEnabledToggle((ev.target as HTMLInputElement).checked),
-          }),
-          el('span', { text: 'Show the side panel' }),
-        ]),
-      ]),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Panel' }),
+        el('span', { class: 'settings-row-label', text: 'Advanced' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         advancedHotkeyInput,
       ]),

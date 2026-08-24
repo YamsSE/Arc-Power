@@ -30,10 +30,19 @@ import {
   CTL_3D_FEATURE, CTL_PROPERTY_VALUE_TYPE, CTL_GAMING_FLIP_MODE_FLAG,
   CTL_3D_LOW_LATENCY, CTL_3D_FRAME_GENERATION_OVERRIDE,
   encode3dFeatureGetset, decode3dFeatureGetsetValue, decode3dFeatureDetails,
+  // M10b (the Graphics "Display" view): the display-module surface.
+  CTL_SCALING_TYPE, CTL_WIRE_COLOR_MODEL,
+  displayFlagNames, encodeDisplayProperties, decodeDisplayProperties,
+  encodeWireFormatConfig, decodeWireFormatConfig, encodeDisplaySettings,
+  decodeDisplaySettings, encodeScalingSettings, decodeScalingSettings,
+  decodeArcSyncMonitor, decodeArcSyncProfile, encodeEdidManagementArgs,
+  encodePanelDescriptorArgs, edidMonitorName,
 } from './igcl-bindings.js';
 import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
-  GRAPHICS_LOW_LATENCY_OPTIONS,
+  GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS,
+  DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS,
+  DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
@@ -151,6 +160,35 @@ const GRAPHICS_FLIP_FROM_IGCL = Object.fromEntries(
 const GRAPHICS_LL_TO_IGCL = { off: 0, on: 1, 'on-boost': 2 };
 const GRAPHICS_LL_FROM_IGCL = { 0: 'off', 1: 'on', 2: 'on-boost' };
 
+// M10b (the Graphics "Display" view): the canonical <-> IGCL value tables
+// for the display controls (the numeric side is the v290 enum/flag; the
+// canonical strings are the shared contract - backend.interface.js option
+// lists). ScalingType is a FLAG value in the struct - the probe-pinned
+// numbers 1/2/4/8/16 (the bindings' CTL_SCALING_TYPE_FLAG table maps those
+// numbers to NAMES; the canonical side needs the numbers themselves).
+const DISPLAY_CONNECTION_CANONICAL = { 1: 'DisplayPort', 2: 'HDMI', 3: 'DVI', 4: 'MIPI', 5: 'CRT' };
+const DISPLAY_QUANT_TO_IGCL = { default: 0, limited: 1, full: 2 };
+const DISPLAY_QUANT_FROM_IGCL = { 0: 'default', 1: 'limited', 2: 'full' };
+const DISPLAY_WIRE_MODEL_TO_IGCL = { RGB: 0, YCbCr420: 1, YCbCr422: 2, YCbCr444: 3 };
+const DISPLAY_WIRE_MODEL_FROM_IGCL = { 0: 'RGB', 1: 'YCbCr420', 2: 'YCbCr422', 3: 'YCbCr444' };
+const DISPLAY_SCALING_MODE_TO_IGCL = {
+  identity: 1, centered: 2, stretched: 4,
+  'aspect-ratio-centered-max': 8, custom: 16,
+};
+const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stretched', 8: 'aspect-ratio-centered-max', 16: 'custom' };
+// The caps-bit decode yields the bindings' SCREAMING names ('IDENTITY',
+// ...) - map them to the canonical strings.
+const DISPLAY_SCALING_NAME_TO_CANONICAL = {
+  IDENTITY: 'identity', CENTERED: 'centered', STRETCHED: 'stretched',
+  ASPECT_RATIO_CENTERED_MAX: 'aspect-ratio-centered-max', CUSTOM: 'custom',
+};
+const DISPLAY_ARC_SYNC_PROFILE_CANONICAL = {
+  1: 'recommended', 2: 'excellent', 3: 'good', 4: 'compatible', 5: 'off', 6: 'vesa', 7: 'custom',
+};
+const displayCapability = (value, supported, controllable = false, reason = null, source = 'igcl') => ({
+  value, supported, controllable, reason, source,
+});
+
 export class IgclBackend {
   /**
    * @param {{
@@ -250,6 +288,11 @@ export class IgclBackend {
     // FIRST failed probe instead of re-running every 500 ms telemetry tick;
     // a device that HAS a sensor is never latched and keeps reading.
     this._tempSensorNoSensor = new Set();
+    // M10b (the Graphics "Display" view): the per-device display-output
+    // handles cache (ctlEnumerateDisplayOutputs - stable per session like
+    // the fan handles; the per-display VALUES are never cached, every
+    // getDisplaySettings reads fresh).
+    this._displayHandles = new Map();
   }
 
   /**
@@ -1927,6 +1970,582 @@ export class IgclBackend {
     return result;
   }
 
+  // -------------------------------------------------------------------------
+  // M10b - Display (the IGCL display-output surface)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The NEVER-THROW degraded DisplayState - the honest "no display
+   * controls" surface (an empty display list: no display outputs
+   * enumerated, or the display module's symbols are missing). Mirrored by
+   * the mock's per-device degrade (the RID_MOCK_MULTI_DEVICE iGPU + the
+   * RID_MOCK_DISPLAY_UNSUPPORTED knob).
+   * @returns {import('./backend.interface.js').DisplayState}
+   */
+  _displayDegraded() {
+    return { displays: [] };
+  }
+
+  /**
+   * M10b: the per-device display-output handle cache (ctlEnumerate-
+   * DisplayOutputs - the 3-arg signature: handle + count* + handles*; the
+   * M10b probe caught the uniform-2-arg mistake that silently dropped the
+   * output-handle writes and produced an empty display list). Handles are
+   * stable per session (cached like the fan handles); the per-display
+   * VALUES are never cached - every getDisplaySettings reads fresh.
+   * @param {number} deviceId
+   * @returns {Promise<object[]>}
+   */
+  async _displayOutputsOf(deviceId, refresh = false) {
+    if (!refresh && this._displayHandles.has(deviceId)) return this._displayHandles.get(deviceId);
+    const lib = this._libOrThrow();
+    const dev = await this._device(deviceId);
+    const handles = [];
+    if (!this._isUnavailable(lib.ctlEnumerateDisplayOutputs)) {
+      const countBuf = koffi.alloc('uint32', 1);
+      koffi.encode(countBuf, 'uint32', 0);
+      let result = lib.ctlEnumerateDisplayOutputs(dev.handle, countBuf, null);
+      const count = Number(koffi.decode(countBuf, 'uint32'));
+      // Sanity-cap the count (a corrupt driver write must never size an
+      // allocation); the probe: 30 outputs on the A770.
+      if (result === CTL_RESULT.SUCCESS && count > 0 && count < 64) {
+        const handlesBuf = koffi.alloc('void*', count);
+        koffi.encode(countBuf, 'uint32', count);
+        result = lib.ctlEnumerateDisplayOutputs(dev.handle, countBuf, handlesBuf);
+        if (result === CTL_RESULT.SUCCESS) {
+          for (let i = 0; i < count; i++) handles.push(koffi.decode(handlesBuf, i * 8, 'void*'));
+        }
+      }
+    }
+    this._displayHandles.set(deviceId, handles);
+    return handles;
+  }
+
+  /**
+   * M10b: the monitor-name read (the EDID 0xFC display-name descriptor).
+   * ctlEdidManagement 2-pass (READ, MONITOR) first; ctlPanelDescriptorAccess
+   * 2-pass (READ, block 0) is the fallback. The M10b probe: the management
+   * call answered ERROR_KMD_CALL on the A770 and the panel-descriptor path
+   * served the 128-byte block (name: MSI G27C4 E3). Null on any failure
+   * path (never throws - the caller wraps it).
+   * @param {object} handle the display handle
+   * @returns {Promise<string | null>}
+   */
+  async _readDisplayName(handle) {
+    const lib = this._libOrThrow();
+    if (!this._isUnavailable(lib.ctlEdidManagement)) {
+      try {
+        let args = encodeEdidManagementArgs({ edidSize: 0 });
+        let r = lib.ctlEdidManagement(handle, args.buf);
+        if (r === CTL_RESULT.SUCCESS) {
+          const size = Number(koffi.decode(args.buf, koffi.offsetof('ctl_edid_management_args_t', 'EdidSize'), 'uint32'));
+          if (Number.isInteger(size) && size > 0 && size <= 4096) {
+            const data = koffi.alloc('uint8', size);
+            args = encodeEdidManagementArgs({ edidSize: size, pEdidBuf: koffi.address(data) });
+            r = lib.ctlEdidManagement(handle, args.buf);
+            if (r === CTL_RESULT.SUCCESS) {
+              const name = edidMonitorName(data, size);
+              if (name) return name;
+            }
+          }
+        }
+      } catch {
+        // fall through to the panel-descriptor path
+      }
+    }
+    if (!this._isUnavailable(lib.ctlPanelDescriptorAccess)) {
+      try {
+        let args = encodePanelDescriptorArgs({ dataSize: 0 });
+        let r = lib.ctlPanelDescriptorAccess(handle, args.buf);
+        if (r === CTL_RESULT.SUCCESS) {
+          const size = Number(koffi.decode(args.buf, koffi.offsetof('ctl_panel_descriptor_access_args_t', 'DescriptorDataSize'), 'uint32'));
+          if (Number.isInteger(size) && size > 0 && size <= 4096) {
+            const data = koffi.alloc('uint8', size);
+            args = encodePanelDescriptorArgs({ dataSize: size, pData: koffi.address(data) });
+            r = lib.ctlPanelDescriptorAccess(handle, args.buf);
+            if (r === CTL_RESULT.SUCCESS) {
+              const name = edidMonitorName(data, size);
+              if (name) return name;
+            }
+          }
+        }
+      } catch {
+        // no name path succeeded - null
+      }
+    }
+    return null;
+  }
+
+  /**
+   * M10b: the plausible-timing filter (the probe's rule: an inactive
+   * output reports an IMPLAUSIBLE 0x0 @ 0 Hz timing; a plausible timing is
+   * the driver actually driving the output).
+   * @param {{ pixelClockHz: number, hActive: number, vActive: number, refreshRate: number }} t
+   * @returns {boolean}
+   */
+  _plausibleDisplayTiming(t) {
+    return Number.isFinite(t.refreshRate) && t.refreshRate > 10 && t.refreshRate <= 1000
+      && t.hActive > 320 && t.hActive <= 16384
+      && t.vActive > 200 && t.vActive <= 16384
+      && Number.isInteger(t.pixelClockHz) && t.pixelClockHz > 0 && t.pixelClockHz < 20000000000;
+  }
+
+  /**
+   * M10b: one display output's canonical read. Every per-feature read is
+   * defensive (try/catch per feature - a crash artifact or a refused read
+   * degrades THAT feature only, never the surface). A display whose
+   * properties read failed keeps the all-false flags - the caller excludes
+   * it via flags.active (the probe: 30 outputs, ONE active on the A770).
+   * @param {number} index the output index (display-only presentation id)
+   * @param {object} handle the display handle
+   * @param {string|null} deviceKey the stable physical adapter key
+   * @returns {Promise<object>} the canonical display shape
+   */
+  async _readDisplayOutput(index, handle, deviceKey = null) {
+    const lib = this._libOrThrow();
+    const d = {
+      id: index,
+      displayKey: null,
+      identityVerified: false,
+      name: null,
+      connection: 'Unknown',
+      resolution: null,
+      refreshRate: null,
+      colorDepth: null,
+      colorFormat: null,
+      quantizationRange: null,
+      scalingMode: null,
+      scalingMethod: displayCapability(null, false, false, 'Scaling method is not exposed by the driver interface.'),
+      vrrMode: displayCapability(null, null, false, 'Variable refresh-rate mode is read-only on this driver surface.'),
+      variableRefreshRate: displayCapability(null, null, false, 'Variable refresh rate is controlled by Windows/the display path.'),
+      vrrCurrentRange: displayCapability(null, null, false, 'The current variable refresh-rate range is not exposed by the driver interface.'),
+      vrrMaximumRange: displayCapability(null, null, false, 'The maximum variable refresh-rate range is not exposed by the driver interface.'),
+      hdcpSupport: displayCapability(null, null, false, 'HDCP support is not exposed by the driver interface.'),
+      fourKSupport: displayCapability(null, null, false, '4K support is not exposed by the driver interface.'),
+      hdrSupport: displayCapability(null, null, false, 'HDR support is not exposed by the driver interface.'),
+      hue: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface.'),
+      saturation: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface.'),
+      brightness: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface.'),
+      contrast: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface.'),
+      supportedOptions: {
+        scalingModes: [],
+        scalingMethods: [],
+        wireFormats: [],
+        bpcDepths: [],
+        quantizationRanges: [],
+      },
+      flags: { active: false, attached: false, dongleConnected: false, ditheringEnabled: false },
+      arcSync: { supported: false, minRefreshHz: null, maxRefreshHz: null, profile: null },
+    };
+    // The canonical wire-model name (the bindings' enum names are
+    // SCREAMING: 'YCBCR_422' -> the shared 'YCbCr422').
+    const canonicalWireModel = (name) => {
+      if (!name) return null;
+      const num = Object.entries(CTL_WIRE_COLOR_MODEL).find(([, n]) => n === name)?.[0];
+      return num === undefined ? null : (DISPLAY_WIRE_MODEL_FROM_IGCL[num] ?? null);
+    };
+
+    // Properties - the ONLY mandatory read (an inactive output's feature
+    // reads refuse with ERROR_KMD_CALL anyway; the probe record).
+    try {
+      if (!this._isUnavailable(lib.ctlGetDisplayProperties)) {
+        const { buf } = encodeDisplayProperties();
+        const r = lib.ctlGetDisplayProperties(handle, buf);
+        if (r === CTL_RESULT.SUCCESS) {
+          const p = decodeDisplayProperties(buf);
+          if (typeof deviceKey === 'string' && p.encoderId) {
+            // The encoder handle is the driver-provided physical output
+            // identity. The ordinal is intentionally excluded from this key
+            // so hot-plug/re-enumeration cannot retarget another monitor.
+            d.displayKey = `${deviceKey}|display|${p.encoderId}`;
+            d.identityVerified = true;
+          }
+          d.connection = DISPLAY_CONNECTION_CANONICAL[p.type] ?? 'Unknown';
+          d.flags = {
+            active: (p.configFlags & 1) !== 0,
+            attached: (p.configFlags & 2) !== 0,
+            dongleConnected: (p.configFlags & 4) !== 0,
+            ditheringEnabled: (p.configFlags & 8) !== 0,
+          };
+          if (this._plausibleDisplayTiming(p.timing)) {
+            d.resolution = { width: p.timing.hActive, height: p.timing.vActive };
+            d.refreshRate = p.timing.refreshRate;
+          }
+        }
+      }
+    } catch {
+      // degrade this display's fields
+    }
+    if (!d.flags.active) return d;
+
+    // Display settings (the quantization range + the driver's own
+    // Controllable contract - a UI hint for the offered options; the SET
+    // itself is never pre-gated, the driver's actual result decides).
+    try {
+      if (!this._isUnavailable(lib.ctlGetSetDisplaySettings)) {
+        const { buf } = encodeDisplaySettings({ set: false });
+        const r = lib.ctlGetSetDisplaySettings(handle, buf);
+        if (r === CTL_RESULT.SUCCESS) {
+          const ds = decodeDisplaySettings(buf);
+          d.quantizationRange = DISPLAY_QUANT_FROM_IGCL[ds.quantizationRange] ?? null;
+          if ((ds.controllableFlags & (1 << 3)) !== 0) {
+            d.supportedOptions.quantizationRanges = [...DISPLAY_QUANTIZATION_OPTIONS];
+          }
+        }
+      }
+    } catch {
+      // degrade the quantization surface
+    }
+
+    // Wire format. THIS driver build (the probe's byte-truth): the
+    // ColorDepth field is NEVER populated - the supported list is empty,
+    // the current member reports a model only (YCBCR_422 live) and the SET
+    // is a silent no-op. The COLOR card's format/depth controls therefore
+    // degrade honestly (wireFormats/bpcDepths empty, colorDepth null).
+    try {
+      if (!this._isUnavailable(lib.ctlGetSetWireFormat)) {
+        const { buf } = encodeWireFormatConfig({ operation: 0 });
+        const r = lib.ctlGetSetWireFormat(handle, buf);
+        if (r === CTL_RESULT.SUCCESS) {
+          const wf = decodeWireFormatConfig(buf);
+          d.supportedOptions.wireFormats = [...new Set(wf.supported.map((s) => canonicalWireModel(s.model)))].filter(Boolean);
+          d.supportedOptions.bpcDepths = [...new Set(wf.supported.map((s) => s.depth))];
+          if (wf.currentUnavailable) {
+            d.colorFormat = canonicalWireModel(wf.currentModel);
+            d.colorDepth = null;
+          } else if (wf.current) {
+            d.colorFormat = canonicalWireModel(wf.current.model);
+            d.colorDepth = wf.current.depth;
+          }
+        }
+      }
+    } catch {
+      // degrade the wire-format surface
+    }
+
+    // Scaling: the driver's SupportedScaling bitmask (the offered options)
+    // + the current scaling type (a FLAG value - the probe's live read:
+    // 0x1 = IDENTITY).
+    try {
+      if (!this._isUnavailable(lib.ctlGetSupportedScalingCapability) && !this._isUnavailable(lib.ctlGetCurrentScaling)) {
+        const capsBuf = koffi.alloc('uint8', koffi.sizeof('ctl_scaling_caps_t') + 16);
+        koffi.encode(capsBuf, 0, 'uint32', koffi.sizeof('ctl_scaling_caps_t'));
+        koffi.encode(capsBuf, 4, 'uint8', 0);
+        const capsResult = lib.ctlGetSupportedScalingCapability(handle, capsBuf);
+        if (capsResult === CTL_RESULT.SUCCESS) {
+          const capsFlags = Number(koffi.decode(capsBuf, 8, 'uint32')) >>> 0;
+          d.supportedOptions.scalingModes = displayFlagNames(capsFlags, CTL_SCALING_TYPE)
+            .map((n) => DISPLAY_SCALING_NAME_TO_CANONICAL[n])
+            .filter(Boolean);
+        }
+        const { buf } = encodeScalingSettings();
+        const curResult = lib.ctlGetCurrentScaling(handle, buf);
+        if (curResult === CTL_RESULT.SUCCESS) {
+          const sc = decodeScalingSettings(buf);
+          d.scalingMode = DISPLAY_SCALING_MODE_FROM_IGCL[sc.scalingType] ?? null;
+        }
+      }
+    } catch {
+      // degrade the scaling surface
+    }
+
+    // Arc Sync - READ-ONLY in the app (the monitor params + profile are
+    // recorded for the INFORMATION section; the probe: 48-180 Hz monitor
+    // range + the RECOMMENDED 90-180 profile on the A770).
+    try {
+      if (!this._isUnavailable(lib.ctlGetIntelArcSyncInfoForMonitor)) {
+        const buf = koffi.alloc('uint8', koffi.sizeof('ctl_intel_arc_sync_monitor_params_t') + 16);
+        koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_intel_arc_sync_monitor_params_t'));
+        koffi.encode(buf, 4, 'uint8', 0);
+        const r = lib.ctlGetIntelArcSyncInfoForMonitor(handle, buf);
+        if (r === CTL_RESULT.SUCCESS) {
+          const m = decodeArcSyncMonitor(buf);
+          d.arcSync.supported = m.supported;
+          d.arcSync.minRefreshHz = m.supported ? m.minRefreshHz : null;
+          d.arcSync.maxRefreshHz = m.supported ? m.maxRefreshHz : null;
+          d.variableRefreshRate = displayCapability(null, m.supported, false, 'Variable refresh rate is controlled by Windows/the display path.');
+          d.vrrMaximumRange = displayCapability(m.supported ? `${m.minRefreshHz} Hz - ${m.maxRefreshHz} Hz` : null, m.supported, false, 'Read-only driver capability.');
+        }
+      }
+    } catch {
+      // degrade the arc-sync surface
+    }
+    try {
+      if (!this._isUnavailable(lib.ctlGetIntelArcSyncProfile)) {
+        const buf = koffi.alloc('uint8', koffi.sizeof('ctl_intel_arc_sync_profile_params_t') + 16);
+        koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_intel_arc_sync_profile_params_t'));
+        koffi.encode(buf, 4, 'uint8', 0);
+        const r = lib.ctlGetIntelArcSyncProfile(handle, buf);
+        if (r === CTL_RESULT.SUCCESS) {
+          const p = decodeArcSyncProfile(buf);
+          d.arcSync.profile = DISPLAY_ARC_SYNC_PROFILE_CANONICAL[p.profile] ?? null;
+          d.vrrMode = displayCapability(d.arcSync.profile, d.arcSync.supported, false, 'Variable refresh-rate mode is read-only on this driver surface.');
+        }
+      }
+    } catch {
+      // degrade the arc-sync profile
+    }
+
+    // The EDID monitor name (defensive - a failing name read keeps null).
+    try {
+      d.name = await this._readDisplayName(handle);
+    } catch {
+      d.name = null;
+    }
+    return d;
+  }
+
+  /**
+   * M10b: read the Display view's driver state. NEVER throws - every
+   * failure (missing symbols, ctl errors, crashes) degrades to
+   * { displays: [] } (the honest no-controls surface). Only ACTIVE display
+   * outputs are returned (the M10b probe: 30 enumerated outputs, ONE
+   * active on the A770 - the inactive outputs report implausible timings
+   * and refuse every feature read); the per-feature reads are defensive.
+   * @param {number} deviceId
+   * @returns {Promise<import('./backend.interface.js').DisplayState>}
+   */
+  async getDisplaySettings(deviceId) {
+    try {
+      const lib = this._libOrThrow();
+      const dev = await this._device(deviceId);
+      const deviceKey = dev.deviceKey ?? deviceHardwareKey(dev);
+      if (this._isUnavailable(lib.ctlEnumerateDisplayOutputs) || this._isUnavailable(lib.ctlGetDisplayProperties)) {
+        return { deviceKey, adapterName: dev.name ?? null, displays: [] };
+      }
+      // Output handles are topology-scoped. Re-enumerate for every Display
+      // read so hot-plug/re-enumeration cannot leave the view on stale handles.
+      const handles = await this._displayOutputsOf(deviceId, true);
+      const displays = [];
+      for (let i = 0; i < handles.length; i++) {
+        const d = await this._readDisplayOutput(i, handles[i], deviceKey);
+        if (d.flags.active) displays.push(d);
+      }
+      return { deviceKey, adapterName: dev.name ?? null, displays };
+    } catch {
+      return this._displayDegraded();
+    }
+  }
+
+  /**
+   * M10b: apply the Display view's settings for ONE display (the DEDICATED
+   * display apply path - NOT the OC machinery: display settings have no OC
+   * waiver and no OC-mode gate). Returns the ApplyResult shape with one
+   * per-control entry per requested field. Every set is followed by a
+   * read-back verification (the plan's every-apply-verified rule); a
+   * SUCCESS-with-unchanged-read-back surfaces as the honest silentNoop
+   * (the probe's wire-format finding: the SET answers SUCCESS but the
+   * read-back never changes - read-only in effect on this driver build).
+   * The error mapping reuses igclErrorCode; the 0x60000000-range display
+   * codes fall through to the honest 'io-failed' fallback (never raw hex
+   * in the UI). The scaling entry carries the honest modeset-flash warning
+   * (the probe skipped the scaling SET by design - a scaling change is a
+   * PHYSICAL MODESET = a screen flash).
+   * @param {number} deviceId
+   * @param {{ deviceKey: string, displayKey: string, patch: import('./backend.interface.js').DisplaySettings }} request
+   * @returns {Promise<import('./backend.interface.js').ApplyResult>}
+   */
+  async setDisplaySettings(deviceId, request = {}) {
+    const lib = this._libOrThrow();
+    const dev = await this._device(deviceId);
+    const deviceKey = typeof request.deviceKey === 'string' ? request.deviceKey : null;
+    const displayKey = typeof request.displayKey === 'string' ? request.displayKey : null;
+    const patch = request.patch && typeof request.patch === 'object' ? request.patch : {};
+    const result = { ok: true, perControl: {} };
+    const fail = (control, errorCode, message) => {
+      result.perControl[control] = { ok: false, errorCode, message };
+      result.ok = false;
+    };
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode']
+      .filter((c) => patch[c] !== null && patch[c] !== undefined);
+
+    // The whole-surface gate (the M8 setGraphicsSettings pattern): when NO
+    // display API is bound, the surface is absent - every requested control
+    // fails with unavailable-symbol BEFORE the handle lookup (a surface-less
+    // runtime cannot even resolve display ids).
+    if (this._isUnavailable(lib.ctlGetSetDisplaySettings)
+      && this._isUnavailable(lib.ctlGetSetWireFormat)
+      && this._isUnavailable(lib.ctlSetCurrentScaling)) {
+      for (const c of controls) {
+        fail(c, 'unavailable-symbol', 'the display-settings API is missing in the IGCL runtime');
+      }
+      return result;
+    }
+
+    if (!deviceKey || !displayKey || deviceKey !== (dev.deviceKey ?? deviceHardwareKey(dev))) {
+      for (const c of controls) fail(c, 'stale-target', 'the selected graphics adapter identity is stale; refresh Display and try again');
+      return result;
+    }
+    // Output handles are topology-scoped. Re-enumerate immediately before
+    // resolving a write target, so a hot-plug cannot retarget a stale handle.
+    const handles = await this._displayOutputsOf(deviceId, true);
+    const fresh = [];
+    for (let i = 0; i < handles.length; i++) {
+      const output = await this._readDisplayOutput(i, handles[i], deviceKey);
+      if (output.flags.active) fresh.push({ output, handle: handles[i] });
+    }
+    const matches = fresh.filter(({ output }) => output.displayKey === displayKey && output.identityVerified === true);
+    if (matches.length !== 1) {
+      for (const c of controls) fail(c, matches.length === 0 ? 'stale-target' : 'ambiguous-target', 'the selected display is no longer uniquely connected; refresh Display and try again');
+      return result;
+    }
+    const handle = matches[0].handle;
+
+    if (patch.quantizationRange !== null && patch.quantizationRange !== undefined) {
+      if (this._isUnavailable(lib.ctlGetSetDisplaySettings)) {
+        fail('quantizationRange', 'unavailable-symbol', 'the display-settings API is missing in the IGCL runtime');
+      } else {
+        const igclValue = DISPLAY_QUANT_TO_IGCL[patch.quantizationRange];
+        if (igclValue === undefined) {
+          fail('quantizationRange', 'out-of-range', `unknown quantization range '${patch.quantizationRange}'`);
+        } else {
+          // The M10b-fix lesson: NO Controllable-flag pre-gate - the flag
+          // stays a UI hint (the supportedOptions list); the set reaches
+          // the driver and the driver's ACTUAL result decides (a genuine
+          // refusal still surfaces honestly through the ApplyResult
+          // machinery). The probe-verified set shape: Set@5=true +
+          // ValidFlags@16=1<<3 (QUANTIZATION_RANGE) + QuantizationRange@32.
+          const gs = encodeDisplaySettings({ set: true, validFlags: 1 << 3, quantizationRange: igclValue });
+          const setResult = lib.ctlGetSetDisplaySettings(handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('quantizationRange', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            const rb = encodeDisplaySettings({ set: false });
+            const getResult = lib.ctlGetSetDisplaySettings(handle, rb.buf);
+            let readBackEqual = false;
+            let message;
+            if (getResult !== CTL_RESULT.SUCCESS) {
+              message = `set succeeded but read-back failed (${describeResult(getResult)})`;
+            } else {
+              const got = decodeDisplaySettings(rb.buf).quantizationRange;
+              readBackEqual = got === igclValue;
+              message = readBackEqual ? undefined : `read-back ${got} != requested ${igclValue}`;
+            }
+            result.perControl.quantizationRange = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message,
+              readBackEqual,
+              // F3 silent no-op: SUCCESS from the setter with an unchanged
+              // read-back - the driver accepted nothing; NEVER "applied".
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+            };
+            if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
+    if (patch.wireFormat !== null && patch.wireFormat !== undefined) {
+      if (this._isUnavailable(lib.ctlGetSetWireFormat)) {
+        fail('wireFormat', 'unavailable-symbol', 'the wire-format API is missing in the IGCL runtime');
+      } else {
+        const modelNum = DISPLAY_WIRE_MODEL_TO_IGCL[patch.wireFormat.model];
+        const depth = patch.wireFormat.depth;
+        if (modelNum === undefined || !DISPLAY_BPC_OPTIONS.includes(depth)) {
+          fail('wireFormat', 'out-of-range', `unknown wire format '${patch.wireFormat.model}' ${depth}-bpc`);
+        } else {
+          const gs = encodeWireFormatConfig({ operation: 1, colorModel: modelNum, colorDepth: depth });
+          const setResult = lib.ctlGetSetWireFormat(handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('wireFormat', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            // Read-back verify. THIS driver build (the probe's byte-truth):
+            // SUCCESS with an UNCHANGED read-back - the silent no-op - the
+            // honest read-only result, never a fake "applied". The depth is
+            // never populated here, so the model is the only verifiable
+            // member.
+            const rb = encodeWireFormatConfig({ operation: 0 });
+            const getResult = lib.ctlGetSetWireFormat(handle, rb.buf);
+            let readBackEqual = false;
+            let message;
+            if (getResult !== CTL_RESULT.SUCCESS) {
+              message = `set succeeded but read-back failed (${describeResult(getResult)})`;
+            } else {
+              const wf = decodeWireFormatConfig(rb.buf);
+              if (wf.currentUnavailable) {
+                const curModel = DISPLAY_WIRE_MODEL_FROM_IGCL[
+                  Object.entries(CTL_WIRE_COLOR_MODEL).find(([, n]) => n === wf.currentModel)?.[0]
+                ] ?? null;
+                // A model-only read-back is not sufficient proof of a wire
+                // format apply: ColorDepth is absent on this driver surface.
+                // Keep the successful setter classified as a silent no-op.
+                readBackEqual = false;
+                message = `read-back ${curModel ?? 'unknown'} with unverifiable depth != requested ${patch.wireFormat.model} ${depth}-bpc - the wire-format surface is read-only in effect on this driver build`;
+              } else if (wf.current) {
+                readBackEqual = wf.current.model === patch.wireFormat.model && wf.current.depth === depth;
+                message = readBackEqual
+                  ? undefined
+                  : `read-back ${wf.current.model} ${wf.current.depth}-bpc != requested ${patch.wireFormat.model} ${depth}-bpc`;
+              } else {
+                message = 'set succeeded but the read-back reports no current wire format';
+              }
+            }
+            result.perControl.wireFormat = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message,
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+            };
+            if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
+    if (patch.scalingMode !== null && patch.scalingMode !== undefined) {
+      if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {
+        fail('scalingMode', 'unavailable-symbol', 'the scaling API is missing in the IGCL runtime');
+      } else {
+        const flag = DISPLAY_SCALING_MODE_TO_IGCL[patch.scalingMode];
+        if (flag === undefined) {
+          fail('scalingMode', 'out-of-range', `unknown scaling mode '${patch.scalingMode}'`);
+        } else {
+          // The M10b-fix lesson: NO SupportedScaling pre-gate - the caps
+          // bitmask stays a UI hint (the supportedOptions list); the set
+          // reaches the driver and the driver's ACTUAL result decides.
+          // ScalingType is a FLAG value in the struct (1/2/4/8/16).
+          const gs = encodeScalingSettings({ enable: true, scalingType: flag });
+          const setResult = lib.ctlSetCurrentScaling(handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('scalingMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            // The probe never set-tested scaling (the physical-modeset
+            // flash); the read-back gets a short settle - a scaling change
+            // is a real modeset and the driver may need a beat to report
+            // the new state.
+            await new Promise((r) => setTimeout(r, 400));
+            const rb = encodeScalingSettings();
+            const getResult = lib.ctlGetCurrentScaling(handle, rb.buf);
+            let readBackEqual = false;
+            let message;
+            if (getResult !== CTL_RESULT.SUCCESS) {
+              message = `set succeeded but read-back failed (${describeResult(getResult)})`;
+            } else {
+              const got = decodeScalingSettings(rb.buf).scalingType;
+              readBackEqual = got === flag;
+              message = readBackEqual ? undefined : `read-back 0x${got.toString(16)} != requested 0x${flag.toString(16)}`;
+            }
+            result.perControl.scalingMode = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message,
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              // The honest modeset note - the scaling card warns the user
+              // (the M10b probe skipped the scaling SET by design; the
+              // header documents the same flash for retro scaling).
+              warning: DISPLAY_SCALING_FLASH_WARNING,
+            };
+            if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
+    return result;
+  }
 
   // -------------------------------------------------------------------------
   // Apply

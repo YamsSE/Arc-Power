@@ -98,6 +98,218 @@ let chipNamesEnabled = false;
 let cpuChipLabel: string | null = null;
 let gpuChipLabel: string | null = null;
 let secondaryGpuChipLabels: Array<string | null> = [];
+type OverlayDeviceIdentity = {
+  id: number;
+  name?: string;
+  deviceKey?: string | null;
+  pciVendorId?: unknown;
+  pciDeviceId?: unknown;
+  bdf?: unknown;
+  locationInfo?: unknown;
+  pnpDeviceId?: string | null;
+  osController?: { pnpDeviceId?: string | null; pciVendorId?: unknown; pciDeviceId?: unknown; bdf?: unknown; locationInfo?: unknown } | null;
+};
+type OverlaySysinfoController = {
+  name?: string | null;
+  pnpDeviceId?: string | null;
+  pciVendorId?: unknown;
+  pciDeviceId?: unknown;
+  bdf?: unknown;
+  locationInfo?: unknown;
+};
+const sysinfoGpuLabels = new Map<string, string>();
+let sysinfoControllersByPnp: Map<string, OverlaySysinfoController[]> | null = null;
+
+function identityToken(value: unknown): string | null {
+  const normalized = typeof value === 'string' ? value.trim().replace(/[\u0000\s]+/g, '').toUpperCase() : '';
+  return normalized.length > 0 ? normalized : null;
+}
+
+function deviceIdentity(device: OverlayDeviceIdentity): string | null {
+  // gpu-inventory device keys intentionally carry a namespace (`pnp:<id>`),
+  // while sysinfo exposes the raw PNP id. Prefer the authoritative OS row and
+  // normalize the namespace before joining labels, especially for secondary
+  // GPUs. Duplicate PNP rows also carry their BDF/PCI proof so their cache
+  // entries cannot overwrite each other. No ordinal fallback is valid.
+  const composite = physicalIdentityKey(device);
+  if (composite) return composite;
+  const key = identityToken(device.deviceKey);
+  return key?.startsWith('PNP:') ? key.slice(4) : key;
+}
+
+function normalizedPciId(value: unknown): string | null {
+  const text = typeof value === 'number' && Number.isInteger(value)
+    ? value.toString(16)
+    : typeof value === 'string' ? value.trim().replace(/^0x/i, '') : '';
+  return /^[0-9a-f]{1,8}$/i.test(text) ? text.toUpperCase().slice(-4).padStart(4, '0') : null;
+}
+
+function normalizedBdf(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const direct = value.trim().match(/^(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+    if (direct) {
+      return `${Number.parseInt(direct[1] ?? '0', 16).toString(16).padStart(4, '0')}:${Number.parseInt(direct[2], 16).toString(16).padStart(2, '0')}:${Number.parseInt(direct[3], 16).toString(16).padStart(2, '0')}.${direct[4]}`;
+    }
+    const location = value.match(/\bbus\s*(\d+)\s*,?\s*device\s*(\d+)\s*,?\s*function\s*(\d+)/i);
+    if (location) {
+      return `0000:${Number(location[1]).toString(16).padStart(2, '0')}:${Number(location[2]).toString(16).padStart(2, '0')}.${location[3]}`;
+    }
+  }
+  if (value && typeof value === 'object') {
+    const record = value as { bus?: unknown; device?: unknown; function?: unknown; func?: unknown; domain?: unknown; segment?: unknown };
+    const bus = Number(record.bus);
+    const device = Number(record.device);
+    const fn = Number(record.function ?? record.func ?? 0);
+    const domain = Number(record.domain ?? record.segment ?? 0);
+    if ([bus, device, fn, domain].every(Number.isInteger) && bus >= 0 && device >= 0 && fn >= 0 && domain >= 0) {
+      return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+    }
+  }
+  return null;
+}
+
+function normalizedPciPair(value: OverlayDeviceIdentity | OverlaySysinfoController): string | null {
+  const osController = 'osController' in value ? value.osController : null;
+  const pnp = identityToken(value.pnpDeviceId ?? osController?.pnpDeviceId);
+  const vendor = normalizedPciId(value.pciVendorId ?? osController?.pciVendorId)
+    ?? pnp?.match(/(?:^|\\|&)VEN_([0-9A-F]{4})/i)?.[1]
+    ?? null;
+  const device = normalizedPciId(value.pciDeviceId ?? osController?.pciDeviceId)
+    ?? pnp?.match(/(?:^|\\|&)DEV_([0-9A-F]{4})/i)?.[1]
+    ?? null;
+  return vendor && device ? `${vendor}:${device}` : null;
+}
+
+function explicitNormalizedPciPair(value: OverlayDeviceIdentity | OverlaySysinfoController): string | null {
+  const osController = 'osController' in value ? value.osController : null;
+  const vendor = normalizedPciId(value.pciVendorId ?? osController?.pciVendorId);
+  const device = normalizedPciId(value.pciDeviceId ?? osController?.pciDeviceId);
+  return vendor && device ? `${vendor}:${device}` : null;
+}
+
+function pnpNormalizedPciPair(value: OverlayDeviceIdentity | OverlaySysinfoController): string | null {
+  const osController = 'osController' in value ? value.osController : null;
+  const pnp = identityToken(value.pnpDeviceId ?? osController?.pnpDeviceId);
+  const vendor = pnp?.match(/(?:^|\\|&)VEN_([0-9A-F]{4})/i)?.[1]?.toUpperCase();
+  const device = pnp?.match(/(?:^|\\|&)DEV_([0-9A-F]{4})/i)?.[1]?.toUpperCase();
+  return vendor && device ? `${vendor}:${device}` : null;
+}
+
+function physicalIdentityKey(value: OverlayDeviceIdentity | OverlaySysinfoController): string | null {
+  const osController = 'osController' in value ? value.osController : null;
+  const rawKey = 'deviceKey' in value ? identityToken(value.deviceKey) : null;
+  const pnp = identityToken(value.pnpDeviceId ?? osController?.pnpDeviceId)
+    ?? (rawKey?.startsWith('PNP:') ? rawKey.slice(4) : null);
+  const bdf = normalizedBdf(value.bdf ?? value.locationInfo ?? osController?.bdf ?? osController?.locationInfo);
+  const pci = normalizedPciPair(value);
+  const physical = bdf ? `bdf:${bdf}` : pci ? `pci:${pci}` : null;
+  if (pnp && physical) return `pnp:${pnp}|${physical}`;
+  if (pnp) return `pnp:${pnp}`;
+  if (physical) return physical;
+  return null;
+}
+
+function stableIdentityParts(value: OverlayDeviceIdentity | OverlaySysinfoController) {
+  const osController = 'osController' in value ? value.osController : null;
+  const pnpValues = [value.pnpDeviceId, osController?.pnpDeviceId]
+    .map(identityToken)
+    .filter((v): v is string => v !== null);
+  const bdfValues = [
+    value.bdf,
+    value.locationInfo,
+    osController?.bdf,
+    osController?.locationInfo,
+  ].map(normalizedBdf).filter((v): v is string => v !== null);
+  const explicitPci = [explicitNormalizedPciPair(value)].filter((v): v is string => v !== null);
+  const pnpPci = pnpValues.map(() => pnpNormalizedPciPair(value)).filter((v): v is string => v !== null);
+  const pciValues = [...explicitPci, ...pnpPci];
+  const pnp = pnpValues[0] ?? null;
+  const bdf = bdfValues[0] ?? null;
+  const pci = pciValues[0] ?? null;
+  return {
+    pnp,
+    bdf,
+    pci,
+    invalid: new Set(pnpValues).size > 1
+      || new Set(bdfValues).size > 1
+      || pciValues.some((candidate) => candidate !== pci),
+  };
+}
+
+function stableIdentitiesAgree(
+  device: OverlayDeviceIdentity,
+  controller: OverlaySysinfoController,
+): boolean {
+  const left = stableIdentityParts(device);
+  const right = stableIdentityParts(controller);
+  if (left.invalid || right.invalid) return false;
+  if (left.pnp && right.pnp && left.pnp !== right.pnp) return false;
+  if (left.bdf && right.bdf && left.bdf !== right.bdf) return false;
+  if (left.pci && right.pci && left.pci !== right.pci) return false;
+  return true;
+}
+
+function uniqueDuplicatePnpController(
+  device: OverlayDeviceIdentity,
+  candidates: OverlaySysinfoController[],
+): OverlaySysinfoController | undefined {
+  const consistent = candidates.filter((controller) => stableIdentitiesAgree(device, controller));
+  const deviceBdf = stableIdentityParts(device).bdf;
+  const devicePci = stableIdentityParts(device).pci;
+  if (!deviceBdf && !devicePci) return undefined;
+  const bdfMatches = deviceBdf ? consistent.filter((controller) => {
+    return stableIdentityParts(controller).bdf === deviceBdf;
+  }) : [];
+  const pciMatches = devicePci ? consistent.filter((controller) => {
+    return stableIdentityParts(controller).pci === devicePci;
+  }) : [];
+  const uniqueMatches = [
+    bdfMatches.length === 1 ? bdfMatches[0] : undefined,
+    pciMatches.length === 1 ? pciMatches[0] : undefined,
+  ].filter((controller): controller is OverlaySysinfoController => controller !== undefined);
+  return uniqueMatches.length === 1 || (uniqueMatches.length === 2 && uniqueMatches[0] === uniqueMatches[1])
+    ? uniqueMatches[0]
+    : undefined;
+}
+
+function controllerForDevice(
+  device: OverlayDeviceIdentity,
+  controllersByPnp: Map<string, OverlaySysinfoController[]>,
+): OverlaySysinfoController | undefined {
+  const rawKey = identityToken(device.deviceKey);
+  const pnp = identityToken(device.osController?.pnpDeviceId ?? device.pnpDeviceId)
+    ?? (rawKey?.startsWith('PNP:') ? rawKey.slice(4) : null);
+  const candidates = pnp ? controllersByPnp.get(pnp) : undefined;
+  if (!candidates || candidates.length === 0) return undefined;
+  if (candidates.length === 1) {
+    return stableIdentitiesAgree(device, candidates[0]) ? candidates[0] : undefined;
+  }
+  return uniqueDuplicatePnpController(device, candidates);
+}
+
+function chipLabelForDevice(
+  device: OverlayDeviceIdentity,
+  controllersByPnp?: Map<string, OverlaySysinfoController[]>,
+  resolvedPrimaryLabel?: string | null,
+): string | null {
+  const key = deviceIdentity(device);
+  // Once sysinfo is available, an unresolved duplicate-PNP group must not
+  // inherit a fallback label from another controller. A unique PNP row (or a
+  // device with no stable identity at all) may still use its inventory name.
+  if (controllersByPnp && key) {
+    const pnp = identityToken(device.osController?.pnpDeviceId ?? device.pnpDeviceId);
+    const candidates = pnp ? controllersByPnp.get(pnp) : undefined;
+    if (candidates && !controllerForDevice(device, controllersByPnp)) return null;
+  }
+  const cached = key ? sysinfoGpuLabels.get(key) : undefined;
+  if (cached) return cached;
+  // An identity-less primary can still have an unambiguous sole sysinfo
+  // controller. Preserve that resolved label through the final projection;
+  // stable-identity rows continue to use their keyed cache or inventory
+  // fallback, and secondary rows never receive this primary-only override.
+  if (!key && resolvedPrimaryLabel) return resolvedPrimaryLabel;
+  return chipLabelGpu(device.name ?? null);
+}
 // M6-amd2: the latest derived frame time (the value line below the strip;
 // null -> the honest '-').
 let latestFrameTime: number | null = null;
@@ -526,7 +738,7 @@ const overlayFpsBoot = bootFpsLoop();
 // 'CPU '/'GPU ' prefixes (the honest degrade).
 async function configureOverlayDevices(
   primaryId: number | null,
-  devices: Array<{ id: number; name?: string; deviceKey?: string | null }>,
+  devices: OverlayDeviceIdentity[],
 ): Promise<void> {
   const generation = ++overlayConfigureGeneration;
   overlayDevices = devices;
@@ -541,10 +753,10 @@ async function configureOverlayDevices(
   overlayDisplayDeviceId = primary?.id ?? null;
   document.documentElement.dataset.overlayDisplayDevice = String(overlayDisplayDeviceId ?? '');
   fpsDeviceId = overlayDisplayDeviceId;
-  if (primary) gpuChipLabel = chipLabelGpu(primary.name ?? null);
+  if (primary) gpuChipLabel = chipLabelForDevice(primary, sysinfoControllersByPnp ?? undefined);
   const secondary = monitored.filter((device) => device.id !== overlayDisplayDeviceId);
   secondaryDeviceIds = secondary.map((device) => device.id);
-  secondaryGpuChipLabels = secondary.map((device) => chipLabelGpu(device.name ?? null));
+  secondaryGpuChipLabels = secondary.map((device) => chipLabelForDevice(device, sysinfoControllersByPnp ?? undefined));
   secondarySamples.clear();
   // Keep the existing main telemetry stream as the display lane whenever
   // possible. Start the display lane here only when the user's selection
@@ -569,18 +781,54 @@ async function bootNamesFetch(): Promise<void> {
     await overlayFpsBoot;
     let gpuName: unknown = null;
     let cpuName: unknown = null;
-    let devices: Array<{ id: number; name?: string; deviceKey?: string | null }> = [];
+    let devices: OverlayDeviceIdentity[] = [];
     try { devices = await api.listDevices(); } catch { devices = []; }
     const primaryId = await resolveOverlayDeviceId() ?? devices[0]?.id ?? null;
     await configureOverlayDevices(primaryId, devices);
     const sysinfo = await api.sysinfo();
-    const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
+    const controllers: OverlaySysinfoController[] = Array.isArray(sysinfo?.videoControllers)
+      ? sysinfo.videoControllers
+      : [];
     const primaryDevice = devices.find((device) => device.id === overlayDisplayDeviceId);
-    gpuName = controllers.length > 0 && overlayDisplayDeviceId === primaryId
-      ? controllers[0].name
-      : (primaryDevice?.name ?? null);
+    const controllersByPnp = new Map<string, OverlaySysinfoController[]>();
+    for (const controller of controllers) {
+      const key = identityToken(controller.pnpDeviceId);
+      if (key) controllersByPnp.set(key, [...(controllersByPnp.get(key) ?? []), controller]);
+    }
+    sysinfoControllersByPnp = controllersByPnp;
+    for (const device of devices) {
+      const key = deviceIdentity(device);
+      const controller = controllerForDevice(device, controllersByPnp);
+      if (key && controller) {
+        const label = chipLabelGpu(controller.name ?? null);
+        if (label) sysinfoGpuLabels.set(key, label);
+      }
+    }
+    // The mock and older inventory paths expose one primary controller in
+    // sysinfo even when the device row has no PNP mirror. With exactly one
+    // controller this is unambiguous; multi-GPU sessions require a PNP match
+    // and never fall back by ordinal.
+    if (primaryDevice) {
+      const primaryKey = deviceIdentity(primaryDevice);
+      const primaryController = controllerForDevice(primaryDevice, controllersByPnp);
+      const unambiguousController = primaryController
+        ?? (!primaryKey && controllers.length === 1 ? controllers[0] : undefined);
+      if (primaryKey && unambiguousController) {
+        const label = chipLabelGpu(unambiguousController.name ?? null);
+        if (label) sysinfoGpuLabels.set(primaryKey, label);
+      }
+      gpuName = unambiguousController?.name ?? primaryDevice.name ?? null;
+    }
     cpuName = sysinfo?.cpu?.name ?? null;
-    gpuChipLabel = chipLabelGpu(gpuName);
+    const primaryLabel = chipLabelGpu(gpuName);
+    if (primaryLabel) gpuChipLabel = primaryLabel;
+    // Re-run the device projection after the authoritative sysinfo labels are
+    // recorded so secondary rows receive their own stable labels too.
+    if (primaryDevice) {
+      gpuChipLabel = chipLabelForDevice(primaryDevice, controllersByPnp, primaryLabel);
+      const secondary = devices.filter((device) => device.id !== overlayDisplayDeviceId);
+      secondaryGpuChipLabels = secondary.map((device) => chipLabelForDevice(device, controllersByPnp));
+    }
     cpuChipLabel = chipLabelCpu(cpuName);
     render();
   } catch {

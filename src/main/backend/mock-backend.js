@@ -27,6 +27,10 @@ import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFan
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
+import {
+  DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS,
+  DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_FLASH_WARNING,
+} from './backend.interface.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch) - the SAME decode
 // the real backend runs in getCapabilities (the renderer TS imports fine
 // under the packaged Electron - Node 22.21 type stripping).
@@ -95,6 +99,51 @@ const GRAPHICS_DEGRADED = Object.freeze({
   values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null },
 });
 
+const displayCapability = (value, supported, controllable = false, reason = null, source = 'mock-fixture') => ({ value, supported, controllable, reason, source });
+const DISPLAY_FIXTURE = Object.freeze({
+  displays: [{
+    id: 0,
+    displayKey: null,
+    identityVerified: true,
+    name: 'Arc Power Mock Display',
+    connection: 'DisplayPort',
+    resolution: { width: 2560, height: 1440 },
+    refreshRate: 144,
+    colorDepth: 10,
+    colorFormat: 'RGB',
+    quantizationRange: 'default',
+    scalingMode: 'identity',
+    scalingMethod: displayCapability('Maintain Display Scaling', true, false, 'Read-only fixture capability', 'mock-fixture'),
+    vrrMode: displayCapability('Fullscreen', true, false, 'VRR mode is controlled by the display/OS path', 'mock-fixture'),
+    variableRefreshRate: displayCapability(true, true, false, 'VRR toggle is controlled by the display/OS path', 'mock-fixture'),
+    vrrCurrentRange: displayCapability('90 Hz - 180 Hz', true, false, 'Read-only fixture capability', 'mock-fixture'),
+    vrrMaximumRange: displayCapability('48 Hz - 180 Hz', true, false, 'Read-only fixture capability', 'mock-fixture'),
+    hdcpSupport: displayCapability(true, true),
+    fourKSupport: displayCapability(false, true),
+    hdrSupport: displayCapability(false, true),
+    hue: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
+    saturation: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
+    brightness: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
+    contrast: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
+    supportedOptions: {
+      scalingModes: [...DISPLAY_SCALING_MODE_OPTIONS],
+      scalingMethods: [],
+      wireFormats: [...DISPLAY_WIRE_FORMAT_OPTIONS],
+      bpcDepths: [...DISPLAY_BPC_OPTIONS].filter((depth) => depth === 8 || depth === 10),
+      quantizationRanges: [...DISPLAY_QUANTIZATION_OPTIONS],
+    },
+    flags: { active: true, attached: true, dongleConnected: false, ditheringEnabled: false },
+    arcSync: { supported: true, minRefreshHz: 48, maxRefreshHz: 180, profile: 'recommended' },
+  }],
+});
+
+function displayFixtureFor(deviceKey, adapterName) {
+  const displays = JSON.parse(JSON.stringify(DISPLAY_FIXTURE.displays));
+  displays[0].displayKey = typeof deviceKey === 'string' ? `${deviceKey}|display|mock-encoder-0` : null;
+  displays[0].adapterName = adapterName ?? null;
+  return displays;
+}
+
 // The mock's default driver fan curve (10 points) - reported by every
 // fan-bearing featureset and restored by resetToDefaults. MUST equal
 // pure/curve.ts STOCK_FAN_CURVE (the canonical stock Intel table - the
@@ -141,6 +190,9 @@ export class MockBackend {
    *   graphicsUnsupported?: boolean,     // honest all-false graphics surface
    *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1)
    *                                      // the multi-device iGPU degrades regardless
+   *   displayUnsupported?: boolean,     // honest empty Display surface
+   *   displayWireReadonly?: boolean,    // simulate the real driver's
+   *                                      // silent/no-readback wire-format surface
    *   laptopInfoOf?: () => object|null,  // M17c: the laptop sysinfo provider
    *                                      // (the real backend's vramBytesOf-style
    *                                      // injection - the caps AIB decode's
@@ -181,7 +233,12 @@ export class MockBackend {
     // M4-F: the multi-device session - device ids 0 AND 1 under the
     // RID_MOCK_MULTI_DEVICE=1 knob (or the constructor flag for tests);
     // device 1 is the arc-igpu line with DISTINCT caps/state/telemetry.
-    this._multiDevice = opts.multiDevice === true || process.env.RID_MOCK_MULTI_DEVICE === '1';
+    // M53's duplicate-PNP overlay is self-contained and expands this to the
+    // three rows required by its identity fixture.
+    this._duplicatePnpOverlay = process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1';
+    this._multiDevice = opts.multiDevice === true
+      || process.env.RID_MOCK_MULTI_DEVICE === '1'
+      || this._duplicatePnpOverlay;
     this._reverseEnumeration = opts.reverseEnumeration === true || process.env.RID_MOCK_REVERSED_ENUM === '1';
     // M20-B: the flat-table-fixed session knob (RID_MOCK_FAN_FIXED=1) - the
     // probe's flat-table fallback learned 'fixed' (modes
@@ -201,6 +258,8 @@ export class MockBackend {
     // supported-all-false state. The multi-device iGPU (device 1) degrades
     // regardless (honest - an iGPU exposes no 3D-feature overrides).
     this._graphicsUnsupported = opts.graphicsUnsupported === true || process.env.RID_MOCK_GRAPHICS_UNSUPPORTED === '1';
+    this._displayUnsupported = opts.displayUnsupported === true || process.env.RID_MOCK_DISPLAY_UNSUPPORTED === '1';
+    this._displayWireReadonly = opts.displayWireReadonly === true || process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1';
     // M17c: the laptop sysinfo provider (the caps AIB decode's laptop
     // branch - mirrors the real backend's injection).
     this._laptopInfoOf = typeof opts.laptopInfoOf === 'function' ? opts.laptopInfoOf : null;
@@ -220,6 +279,7 @@ export class MockBackend {
     // mode - the V1 path owns it; a stock-mode apply never records by the
     // same gate). Session-level, never reset by a featureset swap.
     this._v2CompanionCalls = [];
+    this._displayApplies = [];
     // Device ids are session enumeration ids. Consent/subscriptions survive
     // rebuilds in this durable-keyed registry, never in an id-keyed cache.
     this._deviceStateByKey = new Map();
@@ -261,6 +321,7 @@ export class MockBackend {
         telemetryCbs: this._telemetryCbs,
         // M8: the graphics state (the fixture values the apply mutates).
         graphics: this._graphics,
+        displays: this._displays,
       };
     }
     const e = this._extraDevices.get(id);
@@ -338,11 +399,15 @@ export class MockBackend {
         waiverAccepted: prior?.waiverAccepted === true,
         telemetryCbs: prior?.telemetryCbs instanceof Set ? prior.telemetryCbs : new Set(),
         graphics: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
+        displays: displayFixtureFor(device.deviceKey, device.name),
       };
     };
 
     const entries = [makeEntry(fs, 0)];
-    if (this._multiDevice) {
+    if (this._duplicatePnpOverlay) {
+      entries.push(makeEntry(fs, 1));
+      entries.push(makeEntry(fs, 2));
+    } else if (this._multiDevice) {
       const fs2 = this._secondFeatureset();
       entries.push(makeEntry(fs2, 1, fs2.extendedRanges === true, fs2.hasFan && fs2.fanCanControl === true));
     }
@@ -369,6 +434,7 @@ export class MockBackend {
     this._waiverAccepted = first.waiverAccepted;
     this._telemetryCbs = first.telemetryCbs;
     this._graphics = first.graphics;
+    this._displays = first.displays;
     this._extraDevices.clear();
     for (let index = 1; index < ordered.length; index += 1) {
       const entry = byDevice.get(ordered[index].deviceKey);
@@ -505,6 +571,13 @@ export class MockBackend {
   }
 
   _buildDevice(fs, id = 0) {
+    const duplicatePnp = this._duplicatePnpOverlay;
+    const bdf = duplicatePnp
+      ? id === 0 ? { bus: 3, device: 0, function: 0 }
+        : id === 1 ? { bus: 0, device: 2, function: 0 }
+          : null
+      : id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 };
+    const duplicatePnpId = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_DUPLICATE';
     return {
       id,
       // M4-B: the VRAM suffix is formatted ONCE here (listDevices time) -
@@ -513,24 +586,26 @@ export class MockBackend {
       // M4-I (S1): the memType rides the DEVICE payload (the renderer's
       // VRAM row type source - the fixture supplies it; the mock name
       // token would derive it anyway).
-      name: formatDeviceName(fs.deviceName, fs.vramBytes ?? null, fs.memType ?? undefined),
+      name: duplicatePnp && id === 2
+        ? 'Mock Ambiguous Arc Graphics'
+        : formatDeviceName(fs.deviceName, fs.vramBytes ?? null, fs.memType ?? undefined),
       type: 'GRAPHICS',
       pciVendorId: '0x00008086',
       pciDeviceId: fs.pciDeviceId ?? '0x000056a0',
       revId: 8,
       // M4-F: the second device sits at its own bus/device slot (an iGPU
       // fixture - distinct from the primary card's bdf).
-      bdf: id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 },
+      bdf,
       driverVersion: fs.driverVersion,
       graphicsClockMHz: fs.graphicsClockMHz,
       numXeCores: fs.numXeCores,
       vramBytes: fs.vramBytes ?? null,
       memType: fs.memType ?? null,
-      bdf: id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 },
+      ...(duplicatePnp ? { pnpDeviceId: duplicatePnpId } : {}),
       deviceKey: deviceHardwareKey({
         pciVendorId: '0x00008086',
         pciDeviceId: fs.pciDeviceId ?? '0x000056a0',
-        bdf: id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 },
+        bdf,
       }),
       pciSubsysVendorId: typeof fs.pciSubsysVendorId === 'number' ? fs.pciSubsysVendorId : null,
       pciSubsysId: typeof fs.pciSubsysId === 'number' ? fs.pciSubsysId : null,
@@ -930,6 +1005,83 @@ export class MockBackend {
       const clamped = clampAndSnap(settings.frameLimit.value, GRAPHICS_FIXTURE.frameLimitRange);
       e.graphics.frameLimit = { enabled: settings.frameLimit.enabled === true, value: clamped };
       result.perControl.frameLimit = { ok: true, readBackEqual: true };
+    }
+    return result;
+  }
+
+  /** Display fixture read-back. Every call returns a clone so tests exercise
+   * the same fresh-state contract as the native backend. */
+  async getDisplaySettings(deviceId = 0) {
+    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
+    const e = this._entry(id);
+    if (id !== 0 || this._displayUnsupported || this._noIntel) {
+      return { deviceKey: e.device.deviceKey ?? null, adapterName: e.device.name ?? null, displays: [] };
+    }
+    const displays = JSON.parse(JSON.stringify(e.displays ?? []));
+    if (this._displayWireReadonly) {
+      for (const display of displays) {
+        display.supportedOptions.wireFormats = [];
+        display.supportedOptions.bpcDepths = [];
+        display.colorDepth = null;
+      }
+    }
+    return { deviceKey: e.device.deviceKey ?? null, adapterName: e.device.name ?? null, displays };
+  }
+
+  /** Display fixture write/readback path. The request must use the durable
+   * adapter key and the display key; ordinal ids are intentionally rejected. */
+  async setDisplaySettings(deviceId = 0, request = {}) {
+    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
+    const e = this._entry(id);
+    const patch = request?.patch && typeof request.patch === 'object' ? request.patch : {};
+    const result = { ok: true, perControl: {} };
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode']
+      .filter((key) => patch[key] !== null && patch[key] !== undefined);
+    const fail = (key, errorCode, message) => {
+      result.perControl[key] = { ok: false, errorCode, message };
+      result.ok = false;
+    };
+    if (id !== 0 || this._displayUnsupported || this._noIntel) {
+      for (const key of controls) fail(key, 'unsupported', 'display settings are not supported on this device');
+      return result;
+    }
+    if (request.deviceKey !== e.device.deviceKey) {
+      for (const key of controls) fail(key, 'stale-target', 'the selected graphics adapter identity is stale');
+      return result;
+    }
+    const display = (e.displays ?? []).find((candidate) => candidate.displayKey === request.displayKey && candidate.identityVerified === true);
+    if (!display) {
+      for (const key of controls) fail(key, 'stale-target', 'the selected display is no longer connected');
+      return result;
+    }
+    if (patch.quantizationRange !== undefined && patch.quantizationRange !== null) {
+      if (!DISPLAY_QUANTIZATION_OPTIONS.includes(patch.quantizationRange)) fail('quantizationRange', 'out-of-range', `unknown quantization range '${patch.quantizationRange}'`);
+      else if (!display.supportedOptions.quantizationRanges.includes(patch.quantizationRange)) fail('quantizationRange', 'unsupported', 'quantization range is not supported by this display');
+      else {
+        display.quantizationRange = patch.quantizationRange;
+        result.perControl.quantizationRange = { ok: display.quantizationRange === patch.quantizationRange, readBackEqual: display.quantizationRange === patch.quantizationRange };
+      }
+    }
+    if (patch.wireFormat !== undefined && patch.wireFormat !== null) {
+      const { model, depth } = patch.wireFormat;
+      if (!DISPLAY_WIRE_FORMAT_OPTIONS.includes(model) || !DISPLAY_BPC_OPTIONS.includes(depth)) fail('wireFormat', 'out-of-range', 'unknown wire format');
+      else if (this._displayWireReadonly || !display.supportedOptions.wireFormats.includes(model) || !display.supportedOptions.bpcDepths.includes(depth)) fail('wireFormat', 'unsupported', 'wire format is read-only on this driver surface');
+      else {
+        display.colorFormat = model;
+        display.colorDepth = depth;
+        result.perControl.wireFormat = { ok: true, readBackEqual: true };
+      }
+    }
+    if (patch.scalingMode !== undefined && patch.scalingMode !== null) {
+      if (!DISPLAY_SCALING_MODE_OPTIONS.includes(patch.scalingMode)) fail('scalingMode', 'out-of-range', `unknown scaling mode '${patch.scalingMode}'`);
+      else if (!display.supportedOptions.scalingModes.includes(patch.scalingMode)) fail('scalingMode', 'unsupported', 'scaling mode is not supported by this display');
+      else {
+        display.scalingMode = patch.scalingMode;
+        result.perControl.scalingMode = { ok: true, readBackEqual: true, warning: DISPLAY_SCALING_FLASH_WARNING };
+      }
+    }
+    if (controls.length > 0) {
+      this._displayApplies.push({ deviceId: id, displayKey: request.displayKey ?? null, patch: JSON.parse(JSON.stringify(patch)) });
     }
     return result;
   }

@@ -321,6 +321,19 @@ html, body {
   cursor: pointer;
 }
 .device-select:hover { border-color: var(--accent); }
+/* Match the main window's rounded GPU selector and remove the warm native
+   focus ring on Windows. The option popup remains OS-owned, but the selected
+   option uses the panel's Arc accent instead of a yellow system highlight. */
+.device-select:focus,
+.device-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+.device-select option:checked {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
 .device-select option { background: var(--bg-panel); color: var(--text); }
 .adv-view-heading .device-select { min-width: 150px; max-width: 210px; }
 .adv-view-title {

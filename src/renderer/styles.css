@@ -855,6 +855,20 @@ html, body {
   cursor: pointer;
 }
 .device-select:hover { border-color: var(--accent); }
+/* Keep the native selector's focus state in the Arc palette. Chromium/Windows
+   otherwise paints a warm system ring when the control is opened. The
+   closed control stays pill-shaped; the OS-owned option popup cannot inherit
+   border-radius, but its selected option follows the same blue accent. */
+.device-select:focus,
+.device-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+.device-select option:checked {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
 .device-select option { background: var(--bg-panel); color: var(--text); }
 
 /* M17c: the GENERIC select rule - any select element without its own
@@ -1708,6 +1722,47 @@ select {
 .graphics-fps-slider-row { display: flex; align-items: center; gap: 10px; }
 .graphics-slider { flex: 1; accent-color: var(--accent-strong); }
 .graphics-fps-value { font-size: 13px; min-width: 64px; text-align: right; color: var(--text); }
+
+/* Graphics | Display segmented view and compact IGS-style Display rows. */
+.graphics-view-toolbar { margin: 2px 0 14px; display: flex; flex-direction: column; align-items: flex-start; }
+.graphics-view-toolbar .graphics-view-toggle-row { margin: 0 0 8px; justify-content: flex-start; }
+.graphics-view { min-width: 0; }
+.display-stack { display: flex; flex-direction: column; gap: 10px; }
+.display-group { padding: 12px 14px; }
+.display-group > .card-title { margin-bottom: 10px; }
+.display-control,
+.display-note-row { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--control-bg) 72%, transparent); }
+.display-control-title { margin: 0; font-size: 13px; font-weight: 650; color: var(--text); }
+.display-control-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.display-readonly-badge { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.display-readonly-value { margin-top: 6px; color: var(--text); font-size: 13px; }
+.display-control-readonly .card-note { margin: 5px 0 0; color: var(--text-dim); }
+.display-control .graphics-control { margin-top: 0; }
+.display-select { min-width: 230px; }
+.display-picker-row { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
+.display-picker-label { color: var(--text-muted); font-size: 12px; }
+.display-picker { flex: 1; }
+.display-wire-format-row { display: flex; gap: 12px; }
+.display-wire-format-field { display: flex; flex: 1; flex-direction: column; gap: 5px; }
+.display-wire-format-field-label { color: var(--text-muted); font-size: 11px; }
+.display-wire-format-readonly { margin-top: 8px; }
+.display-info-row { display: flex; justify-content: space-between; gap: 18px; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+.display-info-row:last-child { border-bottom: 0; }
+.display-info-label { color: var(--text-muted); font-size: 12px; }
+.display-info-value { color: var(--text); font-size: 12px; text-align: right; }
+.display-slider-line { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
+.display-slider-line .graphics-slider { min-width: 120px; }
+.display-number-input { width: 72px; padding: 5px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); }
+.display-mode-row { display: flex; align-items: center; gap: 14px; }
+.display-mode-toggle { display: inline-flex; margin-left: auto; border-radius: var(--radius-sm); overflow: hidden; background: var(--bg-inset); }
+.display-mode-btn { border: 0; padding: 7px 22px; background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; }
+.display-mode-btn.active { background: var(--accent); color: var(--on-accent); }
+.display-mode-toggle.disabled { opacity: .8; }
+.display-no-displays { padding: 14px; }
+@media (max-width: 680px) {
+  .display-wire-format-row, .display-mode-row { flex-direction: column; align-items: stretch; }
+  .display-mode-toggle { margin-left: 0; }
+}
 
 /* M9: the Monitoring | Overlay view pill - the Tuning view-pill pattern
    (the .oc-mode-toggle / .oc-mode-btn classes carry the segmented styling;

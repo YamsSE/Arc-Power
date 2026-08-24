@@ -91,6 +91,60 @@
  */
 
 /**
+ * M10b: the Display view's read-back (getDisplaySettings). NEVER throws -
+ * degrades to { displays: [] } on any failure (the honest no-controls
+ * surface). Only ACTIVE display outputs are enumerated (the M10b probe:
+ * 30 outputs, ONE active on the A770); a display's per-feature reads are
+ * defensive - a failing feature reads null/[] without taking the surface
+ * down. The wire-format surface is read-only in effect on this driver
+ * build (ColorDepth is never populated - wireFormats/bpcDepths come back
+ * empty and the COLOR card degrades honestly); the Arc Sync surface is
+ * read-only too (recorded for the INFORMATION section).
+ * @typedef {{
+ *   displays: Array<{
+ *     id: number,
+ *     name: string|null,
+ *     connection: 'DisplayPort'|'HDMI'|'DVI'|'MIPI'|'CRT'|'Unknown',
+ *     resolution: { width: number, height: number }|null,
+ *     refreshRate: number|null,
+ *     colorDepth: number|null,
+ *     colorFormat: string|null,
+ *     quantizationRange: 'default'|'limited'|'full'|null,
+ *     scalingMode: string|null,
+ *     supportedOptions: {
+ *       scalingModes: string[],
+ *       scalingMethods: string[],
+ *       wireFormats: string[],
+ *       bpcDepths: number[],
+ *       quantizationRanges: string[],
+ *     },
+ *     flags: {
+ *       active: boolean, attached: boolean,
+ *       dongleConnected: boolean, ditheringEnabled: boolean,
+ *     },
+ *     arcSync: {
+ *       supported: boolean, minRefreshHz: number|null,
+ *       maxRefreshHz: number|null, profile: string|null,
+ *     },
+ *   }>,
+ * }} DisplayState
+ */
+
+/**
+ * M10b: the canonical display apply intent for ONE display (an absent field
+ * = "leave the current driver value untouched"). The canonical strings are
+ * shared by the page / IPC / backends; the IGCL numeric side stays inside
+ * the igcl backend. The scalingMode values are the driver's scaling-type
+ * FLAG names (identity/centered/stretched/aspect-ratio-centered-max/
+ * custom).
+ * @typedef {{
+ *   quantizationRange?: 'default' | 'limited' | 'full',
+ *   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444', depth: number },
+ *   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom',
+ * }} DisplaySettings
+ */
+
+/**
  * @typedef {{
  *   ok: boolean,
  *   perControl: Record<string, { ok: boolean, errorCode?: OcErrorCode, message?: string }>,
@@ -214,9 +268,22 @@
  *   // not-supported surface); setGraphicsSettings returns the ApplyResult
  *   // shape with per-feature results (success / igcl error code / refusal).
  *   // NO OC waiver applies to 3D features.
-  *   getGraphicsSettings(deviceId: number): Promise<GraphicsState>,
-  *   setGraphicsSettings(deviceId: number, s: GraphicsSettings): Promise<ApplyResult>,
-  *   health(): Promise<HealthReport>,
+ *   getGraphicsSettings(deviceId: number): Promise<GraphicsState>,
+ *   setGraphicsSettings(deviceId: number, s: GraphicsSettings): Promise<ApplyResult>,
+ *   // M10b (the Graphics "Display" view): the display-output surface
+ *   // (ctlEnumerateDisplayOutputs + ctlGetDisplayProperties + the wire-
+ *   // format / display-settings / scaling / Arc Sync reads). getDisplay-
+ *   // Settings NEVER throws (degrades to { displays: [] } - the honest
+ *   // no-controls surface; only ACTIVE outputs are returned);
+  *   // setDisplaySettings(deviceId, { deviceKey, displayKey, patch }) returns the ApplyResult
+ *   // shape with one per-control entry per requested field (success / igcl
+ *   // error code / refusal; the wire-format set surfaces the honest
+ *   // read-only result when the driver answers SUCCESS with an unchanged
+ *   // read-back; the scaling entry carries the modeset-flash warning). NO
+ *   // OC waiver applies to display settings.
+ *   getDisplaySettings(deviceId: number): Promise<DisplayState>,
+  *   setDisplaySettings(deviceId: number, request: { deviceKey: string, displayKey: string, patch: DisplaySettings }): Promise<ApplyResult>,
+ *   health(): Promise<HealthReport>,
  *   close(): Promise<void>,
  * }} IOCBackend
  */
@@ -248,6 +315,26 @@ export const CONTROLS = [
 export const GRAPHICS_FRAME_GEN_OPTIONS = ['app-choice', '2x', '3x', '4x'];
 export const GRAPHICS_FLIP_MODE_OPTIONS = ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame'];
 export const GRAPHICS_LOW_LATENCY_OPTIONS = ['off', 'on', 'on-boost'];
+
+// M10b (the Graphics "Display" view): the canonical display vocabularies -
+// the shared strings for the page, the IPC validator, the backends and the
+// mock (the numeric IGCL side stays inside the igcl backend). The scaling
+// modes are the driver's scaling-type FLAG names (probe-recorded caps on
+// the A770: IDENTITY | CENTERED | STRETCHED | ASPECT_RATIO_CENTERED_MAX |
+// CUSTOM). The BPC list is the driver's bpc-flag bit values.
+export const DISPLAY_QUANTIZATION_OPTIONS = ['default', 'limited', 'full'];
+export const DISPLAY_WIRE_FORMAT_OPTIONS = ['RGB', 'YCbCr420', 'YCbCr422', 'YCbCr444'];
+export const DISPLAY_BPC_OPTIONS = [6, 8, 10, 12];
+export const DISPLAY_SCALING_MODE_OPTIONS = ['identity', 'centered', 'stretched', 'aspect-ratio-centered-max', 'custom'];
+
+/**
+ * The honest modeset-flash note the scaling apply carries (the M10b probe
+ * SKIPPED the scaling set by design - a scaling change causes a PHYSICAL
+ * MODESET = a screen flash; the header documents the same for retro
+ * scaling). Shared by the real backend's ApplyResult entry and the mock.
+ * @type {string}
+ */
+export const DISPLAY_SCALING_FLASH_WARNING = 'Changing the scaling mode causes a brief screen flash (a physical modeset).';
 
 /**
  * Map an IGCL ctl_result_t code to a canonical OcErrorCode (or null when

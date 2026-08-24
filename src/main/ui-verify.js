@@ -1601,6 +1601,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // the page reads the mock fixture). Runs in the default variant AND under
   // the RID_MOCK_OVERLAY=1 / RID_MOCK_MULTI_DEVICE=1 variants.
   await runGraphicsVerify(win, backend);
+  // M10b/D1: the Display view is verified separately because its write
+  // contract is different from the 3D Graphics cards. In particular, the
+  // test exercises stable-key targeting plus post-write readback instead of
+  // trusting a successful native setter return code.
+  await runDisplayVerify(win, backend);
 
   // --- 2. Tuning page control cards (M4-D2: #/overclocking -> #/tuning) ----
   await gotoOverclocking();
@@ -4979,6 +4984,75 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
 //
 // @param {import('electron').BrowserWindow} win
 // @param {object} backend the active (mock) backend
+/** D1 Display verification: title/view contract, compact IGS rows, stable
+ * target identity, successful quantization/scaling readbacks, and honest
+ * wire-format refusal when the mock is configured read-only. */
+export async function runDisplayVerify(win, backend) {
+  const log = (s) => console.log(`[ui-verify] ${s}`);
+  const steps = [];
+  const step = (n, msg) => { steps.push(`[${n}] ${msg}`); log(msg); };
+  const fail = (msg) => { throw new UiVerifyFailure(msg); };
+  const js = (code) => win.webContents.executeJavaScript(code);
+  await js(`location.hash = '#/graphics'`);
+  if (!(await waitFor(win, `!!document.querySelector('.graphics-view-btn')`, 8000))) fail('D1: Graphics view toggle did not render');
+  await js(`(() => { const b = Array.from(document.querySelectorAll('.graphics-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Display'); if (b) b.click(); })()`);
+  if (!(await waitFor(win, `document.querySelector('.page-title')?.textContent?.trim() === 'Display' && document.querySelectorAll('.display-group').length === 3`, 8000))) {
+    fail(`D1: Display view did not render its title and three compact groups (page='${await js(`document.getElementById('page')?.textContent ?? ''`)}')`);
+  }
+  const displayToolbar = await js(`(() => {
+    const toolbar = document.querySelector('.graphics-view-toolbar');
+    const toggle = toolbar?.querySelector('.graphics-view-toggle-row');
+    const pickerHost = toolbar?.querySelector('.display-picker-host');
+    const picker = pickerHost?.querySelector('.display-picker-row');
+    if (!toolbar || !toggle || !pickerHost || !picker) return null;
+    const toggleRect = toggle.getBoundingClientRect();
+    const pickerRect = picker.getBoundingClientRect();
+    return {
+      toggleFirst: toolbar.children[0] === toggle,
+      pickerSecond: toolbar.children[1] === pickerHost && pickerHost.children[0] === picker,
+      pickerBelow: pickerRect.top >= toggleRect.bottom,
+      leftAligned: Math.abs(pickerRect.left - toggleRect.left) <= 1,
+    };
+  })()`);
+  if (!displayToolbar?.toggleFirst || !displayToolbar.pickerSecond || !displayToolbar.pickerBelow || !displayToolbar.leftAligned) {
+    fail(`D1: Display toolbar layout is not vertical/left-aligned (layout=${JSON.stringify(displayToolbar)})`);
+  }
+  step('d1-display-toolbar', 'D1: Display view toggle is first in the left toolbar; the monitor selector is immediately below it');
+  const labels = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.display-group')).flatMap((g) => Array.from(g.querySelectorAll('.display-control-title, .display-info-label, .display-wire-format-field-label')).map((n) => (n.textContent ?? '').trim())))`));
+  for (const expected of ['Scaling Mode', 'Scaling Method', 'Variable Refresh Rate Mode', 'Variable Refresh Rate', 'Hue', 'Saturation', 'Brightness', 'Contrast', 'Quantization Range', 'Color Depth', 'Color Format', 'Graphics Adapter', 'Display Connection', 'HDCP Support', '4K Support', 'HDR Support']) {
+    if (!labels.includes(expected)) fail(`D1: Display view is missing the '${expected}' row`);
+  }
+  const before = await js(`window.arcPower.displayGet(0)`);
+  const target = before?.displays?.[0];
+  if (!before?.deviceKey || !target?.displayKey || target.identityVerified !== true) fail(`D1: Display readback did not expose a verified stable target: ${JSON.stringify(before)}`);
+  if (process.env.RID_MOCK_DISPLAY_UNSUPPORTED === '1') {
+    if (!(await js(`!!document.querySelector('.display-no-displays')`))) fail('D1: unsupported Display fixture did not show the honest empty state');
+    step('d1-display-unsupported', 'D1: unsupported Display fixture is visible and has no writable controls');
+    return;
+  }
+  const quant = await js(`document.querySelector('.display-select[data-display-select="quantizationRange"]')?.value ?? ''`);
+  if (!quant) fail('D1: quantization dropdown is missing');
+  await js(`(() => { const s = document.querySelector('.display-select[data-display-select="quantizationRange"]'); s.value = s.value === 'limited' ? 'full' : 'limited'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="quantizationRange"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: quantization change did not expose its Apply action');
+  await js(`document.querySelector('.display-control[data-control="quantizationRange"] .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].quantizationRange !== '${quant}')`, 8000))) fail('D1: quantization apply did not update the fresh driver readback');
+  const afterQuant = await js(`window.arcPower.displayGet(0)`);
+  const quantValue = afterQuant.displays[0].quantizationRange;
+  await js(`(() => { const s = document.querySelector('.display-select[data-display-select="scalingMode"]'); const next = Array.from(s.options).find((o) => o.value !== s.value); if (next) { s.value = next.value; s.dispatchEvent(new Event('change', { bubbles: true })); } })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: scaling change did not expose its Apply action');
+  await js(`document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].scalingMode !== 'identity')`, 8000))) fail('D1: scaling apply did not update the fresh driver readback');
+  const stale = await js(`window.arcPower.displayApply(0, { deviceKey: 'stale-device', displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default' } }).then(() => 'accepted').catch((e) => String(e.message ?? e))`);
+  if (stale === 'accepted' || !String(stale).toLowerCase().includes('stale')) fail(`D1: stale display target was not rejected honestly: ${stale}`);
+  if (process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1') {
+    const wire = await js(`window.arcPower.displayApply(0, { deviceKey: ${JSON.stringify(before.deviceKey)}, displayKey: ${JSON.stringify(target.displayKey)}, patch: { wireFormat: { model: 'RGB', depth: 8 } } })`);
+    if (wire.ok === true || wire.perControl?.wireFormat?.ok === true) fail(`D1: read-only wire-format apply reported success: ${JSON.stringify(wire)}`);
+  }
+  // Restore the mock fixture so later checks start from known state.
+  await js(`window.arcPower.displayApply(0, { deviceKey: ${JSON.stringify(before.deviceKey)}, displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default', scalingMode: 'identity' } })`);
+  step('d1-display-readback', `D1: Display title/rows rendered; stable key '${target.displayKey}' targeted quantization '${quant}' -> '${quantValue}' and scaling with fresh readbacks; stale targets refused`);
+}
+
 export async function runGraphicsVerify(win, backend) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
@@ -7536,7 +7610,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // section turns the other fields on + off; M18: the units are GLUED;
   // M19/M19b: the 'GPU' label is padded to the 4ch column + the TWO-space
   // separator).
-  const multiGpu = process.env.RID_MOCK_MULTI_DEVICE === '1';
+  const multiGpu = process.env.RID_MOCK_MULTI_DEVICE === '1'
+    || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1';
   const gpuPattern = multiGpu ? /GPU1   42%  \d+°C  38\.8W/ : /GPU   42%  \d+°C  38\.8W/;
   if (!(await waitFor(overlayWin, `(${gpuPattern.toString()}).test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 15000))) {
     fail(`M17g: the overlay GPU line does not match the default-set pattern: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
@@ -7559,10 +7634,16 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
       if (!singleSelected) {
         fail(`M35: selecting only GPU2 did not collapse the overlay to unnumbered GPU / VRAM rows (GPU='${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}', GPU2='${await ojs(`document.getElementById('overlay-gpu2')?.textContent ?? ''`)}')`);
       }
+      if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === false)`, 5000))) {
+        fail('M53 (HUD lifecycle): the hidden HUD was revived by the non-master overlayDeviceKeys update');
+      }
       await js(`window.arcPower.profilesSettingsSave({ overlayDeviceKeys: ${JSON.stringify(keys)} })`);
       const restored = await waitFor(overlayWin, `(document.getElementById('overlay-gpu2')?.textContent ?? '').startsWith('GPU2') && getComputedStyle(document.getElementById('overlay-gpu2')).display !== 'none'`, 10000);
       if (!restored) fail('M35: restoring all monitored GPU keys did not restore the secondary overlay rows');
-      step('m35-overlay-gpu-selection', `M35: Overlay Settings can monitor only GPU2, collapsing labels to GPU / VRAM, then restore all ${keys.length} GPU lanes`);
+      if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === false)`, 5000))) {
+        fail('M53 (HUD lifecycle): the hidden HUD was revived by restoring overlayDeviceKeys');
+      }
+      step('m35-overlay-gpu-selection', `M35/M53: Overlay Settings can monitor only GPU2, collapsing labels to GPU / VRAM, then restore all ${keys.length} GPU lanes while the shortcut-hidden HUD stays hidden`);
     }
   }
   // M16: the standalone Voltage row is REMOVED - the #overlay-voltage div
@@ -7852,8 +7933,9 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   await js(`window.arcPower.profilesSettingsSave({ overlayScale: 2 })`);
   await sleep(500);
   const scaled = await js(`window.arcPower.overlayGetState()`);
-  if (Math.abs(scaled.bounds.width - 460 * 2) > 2 || Math.abs(scaled.bounds.height - 170 * 2) > 2) {
-    fail(`M16: the scale 2 patch did not resize the overlay (bounds ${JSON.stringify(scaled.bounds)} - expected ~920x340 - the base height is back to 170: the Voltage row is a GPU-row FIELD now, not a standalone line)`);
+  const expectedScaledHeight = process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1' ? 226 * 2 : 170 * 2;
+  if (Math.abs(scaled.bounds.width - 460 * 2) > 2 || Math.abs(scaled.bounds.height - expectedScaledHeight) > 2) {
+    fail(`M16: the scale 2 patch did not resize the overlay (bounds ${JSON.stringify(scaled.bounds)} - expected ~920x${expectedScaledHeight} - the base height grows for the duplicate-PNP regression's third GPU row)`);
   }
   step('m5-geometry', `position patch -> bottom-right corner (bounds ${JSON.stringify(ps.bounds)} vs display ${JSON.stringify(display)}); scale patch -> ${scaled.bounds.width}x${scaled.bounds.height}`);
 
@@ -7875,34 +7957,47 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(win, `location.hash === '#/monitoring'`, 5000))) {
     fail('M9: the Settings "Overlay settings" button did not navigate to #/monitoring');
   }
-  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Overlay Settings')`, 5000))) {
-    fail('M9: the Monitoring page did not render the Overlay view (no "Overlay Settings" heading)');
-  }
-  // M9: the view pill marks the Overlay view active (the Settings-button
-  // path requested the view before navigating).
   if (!(await waitFor(win, `(() => {
+    const title = document.querySelector('.page-title');
     const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Overlay');
-    return !!b && b.classList.contains('active');
+    return (title?.textContent ?? '').trim() === 'Overlay'
+      && !!b
+      && b.classList.contains('active')
+      && !!document.querySelector('#overlay-settings-root');
   })()`, 5000))) {
-    fail('M9: the Monitoring view pill does not mark the Overlay view active after the Settings-button navigation');
+    fail('M9: the Settings-button navigation did not render the Overlay Monitoring contract (title, active view pill, and overlay settings root)');
   }
-  step('m9-settings-button', 'Settings "Overlay settings" button navigated to #/monitoring with the Overlay view active (the "Overlay Settings" heading renders in the Monitoring page; the Settings card is button-only)');
+  step('m9-settings-button', 'Settings "Overlay settings" button navigated to #/monitoring with the Overlay view active and its current Monitoring renderer contract present (title, view pill, and overlay settings root; the Settings card is button-only)');
 
-  // (f2-m9) M9: the Position setting moved INTO the Appearance card - the
-  // standalone Position card is GONE, the .settings-position-select now
-  // lives in the Appearance card (the same row pattern as the Size row).
+  // (f2-m9) M9: the stock Monitor position select sits directly below its
+  // hotkey setter in the merged Hotkey card, matching the Advanced grouping.
   if (await js(`!!document.querySelector('.overlay-position-card')`)) {
-    fail('M9: the standalone Position card is still rendered (the position moved into the Appearance card)');
+    fail('M9: the standalone Position card is still rendered');
   }
-  if (!(await js(`!!document.querySelector('.overlay-appearance-card .settings-position-select')`))) {
-    fail('M9: the Appearance card has no .settings-position-select (the position row must live there)');
+  if (await js(`!!document.querySelector('.overlay-appearance-card .settings-position-select')`)) {
+    fail('M9: the stock Monitor position select still lives in Appearance');
   }
-  const positionRow = await js(`(() => {
-    const row = Array.from(document.querySelectorAll('.overlay-appearance-card .settings-row')).find((r) => r.querySelector('.settings-position-select'));
-    return row ? (row.querySelector('.settings-row-label')?.textContent ?? '').trim() : '';
-  })()`);
-  if (positionRow !== 'Position') fail(`M9: the Appearance position row label is '${positionRow}' (expected 'Position')`);
-  step('m9-position-in-appearance', 'M9: the Position setting lives in the Appearance card (the standalone Position card is gone; the .settings-position-select row reads "Position")');
+  if (!(await js(`!!document.querySelector('.overlay-hotkey-card .overlay-position-row .settings-position-select')`))) {
+    fail('M9: the stock Monitor position select is missing from the Hotkey card');
+  }
+  const hotkeyRows = await js(`(() => Array.from(document.querySelectorAll('.overlay-hotkey-card > .settings-row')).map((row) => row.className))()`);
+  const monitorHotkeyIndex = hotkeyRows.indexOf('settings-row overlay-hotkey-row');
+  const monitorPositionIndex = hotkeyRows.indexOf('settings-row overlay-position-row');
+  if (monitorPositionIndex !== monitorHotkeyIndex + 1) {
+    fail(`M9: the Monitor Position row order is ${JSON.stringify(hotkeyRows)} (expected immediately below the Monitor hotkey)`);
+  }
+  const monitorLabel = await js(`document.querySelector('.overlay-hotkey-row .settings-row-label')?.textContent?.trim() ?? ''`);
+  const positionLabel = await js(`document.querySelector('.overlay-position-row .settings-row-label')?.textContent?.trim() ?? ''`);
+  const advancedLabel = await js(`document.querySelector('.overlay-advanced-hotkey-row .settings-row-label')?.textContent?.trim() ?? ''`);
+  if (monitorLabel !== 'Monitor' || positionLabel !== 'Position' || advancedLabel !== 'Advanced') {
+    fail(`M9: hotkey labels are '${monitorLabel}', '${positionLabel}', and '${advancedLabel}' (expected Monitor, Position, and Advanced)`);
+  }
+  const advancedMasterCount = await js(`document.querySelectorAll('.settings-checkbox[data-setting="advancedOverlayEnabled"]').length`);
+  if (advancedMasterCount !== 1 || (await js(`document.querySelector('.overlay-hotkey-card')?.textContent ?? ''`)).includes('Show the side panel')) {
+    fail(`D1: Overlay must expose exactly one advancedOverlayEnabled checkbox and no 'Show the side panel' label (count=${advancedMasterCount})`);
+  }
+  step('d1-overlay-side-panel', 'D1: Overlay removed the duplicate Show the side panel checkbox; the General-card advancedOverlayEnabled master remains the only control');
+  step('m9-position-below-monitor-hotkey', 'M9: the stock Monitor Position select sits directly below its hotkey in the Hotkey card; HUD/Panel labels are renamed Monitor/Advanced');
 
   // (f2b) M6-amd3: the enable toggle MOVED to the General card at the top
   // of the overlay view - clicking it flips the persisted overlayEnabled
@@ -7962,23 +8057,50 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === true)`, 5000))) {
     fail('M17b: toggling the chip-names checkbox did not persist overlayChipNames=true');
   }
-  if (!(await waitFor(overlayWin, `/^A770       42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+  if (process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY !== '1'
+    && !(await waitFor(overlayWin, `/^A770       42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
     fail(`M17b: the overlay GPU row label is not the mock-derived 'A770': '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}' (expected 'A770       42%  <temp>°C  38.8W' - the M17g default-set fields, the label padded to the 9ch 'i7 14700K' column + the two-space separator)`);
   }
-  if (!(await waitFor(overlayWin, `/^i7 14700K  42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
+  if (process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY !== '1'
+    && !(await waitFor(overlayWin, `/^i7 14700K  42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
     fail(`M17b: the overlay CPU row label is not the mock-derived 'i7 14700K': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (expected 'i7 14700K  42%  <temp>°C ...' - the M17g default-set fields; the 9ch label is the max, its row takes the two-space separator)`);
   }
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('GPU ') === false && (document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU ') === false`, 5000))) {
+  if (process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY !== '1'
+    && !(await waitFor(overlayWin, `(document.getElementById('overlay-gpu')?.textContent ?? '').includes('GPU ') === false && (document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU ') === false`, 5000))) {
     fail('M17b: the chip labels must REPLACE the stock prefixes (no doubling)');
   }
   step('m17b-chipnames-on', `the chip-names toggle ON: the overlay rows read 'A770 ...' + 'i7 14700K ...' (the boot names fetch labels) with the field order unchanged (${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)} / ${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)})`);
+  // M53 runtime regression: duplicate PNP controllers are joined by their
+  // physical BDF, while the third controller has the same PNP with no stable
+  // secondary proof. The first two labels must stay distinct and the
+  // unresolved row must keep the stock GPU prefix rather than inheriting a
+  // cached sysinfo label from either resolved device.
+  if (process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1') {
+    const duplicatePnpRows = await waitFor(overlayWin, `(() => {
+      const rows = [
+        document.getElementById('overlay-gpu'),
+        document.getElementById('overlay-gpu2'),
+        ...Array.from(document.querySelectorAll('#overlay-secondary-rows .overlay-secondary')),
+      ].filter((row) => row && getComputedStyle(row).display !== 'none');
+      const text = rows.map((row) => row.textContent ?? '');
+      return text.some((line) => /^A770\\s+42%/.test(line))
+        && text.some((line) => /^A770 Secondary\\s+/.test(line))
+        && text.some((line) => /^GPU\\s+/.test(line));
+    })()`, 15000);
+    if (!duplicatePnpRows) {
+      fail(`M53: duplicate-PNP runtime labels did not resolve as expected: ${await ojs(`JSON.stringify([document.getElementById('overlay-gpu')?.textContent ?? '', document.getElementById('overlay-gpu2')?.textContent ?? '', ...Array.from(document.querySelectorAll('#overlay-secondary-rows .overlay-secondary')).map((e) => e.textContent ?? '')])`)}`);
+    }
+    step('m53-duplicate-pnp-labels', `M53 runtime: duplicate normalized PNP controllers keep distinct BDF-resolved labels ('${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}' / '${await ojs(`document.getElementById('overlay-gpu2')?.textContent ?? ''`)}') and the ambiguous row receives no sysinfo label`);
+  }
   // (m18-divider-wide) M18/M19b: with the chip labels ON the label column
   // WIDENS - the --overlay-label-w var flips to the chip max ('9ch' - the
   // 'i7 14700K' label is the widest of the SIX) and the divider's x
   // shifts right accordingly (the same independent derivation: the root
   // padding + the documented SIX-label column + a measured per-char
   // width).
-  const dividerWide = await ojs(`(() => {
+  const dividerWide = process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1'
+    ? { ok: true, why: 'duplicate-PNP fixture uses its longer BDF-resolved label column' }
+    : await ojs(`(() => {
     const divider = document.getElementById('overlay-divider');
     if (!divider) return { ok: false, why: 'missing-divider' };
     const root = document.getElementById('overlay-root');
@@ -8038,7 +8160,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayChipNames === false)`, 5000))) {
     fail('M17b: re-toggling the chip-names checkbox did not persist overlayChipNames=false');
   }
-  if (!(await waitFor(overlayWin, `/^GPU   42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
+  if (process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY !== '1'
+    && !(await waitFor(overlayWin, `/^GPU   42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
     fail(`M17b: re-toggling did not restore the stock 'GPU' prefix: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
   if (!(await waitFor(overlayWin, `/^CPU   42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
@@ -8672,7 +8795,13 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   const expectedTheme = ['light', 'red', 'yellow'].includes(process.env.RID_MOCK_THEME)
     ? process.env.RID_MOCK_THEME
     : 'dark';
-  const expectedBg = { dark: '#0f1116', light: '#f2f4f8', red: '#1a0d10', yellow: '#1a1608' }[expectedTheme];
+  const expectedThemeTokens = {
+    dark: { bg: '#0f1116', accent: '#4cc2ff', strong: '#1f9ce8', panel: '#0d1017', control: '#0a0d13', success: '#34d399', warn: '#fbbf24', error: '#f87171', accentRgb: 'rgb(76, 194, 255)', accentChannels: '76, 194, 255', controlRgb: 'rgb(10, 13, 19)' },
+    light: { bg: '#f2f4f8', accent: '#0a7cc2', strong: '#0869b8', panel: '#f7f9fc', control: '#dce2ea', success: '#0d9488', warn: '#b45309', error: '#dc2626', accentRgb: 'rgb(10, 124, 194)', accentChannels: '10, 124, 194', controlRgb: 'rgb(220, 226, 234)' },
+    red: { bg: '#1a0d10', accent: '#ff6b6b', strong: '#e34352', panel: '#200e14', control: '#14090d', success: '#4ade80', warn: '#fbbf24', error: '#ff8a8a', accentRgb: 'rgb(255, 107, 107)', accentChannels: '255, 107, 107', controlRgb: 'rgb(20, 9, 13)' },
+    yellow: { bg: '#1a1608', accent: '#ffd166', strong: '#e3a928', panel: '#211b08', control: '#141107', success: '#67e8a3', warn: '#facc15', error: '#fb7185', accentRgb: 'rgb(255, 209, 102)', accentChannels: '255, 209, 102', controlRgb: 'rgb(20, 17, 7)' },
+  };
+  const expectedBg = expectedThemeTokens[expectedTheme].bg;
   if (!(await waitFor(panelWin, `document.documentElement.dataset.theme === '${expectedTheme}'`, 8000))) {
     fail(`M51: Advanced Overlay boot theme is '${await ojs(`document.documentElement.dataset.theme ?? ''`)}' (expected '${expectedTheme}')`);
   }
@@ -8735,13 +8864,33 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     fail(`M23: the hotkey probe never registered 'Control+P' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   step('m23-get-state', `advanced-overlay:get-state -> exists + hidden-on-boot (position '${s0.position}', enabled ${s0.enabled}); the counting probe registered ${JSON.stringify(hotkeyProbe.registrations)}; hotkeyRegistered true`);
-  const expectPanelTokens = async (theme) => {
-    const expected = {
-      dark: { bg: '#0f1116', accent: '#4cc2ff', strong: '#1f9ce8', panel: '#0d1017', control: '#0a0d13', success: '#34d399', warn: '#fbbf24', error: '#f87171', accentRgb: 'rgb(76, 194, 255)' },
-      light: { bg: '#f2f4f8', accent: '#0a7cc2', strong: '#0869b8', panel: '#f7f9fc', control: '#dce2ea', success: '#0d9488', warn: '#b45309', error: '#dc2626', accentRgb: 'rgb(10, 124, 194)' },
-      red: { bg: '#1a0d10', accent: '#ff6b6b', strong: '#e34352', panel: '#200e14', control: '#14090d', success: '#4ade80', warn: '#fbbf24', error: '#ff8a8a', accentRgb: 'rgb(255, 107, 107)' },
-      yellow: { bg: '#1a1608', accent: '#ffd166', strong: '#e3a928', panel: '#211b08', control: '#141107', success: '#67e8a3', warn: '#facc15', error: '#fb7185', accentRgb: 'rgb(255, 209, 102)' },
-    }[theme];
+
+  // M53: non-master panel settings must update geometry without reviving a
+  // panel hidden by the shortcut. The position change is intentionally made
+  // before the first toggle so the verifier catches an apply path that shows
+  // the enabled panel instead of preserving its session visibility.
+  await js(`window.arcPower.profilesSettingsSave({ advancedOverlayPosition: 'left' })`);
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.position === 'left' && s.visible === false)`, 5000))) {
+    fail('M53 (advanced-overlay lifecycle): the hidden panel was revived by the non-master advancedOverlayPosition update');
+  }
+  await js(`window.arcPower.profilesSettingsSave({ advancedOverlayPosition: 'right' })`);
+  if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.position === 'right' && s.visible === false)`, 5000))) {
+    fail('M53 (advanced-overlay lifecycle): restoring advancedOverlayPosition revived the hidden panel');
+  }
+  step('m53-advanced-preserve-hidden', 'M53: non-master advancedOverlayPosition updates moved the shortcut-hidden panel left and back right without reviving it');
+  async function expectPanelTokens(theme) {
+    const expected = expectedThemeTokens[theme];
+    const activeBorderReady = await waitFor(panelWin, `(() => {
+      const active = document.querySelector('.adv-tab-active');
+      return !!active && getComputedStyle(active).borderBottomColor === '${expected.accentRgb}';
+    })()`, 5000);
+    if (!activeBorderReady) {
+      const border = await ojs(`(() => {
+        const active = document.querySelector('.adv-tab-active');
+        return active ? getComputedStyle(active).borderBottomColor : '';
+      })()`);
+      fail(`M51: Advanced Overlay ${theme} accent border did not settle to '${expected.accentRgb}' (got '${border}')`);
+    }
     const probe = await ojs(`(() => {
       const root = getComputedStyle(document.documentElement);
       const active = document.querySelector('.adv-tab-active');
@@ -8764,7 +8913,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     }
     if (probe.border !== expected.accentRgb) fail(`M51: Advanced Overlay ${theme} accent border is '${probe.border}' (expected '${expected.accentRgb}')`);
     if (!probe.brandGradient.includes('linear-gradient')) fail(`M51: Advanced Overlay ${theme} brand gradient is not token-derived: '${probe.brandGradient}'`);
-  };
+  }
   await expectPanelTokens(expectedTheme);
 
   // (2) the toggle semantics (M7b fix-5) + M24: the shortcut
@@ -8866,24 +9015,30 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   const sliderOk = await ojs(`Array.from(document.querySelectorAll('.adv-view .oc-card[data-control] input[type="range"]')).length >= 3`);
   if (!sliderOk) fail('M23: the a770 Tuning tab must render at least three slider cards with range inputs');
   // M31/user: in a multi-device session the panel's shared GPU selector uses
-  // the same compact Intel-Arc pill treatment as Dashboard and Tuning, and
-  // the actual selection push switches the panel away and back.
+  // the same compact Intel-Arc pill treatment as Dashboard and Tuning. Its
+  // focused state must stay in the Arc palette, not the warm Windows ring.
   if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
     const selectorStyle = await ojs(`(() => {
       const node = document.querySelector('.adv-view-heading .device-select');
       if (!node) return null;
+      node.focus();
       const style = getComputedStyle(node);
       return {
         radius: style.borderRadius,
         color: style.color,
         background: style.backgroundColor,
         border: style.borderTopColor,
+        outline: style.outlineStyle,
+        shadow: style.boxShadow,
       };
     })()`);
     if (!selectorStyle || selectorStyle.radius !== '999px'
-      || selectorStyle.color !== 'rgb(76, 194, 255)'
-      || selectorStyle.background !== 'rgb(10, 13, 19)') {
-      fail(`M31: the Advanced Overlay GPU selector is not styled like the Dashboard/Tuning pill (${JSON.stringify(selectorStyle)})`);
+      || selectorStyle.color !== expectedThemeTokens[expectedTheme].accentRgb
+      || selectorStyle.background !== expectedThemeTokens[expectedTheme].controlRgb
+      || selectorStyle.border !== expectedThemeTokens[expectedTheme].accentRgb
+      || selectorStyle.outline !== 'none'
+      || !selectorStyle.shadow.includes(expectedThemeTokens[expectedTheme].accentChannels)) {
+      fail(`M31: the Advanced Overlay GPU selector is not styled like the selected theme's Arc pill or has a non-Arc focus ring (${JSON.stringify(selectorStyle)})`);
     }
     const selectorState = await ojs(`(() => {
       const node = document.querySelector('.adv-view-heading .device-select');
@@ -9249,8 +9404,8 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   // (8) the Settings card (Overlay view): the advanced hotkey card renders +
   // a letter save re-registers through the probe + the honest
   // register-failure note appears when the probe fails.
-  if (!(await js(`!!document.querySelector('.overlay-advanced-card')`))) {
-    fail('M23: the Overlay view has no advanced settings card');
+  if (!(await js(`!!document.querySelector('.overlay-hotkey-card .overlay-advanced-hotkey-row .settings-advanced-hotkey-input')`))) {
+    fail('M23: the Overlay view has no merged Advanced controls in the Hotkey card');
   }
   // (8a) a letter save re-registers through the counting probe.
   await clearToasts();

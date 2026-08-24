@@ -14,8 +14,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings } from './ipc-core.js';
+import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings, sanitizeDisplaySettings } from './ipc-core.js';
 import { executeApply, withCapabilityFlags, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
+import { displayKeyInNamespace, normalizeDisplayStateIdentity } from './display-identity.js';
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -122,7 +123,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       return 1;
     }
   }
-  if (!['apply', 'waiver-accept', 'reset', 'graphics-apply'].includes(op)) {
+  if (!['apply', 'waiver-accept', 'reset', 'graphics-apply', 'display-apply'].includes(op)) {
     await finish({ ok: false, error: `invalid request: unknown op '${op}'` });
     return 1;
   }
@@ -194,6 +195,39 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       let graphicsState = null;
       try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: out.ok, perControl: out.perControl, graphicsState });
+      return 0;
+    }
+
+    // M10b (the Graphics "Display" view): the DEDICATED display apply op -
+    // the graphics-apply twin. Display settings have NO OC waiver and NO
+    // OC-mode gate, so this branch never touches the OC machinery (no
+    // sanitizeSettings, no ocModeRefusal). The worker's own sanitizer
+    // validates the payload + stable adapter/display keys; the response envelope is
+    // { ok, perControl, displayState } with the FRESH getDisplaySettings
+    // read-back for the page's per-control refresh.
+    if (op === 'display-apply') {
+      if (typeof req.settings !== 'object' || req.settings === null || Array.isArray(req.settings)) {
+        await finish({ ok: false, error: 'invalid request: settings must be an object' });
+        return 1;
+      }
+      if (typeof req.deviceKey !== 'string' || req.deviceKey.length === 0
+        || typeof req.displayKey !== 'string' || req.displayKey.length === 0) {
+        await finish({ ok: false, error: 'invalid request: stable deviceKey and displayKey are required' });
+        return 1;
+      }
+      const settings = sanitizeDisplaySettings(req.settings);
+      // The parent key is used above only to validate the physical proof.
+      // The worker backend may have a different durable key after rebuilding
+      // inventory (for example, PCI/BDF instead of the parent's PNP key), so
+      // route the actual write through the validated worker target identity.
+      const writeDeviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : req.deviceKey;
+      const writeDisplayKey = displayKeyInNamespace(req.displayKey, writeDeviceKey);
+      const out = await backend.setDisplaySettings(deviceId, { deviceKey: writeDeviceKey, displayKey: writeDisplayKey, patch: settings });
+      let displayState = null;
+      try {
+        displayState = normalizeDisplayStateIdentity(await backend.getDisplaySettings(deviceId), req.deviceKey);
+      } catch { /* degraded */ }
+      await finish({ ok: out.ok, perControl: out.perControl, displayState });
       return 0;
     }
 

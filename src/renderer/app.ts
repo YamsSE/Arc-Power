@@ -351,6 +351,9 @@ async function boot() {
   // buttons + the maximized-state icon subscription. Static markup, wired
   // before the boot sequence so the buttons work immediately.
   initTitlebar();
+  // M25/M52: check independently of the GPU bootstrap. A device/driver
+  // probe must never prevent the user from seeing a release notification.
+  void startupUpdateCheck();
 
   store.subscribe(() => {
     header.render();
@@ -451,10 +454,8 @@ async function boot() {
   } catch {
     store.set({ appVersion: '0.0.0' });
   }
-
-  // M25: fill the titlebar version + trigger the startup update check.
   setTitlebarVersion(store.get().appVersion);
-  void startupUpdateCheck();
+
 
   // M4-E: the distribution kind (app:build-info IPC) - the Settings
   // start-with-Windows hint differentiates by it. Failure degrades to 'dev'.
