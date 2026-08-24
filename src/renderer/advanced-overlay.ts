@@ -69,6 +69,7 @@ import {
   buildGraphicsSettings,
   isGraphicsControlDirtyVsApplied,
 } from './pure/graphics.ts';
+import { isValidTheme } from './pure/theme.ts';
 
 // ---------------------------------------------------------------------------
 // The panel store + boot state
@@ -104,10 +105,24 @@ const fanEl = document.getElementById('adv-readout-fan') as HTMLElement;
 const powerEl = document.getElementById('adv-readout-power') as HTMLElement;
 const closeBtn = document.getElementById('adv-close') as HTMLButtonElement;
 
-// M23 (user): NO shortcut info inside the panel - the settings push's
-// only former consumer (the hotkey hint) is gone, so the panel does NOT
-// subscribe to 'advanced-overlay:settings' (the main side still applies
-// the geometry/visibility; the panel needs no pushed state).
+function applyAdvancedTheme(theme: string): void {
+  const normalized = isValidTheme(theme) ? theme : 'dark';
+  document.documentElement.dataset.theme = normalized;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('theme', normalized);
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // Keep the bootstrap theme in constrained test harnesses.
+  }
+}
+
+// The main process pushes the persisted software theme on initial load and
+// after every settings save. Basic Overlay classic/arc state is unrelated.
+api.onAdvancedOverlaySettings((settings) => {
+  applyAdvancedTheme(settings?.theme);
+});
+
 closeBtn.addEventListener('click', () => {
   void api.advancedOverlayClose();
 });

@@ -39,14 +39,16 @@ import { toast } from '../components/toast.ts';
 import { displayVersion as displayVersionLine } from '../components/header.ts';
 import { setMonitorLogToFile } from '../log-state.ts';
 import { applyTheme } from '../app.ts';
-import { isValidTheme, THEMES, type Theme } from '../pure/theme.ts';
+import { isValidTheme, reconcileThemeSave, THEMES, type Theme } from '../pure/theme.ts';
 import type { StartupGetState } from '../types.ts';
 
-/** 1.0.1 Themes: the display label per theme id (the swatch buttons). */
+/** 1.0.4 Themes: the display label per theme id (the swatch buttons). */
 const THEME_LABELS: Record<Theme, string> = {
   dark: 'Dark Steel',
   midnight: 'Midnight',
   light: 'Arctic Light',
+  red: 'Red',
+  yellow: 'Yellow',
 };
 
 export const settingsPage: Page = {
@@ -75,6 +77,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // moved to the Overlay view - M6 the #/overlay page, M9 the Monitoring
   // page's Overlay view; the old #/overlay page is gone).
   let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
+  // Theme chips apply immediately, so rapid clicks can enqueue overlapping
+  // read-modify-write IPC calls. Serialize only the theme writes to preserve
+  // click order in the ProfileStore and keep the final chip persistent.
+  let themeSaveQueue: Promise<unknown> = Promise.resolve();
+  let themeSelectionGeneration = 0;
+  let committedTheme: Theme;
   let bootState: StartupGetState | null = null;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
@@ -95,6 +103,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // value degrades to the dark default defensively).
       theme: isValidTheme(envelope.settings.theme) ? envelope.settings.theme : 'dark',
     };
+    committedTheme = persisted.theme;
   } catch (err) {
     clear(root);
     root.append(el('p', { class: 'text-error', text: `Could not load settings: ${err instanceof Error ? err.message : String(err)}` }));
@@ -378,30 +387,53 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   // 1.0.1 Themes: one swatch selected - apply IMMEDIATELY (the <html>
   // attribute + the canvas recolor via app.ts) and persist through
-  // profiles-settings-save. A failed save REVERTS to the last persisted
-  // theme + surfaces the honest error toast (like the other toggles).
+  // profiles-settings-save. A failed save rolls back only when its request
+  // is still the newest live selection; a newer queued selection always wins.
   const onThemeSelect = async (theme: string): Promise<void> => {
     if (!isValidTheme(theme) || theme === persisted.theme) return;
+    const requestGeneration = ++themeSelectionGeneration;
     const syncSwatches = (active: Theme): void => {
       root.querySelectorAll<HTMLElement>('.theme-option').forEach((b) => {
         b.classList.toggle('active', b.dataset.themeOption === active);
       });
     };
-    const previous = persisted.theme;
-    // Apply first - the UI never waits on the save to show the new theme.
+    // The live selection may advance while this request waits in the queue.
+    // Keep the last successful store value separate from that selection.
     applyTheme(theme);
     persisted.theme = theme;
     syncSwatches(theme);
+    const save = themeSaveQueue.then(() => api.profilesSettingsSave({ theme }));
+    // Keep the queue alive after a rejected write so a later user click can
+    // still commit its theme.
+    themeSaveQueue = save.catch(() => undefined);
     try {
-      await api.profilesSettingsSave({ theme });
+      await save;
+      committedTheme = reconcileThemeSave(
+        persisted.theme,
+        committedTheme,
+        theme,
+        true,
+        requestGeneration,
+        themeSelectionGeneration,
+      ).committed;
       toast('success', 'Theme changed', `${THEME_LABELS[theme]} is now active.`);
     } catch (err) {
-      // Revert to the last known persisted theme (the failed save left the
-      // store on `previous`) + honest error toast.
+      // An older failure must not roll back a newer live selection. Only the
+      // request that is still newest may restore the last committed theme.
+      const result = reconcileThemeSave(
+        persisted.theme,
+        committedTheme,
+        theme,
+        false,
+        requestGeneration,
+        themeSelectionGeneration,
+      );
+      if (result.theme !== persisted.theme) {
+        applyTheme(result.theme);
+        persisted.theme = result.theme;
+        syncSwatches(result.theme);
+      }
       toast('error', 'Theme could not be changed', err instanceof Error ? err.message : String(err));
-      applyTheme(previous);
-      persisted.theme = previous;
-      syncSwatches(previous);
     }
   };
 

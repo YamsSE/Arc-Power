@@ -15,7 +15,7 @@ import { migrateStoreData, SCHEMA_VERSION } from './migrations.js';
 // lockstep). Absent on old settings files -> 'dark'; a garbage value
 // degrades to 'dark' at the STORE (the channel keeps the current theme -
 // never a silent reset).
-const THEMES = ['dark', 'midnight', 'light'];
+const THEMES = ['dark', 'midnight', 'light', 'red', 'yellow'];
 
 // M5: the canonical overlay corner ids - the persisted-truth owner of the
 // list (the THEMES pattern). The renderer mirror lives in

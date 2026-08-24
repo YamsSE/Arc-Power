@@ -549,13 +549,13 @@ export interface OverlayState {
   hotkeyRegistered: boolean;
 }
 
-/** M23: the ADVANCED-overlay settings push payload ({ position, enabled,
- *  hotkeyLetter } - the HUD's push parity; the letter rides it so the
- *  panel can render its own shortcut hint). */
+/** M23/M51: the ADVANCED-overlay settings push payload. Software theme
+ * follows the main window; the Basic Overlay's classic/arc theme is separate. */
 export interface AdvancedOverlaySettings {
   position: 'left' | 'right';
   enabled: boolean;
   hotkeyLetter: string;
+  theme: Theme;
 }
 
 /** M23: the advanced-overlay:get-state envelope (the Overlay view's

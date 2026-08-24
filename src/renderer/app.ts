@@ -43,9 +43,18 @@ const store = new Store();
 // switch must not wait for the next telemetry tick). The dataset write
 // lives HERE (and in settings.ts), never in pure/theme.ts (N8 - that module
 // stays DOM-free). An invalid id degrades to 'dark' (the same fallback the
-// store applies).
+// store applies). The query is kept in sync without a reload so a later
+// navigation/reload bootstraps the current persisted theme.
 export function applyTheme(theme: string): void {
-  document.documentElement.dataset.theme = isValidTheme(theme) ? theme : 'dark';
+  const normalized = isValidTheme(theme) ? theme : 'dark';
+  document.documentElement.dataset.theme = normalized;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('theme', normalized);
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // A non-browser unit harness may not expose a mutable location/history.
+  }
   redrawMonitoringGraphs();
 }
 let featuresetSwapInFlight = false;

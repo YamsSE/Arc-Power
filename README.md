@@ -8,7 +8,7 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.0.3</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
+<p align="center"><b>1.0.4</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
 
 ## Features
 
@@ -19,7 +19,7 @@
 - **In-game overlay** - a click-through, always-on-top stats overlay (MSI Afterburner/RTSS-style): clocks, temps, FPS with 1% Low / 99% FPS percentiles, and a frametime polyline. Hotkey toggle, 4-corner positioning, size/scale, text colors, an optional background, an API row and a configurable polling rate (100-2000 ms).
 - **Graphics tuning** - XeSS Frame Generation override (2x/3x/4x), frame synchronization, an FPS limit (30-300), and Low Latency (Off/On/On+Boost), applied through the IGCL 3D-feature API on the dedicated Graphics page, plus a Display view (scaling mode, quantization range, display info) via the IGCL display module.
 - **Multi-GPU** - pick which Intel Arc GPU to control; the choice persists and applies to the dashboard, tuning, telemetry, waiver, and boot/tray applies.
-- **UI themes** - Dark Steel (default), Midnight, and Arctic Light, selectable in Settings and persisted.
+- **UI themes** - Dark Steel (default), Midnight, Arctic Light, Red, and Yellow, selectable in Settings and persisted.
 - **Profiles** - save, load, and apply named profiles, optionally at every startup/logon (silently, via an elevated scheduled task on the installed build).
 - **Reversible tweaks** - registry hacks (MPO disable, HAGS, and more) with one-click Enable / Disable / Revert.
 - **Graceful fallback** - on non-Intel GPUs the app boots into a "Non supported GPU" state, keeps CPU/RAM telemetry live, reads GPU clocks/temperature/utilization/power/VRAM through the vendor libraries (NVML/ADL) when present, and shows no raw error text.

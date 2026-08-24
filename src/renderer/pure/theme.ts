@@ -7,7 +7,7 @@
 // owner) and src/main/ipc-core.js (the envelope validation); keep the three
 // lists in lockstep.
 
-export const THEMES = ['dark', 'midnight', 'light'] as const;
+export const THEMES = ['dark', 'midnight', 'light', 'red', 'yellow'] as const;
 
 export type Theme = (typeof THEMES)[number];
 
@@ -17,4 +17,25 @@ export type Theme = (typeof THEMES)[number];
  */
 export function isValidTheme(value: unknown): value is Theme {
   return typeof value === 'string' && (THEMES as readonly string[]).includes(value);
+}
+/**
+ * Reconcile one serialized theme-save result with the live selection.
+ *
+ * Writes are serialized, so every successful request becomes the new
+ * committed value in ProfileStore order. A failed request may roll back only
+ * when its request generation is still the newest live selection. The
+ * generation check is required when a later click selects the same theme.
+ */
+export function reconcileThemeSave(
+  current: Theme,
+  committed: Theme,
+  requested: Theme,
+  succeeded: boolean,
+  requestGeneration: number,
+  latestGeneration: number,
+): { theme: Theme; committed: Theme } {
+  if (succeeded) return { theme: current, committed: requested };
+  return requestGeneration === latestGeneration
+    ? { theme: committed, committed }
+    : { theme: current, committed };
 }

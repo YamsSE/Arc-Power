@@ -51,6 +51,7 @@ import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
 import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
+import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
 // M23 (Part B): the ADVANCED overlay module (the AMD-Adrenaline-style
 // interactive side panel - CONTROL + <letter>, stock P). The HUD's
@@ -197,8 +198,9 @@ async function boundShutdown(proxy) {
     // a shutdown failure degrades silently - the helper-side idle backstop reaps it
   }
 }
+let bootWindowTheme = 'dark';
 
-function createWindow(backgroundColor = '#0f1116', show = true) {
+function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme) {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -261,7 +263,12 @@ function createWindow(backgroundColor = '#0f1116', show = true) {
   // renderer via the load query (the renderer is sandboxed - no env access;
   // its boot marks are gated on the same flag so product runs never emit
   // the harness lines).
-  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), profileBoot ? { query: { profileBoot: '1' } } : undefined);
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), {
+    query: {
+      theme: normalizeTheme(theme),
+      ...(profileBoot ? { profileBoot: '1' } : {}),
+    },
+  });
   return win;
 }
 
@@ -1165,7 +1172,7 @@ async function main() {
       const cur = await store.loadSettings();
       await store.saveSettings({
         ...cur,
-        theme: process.env.RID_MOCK_THEME === 'light' ? 'light' : 'dark',
+        theme: ['light', 'red', 'yellow'].includes(process.env.RID_MOCK_THEME) ? process.env.RID_MOCK_THEME : 'dark',
         overlayTheme: 'arc',
       });
     } catch (err) {
@@ -1701,11 +1708,14 @@ async function main() {
   // window, never a minimize race). RID_MOCK_START_MINIMIZED=1 lets the
   // --ui-verify tray-start probe drive the block (the seed above wrote
   // startMinimized:true into the isolated mock store).
-  let windowBackground = '#0f1116';
+  let windowBackground = themeBackground('dark');
+  let windowTheme = 'dark';
   let startMinimizedAtBoot = false;
   try {
     const bootSettings = await store.loadSettings();
-    windowBackground = bootSettings.theme === 'light' ? '#f2f4f8' : bootSettings.theme === 'midnight' ? '#0b1020' : '#0f1116';
+    windowTheme = normalizeTheme(bootSettings.theme);
+    bootWindowTheme = windowTheme;
+    windowBackground = themeBackground(windowTheme);
     startMinimizedAtBoot = bootSettings.startMinimized === true;
   } catch {
     // keep the Dark Steel default - never block the window on a settings read
@@ -2158,12 +2168,16 @@ async function main() {
   // panel window (webContents.send).
   const onAdvancedOverlaySettings = async (patch) => {
     if (!advancedOverlayHandle) return;
-    applyAdvancedOverlaySettings();
+    const themeOnly = patch
+      && typeof patch === 'object'
+      && patch.theme !== undefined
+      && Object.keys(patch).length === 1;
+    applyAdvancedOverlaySettings({ preserveVisibility: themeOnly });
     if (patch && typeof patch.advancedOverlayHotkeyLetter === 'string') {
       registerAdvancedOverlayHotkey(patch.advancedOverlayHotkeyLetter);
     }
   };
-  const applyAdvancedOverlaySettings = () => {
+  const applyAdvancedOverlaySettings = ({ preserveVisibility = false } = {}) => {
     if (!advancedOverlayHandle) return;
     let settings = {};
     try {
@@ -2180,7 +2194,8 @@ async function main() {
         && /^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter)
         ? settings.advancedOverlayHotkeyLetter
         : 'P',
-    });
+      theme: normalizeTheme(settings.theme),
+    }, { preserveVisibility });
   };
   // The dedicated panel-close op (the 'advanced-overlay:close' channel's
   // handler): a SESSION hide - the panel's own close button never closes the

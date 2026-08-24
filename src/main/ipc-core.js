@@ -2426,7 +2426,7 @@ export function createIpcHandlers({
         // 'advanced-overlay:settings' to the panel window. Best effort: a
         // callback failure must never fail the save.
         const advancedOverlayChanged = {};
-        for (const key of ['advancedOverlayEnabled', 'advancedOverlayHotkeyLetter', 'advancedOverlayPosition']) {
+        for (const key of ['advancedOverlayEnabled', 'advancedOverlayHotkeyLetter', 'advancedOverlayPosition', 'theme']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) advancedOverlayChanged[key] = next[key];
         }
         if (Object.keys(advancedOverlayChanged).length > 0) {

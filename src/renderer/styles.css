@@ -12,7 +12,9 @@
   --text-dim: #5c6478;
   --accent: #4cc2ff;
   --accent-strong: #1f9ce8;
-  --accent-soft: rgba(76, 194, 255, 0.12);
+  --accent-rgb: 76, 194, 255;
+  --accent-soft: rgba(var(--accent-rgb), 0.12);
+  --brand-highlight: #7ee0ff;
   --on-accent: #07111c;
   --success: #34d399;
   --warn: #fbbf24;
@@ -58,7 +60,9 @@
   --text-dim: #63718f;
   --accent: #6fd2ff;
   --accent-strong: #2ea8e8;
-  --accent-soft: rgba(111, 210, 255, 0.12);
+  --accent-rgb: 111, 210, 255;
+  --accent-soft: rgba(var(--accent-rgb), 0.12);
+  --brand-highlight: #a9e8ff;
   --on-accent: #081222;
   --success: #34d399;
   --warn: #fbbf24;
@@ -84,7 +88,9 @@
   --text-dim: #8a93a3;
   --accent: #0a7cc2;
   --accent-strong: #0869b8;
-  --accent-soft: rgba(10, 124, 194, 0.1);
+  --accent-rgb: 10, 124, 194;
+  --accent-soft: rgba(var(--accent-rgb), 0.1);
+  --brand-highlight: #054a85;
   --on-accent: #ffffff;
   --success: #0d9488;
   --warn: #b45309;
@@ -95,21 +101,72 @@
   --control-bg: #dce2ea;
 }
 
+/* M51: Red and Yellow are dark ember/solar software themes. Every surface,
+   border, text, accent, semantic, panel and control token is explicit so
+   switching themes never leaves a hardcoded blue/black island behind. */
+[data-theme="red"] {
+  --bg: #1a0d10;
+  --bg-elev: #241217;
+  --bg-inset: #32151b;
+  --border: #4a2029;
+  --border-strong: #6b2a39;
+  --text: #f6e7ea;
+  --text-muted: #c098a1;
+  --text-dim: #8d636e;
+  --accent: #ff6b6b;
+  --accent-strong: #e34352;
+  --accent-rgb: 255, 107, 107;
+  --accent-soft: rgba(var(--accent-rgb), 0.14);
+  --brand-highlight: #ffb0a8;
+  --on-accent: #24080d;
+  --success: #4ade80;
+  --warn: #fbbf24;
+  --error: #ff8a8a;
+  --danger: #ff4d5d;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --bg-panel: #200e14;
+  --control-bg: #14090d;
+}
+
+[data-theme="yellow"] {
+  --bg: #1a1608;
+  --bg-elev: #26200c;
+  --bg-inset: #342b0d;
+  --border: #55450f;
+  --border-strong: #7b6218;
+  --text: #f8f0d6;
+  --text-muted: #c7b87c;
+  --text-dim: #91834d;
+  --accent: #ffd166;
+  --accent-strong: #e3a928;
+  --accent-rgb: 255, 209, 102;
+  --accent-soft: rgba(var(--accent-rgb), 0.14);
+  --brand-highlight: #ffe7a3;
+  --on-accent: #261b04;
+  --success: #67e8a3;
+  --warn: #facc15;
+  --error: #fb7185;
+  --danger: #f43f5e;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --bg-panel: #211b08;
+  --control-bg: #141107;
+}
+
 /* The brand gradient on light: the ice end stop (#7ee0ff) disappears on
    white - the light variant runs the dark-blue trio end-to-end with a
    reduced/softened glow. The `background` shorthand RESETS background-clip
    (the base rule's text clip would be wiped) - re-declare it here. */
-[data-theme="light"] .titlebar-brand-power {
-  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #054a85 90%);
+ [data-theme="light"] .titlebar-brand-power {
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, var(--brand-highlight) 90%);
   -webkit-background-clip: text;
   background-clip: text;
-  filter: drop-shadow(0 0 10px rgba(10, 124, 194, 0.22));
+  filter: drop-shadow(0 0 10px rgba(var(--accent-rgb), 0.22));
 }
 [data-theme="light"] .sidebar-brand-power {
-  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #054a85 90%);
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, var(--brand-highlight) 90%);
   -webkit-background-clip: text;
   background-clip: text;
-  filter: drop-shadow(0 0 8px rgba(10, 124, 194, 0.2));
+  filter: drop-shadow(0 0 8px rgba(var(--accent-rgb), 0.2));
 }
 
 * { box-sizing: border-box; }
@@ -288,11 +345,11 @@ html, body {
 }
 
 .titlebar-brand-power {
-  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #7ee0ff 90%);
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, var(--brand-highlight) 90%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  filter: drop-shadow(0 0 24px rgba(76, 194, 255, 0.28));
+  filter: drop-shadow(0 0 24px rgba(var(--accent-rgb), 0.28));
 }
 
 /* The right cluster: the integrated window controls (Windows-style: 46px
@@ -364,11 +421,11 @@ html, body {
 }
 
 .sidebar-brand-power {
-  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #7ee0ff 90%);
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, var(--brand-highlight) 90%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  filter: drop-shadow(0 0 12px rgba(76, 194, 255, 0.3));
+  filter: drop-shadow(0 0 12px rgba(var(--accent-rgb), 0.3));
 }
 
 .sidebar-brand::after {
@@ -761,7 +818,7 @@ html, body {
   font-size: 11.5px;
   font-weight: 600;
 }
-.badge-mock { background: rgba(76, 194, 255, 0.15); color: var(--accent); border: 1px solid rgba(76, 194, 255, 0.4); }
+.badge-mock { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.4); }
 
 /* M2D: mock-only device featureset dropdown (header, mock badge area).
    M17c: the accent-tinted background becomes the shared --control-bg token
@@ -771,7 +828,7 @@ html, body {
   appearance: none;
   background: var(--control-bg);
   color: var(--accent);
-  border: 1px solid rgba(76, 194, 255, 0.35);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
   border-radius: 999px;
   padding: 3px 10px;
   font-family: inherit;
@@ -789,7 +846,7 @@ html, body {
   appearance: none;
   background: var(--control-bg);
   color: var(--accent);
-  border: 1px solid rgba(76, 194, 255, 0.35);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
   border-radius: 999px;
   padding: 3px 10px;
   font-family: inherit;
@@ -1885,6 +1942,10 @@ select {
 .swatch-midnight::after { background: #6fd2ff; }
 .swatch-light { background: #f2f4f8; }
 .swatch-light::after { background: #0a7cc2; }
+.swatch-red { background: #1a0d10; }
+.swatch-red::after { background: #ff6b6b; }
+.swatch-yellow { background: #1a1608; }
+.swatch-yellow::after { background: #ffd166; }
 
 .boot-row { display: flex; align-items: center; gap: 8px; }
 
@@ -2001,12 +2062,7 @@ select {
 .overlay-stat-actions {
   display: flex;
   gap: 6px;
-  margin-bottom: 6px;
 }
-.overlay-stat-actions .btn { font-size: 11px; padding: 2px 8px; }
-
-/* The Stats card - one tickbox row per stat id (data-stat-id), two
-   columns on wide cards. M25: more compact. */
 .overlay-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2101,7 +2157,7 @@ select {
   min-width: 160px;
 }
 .profile-name { font-weight: 650; font-size: 13.5px; }
-.profile-badge { background: rgba(76, 194, 255, 0.15); color: var(--accent); border: 1px solid rgba(76, 194, 255, 0.4); }
+.profile-badge { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.4); }
 
 .profile-chips { flex: 1; }
 

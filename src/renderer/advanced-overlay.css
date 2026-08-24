@@ -21,7 +21,9 @@
   --text-dim: #5c6478;
   --accent: #4cc2ff;
   --accent-strong: #1f9ce8;
-  --accent-soft: rgba(76, 194, 255, 0.12);
+  --accent-rgb: 76, 194, 255;
+  --accent-soft: rgba(var(--accent-rgb), 0.12);
+  --brand-highlight: #7ee0ff;
   --on-accent: #07111c;
   --success: #34d399;
   --warn: #fbbf24;
@@ -34,6 +36,105 @@
   --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
   --bg-panel: #0d1017;
   --control-bg: #0a0d13;
+}
+/* Keep all five software themes in lockstep with styles.css so the panel
+   never falls back to Dark Steel when the main window is Midnight or Arctic
+   Light. */
+[data-theme="midnight"] {
+  --bg: #0b1020;
+  --bg-elev: #111a33;
+  --bg-inset: #16203f;
+  --border: #29365c;
+  --border-strong: #3d5284;
+  --text: #e9f0ff;
+  --text-muted: #9aa9c7;
+  --text-dim: #63718f;
+  --accent: #6fd2ff;
+  --accent-strong: #2ea8e8;
+  --accent-rgb: 111, 210, 255;
+  --accent-soft: rgba(var(--accent-rgb), 0.12);
+  --brand-highlight: #a9e8ff;
+  --on-accent: #081222;
+  --success: #34d399;
+  --warn: #fbbf24;
+  --error: #f87171;
+  --danger: #ef4444;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --bg-panel: #0e1630;
+  --control-bg: #101a34;
+}
+
+[data-theme="light"] {
+  --bg: #f2f4f8;
+  --bg-elev: #ffffff;
+  --bg-inset: #e4e8ef;
+  --border: #c7cfdb;
+  --border-strong: #aeb9c8;
+  --text: #232a36;
+  --text-muted: #536071;
+  --text-dim: #6a7484;
+  --accent: #0a7cc2;
+  --accent-strong: #0869b8;
+  --accent-rgb: 10, 124, 194;
+  --accent-soft: rgba(var(--accent-rgb), 0.1);
+  --brand-highlight: #054a85;
+  --on-accent: #ffffff;
+  --success: #0d9488;
+  --warn: #b45309;
+  --error: #dc2626;
+  --danger: #b91c1c;
+  --shadow: 0 4px 16px rgba(26, 36, 50, 0.16);
+  --bg-panel: #f7f9fc;
+  --control-bg: #dce2ea;
+}
+
+/* M51: the Advanced Overlay follows the selected software theme. */
+[data-theme="red"] {
+  --bg: #1a0d10;
+  --bg-elev: #241217;
+  --bg-inset: #32151b;
+  --border: #4a2029;
+  --border-strong: #6b2a39;
+  --text: #f6e7ea;
+  --text-muted: #c098a1;
+  --text-dim: #8d636e;
+  --accent: #ff6b6b;
+  --accent-strong: #e34352;
+  --accent-rgb: 255, 107, 107;
+  --accent-soft: rgba(var(--accent-rgb), 0.14);
+  --brand-highlight: #ffb0a8;
+  --on-accent: #24080d;
+  --success: #4ade80;
+  --warn: #fbbf24;
+  --error: #ff8a8a;
+  --danger: #ff4d5d;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --bg-panel: #200e14;
+  --control-bg: #14090d;
+}
+
+[data-theme="yellow"] {
+  --bg: #1a1608;
+  --bg-elev: #26200c;
+  --bg-inset: #342b0d;
+  --border: #55450f;
+  --border-strong: #7b6218;
+  --text: #f8f0d6;
+  --text-muted: #c7b87c;
+  --text-dim: #91834d;
+  --accent: #ffd166;
+  --accent-strong: #e3a928;
+  --accent-rgb: 255, 209, 102;
+  --accent-soft: rgba(var(--accent-rgb), 0.14);
+  --brand-highlight: #ffe7a3;
+  --on-accent: #261b04;
+  --success: #67e8a3;
+  --warn: #facc15;
+  --error: #fb7185;
+  --danger: #f43f5e;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --bg-panel: #211b08;
+  --control-bg: #141107;
 }
 
 * { box-sizing: border-box; }
@@ -98,7 +199,7 @@ html, body {
 }
 
 .adv-wordmark-power {
-  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, #7ee0ff 90%);
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, var(--brand-highlight) 90%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -211,7 +312,7 @@ html, body {
   appearance: none;
   background: var(--control-bg);
   color: var(--accent);
-  border: 1px solid rgba(76, 194, 255, 0.35);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
   border-radius: 999px;
   padding: 3px 10px;
   font-family: inherit;

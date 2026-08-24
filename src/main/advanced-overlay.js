@@ -42,6 +42,7 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { normalizeTheme, themeBackground } from './theme.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -79,6 +80,7 @@ function normalizeSettings(raw = {}) {
     enabled: raw.enabled === true,
     position,
     hotkeyLetter,
+    theme: normalizeTheme(raw.theme),
   };
 }
 
@@ -95,7 +97,8 @@ function normalizeSettings(raw = {}) {
  * @returns {{
  *   getWindow: () => import('electron').BrowserWindow | null,
  *   getState: () => { exists: boolean, visible: boolean, bounds: object | null, position: string, enabled: boolean, hotkeyRegistered: boolean },
- *   apply: (settings: object) => void,   // idempotent geometry + visibility
+ *   apply: (settings: object, options?: { preserveVisibility?: boolean }) => void,
+ *                                        // idempotent geometry + visibility
  *                                        // application (boot + every change)
  *   toggle: () => Promise<void>,         // the SHORTCUT flip - gated on the
  *                                        // enabled master; never persists
@@ -129,7 +132,7 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
       skipTaskbar: true,
       resizable: false,
       hasShadow: true,
-      backgroundColor: '#0f1116',
+      backgroundColor: themeBackground(applied.theme),
       // Created hidden - the visibility is applied by apply() (the
       // hotkey-enable path must work before the user ever enables it).
       show: false,
@@ -178,7 +181,7 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
     win.webContents.on('did-finish-load', () => {
       if (win && !win.isDestroyed()) win.webContents.send('advanced-overlay:settings', payload());
     });
-    win.loadFile(path.join(__dirname, '..', 'renderer', 'advanced-overlay.html'));
+    win.loadFile(path.join(__dirname, '..', 'renderer', 'advanced-overlay.html'), { query: { theme: applied.theme } });
     return win;
   };
 
@@ -200,6 +203,7 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
     position: applied.position,
     enabled: applied.enabled,
     hotkeyLetter: applied.hotkeyLetter,
+    theme: applied.theme,
   });
 
   return {
@@ -226,8 +230,9 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
      * renderer happen TOGETHER - the panel renders against the SAME pushed
      * position/hotkeyLetter the window was placed with.
      */
-    apply(rawSettings) {
+    apply(rawSettings, { preserveVisibility = false } = {}) {
       applied = normalizeSettings(rawSettings);
+      if (win && !win.isDestroyed()) win.setBackgroundColor(themeBackground(applied.theme));
       if (!win) build();
       if (win && !win.isDestroyed()) {
         const { bounds } = screen.getPrimaryDisplay();
@@ -238,22 +243,27 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
           width: PANEL_WIDTH,
           height: geom.height,
         });
-        // M24 (user): the first apply() is the boot apply  -  apply geometry
-        // + push settings but do NOT show the window. Subsequent applies
-        // (Settings toggle) show/hide normally.
-        if (bootApply) {
-          bootApply = false;
-        } else if (applied.enabled) {
-          if (!win.isVisible()) win.show();
-          try {
-            win.setAlwaysOnTop(true, 'screen-saver');
-          } catch {
-            // never throw through the apply path
+        // Theme-only pushes update the panel document/background but must not
+        // alter session visibility. In particular, a hidden enabled panel
+        // stays hidden instead of entering the enabled show path.
+        if (!preserveVisibility) {
+          // M24 (user): the first apply() is the boot apply  -  apply geometry
+          // + push settings but do NOT show the window. Subsequent applies
+          // (Settings toggle) show/hide normally.
+          if (bootApply) {
+            bootApply = false;
+          } else if (applied.enabled) {
+            if (!win.isVisible()) win.show();
+            try {
+              win.setAlwaysOnTop(true, 'screen-saver');
+            } catch {
+              // never throw through the apply path
+            }
+            visible = true;
+          } else {
+            if (win.isVisible()) win.hide();
+            visible = false;
           }
-          visible = true;
-        } else {
-          if (win.isVisible()) win.hide();
-          visible = false;
         }
         win.webContents.send('advanced-overlay:settings', payload());
       }

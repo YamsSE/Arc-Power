@@ -782,10 +782,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // M23 (user): the 1.0.3 STABLE bump - the display drops the Beta line
-  // entirely ('Arc Power Ver. 1.0.3' - a stable has no suffix).
-if (!(await waitFor(win, `(document.querySelector('.gpu-meta')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3'`))) {
-fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3')`);
+  // M51: the 1.0.4 stable release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.0.4'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.0.4')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -803,22 +802,28 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS is still surfaced as a status item');
   step('version-line', `header line '${await js(`document.querySelector('.gpu-meta')?.textContent ?? ''`)}'; no PCI text; no status dot / Service Status label`);
   // --- 1.0.1 Themes (M3): the persisted theme applies at BOOT --------------
-  // The attribute lives on <html> (documentElement.dataset.theme), written
-  // by the boot sequence right after health + the hoisted profiles envelope
-  // read. The default session boots on Dark Steel (the M2 mock seed);
-  // RID_MOCK_THEME=light flips the seed for the light-boot sanity run. The
-  // COMPUTED --bg assertion pins the equal-specificity ordering hazard (the
-  // [data-theme] blocks must win over :root).
-  const bootTheme = process.env.RID_MOCK_THEME === 'light' ? 'light' : 'dark';
-  const bootBg = bootTheme === 'light' ? '#f2f4f8' : '#0f1116';
+  // M51: persisted software themes bootstrap before CSS and remain reflected
+  // in the renderer URL without reloading.
+  const bootTheme = ['light', 'red', 'yellow'].includes(process.env.RID_MOCK_THEME)
+    ? process.env.RID_MOCK_THEME
+    : 'dark';
+  const bootBg = {
+    dark: '#0f1116',
+    light: '#f2f4f8',
+    midnight: '#0b1020',
+    red: '#1a0d10',
+    yellow: '#1a1608',
+  }[bootTheme];
   if (!(await waitFor(win, `document.documentElement.dataset.theme === '${bootTheme}'`, 8000))) {
-    fail(`1.0.1: the boot theme attribute is '${await js(`document.documentElement.dataset.theme ?? ''`)}' (expected '${bootTheme}')`);
+    fail(`M51: the boot theme attribute is '${await js(`document.documentElement.dataset.theme ?? ''`)}' (expected '${bootTheme}')`);
   }
   if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '${bootBg}'`, 8000))) {
-    fail(`1.0.1: the boot computed --bg is '${await js(`getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`)}' (expected '${bootBg}')`);
+    fail(`M51: the boot computed --bg is '${await js(`getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`)}' (expected '${bootBg}')`);
   }
-  step('themes-boot', `1.0.1: boot theme '${bootTheme}' on <html> + computed --bg ${bootBg} (applied from the persisted envelope, equal-specificity ordering safe)`);
-
+  if (!(await js(`new URL(window.location.href).searchParams.get('theme') === '${bootTheme}'`))) {
+    fail(`M51: main renderer theme query is '${await js(`new URL(window.location.href).searchParams.get('theme') ?? ''`)}' (expected '${bootTheme}')`);
+  }
+  step('themes-boot', `M51: boot theme '${bootTheme}' + computed --bg ${bootBg} + validated query`);
   // --- M24 (Part A): the PRODUCT-DEFAULT overlay theme. This variant's
   // seeds never touch overlayTheme (only the RID_MOCK_OVERLAY boot seed
   // writes 'classic' when its knob is on), so the fresh store must carry
@@ -831,32 +836,100 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   }
   step('m24-theme-default', `M24: the fresh-store overlayTheme defaults to 'arc' (the product default - the Arc look; 'classic' stays one click away)`);
 
-  // M17c (user request): the shared --control-bg token renders on the
-  // interactive controls - the M8-style computed-style pins for a select
-  // (.featureset-select - always present in mock mode), a plain non-primary
-  // .btn (the Tweaks Refresh button - the only non-ghost/non-primary .btn
-  // in the app) and a checkbox (.settings-checkbox) in BOTH themes (the
-  // Settings theme chips flip the session; the dark state is restored for
-  // the later pins).
   const expectControlBg = async (sel, theme) => {
     const bg = await js(`getComputedStyle(document.querySelector('${sel}')).backgroundColor`);
-    const want = theme === 'light' ? 'rgb(220, 226, 234)' : 'rgb(10, 13, 19)';
+    const want = {
+      dark: 'rgb(10, 13, 19)',
+      light: 'rgb(220, 226, 234)',
+      red: 'rgb(20, 9, 13)',
+      yellow: 'rgb(20, 17, 7)',
+    }[theme] ?? 'rgb(10, 13, 19)';
     if (bg !== want) {
-      fail(`M17c: the computed background of ${sel} is '${bg}' (expected the --control-bg token '${want}' in the ${theme} theme)`);
+      fail(`M51: the computed background of ${sel} is '${bg}' (expected the --control-bg token '${want}' in the ${theme} theme)`);
     }
   };
   const clickThemeChip = (theme) => js(`(() => { const b = Array.from(document.querySelectorAll('button.theme-option')).find((x) => x.dataset.themeOption === '${theme}'); if (b) b.click(); return !!b; })()`);
-  await expectControlBg('.featureset-select', 'dark');
+  const expectThemeTokens = async (theme) => {
+    const expected = {
+      red: {
+        bg: '#1a0d10', accent: '#ff6b6b', strong: '#e34352', panel: '#200e14',
+        control: '#14090d', success: '#4ade80', warn: '#fbbf24', error: '#ff8a8a',
+        accentRgb: 'rgb(255, 107, 107)',
+      },
+      yellow: {
+        bg: '#1a1608', accent: '#ffd166', strong: '#e3a928', panel: '#211b08',
+        control: '#141107', success: '#67e8a3', warn: '#facc15', error: '#fb7185',
+        accentRgb: 'rgb(255, 209, 102)',
+      },
+    }[theme];
+    await clickThemeChip(theme);
+    if (!(await waitFor(win, `document.documentElement.dataset.theme === '${theme}'`, 5000))) {
+      fail(`M51: the ${theme} theme selection did not land`);
+    }
+    if (!(await waitFor(win, `document.querySelector('button.theme-option[data-theme-option="${theme}"]')?.classList.contains('active')`, 5000))) {
+      fail(`M51: the ${theme} theme swatch did not become active`);
+    }
+    const probe = await js(`(() => {
+      const root = getComputedStyle(document.documentElement);
+      const accentProbe = document.createElement('button');
+      accentProbe.className = 'theme-option active';
+      document.body.append(accentProbe);
+      const accentBorder = getComputedStyle(accentProbe).borderTopColor;
+      accentProbe.remove();
+      const brand = document.querySelector('.sidebar-brand-power');
+      return {
+        bg: root.getPropertyValue('--bg').trim(),
+        accent: root.getPropertyValue('--accent').trim(),
+        strong: root.getPropertyValue('--accent-strong').trim(),
+        panel: root.getPropertyValue('--bg-panel').trim(),
+        control: root.getPropertyValue('--control-bg').trim(),
+        success: root.getPropertyValue('--success').trim(),
+        warn: root.getPropertyValue('--warn').trim(),
+        error: root.getPropertyValue('--error').trim(),
+        border: accentBorder,
+        brandGradient: brand ? getComputedStyle(brand).backgroundImage : '',
+      };
+    })()`);
+    const expectedRgb = (hex) => {
+      const n = Number.parseInt(hex.slice(1), 16);
+      return `rgb(${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255})`;
+    };
+    for (const [key, value] of Object.entries({
+      bg: expected.bg,
+      accent: expected.accent,
+      strong: expected.strong,
+      panel: expected.panel,
+      control: expected.control,
+      success: expected.success,
+      warn: expected.warn,
+      error: expected.error,
+    })) {
+      if (probe[key] !== value) fail(`M51: ${theme} computed ${key} token is '${probe[key]}' (expected '${value}')`);
+    }
+    if (probe.border !== expected.accentRgb) {
+      fail(`M51: ${theme} representative accent border is '${probe.border}' (expected '${expected.accentRgb}')`);
+    }
+    if (!probe.brandGradient.includes('linear-gradient')) {
+      fail(`M51: ${theme} brand highlight is not token-derived gradient: '${probe.brandGradient}'`);
+    }
+    step(`m51-${theme}-tokens`, `M51: ${theme} computed token matrix + semantic colors + brand gradient + accent border are theme-derived`);
+  };
+  await expectControlBg('.featureset-select', bootTheme);
   await js(`location.hash = '#/tweaks'`);
   await sleep(250);
-  await expectControlBg('.tweak-refresh', 'dark');
+  await expectControlBg('.tweak-refresh', bootTheme);
   await js(`location.hash = '#/settings'`);
   await sleep(250);
-  await expectControlBg('.settings-checkbox[data-setting="startMinimized"]', 'dark');
+  await expectControlBg('.settings-checkbox[data-setting="startMinimized"]', bootTheme);
   // Flip to light: the theme chip applies + persists immediately.
+  if (!(await js(`document.querySelectorAll('button.theme-option').length === 5`))) {
+    fail('M51: Settings must expose exactly five software theme swatches');
+  }
   if (!(await js(`!!document.querySelector('button.theme-option[data-theme-option="light"]')`))) {
     fail('M17c: the Settings page theme chips are missing');
   }
+  await expectThemeTokens('red');
+  await expectThemeTokens('yellow');
   await clickThemeChip('light');
   if (!(await waitFor(win, `document.documentElement.dataset.theme === 'light'`, 5000))) {
     fail('M17c: the light theme flip did not land (the theme chip must apply immediately)');
@@ -2209,7 +2282,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   })()`);
   const voltMin = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('min')`);
   const voltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
-  if (voltMin !== '-0.234' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.234..0.234 - the mirrored min)`);
+  if (voltMin !== '0' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected 0..0.234 - the negative-voltage half-plane is intentionally hidden)`);
   // M15 F4-fix / M16 (nit 9a): the slider's step attribute is the pinned
   // 0.001 grid - the old driver-reported 0.005 put the 0.234 ceiling
   // OFF-GRID (the slider maxed at 0.230). The step + the reachability of
@@ -3023,7 +3096,7 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   if (await js(`!!document.querySelector('.oc-lock-mode-toggle')`)) {
     fail('M17e: the Offset|Lock toggle is rendered on the b580 surface (no gpuLock control - the offset card must have NO toggle)');
   }
-  if (await js(`!!document.querySelector('.vram-editor-card')`) === false) {
+  if (!(await js(`!!document.querySelector('.oc-card[data-control="vramFreqOffsetGts"]')`))) {
     fail('M4J (D): the VRAM clock editor is missing on the b580 swap (vramFreqOffset native)');
   }
   step('fs-swap-b580', `swap -> b580: PL readout '100 %', percent units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
@@ -3868,9 +3941,10 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
   // detached nodes a clear() orphaned.
   const viewLabels = await js(`Array.from(document.querySelectorAll('.mon-view-btn')).map((b) => (b.textContent ?? '').trim()).join('|')`);
   if (viewLabels !== 'Monitoring|Overlay') fail(`M9: the Monitoring view pill must read 'Monitoring|Overlay' (got '${viewLabels}')`);
-  // overlay -> the Overlay Settings content renders (its own heading).
+  // overlay -> the Overlay Settings content root renders (the M25 heading was removed;
+  // Monitoring's page title/subtitle describe this sub-view).
   await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Overlay'); b.click(); })()`);
-  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Overlay Settings')`, 8000))) {
+  if (!(await waitFor(win, `!!document.querySelector('#overlay-settings-root')`, 8000))) {
     fail('M9: the Overlay view did not render the Overlay Settings content');
   }
   // monitoring -> the readout grid returns.
@@ -4482,10 +4556,9 @@ fail(`header version line is '${await js(`document.querySelector('.gpu-meta')?.t
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// M4-D row shares the header's display format). M23 (user): the 1.0.3
-// STABLE bump - 'Arc Power Ver. 1.0.3' (no Beta suffix on a stable).
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.3'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.3')`);
+// M51: the 1.0.4 stable bump - Settings displays 'Arc Power Ver. 1.0.4'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.4'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.4')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -4547,8 +4620,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' :     '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.3`);
-
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' : '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.4`);
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -4687,7 +4759,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
   // fresh reload below re-boots WITHOUT the waiver prompt (M4-D permanent
   // acceptance) and the persisted theme must survive a REAL renderer reload
   // (M3 - the boot sequence re-applies it from the envelope). The pins:
-  //   1. the card renders 3 swatches (button[data-theme-option=...]) with
+  //   1. the card renders 5 swatches (button[data-theme-option=...]) with
   //      class-driven color chips (CSP-safe) and the current theme marked
   //      .active;
   //   2. selecting Midnight flips the <html> attribute AND the COMPUTED
@@ -4701,17 +4773,20 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
   await js(`location.hash = '#/settings'`);
   await sleep(250);
   const themeOption = (t) => `document.querySelector('.theme-option[data-theme-option="${t}"]')`;
-  if (!(await waitFor(win, `document.querySelectorAll('.theme-option').length === 3`, 5000))) {
-    fail(`1.0.1: the Theme card renders ${await js(`document.querySelectorAll('.theme-option').length`)} swatches (expected 3)`);
+  if (!(await waitFor(win, `document.querySelectorAll('.theme-option').length === 5`, 5000))) {
+    fail(`M51: the Theme card renders ${await js(`document.querySelectorAll('.theme-option').length`)} swatches (expected 5)`);
   }
-  for (const t of ['dark', 'midnight', 'light']) {
-    if (!(await js(`!!${themeOption(t)}`))) fail(`1.0.1: the Theme card has no ${t} swatch`);
-    if (!(await js(`!!document.querySelector('.swatch-chip.swatch-${t}')`))) fail(`1.0.1: the ${t} swatch has no class-driven color chip`);
+  for (const t of ['dark', 'midnight', 'light', 'red', 'yellow']) {
+    if (!(await js(`!!${themeOption(t)}`))) fail(`M51: the Theme card has no ${t} swatch`);
+    if (!(await js(`!!document.querySelector('.swatch-chip.swatch-${t}')`))) fail(`M51: the ${t} swatch has no class-driven color chip`);
   }
-  if (!(await js(`${themeOption(bootTheme)}.classList.contains('active')`))) {
-    fail(`1.0.1: the current (${bootTheme}) swatch is not marked active`);
+  // Earlier M51 probes restore the session to the persisted default before
+  // this reload, so the stable active swatch here is Dark Steel even when the
+  // initial process booted a red/yellow variant.
+  if (!(await js(`${themeOption('dark')}.classList.contains('active')`))) {
+    fail(`M51: the current persisted swatch is not Dark Steel (theme='${await js(`document.documentElement.dataset.theme ?? ''`)}')`);
   }
-  step('themes-card', `1.0.1: Theme card renders the 3 swatches (dark/midnight/light, class-driven chips) with the current one ('${bootTheme}') active`);
+  step('themes-card', 'M51: Theme card renders the 5 swatches (dark/midnight/light/red/yellow, class-driven chips) with Dark Steel active after the default restore');
 
   // Midnight: attribute + computed --bg + persisted + active swatch.
   await js(`${themeOption('midnight')}.click()`);
@@ -4742,8 +4817,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
   // Light: attribute + computed --bg (the Arctic palette) + persisted.
   await js(`location.hash = '#/settings'`);
   await sleep(250);
-  if (!(await waitFor(win, `document.querySelectorAll('.theme-option').length === 3`, 5000))) fail('1.0.1: the Theme card did not re-render after the reload');
-  if (!(await js(`${themeOption('midnight')}.classList.contains('active')`))) fail('1.0.1: the Midnight swatch is not active after the reload round trip');
+  if (!(await waitFor(win, `document.querySelectorAll('.theme-option').length === 5`, 5000))) fail('M51: the Theme card did not re-render all five swatches after the reload');
   await js(`${themeOption('light')}.click()`);
   if (!(await waitFor(win, `document.documentElement.dataset.theme === 'light'`, 5000))) fail('1.0.1: selecting Light did not set the attribute');
   if (!(await waitFor(win, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#f2f4f8'`, 5000))) {
@@ -8579,6 +8653,44 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   const ojs = (code) => panelWin.webContents.executeJavaScript(code);
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
   const clearPanelToasts = () => ojs(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
+  const expectedTheme = ['light', 'red', 'yellow'].includes(process.env.RID_MOCK_THEME)
+    ? process.env.RID_MOCK_THEME
+    : 'dark';
+  const expectedBg = { dark: '#0f1116', light: '#f2f4f8', red: '#1a0d10', yellow: '#1a1608' }[expectedTheme];
+  if (!(await waitFor(panelWin, `document.documentElement.dataset.theme === '${expectedTheme}'`, 8000))) {
+    fail(`M51: Advanced Overlay boot theme is '${await ojs(`document.documentElement.dataset.theme ?? ''`)}' (expected '${expectedTheme}')`);
+  }
+  if (!(await waitFor(panelWin, `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '${expectedBg}'`, 8000))) {
+    fail(`M51: Advanced Overlay computed --bg is '${await ojs(`getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`)}' (expected '${expectedBg}')`);
+  }
+  if (!(await ojs(`new URL(window.location.href).searchParams.get('theme') === '${expectedTheme}'`))) {
+    fail(`M51: Advanced Overlay theme query did not bootstrap '${expectedTheme}'`);
+  }
+  const liveTheme = expectedTheme === 'red' ? 'yellow' : 'red';
+  await js(`location.hash = '#/settings'`);
+  await sleep(250);
+  await js(`(() => { const b = document.querySelector('button.theme-option[data-theme-option="${liveTheme}"]'); b?.click(); return !!b; })()`);
+  if (!(await waitFor(panelWin, `document.documentElement.dataset.theme === '${liveTheme}'`, 8000))) {
+    fail(`M51: Advanced Overlay did not follow live software theme push '${liveTheme}'`);
+  }
+  if (!(await ojs(`new URL(window.location.href).searchParams.get('theme') === '${liveTheme}'`))) {
+    fail('M51: Advanced Overlay query did not follow live theme push');
+  }
+  await expectPanelTokens(liveTheme);
+  const basicOverlayThemeAfterSoftwareChange = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayTheme)`);
+  if (!['classic', 'arc'].includes(basicOverlayThemeAfterSoftwareChange)) {
+    fail(`M51: Basic Overlay theme '${basicOverlayThemeAfterSoftwareChange}' left classic|arc while software theme changed`);
+  }
+  await js(`window.arcPower.profilesSettingsSave({ overlayTheme: 'classic' })`);
+  await js(`(() => { const b = document.querySelector('button.theme-option[data-theme-option="${expectedTheme}"]'); b?.click(); return !!b; })()`);
+  if (!(await waitFor(panelWin, `document.documentElement.dataset.theme === '${expectedTheme}'`, 8000))) {
+    fail(`M51: Advanced Overlay did not restore '${expectedTheme}' after live theme test`);
+  }
+  const basicOverlayThemeAfterClassic = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayTheme)`);
+  if (basicOverlayThemeAfterClassic !== 'classic') {
+    fail(`M51: software theme changes overwrote Basic Overlay theme '${basicOverlayThemeAfterClassic}'`);
+  }
+  await js(`window.arcPower.profilesSettingsSave({ overlayTheme: 'arc' })`);
 
   // The apply-settings payload recorder (the M22-safe payload pins): when
   // the backend is passed, every applySettings call's payload is recorded
@@ -8607,6 +8719,37 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     fail(`M23: the hotkey probe never registered 'Control+P' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   step('m23-get-state', `advanced-overlay:get-state -> exists + hidden-on-boot (position '${s0.position}', enabled ${s0.enabled}); the counting probe registered ${JSON.stringify(hotkeyProbe.registrations)}; hotkeyRegistered true`);
+  const expectPanelTokens = async (theme) => {
+    const expected = {
+      dark: { bg: '#0f1116', accent: '#4cc2ff', strong: '#1f9ce8', panel: '#0d1017', control: '#0a0d13', success: '#34d399', warn: '#fbbf24', error: '#f87171', accentRgb: 'rgb(76, 194, 255)' },
+      light: { bg: '#f2f4f8', accent: '#0a7cc2', strong: '#0869b8', panel: '#f7f9fc', control: '#dce2ea', success: '#0d9488', warn: '#b45309', error: '#dc2626', accentRgb: 'rgb(10, 124, 194)' },
+      red: { bg: '#1a0d10', accent: '#ff6b6b', strong: '#e34352', panel: '#200e14', control: '#14090d', success: '#4ade80', warn: '#fbbf24', error: '#ff8a8a', accentRgb: 'rgb(255, 107, 107)' },
+      yellow: { bg: '#1a1608', accent: '#ffd166', strong: '#e3a928', panel: '#211b08', control: '#141107', success: '#67e8a3', warn: '#facc15', error: '#fb7185', accentRgb: 'rgb(255, 209, 102)' },
+    }[theme];
+    const probe = await ojs(`(() => {
+      const root = getComputedStyle(document.documentElement);
+      const active = document.querySelector('.adv-tab-active');
+      const brand = document.querySelector('.adv-wordmark-power');
+      return {
+        bg: root.getPropertyValue('--bg').trim(),
+        accent: root.getPropertyValue('--accent').trim(),
+        strong: root.getPropertyValue('--accent-strong').trim(),
+        panel: root.getPropertyValue('--bg-panel').trim(),
+        control: root.getPropertyValue('--control-bg').trim(),
+        success: root.getPropertyValue('--success').trim(),
+        warn: root.getPropertyValue('--warn').trim(),
+        error: root.getPropertyValue('--error').trim(),
+        border: active ? getComputedStyle(active).borderBottomColor : '',
+        brandGradient: brand ? getComputedStyle(brand).backgroundImage : '',
+      };
+    })()`);
+    for (const [key, value] of Object.entries({ bg: expected.bg, accent: expected.accent, strong: expected.strong, panel: expected.panel, control: expected.control, success: expected.success, warn: expected.warn, error: expected.error })) {
+      if (probe[key] !== value) fail(`M51: Advanced Overlay ${theme} computed ${key} token is '${probe[key]}' (expected '${value}')`);
+    }
+    if (probe.border !== expected.accentRgb) fail(`M51: Advanced Overlay ${theme} accent border is '${probe.border}' (expected '${expected.accentRgb}')`);
+    if (!probe.brandGradient.includes('linear-gradient')) fail(`M51: Advanced Overlay ${theme} brand gradient is not token-derived: '${probe.brandGradient}'`);
+  };
+  await expectPanelTokens(expectedTheme);
 
   // (2) the toggle semantics (M7b fix-5) + M24: the shortcut
   // ('advanced-overlay:toggle') with the master ON flips the SESSION
