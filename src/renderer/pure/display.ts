@@ -40,10 +40,11 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
   switch (control) {
     case 'quantizationRange': return display.supportedOptions.quantizationRanges.length > 0;
     case 'scalingMode': return display.supportedOptions.scalingModes.length > 0;
-    case 'displayScalingMethod': return display.supportedOptions.scalingModes.length > 0;
+    case 'displayScalingMethod': return display.supportedOptions.scalingModes.includes('custom');
     case 'scalingMethod': return display.scalingMethod?.controllable === true && display.supportedOptions.scalingMethods.length > 0;
     case 'vrrMode': return display.vrrMode?.controllable === true && (display.supportedOptions.vrrModes ?? []).length > 0;
     case 'globalVrrMode': return display.globalVrrMode?.controllable === true && (display.supportedOptions.globalVrrModes ?? []).length > 0;
+    case 'variableRefreshRate': return display.variableRefreshRate?.controllable === true && display.variableRefreshRate.supported === true;
     case 'scalingCustom': return display.supportedOptions.scalingModes.includes('custom');
     case 'wireFormat': return display.supportedOptions.wireFormats.length > 0 && display.supportedOptions.bpcDepths.length > 0;
     case 'hue': return display.hue?.controllable === true;
@@ -63,6 +64,7 @@ export function displayDriverValue(display: Display | null | undefined, control:
     case 'scalingMethod': return display.scalingMethod?.value;
     case 'vrrMode': return display.vrrMode?.value;
     case 'globalVrrMode': return display.globalVrrMode?.value;
+    case 'variableRefreshRate': return display.variableRefreshRate?.value;
     case 'scalingCustom': return display.scalingDetails ? {
       x: display.scalingDetails.customX,
       y: display.scalingDetails.customY,
@@ -104,6 +106,9 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   if (isDisplayControlSupported(display, 'globalVrrMode') && display.globalVrrMode?.value) {
     out.globalVrrMode = display.globalVrrMode.value;
   }
+  if (isDisplayControlSupported(display, 'variableRefreshRate') && display.variableRefreshRate?.value !== null && display.variableRefreshRate?.value !== undefined) {
+    out.variableRefreshRate = display.variableRefreshRate.value;
+  }
   if (isDisplayControlSupported(display, 'wireFormat')) {
     out.wireFormat = {
       model: (display.colorFormat ?? display.supportedOptions.wireFormats[0]) as NonNullable<DisplaySettings['wireFormat']>['model'],
@@ -143,6 +148,8 @@ export function validateDisplaySettings(value: unknown): value is DisplaySetting
       if (!ARC_SYNC_PROFILE_SET.has(v)) return false;
     } else if (key === 'globalVrrMode') {
       if (!GLOBAL_VRR_MODE_SET.has(v)) return false;
+    } else if (key === 'variableRefreshRate') {
+      if (typeof v !== 'boolean') return false;
     } else if (key === 'scalingCustom') {
       if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
       const custom = v as { x?: unknown; y?: unknown; hardwareModeSet?: unknown };

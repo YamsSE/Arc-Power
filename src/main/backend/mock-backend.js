@@ -119,7 +119,7 @@ const DISPLAY_FIXTURE = Object.freeze({
     scalingMethod: displayCapability({ enabled: true, method: 'integer' }, true, true, null, 'mock-fixture'),
     globalVrrMode: displayCapability('fullscreen', true, true, null, 'mock-fixture'),
     vrrMode: displayCapability('recommended', true, true, null, 'mock-fixture'),
-    variableRefreshRate: displayCapability(true, true, false, 'VRR toggle is controlled by the display/OS path', 'mock-fixture'),
+    variableRefreshRate: displayCapability(true, true, true, null, 'mock-fixture'),
     vrrCurrentRange: displayCapability('90 Hz - 180 Hz', true, false, 'Read-only fixture capability', 'mock-fixture'),
     vrrMaximumRange: displayCapability('48 Hz - 180 Hz', true, false, 'Read-only fixture capability', 'mock-fixture'),
     hdcpSupport: displayCapability(true, true),
@@ -1232,6 +1232,14 @@ export class MockBackend {
       else {
         display.scalingMethod.value = { enabled: value.enabled, method: value.method };
         result.perControl.scalingMethod = { ok: true, readBackEqual: display.scalingMethod.value.enabled === value.enabled && display.scalingMethod.value.method === value.method, warning: DISPLAY_SCALING_FLASH_WARNING };
+      }
+    }
+    if (patch.variableRefreshRate !== undefined && patch.variableRefreshRate !== null) {
+      if (typeof patch.variableRefreshRate !== 'boolean') fail('variableRefreshRate', 'out-of-range', 'Variable Refresh Rate must be enabled or disabled');
+      else if (display.variableRefreshRate?.controllable !== true) fail('variableRefreshRate', 'unsupported', 'Variable Refresh Rate is not supported by this display');
+      else {
+        display.variableRefreshRate.value = patch.variableRefreshRate;
+        result.perControl.variableRefreshRate = { ok: display.variableRefreshRate.value === patch.variableRefreshRate, readBackEqual: display.variableRefreshRate.value === patch.variableRefreshRate };
       }
     }
     if (patch.globalVrrMode !== undefined && patch.globalVrrMode !== null) {

@@ -179,6 +179,10 @@ export const CTL_DISPLAY_OUTPUT_TYPE = {
 };
 
 export const CTL_DISPLAY_BPC_FLAG = { 0: '6BPC', 1: '8BPC', 2: '10BPC', 3: '12BPC' };
+// ctl_output_bpc_flags_t is a bitmask, while Arc Power's public contract
+// uses the human-facing BPC value. Never send 8/10/12 as the raw mask.
+export const CTL_DISPLAY_BPC_TO_FLAG = { 6: 1, 8: 2, 10: 4, 12: 8 };
+export const CTL_DISPLAY_BPC_FROM_FLAG = { 1: 6, 2: 8, 4: 10, 8: 12 };
 
 export const CTL_DISPLAY_CONFIG_FLAG = {
   0: 'DISPLAY_ACTIVE', 1: 'DISPLAY_ATTACHED', 2: 'IS_DONGLE_CONNECTED', 3: 'DITHERING_ENABLED',
@@ -515,6 +519,11 @@ const ctl_3d_feature_getset_t = koffi.struct('ctl_3d_feature_getset_t', {
   CustomValueSize: 'int32',       // @40
   pCustomValue: 'void*',          // @48
 }); // 56 bytes, align 8
+
+// ctl_3d_feature_getset_t uses a pointer for CUSTOM values. Adaptive Sync
+// Plus supplies a compact four-field payload without its own Size/Version
+// header, so keep its byte size explicit and retain the backing buffer.
+const ADAPTIVE_SYNC_CUSTOM_SIZE = 8;
 
 // M17c (the iGPU temperature fallback): the temperature-sensor surface
 // (igcl_api.h v1.1). ctlEnumTemperatureSensors enumerates per-sensor
@@ -1286,6 +1295,25 @@ export function encode3dFeatureGetset({ featureType, valueType, bSet, enumValue,
   return { buf, appName };
 }
 
+/** Build the CUSTOM payload used by IGCL Adaptive Sync Plus. */
+export function encodeAdaptiveSyncFeatureGetset({ bSet, adaptiveSync = false, applicationName = '' } = {}) {
+  const { buf, appName } = encode3dFeatureGetset({
+    featureType: CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS,
+    valueType: CTL_PROPERTY_VALUE_TYPE.CUSTOM,
+    bSet,
+    applicationName,
+  });
+  const custom = koffi.alloc('uint8', ADAPTIVE_SYNC_CUSTOM_SIZE);
+  koffi.encode(custom, 0, 'bool', adaptiveSync === true);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'CustomValueSize'), 'int32', ADAPTIVE_SYNC_CUSTOM_SIZE);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'pCustomValue'), 'void*', koffi.address(custom));
+  return { buf, appName, custom };
+}
+
+export function decodeAdaptiveSyncFeatureGetset(custom) {
+  return { adaptiveSync: koffi.decode(custom, 0, 'bool') === true };
+}
+
 /**
  * Decode the Value union of a filled ctl_3d_feature_getset_t raw buffer.
  * @param {unknown} buf raw getset buffer
@@ -1402,23 +1430,36 @@ export function encodeWireFormatConfig({ operation, colorModel, colorDepth }) {
   koffi.encode(buf, 0, 'uint32', 80); // the DRIVER ceiling, not the v290 96
   koffi.encode(buf, 4, 'uint8', 0);
   koffi.encode(buf, koffi.offsetof('ctl_get_set_wire_format_config_t', 'Operation'), 'int32', operation);
+  // Each nested ctl_wire_format_t is versioned too. Without these headers
+  // the driver accepts the outer call but leaves RGB/YCbCr/depth slots empty.
+  const entrySize = koffi.sizeof('ctl_wire_format_t');
+  const nestedSize = koffi.offsetof('ctl_wire_format_t', 'Size');
+  const nestedVersion = koffi.offsetof('ctl_wire_format_t', 'Version');
+  const supported = koffi.offsetof('ctl_get_set_wire_format_config_t', 'SupportedWireFormat');
+  for (let i = 0; i < 4; i += 1) {
+    const offset = supported + (i * entrySize);
+    koffi.encode(buf, offset + nestedSize, 'uint32', entrySize);
+    koffi.encode(buf, offset + nestedVersion, 'uint8', 0);
+  }
   const cur = koffi.offsetof('ctl_get_set_wire_format_config_t', 'WireFormat');
+  koffi.encode(buf, cur + nestedSize, 'uint32', entrySize);
+  koffi.encode(buf, cur + nestedVersion, 'uint8', 0);
   if (Number.isInteger(colorModel)) {
     koffi.encode(buf, cur + koffi.offsetof('ctl_wire_format_t', 'ColorModel'), 'int32', colorModel);
   }
   if (Number.isInteger(colorDepth)) {
-    koffi.encode(buf, cur + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32', colorDepth);
+    koffi.encode(buf, cur + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32', CTL_DISPLAY_BPC_TO_FLAG[colorDepth] ?? colorDepth);
   }
   return { buf };
 }
 
 /**
  * Decode a filled ctl_get_set_wire_format_config_t raw buffer (a GET
- * result). A supported entry with ColorDepth 0 is an EMPTY driver slot
- * (skipped). THIS driver build never populates the ColorDepth field - the
- * supported list is empty, the current member reports a model only and
- * currentUnavailable is true (the SET is a silent no-op; the COLOR card
- * degrades honestly).
+ * result). ColorDepth is the ctl_output_bpc_flags_t bitmask, so one driver
+ * entry can produce more than one canonical BPC option. A supported entry
+ * with ColorDepth 0 is an empty slot. Some driver builds still return a
+ * model-only current value; those remain marked unavailable rather than
+ * being presented as a verified format/depth pair.
  * @param {unknown} buf
  * @returns {{
  *   supported: Array<{ model: string, depth: number }>,
@@ -1434,18 +1475,21 @@ export function decodeWireFormatConfig(buf) {
   for (let i = 0; i < 4; i++) {
     const o = supportedOff + i * entrySize;
     const model = koffi.decode(buf, o + koffi.offsetof('ctl_wire_format_t', 'ColorModel'), 'int32') | 0;
-    const depth = Number(koffi.decode(buf, o + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32')) >>> 0;
-    if (depth === 0) continue; // a zero-filled slot (depth 0 = empty, never a real entry)
-    supported.push({ model: CTL_WIRE_COLOR_MODEL[model] ?? `MODEL_${model}`, depth });
+    const depthFlags = Number(koffi.decode(buf, o + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32')) >>> 0;
+    if (depthFlags === 0) continue; // a zero-filled slot (depth 0 = empty, never a real entry)
+    for (const [flag, depth] of Object.entries(CTL_DISPLAY_BPC_FROM_FLAG)) {
+      if ((depthFlags & Number(flag)) !== 0) supported.push({ model: CTL_WIRE_COLOR_MODEL[model] ?? `MODEL_${model}`, depth });
+    }
   }
   const cur = koffi.offsetof('ctl_get_set_wire_format_config_t', 'WireFormat');
   const currentModel = koffi.decode(buf, cur + koffi.offsetof('ctl_wire_format_t', 'ColorModel'), 'int32') | 0;
-  const currentDepth = Number(koffi.decode(buf, cur + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32')) >>> 0;
+  const currentDepthFlags = Number(koffi.decode(buf, cur + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32')) >>> 0;
+  const currentDepth = CTL_DISPLAY_BPC_FROM_FLAG[currentDepthFlags] ?? null;
   return {
     supported,
-    current: currentDepth !== 0 ? { model: CTL_WIRE_COLOR_MODEL[currentModel] ?? `MODEL_${currentModel}`, depth: currentDepth } : null,
-    currentModel: currentDepth === 0 ? (CTL_WIRE_COLOR_MODEL[currentModel] ?? `MODEL_${currentModel}`) : null,
-    currentUnavailable: currentDepth === 0,
+    current: currentDepth !== null ? { model: CTL_WIRE_COLOR_MODEL[currentModel] ?? `MODEL_${currentModel}`, depth: currentDepth } : null,
+    currentModel: currentDepth === null ? (CTL_WIRE_COLOR_MODEL[currentModel] ?? `MODEL_${currentModel}`) : null,
+    currentUnavailable: currentDepth === null,
   };
 }
 

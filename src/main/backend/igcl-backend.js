@@ -30,6 +30,7 @@ import {
   CTL_3D_FEATURE, CTL_PROPERTY_VALUE_TYPE, CTL_GAMING_FLIP_MODE_FLAG,
   CTL_3D_LOW_LATENCY, CTL_3D_FRAME_GENERATION_OVERRIDE,
   encode3dFeatureGetset, decode3dFeatureGetsetValue, decode3dFeatureDetails,
+  encodeAdaptiveSyncFeatureGetset, decodeAdaptiveSyncFeatureGetset,
   // M10b (the Graphics "Display" view): the display-module surface.
   CTL_SCALING_TYPE, CTL_WIRE_COLOR_MODEL,
   displayFlagNames, encodeDisplayProperties, decodeDisplayProperties,
@@ -216,6 +217,11 @@ const DISPLAY_ARC_SYNC_PROFILE_TO_IGCL = {
 // Fullscreen & Windowed, and Disabled respectively.
 const DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL = { 0: 'fullscreen', 1: 'fullscreen-windowed', 2: 'disabled' };
 const DISPLAY_GLOBAL_VRR_MODE_TO_IGCL = { fullscreen: 0, 'fullscreen-windowed': 1, disabled: 2 };
+// ctl_std_display_feature_flag_t is a bitmask. These values are deliberately
+// named here instead of treating the flags as anonymous shifts at each read.
+const DISPLAY_FEATURE_HDCP = 1 << 0;
+const DISPLAY_FEATURE_ADAPTIVE_SYNC_VRR = 1 << 3;
+const DISPLAY_FEATURE_HDR = 1 << 5;
 const displayCapability = (value, supported, controllable = false, reason = null, source = 'igcl') => ({
   value, supported, controllable, reason, source,
 });
@@ -1925,6 +1931,7 @@ export class IgclBackend {
     const unavailable = (reason) => ({
       capability: displayCapability(null, false, false, reason, 'igcl-global-vrr'),
       options: [],
+      variableRefreshRate: displayCapability(null, false, false, 'Adaptive Sync Plus is not reported by the driver.', 'igcl-adaptive-sync'),
     });
     try {
       const lib = this._libOrThrow();
@@ -1932,29 +1939,62 @@ export class IgclBackend {
         return unavailable('The global Variable Refresh Rate Mode API is not available in this IGCL runtime.');
       }
       const features = await this._graphicsCapsOf(deviceId, adapterHandle);
+      let variableRefreshRate = displayCapability(null, false, false, 'Adaptive Sync Plus is not reported by the driver.', 'igcl-adaptive-sync');
+      const adaptiveDetail = features?.get(CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS);
+      if (adaptiveDetail?.valueType === CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
+        const adaptive = encodeAdaptiveSyncFeatureGetset({ bSet: false });
+        const adaptiveResult = lib.ctlGetSet3DFeature(adapterHandle, adaptive.buf);
+        if (adaptiveResult === CTL_RESULT.SUCCESS) {
+          variableRefreshRate = displayCapability(
+            decodeAdaptiveSyncFeatureGetset(adaptive.custom).adaptiveSync,
+            true,
+            true,
+            null,
+            'igcl-adaptive-sync',
+          );
+        } else {
+          // Keep the control visible when the driver advertises the custom
+          // surface but refuses the initial read. Apply will still perform a
+          // set + read-back and report the exact native result.
+          variableRefreshRate = displayCapability(
+            null,
+            true,
+            true,
+            `The driver reported Adaptive Sync Plus but refused read-back (${describeResult(adaptiveResult)}).`,
+            'igcl-adaptive-sync',
+          );
+        }
+      }
       const detail = features?.get(CTL_3D_FEATURE.VRR_WINDOWED_BLT);
       if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM) {
-        return unavailable('The global Variable Refresh Rate Mode feature is not reported by the driver.');
+        return {
+          ...unavailable('The global Variable Refresh Rate Mode feature is not reported by the driver.'),
+          variableRefreshRate,
+        };
       }
       const options = [...DISPLAY_GLOBAL_VRR_MODE_OPTIONS];
+      const defaultMode = DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[detail.enumDefaultType ?? 0] ?? 'fullscreen';
       const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
       const readResult = lib.ctlGetSet3DFeature(adapterHandle, gs.buf);
       if (readResult !== CTL_RESULT.SUCCESS) {
         return {
-          capability: displayCapability(null, true, false, `The driver reported the global Variable Refresh Rate Mode but refused read-back (${describeResult(readResult)}).`, 'igcl-global-vrr'),
+          capability: displayCapability(defaultMode, true, true, `The driver reported the global Variable Refresh Rate Mode but refused read-back (${describeResult(readResult)}); Apply will verify the requested value.`, 'igcl-global-vrr'),
           options,
+          variableRefreshRate,
         };
       }
       const mode = DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType] ?? null;
       if (!mode) {
         return {
-          capability: displayCapability(null, true, false, 'The driver returned an unknown global Variable Refresh Rate Mode.', 'igcl-global-vrr'),
+          capability: displayCapability(defaultMode, true, true, 'The driver returned an unknown global Variable Refresh Rate Mode; Apply will verify the requested value.', 'igcl-global-vrr'),
           options,
+          variableRefreshRate,
         };
       }
       return {
         capability: displayCapability(mode, true, true, null, 'igcl-global-vrr'),
         options,
+        variableRefreshRate,
       };
     } catch {
       return unavailable('The global Variable Refresh Rate Mode could not be read from this driver runtime.');
@@ -2544,13 +2584,11 @@ export class IgclBackend {
             dongleConnected: (p.configFlags & 4) !== 0,
             ditheringEnabled: (p.configFlags & 8) !== 0,
           };
-          // IGCL exposes Adaptive Sync/VRR support and its current enabled
-          // state in the display feature flags. This is a capability read;
-          // the public generic VRR setter is still not available, so the
-          // renderer keeps the toggle read-only unless a verified setter is
-          // added for the driver family.
-          const vrrSupported = (p.featureSupportedFlags & (1 << 3)) !== 0;
-          const vrrEnabled = (p.featureEnabledFlags & (1 << 3)) !== 0;
+          // IGCL exposes standard display capabilities as bitmasks. HDCP and
+          // HDR used to remain null because only the Adaptive Sync bit was
+          // decoded here, even though the driver reported all three flags.
+          const vrrSupported = (p.featureSupportedFlags & DISPLAY_FEATURE_ADAPTIVE_SYNC_VRR) !== 0;
+          const vrrEnabled = (p.featureEnabledFlags & DISPLAY_FEATURE_ADAPTIVE_SYNC_VRR) !== 0;
           d.variableRefreshRate = displayCapability(
             vrrEnabled,
             vrrSupported,
@@ -2558,6 +2596,30 @@ export class IgclBackend {
             vrrSupported ? 'Variable refresh rate is controlled by Windows/the display path.' : 'Variable refresh rate is not supported by this display.',
             'igcl-display-properties',
           );
+          d.hdcpSupport = displayCapability(
+            (p.featureSupportedFlags & DISPLAY_FEATURE_HDCP) !== 0,
+            (p.featureSupportedFlags & DISPLAY_FEATURE_HDCP) !== 0,
+            false,
+            'Read-only display capability.',
+            'igcl-display-properties',
+          );
+          d.hdrSupport = displayCapability(
+            (p.featureSupportedFlags & DISPLAY_FEATURE_HDR) !== 0,
+            (p.featureSupportedFlags & DISPLAY_FEATURE_HDR) !== 0,
+            false,
+            'Read-only display capability.',
+            'igcl-display-properties',
+          );
+          const adaptive = globalVrr?.variableRefreshRate;
+          if (adaptive?.supported === true) {
+            d.variableRefreshRate = displayCapability(
+              adaptive.value ?? vrrEnabled,
+              true,
+              adaptive.controllable === true,
+              adaptive.reason,
+              adaptive.source,
+            );
+          }
           if (this._plausibleDisplayTiming(p.timing)) {
             d.resolution = { width: p.timing.hActive, height: p.timing.vActive };
             d.refreshRate = p.timing.refreshRate;
@@ -2588,11 +2650,10 @@ export class IgclBackend {
       // degrade the quantization surface
     }
 
-    // Wire format. THIS driver build (the probe's byte-truth): the
-    // ColorDepth field is NEVER populated - the supported list is empty,
-    // the current member reports a model only (YCBCR_422 live) and the SET
-    // is a silent no-op. The COLOR card's format/depth controls therefore
-    // degrade honestly (wireFormats/bpcDepths empty, colorDepth null).
+    // Wire format. The nested structs are fully versioned and BPC values are
+    // decoded from the driver's bitmask. A driver that returns only a
+    // model-without-depth remains read-only because it cannot prove a
+    // format/depth apply.
     try {
       if (!this._isUnavailable(lib.ctlGetSetWireFormat)) {
         const { buf } = encodeWireFormatConfig({ operation: 0 });
@@ -2701,8 +2762,10 @@ export class IgclBackend {
           d.variableRefreshRate = displayCapability(
             existingVrr?.value ?? null,
             m.supported || existingVrr?.supported === true,
-            false,
-            'Variable refresh rate is controlled by Windows/the display path.',
+            existingVrr?.controllable === true,
+            existingVrr?.controllable === true
+              ? existingVrr.reason
+              : 'Variable refresh rate is controlled by Windows/the display path.',
             existingVrr?.source ?? 'igcl-display-properties',
           );
           d.vrrMaximumRange = displayCapability(m.supported ? `${m.minRefreshHz} Hz - ${m.maxRefreshHz} Hz` : null, m.supported, false, 'Read-only driver capability.');
@@ -2829,7 +2892,7 @@ export class IgclBackend {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((c) => patch[c] !== null && patch[c] !== undefined);
 
     // The whole-surface gate (the M8 setGraphicsSettings pattern): when NO
@@ -2927,11 +2990,8 @@ export class IgclBackend {
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('wireFormat', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
-            // Read-back verify. THIS driver build (the probe's byte-truth):
-            // SUCCESS with an UNCHANGED read-back - the silent no-op - the
-            // honest read-only result, never a fake "applied". The depth is
-            // never populated here, so the model is the only verifiable
-            // member.
+            // Read-back verify. A successful setter with an unchanged or
+            // model-only read-back is a silent no-op, never a fake "applied".
             const rb = encodeWireFormatConfig({ operation: 0 });
             const getResult = lib.ctlGetSetWireFormat(handle, rb.buf);
             let readBackEqual = false;
@@ -3151,6 +3211,42 @@ export class IgclBackend {
               };
               if (!readBackEqual) result.ok = false;
             }
+          }
+        }
+      }
+    }
+
+    if (patch.variableRefreshRate !== null && patch.variableRefreshRate !== undefined) {
+      const requested = patch.variableRefreshRate === true;
+      if (typeof patch.variableRefreshRate !== 'boolean') {
+        fail('variableRefreshRate', 'out-of-range', 'Variable Refresh Rate must be enabled or disabled');
+      } else if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
+        fail('variableRefreshRate', 'unavailable-symbol', 'the Variable Refresh Rate API is missing in the IGCL runtime');
+      } else {
+        const features = await this._graphicsCapsOf(deviceId, dev.handle);
+        const detail = features?.get(CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS);
+        if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
+          fail('variableRefreshRate', 'unsupported', 'the driver does not expose Adaptive Sync Plus for Variable Refresh Rate');
+        } else {
+          const gs = encodeAdaptiveSyncFeatureGetset({ bSet: true, adaptiveSync: requested });
+          const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('variableRefreshRate', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            const rb = encodeAdaptiveSyncFeatureGetset({ bSet: false });
+            const readResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+            const got = readResult === CTL_RESULT.SUCCESS
+              ? decodeAdaptiveSyncFeatureGetset(rb.custom).adaptiveSync
+              : null;
+            const readBackEqual = got === requested;
+            result.perControl.variableRefreshRate = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message: readBackEqual ? undefined : `read-back ${got === null ? describeResult(readResult) : got ? 'enabled' : 'disabled'} != requested ${requested ? 'enabled' : 'disabled'}`,
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+            };
+            if (!readBackEqual) result.ok = false;
           }
         }
       }

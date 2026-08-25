@@ -178,7 +178,7 @@ function artworkTile(artwork: string | undefined, label: string, className = '')
   let hash = 0;
   for (const char of safeKey) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
   const initials = label.split(/[^A-Za-z0-9]+/).filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('') || '?';
-  return el('span', { class: `profile-artwork profile-artwork-tone-${Math.abs(hash) % 5}${className ? ` ${className}` : ''}`, dataset: { artwork: safeKey } }, [
+  return el('span', { class: `profile-artwork profile-artwork-tone-${Math.abs(hash) % 5}${isDataArtwork ? ' has-artwork' : ''}${className ? ` ${className}` : ''}`, dataset: { artwork: safeKey } }, [
     el('img', { src: isDataArtwork ? artwork : './assets/game-cover-fallback.png', alt: '', 'aria-hidden': 'true' }),
     el('span', { class: 'profile-artwork-initials', text: initials }),
   ]);

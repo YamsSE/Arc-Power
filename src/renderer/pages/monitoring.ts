@@ -435,16 +435,19 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     const canvas = el('canvas', { class: 'seg-canvas' });
     m.canvases.set(seg.id, canvas);
     const popup = el('div', { class: 'seg-popup', hidden: true });
-    const body = el('div', { class: 'seg-body' }, [canvas, popup]);
+    const body = el('div', { class: `seg-body${idx === 0 ? '' : ' is-collapsed'}`, 'aria-hidden': String(idx !== 0) }, [canvas, popup]);
     const head = el('button', {
       class: 'seg-head',
+      'aria-expanded': String(idx === 0),
       onClick: () => {
-        const collapsed = body.hidden;
-        body.hidden = !collapsed;
+        const collapsed = body.classList.contains('is-collapsed');
+        body.classList.toggle('is-collapsed', !collapsed);
+        body.setAttribute('aria-hidden', String(collapsed));
+        head.setAttribute('aria-expanded', String(collapsed));
         head.querySelector('.seg-chevron')!.textContent = collapsed ? '▾' : '▸';
         // M4-C: collapsing the segment hides any stale hover popup and
         // clears the persisted crosshair.
-        if (body.hidden) {
+        if (!collapsed) {
           popup.hidden = true;
           if (mon) mon.hover = null;
         }
@@ -456,10 +459,8 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
       el('span', { class: 'seg-unit', text: seg.unit }),
     ]);
     // Collapsed by default except the first segment.
-    if (idx !== 0) body.hidden = true;
-
     // M4-C: hover crosshair + nearest-sample popup - only while the
-    // segment is EXPANDED (the collapsed body is hidden, and the handler
+    // segment is EXPANDED (the collapsed body is visually closed, and the handler
     // re-checks so a collapse mid-hover can never leave a popup behind).
     const hideHover = () => {
       popup.hidden = true;
@@ -467,7 +468,7 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
       drawSeries(canvas, mon?.series[seg.id] ?? []);
     };
     canvas.addEventListener('pointermove', (ev) => {
-      if (body.hidden) return;
+      if (body.classList.contains('is-collapsed')) return;
       const points = mon?.series[seg.id] ?? [];
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;

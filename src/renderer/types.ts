@@ -773,6 +773,8 @@ export interface DisplaySettings {
   scalingMethod?: { enabled: boolean; method: 'integer' | 'nearest-neighbour' };
   /** IGS global Variable Refresh Rate mode. */
   globalVrrMode?: 'fullscreen' | 'fullscreen-windowed' | 'disabled';
+  /** IGS Variable Refresh Rate enabled/disabled switch. */
+  variableRefreshRate?: boolean;
   vrrMode?: 'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom';
   hue?: number;
   saturation?: number;

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
@@ -25,6 +25,8 @@ const POSTER_EXTENSIONS = new Map([
   ['.jpeg', 'image/jpeg'],
   ['.webp', 'image/webp'],
 ]);
+const STEAM_ARTWORK_FILES = ['library_600x900_2x.jpg', 'library_600x900.jpg', 'library_capsule.jpg', 'header.jpg'];
+const STEAM_ARTWORK_TIMEOUT_MS = 900;
 
 const withTimeout = (promise, timeoutMs) => Promise.race([
   promise,
@@ -60,7 +62,11 @@ export function normalizeScannedApps(rows, excludedPaths = [], opts = {}) {
     const displayNameRaw = typeof row?.displayName === 'string' && row.displayName.trim()
       ? row.displayName.trim()
       : processName || path.win32.basename(exePath);
-    if (opts.onlyGames === true && !isLikelyGameCandidate({ exePath, displayName: displayNameRaw, processName })) continue;
+    // The UI verifier feeds synthetic executable fixtures through the same
+    // scan channel. They are explicitly trusted by the mock adapter, while
+    // all real scan rows still pass the conservative game-title/path gate.
+    const trustedFixture = row?.source === 'fixture';
+    if (opts.onlyGames === true && !trustedFixture && !isLikelyGameCandidate({ exePath, displayName: displayNameRaw, processName })) continue;
     const existing = apps.find((item) => item.exePath === exePath);
     const normalized = {
       exePath,
@@ -120,6 +126,66 @@ export async function findGamePosterArtwork(exePath, opts = {}) {
       }
     }
   }
+  // Steam keeps the high-resolution library art in appcache/userdata rather
+  // than beside the executable. Resolve the AppID from the local manifest,
+  // then prefer local cache art before the public CDN. All paths and bytes
+  // remain bounded; offline or missing artwork simply falls back to the icon.
+  const steam = await steamContext(canonical);
+  if (steam) {
+    const localCandidates = [];
+    const libraryCache = path.win32.join(steam.root, 'appcache', 'librarycache');
+    for (const name of STEAM_ARTWORK_FILES) localCandidates.push(path.win32.join(libraryCache, `${steam.appId}_${name}`));
+    try {
+      const users = await readdir(path.win32.join(steam.root, 'userdata'), { withFileTypes: true });
+      for (const user of users.slice(0, 16)) {
+        if (!user.isDirectory()) continue;
+        for (const name of ['.png', '.jpg', '.jpeg', '.webp']) {
+          localCandidates.push(path.win32.join(steam.root, 'userdata', user.name, 'config', 'grid', `${steam.appId}p${name}`));
+        }
+      }
+    } catch { /* optional Steam cache */ }
+    for (const candidate of localCandidates) {
+      try {
+        const bytes = await readFile(candidate);
+        const extension = path.win32.extname(candidate).toLowerCase();
+        const mime = POSTER_EXTENSIONS.get(extension);
+        if (mime && bytes.length > 0 && bytes.length <= maxBytes) return `data:${mime};base64,${bytes.toString('base64')}`;
+      } catch { /* optional cache item */ }
+    }
+    if (opts.allowRemote === true && typeof fetch === 'function') {
+      for (const name of STEAM_ARTWORK_FILES) {
+        const controller = new AbortController();
+        try {
+          const response = await withTimeout(fetch(`https://cdn.cloudflare.steamstatic.com/steam/apps/${steam.appId}/${name}`, { signal: controller.signal }), STEAM_ARTWORK_TIMEOUT_MS);
+          if (!response || !response.ok) continue;
+          const type = response.headers.get('content-type')?.split(';')[0] ?? 'image/jpeg';
+          if (!/^image\/(?:jpeg|png|webp)$/.test(type)) continue;
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (bytes.length > 0 && bytes.length <= maxBytes) return `data:${type};base64,${bytes.toString('base64')}`;
+        } catch { /* offline CDN or timeout */ }
+        finally { controller.abort(); }
+      }
+    }
+  }
+  return null;
+}
+
+async function steamContext(canonical) {
+  const match = canonical.match(/^(.*\\steamapps)\\common\\([^\\]+)(?:\\.*)?$/i);
+  if (!match) return null;
+  const steamapps = match[1];
+  const installDir = match[2].toLocaleLowerCase();
+  let entries;
+  try { entries = await readdir(steamapps); } catch { return null; }
+  for (const entry of entries) {
+    const appId = entry.match(/^appmanifest_(\d+)\.acf$/i)?.[1];
+    if (!appId) continue;
+    try {
+      const manifest = await readFile(path.win32.join(steamapps, entry), 'utf8');
+      const name = manifest.match(/"installdir"\s+"([^"]+)"/i)?.[1]?.toLocaleLowerCase();
+      if (name === installDir) return { appId, root: path.win32.dirname(steamapps) };
+    } catch { /* ignore unreadable manifest */ }
+  }
   return null;
 }
 
@@ -154,6 +220,7 @@ export function createGameScanAdapter(opts = {}) {
   const executable = opts.executable ?? 'powershell.exe';
   const excluded = [process.execPath, ...(opts.excludedPaths ?? [])];
   return {
+    onlyGames: true,
     async scan() {
       // This script is deliberately read-only. It reads shortcut/registry
       // metadata and verifies candidate files; it never reads or invokes an

@@ -3832,16 +3832,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === 5`))) {
     fail(`expected 5 monitoring segments, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
   }
-  const firstOpen = await js(`!document.querySelector('.seg-card .seg-body').hidden`);
-  const othersHidden = await js(`Array.from(document.querySelectorAll('.seg-card .seg-body')).slice(1).every((b) => b.hidden === true)`);
+  const firstOpen = await js(`!document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
+  const othersHidden = await js(`Array.from(document.querySelectorAll('.seg-card .seg-body')).slice(1).every((b) => b.classList.contains('is-collapsed'))`);
   if (!firstOpen || !othersHidden) fail(`segment defaults wrong: firstOpen=${firstOpen} othersHidden=${othersHidden}`);
   step('mon-segments', '5 segments render; first expanded, rest collapsed');
 
   await js(`document.querySelector('.seg-head').click()`);
-  const collapsedNow = await js(`document.querySelector('.seg-card .seg-body').hidden`);
+  const collapsedNow = await js(`document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
   if (!collapsedNow) fail('first segment did not collapse on header click');
   await js(`document.querySelector('.seg-head').click()`);
-  const reopened = await js(`!document.querySelector('.seg-card .seg-body').hidden`);
+  const reopened = await js(`!document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
   if (!reopened) fail('first segment did not re-expand');
   step('mon-collapse', 'segment header click toggles collapse/expand (chevron)');
 
@@ -4102,9 +4102,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // A COLLAPSED segment must never show the popup (expand + collapse the
   // second segment, then hover its canvas).
   await js(`document.querySelectorAll('.seg-head')[1].click()`);
-  if (!(await waitFor(win, `!document.querySelectorAll('.seg-card .seg-body')[1].hidden`, 5000))) fail('M4-C: the 2nd segment did not expand');
+  if (!(await waitFor(win, `!document.querySelectorAll('.seg-card .seg-body')[1].classList.contains('is-collapsed')`, 5000))) fail('M4-C: the 2nd segment did not expand');
   await js(`document.querySelectorAll('.seg-head')[1].click()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.seg-card .seg-body')[1].hidden === true`, 5000))) fail('M4-C: the 2nd segment did not collapse');
+  if (!(await waitFor(win, `document.querySelectorAll('.seg-card .seg-body')[1].classList.contains('is-collapsed')`, 5000))) fail('M4-C: the 2nd segment did not collapse');
   const collapsedOk = await js(`(() => {
     const body = document.querySelectorAll('.seg-card .seg-body')[1];
     const canvas = body.querySelector('.seg-canvas');
@@ -5098,6 +5098,12 @@ export async function runDisplayVerify(win, backend) {
   if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="globalVrrMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: global Variable Refresh Rate Mode change did not expose its Apply action');
   await js(`document.querySelector('.display-control[data-control="globalVrrMode"] .oc-chip-apply').click()`);
   if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].globalVrrMode?.value === 'fullscreen-windowed')`, 8000))) fail('D1: global Variable Refresh Rate Mode apply did not update the fresh driver readback');
+  const variableRefreshOptions = await js(`(() => Array.from(document.querySelectorAll('.display-select[data-display-select="variableRefreshRate"] option')).map((o) => o.value))()`);
+  if (JSON.stringify(variableRefreshOptions) !== JSON.stringify(['enabled', 'disabled'])) fail('D1: Variable Refresh Rate must expose Enabled, Disabled in that order');
+  await js(`(() => { const s = document.querySelector('.display-select[data-display-select="variableRefreshRate"]'); if (!s) return false; s.value = 'disabled'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="variableRefreshRate"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: Variable Refresh Rate change did not expose its Apply action');
+  await js(`document.querySelector('.display-control[data-control="variableRefreshRate"] .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].variableRefreshRate?.value === false)`, 8000))) fail('D1: Variable Refresh Rate apply did not update the fresh driver readback');
   const stale = await js(`window.arcPower.displayApply(0, { deviceKey: 'stale-device', displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default' } }).then(() => 'accepted').catch((e) => String(e.message ?? e))`);
   if (stale === 'accepted' || !String(stale).toLowerCase().includes('stale')) fail(`D1: stale display target was not rejected honestly: ${stale}`);
   if (process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1') {
@@ -5105,7 +5111,7 @@ export async function runDisplayVerify(win, backend) {
     if (wire.ok === true || wire.perControl?.wireFormat?.ok === true) fail(`D1: read-only wire-format apply reported success: ${JSON.stringify(wire)}`);
   }
   // Restore the mock fixture so later checks start from known state.
-  await js(`window.arcPower.displayApply(0, { deviceKey: ${JSON.stringify(before.deviceKey)}, displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default', scalingMode: 'identity', scalingMethod: { enabled: true, method: 'integer' }, vrrMode: 'recommended' } })`);
+  await js(`window.arcPower.displayApply(0, { deviceKey: ${JSON.stringify(before.deviceKey)}, displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default', scalingMode: 'identity', scalingMethod: { enabled: true, method: 'integer' }, globalVrrMode: 'fullscreen', variableRefreshRate: true, vrrMode: 'recommended' } })`);
   step('d1-display-readback', `D1: Display title/rows rendered; stable key '${target.displayKey}' targeted quantization '${quant}' -> '${quantValue}', GPU/Display/Retro scaling, Display Scaling method and Arc Sync with fresh readbacks; stale targets refused`);
 }
 

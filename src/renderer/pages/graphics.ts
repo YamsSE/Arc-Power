@@ -93,12 +93,12 @@ const PAGE_NOTE = 'These settings are applied via the Intel driver\'s control in
 
 // M10b: the Display view's honest notes (plan 2.4 - the IGS "Display" tab
 // mirror; the M10b checkpoint-1 probe recorded what this driver exposes).
-const DISPLAY_SCALING_NOTE = 'Changing the scaling mode causes a brief screen flash (a physical modeset).';
-const DISPLAY_SCALING_METHOD_NOTE = 'Custom scaling exposes the driver percentages used by the display path.';
-const DISPLAY_GLOBAL_VRR_NOTE = 'Sets the default Variable Refresh Rate mode globally across all displays.';
-const DISPLAY_VRR_NOTE = 'Enables the display to present frames at a variable rate instead of a fixed rate.';
-const DISPLAY_SLIDERS_NOTE = 'IGS uses 0–100 with 50 as the neutral value. These controls are sent to IGCL Standard Color Correction and verified by driver read-back; the surface applies to the driver’s video-processing path.';
-const DISPLAY_WIRE_READONLY_NOTE = 'The wire-format set is a silent no-op on this driver build - the driver does not accept wire-format changes (the read-back never changes).';
+const DISPLAY_SCALING_NOTE = 'Changes may briefly flash the display.';
+const DISPLAY_SCALING_METHOD_NOTE = 'Custom mode exposes horizontal and vertical scaling.';
+const DISPLAY_GLOBAL_VRR_NOTE = 'Choose when variable refresh rate is used.';
+const DISPLAY_VRR_NOTE = 'Choose whether variable refresh rate is enabled.';
+const DISPLAY_SLIDERS_NOTE = 'IGS-style video color controls; Apply verifies the driver read-back.';
+const DISPLAY_WIRE_READONLY_NOTE = 'The driver did not report writable color-format data.';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
 export const CARD_TITLES: Record<string, string> = {
@@ -143,6 +143,15 @@ const GLOBAL_VRR_LABELS: Record<string, string> = {
   fullscreen: 'Fullscreen',
   'fullscreen-windowed': 'Fullscreen & Windowed',
   disabled: 'Disabled',
+};
+const VARIABLE_REFRESH_RATE_LABELS: Record<string, string> = {
+  enabled: 'Enabled',
+  disabled: 'Disabled',
+};
+const IGS_WIRE_FORMATS = ['RGB', 'YCbCr444'];
+const IGS_WIRE_FORMAT_LABELS: Record<string, string> = {
+  RGB: 'RGB',
+  YCbCr444: 'YCbCr 4:4:4',
 };
 const RETRO_SCALING_LABELS: Record<string, string> = {
   integer: 'Integer Scaling',
@@ -316,9 +325,13 @@ function rawScalingForView(display: DisplayState['displays'][number], view: stri
 
 function customScalingOf(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['scalingCustom']> {
   const details = display.scalingDetails;
+  const isCustom = display.scalingMode === 'custom';
   return {
-    x: Number.isFinite(details?.customX) ? Math.max(0, Math.min(100, details!.customX)) : 100,
-    y: Number.isFinite(details?.customY) ? Math.max(0, Math.min(100, details!.customY)) : 100,
+    // Identity/centered read-backs commonly return zero because the custom
+    // fields are inactive. IGS treats Custom as 100/100 until that mode is
+    // selected, so do not turn an inactive 0/0 into the visible default.
+    x: isCustom && Number.isFinite(details?.customX) && details!.customX > 0 ? Math.max(0, Math.min(100, details!.customX)) : 100,
+    y: isCustom && Number.isFinite(details?.customY) && details!.customY > 0 ? Math.max(0, Math.min(100, details!.customY)) : 100,
     hardwareModeSet: details?.hardwareModeSet === true,
   };
 }
@@ -405,7 +418,7 @@ function refreshAll() {
   updateFloating();
 }
 
-const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'hue', 'saturation', 'brightness', 'contrast', 'quantizationRange', 'wireFormat'];
+const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'hue', 'saturation', 'brightness', 'contrast', 'quantizationRange', 'wireFormat'];
 const DISPLAY_COLOR_KEYS = ['hue', 'saturation', 'brightness', 'contrast'];
 
 function displayHasDirtyDraft(display: DisplayState['displays'][number] | null): boolean {
@@ -444,6 +457,9 @@ function resetDisplayDraft(display: DisplayState['displays'][number]): void {
   if (display.supportedOptions.globalVrrModes.length > 0) {
     const defaultValue = resetOption('globalVrrMode', display.supportedOptions.globalVrrModes, DISPLAY_RESET_DEFAULTS);
     if (defaultValue !== null) displayDraft.globalVrrMode = defaultValue as DisplaySettings['globalVrrMode'];
+  }
+  if (isDisplayControlSupported(display, 'variableRefreshRate')) {
+    displayDraft.variableRefreshRate = display.variableRefreshRate?.value ?? true;
   }
   if (display.supportedOptions.quantizationRanges.length > 0) {
     const defaultValue = resetOption('quantizationRange', display.supportedOptions.quantizationRanges, DISPLAY_RESET_DEFAULTS);
@@ -922,6 +938,7 @@ function buildDisplayDropdownRow(
   labels: Record<string, string>,
 ): HTMLElement {
   if (key === 'scalingMode') return buildDisplayScalingModeRow(ctx);
+  if (key === 'variableRefreshRate') return buildVariableRefreshRateRow(ctx);
   const display = selectedDisplay();
   const supported = display !== null && isDisplayControlSupported(display, key);
   if (!supported || options.length === 0) {
@@ -1120,7 +1137,7 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
   const supported = display !== null && isDisplayControlSupported(display, 'wireFormat');
   if (!supported) {
     return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'wireFormat' } }, [
-      el('h3', { class: 'display-control-title', text: 'Wire Format' }),
+      el('h3', { class: 'display-control-title', text: 'Color Format' }),
       el('p', { class: 'card-note', text: DISPLAY_WIRE_READONLY_NOTE }),
       el('div', { class: 'display-wire-format-readonly' }, [
         el('div', { class: 'display-info-row' }, [
@@ -1142,9 +1159,9 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
       displayDraft.wireFormat = { model: (e.target as HTMLSelectElement).value as NonNullable<DisplaySettings['wireFormat']>['model'], depth: wf.depth };
       refreshDisplayChip('wireFormat');
     },
-  }, display!.supportedOptions.wireFormats.map((o) => el('option', {
+  }, display!.supportedOptions.wireFormats.filter((o) => IGS_WIRE_FORMATS.includes(o)).map((o) => el('option', {
     value: o,
-    text: o,
+    text: IGS_WIRE_FORMAT_LABELS[o] ?? o,
     selected: o === wf.model,
   })));
   const depthSelect = el('select', {
@@ -1162,8 +1179,8 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
   selectNodes.set('wireFormat', modelSelect);
   selectNodes.set('wireFormatDepth', depthSelect);
   const row = el('div', { class: 'display-control', dataset: { control: 'wireFormat' } }, [
-    el('h3', { class: 'display-control-title', text: 'Wire Format' }),
-    el('p', { class: 'card-note', text: 'The driver-level wire format of the display output (color model + bit depth).' }),
+    el('h3', { class: 'display-control-title', text: 'Color Format' }),
+    el('p', { class: 'card-note', text: 'Choose the display output color format.' }),
     el('div', { class: 'graphics-control display-wire-format-row' }, [
       el('label', { class: 'display-wire-format-field' }, [
         el('span', { class: 'display-wire-format-field-label', text: 'Color Format' }),
@@ -1257,6 +1274,45 @@ function buildDisplayReadonlyRow<T>(title: string, capability: DisplayCapability
   ]);
 }
 
+function buildVariableRefreshRateRow(ctx: PageContext): HTMLElement {
+  const display = selectedDisplay();
+  const supported = display !== null && isDisplayControlSupported(display, 'variableRefreshRate');
+  if (!supported) return buildDisplayReadonlyRow('Variable Refresh Rate', display?.variableRefreshRate, DISPLAY_VRR_NOTE);
+  const current = displayDraft.variableRefreshRate ?? display?.variableRefreshRate?.value ?? true;
+  const select = el('select', {
+    class: 'graphics-select display-select',
+    dataset: { displaySelect: 'variableRefreshRate' },
+    onchange: (e: Event) => {
+      displayDraft.variableRefreshRate = (e.target as HTMLSelectElement).value === 'enabled';
+      refreshDisplayChip('variableRefreshRate');
+    },
+  }, ['enabled', 'disabled'].map((value) => el('option', {
+    value,
+    text: VARIABLE_REFRESH_RATE_LABELS[value],
+    selected: (value === 'enabled') === current,
+  })));
+  selectNodes.set('variableRefreshRate', select);
+  const row = el('div', { class: 'display-control', dataset: { control: 'variableRefreshRate' } }, [
+    el('h3', { class: 'display-control-title', text: 'Variable Refresh Rate' }),
+    el('p', { class: 'card-note', text: DISPLAY_VRR_NOTE }),
+    el('div', { class: 'graphics-control' }, [select]),
+    el('div', { class: 'graphics-card-actions' }, [
+      el('span', { class: 'chip oc-chip-status', hidden: true }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'variableRefreshRate'); } }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
+        const value = display?.variableRefreshRate?.value ?? true;
+        displayDraft.variableRefreshRate = value;
+        select.value = value ? 'enabled' : 'disabled';
+        refreshDisplayChip('variableRefreshRate');
+      } }),
+    ]),
+  ]);
+  chipNodes.set('variableRefreshRate', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+  chipApplyNodes.set('variableRefreshRate', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+  refreshDisplayChip('variableRefreshRate');
+  return row;
+}
+
 function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: string, capability: DisplayCapability<number> | undefined, fallbackMin: number, fallbackMax: number, fallbackReason: string): HTMLElement {
   const display = selectedDisplay();
   const supported = display !== null && isDisplayControlSupported(display, key);
@@ -1334,6 +1390,27 @@ function buildDisplayModeRow(title: string, value: string, reason: string): HTML
   ]);
 }
 
+function buildDisplayGroup(key: string, title: string, children: HTMLElement[], open = true): HTMLElement {
+  const body = el('div', { class: `display-group-body${open ? '' : ' is-collapsed'}` }, [
+    el('div', { class: 'display-group-body-inner' }, children),
+  ]);
+  const toggle = el('button', {
+    class: 'display-group-toggle',
+    type: 'button',
+    'aria-expanded': String(open),
+    onclick: () => {
+      const nextOpen = body.classList.toggle('is-collapsed') === false;
+      toggle.setAttribute('aria-expanded', String(nextOpen));
+      const chevron = toggle.querySelector<HTMLElement>('.display-group-chevron');
+      if (chevron) chevron.textContent = nextOpen ? '▾' : '▸';
+    },
+  }, [
+    el('span', { class: 'display-group-chevron', text: open ? '▾' : '▸' }),
+    el('span', { class: 'card-title', text: title }),
+  ]);
+  return el('section', { class: 'card display-group', dataset: { displayGroup: key } }, [toggle, body]);
+}
+
 function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   clear(view);
   const display = selectedDisplay();
@@ -1367,16 +1444,14 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     selected: d.id === display.id,
   })));
 
-  const general = el('section', { class: 'card display-group', dataset: { displayGroup: 'general' } }, [
-    el('h2', { class: 'card-title', text: 'General' }),
+  const general = buildDisplayGroup('general', 'General', [
     buildDisplayDropdownRow(ctx, 'scalingMode', 'Scaling Mode', DISPLAY_SCALING_NOTE, display.supportedOptions.scalingModes, SCALING_MODE_LABELS),
     buildDisplayScalingMethodRow(ctx),
     buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),
-    buildDisplayReadonlyRow('Variable Refresh Rate', display.variableRefreshRate, DISPLAY_VRR_NOTE),
+    buildDisplayDropdownRow(ctx, 'variableRefreshRate', 'Variable Refresh Rate', DISPLAY_VRR_NOTE, ['enabled', 'disabled'], VARIABLE_REFRESH_RATE_LABELS),
   ]);
 
-  const color = el('section', { class: 'card display-group', dataset: { displayGroup: 'color' } }, [
-    el('h2', { class: 'card-title', text: 'Color' }),
+  const color = buildDisplayGroup('color', 'Color', [
     buildDisplaySlider(ctx, 'hue', 'Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
     buildDisplaySlider(ctx, 'saturation', 'Saturation', display.saturation, 0, 10, DISPLAY_SLIDERS_NOTE),
     buildDisplayModeRow('Brightness', 'Basic', DISPLAY_SLIDERS_NOTE),
@@ -1391,8 +1466,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     el('span', { class: 'display-info-label', text: label }),
     el('span', { class: 'display-info-value', text: value }),
   ]);
-  const info = el('section', { class: 'card display-group', dataset: { displayGroup: 'info' } }, [
-    el('h2', { class: 'card-title', text: 'Information' }),
+  const info = buildDisplayGroup('info', 'Information', [
     infoRow('Display', display.name ?? '-'),
     infoRow('Graphics Adapter', display.adapterName ?? displayState.adapterName ?? 'Not available'),
     infoRow('Display Connection', display.connection),

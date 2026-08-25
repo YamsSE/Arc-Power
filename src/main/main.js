@@ -1181,15 +1181,15 @@ async function main() {
       scan: async () => process.env.RID_MOCK_GAME_SCAN === '1'
         ? {
           apps: [
-            { exePath: path.join(mockGameDir, 'RID-Verify-One.exe'), processName: 'RID-Verify-One.exe', displayName: 'RID Verify One', artwork: 'data:image/png;base64,AA==', source: 'scan' },
-            { exePath: path.join(mockGameDir, 'RID-Verify-Two.exe'), processName: 'RID-Verify-Two.exe', displayName: 'RID Verify Two', source: 'scan' },
+            { exePath: path.join(mockGameDir, 'RID-Verify-One.exe'), processName: 'RID-Verify-One.exe', displayName: 'RID Verify One', artwork: 'data:image/png;base64,AA==', source: 'fixture' },
+            { exePath: path.join(mockGameDir, 'RID-Verify-Two.exe'), processName: 'RID-Verify-Two.exe', displayName: 'RID Verify Two', source: 'fixture' },
           ],
         }
         : { apps: [] },
     }
     : createGameScanAdapter({
       getArtwork: async (exePath) => {
-        const poster = await findGamePosterArtwork(exePath);
+        const poster = await findGamePosterArtwork(exePath, { allowRemote: true });
         if (poster) return poster;
         try {
           const icon = await app.getFileIcon(exePath, { size: 'large' });

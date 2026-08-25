@@ -119,6 +119,9 @@ function normalizeSettings(raw) {
 }
 
 function safeCatalogRecords(raw) {
+  // Game-only filtering belongs at the scan ingress. Do not re-apply the
+  // title heuristic while loading: old/manual records and test fixtures are
+  // valid persisted identities even when their names are generic.
   return (Array.isArray(raw) ? raw : []).filter((item) => Boolean(validateSafeGameCandidate(item?.exePath)));
 }
 

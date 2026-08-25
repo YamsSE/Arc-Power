@@ -195,6 +195,9 @@ export function sanitizeDisplaySettings(payload) {
     } else if (key === 'globalVrrMode') {
       if (!DISPLAY_GLOBAL_VRR_MODE_OPTIONS.includes(value)) throw new Error(`globalVrrMode must be one of: ${DISPLAY_GLOBAL_VRR_MODE_OPTIONS.join(', ')}`);
       out[key] = value;
+    } else if (key === 'variableRefreshRate') {
+      if (typeof value !== 'boolean') throw new Error('variableRefreshRate must be enabled or disabled');
+      out[key] = value;
     } else if (['hue', 'saturation', 'brightness', 'contrast'].includes(key)) {
       if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
       out[key] = value;
@@ -2315,7 +2318,10 @@ export function createIpcHandlers({
       'games-scan': async (...args) => {
         assertNoPayload(args, 'games-scan');
         const result = await gameScan.scan();
-        const apps = normalizeScannedApps(result?.apps ?? []);
+        // The scan is the only path that labels rows as games. Keep the
+        // conservative game gate here so Windows services and helper apps
+        // never enter the persisted Game Profile catalog.
+        const apps = normalizeScannedApps(result?.apps ?? [], [], { onlyGames: gameScan.onlyGames === true });
         let catalog = null;
         let sidecarError;
         try { catalog = await gameProfiles.syncCatalog(apps, { authoritative: true }); }
