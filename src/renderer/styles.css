@@ -2237,10 +2237,12 @@ select {
 .profile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .profile-grid .profile-row { min-height: 190px; align-content: space-between; box-sizing: border-box; padding: 12px; }
 .profile-list-mode .profile-row { flex-wrap: nowrap; }
-.profile-avatar { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-weight: 750; }
-.profile-association-note { flex-basis: 100%; margin: -4px 0 0 42px; color: var(--text-dim); font-size: 11px; }
 .profile-detail { display: flex; flex-direction: column; gap: 14px; }
 .profile-detail-head { flex-wrap: wrap; }
+.game-profile-detail-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; }
+.game-profile-detail-head .game-profile-back { justify-self: start; }
+.game-profile-title { grid-column: 2; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; }
+.game-profile-title .card-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
 .profile-breadcrumb-sep { color: var(--text-dim); font-size: 20px; }
 .profile-app-badge { display: flex; gap: 8px; align-items: center; padding: 8px 10px; color: var(--text-dim); font-size: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-inset); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile-app-dot { color: var(--accent); }
@@ -2279,7 +2281,7 @@ select {
 .profile-scan-result-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .profile-scan-result-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-size: 11px; }
 .profile-scan-result:hover { border-color: var(--accent); color: var(--accent); }
-@media (max-width: 700px) { .profile-setting-row, .profile-use-card { align-items: flex-start; flex-direction: column; } .profile-list-mode .profile-row { flex-wrap: wrap; } .profile-associated-app { grid-template-columns: 38px 1fr auto; } .profile-associated-app-path { grid-column: 2 / -1; } }
+@media (max-width: 700px) { .profile-setting-row, .profile-use-card { align-items: flex-start; flex-direction: column; } .profile-list-mode .profile-row { flex-wrap: wrap; } .profile-associated-app { grid-template-columns: 38px 1fr auto; } .profile-associated-app-path { grid-column: 2 / -1; } .game-profile-detail-head { grid-template-columns: 1fr; justify-items: stretch; } .game-profile-title { grid-column: 1; justify-content: flex-start; } .game-profile-title .card-title { text-align: left; } }
 
 .profile-row {
   display: flex;
@@ -2305,7 +2307,7 @@ select {
 .profile-grid .profile-row { flex-direction: column; align-items: stretch; justify-content: space-between; }
 .profile-grid .profile-info { width: 100%; justify-content: center; min-width: 0; }
 .profile-grid .profile-name { text-align: center; }
-.profile-grid .profile-association-note { width: 100%; margin: -4px 0 0; text-align: center; }
+.profile-grid .profile-info { gap: 6px; }
 .profile-grid .profile-chips { justify-content: center; gap: 4px; }
 .profile-grid .profile-chips { width: 100%; flex: 0 0 auto; flex-wrap: wrap; }
 .profile-grid .profile-chips .chip { padding: 3px 7px; font-size: 11px; }
@@ -2324,7 +2326,6 @@ select {
   align-items: start;
 }
 .profile-grid .profile-info { min-height: 36px; }
-.profile-grid .profile-association-note { margin: 0; }
 .profile-grid .profile-chips { align-self: start; }
 .profile-grid .profile-actions { align-self: end; margin-top: 12px; }
 .profile-list-mode .profile-row {
@@ -2335,7 +2336,6 @@ select {
   min-height: 104px;
 }
 .profile-list-mode .profile-info { grid-row: 1 / -1; }
-.profile-list-mode .profile-association-note { grid-column: 2; margin: 0; }
 .profile-list-mode .profile-chips { grid-column: 2; }
 .profile-list-mode .profile-actions { grid-column: 3; grid-row: 1 / -1; justify-content: flex-end; flex-wrap: wrap; }
 

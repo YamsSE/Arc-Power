@@ -268,7 +268,7 @@ export const profilesPage: Page = {
     clear(container);
     container.append(
       el('h1', { class: 'page-title', text: 'Profiles' }),
-      el('p', { class: 'page-subtitle', text: 'Save and load named OC presets. Loading applies the profile immediately; the active profile can start at boot.' }),
+      el('p', { id: 'profiles-subtitle', class: 'page-subtitle', text: 'Save and load named tuning presets. Loading applies the profile immediately; the active profile can start at boot.' }),
       el('div', { id: 'profiles-root', class: 'profiles-root' }, [el('p', { class: 'page-subtitle', text: 'Loading profiles…' })]),
     );
     void mount(ctx, container);
@@ -311,6 +311,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let showFilter = 'all';
   let sortMode = 'alphabetical';
   let cardMode: 'grid' | 'list' = 'grid';
+  const profileSubtitle = container.querySelector<HTMLElement>('#profiles-subtitle');
+  const updateProfileCopy = (): void => {
+    if (!profileSubtitle) return;
+    profileSubtitle.textContent = viewMode === 'game'
+      ? 'Save and load named game presets. Enable a game profile only when that executable should override the global graphics settings.'
+      : 'Save and load named tuning presets. Loading applies the profile immediately; the active profile can start at boot.';
+  };
   try { gameProfileCapabilities = await api.gameProfileCapabilities(s.deviceId); } catch { /* unsupported surface stays hidden */ }
   try {
     // The optional per-game sidecar must never gate the legacy profile page.
@@ -333,7 +340,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   }
 
   const modeToggle = (): HTMLElement => el('div', { class: 'profiles-mode-toggle', role: 'group', 'aria-label': 'Profiles view' }, [
-    el('button', { class: `btn btn-ghost btn-sm${viewMode === 'oc' ? ' active' : ''}`, text: 'OC Profile', onclick: () => { viewMode = 'oc'; selectedGameExePath = null; renderList(); } }),
+    el('button', { class: `btn btn-ghost btn-sm${viewMode === 'oc' ? ' active' : ''}`, text: 'Tuning Profile', onclick: () => { viewMode = 'oc'; selectedGameExePath = null; updateProfileCopy(); renderList(); } }),
     el('button', { class: `btn btn-ghost btn-sm${viewMode === 'game' ? ' active' : ''}`, text: 'Game Profile', onclick: () => void openGameView() }),
   ]);
 
@@ -410,7 +417,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]) as HTMLSelectElement;
     const save = (patch: Partial<GameSettingsRecord>): void => { void onGameSettingsSave(game, patch); };
     const detail = el('div', { class: 'profile-detail game-profile-detail' }, [
-      el('div', { class: 'profile-detail-head' }, [el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }), el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
+      el('div', { class: 'profile-detail-head game-profile-detail-head' }, [
+        el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }),
+        el('div', { class: 'game-profile-title' }, [el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
+      ]),
       el('div', { class: 'profile-app-badge' }, [artworkTile(game.artwork, game.displayName, 'profile-artwork-small'), el('span', { text: `${game.displayName}  ·  ${game.exePath}` })]),
       el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled === true, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Game profiles start disabled; enable this only when this executable should use its settings.' })]),
       ...(gameProfileCapabilities.enduranceGaming ? [el('section', { class: 'profile-settings-section game-igs-settings' }, [
@@ -444,6 +454,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const openGameView = (): void => {
     viewMode = 'game';
+    updateProfileCopy();
     renderGameCatalog();
     if (selectedGameExePath) {
       const selected = gameCatalog.find((item) => item.exePath === selectedGameExePath);
@@ -568,11 +579,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       dataset: { id: p.id },
     }, [
       el('div', { class: 'profile-info' }, [
-        el('span', { class: 'profile-avatar', text: p.name.slice(0, 1).toUpperCase() }),
         el('span', { class: 'profile-name', text: p.name }),
         active ? el('span', { class: 'badge profile-badge', text: 'Active' }) : null,
       ]),
-      el('p', { class: 'profile-association-note', text: 'Global graphics profile' }),
       el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps).map((t) => el('span', { class: 'chip', text: t }))),
       el('div', { class: 'profile-actions' }, [
         loadBtn,

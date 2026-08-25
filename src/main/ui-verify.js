@@ -4167,8 +4167,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await js(`location.hash = '#/profiles'`);
     if (!(await waitFor(win, `!!document.querySelector('.profiles-mode-toggle')`))) fail('M55: Profiles view toggle did not render');
     const modeLabels = await js(`Array.from(document.querySelectorAll('.profiles-mode-toggle button')).map((b) => b.textContent.trim())`);
-    if (JSON.stringify(modeLabels) !== JSON.stringify(['OC Profile', 'Game Profile'])) fail(`M55: view toggle labels were ${JSON.stringify(modeLabels)}`);
+    if (JSON.stringify(modeLabels) !== JSON.stringify(['Tuning Profile', 'Game Profile'])) fail(`M55: view toggle labels were ${JSON.stringify(modeLabels)}`);
+    const tuningSubtitle = await js(`document.querySelector('#profiles-subtitle')?.textContent?.trim() ?? ''`);
+    if (!tuningSubtitle.includes('tuning presets')) fail(`M58: Tuning Profile subtitle was '${tuningSubtitle}'`);
     await js(`Array.from(document.querySelectorAll('.profiles-mode-toggle button')).find((b) => b.textContent.trim() === 'Game Profile')?.click()`);
+    if (!(await waitFor(win, `(document.querySelector('#profiles-subtitle')?.textContent ?? '').includes('game presets')`))) fail('M58: Game Profile subtitle did not switch to game presets');
     if (!(await waitFor(win, `document.querySelectorAll('.game-catalog-card').length === 2`, 8000))) fail('M55: Game Profile view did not show the installed mock catalog');
     await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('rid-verify-two.exe'))?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.game-profile-back') && (document.body.textContent ?? '').includes('Back to catalog')`))) fail('M55: clicking a catalog card did not open the in-page detail view');

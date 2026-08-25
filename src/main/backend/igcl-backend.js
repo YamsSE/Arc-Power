@@ -232,6 +232,12 @@ const MEDIA_COLOR_INFO_SIZE = 152;
 const MEDIA_COLOR_VALUE_SIZE = 88;
 const MEDIA_COLOR_FEATURE = 5;
 const MEDIA_CUSTOM_VALUE_TYPE = 5;
+const MEDIA_STRUCT_VERSION = 0;
+
+function mediaStructHeader(buf, size) {
+  mediaWrite(buf, 0, 'uint32', size);
+  mediaWrite(buf, 4, 'uint8', MEDIA_STRUCT_VERSION);
+}
 
 function mediaWrite(buf, offset, type, value) {
   koffi.encode(buf, offset, type, value);
@@ -291,8 +297,10 @@ function readMediaColorCorrection(lib, adapterHandle) {
       }
     }
     if (detailOffset < 0) return null;
-    const info = koffi.alloc('uint8', Math.max(customSize, MEDIA_COLOR_INFO_SIZE) + 16);
-    mediaWrite(details, detailOffset + 40, 'int32', Math.max(customSize, MEDIA_COLOR_INFO_SIZE));
+    const infoSize = Math.max(customSize, MEDIA_COLOR_INFO_SIZE);
+    const info = koffi.alloc('uint8', infoSize + 16);
+    mediaStructHeader(info, infoSize);
+    mediaWrite(details, detailOffset + 40, 'int32', infoSize);
     mediaWrite(details, detailOffset + 48, 'void*', koffi.address(info));
     result = lib.ctlGetSupportedVideoProcessingCapabilities(adapterHandle, caps);
     if (result !== CTL_RESULT.SUCCESS) return null;
@@ -311,6 +319,7 @@ function readMediaColorCorrection(lib, adapterHandle) {
     const appName = koffi.alloc('uint8', 1);
     mediaWrite(appName, 0, 'uint8', 0);
     const custom = koffi.alloc('uint8', MEDIA_COLOR_VALUE_SIZE + 16);
+    mediaStructHeader(custom, MEDIA_COLOR_VALUE_SIZE);
     const getset = koffi.alloc('uint8', MEDIA_FEATURE_GETSET_SIZE + 16);
     mediaWrite(getset, 0, 'uint32', MEDIA_FEATURE_GETSET_SIZE);
     mediaWrite(getset, 4, 'uint8', 0);
@@ -349,6 +358,7 @@ function mediaColorApply(lib, adapterHandle, patch, before) {
   const appName = current.buffers.appName;
   const custom = koffi.alloc('uint8', MEDIA_COLOR_VALUE_SIZE + 16);
   const getset = koffi.alloc('uint8', MEDIA_FEATURE_GETSET_SIZE + 16);
+  mediaStructHeader(custom, MEDIA_COLOR_VALUE_SIZE);
   mediaWrite(custom, 5, 'bool', true);
   mediaWrite(custom, 8, 'float', Number(patch.brightness ?? current.values.brightness));
   mediaWrite(custom, 12, 'float', Number(patch.contrast ?? current.values.contrast));
