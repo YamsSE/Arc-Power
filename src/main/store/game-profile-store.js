@@ -10,7 +10,7 @@ import { canonicalExePath, validateSafeGameCandidate } from '../game-candidate.j
 export { canonicalExePath } from '../game-candidate.js';
 
 export const GAME_PROFILE_SCHEMA_VERSION = 2;
-export const MAX_BANNER_DATA_LENGTH = 3_000_000;
+export const MAX_BANNER_DATA_LENGTH = 12_000_000;
 
 export function deterministicArtworkKey(value) {
   const text = String(value ?? '').toLowerCase();

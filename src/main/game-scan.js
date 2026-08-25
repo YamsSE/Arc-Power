@@ -17,7 +17,8 @@ const ARTWORK_CONCURRENCY = 4;
 const SCAN_MAX_START_MENU_ITEMS = 256;
 const SCAN_MAX_REGISTRY_ITEMS = 512;
 const SCAN_MAX_INSTALL_CANDIDATES = 16;
-const POSTER_MAX_BYTES = 2 * 1024 * 1024;
+const POSTER_MAX_BYTES = 8 * 1024 * 1024;
+const BANNER_DATA_MAX_LENGTH = 12_000_000;
 const STEAM_MAX_MANIFESTS = 512;
 const STEAM_MAX_USERS = 16;
 // Only exact, conventional artwork names are considered. This keeps the
@@ -35,6 +36,57 @@ const withTimeout = (promise, timeoutMs) => Promise.race([
   promise,
   new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
 ]);
+
+function imagePixelArea(bytes, extension) {
+  if (bytes.length >= 24 && extension === '.png'
+    && bytes.readUInt32BE(0) === 0x89504e47 && bytes.readUInt32BE(4) === 0x0d0a1a0a) {
+    return bytes.readUInt32BE(16) * bytes.readUInt32BE(20);
+  }
+  if (bytes.length >= 30 && (extension === '.jpg' || extension === '.jpeg') && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) { offset += 1; continue; }
+      const marker = bytes[offset + 1];
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) { offset += 2; continue; }
+      const length = bytes.readUInt16BE(offset + 2);
+      if (length < 2 || offset + 2 + length > bytes.length) break;
+      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)
+        || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+        return bytes.readUInt16BE(offset + 5) * bytes.readUInt16BE(offset + 7);
+      }
+      offset += 2 + length;
+    }
+  }
+  if (bytes.length >= 30 && extension === '.webp' && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') {
+    if (bytes.toString('ascii', 12, 16) === 'VP8X') {
+      const width = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16);
+      const height = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16);
+      return width * height;
+    }
+  }
+  return 0;
+}
+
+async function chooseBestArtwork(candidates, maxBytes) {
+  const accepted = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    try {
+      const bytes = await readFile(candidate.filePath);
+      if (bytes.length === 0 || bytes.length > maxBytes) continue;
+      accepted.push({ ...candidate, bytes, area: imagePixelArea(bytes, candidate.extension) , index });
+    } catch { /* optional artwork item */ }
+  }
+  accepted.sort((a, b) => {
+    if (a.area > 0 || b.area > 0) {
+      if (a.area !== b.area) return b.area - a.area;
+      if (a.bytes.length !== b.bytes.length) return b.bytes.length - a.bytes.length;
+    }
+    return a.index - b.index;
+  });
+  const selected = accepted[0];
+  return selected ? `data:${selected.mime};base64,${selected.bytes.toString('base64')}` : null;
+}
 
 function candidateScore(item, row) {
   const base = path.win32.basename(item.exePath, '.exe').toLowerCase();
@@ -118,19 +170,16 @@ export async function findGamePosterArtwork(exePath, opts = {}) {
     if (parent === directory) break;
     directory = parent;
   }
+  const candidates = [];
   for (const dir of directories) {
     for (const base of POSTER_NAMES) {
       for (const [extension, mime] of POSTER_EXTENSIONS) {
-        try {
-          const bytes = await readFile(path.win32.join(dir, base + extension));
-          if (bytes.length === 0 || bytes.length > maxBytes) continue;
-          return 'data:' + mime + ';base64,' + bytes.toString('base64');
-        } catch {
-          // Optional artwork is allowed to be absent.
-        }
+        candidates.push({ filePath: path.win32.join(dir, base + extension), extension, mime });
       }
     }
   }
+  const local = await chooseBestArtwork(candidates, maxBytes);
+  if (local) return local;
   // Steam keeps high-resolution library art in local appcache/userdata rather
   // than beside the executable. Resolve the AppID from the local manifest,
   // then prefer local cache art. Network artwork is intentionally excluded:
@@ -149,14 +198,11 @@ export async function findGamePosterArtwork(exePath, opts = {}) {
         }
       }
     } catch { /* optional Steam cache */ }
-    for (const candidate of localCandidates) {
-      try {
-        const bytes = await readFile(candidate);
-        const extension = path.win32.extname(candidate).toLowerCase();
-        const mime = POSTER_EXTENSIONS.get(extension);
-        if (mime && bytes.length > 0 && bytes.length <= maxBytes) return `data:${mime};base64,${bytes.toString('base64')}`;
-      } catch { /* optional cache item */ }
-    }
+    const steamArtwork = await chooseBestArtwork(localCandidates.map((filePath) => {
+      const extension = path.win32.extname(filePath).toLowerCase();
+      return { filePath, extension, mime: POSTER_EXTENSIONS.get(extension) };
+    }).filter((candidate) => candidate.mime), maxBytes);
+    if (steamArtwork) return steamArtwork;
   }
   return null;
 }
@@ -210,7 +256,7 @@ export async function enrichScannedApps(apps, getArtwork, opts = {}) {
           nextItem.artwork = artwork;
         }
         if (typeof opts.getBanner === 'function') {
-          const bannerMaxBytes = Number.isFinite(opts.bannerMaxBytes) ? Math.max(0, opts.bannerMaxBytes) : maxBytes;
+          const bannerMaxBytes = Number.isFinite(opts.bannerMaxBytes) ? Math.max(0, opts.bannerMaxBytes) : BANNER_DATA_MAX_LENGTH;
           if (isValidBanner(banner) && bannerBytes + banner.length <= bannerMaxBytes) {
             bannerBytes += banner.length;
             nextItem.banner = banner;

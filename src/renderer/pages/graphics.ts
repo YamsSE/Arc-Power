@@ -919,7 +919,10 @@ async function renderDisplayView(view: HTMLElement, ctx: PageContext, generation
   displayDraft = normalizeDisplaySettings(selectedDisplay());
   displayScalingViewDraft = scalingViewOf(selectedDisplay());
   displayScalingMethodDraft = scalingMethodViewOf(selectedDisplay());
-  displayApplied = {};
+  // Establish a clean baseline from the fresh driver read-back. Without this
+  // the first render treated every exposed value as an unapplied edit when a
+  // driver temporarily omitted a value (notably global VRR).
+  displayApplied = { ...displayDraft };
   renderDisplayCards(view, ctx);
 }
 
@@ -949,7 +952,7 @@ function buildDisplayDropdownRow(
       el('p', { class: 'card-note', text: `${allowed}${capability?.reason ?? 'Not supported on this GPU.'}` }),
     ]);
   }
-  const current = (displayDraft as Record<string, unknown>)[key] as string;
+  const current = ((displayDraft as Record<string, unknown>)[key] as string | undefined) ?? options[0];
   const select = el('select', {
     class: 'graphics-select display-select',
     dataset: { displaySelect: key },
@@ -1095,7 +1098,7 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
   const customX = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.x, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom horizontal scaling' }) as HTMLInputElement;
   const customY = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.y, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom vertical scaling' }) as HTMLInputElement;
   const setCustom = (): void => {
-    displayDraft.scalingCustom = { x: Math.max(0, Math.min(100, Number(customX.value))), y: Math.max(0, Math.min(100, Number(customY.value))), hardwareModeSet: false };
+    displayDraft.scalingCustom = { x: Math.max(0, Math.min(100, Number(customX.value))), y: Math.max(0, Math.min(100, Number(customY.value))), hardwareModeSet: true };
     refreshDisplayChip('displayScalingMethod');
   };
   customX.addEventListener('change', setCustom);
@@ -1442,7 +1445,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
       displayDraft = normalizeDisplaySettings(selectedDisplay());
       displayScalingViewDraft = scalingViewOf(selectedDisplay());
       displayScalingMethodDraft = scalingMethodViewOf(selectedDisplay());
-      displayApplied = {};
+      displayApplied = { ...displayDraft };
       renderDisplayCards(view, ctx);
     },
   }, displayState.displays.map((d) => el('option', {
@@ -1456,7 +1459,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     buildDisplayScalingMethodRow(ctx),
     buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),
     buildDisplayDropdownRow(ctx, 'variableRefreshRate', 'Variable Refresh Rate', DISPLAY_VRR_NOTE, ['enabled', 'disabled'], VARIABLE_REFRESH_RATE_LABELS),
-  ], false);
+  ]);
 
   const color = buildDisplayGroup('color', 'Color', [
     buildDisplayDropdownRow(ctx, 'quantizationRange', 'Quantization Range', 'The color-quantization range of the display output.', display.supportedOptions.quantizationRanges, QUANTIZATION_LABELS),
@@ -1610,7 +1613,7 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
       payload = { displayScalingMethod: displayScalingMethodDraft as DisplaySettings['displayScalingMethod'] };
       if (displayScalingMethodDraft === 'custom') {
         payload.scalingMode = 'custom';
-        payload.scalingCustom = displayDraft.scalingCustom ?? { ...customScalingOf(display), hardwareModeSet: false };
+        payload.scalingCustom = displayDraft.scalingCustom ?? { ...customScalingOf(display), hardwareModeSet: true };
       }
     }
   } else if (isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)) {

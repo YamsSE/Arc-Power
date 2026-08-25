@@ -30,6 +30,7 @@ import { formatValue } from '../pure/slider.ts';
 import type { Capabilities, DeviceState, FlipMode, GameCatalogEntry, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
+const MAX_GAME_BANNER_DATA_LENGTH = 12_000_000;
 
 // M4-D: the automatic waiver re-prompt + single retry counter - a
 // profile load can hit waiver-not-set (the driver lost the waiver while the
@@ -185,7 +186,7 @@ function artworkTile(artwork: string | undefined, label: string, className = '')
 }
 
 function gameBannerTile(banner: string | undefined, artwork: string | undefined, label: string, className = ''): HTMLElement {
-  const isDataBanner = typeof banner === 'string' && banner.length <= 3000000
+  const isDataBanner = typeof banner === 'string' && banner.length <= MAX_GAME_BANNER_DATA_LENGTH
     && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(banner);
   const isDataArtwork = typeof artwork === 'string' && artwork.length <= 750000
     && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(artwork);

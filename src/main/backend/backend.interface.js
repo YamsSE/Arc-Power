@@ -169,7 +169,7 @@
  *     powerLimit?: boolean, tempLimit?: boolean, vfCurve?: boolean,
  *   },
  *   ranges: Record<string, { min: number, max: number, step: number, default: number, units: string }>,
- *   fan: { canControl: boolean, modes: string[], maxRpm: number, maxCurvePoints: number },
+ *   fan: { canControl: boolean, modes: string[], maxRpm: number, maxCurvePoints: number, speedUnits?: 'percent'|'rpm' },
  * }} Capabilities
  */
 

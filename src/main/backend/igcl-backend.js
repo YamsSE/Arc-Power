@@ -76,9 +76,30 @@ const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0]
 // ctl_fan_config_t.mode -> canonical fanMode.
 const FAN_MODE_CANONICAL = { 0: 'auto', 1: 'fixed', 2: 'curve' };
 
-// CTL_FAN_SPEED_UNITS maps numeric codes -> names ({1: 'PERCENT'}), so the
-// ctl_fan_speed_t.units field needs the numeric code - look it up by name.
+// CTL_FAN_SPEED_UNITS maps numeric codes -> names ({0: 'RPM', 1: 'PERCENT'}),
+// while ctl_fan_properties_t.supportedUnits is a bit mask over those codes.
 const FAN_UNITS_PERCENT = Number(Object.entries(CTL_FAN_SPEED_UNITS).find(([, n]) => n === 'PERCENT')[0]);
+const FAN_UNITS_RPM = Number(Object.entries(CTL_FAN_SPEED_UNITS).find(([, n]) => n === 'RPM')[0]);
+
+function fanUnitForProperties(properties) {
+  const supported = Number(properties?.supportedUnits) >>> 0;
+  // Prefer percent when the driver advertises it: it is the canonical UI
+  // unit and preserves the existing Alchemist/IGS route.
+  if ((supported & (1 << FAN_UNITS_PERCENT)) !== 0) return FAN_UNITS_PERCENT;
+  if ((supported & (1 << FAN_UNITS_RPM)) !== 0 && Number(properties?.maxRPM) > 0) return FAN_UNITS_RPM;
+  return null;
+}
+
+function fanSpeedFromPct(value, units, maxRpm) {
+  const pct = clampFanPct(value);
+  return units === FAN_UNITS_RPM ? Math.round((pct / 100) * maxRpm) : pct;
+}
+
+function fanPctFromSpeed(value, units, maxRpm) {
+  if (units === FAN_UNITS_PERCENT) return Number(value);
+  if (units === FAN_UNITS_RPM && Number(maxRpm) > 0) return (Number(value) / Number(maxRpm)) * 100;
+  return null;
+}
 
 // M17p: the fan-probe PERSISTED cache (the igcl-dll-cache precedent -
 // %APPDATA%\ArcPower, NOT temp which the OS cleans). The in-memory
@@ -204,6 +225,38 @@ function selectGlobal3dScope(lib, adapterHandle, features) {
   return { ok: true };
 }
 
+// Most drivers accept the global VRR feature directly with an empty
+// application name. A small set requires feature 15 to select GLOBAL first;
+// ERROR_INVALID_ARGUMENT is the only result that justifies that fallback.
+// Permission/unsupported/IO failures are real refusals and must not trigger a
+// second write path or be reported as applied.
+function globalVrrRequest(lib, adapterHandle, features, { bSet, enumValue } = {}) {
+  const makeRequest = () => encode3dFeatureGetset({
+    featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT,
+    valueType: CTL_PROPERTY_VALUE_TYPE.ENUM,
+    bSet,
+    enumValue,
+    applicationName: '',
+  });
+  let request = makeRequest();
+  let result;
+  try {
+    result = lib.ctlGetSet3DFeature(adapterHandle, request.buf);
+  } catch {
+    return { result: null, request, errorCode: 'io-failed', message: 'IGCL global Variable Refresh Rate access failed while calling the driver.' };
+  }
+  if (result !== CTL_RESULT.ERROR_INVALID_ARGUMENT) return { result, request };
+  const scope = selectGlobal3dScope(lib, adapterHandle, features);
+  if (!scope.ok) return { result, request, scope };
+  request = makeRequest();
+  try {
+    result = lib.ctlGetSet3DFeature(adapterHandle, request.buf);
+  } catch {
+    return { result: null, request, errorCode: 'io-failed', message: 'IGCL global Variable Refresh Rate access failed while calling the driver after selecting GLOBAL scope.' };
+  }
+  return { result, request, usedScopeFallback: true };
+}
+
 function endurancePlatformSupported(device, laptopInfo = null) {
   const name = String(device?.name ?? '');
   // Reuse the inventory's conservative model classification, then add the
@@ -231,6 +284,31 @@ const DISPLAY_SCALING_MODE_TO_IGCL = {
   'aspect-ratio-centered-max': 8, custom: 16,
 };
 const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stretched', 8: 'aspect-ratio-centered-max', 16: 'custom' };
+
+// Some driver revisions validate the versioned tail of
+// ctl_scaling_settings_t only when Custom is requested. Keep the normal v0
+// payload first, then retry the same hardware-modeset request with v1 only
+// for the driver's explicit INVALID_ARGUMENT response. A successful setter
+// is still not reported as applied until the fresh scaling read-back agrees.
+function setScalingWithCompatibility(lib, handle, { flag, custom }) {
+  const versions = custom ? [0, 1] : [0];
+  let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
+  let lastBuf = null;
+  for (const version of versions) {
+    const gs = encodeScalingSettings({
+      enable: true,
+      scalingType: flag,
+      customScalingX: custom?.x,
+      customScalingY: custom?.y,
+      hardwareModeSet: custom?.hardwareModeSet,
+      version,
+    });
+    lastBuf = gs.buf;
+    lastResult = lib.ctlSetCurrentScaling(handle, gs.buf);
+    if (lastResult === CTL_RESULT.SUCCESS || version === versions[versions.length - 1]) break;
+  }
+  return { setResult: lastResult, request: lastBuf };
+}
 // The caps-bit decode yields the bindings' SCREAMING names ('IDENTITY',
 // ...) - map them to the canonical strings.
 const DISPLAY_SCALING_NAME_TO_CANONICAL = {
@@ -243,11 +321,11 @@ const DISPLAY_ARC_SYNC_PROFILE_CANONICAL = {
 const DISPLAY_RETRO_SCALING_NAME_TO_CANONICAL = {
   INTEGER: 'integer', NEAREST_NEIGHBOUR: 'nearest-neighbour',
 };
-// The public header calls this a flag type, but the live driver surface uses
-// enum indices in ctl_retro_scaling_settings_t: 0 = integer, 1 = nearest
-// neighbour. The caps value remains a bitmask (bits 0 and 1).
-const DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL = { 0: 'integer', 1: 'nearest-neighbour' };
-const DISPLAY_RETRO_SCALING_METHOD_TO_IGCL = { integer: 0, 'nearest-neighbour': 1 };
+// ctl_retro_scaling_settings_t carries the flag VALUE, not the caps bit
+// index: INTEGER=1 and NEAREST_NEIGHBOUR=2. A disabled driver may normalize
+// the type field to 0, so the disabled read-back path treats type as opaque.
+const DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL = { 1: 'integer', 2: 'nearest-neighbour' };
+const DISPLAY_RETRO_SCALING_METHOD_TO_IGCL = { integer: 1, 'nearest-neighbour': 2 };
 const DISPLAY_ARC_SYNC_PROFILE_TO_IGCL = {
   recommended: 1, excellent: 2, good: 3, compatible: 4, off: 5, vesa: 6, custom: 7,
 };
@@ -1097,7 +1175,7 @@ export class IgclBackend {
    * @param {number} [maxPoints]
    * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }>}
    */
-  async _probeFanCapability(deviceId, maxPoints) {
+  async _probeFanCapability(deviceId, maxPoints, fanProperties = null) {
     if (this._fanProbeCache.has(deviceId)) return this._fanProbeCache.get(deviceId);
     // M17p: the PERSISTED cache - SUCCESS-ONLY trust: a cached
     // probeOk:true for THIS driverVersion+deviceId skips the probe across
@@ -1114,7 +1192,7 @@ export class IgclBackend {
       this._fanProbeCache.set(deviceId, p);
       return p;
     }
-    const p = this._runFanProbe(deviceId, maxPoints).catch((err) => {
+    const p = this._runFanProbe(deviceId, maxPoints, fanProperties).catch((err) => {
       console.error(`[igcl-backend] fan capability probe threw for device ${deviceId}: ${err.message} - fan stays read-only`);
       return { probeOk: false, writeAccepted: false, fixedOk: false };
     });
@@ -1234,7 +1312,7 @@ export class IgclBackend {
    * @param {number} [maxPoints]  fan properties' maxPoints (default 10)
    * @returns {Promise<{ probeOk: boolean, writeAccepted: boolean, fixedOk: boolean }>}
    */
-  async _runFanProbe(deviceId, maxPoints) {
+  async _runFanProbe(deviceId, maxPoints, fanProperties = null) {
     const lib = this._libOrThrow();
     const fanHandles = await this._fanHandlesOf(deviceId);
     const fan = await this._fanHandleForControl(deviceId);
@@ -1244,8 +1322,21 @@ export class IgclBackend {
       return { probeOk: false, writeAccepted: false, fixedOk: false };
     }
 
-    // Intel's sample encoding: Size/Version filled, FAN-enum PERCENT units
-    // (1), strictly ascending temps, safe speeds 0-90%. Point count honors
+    if (!fanProperties && !this._isUnavailable(lib.ctlFanGetProperties)) {
+      const propBuf = koffi.alloc('ctl_fan_properties_t', 1);
+      koffi.encode(propBuf, 'ctl_fan_properties_t', { Size: koffi.sizeof('ctl_fan_properties_t'), Version: 0 });
+      if (lib.ctlFanGetProperties(fan, propBuf) === CTL_RESULT.SUCCESS) fanProperties = koffi.decode(propBuf, 'ctl_fan_properties_t');
+    }
+
+    const fanUnits = fanUnitForProperties(fanProperties);
+    const maxRpm = Number(fanProperties?.maxRPM);
+    if (fanUnits === null) {
+      console.error('[igcl-backend] fan probe: the driver did not advertise a usable RPM or percent speed unit');
+      return { probeOk: false, writeAccepted: false, fixedOk: false };
+    }
+
+    // Intel's sample encoding: Size/Version filled, the driver's advertised
+    // FAN speed unit, strictly ascending temps, safe speeds 0-90%. Point count honors
     // the card's maxPoints (capped at the live-verified 10-point sample).
     const pointCount = Number.isInteger(maxPoints) && maxPoints > 0 ? Math.min(10, maxPoints) : 10;
     const expected = [];
@@ -1254,7 +1345,7 @@ export class IgclBackend {
       Size: koffi.sizeof('ctl_fan_temp_speed_t'),
       Version: 0,
       temperature: p.t,
-      speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: p.speedPct, units: FAN_UNITS_PERCENT },
+      speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fanSpeedFromPct(p.speedPct, fanUnits, maxRpm), units: fanUnits },
     }));
     const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: table.length, table };
 
@@ -1269,7 +1360,7 @@ export class IgclBackend {
       return { probeOk: false, writeAccepted, fixedOk: false };
     }
 
-    // Read-back verify: exact point match, PERCENT units.
+    // Read-back verify: exact point match in the native unit, normalized to %.
     let readOk = false;
     const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
     koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
@@ -1280,9 +1371,9 @@ export class IgclBackend {
         && cfg.speedTable.numPoints === expected.length
         && expected.every((p, i) => {
           const tp = cfg.speedTable.table[i];
-          return tp.speed.units === FAN_UNITS_PERCENT
+          return tp.speed.units === fanUnits
             && nearlyEqual(tp.temperature, p.t, 1)
-            && nearlyEqual(tp.speed.speed, p.speedPct, 1);
+            && nearlyEqual(fanPctFromSpeed(tp.speed.speed, tp.speed.units, maxRpm), p.speedPct, 1);
         });
     }
     if (!readOk) {
@@ -1291,7 +1382,7 @@ export class IgclBackend {
 
     // Restore default mode, retried: a failed probe must NEVER leave the
     // card in table mode.
-    const restoreOk = await this._restoreFanDefault(fan, deviceId);
+    const restoreOk = await this._restoreFanDefault(fan, deviceId, fanUnits, maxRpm);
 
     const probeOk = readOk && restoreOk;
     console.log(`[igcl-backend] fan probe device ${deviceId}: table write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - effective canControl=${probeOk}`);
@@ -1320,7 +1411,7 @@ export class IgclBackend {
     // honestly reports no fixed (the probe cannot run).
     let fixedOk = false;
     if (restoreOk && (!this._isUnavailable(lib.ctlFanSetFixedSpeedMode) || !this._isUnavailable(lib.ctlFanSetSpeedTableMode))) {
-      fixedOk = await this._runFixedProbe(fan, deviceId);
+      fixedOk = await this._runFixedProbe(fan, deviceId, fanUnits, maxRpm);
     }
     return { probeOk, writeAccepted, fixedOk };
   }
@@ -1353,10 +1444,10 @@ export class IgclBackend {
    * @param {number} deviceId
    * @returns {Promise<boolean>}
    */
-  async _runFixedProbe(fan, deviceId) {
+  async _runFixedProbe(fan, deviceId, fanUnits = FAN_UNITS_PERCENT, maxRpm = -1) {
     const lib = this._libOrThrow();
     const FIXED_PCT = 50;
-    const fixed = { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: FIXED_PCT, units: FAN_UNITS_PERCENT };
+    const fixed = { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fanSpeedFromPct(FIXED_PCT, fanUnits, maxRpm), units: fanUnits };
     // M20-B (F1): the PRIMARY write is guarded - an unavailable symbol
     // skips straight to the flat-table fallback, never a throw.
     let setResult;
@@ -1378,7 +1469,7 @@ export class IgclBackend {
     }
 
     if (writeAccepted) {
-      // Read-back verify: FIXED mode + PERCENT units + the 50% sample.
+      // Read-back verify: FIXED mode + the driver's native unit + the 50% sample.
       let readOk = false;
       const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
       koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
@@ -1386,8 +1477,8 @@ export class IgclBackend {
       if (getResult === CTL_RESULT.SUCCESS) {
         const cfg = koffi.decode(cfgBuf, 'ctl_fan_config_t');
         readOk = cfg.mode === 1 /* FIXED */
-          && cfg.speedFixed.units === FAN_UNITS_PERCENT
-          && nearlyEqual(cfg.speedFixed.speed, FIXED_PCT, 1);
+          && cfg.speedFixed.units === fanUnits
+          && nearlyEqual(fanPctFromSpeed(cfg.speedFixed.speed, cfg.speedFixed.units, maxRpm), FIXED_PCT, 1);
       }
       if (!readOk) {
         console.error('[igcl-backend] fixed fan probe: read-back did not match the 50% fixed sample - probe fails');
@@ -1395,7 +1486,7 @@ export class IgclBackend {
 
       // Restore default mode, retried: a failed fixed probe must NEVER leave
       // the fan at 50% fixed.
-      const restoreOk = await this._restoreFanDefault(fan, deviceId);
+      const restoreOk = await this._restoreFanDefault(fan, deviceId, fanUnits, maxRpm);
 
       const fixedOk = readOk && restoreOk;
       console.log(`[igcl-backend] fixed fan probe device ${deviceId}: 50% write ${writeAccepted ? 'accepted' : 'refused'}, read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - fixedOk=${fixedOk}`);
@@ -1407,13 +1498,13 @@ export class IgclBackend {
       console.error('[igcl-backend] fixed fan probe: the dedicated API refused and ctlFanSetSpeedTableMode is unavailable - no flat-table fallback possible, fixedOk stays false');
       return false;
     }
-    // A flat 2-point 50% table (20C/100C, FAN-enum PERCENT units - the
+    // A flat 2-point 50% table (20C/100C, the driver's native speed unit - the
     // probe convention shared with the apply path).
     const table = [20, 100].map((t) => ({
       Size: koffi.sizeof('ctl_fan_temp_speed_t'),
       Version: 0,
       temperature: t,
-      speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: FIXED_PCT, units: FAN_UNITS_PERCENT },
+      speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fanSpeedFromPct(FIXED_PCT, fanUnits, maxRpm), units: fanUnits },
     }));
     const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: table.length, table };
     const setTableResult = lib.ctlFanSetSpeedTableMode(fan, tableObj);
@@ -1424,7 +1515,7 @@ export class IgclBackend {
       return false;
     }
 
-    // Read-back verify: TABLE mode + >= 2 points, all PERCENT, ~50%.
+    // Read-back verify: TABLE mode + >= 2 points, native units, ~50%.
     let readOk = false;
     const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
     koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
@@ -1435,7 +1526,8 @@ export class IgclBackend {
         && cfg.speedTable.numPoints >= 2
         && cfg.speedTable.numPoints <= 32
         && Array.from({ length: cfg.speedTable.numPoints }, (_, i) => cfg.speedTable.table[i])
-          .every((tp) => tp.speed.units === FAN_UNITS_PERCENT && nearlyEqual(tp.speed.speed, FIXED_PCT, 1));
+          .every((tp) => tp.speed.units === fanUnits
+            && nearlyEqual(fanPctFromSpeed(tp.speed.speed, tp.speed.units, maxRpm), FIXED_PCT, 1));
     }
     if (!readOk) {
       console.error('[igcl-backend] fixed fan probe: the flat-table read-back did not match the 50% sample - probe fails');
@@ -1443,7 +1535,7 @@ export class IgclBackend {
 
     // Restore default mode, retried: a failed probe must NEVER leave the
     // fan in table mode.
-    const restoreOk = await this._restoreFanDefault(fan, deviceId);
+    const restoreOk = await this._restoreFanDefault(fan, deviceId, fanUnits, maxRpm);
 
     const fixedOk = readOk && restoreOk;
     console.log(`[igcl-backend] fixed fan probe device ${deviceId}: flat-table 50% write accepted (result ${describeResult(setTableResult)}), read-back ${readOk ? 'OK' : 'FAILED'}, restore-to-default ${restoreOk ? 'OK' : 'FAILED'} - fixedOk=${fixedOk}`);
@@ -1467,7 +1559,7 @@ export class IgclBackend {
    * @param {number} deviceId
    * @returns {Promise<boolean>}
    */
-  async _restoreFanDefault(fan, deviceId) {
+  async _restoreFanDefault(fan, deviceId, fanUnits = FAN_UNITS_PERCENT, maxRpm = -1) {
     const lib = this._libOrThrow();
     const settle = (ms) => new Promise((r) => setTimeout(r, ms));
     if (this._isUnavailable(lib.ctlFanSetDefaultMode) || this._isUnavailable(lib.ctlFanGetConfig)) return false;
@@ -1500,7 +1592,7 @@ export class IgclBackend {
           Size: koffi.sizeof('ctl_fan_temp_speed_t'),
           Version: 0,
           temperature: 20 + i * 30,
-          speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: 30 + i * 20, units: FAN_UNITS_PERCENT },
+          speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fanSpeedFromPct(30 + i * 20, fanUnits, maxRpm), units: fanUnits },
         });
       }
       const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: table.length, table };
@@ -1848,7 +1940,7 @@ export class IgclBackend {
           && (!fp.canControl || modes.includes('fixed'));
         let canControl = fp.canControl;
         if (probeRuns) {
-          const probe = await this._probeFanCapability(deviceId, fp.maxPoints);
+          const probe = await this._probeFanCapability(deviceId, fp.maxPoints, fp);
           canControl = fp.canControl || probe.probeOk;
           // M4-C: the fixed sub-probe extends the write-accepted rule -
           // only a FULLY verified fixed probe (write + read-back + restore
@@ -1870,6 +1962,11 @@ export class IgclBackend {
           modes,
           maxRpm: fp.maxRPM,
           maxCurvePoints: fp.maxPoints,
+          // The native API uses a bit mask for supportedUnits. Battlemage
+          // commonly exposes RPM only; retain percent as the UI contract and
+          // convert at the native boundary instead of writing percent values
+          // into an RPM-only driver surface.
+          speedUnits: fanUnitForProperties(fp) === FAN_UNITS_RPM ? 'rpm' : 'percent',
         };
       }
     }
@@ -2136,6 +2233,16 @@ export class IgclBackend {
     // false - the A770 still reports config/state; setters stay gated).
     const fanHandles = await this._fanHandlesOf(deviceId);
     if (fanHandles.length > 0 && !this._isUnavailable(lib.ctlFanGetConfig)) {
+      let fanProperties = null;
+      if (!this._isUnavailable(lib.ctlFanGetProperties)) {
+        const propBuf = koffi.alloc('ctl_fan_properties_t', 1);
+        koffi.encode(propBuf, 'ctl_fan_properties_t', { Size: koffi.sizeof('ctl_fan_properties_t'), Version: 0 });
+        if (lib.ctlFanGetProperties(await this._fanHandleForControl(deviceId), propBuf) === CTL_RESULT.SUCCESS) {
+          fanProperties = koffi.decode(propBuf, 'ctl_fan_properties_t');
+        }
+      }
+      const fanUnits = fanUnitForProperties(fanProperties);
+      const fanMaxRpm = Number(fanProperties?.maxRPM);
       const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
       koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
       const result = lib.ctlFanGetConfig(await this._fanHandleForControl(deviceId), cfgBuf);
@@ -2148,9 +2255,9 @@ export class IgclBackend {
             const tp = cfg.speedTable.table[i];
             state.fanCurve.push({
               t: tp.temperature,
-              // RPM tables cannot be normalized to % (maxRPM is unknown on
-              // Alchemist) - only PERCENT units become canonical % values.
-              speedPct: tp.speed.units === FAN_UNITS_PERCENT ? tp.speed.speed : null,
+              // Keep the canonical profile unit as percent while converting
+              // RPM-only Battlemage tables with the advertised maxRPM.
+              speedPct: fanPctFromSpeed(tp.speed.speed, tp.speed.units, fanMaxRpm),
             });
           }
           // Mixed/unknown units make the canonical % curve meaningless.
@@ -2172,10 +2279,10 @@ export class IgclBackend {
         if (flatTable) {
           state.fanMode = 'fixed';
           state.fixedFanPct = state.fanCurve[0].speedPct;
-        } else if (cfg.speedFixed.units === FAN_UNITS_PERCENT) {
-          state.fixedFanPct = cfg.speedFixed.speed;
+        } else if (fanUnits !== null && cfg.speedFixed.units === fanUnits) {
+          state.fixedFanPct = fanPctFromSpeed(cfg.speedFixed.speed, cfg.speedFixed.units, fanMaxRpm);
         } else {
-          state.fixedFanPct = null; // RPM fixed speed (no maxRPM to normalize) or none set
+          state.fixedFanPct = null; // unsupported native unit or no maxRPM to normalize
         }
       }
     }
@@ -2266,22 +2373,20 @@ export class IgclBackend {
       if (options.length === 0) {
         return unavailable('The driver did not advertise any supported global Variable Refresh Rate modes.');
       }
-      const scope = selectGlobal3dScope(lib, adapterHandle, features);
-      if (!scope.ok) {
+      const read = globalVrrRequest(lib, adapterHandle, features, { bSet: false });
+      if (read.scope && !read.scope.ok) {
         return {
-          capability: displayCapability(null, true, false, scope.message, 'igcl-global-vrr'),
+          capability: displayCapability(null, true, false, read.scope.message, 'igcl-global-vrr'),
           options,
         };
       }
-      const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false, applicationName: '' });
-      const readResult = lib.ctlGetSet3DFeature(adapterHandle, gs.buf);
-      if (readResult !== CTL_RESULT.SUCCESS) {
+      if (read.errorCode || read.result !== CTL_RESULT.SUCCESS) {
         return {
-          capability: displayCapability(null, true, false, `The driver reported global Variable Refresh Rate modes but refused read-back (${describeResult(readResult)}).`, 'igcl-global-vrr'),
+          capability: displayCapability(null, true, false, read.message ?? `The driver reported global Variable Refresh Rate modes but refused read-back (${describeResult(read.result)}).`, 'igcl-global-vrr'),
           options,
         };
       }
-      const value = decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType;
+      const value = decode3dFeatureGetsetValue(read.request.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType;
       const mode = DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[value] ?? null;
       if (!mode || !options.includes(mode)) {
         return {
@@ -3273,6 +3378,50 @@ export class IgclBackend {
     const handle = matches[0].handle;
     const selectedDisplay = matches[0].output;
 
+    // The renderer couples the three-way raw scaling selector to the legacy
+    // retro enable/type payload. Leaving Retro must disable the adapter-level
+    // retro surface before the output-handle scaling modeset; otherwise the
+    // driver can accept the first write, reject the second, and leave the UI
+    // claiming a partial apply.
+    let coupledRetroResult = null;
+    const coupledRetro = patch.scalingMode !== null && patch.scalingMode !== undefined
+      && patch.scalingMethod && typeof patch.scalingMethod === 'object';
+    const leavingRetro = coupledRetro
+      && selectedDisplay.scalingMethod?.value?.enabled === true
+      && patch.scalingMethod.enabled === false
+      && DISPLAY_SCALING_MODE_TO_IGCL[patch.scalingMode] !== undefined;
+    if (leavingRetro) {
+      if (this._isUnavailable(lib.ctlGetSetRetroScaling)) {
+        coupledRetroResult = { ok: false, errorCode: 'unavailable-symbol', message: 'the retro-scaling API is missing in the IGCL runtime' };
+      } else {
+        const type = DISPLAY_RETRO_SCALING_METHOD_TO_IGCL[patch.scalingMethod.method];
+        if (type === undefined) {
+          coupledRetroResult = { ok: false, errorCode: 'out-of-range', message: 'unknown retro-scaling method' };
+        } else {
+          const gs = encodeRetroScalingSettings({ get: false, enable: false, retroScalingType: type });
+          const setResult = lib.ctlGetSetRetroScaling(dev.handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            coupledRetroResult = { ok: false, errorCode: igclErrorCode(setResult) ?? 'io-failed', message: `IGCL ${describeResult(setResult)}` };
+          } else {
+            const rb = encodeRetroScalingSettings({ get: true });
+            const getResult = lib.ctlGetSetRetroScaling(dev.handle, rb.buf);
+            const got = getResult === CTL_RESULT.SUCCESS ? decodeRetroScalingSettings(rb.buf) : null;
+            const readBackEqual = got?.enable === false;
+            coupledRetroResult = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message: readBackEqual ? undefined : `retro scaling read-back enabled=${got?.enable ?? describeResult(getResult)} != requested false`,
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              warning: DISPLAY_SCALING_FLASH_WARNING,
+            };
+          }
+        }
+      }
+      result.perControl.scalingMethod = coupledRetroResult;
+      if (!coupledRetroResult.ok) result.ok = false;
+    }
+
     if (patch.quantizationRange !== null && patch.quantizationRange !== undefined) {
       if (this._isUnavailable(lib.ctlGetSetDisplaySettings)) {
         fail('quantizationRange', 'unavailable-symbol', 'the display-settings API is missing in the IGCL runtime');
@@ -3374,6 +3523,9 @@ export class IgclBackend {
     }
 
     if (patch.scalingMode !== null && patch.scalingMode !== undefined) {
+      if (leavingRetro && coupledRetroResult && !coupledRetroResult.ok) {
+        fail('scalingMode', coupledRetroResult.errorCode ?? 'io-failed', 'raw scaling was not changed because Retro Scaling could not be disabled first');
+      } else {
       if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {
         fail('scalingMode', 'unavailable-symbol', 'the scaling API is missing in the IGCL runtime');
       } else {
@@ -3386,7 +3538,7 @@ export class IgclBackend {
             ? {
               x: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.x))),
               y: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.y))),
-              hardwareModeSet: patch.scalingCustom.hardwareModeSet === true,
+              hardwareModeSet: true,
             } : null;
           if (flag === DISPLAY_SCALING_MODE_TO_IGCL.custom && patch.scalingCustom !== undefined && !custom) {
             fail('scalingMode', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
@@ -3395,8 +3547,7 @@ export class IgclBackend {
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
           // ScalingType is a FLAG value in the struct (1/2/4/8/16).
-          const gs = encodeScalingSettings({ enable: true, scalingType: flag, customScalingX: custom?.x, customScalingY: custom?.y, hardwareModeSet: custom?.hardwareModeSet });
-          const setResult = lib.ctlSetCurrentScaling(handle, gs.buf);
+          const { setResult } = setScalingWithCompatibility(lib, handle, { flag, custom });
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('scalingMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
@@ -3432,6 +3583,7 @@ export class IgclBackend {
           }
         }
       }
+      }
     }
     if (patch.displayScalingMethod !== null && patch.displayScalingMethod !== undefined) {
       // The renderer sends the method together with the coupled raw scaling
@@ -3454,13 +3606,12 @@ export class IgclBackend {
             ? {
               x: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.x))),
               y: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.y))),
-              hardwareModeSet: patch.scalingCustom.hardwareModeSet === true,
+              hardwareModeSet: true,
             } : null;
           if (patch.displayScalingMethod === 'custom' && !custom) {
             fail('displayScalingMethod', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
           } else {
-            const gs = encodeScalingSettings({ enable: true, scalingType: flag, customScalingX: custom?.x, customScalingY: custom?.y, hardwareModeSet: custom?.hardwareModeSet });
-            const setResult = lib.ctlSetCurrentScaling(handle, gs.buf);
+            const { setResult } = setScalingWithCompatibility(lib, handle, { flag, custom });
             if (setResult !== CTL_RESULT.SUCCESS) {
               fail('displayScalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
             } else {
@@ -3487,7 +3638,7 @@ export class IgclBackend {
       }
     }
 
-    if (patch.scalingMethod !== null && patch.scalingMethod !== undefined) {
+    if (patch.scalingMethod !== null && patch.scalingMethod !== undefined && !coupledRetroResult) {
       if (this._isUnavailable(lib.ctlGetSetRetroScaling)) {
         fail('scalingMethod', 'unavailable-symbol', 'the retro-scaling API is missing in the IGCL runtime');
       } else {
@@ -3511,8 +3662,11 @@ export class IgclBackend {
               message = `set succeeded but read-back failed (${describeResult(getResult)})`;
             } else {
               const got = decodeRetroScalingSettings(rb.buf);
-              readBackEqual = got.enable === requested.enabled && got.retroScalingType === type;
-              message = readBackEqual ? undefined : `read-back enabled=${got.enable} type=${got.retroScalingType} != requested enabled=${requested.enabled} type=${type}`;
+              readBackEqual = got.enable === requested.enabled
+                && (!requested.enabled || got.retroScalingType === type);
+              message = readBackEqual ? undefined : requested.enabled
+                ? `read-back enabled=${got.enable} type=${got.retroScalingType} != requested enabled=true type=${type}`
+                : `read-back enabled=${got.enable} != requested enabled=false`;
             }
             result.perControl.scalingMethod = {
               ok: readBackEqual,
@@ -3700,27 +3854,26 @@ export class IgclBackend {
         } else if (!globalVrrOptionsOf(detail).includes(requested)) {
           fail('globalVrrMode', 'unsupported', 'the requested global Variable Refresh Rate Mode is not advertised by this driver');
         } else {
-          const scope = selectGlobal3dScope(lib, dev.handle, features);
-          if (!scope.ok) {
-            fail('globalVrrMode', scope.errorCode, scope.message);
+          const set = globalVrrRequest(lib, dev.handle, features, { bSet: true, enumValue: igclValue });
+          if (set.scope && !set.scope.ok) {
+            fail('globalVrrMode', set.scope.errorCode, set.scope.message);
+          } else if (set.errorCode || set.result !== CTL_RESULT.SUCCESS) {
+            fail('globalVrrMode', set.errorCode ?? igclErrorCode(set.result) ?? 'io-failed', set.message ?? `IGCL ${describeResult(set.result)}; no VRR value was changed.`);
           } else {
-            const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue, applicationName: '' });
-            const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
-            if (setResult !== CTL_RESULT.SUCCESS) {
-              fail('globalVrrMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+            const read = globalVrrRequest(lib, dev.handle, features, { bSet: false });
+            if (read.scope && !read.scope.ok) {
+              fail('globalVrrMode', read.scope.errorCode, read.scope.message);
             } else {
-              const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false, applicationName: '' });
-              const readResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
-              const got = readResult === CTL_RESULT.SUCCESS
-                ? DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType]
+              const got = !read.errorCode && read.result === CTL_RESULT.SUCCESS
+                ? DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(read.request.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType]
                 : null;
               const readBackEqual = got === requested;
               result.perControl.globalVrrMode = {
                 ok: readBackEqual,
-                errorCode: readBackEqual ? undefined : 'io-failed',
-                message: readBackEqual ? undefined : `read-back ${got ?? (readResult === CTL_RESULT.SUCCESS ? 'unknown' : describeResult(readResult))} != requested ${requested}`,
+                errorCode: readBackEqual ? undefined : (read.errorCode ?? (read.result === CTL_RESULT.SUCCESS ? 'io-failed' : (igclErrorCode(read.result) ?? 'io-failed'))),
+                message: readBackEqual ? undefined : `read-back ${got ?? (read.errorCode ?? (read.result === CTL_RESULT.SUCCESS ? 'unknown' : describeResult(read.result)))} != requested ${requested}`,
                 readBackEqual,
-                silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+                silentNoop: set.result === CTL_RESULT.SUCCESS && !readBackEqual,
               };
               if (!readBackEqual) result.ok = false;
             }
@@ -4011,15 +4164,22 @@ export class IgclBackend {
         return;
       }
 
-      const pct = (p) => ({ Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: clampFanPct(p), units: FAN_UNITS_PERCENT });
+      const fanUnits = caps.fan.speedUnits === 'rpm' ? FAN_UNITS_RPM : FAN_UNITS_PERCENT;
+      const fanMaxRpm = Number(caps.fan.maxRpm);
+      const pct = (p) => ({
+        Size: koffi.sizeof('ctl_fan_speed_t'),
+        Version: 0,
+        speed: fanSpeedFromPct(p, fanUnits, fanMaxRpm),
+        units: fanUnits,
+      });
 
       // Read-back verification for fan applies (plan §5: every apply is
       // followed by read-back verification). `expected.curve` is an array of
       // { t, speedPct } of the ROUNDED points that were sent; `expected.fixedPct`
       // is the rounded fixed speed. The mode must match the requested canonical
       // mode; table points / fixed speed are compared (within tolerance) when
-      // the read-back reports PERCENT units - RPM values cannot be normalized
-      // without maxRPM, so mode match suffices there.
+      // the read-back reports the advertised native unit. RPM values are
+      // normalized with maxRPM before comparison.
       // M20-B (F2): `expected.flatPct` verifies a FLAT-table fixed write -
       // the canonical 'curve' mode (a flat table reads back mode 2) + every
       // table point's speed within 1 of flatPct (temperatures ignored - the
@@ -4047,10 +4207,10 @@ export class IgclBackend {
           const got = [];
           for (let i = 0; i < numPoints; i++) {
             const tp = cfg.speedTable.table[i];
-            got.push({ t: tp.temperature, speedPct: tp.speed.units === FAN_UNITS_PERCENT ? tp.speed.speed : null });
+            got.push({ t: tp.temperature, speedPct: fanPctFromSpeed(tp.speed.speed, tp.speed.units, fanMaxRpm) });
           }
           if (got.some((p) => p.speedPct === null)) {
-            return { ok: false, message: 'fan curve read-back is not in PERCENT units - cannot verify' };
+            return { ok: false, message: 'fan curve read-back uses an unsupported speed unit - cannot verify' };
           }
           if (got.length !== expected.curve.length) {
             return { ok: false, message: `fan curve read-back ${got.length} points != requested ${expected.curve.length}` };
@@ -4072,17 +4232,19 @@ export class IgclBackend {
           }
           for (let i = 0; i < numPoints; i++) {
             const tp = cfg.speedTable.table[i];
-            if (tp.speed.units !== FAN_UNITS_PERCENT) {
-              return { ok: false, message: 'flat-table read-back is not in PERCENT units - cannot verify' };
+            const speedPct = fanPctFromSpeed(tp.speed.speed, tp.speed.units, fanMaxRpm);
+            if (speedPct === null) {
+              return { ok: false, message: 'flat-table read-back uses an unsupported speed unit - cannot verify' };
             }
-            if (!nearlyEqual(tp.speed.speed, expected.flatPct, 1)) {
-              return { ok: false, message: `flat-table point ${i} read-back ${tp.speed.speed}% != requested ${expected.flatPct}%` };
+            if (!nearlyEqual(speedPct, expected.flatPct, 1)) {
+              return { ok: false, message: `flat-table point ${i} read-back ${speedPct}% != requested ${expected.flatPct}%` };
             }
           }
         }
-        if (expected.fixedPct !== undefined && cfg.speedFixed.units === FAN_UNITS_PERCENT) {
-          if (!nearlyEqual(cfg.speedFixed.speed, expected.fixedPct, 1)) {
-            return { ok: false, message: `fixed fan speed read-back ${cfg.speedFixed.speed}% != requested ${expected.fixedPct}%` };
+        if (expected.fixedPct !== undefined) {
+          const speedPct = fanPctFromSpeed(cfg.speedFixed.speed, cfg.speedFixed.units, fanMaxRpm);
+          if (speedPct === null || !nearlyEqual(speedPct, expected.fixedPct, 1)) {
+            return { ok: false, message: `fixed fan speed read-back ${speedPct ?? 'unknown'}% != requested ${expected.fixedPct}%` };
           }
         }
         return { ok: true };
@@ -4112,7 +4274,7 @@ export class IgclBackend {
           const setResult = lib.ctlFanSetSpeedTableMode(fan, tableObj);
           if (setResult === CTL_RESULT.SUCCESS) {
             const v = verifyFanConfig(fan, 'curve', {
-              curve: table.map((p) => ({ t: p.temperature, speedPct: p.speed.speed })),
+              curve: table.map((p, i) => ({ t: p.temperature, speedPct: normalizeFanCurve(settings.fanCurve, caps.fan.maxCurvePoints)[i].speedPct })),
             });
             result.perControl.fanCurve = { ok: v.ok, readBackEqual: v.ok, errorCode: v.ok ? undefined : 'io-failed', message: v.message };
             curveOk = v.ok;
@@ -4136,7 +4298,7 @@ export class IgclBackend {
         } else {
           const setResult = lib.ctlFanSetFixedSpeedMode(fan, fixed);
           if (setResult === CTL_RESULT.SUCCESS) {
-            const v = verifyFanConfig(fan, 'fixed', { fixedPct: fixed.speed });
+            const v = verifyFanConfig(fan, 'fixed', { fixedPct: clampFanPct(settings.fixedFanPct) });
             result.perControl.fixedFanPct = { ok: v.ok, readBackEqual: v.ok, errorCode: v.ok ? undefined : 'io-failed', message: v.message };
             fixedOk = v.ok;
             if (!v.ok) result.ok = false;
@@ -4159,12 +4321,12 @@ export class IgclBackend {
               Size: koffi.sizeof('ctl_fan_temp_speed_t'),
               Version: 0,
               temperature: t,
-              speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fixed.speed, units: FAN_UNITS_PERCENT },
+              speed: { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fixed.speed, units: fanUnits },
             }));
             const tableObj = { Size: koffi.sizeof('ctl_fan_speed_table_t'), Version: 0, numPoints: flatTable.length, table: flatTable };
             const setResult = lib.ctlFanSetSpeedTableMode(fan, tableObj);
             if (setResult === CTL_RESULT.SUCCESS) {
-              const v = verifyFanConfig(fan, 'curve', { flatPct: fixed.speed });
+              const v = verifyFanConfig(fan, 'curve', { flatPct: clampFanPct(settings.fixedFanPct) });
               result.perControl.fixedFanPct = { ok: v.ok, readBackEqual: v.ok, errorCode: v.ok ? undefined : 'io-failed', message: v.message };
               fixedOk = v.ok;
               if (!v.ok) result.ok = false;

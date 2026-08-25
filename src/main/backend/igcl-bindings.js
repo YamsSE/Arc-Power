@@ -1578,13 +1578,14 @@ export function decodeDisplaySettings(buf) {
  * value (1=IDENTITY 2=CENTERED 4=STRETCHED 8=ASPECT_RATIO_CENTERED_MAX
  * 16=CUSTOM), not an enum index.
  * @param {{ enable?: boolean, scalingType?: number, customScalingX?: number,
- *   customScalingY?: number, hardwareModeSet?: boolean, preferredScalingType?: number }} o
+ *   customScalingY?: number, hardwareModeSet?: boolean, preferredScalingType?: number,
+ *   version?: number }} o
  * @returns {{ buf: unknown }}
  */
-export function encodeScalingSettings({ enable = false, scalingType, customScalingX, customScalingY, hardwareModeSet, preferredScalingType } = {}) {
+export function encodeScalingSettings({ enable = false, scalingType, customScalingX, customScalingY, hardwareModeSet, preferredScalingType, version = 0 } = {}) {
   const buf = koffi.alloc('uint8', koffi.sizeof('ctl_scaling_settings_t') + DISPLAY_HEADROOM);
   koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_scaling_settings_t'));
-  koffi.encode(buf, 4, 'uint8', 0);
+  koffi.encode(buf, 4, 'uint8', Number.isInteger(version) ? Math.max(0, Math.min(255, version)) : 0);
   koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'Enable'), 'bool', enable === true);
   if (Number.isInteger(scalingType)) {
     koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'ScalingType'), 'uint32', scalingType);

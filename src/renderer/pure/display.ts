@@ -43,7 +43,10 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
     case 'displayScalingMethod': return display.supportedOptions.scalingModes.includes('custom');
     case 'scalingMethod': return display.scalingMethod?.controllable === true && display.supportedOptions.scalingMethods.length > 0;
     case 'vrrMode': return display.vrrMode?.controllable === true && (display.supportedOptions.vrrModes ?? []).length > 0;
-    case 'globalVrrMode': return display.globalVrrMode?.controllable === true && (display.supportedOptions.globalVrrModes ?? []).length > 0;
+    // Keep the IGS choices visible even when the driver refuses a read-back.
+    // The apply path still reports the native refusal; hiding the control here
+    // made a transient read-back failure look like the feature disappeared.
+    case 'globalVrrMode': return display.globalVrrMode?.supported === true && (display.supportedOptions.globalVrrModes ?? []).length > 0;
     case 'variableRefreshRate': return display.variableRefreshRate?.controllable === true && display.variableRefreshRate.supported === true;
     case 'scalingCustom': return display.supportedOptions.scalingModes.includes('custom');
     case 'wireFormat': return display.supportedOptions.wireFormats.length > 0 && display.supportedOptions.bpcDepths.length > 0;
@@ -103,8 +106,9 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   if (isDisplayControlSupported(display, 'vrrMode') && display.vrrMode?.value) {
     out.vrrMode = display.vrrMode.value;
   }
-  if (isDisplayControlSupported(display, 'globalVrrMode') && display.globalVrrMode?.value) {
-    out.globalVrrMode = display.globalVrrMode.value;
+  if (isDisplayControlSupported(display, 'globalVrrMode')) {
+    out.globalVrrMode = (display.globalVrrMode?.value
+      ?? display.supportedOptions.globalVrrModes?.[0]) as DisplaySettings['globalVrrMode'];
   }
   if (isDisplayControlSupported(display, 'variableRefreshRate') && display.variableRefreshRate?.value !== null && display.variableRefreshRate?.value !== undefined) {
     out.variableRefreshRate = display.variableRefreshRate.value;
