@@ -654,6 +654,21 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
     async getCurrentSettings(id) { const d = await route(id); return d.synthetic ? nullDeviceState() : backend.getCurrentSettings(d.backendId); },
     async getGraphicsSettings(id) { const d = await route(id); return d.synthetic ? { supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false }, supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] }, frameLimitRange: null, values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null } } : backend.getGraphicsSettings(d.backendId); },
     async setGraphicsSettings(id, settings) { const d = await route(id); return d.synthetic ? unsupportedResult(settings) : backend.setGraphicsSettings((await writeTarget(id)).backendId, settings); },
+    async getGameProfileCapabilities(id) {
+      const d = await route(id);
+      if (d.synthetic) return { enduranceGaming: false, reason: 'The selected adapter is read-only.' };
+      return backend.getGameProfileCapabilities?.(d.backendId) ?? { enduranceGaming: false, reason: 'Game Profile driver capabilities are unavailable.' };
+    },
+    async setGameProfileSettings(id, exePath, settings, enabled = true) {
+      const d = await writeTarget(id);
+      if (typeof backend.setGameProfileSettings === 'function') {
+        return backend.setGameProfileSettings(d.backendId, exePath, settings, enabled);
+      }
+      if (enabled !== true) {
+        return { ok: false, perControl: { profileScope: { ok: false, errorCode: 'unsupported', message: 'This driver runtime cannot restore the executable to global settings.' } } };
+      }
+      return backend.setGraphicsSettings(d.backendId, settings, exePath);
+    },
     async getDisplaySettings(id) {
       const d = await route(id);
       if (d.synthetic) return { deviceKey: d.deviceKey ?? null, adapterName: d.name ?? null, displays: [] };

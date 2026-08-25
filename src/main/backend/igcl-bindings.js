@@ -1249,26 +1249,30 @@ export function decode3dFeatureDetails(buf, index) {
 
 /**
  * Build a raw ctl_3d_feature_getset_t buffer (v290, probe-verified).
- * ApplicationName = a zeroed 1-byte buffer ("" - the GLOBAL settings scope);
- * the returned object holds it so it stays alive across the driver call.
+ * ApplicationName is a null-terminated UTF-8 executable name. An empty name
+ * selects the GLOBAL settings scope; a non-empty name selects the driver's
+ * per-application profile for that executable. The returned object holds the
+ * backing buffer so it stays alive across the driver call.
  * @param {{
  *   featureType: number, valueType: number, bSet: boolean,
  *   enumValue?: number,   // ENUM: Value.EnableType (union offset 32)
  *   intEnable?: boolean,  // INT32/UINT32: Value.Enable (offset 32)
  *   intValue?: number,    // INT32/UINT32: Value.Value (offset 36)
+ *   applicationName?: string, // executable name, or "" for global scope
  * }} o
  * @returns {{ buf: unknown, appName: unknown }}
  */
-export function encode3dFeatureGetset({ featureType, valueType, bSet, enumValue, intEnable, intValue }) {
-  const appName = koffi.alloc('uint8', 1);
-  koffi.encode(appName, 0, 'uint8', 0);
+export function encode3dFeatureGetset({ featureType, valueType, bSet, enumValue, intEnable, intValue, applicationName = '' }) {
+  const encodedName = Buffer.from(`${typeof applicationName === 'string' ? applicationName : ''}\0`, 'utf8');
+  const appName = koffi.alloc('uint8', Math.max(1, encodedName.length));
+  for (let i = 0; i < encodedName.length; i += 1) koffi.encode(appName, i, 'uint8', encodedName[i]);
   const buf = koffi.alloc('uint8', koffi.sizeof('ctl_3d_feature_getset_t'));
   const valueOff = koffi.offsetof('ctl_3d_feature_getset_t', 'Value');
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'Size'), 'uint32', koffi.sizeof('ctl_3d_feature_getset_t'));
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'Version'), 'uint8', 0);
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'FeatureType'), 'int32', featureType);
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'ApplicationName'), 'void*', koffi.address(appName));
-  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'ApplicationNameLength'), 'int8', 0);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'ApplicationNameLength'), 'int8', Math.min(127, Math.max(0, encodedName.length - 1)));
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'bSet'), 'bool', bSet === true);
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'ValueType'), 'int32', valueType);
   if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
@@ -1490,16 +1494,29 @@ export function decodeDisplaySettings(buf) {
  * Enable@8 transcriptions were wrong, live-verified). ScalingType is a FLAG
  * value (1=IDENTITY 2=CENTERED 4=STRETCHED 8=ASPECT_RATIO_CENTERED_MAX
  * 16=CUSTOM), not an enum index.
- * @param {{ enable?: boolean, scalingType?: number }} o
+ * @param {{ enable?: boolean, scalingType?: number, customScalingX?: number,
+ *   customScalingY?: number, hardwareModeSet?: boolean, preferredScalingType?: number }} o
  * @returns {{ buf: unknown }}
  */
-export function encodeScalingSettings({ enable = false, scalingType } = {}) {
+export function encodeScalingSettings({ enable = false, scalingType, customScalingX, customScalingY, hardwareModeSet, preferredScalingType } = {}) {
   const buf = koffi.alloc('uint8', koffi.sizeof('ctl_scaling_settings_t') + DISPLAY_HEADROOM);
   koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_scaling_settings_t'));
   koffi.encode(buf, 4, 'uint8', 0);
   koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'Enable'), 'bool', enable === true);
   if (Number.isInteger(scalingType)) {
     koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'ScalingType'), 'uint32', scalingType);
+  }
+  if (Number.isInteger(customScalingX)) {
+    koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'CustomScalingX'), 'uint32', customScalingX);
+  }
+  if (Number.isInteger(customScalingY)) {
+    koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'CustomScalingY'), 'uint32', customScalingY);
+  }
+  if (typeof hardwareModeSet === 'boolean') {
+    koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'HardwareModeSet'), 'bool', hardwareModeSet);
+  }
+  if (Number.isInteger(preferredScalingType)) {
+    koffi.encode(buf, koffi.offsetof('ctl_scaling_settings_t', 'PreferredScalingType'), 'uint32', preferredScalingType);
   }
   return { buf };
 }

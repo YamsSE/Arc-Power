@@ -64,6 +64,7 @@
  * shared by the page / IPC / backends; the IGCL numeric enum side stays
  * inside the igcl backend.
  * @typedef {{
+ *   enduranceGaming?: 'off' | 'on',
  *   frameGenOverride?: 'app-choice' | '2x' | '3x' | '4x',
  *   flipMode?: 'application-default' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame',
  *   frameLimit?: { enabled: boolean, value: number },
@@ -270,7 +271,9 @@
  *   // shape with per-feature results (success / igcl error code / refusal).
  *   // NO OC waiver applies to 3D features.
  *   getGraphicsSettings(deviceId: number): Promise<GraphicsState>,
- *   setGraphicsSettings(deviceId: number, s: GraphicsSettings): Promise<ApplyResult>,
+ *   setGraphicsSettings(deviceId: number, s: GraphicsSettings, applicationName?: string): Promise<ApplyResult>,
+ *   getGameProfileCapabilities(deviceId: number): Promise<{ enduranceGaming: boolean, reason?: string|null }>,
+ *   setGameProfileSettings(deviceId: number, executablePath: string, s: GraphicsSettings, enabled?: boolean): Promise<ApplyResult>,
  *   // M10b (the Graphics "Display" view): the display-output surface
  *   // (ctlEnumerateDisplayOutputs + ctlGetDisplayProperties + the wire-
  *   // format / display-settings / scaling / Arc Sync reads). getDisplay-
@@ -329,6 +332,7 @@ export const DISPLAY_BPC_OPTIONS = [6, 8, 10, 12];
 export const DISPLAY_SCALING_MODE_OPTIONS = ['identity', 'centered', 'stretched', 'aspect-ratio-centered-max', 'custom'];
 export const DISPLAY_RETRO_SCALING_METHOD_OPTIONS = ['integer', 'nearest-neighbour'];
 export const DISPLAY_ARC_SYNC_PROFILE_OPTIONS = ['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'];
+export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS = ['fullscreen', 'fullscreen-windowed', 'disabled'];
 
 /**
  * The honest modeset-flash note the scaling apply carries (the M10b probe

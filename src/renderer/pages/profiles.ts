@@ -247,6 +247,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let associations: GameAssociation[] = [];
   let gameCatalog: GameCatalogEntry[] = [];
   let gameSettings: GameSettingsRecord[] = [];
+  let gameProfileCapabilities: { enduranceGaming: boolean; reason?: string | null } = { enduranceGaming: false };
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
   let selectedProfileId: string | null = null;
@@ -258,6 +259,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let showFilter = 'all';
   let sortMode = 'alphabetical';
   let cardMode: 'grid' | 'list' = 'grid';
+  try { gameProfileCapabilities = await api.gameProfileCapabilities(s.deviceId); } catch { /* unsupported surface stays hidden */ }
   try {
     // The optional per-game sidecar must never gate the legacy profile page.
     // Keep the independent profile/startup calls usable even when the
@@ -315,6 +317,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const renderGameDetail = (game: GameCatalogEntry): void => {
     const current = gameSettingFor(game.exePath);
     const graphics: GameProfileGraphics = current?.graphics ?? {};
+    const endurance = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.enduranceGaming ?? 'off', disabled: !gameProfileCapabilities.enduranceGaming }, [
+      el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }),
+    ]) as HTMLSelectElement;
     const frame = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.flipMode ?? 'application-default' }, [
       el('option', { value: 'application-default', text: 'Application Choice' }), el('option', { value: 'vsync-on', text: 'VSync On' }), el('option', { value: 'vsync-off', text: 'VSync Off' }), el('option', { value: 'smooth-sync', text: 'Smooth Sync' }), el('option', { value: 'speed-frame', text: 'Speed / Frame' }),
     ]) as HTMLSelectElement;
@@ -327,15 +332,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const detail = el('div', { class: 'profile-detail game-profile-detail' }, [
       el('div', { class: 'profile-detail-head' }, [el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }), el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
       el('div', { class: 'profile-app-badge' }, [artworkTile(game.artwork, game.displayName, 'profile-artwork-small'), el('span', { text: `${game.displayName}  ·  ${game.exePath}` })]),
-      el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled !== false, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Keep this game-specific setting enabled for the installed game.' })]),
-      el('section', { class: 'profile-settings-section' }, [
-        el('h3', { class: 'profile-section-title', text: 'Game Profile Settings' }),
-        settingRow('Frame Synchronization', 'Saved independently for this executable.', frame),
+      el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled === true, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Game profiles start disabled; enable this only when this executable should use its settings.' })]),
+      ...(gameProfileCapabilities.enduranceGaming ? [el('section', { class: 'profile-settings-section game-igs-settings' }, [
+        el('h3', { class: 'profile-section-title', text: 'General' }),
+        settingRow('Endurance Gaming', 'Extend gameplay on battery with platform and frame rate tuning for supported games.', endurance),
+      ])] : []),
+      el('section', { class: 'profile-settings-section game-igs-settings' }, [
+        el('h3', { class: 'profile-section-title', text: 'Frame Delivery' }),
+        settingRow('Frame Synchronization', 'Sets the method used for vertically syncing the rendered image to the display.', frame),
         settingRow('FPS Limiter', 'Saved independently for this executable.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
-        settingRow('Low Latency', 'Saved independently for this executable.', latency),
+        settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
-      el('p', { class: 'profile-capability-note', text: 'These values are persisted per executable. Driver per-app IGCL application is not available yet, so no global graphics setting is changed.' }),
+      el('p', { class: 'profile-capability-note', text: gameProfileCapabilities.enduranceGaming ? 'When Use Profile is enabled, these values are applied to this executable through the driver per-application profile and override the global values for it.' : 'When Use Profile is enabled, the available values are applied to this executable through the driver per-application profile and override the global values for it.' }),
     ]);
+    endurance.addEventListener('change', () => save({ graphics: { enduranceGaming: endurance.value as 'off' | 'on' } }));
     frame.addEventListener('change', () => save({ graphics: { flipMode: frame.value as FlipMode } }));
     latency.addEventListener('change', () => save({ graphics: { lowLatency: latency.value as LowLatency } }));
     fps.addEventListener('change', () => save({ graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));
@@ -536,7 +546,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       associationPicker,
       sidecarWarning ? el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: sidecarWarning }) : null,
       el('section', { class: 'card profile-use-card' }, [
-        el('label', { class: 'profile-use-toggle' }, [el('input', { type: 'checkbox', checked: selected?.enabled !== false, disabled: !selected || !sidecarAvailable, onchange: (ev: Event) => void onGameSave(p, selected, { enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]),
+        el('label', { class: 'profile-use-toggle' }, [el('input', { type: 'checkbox', checked: selected?.enabled === true, disabled: !selected || !sidecarAvailable, onchange: (ev: Event) => void onGameSave(p, selected, { enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]),
         el('span', { class: 'card-note', text: selected ? 'Controls whether this association is enabled when the application is detected.' : 'Associate a scanned game/app to enable per-game controls.' }),
       ]),
       el('section', { class: 'profile-settings-section' }, [
@@ -616,7 +626,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           graphics: patch.graphics ? { ...(current?.graphics ?? {}), ...patch.graphics } : (current?.graphics ?? {}),
         });
         gameSettings = [...gameSettings.filter((item) => item.exePath !== game.exePath), result.settings];
-        toast('success', 'Game settings saved', 'Saved independently for this executable.');
+        if (result.apply && result.apply.ok === false) {
+          toast('warn', 'Game settings saved, driver apply failed', result.apply.message ?? 'The per-game sidecar was saved, but the driver rejected one or more per-application settings.');
+        } else if (result.apply?.skipped === true) {
+          toast('info', 'Game settings saved', result.apply.message ?? 'Enable Use Profile to apply these settings to the executable.');
+        } else {
+          toast('success', 'Game settings applied', 'These settings were saved and applied to this executable.');
+        }
         if (selectedGameExePath === game.exePath) renderGameDetail(game);
       } catch (err) {
         toast('error', 'Game settings save failed', err instanceof Error ? err.message : String(err));

@@ -92,12 +92,9 @@ const PAGE_NOTE = 'These settings are applied via the Intel driver\'s control in
 // M10b: the Display view's honest notes (plan 2.4 - the IGS "Display" tab
 // mirror; the M10b checkpoint-1 probe recorded what this driver exposes).
 const DISPLAY_SCALING_NOTE = 'Changing the scaling mode causes a brief screen flash (a physical modeset).';
-const DISPLAY_SCALING_METHOD_NOTE = 'Retro scaling changes can briefly modeset the display; the control is enabled only after driver read-back confirms support.';
-// The VRR fields render only when the driver reports a VRR surface - this
-// driver reports none (the DisplayState interface has no VRR fields), so
-// the honest note is unconditional. The plain VRR on/off is OS-controlled
-// in Windows (plan 5 - out of scope).
-const DISPLAY_VRR_NOTE = 'Variable refresh rate is OS-controlled in Windows; the driver does not expose a VRR-mode surface here.';
+const DISPLAY_SCALING_METHOD_NOTE = 'Custom scaling exposes the driver percentages used by the display path.';
+const DISPLAY_GLOBAL_VRR_NOTE = 'Sets the default Variable Refresh Rate mode globally across all displays.';
+const DISPLAY_VRR_NOTE = 'Enables the display to present frames at a variable rate instead of a fixed rate.';
 const DISPLAY_SLIDERS_NOTE = 'These values use the driver’s Standard Color Correction surface and are verified by read-back after every change.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The wire-format set is a silent no-op on this driver build - the driver does not accept wire-format changes (the read-back never changes).';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
@@ -139,6 +136,11 @@ const IGS_SCALING_METHOD_OPTIONS = ['maintain-display-scaling', 'custom'];
 const IGS_SCALING_METHOD_LABELS: Record<string, string> = {
   'maintain-display-scaling': 'Maintain Display Scaling',
   custom: 'Custom',
+};
+const GLOBAL_VRR_LABELS: Record<string, string> = {
+  fullscreen: 'Fullscreen',
+  'fullscreen-windowed': 'Fullscreen & Windowed',
+  disabled: 'Disabled',
 };
 const RETRO_SCALING_LABELS: Record<string, string> = {
   integer: 'Integer Scaling',
@@ -273,8 +275,24 @@ function rawScalingForView(display: DisplayState['displays'][number], view: stri
   if (view === 'retro-scaling') {
     return display.scalingMode && supported.includes(display.scalingMode) ? display.scalingMode as DisplaySettings['scalingMode'] : (supported[0] as DisplaySettings['scalingMode']);
   }
-  const gpuMode = ['stretched', 'centered', 'aspect-ratio-centered-max', 'custom'].find((mode) => supported.includes(mode));
+  // The A770 exposes only the raw CUSTOM bit as the writable GPU-scaling
+  // surface. Prefer it so the IGS GPU Scaling choice round-trips instead of
+  // sending the unsupported STRETCHED flag.
+  const gpuMode = ['custom', 'stretched', 'aspect-ratio-centered-max', 'centered'].find((mode) => supported.includes(mode));
   return (gpuMode ?? supported[0]) as DisplaySettings['scalingMode'];
+}
+
+function customScalingOf(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['scalingCustom']> {
+  const details = display.scalingDetails;
+  return {
+    x: Number.isFinite(details?.customX) ? Math.max(0, Math.min(100, details!.customX)) : 100,
+    y: Number.isFinite(details?.customY) ? Math.max(0, Math.min(100, details!.customY)) : 100,
+    hardwareModeSet: details?.hardwareModeSet === true,
+  };
+}
+
+function sameCustomScaling(a: DisplaySettings['scalingCustom'] | null | undefined, b: DisplaySettings['scalingCustom'] | null | undefined): boolean {
+  return !!a && !!b && a.x === b.x && a.y === b.y && a.hardwareModeSet === b.hardwareModeSet;
 }
 
 /** M9: the shared chip state machine (pure/chip.ts) drives the per-card
@@ -326,7 +344,9 @@ function refreshDisplayChip(key: string) {
   const driverValue = key === 'scalingMode' ? scalingViewOf(display)
     : key === 'displayScalingMethod' ? scalingMethodViewOf(display)
       : displayDriverValue(display, key);
-  const state = chipState(key, { [key]: viewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
+  const customDirty = key === 'displayScalingMethod' && displayScalingMethodDraft === 'custom'
+    && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display!));
+  const state = customDirty ? 'dirty' : chipState(key, { [key]: viewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
     ? isDisplayControlSupported(display, 'scalingMode')
     : isDisplayControlSupported(display, key));
   chip.hidden = state !== 'applied';
@@ -791,9 +811,13 @@ function buildDisplayDropdownRow(
   const display = selectedDisplay();
   const supported = display !== null && isDisplayControlSupported(display, key);
   if (!supported || options.length === 0) {
+    const capability = key === 'globalVrrMode' ? display?.globalVrrMode : key === 'vrrMode' ? display?.vrrMode : undefined;
+    const allowed = key === 'globalVrrMode' && options.length > 0
+      ? `IGS options: ${options.map((option) => labels[option] ?? option).join(', ')}. `
+      : '';
     return el('div', { class: 'display-control display-control-readonly', dataset: { control: key } }, [
       el('h3', { class: 'display-control-title', text: title }),
-      el('p', { class: 'card-note', text: key === 'vrrMode' ? (display?.vrrMode?.reason ?? 'Not supported on this GPU.') : 'Not supported on this GPU.' }),
+      el('p', { class: 'card-note', text: `${allowed}${capability?.reason ?? 'Not supported on this GPU.'}` }),
     ]);
   }
   const current = (displayDraft as Record<string, unknown>)[key] as string;
@@ -864,11 +888,18 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'scalingMode' },
     onchange: (e: Event) => {
       displayScalingViewDraft = (e.target as HTMLSelectElement).value;
-      displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
-      displayDraft.scalingMethod = {
-        enabled: displayScalingViewDraft === 'retro-scaling',
-        method: display.scalingMethod?.value?.method ?? 'integer',
-      };
+      const raw = rawScalingForView(display!, displayScalingViewDraft);
+      displayDraft.scalingMode = raw;
+      if (raw === 'custom') displayDraft.scalingCustom = customScalingOf(display!);
+      else delete displayDraft.scalingCustom;
+      if (displayScalingViewDraft === 'retro-scaling' || display.scalingMethod?.value?.enabled === true) {
+        displayDraft.scalingMethod = {
+          enabled: displayScalingViewDraft === 'retro-scaling',
+          method: display.scalingMethod?.value?.method ?? 'integer',
+        };
+      } else {
+        delete displayDraft.scalingMethod;
+      }
       refreshDisplayChip('scalingMode');
     },
   }, IGS_SCALING_MODE_OPTIONS.map((option) => el('option', {
@@ -887,7 +918,12 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
         displayScalingViewDraft = 'display-scaling';
         displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
-        displayDraft.scalingMethod = { enabled: false, method: display.scalingMethod?.value?.method ?? 'integer' };
+        delete displayDraft.scalingCustom;
+        if (display.scalingMethod?.value?.enabled === true) {
+          displayDraft.scalingMethod = { enabled: false, method: display.scalingMethod.value.method };
+        } else {
+          delete displayDraft.scalingMethod;
+        }
         select.value = displayScalingViewDraft;
         refreshDisplayChip('scalingMode');
       } }),
@@ -916,21 +952,37 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
     onchange: (e: Event) => {
       displayScalingMethodDraft = (e.target as HTMLSelectElement).value;
       displayDraft.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
+      if (displayScalingMethodDraft === 'custom') displayDraft.scalingCustom = customScalingOf(display!);
+      else delete displayDraft.scalingCustom;
+      customX.hidden = displayScalingMethodDraft !== 'custom';
+      customY.hidden = displayScalingMethodDraft !== 'custom';
       refreshDisplayChip('displayScalingMethod');
     },
   }, IGS_SCALING_METHOD_OPTIONS.map((option) => el('option', { value: option, text: IGS_SCALING_METHOD_LABELS[option], selected: option === displayScalingMethodDraft })));
   selectNodes.set('displayScalingMethod', methodSelect);
+  const custom = customScalingOf(display!);
+  const customX = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.x, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom horizontal scaling' }) as HTMLInputElement;
+  const customY = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.y, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom vertical scaling' }) as HTMLInputElement;
+  const setCustom = (): void => {
+    displayDraft.scalingCustom = { x: Math.max(0, Math.min(100, Number(customX.value))), y: Math.max(0, Math.min(100, Number(customY.value))), hardwareModeSet: custom.hardwareModeSet };
+    refreshDisplayChip('displayScalingMethod');
+  };
+  customX.addEventListener('change', setCustom);
+  customY.addEventListener('change', setCustom);
   const row = el('div', { class: 'display-control', dataset: { control: 'displayScalingMethod' } }, [
     el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
     el('p', { class: 'card-note', text: DISPLAY_SCALING_METHOD_NOTE }),
-    el('div', { class: 'graphics-control' }, [methodSelect]),
+    el('div', { class: 'graphics-control display-custom-scaling-row' }, [methodSelect, customX, customY]),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'displayScalingMethod'); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
         displayScalingMethodDraft = 'maintain-display-scaling';
         displayDraft.displayScalingMethod = 'maintain-display-scaling';
+        delete displayDraft.scalingCustom;
         methodSelect.value = displayScalingMethodDraft;
+        customX.hidden = true;
+        customY.hidden = true;
         refreshDisplayChip('displayScalingMethod');
       } }),
     ]),
@@ -1174,18 +1226,18 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     el('h2', { class: 'card-title', text: 'General' }),
     buildDisplayDropdownRow(ctx, 'scalingMode', 'Scaling Mode', DISPLAY_SCALING_NOTE, display.supportedOptions.scalingModes, SCALING_MODE_LABELS),
     buildDisplayScalingMethodRow(ctx),
-    buildDisplayDropdownRow(ctx, 'vrrMode', 'Variable Refresh Rate Mode', DISPLAY_VRR_NOTE, display.supportedOptions.vrrModes ?? [], ARC_SYNC_LABELS),
+    buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),
     buildDisplayReadonlyRow('Variable Refresh Rate', display.variableRefreshRate, DISPLAY_VRR_NOTE),
   ]);
 
   const color = el('section', { class: 'card display-group', dataset: { displayGroup: 'color' } }, [
     el('h2', { class: 'card-title', text: 'Color' }),
     buildDisplaySlider(ctx, 'hue', 'Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
-    buildDisplaySlider(ctx, 'saturation', 'Saturation', display.saturation, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'saturation', 'Saturation', display.saturation, 0, 10, DISPLAY_SLIDERS_NOTE),
     buildDisplayModeRow('Brightness', 'Basic', DISPLAY_SLIDERS_NOTE),
-    buildDisplaySlider(ctx, 'brightness', 'All', display.brightness, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'brightness', 'All', display.brightness, -100, 100, DISPLAY_SLIDERS_NOTE),
     buildDisplayModeRow('Contrast', 'Basic', DISPLAY_SLIDERS_NOTE),
-    buildDisplaySlider(ctx, 'contrast', 'All', display.contrast, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'contrast', 'All', display.contrast, 0, 10, DISPLAY_SLIDERS_NOTE),
     buildDisplayDropdownRow(ctx, 'quantizationRange', 'Quantization Range', 'The color-quantization range of the display output.', display.supportedOptions.quantizationRanges, QUANTIZATION_LABELS),
     buildWireFormatRow(ctx),
   ]);
@@ -1308,17 +1360,24 @@ async function applyDisplay(ctx: PageContext, only: string) {
   let payload: DisplaySettings = {};
   if (only === 'scalingMode') {
     if (displayScalingViewDraft !== scalingViewOf(display)) {
+      const raw = rawScalingForView(display, displayScalingViewDraft);
       payload = {
-        scalingMode: rawScalingForView(display, displayScalingViewDraft),
-        scalingMethod: {
+        scalingMode: raw,
+      };
+      if (raw === 'custom') payload.scalingCustom = customScalingOf(display);
+      if (displayScalingViewDraft === 'retro-scaling' || display.scalingMethod?.value?.enabled === true) {
+        payload.scalingMethod = {
           enabled: displayScalingViewDraft === 'retro-scaling',
           method: display.scalingMethod?.value?.method ?? 'integer',
-        },
-      };
+        };
+      }
     }
   } else if (only === 'displayScalingMethod') {
-    if (displayScalingMethodDraft !== scalingMethodViewOf(display)) {
+    const customDirty = displayScalingMethodDraft === 'custom'
+      && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display));
+    if (displayScalingMethodDraft !== scalingMethodViewOf(display) || customDirty) {
       payload = { displayScalingMethod: displayScalingMethodDraft as DisplaySettings['displayScalingMethod'] };
+      if (displayScalingMethodDraft === 'custom') payload.scalingCustom = displayDraft.scalingCustom ?? customScalingOf(display);
     }
   } else if (isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)) {
     payload = { [only]: (displayDraft as Record<string, unknown>)[only] } as unknown as DisplaySettings;

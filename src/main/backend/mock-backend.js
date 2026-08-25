@@ -23,14 +23,15 @@
 // table (the same numPoints>=2 + all-equal + PERCENT derivation the real
 // backend runs) - the mock round trip the ui-verify knob variant pins.
 
-import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, sortDevicesDiscreteFirst, deviceHardwareKey } from './units.js';
+import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice } from './units.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
 import {
   DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS,
   DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_RETRO_SCALING_METHOD_OPTIONS,
-  DISPLAY_ARC_SYNC_PROFILE_OPTIONS, DISPLAY_SCALING_FLASH_WARNING,
+  DISPLAY_ARC_SYNC_PROFILE_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS,
+  DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch) - the SAME decode
 // the real backend runs in getCapabilities (the renderer TS imports fine
@@ -114,7 +115,9 @@ const DISPLAY_FIXTURE = Object.freeze({
     colorFormat: 'RGB',
     quantizationRange: 'default',
     scalingMode: 'identity',
+    scalingDetails: { customX: 100, customY: 100, hardwareModeSet: false, preferredScalingType: 'identity' },
     scalingMethod: displayCapability({ enabled: true, method: 'integer' }, true, true, null, 'mock-fixture'),
+    globalVrrMode: displayCapability('fullscreen', true, true, null, 'mock-fixture'),
     vrrMode: displayCapability('recommended', true, true, null, 'mock-fixture'),
     variableRefreshRate: displayCapability(true, true, false, 'VRR toggle is controlled by the display/OS path', 'mock-fixture'),
     vrrCurrentRange: displayCapability('90 Hz - 180 Hz', true, false, 'Read-only fixture capability', 'mock-fixture'),
@@ -129,15 +132,16 @@ const DISPLAY_FIXTURE = Object.freeze({
     supportedOptions: {
       scalingModes: [...DISPLAY_SCALING_MODE_OPTIONS],
       scalingMethods: [...DISPLAY_RETRO_SCALING_METHOD_OPTIONS],
+      globalVrrModes: [...DISPLAY_GLOBAL_VRR_MODE_OPTIONS],
       vrrModes: [...DISPLAY_ARC_SYNC_PROFILE_OPTIONS],
       wireFormats: [...DISPLAY_WIRE_FORMAT_OPTIONS],
       bpcDepths: [...DISPLAY_BPC_OPTIONS].filter((depth) => depth === 8 || depth === 10),
       quantizationRanges: [...DISPLAY_QUANTIZATION_OPTIONS],
       colorRanges: {
         hue: { min: -180, max: 180, step: 1, default: 0 },
-        saturation: { min: 0, max: 100, step: 1, default: 50 },
-        brightness: { min: 0, max: 100, step: 1, default: 50 },
-        contrast: { min: 0, max: 100, step: 1, default: 50 },
+        saturation: { min: 0, max: 10, step: 0.1, default: 1 },
+        brightness: { min: -100, max: 100, step: 1, default: 0 },
+        contrast: { min: 0, max: 10, step: 0.1, default: 1 },
       },
     },
     flags: { active: true, attached: true, dongleConnected: false, ditheringEnabled: false },
@@ -223,6 +227,7 @@ export class MockBackend {
    *   displayArcSyncSilentNoop?: boolean, // setter succeeds, read-back unchanged
    *   displayRetroReadbackFailure?: boolean, // setter succeeds, read-back fails
    *   displayArcSyncReadbackFailure?: boolean, // setter succeeds, read-back fails
+   *   enduranceGamingSupported?: boolean, // expose Endurance on the mock iGPU
    *   laptopInfoOf?: () => object|null,  // M17c: the laptop sysinfo provider
    *                                      // (the real backend's vramBytesOf-style
    *                                      // injection - the caps AIB decode's
@@ -297,6 +302,8 @@ export class MockBackend {
     this._displayArcSyncSilentNoop = opts.displayArcSyncSilentNoop === true;
     this._displayRetroReadbackFailure = opts.displayRetroReadbackFailure === true;
     this._displayArcSyncReadbackFailure = opts.displayArcSyncReadbackFailure === true;
+    this._enduranceGamingSupported = opts.enduranceGamingSupported === true || process.env.RID_MOCK_ENDURANCE === '1';
+    this._gameGraphics = new Map();
     // M17c: the laptop sysinfo provider (the caps AIB decode's laptop
     // branch - mirrors the real backend's injection).
     this._laptopInfoOf = typeof opts.laptopInfoOf === 'function' ? opts.laptopInfoOf : null;
@@ -1005,6 +1012,61 @@ export class MockBackend {
     };
   }
 
+  async getGameProfileCapabilities(deviceId = 0) {
+    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
+    const entry = this._entry(id);
+    const name = String(entry.device?.name ?? '');
+    const integratedOrMobile = isIntegratedStyleDevice(entry.device)
+      || /\b(?:Mobile|(?:A|B)\d{3,4}M)\b/i.test(name);
+    const supported = integratedOrMobile && this._enduranceGamingSupported;
+    return {
+      enduranceGaming: supported,
+      reason: supported ? null : (integratedOrMobile
+        ? 'The mock driver does not expose Endurance Gaming for this fixture.'
+        : 'Endurance Gaming is available only on integrated or mobile GPUs.'),
+    };
+  }
+
+  async setGameProfileSettings(deviceId = 0, exePath, settings = {}, enabled = true) {
+    const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
+    const result = { ok: true, perControl: {} };
+    if (typeof exePath !== 'string' || exePath.length === 0) {
+      return { ok: false, perControl: { profileScope: { ok: false, errorCode: 'invalid-argument', message: 'an executable path is required' } } };
+    }
+    const mapKey = `${id}:${exePath.toLowerCase()}`;
+    if (enabled !== true) {
+      this._gameGraphics.delete(mapKey);
+      return { ok: true, perControl: { profileScope: { ok: true, readBackEqual: true, message: 'global settings restored' } } };
+    }
+    const controls = ['enduranceGaming', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+      .filter((key) => settings[key] !== null && settings[key] !== undefined);
+    const enduranceCaps = await this.getGameProfileCapabilities(id);
+    if (settings.enduranceGaming !== undefined && settings.enduranceGaming !== null && !enduranceCaps.enduranceGaming) {
+      result.ok = false;
+      result.perControl.enduranceGaming = { ok: false, errorCode: 'unsupported', message: enduranceCaps.reason };
+    }
+    const previous = this._gameGraphics.get(mapKey) ?? {};
+    const next = { ...previous };
+    result.perControl.profileScope = { ok: true, readBackEqual: true, message: 'per-game settings active' };
+    for (const key of ['frameGenOverride', 'flipMode', 'lowLatency']) {
+      if (settings[key] === undefined || settings[key] === null || result.perControl[key]) continue;
+      next[key] = settings[key];
+      result.perControl[key] = { ok: next[key] === settings[key], readBackEqual: next[key] === settings[key] };
+    }
+    if (settings.frameLimit !== undefined && settings.frameLimit !== null && !result.perControl.frameLimit) {
+      const clamped = clampAndSnap(settings.frameLimit.value, GRAPHICS_FIXTURE.frameLimitRange);
+      next.frameLimit = { enabled: settings.frameLimit.enabled === true, value: clamped };
+      result.perControl.frameLimit = { ok: true, readBackEqual: true };
+    }
+    if (settings.enduranceGaming !== undefined && settings.enduranceGaming !== null && !result.perControl.enduranceGaming) {
+      next.enduranceGaming = settings.enduranceGaming;
+      result.perControl.enduranceGaming = { ok: true, readBackEqual: true };
+    }
+    if (Object.keys(next).length > 0) this._gameGraphics.set(mapKey, next);
+    if (controls.length === 0) result.ok = true;
+    return result;
+  }
+
   /**
    * M8: apply the Graphics tab's settings (the mock round trip): the
    * payload lands in the device's graphics state (frame-limit value clamped
@@ -1076,7 +1138,7 @@ export class MockBackend {
     const e = this._entry(id);
     const patch = request?.patch && typeof request.patch === 'object' ? request.patch : {};
     const result = { ok: true, perControl: {} };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((key) => patch[key] !== null && patch[key] !== undefined);
     const fail = (key, errorCode, message) => {
       result.perControl[key] = { ok: false, errorCode, message };
@@ -1121,6 +1183,14 @@ export class MockBackend {
       else if (!display.supportedOptions.scalingModes.includes(patch.scalingMode)) fail('scalingMode', 'unsupported', 'scaling mode is not supported by this display');
       else {
         display.scalingMode = patch.scalingMode;
+        if (patch.scalingMode === 'custom' && patch.scalingCustom && typeof patch.scalingCustom === 'object') {
+          display.scalingDetails = {
+            customX: Math.max(0, Math.min(100, Number(patch.scalingCustom.x))),
+            customY: Math.max(0, Math.min(100, Number(patch.scalingCustom.y))),
+            hardwareModeSet: patch.scalingCustom.hardwareModeSet === true,
+            preferredScalingType: display.scalingDetails?.preferredScalingType ?? 'identity',
+          };
+        }
         result.perControl.scalingMode = { ok: true, readBackEqual: true, warning: DISPLAY_SCALING_FLASH_WARNING };
       }
     }
@@ -1131,6 +1201,14 @@ export class MockBackend {
         if (!display.supportedOptions.scalingModes.includes(next)) fail('displayScalingMethod', 'unsupported', 'Display Scaling method is not supported by this display');
         else {
           display.scalingMode = next;
+          if (patch.displayScalingMethod === 'custom' && patch.scalingCustom && typeof patch.scalingCustom === 'object') {
+            display.scalingDetails = {
+              customX: Math.max(0, Math.min(100, Number(patch.scalingCustom.x))),
+              customY: Math.max(0, Math.min(100, Number(patch.scalingCustom.y))),
+              hardwareModeSet: patch.scalingCustom.hardwareModeSet === true,
+              preferredScalingType: display.scalingDetails?.preferredScalingType ?? 'identity',
+            };
+          }
           result.perControl.displayScalingMethod = { ok: true, readBackEqual: true, warning: DISPLAY_SCALING_FLASH_WARNING };
         }
       }
@@ -1154,6 +1232,14 @@ export class MockBackend {
       else {
         display.scalingMethod.value = { enabled: value.enabled, method: value.method };
         result.perControl.scalingMethod = { ok: true, readBackEqual: display.scalingMethod.value.enabled === value.enabled && display.scalingMethod.value.method === value.method, warning: DISPLAY_SCALING_FLASH_WARNING };
+      }
+    }
+    if (patch.globalVrrMode !== undefined && patch.globalVrrMode !== null) {
+      if (!DISPLAY_GLOBAL_VRR_MODE_OPTIONS.includes(patch.globalVrrMode)) fail('globalVrrMode', 'out-of-range', `unknown global Variable Refresh Rate Mode '${patch.globalVrrMode}'`);
+      else if (!display.supportedOptions.globalVrrModes.includes(patch.globalVrrMode) || display.globalVrrMode?.controllable !== true) fail('globalVrrMode', 'unsupported', 'global Variable Refresh Rate Mode is not supported by this display');
+      else {
+        display.globalVrrMode.value = patch.globalVrrMode;
+        result.perControl.globalVrrMode = { ok: display.globalVrrMode.value === patch.globalVrrMode, readBackEqual: display.globalVrrMode.value === patch.globalVrrMode };
       }
     }
     if (patch.vrrMode !== undefined && patch.vrrMode !== null) {

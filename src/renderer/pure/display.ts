@@ -14,6 +14,7 @@ export const DISPLAY_BPC_OPTIONS = [6, 8, 10, 12];
 export const DISPLAY_SCALING_MODE_OPTIONS: NonNullable<DisplaySettings['scalingMode']>[] = ['identity', 'centered', 'stretched', 'aspect-ratio-centered-max', 'custom'];
 export const DISPLAY_RETRO_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['scalingMethod']>['method'][] = ['integer', 'nearest-neighbour'];
 export const DISPLAY_ARC_SYNC_PROFILE_OPTIONS: NonNullable<DisplaySettings['vrrMode']>[] = ['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'];
+export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS: NonNullable<DisplaySettings['globalVrrMode']>[] = ['fullscreen', 'fullscreen-windowed', 'disabled'];
 export const DISPLAY_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['displayScalingMethod']>[] = ['maintain-display-scaling', 'custom'];
 export const DISPLAY_COLOR_CONTROLS = ['hue', 'saturation', 'brightness', 'contrast'] as const;
 
@@ -25,6 +26,8 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
     case 'displayScalingMethod': return display.supportedOptions.scalingModes.length > 0;
     case 'scalingMethod': return display.scalingMethod?.controllable === true && display.supportedOptions.scalingMethods.length > 0;
     case 'vrrMode': return display.vrrMode?.controllable === true && (display.supportedOptions.vrrModes ?? []).length > 0;
+    case 'globalVrrMode': return display.globalVrrMode?.controllable === true && (display.supportedOptions.globalVrrModes ?? []).length > 0;
+    case 'scalingCustom': return display.supportedOptions.scalingModes.includes('custom');
     case 'wireFormat': return display.supportedOptions.wireFormats.length > 0 && display.supportedOptions.bpcDepths.length > 0;
     case 'hue': return display.hue?.controllable === true;
     case 'saturation': return display.saturation?.controllable === true;
@@ -42,6 +45,12 @@ export function displayDriverValue(display: Display | null | undefined, control:
     case 'displayScalingMethod': return display.scalingMode === 'custom' ? 'custom' : 'maintain-display-scaling';
     case 'scalingMethod': return display.scalingMethod?.value;
     case 'vrrMode': return display.vrrMode?.value;
+    case 'globalVrrMode': return display.globalVrrMode?.value;
+    case 'scalingCustom': return display.scalingDetails ? {
+      x: display.scalingDetails.customX,
+      y: display.scalingDetails.customY,
+      hardwareModeSet: display.scalingDetails.hardwareModeSet,
+    } : null;
     case 'wireFormat': {
       if (display.colorFormat === null || display.colorDepth === null) return null;
       return { model: display.colorFormat, depth: display.colorDepth };
@@ -75,6 +84,9 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   if (isDisplayControlSupported(display, 'vrrMode') && display.vrrMode?.value) {
     out.vrrMode = display.vrrMode.value;
   }
+  if (isDisplayControlSupported(display, 'globalVrrMode') && display.globalVrrMode?.value) {
+    out.globalVrrMode = display.globalVrrMode.value;
+  }
   if (isDisplayControlSupported(display, 'wireFormat')) {
     out.wireFormat = {
       model: (display.colorFormat ?? display.supportedOptions.wireFormats[0]) as NonNullable<DisplaySettings['wireFormat']>['model'],
@@ -94,6 +106,7 @@ const WIRE_FORMAT_SET = new Set<unknown>(DISPLAY_WIRE_FORMAT_OPTIONS);
 const SCALING_MODE_SET = new Set<unknown>(DISPLAY_SCALING_MODE_OPTIONS);
 const RETRO_SCALING_METHOD_SET = new Set<unknown>(DISPLAY_RETRO_SCALING_METHOD_OPTIONS);
 const ARC_SYNC_PROFILE_SET = new Set<unknown>(DISPLAY_ARC_SYNC_PROFILE_OPTIONS);
+const GLOBAL_VRR_MODE_SET = new Set<unknown>(DISPLAY_GLOBAL_VRR_MODE_OPTIONS);
 const SCALING_METHOD_SET = new Set<unknown>(DISPLAY_SCALING_METHOD_OPTIONS);
 
 export function validateDisplaySettings(value: unknown): value is DisplaySettings {
@@ -111,6 +124,14 @@ export function validateDisplaySettings(value: unknown): value is DisplaySetting
       if (typeof sm.enabled !== 'boolean' || !RETRO_SCALING_METHOD_SET.has(sm.method)) return false;
     } else if (key === 'vrrMode') {
       if (!ARC_SYNC_PROFILE_SET.has(v)) return false;
+    } else if (key === 'globalVrrMode') {
+      if (!GLOBAL_VRR_MODE_SET.has(v)) return false;
+    } else if (key === 'scalingCustom') {
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+      const custom = v as { x?: unknown; y?: unknown; hardwareModeSet?: unknown };
+      if (typeof custom.x !== 'number' || !Number.isFinite(custom.x) || custom.x < 0 || custom.x > 100
+        || typeof custom.y !== 'number' || !Number.isFinite(custom.y) || custom.y < 0 || custom.y > 100
+        || (custom.hardwareModeSet !== undefined && typeof custom.hardwareModeSet !== 'boolean')) return false;
     } else if (key === 'wireFormat') {
       if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
       const wf = v as { model?: unknown; depth?: unknown };

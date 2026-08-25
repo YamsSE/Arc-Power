@@ -46,6 +46,8 @@ function cleanGraphics(value) {
     out.frameLimit = { enabled: value.frameLimit.enabled, value: Math.max(1, Math.min(1000, Math.round(value.frameLimit.value))) };
   }
   if (['off', 'on', 'on-boost'].includes(value.lowLatency)) out.lowLatency = value.lowLatency;
+  if (['off', 'on'].includes(value.enduranceGaming)) out.enduranceGaming = value.enduranceGaming;
+  if (['app-choice', '2x', '3x', '4x'].includes(value.frameGenOverride)) out.frameGenOverride = value.frameGenOverride;
   return out;
 }
 
@@ -60,7 +62,10 @@ export function normalizeGameSettings(raw) {
   const now = new Date().toISOString();
   return {
     exePath,
-    enabled: raw.enabled !== false,
+    // A discovered game is inert until the user explicitly enables its
+    // per-game profile. This prevents a newly scanned catalog from changing
+    // game behavior merely by existing.
+    enabled: raw.enabled === true,
     graphics: cleanGraphics(raw.graphics),
     createdAt: cleanTime(raw.createdAt, now),
     updatedAt: cleanTime(raw.updatedAt, now),

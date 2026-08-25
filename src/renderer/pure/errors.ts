@@ -25,6 +25,7 @@ export const CONTROL_LABELS: Record<string, string> = {
   lowLatency: 'Low latency',
   scalingMode: 'Scaling mode',
   scalingMethod: 'Scaling method',
+  globalVrrMode: 'Variable refresh-rate mode',
   vrrMode: 'Variable refresh-rate mode',
 };
 

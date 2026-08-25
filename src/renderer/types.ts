@@ -767,8 +767,12 @@ export interface DisplaySettings {
   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom';
   /** IGS Display Scaling > Scaling Method abstraction. */
   displayScalingMethod?: 'maintain-display-scaling' | 'custom';
+  /** Custom GPU-scaling percentages from ctl_scaling_settings_t. */
+  scalingCustom?: { x: number; y: number; hardwareModeSet?: boolean };
   /** Legacy retro-scaling shape retained for older callers. */
   scalingMethod?: { enabled: boolean; method: 'integer' | 'nearest-neighbour' };
+  /** IGS global Variable Refresh Rate mode. */
+  globalVrrMode?: 'fullscreen' | 'fullscreen-windowed' | 'disabled';
   vrrMode?: 'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom';
   hue?: number;
   saturation?: number;
@@ -777,6 +781,8 @@ export interface DisplaySettings {
 }
 
 export interface GameProfileGraphics {
+  enduranceGaming?: 'off' | 'on';
+  frameGenOverride?: FrameGenOverride;
   flipMode?: FlipMode;
   frameLimit?: { enabled: boolean; value: number };
   lowLatency?: LowLatency;
@@ -853,8 +859,10 @@ export interface DisplayState {
     colorFormat: string | null;
     quantizationRange: 'default' | 'limited' | 'full' | null;
     scalingMode: string | null;
+    scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null } | null;
     scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' }>;
     vrrMode?: DisplayCapability<'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom'>;
+    globalVrrMode?: DisplayCapability<'fullscreen' | 'fullscreen-windowed' | 'disabled'>;
     variableRefreshRate?: DisplayCapability<boolean>;
     vrrCurrentRange?: DisplayCapability<string>;
     vrrMaximumRange?: DisplayCapability<string>;
@@ -869,6 +877,7 @@ export interface DisplayState {
       scalingModes: string[];
       scalingMethods: string[];
       vrrModes: string[];
+      globalVrrModes: string[];
       wireFormats: string[];
       bpcDepths: number[];
       quantizationRanges: string[];

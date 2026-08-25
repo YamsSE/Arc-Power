@@ -25,7 +25,7 @@
 import { createRequire } from 'node:module';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
-import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS } from './backend/backend.interface.js';
+import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey } from './backend/units.js';
 import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
@@ -172,6 +172,14 @@ export function sanitizeDisplaySettings(payload) {
     } else if (key === 'displayScalingMethod') {
       if (!['maintain-display-scaling', 'custom'].includes(value)) throw new Error('displayScalingMethod must be maintain-display-scaling or custom');
       out[key] = value;
+    } else if (key === 'scalingCustom') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || typeof value.x !== 'number' || !Number.isFinite(value.x) || value.x < 0 || value.x > 100
+        || typeof value.y !== 'number' || !Number.isFinite(value.y) || value.y < 0 || value.y > 100
+        || (value.hardwareModeSet !== undefined && typeof value.hardwareModeSet !== 'boolean')) {
+        throw new Error('scalingCustom must be { x: 0..100, y: 0..100, hardwareModeSet?: boolean }');
+      }
+      out[key] = { x: value.x, y: value.y, ...(value.hardwareModeSet === undefined ? {} : { hardwareModeSet: value.hardwareModeSet }) };
     } else if (key === 'scalingMethod') {
       if (typeof value !== 'object' || value === null || Array.isArray(value)
         || typeof value.enabled !== 'boolean'
@@ -183,6 +191,9 @@ export function sanitizeDisplaySettings(payload) {
       if (!['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'].includes(value)) {
         throw new Error('vrrMode must be one of: recommended, excellent, good, compatible, off, vesa, custom');
       }
+      out[key] = value;
+    } else if (key === 'globalVrrMode') {
+      if (!DISPLAY_GLOBAL_VRR_MODE_OPTIONS.includes(value)) throw new Error(`globalVrrMode must be one of: ${DISPLAY_GLOBAL_VRR_MODE_OPTIONS.join(', ')}`);
       out[key] = value;
     } else if (['hue', 'saturation', 'brightness', 'contrast'].includes(key)) {
       if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
@@ -2318,6 +2329,14 @@ export function createIpcHandlers({
         catch (err) { throw new Error(`game-catalog-list: ${err instanceof Error ? err.message : String(err)}`); }
       },
 
+      'game-profile-capabilities': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        if (typeof backend.getGameProfileCapabilities !== 'function') {
+          return { enduranceGaming: false, reason: 'Game Profile driver capabilities are unavailable.' };
+        }
+        return backend.getGameProfileCapabilities(deviceId);
+      },
+
       'game-catalog-sync': async (payload) => {
         if (!Array.isArray(payload)) throw new Error('game-catalog-sync: payload must be an array');
         for (const row of payload) {
@@ -2338,7 +2357,21 @@ export function createIpcHandlers({
         if (!catalog?.catalog?.some((entry) => entry.exePath === safePath)) {
           throw new Error('game-settings-save: executable is not present in the game catalog');
         }
-        return { settings: await gameProfiles.saveSettings({ ...payload, ...clean, exePath: safePath }) };
+        const saved = await gameProfiles.saveSettings({ ...payload, ...clean, exePath: safePath });
+        const persisted = await store.loadSettings();
+        let apply;
+        if (!Number.isInteger(persisted?.deviceId) || typeof backend.setGameProfileSettings !== 'function') {
+          apply = { ok: false, skipped: true, errorCode: 'unsupported', message: 'The selected graphics adapter cannot apply per-game driver settings.' };
+        } else {
+          try {
+            // Always update the driver scope. Disabling Use Profile must
+            // restore this executable to the global graphics settings.
+            apply = await backend.setGameProfileSettings(persisted.deviceId, safePath, saved.graphics ?? {}, saved.enabled === true);
+          } catch (err) {
+            apply = { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
+          }
+        }
+        return { settings: saved, apply };
       },
 
       'game-settings-delete': async (payload) => {

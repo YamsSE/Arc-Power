@@ -45,9 +45,10 @@ import {
   GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS,
   DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS,
   DISPLAY_RETRO_SCALING_METHOD_OPTIONS, DISPLAY_ARC_SYNC_PROFILE_OPTIONS,
+  DISPLAY_GLOBAL_VRR_MODE_OPTIONS,
   DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
 // imports fine under the packaged Electron (Node 22.21 - type stripping is
@@ -162,6 +163,17 @@ const GRAPHICS_FLIP_FROM_IGCL = Object.fromEntries(
 );
 const GRAPHICS_LL_TO_IGCL = { off: 0, on: 1, 'on-boost': 2 };
 const GRAPHICS_LL_FROM_IGCL = { 0: 'off', 1: 'on', 2: 'on-boost' };
+const GLOBAL_OR_PER_APP_TO_IGCL = { global: 2, 'per-app': 1 };
+function endurancePlatformSupported(device, laptopInfo = null) {
+  const name = String(device?.name ?? '');
+  // Reuse the inventory's conservative model classification, then add the
+  // explicit mobile SKU forms. Never use enumeration order: laptops can have
+  // both an integrated adapter and a discrete mobile adapter.
+  return isIntegratedStyleDevice(device)
+    || /\b(?:A|B)\d{3,4}M\b/i.test(name)
+    || /\bMobile\b/i.test(name)
+    || (Boolean(laptopInfo) && /\b(?:A|B)\d{3,4}M\b/i.test(name));
+}
 
 // M10b (the Graphics "Display" view): the canonical <-> IGCL value tables
 // for the display controls (the numeric side is the v290 enum/flag; the
@@ -188,11 +200,22 @@ const DISPLAY_SCALING_NAME_TO_CANONICAL = {
 const DISPLAY_ARC_SYNC_PROFILE_CANONICAL = {
   1: 'recommended', 2: 'excellent', 3: 'good', 4: 'compatible', 5: 'off', 6: 'vesa', 7: 'custom',
 };
-const DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL = { 1: 'integer', 2: 'nearest-neighbour' };
-const DISPLAY_RETRO_SCALING_METHOD_TO_IGCL = { integer: 1, 'nearest-neighbour': 2 };
+const DISPLAY_RETRO_SCALING_NAME_TO_CANONICAL = {
+  INTEGER: 'integer', NEAREST_NEIGHBOUR: 'nearest-neighbour',
+};
+// The public header calls this a flag type, but the live driver surface uses
+// enum indices in ctl_retro_scaling_settings_t: 0 = integer, 1 = nearest
+// neighbour. The caps value remains a bitmask (bits 0 and 1).
+const DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL = { 0: 'integer', 1: 'nearest-neighbour' };
+const DISPLAY_RETRO_SCALING_METHOD_TO_IGCL = { integer: 0, 'nearest-neighbour': 1 };
 const DISPLAY_ARC_SYNC_PROFILE_TO_IGCL = {
   recommended: 1, excellent: 2, good: 3, compatible: 4, off: 5, vesa: 6, custom: 7,
 };
+// IGS Display > General exposes GlobalVrr as three user-facing modes. The
+// public IGCL enum uses Auto/On/Off, which map to Fullscreen,
+// Fullscreen & Windowed, and Disabled respectively.
+const DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL = { 0: 'fullscreen', 1: 'fullscreen-windowed', 2: 'disabled' };
+const DISPLAY_GLOBAL_VRR_MODE_TO_IGCL = { fullscreen: 0, 'fullscreen-windowed': 1, disabled: 2 };
 const displayCapability = (value, supported, controllable = false, reason = null, source = 'igcl') => ({
   value, supported, controllable, reason, source,
 });
@@ -1883,6 +1906,120 @@ export class IgclBackend {
   }
 
   /**
+   * Read the IGS Global VRR mode independently from the Arc Sync tuning
+   * profile. The public IGCL runtime exposes the feature in its 3D capability
+   * list, but some driver builds refuse the global read/write surface; those
+   * builds remain visible as read-only with the exact IGS option list.
+   */
+  async _readGlobalVrrMode(deviceId, adapterHandle) {
+    const unavailable = (reason) => ({
+      capability: displayCapability(null, false, false, reason, 'igcl-global-vrr'),
+      options: [],
+    });
+    try {
+      const lib = this._libOrThrow();
+      if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
+        return unavailable('The global Variable Refresh Rate Mode API is not available in this IGCL runtime.');
+      }
+      const features = await this._graphicsCapsOf(deviceId, adapterHandle);
+      const detail = features?.get(CTL_3D_FEATURE.VRR_WINDOWED_BLT);
+      if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM) {
+        return unavailable('The global Variable Refresh Rate Mode feature is not reported by the driver.');
+      }
+      const options = [...DISPLAY_GLOBAL_VRR_MODE_OPTIONS];
+      const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
+      const readResult = lib.ctlGetSet3DFeature(adapterHandle, gs.buf);
+      if (readResult !== CTL_RESULT.SUCCESS) {
+        return {
+          capability: displayCapability(null, true, false, `The driver reported the global Variable Refresh Rate Mode but refused read-back (${describeResult(readResult)}).`, 'igcl-global-vrr'),
+          options,
+        };
+      }
+      const mode = DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType] ?? null;
+      if (!mode) {
+        return {
+          capability: displayCapability(null, true, false, 'The driver returned an unknown global Variable Refresh Rate Mode.', 'igcl-global-vrr'),
+          options,
+        };
+      }
+      return {
+        capability: displayCapability(mode, true, true, null, 'igcl-global-vrr'),
+        options,
+      };
+    } catch {
+      return unavailable('The global Variable Refresh Rate Mode could not be read from this driver runtime.');
+    }
+  }
+
+  /**
+   * Return only Game Profile capabilities that are safe to expose for this
+   * adapter. Endurance Gaming requires both an integrated/mobile adapter and
+   * a driver-reported per-application feature surface.
+   */
+  async getGameProfileCapabilities(deviceId) {
+    try {
+      const dev = await this._device(deviceId);
+      const features = await this._graphicsCapsOf(deviceId, dev.handle);
+      const detail = features?.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
+      const platform = endurancePlatformSupported(dev, this._laptopInfoOf ? this._laptopInfoOf() : null);
+      const supported = platform
+        && [CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32].includes(detail?.valueType)
+        && detail.perAppSupport === true;
+      return {
+        enduranceGaming: supported,
+        reason: supported ? null : (!platform
+          ? 'Endurance Gaming is available only on integrated or mobile GPUs.'
+          : !detail
+            ? 'The driver does not expose Endurance Gaming for this adapter.'
+            : detail.perAppSupport !== true
+              ? 'The driver does not expose Endurance Gaming as a per-game control.'
+              : 'Endurance Gaming is not available on this driver surface.'),
+      };
+    } catch {
+      return { enduranceGaming: false, reason: 'Endurance Gaming could not be read from this driver.' };
+    }
+  }
+
+  async setGameProfileSettings(deviceId, exePath, settings = {}, enabled = true) {
+    const appName = typeof exePath === 'string' && exePath.length > 0 ? path.win32.basename(exePath) : '';
+    if (!appName) return { ok: false, perControl: { profileScope: { ok: false, errorCode: 'invalid-argument', message: 'an executable name is required' } } };
+    const lib = this._libOrThrow();
+    const dev = await this._device(deviceId);
+    const features = await this._graphicsCapsOf(deviceId, dev.handle);
+    const detail = features?.get(CTL_3D_FEATURE.GLOBAL_OR_PER_APP);
+    const result = { ok: true, perControl: {} };
+    const scope = enabled === true ? 'per-app' : 'global';
+    const igclValue = GLOBAL_OR_PER_APP_TO_IGCL[scope];
+    // GLOBAL_OR_PER_APP is the scope selector itself. Its ApplicationName
+    // field is what makes the value executable-scoped, so do not require the
+    // selector's own PerAppSupport bit (that bit describes whether the
+    // selector can be nested under another app scope, not whether it can
+    // select an app scope).
+    if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM) {
+      return { ok: false, perControl: { profileScope: { ok: false, errorCode: 'unsupported', message: 'the driver does not expose a per-game global/per-application selector' } } };
+    }
+    const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.GLOBAL_OR_PER_APP, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue, applicationName: appName });
+    const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+    if (setResult !== CTL_RESULT.SUCCESS) {
+      return { ok: false, perControl: { profileScope: { ok: false, errorCode: igclErrorCode(setResult) ?? 'io-failed', message: `IGCL ${describeResult(setResult)}` } } };
+    }
+    const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.GLOBAL_OR_PER_APP, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false, applicationName: appName });
+    const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+    const got = getResult === CTL_RESULT.SUCCESS ? decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType : null;
+    const readBackEqual = got === igclValue;
+    result.perControl.profileScope = {
+      ok: readBackEqual,
+      errorCode: readBackEqual ? undefined : 'io-failed',
+      message: readBackEqual ? undefined : `read-back ${got ?? describeResult(getResult)} != requested ${scope}`,
+      readBackEqual,
+    };
+    if (!readBackEqual) return { ...result, ok: false };
+    if (enabled !== true) return result;
+    const applied = await this.setGraphicsSettings(deviceId, settings, appName);
+    return { ok: applied.ok, perControl: { ...result.perControl, ...applied.perControl } };
+  }
+
+  /**
    * M8: read the Graphics tab's driver state. NEVER throws - every failure
    * (missing symbols, ctl errors, the ArcticControl read-crash) degrades to
    * the all-false/null GraphicsState. The per-feature reads are defensive
@@ -1976,9 +2113,15 @@ export class IgclBackend {
    * @param {import('./backend.interface.js').GraphicsSettings} settings
    * @returns {Promise<import('./backend.interface.js').ApplyResult>}
    */
-  async setGraphicsSettings(deviceId, settings = {}) {
+  async setGraphicsSettings(deviceId, settings = {}, applicationName = '') {
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);
+    // IGCL's ApplicationName field is the executable name, not a full system
+    // path. Normalize callers' catalog paths here so per-game read/write uses
+    // the same identity the driver expects.
+    const appScope = typeof applicationName === 'string' && applicationName.length > 0
+      ? path.win32.basename(applicationName)
+      : '';
     const result = { ok: true, perControl: {} };
     const fail = (control, errorCode, message) => {
       result.perControl[control] = { ok: false, errorCode, message };
@@ -1988,7 +2131,7 @@ export class IgclBackend {
     const surfaceUp = features !== null
       && !this._isUnavailable(lib.ctlGetSupported3DCapabilities)
       && !this._isUnavailable(lib.ctlGetSet3DFeature);
-    const controls = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+    const controls = ['enduranceGaming', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
     if (!surfaceUp) {
       for (const c of controls) {
@@ -2007,14 +2150,19 @@ export class IgclBackend {
         fail(control, 'unsupported', `the '${canonical}' option is not supported by this driver`);
         return;
       }
-      const gs = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue });
+      const detail = features.get(featureType);
+      if (appScope && detail?.perAppSupport !== true) {
+        fail(control, 'unsupported', `${control} is not exposed as a per-game driver setting`);
+        return;
+      }
+      const gs = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue, applicationName: appScope });
       const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
       if (setResult !== CTL_RESULT.SUCCESS) {
         fail(control, igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
         return;
       }
       // Read-back verification (the plan's every-apply-verified rule).
-      const rb = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
+      const rb = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false, applicationName: appScope });
       const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
       let readBackEqual = false;
       let message;
@@ -2035,6 +2183,51 @@ export class IgclBackend {
       };
       if (!readBackEqual) result.ok = false;
     };
+
+    if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {
+      const detail = features.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
+      const platform = endurancePlatformSupported(dev, this._laptopInfoOf ? this._laptopInfoOf() : null);
+      const valueType = detail?.valueType;
+      if (!platform || !detail || ![CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32].includes(valueType) || detail.perAppSupport !== true) {
+        fail('enduranceGaming', 'unsupported', 'Endurance Gaming is only available as a per-game setting on integrated or mobile GPUs');
+      } else if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
+        // Older driver branches report the simple Off/On enum directly.
+        setEnum('enduranceGaming', CTL_3D_FEATURE.ENDURANCE_GAMING, settings.enduranceGaming, { off: 0, on: 1 }, null);
+      } else {
+        // Current IGCL describes Endurance Gaming as an integer feature: the
+        // enable bit controls Off/On and the integer is the DC-mode target
+        // FPS. The UI exposes the IGS control only, so preserve the driver's
+        // default target when enabling it.
+        const range = detail.intRange;
+        const targetFps = range && Number.isFinite(range.default) ? clampAndSnap(range.default, range) : 60;
+        const enabled = settings.enduranceGaming === 'on';
+        const gs = encode3dFeatureGetset({
+          featureType: CTL_3D_FEATURE.ENDURANCE_GAMING,
+          valueType,
+          bSet: true,
+          intEnable: enabled,
+          intValue: targetFps,
+          applicationName: appScope,
+        });
+        const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+        if (setResult !== CTL_RESULT.SUCCESS) {
+          fail('enduranceGaming', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+        } else {
+          const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.ENDURANCE_GAMING, valueType, bSet: false, applicationName: appScope });
+          const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+          const got = getResult === CTL_RESULT.SUCCESS ? decode3dFeatureGetsetValue(rb.buf, valueType) : null;
+          const readBackEqual = got?.enable === enabled;
+          result.perControl.enduranceGaming = {
+            ok: readBackEqual,
+            errorCode: readBackEqual ? undefined : 'io-failed',
+            message: readBackEqual ? undefined : `read-back ${got ? JSON.stringify(got) : describeResult(getResult)} did not match requested ${settings.enduranceGaming}`,
+            readBackEqual,
+            silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+          };
+          if (!readBackEqual) result.ok = false;
+        }
+      }
+    }
 
     if (settings.frameGenOverride !== null && settings.frameGenOverride !== undefined) {
       if (!features.has(CTL_3D_FEATURE.FRAME_GENERATION)) {
@@ -2087,6 +2280,9 @@ export class IgclBackend {
           // was fragile: a control appended after it would be skipped).
           fail('frameLimit', 'unsupported', 'no capability range reported for the frame limit');
         } else {
+          if (appScope && detail.perAppSupport !== true) {
+            fail('frameLimit', 'unsupported', 'frame limit is not exposed as a per-game driver setting');
+          } else {
           // Never assume the caller's value is in range (backend contract):
           // clamp to the driver-reported range, snap to the step.
           const clamped = clampAndSnap(settings.frameLimit.value, range);
@@ -2096,12 +2292,13 @@ export class IgclBackend {
             bSet: true,
             intEnable: settings.frameLimit.enabled === true,
             intValue: clamped,
+            applicationName: appScope,
           });
           const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('frameLimit', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
-            const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.FRAME_LIMIT, valueType: CTL_PROPERTY_VALUE_TYPE.INT32, bSet: false });
+            const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.FRAME_LIMIT, valueType: CTL_PROPERTY_VALUE_TYPE.INT32, bSet: false, applicationName: appScope });
             const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
             let readBackEqual = false;
             let message;
@@ -2123,6 +2320,7 @@ export class IgclBackend {
           }
         }
       }
+    }
     }
 
     return result;
@@ -2261,7 +2459,7 @@ export class IgclBackend {
    * the adapter-scoped retro/media APIs)
    * @returns {Promise<object>} the canonical display shape
    */
-  async _readDisplayOutput(index, handle, deviceKey = null, adapterHandle = null) {
+  async _readDisplayOutput(index, handle, deviceKey = null, adapterHandle = null, globalVrr = null) {
     const lib = this._libOrThrow();
     const d = {
       id: index,
@@ -2275,7 +2473,9 @@ export class IgclBackend {
       colorFormat: null,
       quantizationRange: null,
       scalingMode: null,
+      scalingDetails: null,
       scalingMethod: displayCapability(null, false, false, 'Retro scaling is not exposed by the driver interface.'),
+      globalVrrMode: displayCapability(null, null, false, 'Global Variable Refresh Rate Mode is not exposed by the driver interface.'),
       vrrMode: displayCapability(null, null, false, 'Arc Sync profile control is not exposed by the driver interface.'),
       variableRefreshRate: displayCapability(null, null, false, 'Variable refresh rate is controlled by Windows/the display path.'),
       vrrCurrentRange: displayCapability(null, null, false, 'The current variable refresh-rate range is not exposed by the driver interface.'),
@@ -2291,6 +2491,7 @@ export class IgclBackend {
         scalingModes: [],
         scalingMethods: [],
         vrrModes: [],
+        globalVrrModes: [],
         wireFormats: [],
         bpcDepths: [],
         quantizationRanges: [],
@@ -2299,6 +2500,10 @@ export class IgclBackend {
       flags: { active: false, attached: false, dongleConnected: false, ditheringEnabled: false },
       arcSync: { supported: false, minRefreshHz: null, maxRefreshHz: null, profile: null },
     };
+    if (globalVrr) {
+      d.globalVrrMode = globalVrr.capability;
+      d.supportedOptions.globalVrrModes = [...globalVrr.options];
+    }
     // The canonical wire-model name (the bindings' enum names are
     // SCREAMING: 'YCBCR_422' -> the shared 'YCbCr422').
     const canonicalWireModel = (name) => {
@@ -2419,6 +2624,12 @@ export class IgclBackend {
         if (curResult === CTL_RESULT.SUCCESS) {
           const sc = decodeScalingSettings(buf);
           d.scalingMode = DISPLAY_SCALING_MODE_FROM_IGCL[sc.scalingType] ?? null;
+          d.scalingDetails = {
+            customX: sc.customX,
+            customY: sc.customY,
+            hardwareModeSet: sc.hardwareModeSet,
+            preferredScalingType: DISPLAY_SCALING_MODE_FROM_IGCL[sc.preferredScalingType] ?? null,
+          };
         }
       }
     } catch {
@@ -2436,7 +2647,7 @@ export class IgclBackend {
         if (capsResult === CTL_RESULT.SUCCESS) {
           const flags = decodeRetroScalingCaps(caps.buf).supportedRetroScaling;
           d.supportedOptions.scalingMethods = displayFlagNames(flags, CTL_RETRO_SCALING_TYPE)
-            .map((name) => Object.entries(DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL).find(([, value]) => value && name === value.toUpperCase().replace('-', '_'))?.[1])
+            .map((name) => ({ INTEGER: 'integer', NEAREST_NEIGHBOUR: 'nearest-neighbour' }[name]))
             .filter(Boolean);
           // The driver exposes these as the two canonical flag values. Keep
           // the mapping explicit so an unexpected future flag cannot become a
@@ -2476,7 +2687,14 @@ export class IgclBackend {
           d.arcSync.supported = m.supported;
           d.arcSync.minRefreshHz = m.supported ? m.minRefreshHz : null;
           d.arcSync.maxRefreshHz = m.supported ? m.maxRefreshHz : null;
-          d.variableRefreshRate = displayCapability(null, m.supported, false, 'Variable refresh rate is controlled by Windows/the display path.');
+          const existingVrr = d.variableRefreshRate;
+          d.variableRefreshRate = displayCapability(
+            existingVrr?.value ?? null,
+            m.supported || existingVrr?.supported === true,
+            false,
+            'Variable refresh rate is controlled by Windows/the display path.',
+            existingVrr?.source ?? 'igcl-display-properties',
+          );
           d.vrrMaximumRange = displayCapability(m.supported ? `${m.minRefreshHz} Hz - ${m.maxRefreshHz} Hz` : null, m.supported, false, 'Read-only driver capability.');
         }
       }
@@ -2499,6 +2717,15 @@ export class IgclBackend {
             canControl,
             d.arcSync.supported && d.arcSync.profile ? (canControl ? null : 'Arc Sync setter is not available in this driver runtime.') : 'Arc Sync is not supported by this display.',
           );
+          if (Number.isFinite(p.minRefreshHz) && Number.isFinite(p.maxRefreshHz)
+            && p.maxRefreshHz > 0 && p.maxRefreshHz >= p.minRefreshHz) {
+            d.vrrCurrentRange = displayCapability(
+              `${p.minRefreshHz} Hz - ${p.maxRefreshHz} Hz`,
+              d.arcSync.supported,
+              false,
+              'Read-only driver capability.',
+            );
+          }
           if (d.arcSync.supported && d.arcSync.profile) d.supportedOptions.vrrModes = [...DISPLAY_ARC_SYNC_PROFILE_OPTIONS];
         }
       }
@@ -2551,9 +2778,10 @@ export class IgclBackend {
       // Output handles are topology-scoped. Re-enumerate for every Display
       // read so hot-plug/re-enumeration cannot leave the view on stale handles.
       const handles = await this._displayOutputsOf(deviceId, true);
+      const globalVrr = await this._readGlobalVrrMode(deviceId, dev.handle);
       const displays = [];
       for (let i = 0; i < handles.length; i++) {
-        const d = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle);
+        const d = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle, globalVrr);
         if (d.flags.active) displays.push(d);
       }
       return { deviceKey, adapterName: dev.name ?? null, displays };
@@ -2591,7 +2819,7 @@ export class IgclBackend {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((c) => patch[c] !== null && patch[c] !== undefined);
 
     // The whole-surface gate (the M8 setGraphicsSettings pattern): when NO
@@ -2603,7 +2831,8 @@ export class IgclBackend {
       && this._isUnavailable(lib.ctlSetCurrentScaling)
       && this._isUnavailable(lib.ctlGetSetRetroScaling)
       && this._isUnavailable(lib.ctlSetIntelArcSyncProfile)
-      && this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)) {
+      && this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)
+      && this._isUnavailable(lib.ctlGetSet3DFeature)) {
       for (const c of controls) {
         fail(c, 'unavailable-symbol', 'the display-settings API is missing in the IGCL runtime');
       }
@@ -2740,11 +2969,21 @@ export class IgclBackend {
         if (flag === undefined) {
           fail('scalingMode', 'out-of-range', `unknown scaling mode '${patch.scalingMode}'`);
         } else {
+          const custom = patch.scalingCustom && typeof patch.scalingCustom === 'object'
+            && Number.isFinite(patch.scalingCustom.x) && Number.isFinite(patch.scalingCustom.y)
+            ? {
+              x: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.x))),
+              y: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.y))),
+              hardwareModeSet: patch.scalingCustom.hardwareModeSet === true,
+            } : null;
+          if (flag === DISPLAY_SCALING_MODE_TO_IGCL.custom && patch.scalingCustom !== undefined && !custom) {
+            fail('scalingMode', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
+          } else {
           // The M10b-fix lesson: NO SupportedScaling pre-gate - the caps
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
           // ScalingType is a FLAG value in the struct (1/2/4/8/16).
-          const gs = encodeScalingSettings({ enable: true, scalingType: flag });
+          const gs = encodeScalingSettings({ enable: true, scalingType: flag, customScalingX: custom?.x, customScalingY: custom?.y, hardwareModeSet: custom?.hardwareModeSet });
           const setResult = lib.ctlSetCurrentScaling(handle, gs.buf);
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('scalingMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
@@ -2761,9 +3000,9 @@ export class IgclBackend {
             if (getResult !== CTL_RESULT.SUCCESS) {
               message = `set succeeded but read-back failed (${describeResult(getResult)})`;
             } else {
-              const got = decodeScalingSettings(rb.buf).scalingType;
-              readBackEqual = got === flag;
-              message = readBackEqual ? undefined : `read-back 0x${got.toString(16)} != requested 0x${flag.toString(16)}`;
+              const got = decodeScalingSettings(rb.buf);
+              readBackEqual = got.scalingType === flag && (!custom || (got.customX === custom.x && got.customY === custom.y));
+              message = readBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`;
             }
             result.perControl.scalingMode = {
               ok: readBackEqual,
@@ -2778,10 +3017,10 @@ export class IgclBackend {
             };
             if (!readBackEqual) result.ok = false;
           }
+          }
         }
       }
     }
-
     if (patch.displayScalingMethod !== null && patch.displayScalingMethod !== undefined) {
       if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {
         fail('displayScalingMethod', 'unavailable-symbol', 'the scaling API is missing in the IGCL runtime');
@@ -2790,27 +3029,38 @@ export class IgclBackend {
         if (flag === undefined) {
           fail('displayScalingMethod', 'out-of-range', `unknown Display Scaling method '${patch.displayScalingMethod}'`);
         } else {
-          const gs = encodeScalingSettings({ enable: true, scalingType: flag });
-          const setResult = lib.ctlSetCurrentScaling(handle, gs.buf);
-          if (setResult !== CTL_RESULT.SUCCESS) {
-            fail('displayScalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          const custom = patch.displayScalingMethod === 'custom' && patch.scalingCustom && typeof patch.scalingCustom === 'object'
+            && Number.isFinite(patch.scalingCustom.x) && Number.isFinite(patch.scalingCustom.y)
+            ? {
+              x: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.x))),
+              y: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.y))),
+              hardwareModeSet: patch.scalingCustom.hardwareModeSet === true,
+            } : null;
+          if (patch.displayScalingMethod === 'custom' && !custom) {
+            fail('displayScalingMethod', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
           } else {
-            await new Promise((r) => setTimeout(r, 400));
-            const rb = encodeScalingSettings();
-            const getResult = lib.ctlGetCurrentScaling(handle, rb.buf);
-            const got = getResult === CTL_RESULT.SUCCESS ? decodeScalingSettings(rb.buf).scalingType : null;
-            const readBackEqual = got === flag;
-            result.perControl.displayScalingMethod = {
-              ok: readBackEqual,
-              errorCode: readBackEqual ? undefined : 'io-failed',
-              message: readBackEqual ? undefined : (getResult === CTL_RESULT.SUCCESS
-                ? `read-back 0x${got.toString(16)} != requested 0x${flag.toString(16)}`
-                : `set succeeded but read-back failed (${describeResult(getResult)})`),
-              readBackEqual,
-              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
-              warning: DISPLAY_SCALING_FLASH_WARNING,
-            };
-            if (!readBackEqual) result.ok = false;
+            const gs = encodeScalingSettings({ enable: true, scalingType: flag, customScalingX: custom?.x, customScalingY: custom?.y, hardwareModeSet: custom?.hardwareModeSet });
+            const setResult = lib.ctlSetCurrentScaling(handle, gs.buf);
+            if (setResult !== CTL_RESULT.SUCCESS) {
+              fail('displayScalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+            } else {
+              await new Promise((r) => setTimeout(r, 400));
+              const rb = encodeScalingSettings();
+              const getResult = lib.ctlGetCurrentScaling(handle, rb.buf);
+              const got = getResult === CTL_RESULT.SUCCESS ? decodeScalingSettings(rb.buf) : null;
+              const readBackEqual = got !== null && got.scalingType === flag && (!custom || (got.customX === custom.x && got.customY === custom.y));
+              result.perControl.displayScalingMethod = {
+                ok: readBackEqual,
+                errorCode: readBackEqual ? undefined : 'io-failed',
+                message: readBackEqual ? undefined : (getResult === CTL_RESULT.SUCCESS
+                  ? `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`
+                  : `set succeeded but read-back failed (${describeResult(getResult)})`),
+                readBackEqual,
+                silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+                warning: DISPLAY_SCALING_FLASH_WARNING,
+              };
+              if (!readBackEqual) result.ok = false;
+            }
           }
         }
       }
@@ -2891,6 +3141,43 @@ export class IgclBackend {
               };
               if (!readBackEqual) result.ok = false;
             }
+          }
+        }
+      }
+    }
+
+    if (patch.globalVrrMode !== null && patch.globalVrrMode !== undefined) {
+      const requested = patch.globalVrrMode;
+      const igclValue = DISPLAY_GLOBAL_VRR_MODE_TO_IGCL[requested];
+      if (igclValue === undefined) {
+        fail('globalVrrMode', 'out-of-range', `unknown global Variable Refresh Rate Mode '${requested}'`);
+      } else if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
+        fail('globalVrrMode', 'unavailable-symbol', 'the global Variable Refresh Rate Mode API is missing in the IGCL runtime');
+      } else {
+        const features = await this._graphicsCapsOf(deviceId, dev.handle);
+        const detail = features?.get(CTL_3D_FEATURE.VRR_WINDOWED_BLT);
+        if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM) {
+          fail('globalVrrMode', 'unsupported', 'the driver does not expose the global Variable Refresh Rate Mode feature');
+        } else {
+          const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue });
+          const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('globalVrrMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
+            const readResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+            const got = readResult === CTL_RESULT.SUCCESS
+              ? DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType]
+              : null;
+            const readBackEqual = got === requested;
+            result.perControl.globalVrrMode = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message: readBackEqual ? undefined : `read-back ${got ?? (readResult === CTL_RESULT.SUCCESS ? 'unknown' : describeResult(readResult))} != requested ${requested}`,
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+            };
+            if (!readBackEqual) result.ok = false;
           }
         }
       }

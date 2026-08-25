@@ -1190,7 +1190,7 @@ async function main() {
     : createGameScanAdapter({
       getArtwork: async (exePath) => {
         try {
-          const icon = await app.getFileIcon(exePath, { size: 'small' });
+          const icon = await app.getFileIcon(exePath, { size: 'large' });
           const dataUrl = icon.toDataURL();
           return /^data:image\/(?:png|jpeg|webp);base64,/.test(dataUrl) ? dataUrl : null;
         } catch { return null; }

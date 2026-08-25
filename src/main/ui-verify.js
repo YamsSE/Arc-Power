@@ -4173,7 +4173,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('rid-verify-two.exe'))?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.game-profile-back') && (document.body.textContent ?? '').includes('Back to catalog')`))) fail('M55: clicking a catalog card did not open the in-page detail view');
     const gameLabels = await js(`Array.from(document.querySelectorAll('.game-profile-detail .profile-setting-label strong')).map((x) => x.textContent.trim()).concat(Array.from(document.querySelectorAll('.game-use-profile')).map(() => 'Use Profile'))`);
-    for (const label of ['Frame Synchronization', 'FPS Limiter', 'Low Latency', 'Use Profile']) if (!gameLabels.includes(label)) fail(`M55: Game Profile detail is missing ${label}`);
+    for (const label of ['Frame Synchronization', 'FPS Limiter', 'Low Latency Mode', 'Use Profile']) if (!gameLabels.includes(label)) fail(`M55: Game Profile detail is missing ${label}`);
+    if (gameLabels.includes('Endurance Gaming')) fail('M55: Endurance Gaming was exposed on the discrete mock adapter');
     await js(`(() => { const s = document.querySelector('.game-profile-detail select.game-setting-control'); s.value = 'vsync-off'; s.dispatchEvent(new Event('change', { bubbles: true })); const l = document.querySelectorAll('.game-profile-detail select.game-setting-control')[1]; l.value = 'on'; l.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     if (!(await waitFor(win, `window.arcPower.gameCatalogList().then((e) => e.settings.some((s) => s.exePath.endsWith('rid-verify-two.exe') && s.graphics.flipMode === 'vsync-off' && s.graphics.lowLatency === 'on'))`, 8000))) fail('M55: Game Profile settings did not read back independently from the catalog');
     await js(`document.querySelector('.game-profile-back')?.click()`);
@@ -5088,10 +5089,12 @@ export async function runDisplayVerify(win, backend) {
   if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="displayScalingMethod"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: Display Scaling method change did not expose its Apply action');
   await js(`document.querySelector('.display-control[data-control="displayScalingMethod"] .oc-chip-apply').click()`);
   if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].scalingMode === 'custom')`, 8000))) fail('D1: Display Scaling method apply did not update the fresh driver readback');
-  await js(`(() => { const s = document.querySelector('.display-select[data-display-select="vrrMode"]'); if (!s || s.options.length < 2) return false; s.value = s.options[1].value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="vrrMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: Arc Sync profile change did not expose its Apply action');
-  await js(`document.querySelector('.display-control[data-control="vrrMode"] .oc-chip-apply').click()`);
-  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].vrrMode?.value === 'excellent')`, 8000))) fail('D1: Arc Sync profile apply did not update the fresh driver readback');
+  const globalVrrOptions = await js(`(() => Array.from(document.querySelectorAll('.display-select[data-display-select="globalVrrMode"] option')).map((o) => o.value))()`);
+  if (JSON.stringify(globalVrrOptions) !== JSON.stringify(['fullscreen', 'fullscreen-windowed', 'disabled'])) fail('D1: IGS Variable Refresh Rate Mode must expose Fullscreen, Fullscreen & Windowed, Disabled in that order');
+  await js(`(() => { const s = document.querySelector('.display-select[data-display-select="globalVrrMode"]'); if (!s) return false; s.value = 'fullscreen-windowed'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="globalVrrMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: global Variable Refresh Rate Mode change did not expose its Apply action');
+  await js(`document.querySelector('.display-control[data-control="globalVrrMode"] .oc-chip-apply').click()`);
+  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].globalVrrMode?.value === 'fullscreen-windowed')`, 8000))) fail('D1: global Variable Refresh Rate Mode apply did not update the fresh driver readback');
   const stale = await js(`window.arcPower.displayApply(0, { deviceKey: 'stale-device', displayKey: ${JSON.stringify(target.displayKey)}, patch: { quantizationRange: 'default' } }).then(() => 'accepted').catch((e) => String(e.message ?? e))`);
   if (stale === 'accepted' || !String(stale).toLowerCase().includes('stale')) fail(`D1: stale display target was not rejected honestly: ${stale}`);
   if (process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1') {
