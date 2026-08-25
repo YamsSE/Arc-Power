@@ -66,7 +66,7 @@ export async function runSmoke(backend, opts = {}) {
   step('presentmon', `resolved: ${pmPath}`);
 
   // --- init + discovery -----------------------------------------------------
-  step('init', 'backend.init() (zero UID + CTL_INIT_FLAG_USE_LEVEL_ZERO)');
+  step('init', 'backend.init() (zero UID + Level Zero + CTL_INIT_FLAG_IGSC_FUL)');
   try {
     await backend.init();
   } catch (err) {

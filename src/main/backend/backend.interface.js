@@ -55,7 +55,7 @@
  * IGCL OC error surface, decoupled from raw ctl_result_t values so the
  * sidecar/mock can map 1:1).
  * @typedef {'waiver-not-set'|'out-of-range'|'locked-mode'|'reset-required'
- *   |'unsupported'|'unavailable-symbol'|'invalid-argument'|'io-failed'} OcErrorCode
+ *   |'unsupported'|'unavailable-symbol'|'invalid-argument'|'permission-denied'|'io-failed'} OcErrorCode
  */
 
 /**
@@ -361,6 +361,7 @@ export function igclErrorCode(code) {
     case 0x44000007: return 'reset-required';
     case 0x4400000e: return 'out-of-range'; // invalid custom VF curve
     case 0x4000000a: return 'unsupported';
+    case 0x40000006: return 'permission-denied';
     // Invalid argument is a caller/driver contract violation - deterministic,
     // never transient: classify as a HARD error (instant fail) in the F3 core.
     case 0x4000000b: return 'invalid-argument';

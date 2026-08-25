@@ -1194,14 +1194,13 @@ async function main() {
     }
     : createGameScanAdapter({
       getArtwork: async (exePath) => {
-        const poster = await findGamePosterArtwork(exePath, { allowRemote: true });
-        if (poster) return poster;
         try {
           const icon = await app.getFileIcon(exePath, { size: 'large' });
           const dataUrl = icon.toDataURL();
           return /^data:image\/(?:png|jpeg|webp);base64,/.test(dataUrl) ? dataUrl : null;
         } catch { return null; }
       },
+      getBanner: async (exePath) => findGamePosterArtwork(exePath),
     });
   // Mock/ui-verify sessions seed the session mode into the ISOLATED store
   // (never the real settings.json - F4 above). The real product path never
@@ -2629,13 +2628,15 @@ async function main() {
       return result.canceled ? null : (result.filePaths[0] ?? null);
     },
     gameArtwork: async (exePath) => {
-      const poster = await findGamePosterArtwork(exePath, { allowRemote: true });
-      if (poster) return poster;
+      const banner = await findGamePosterArtwork(exePath);
       try {
         const icon = await app.getFileIcon(exePath, { size: 'large' });
         const dataUrl = icon.toDataURL();
-        return /^data:image\/(?:png|jpeg|webp);base64,/.test(dataUrl) ? dataUrl : null;
-      } catch { return null; }
+        return {
+          banner,
+          artwork: /^data:image\/(?:png|jpeg|webp);base64,/.test(dataUrl) ? dataUrl : null,
+        };
+      } catch { return { banner, artwork: null }; }
     },
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }

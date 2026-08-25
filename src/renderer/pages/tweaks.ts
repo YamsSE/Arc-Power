@@ -149,9 +149,9 @@ function actionButtons(entry: RegistryEntry, onApply: (action: ApplyAction) => v
 
 function tweakDescription(entry: RegistryEntry, state: RegistryEntryState | undefined): string {
   if (entry.id === 'mpo') {
-    if (state?.state === 'enabled') return 'MPO is disabled by this tweak. Disable the tweak to restore MPO.';
-    if (state?.state === 'disabled') return 'MPO is active. Enable the tweak to disable MPO.';
-    return 'MPO follows the Windows default. Enable the tweak to disable MPO.';
+    if (state?.state === 'enabled') return 'MPO suppression is enabled with MPOHack and DWM OverlayTestMode=5. Disable or Revert to restore the normal path.';
+    if (state?.state === 'disabled') return 'MPO is active. Enable writes both the legacy MPOHack value and DWM OverlayTestMode=5 for compatibility testing.';
+    return 'MPO follows the Windows default. Enable writes MPOHack plus DWM OverlayTestMode=5; validate behavior with PresentMon or GPUView.';
   }
   if (entry.id === 'game-dvr') {
     if (state?.state === 'enabled') return 'Background recording is disabled by this tweak. Disable the tweak to restore it.';

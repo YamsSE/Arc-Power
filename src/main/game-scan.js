@@ -4,7 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
 import { canonicalExePath, isLikelyGameCandidate, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
-import { deterministicArtworkKey, isValidArtwork } from './store/game-profile-store.js';
+import { deterministicArtworkKey, isValidArtwork, isValidBanner } from './store/game-profile-store.js';
 
 export { canonicalExePath, isLikelyGameCandidate, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
 
@@ -17,8 +17,12 @@ const ARTWORK_CONCURRENCY = 4;
 const SCAN_MAX_START_MENU_ITEMS = 256;
 const SCAN_MAX_REGISTRY_ITEMS = 512;
 const SCAN_MAX_INSTALL_CANDIDATES = 16;
-const POSTER_MAX_BYTES = 512 * 1024;
-const POSTER_NAMES = ['library_hero', 'library_capsule', 'capsule', 'cover', 'poster', 'banner', 'steam_grid'];
+const POSTER_MAX_BYTES = 2 * 1024 * 1024;
+const STEAM_MAX_MANIFESTS = 512;
+const STEAM_MAX_USERS = 16;
+// Only exact, conventional artwork names are considered. This keeps the
+// resolver deterministic without walking arbitrary install contents.
+const POSTER_NAMES = ['library_hero', 'library_capsule', 'header', 'banner', 'cover', 'poster', 'capsule', 'steam_grid'];
 const POSTER_EXTENSIONS = new Map([
   ['.png', 'image/png'],
   ['.jpg', 'image/jpeg'],
@@ -26,7 +30,6 @@ const POSTER_EXTENSIONS = new Map([
   ['.webp', 'image/webp'],
 ]);
 const STEAM_ARTWORK_FILES = ['library_600x900_2x.jpg', 'library_600x900.jpg', 'library_capsule.jpg', 'header.jpg'];
-const STEAM_ARTWORK_TIMEOUT_MS = 900;
 
 const withTimeout = (promise, timeoutMs) => Promise.race([
   promise,
@@ -76,6 +79,7 @@ export function normalizeScannedApps(rows, excludedPaths = [], opts = {}) {
       displayName: displayNameRaw.replace(/\.exe$/i, ''),
       artwork: isValidArtwork(row?.artwork)
         ? row.artwork : deterministicArtworkKey(exePath),
+      banner: isValidBanner(row?.banner) ? row.banner : null,
       source: 'scan',
     };
     if (existing) {
@@ -83,6 +87,7 @@ export function normalizeScannedApps(rows, excludedPaths = [], opts = {}) {
         processName: existing.processName || normalized.processName,
         displayName: explicitDisplayName ? normalized.displayName : existing.displayName,
         artwork: isValidArtwork(existing.artwork) && !/^fallback-/.test(existing.artwork) ? existing.artwork : normalized.artwork,
+        banner: isValidBanner(existing.banner) ? existing.banner : normalized.banner,
       });
     } else {
       const displayKey = normalized.displayName.toLocaleLowerCase();
@@ -126,10 +131,11 @@ export async function findGamePosterArtwork(exePath, opts = {}) {
       }
     }
   }
-  // Steam keeps the high-resolution library art in appcache/userdata rather
+  // Steam keeps high-resolution library art in local appcache/userdata rather
   // than beside the executable. Resolve the AppID from the local manifest,
-  // then prefer local cache art before the public CDN. All paths and bytes
-  // remain bounded; offline or missing artwork simply falls back to the icon.
+  // then prefer local cache art. Network artwork is intentionally excluded:
+  // this feature is a local catalog cache and must not turn a refresh into a
+  // network scan or remote-content fetch.
   const steam = await steamContext(canonical);
   if (steam) {
     const localCandidates = [];
@@ -137,8 +143,7 @@ export async function findGamePosterArtwork(exePath, opts = {}) {
     for (const name of STEAM_ARTWORK_FILES) localCandidates.push(path.win32.join(libraryCache, `${steam.appId}_${name}`));
     try {
       const users = await readdir(path.win32.join(steam.root, 'userdata'), { withFileTypes: true });
-      for (const user of users.slice(0, 16)) {
-        if (!user.isDirectory()) continue;
+      for (const user of users.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name)).slice(0, STEAM_MAX_USERS)) {
         for (const name of ['.png', '.jpg', '.jpeg', '.webp']) {
           localCandidates.push(path.win32.join(steam.root, 'userdata', user.name, 'config', 'grid', `${steam.appId}p${name}`));
         }
@@ -152,23 +157,13 @@ export async function findGamePosterArtwork(exePath, opts = {}) {
         if (mime && bytes.length > 0 && bytes.length <= maxBytes) return `data:${mime};base64,${bytes.toString('base64')}`;
       } catch { /* optional cache item */ }
     }
-    if (opts.allowRemote === true && typeof fetch === 'function') {
-      for (const name of STEAM_ARTWORK_FILES) {
-        const controller = new AbortController();
-        try {
-          const response = await withTimeout(fetch(`https://cdn.cloudflare.steamstatic.com/steam/apps/${steam.appId}/${name}`, { signal: controller.signal }), STEAM_ARTWORK_TIMEOUT_MS);
-          if (!response || !response.ok) continue;
-          const type = response.headers.get('content-type')?.split(';')[0] ?? 'image/jpeg';
-          if (!/^image\/(?:jpeg|png|webp)$/.test(type)) continue;
-          const bytes = Buffer.from(await response.arrayBuffer());
-          if (bytes.length > 0 && bytes.length <= maxBytes) return `data:${type};base64,${bytes.toString('base64')}`;
-        } catch { /* offline CDN or timeout */ }
-        finally { controller.abort(); }
-      }
-    }
   }
   return null;
 }
+
+// Keep the old export name for existing callers while exposing the intent of
+// the local-banner path to future catalog consumers.
+export const findGameBannerArtwork = findGamePosterArtwork;
 
 async function steamContext(canonical) {
   const match = canonical.match(/^(.*\\steamapps)\\common\\([^\\]+)(?:\\.*)?$/i);
@@ -177,9 +172,9 @@ async function steamContext(canonical) {
   const installDir = match[2].toLocaleLowerCase();
   let entries;
   try { entries = await readdir(steamapps); } catch { return null; }
-  for (const entry of entries) {
+  const manifests = entries.filter((entry) => /^appmanifest_\d+\.acf$/i.test(entry)).sort().slice(0, STEAM_MAX_MANIFESTS);
+  for (const entry of manifests) {
     const appId = entry.match(/^appmanifest_(\d+)\.acf$/i)?.[1];
-    if (!appId) continue;
     try {
       const manifest = await readFile(path.win32.join(steamapps, entry), 'utf8');
       const name = manifest.match(/"installdir"\s+"([^"]+)"/i)?.[1]?.toLocaleLowerCase();
@@ -190,7 +185,7 @@ async function steamContext(canonical) {
 }
 
 export async function enrichScannedApps(apps, getArtwork, opts = {}) {
-  if (!Array.isArray(apps) || typeof getArtwork !== 'function') return apps;
+  if (!Array.isArray(apps) || (typeof getArtwork !== 'function' && typeof opts.getBanner !== 'function')) return apps;
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? Math.max(1, opts.timeoutMs) : ARTWORK_RESOLVE_TIMEOUT_MS;
   const maxItems = Number.isInteger(opts.maxItems) ? Math.max(0, opts.maxItems) : ARTWORK_MAX_ITEMS;
   const maxBytes = Number.isFinite(opts.maxBytes) ? Math.max(0, opts.maxBytes) : ARTWORK_MAX_BYTES;
@@ -198,17 +193,34 @@ export async function enrichScannedApps(apps, getArtwork, opts = {}) {
   const out = apps.slice();
   let next = 0;
   let artworkBytes = 0;
+  let bannerBytes = 0;
   const worker = async () => {
     while (true) {
       const index = next++;
       if (index >= Math.min(apps.length, maxItems)) return;
       const item = apps[index];
       try {
-        const artwork = await withTimeout(Promise.resolve(getArtwork(item.exePath)), timeoutMs);
+        const [artwork, banner] = await Promise.all([
+          typeof getArtwork === 'function' ? withTimeout(Promise.resolve(getArtwork(item.exePath)), timeoutMs) : item.artwork,
+          typeof opts.getBanner === 'function' ? withTimeout(Promise.resolve(opts.getBanner(item.exePath)), timeoutMs) : item.banner,
+        ]);
+        const nextItem = { ...item };
         if (isValidArtwork(artwork) && artworkBytes + artwork.length <= maxBytes) {
           artworkBytes += artwork.length;
-          out[index] = { ...item, artwork };
+          nextItem.artwork = artwork;
         }
+        if (typeof opts.getBanner === 'function') {
+          const bannerMaxBytes = Number.isFinite(opts.bannerMaxBytes) ? Math.max(0, opts.bannerMaxBytes) : maxBytes;
+          if (isValidBanner(banner) && bannerBytes + banner.length <= bannerMaxBytes) {
+            bannerBytes += banner.length;
+            nextItem.banner = banner;
+          } else {
+            // A refresh is also cache invalidation: a missing/invalid local
+            // file must clear a previously resolved banner.
+            nextItem.banner = null;
+          }
+        }
+        out[index] = nextItem;
       } catch { /* deterministic fallback remains */ }
     }
   };
@@ -292,8 +304,8 @@ foreach ($process in @(Get-CimInstance Win32_Process | Where-Object { $_.Executa
         const { stdout } = await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
         const parsed = stdout.trim() ? JSON.parse(stdout) : [];
         const apps = normalizeScannedApps(Array.isArray(parsed) ? parsed : [parsed], excluded, { requireExists: true, onlyGames: true });
-        if (typeof opts.getArtwork !== 'function') return { apps };
-        const enriched = await enrichScannedApps(apps, opts.getArtwork, opts.artworkBudget);
+        if (typeof opts.getArtwork !== 'function' && typeof opts.getBanner !== 'function') return { apps };
+        const enriched = await enrichScannedApps(apps, opts.getArtwork, { ...(opts.artworkBudget ?? {}), getBanner: opts.getBanner });
         return { apps: enriched };
       } catch (err) {
         return { apps: [], error: `Game scan unavailable: ${err instanceof Error ? err.message : String(err)}` };

@@ -41,6 +41,7 @@ const ERROR_MESSAGES: Record<OcErrorCode, string> = {
   unsupported: 'This control is not supported on this GPU.',
   'unavailable-symbol': 'The IGCL runtime on this driver is missing the API for this control - update the Intel graphics driver.',
   'invalid-argument': 'The driver rejected the value as invalid - update the Intel graphics driver and try again.',
+  'permission-denied': 'The driver denied this global setting. Update the Intel graphics driver or apply it from Intel Graphics Software; no value was changed.',
   'io-failed': 'The GPU driver did not accept the value (read-back mismatch).',
 };
 

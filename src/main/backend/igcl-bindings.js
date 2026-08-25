@@ -18,6 +18,7 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 export const CTL_INIT_FLAG_USE_LEVEL_ZERO = 0x00000001;
+export const CTL_INIT_FLAG_IGSC_FUL = 0x00000002;
 
 export const CTL_RESULT = {
   SUCCESS: 0x00000000,

@@ -10,6 +10,7 @@ import { canonicalExePath, validateSafeGameCandidate } from '../game-candidate.j
 export { canonicalExePath } from '../game-candidate.js';
 
 export const GAME_PROFILE_SCHEMA_VERSION = 2;
+export const MAX_BANNER_DATA_LENGTH = 3_000_000;
 
 export function deterministicArtworkKey(value) {
   const text = String(value ?? '').toLowerCase();
@@ -24,9 +25,19 @@ export function isValidArtwork(value) {
   return /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
 
+/** Banner data is cached separately from the executable icon fallback. */
+export function isValidBanner(value) {
+  if (typeof value !== 'string' || value.length > MAX_BANNER_DATA_LENGTH) return false;
+  return /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
 function sanitizeArtwork(value, fallback) {
   if (isValidArtwork(value)) return value;
   return fallback;
+}
+
+function sanitizeBanner(value) {
+  return isValidBanner(value) ? value : null;
 }
 
 function defaultDataDir() {
@@ -84,6 +95,7 @@ export function normalizeCatalogEntry(raw) {
     processName,
     displayName,
     artwork: sanitizeArtwork(raw.artwork, deterministicArtworkKey(exePath)),
+    banner: sanitizeBanner(raw.banner),
     source: raw.source === 'manual' ? 'manual' : 'scan',
     createdAt: cleanTime(raw.createdAt, now),
     updatedAt: cleanTime(raw.updatedAt, now),
@@ -148,6 +160,7 @@ export function normalizeAssociation(raw) {
     processName,
     displayName,
     artwork: sanitizeArtwork(raw.artwork, deterministicArtworkKey(exePath)),
+    banner: sanitizeBanner(raw.banner),
     source: raw.source === 'manual' ? 'manual' : 'scan',
     enabled: raw.enabled !== false,
     graphics: cleanGraphics(raw.graphics),
@@ -239,7 +252,13 @@ export class GameProfileStore {
       associations,
       catalog: normalizeCatalog(safeCatalogRecords(migratedCatalog)).map((entry) => {
         const association = associations.find((item) => item.exePath === entry.exePath);
-        return association ? { ...entry, processName: association.processName, displayName: association.displayName, artwork: isValidArtwork(association.artwork) ? association.artwork : entry.artwork } : entry;
+        return association ? {
+          ...entry,
+          processName: association.processName,
+          displayName: association.displayName,
+          artwork: isValidArtwork(association.artwork) ? association.artwork : entry.artwork,
+          banner: isValidBanner(association.banner) ? association.banner : entry.banner,
+        } : entry;
       }),
       settings: normalizeSettings(safeCatalogRecords(migratedSettings)),
     };
@@ -321,7 +340,9 @@ export class GameProfileStore {
         data.catalog = data.catalog.filter((item) => item.exePath !== association.exePath);
         data.catalog.push(normalizeCatalogEntry({ ...(existingCatalog ?? {}), ...association,
           artwork: isValidArtwork(association.artwork) && !/^fallback-/.test(association.artwork)
-            ? association.artwork : existingCatalog?.artwork }));
+            ? association.artwork : existingCatalog?.artwork,
+          banner: isValidBanner(association.banner) ? association.banner : existingCatalog?.banner,
+        }));
         const existingSettings = data.settings.find((item) => item.exePath === association.exePath);
         data.settings = data.settings.filter((item) => item.exePath !== association.exePath);
         data.settings.push(normalizeGameSettings({ ...(existingSettings ?? {}), ...association, graphics: { ...(existingSettings?.graphics ?? {}), ...(association.graphics ?? {}) } }));
@@ -388,6 +409,10 @@ export class GameProfileStore {
           // deterministic fallback and must not erase a prior real artwork.
           artwork: isValidArtwork(entry.artwork) && !/^fallback-/.test(entry.artwork)
             ? entry.artwork : previous.artwork,
+          // Banner resolution is part of the scan cache. An authoritative
+          // refresh therefore replaces (including clearing) the prior value;
+          // stale local art must not survive after the file is removed.
+          banner: entry.banner,
           createdAt: previous.createdAt || entry.createdAt,
         } : entry);
       }
@@ -411,6 +436,7 @@ export class GameProfileStore {
         ...incoming,
         source: 'manual',
         artwork: isValidArtwork(raw?.artwork) && !/^fallback-/.test(raw.artwork) ? raw.artwork : previous.artwork,
+        banner: incoming.banner,
         createdAt: previous.createdAt || incoming.createdAt,
       } : incoming;
       data.catalog = normalizeCatalog([...data.catalog.filter((item) => item.exePath !== safePath), entry]);

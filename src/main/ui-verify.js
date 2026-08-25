@@ -4551,6 +4551,62 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   const tweakIds = await js(`Array.from(document.querySelectorAll('.tweak-card')).map((c) => c.dataset.tweak).join(',')`);
   if (tweakIds !== 'mpo,hags,game-dvr,fullscreen-optimizations') fail(`tweak cards are '${tweakIds}'`);
+  // The shared compact card layout keeps the collapsible content aligned with
+  // the title while removing only its vertical padding in the closed state.
+  const tweakLayout = await js(`(() => {
+    const card = document.querySelector('.tweak-card[data-tweak="mpo"]');
+    const title = card?.querySelector('.tweak-title');
+    const body = card?.querySelector('.tweak-collapse-body');
+    const inner = card?.querySelector('.tweak-collapse-inner');
+    if (!title || !body || !inner) return false;
+    const titleStyle = getComputedStyle(title);
+    const innerStyle = getComputedStyle(inner);
+    return body.classList.contains('is-collapsed')
+      && title.getAttribute('aria-expanded') === 'false'
+      && titleStyle.paddingInlineStart === '14px'
+      && titleStyle.paddingInlineEnd === '14px'
+      && innerStyle.paddingInlineStart === '14px'
+      && innerStyle.paddingInlineEnd === '14px'
+      && innerStyle.paddingTop === '0px'
+      && innerStyle.paddingBottom === '0px';
+  })()`);
+  if (!tweakLayout) fail('collapsed tweak card content is not aligned with the title padding');
+  await js(`document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-title').click()`);
+  const tweakOpenLayout = await waitFor(win, `(() => {
+    const card = document.querySelector('.tweak-card[data-tweak="mpo"]');
+    const title = card?.querySelector('.tweak-title');
+    const body = card?.querySelector('.tweak-collapse-body');
+    const inner = card?.querySelector('.tweak-collapse-inner');
+    if (!title || !body || !inner) return false;
+    const innerStyle = getComputedStyle(inner);
+    return !body.classList.contains('is-collapsed')
+      && title.getAttribute('aria-expanded') === 'true'
+      && innerStyle.paddingInlineStart === '14px'
+      && innerStyle.paddingInlineEnd === '14px'
+      && innerStyle.paddingTop === '10px'
+      && innerStyle.paddingBottom === '12px';
+  })()`, 2000);
+  if (!tweakOpenLayout) {
+    const actual = await js(`(() => {
+      const card = document.querySelector('.tweak-card[data-tweak="mpo"]');
+      const title = card?.querySelector('.tweak-title');
+      const body = card?.querySelector('.tweak-collapse-body');
+      const inner = card?.querySelector('.tweak-collapse-inner');
+      if (!title || !body || !inner) return 'missing tweak layout nodes';
+      const style = getComputedStyle(inner);
+      return JSON.stringify({
+        collapsed: body.classList.contains('is-collapsed'),
+        expanded: title.getAttribute('aria-expanded'),
+        paddingInlineStart: style.paddingInlineStart,
+        paddingInlineEnd: style.paddingInlineEnd,
+        paddingTop: style.paddingTop,
+        paddingBottom: style.paddingBottom,
+      });
+    })()`);
+    fail(`expanded tweak card content padding is not compact and consistent (${actual})`);
+  }
+  await js(`document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-title').click()`);
+  await sleep(300);
   // The mock fixture covers the whole vocabulary: mpo=Off, hags=Active,
   // game-dvr=Default, fullscreen-optimizations=Active.
   const tweakStateOf = (id) => js(`document.querySelector('.tweak-card[data-tweak="${id}"] .tweak-state-label')?.textContent ?? ''`);
@@ -4592,7 +4648,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`mpo state did not refresh to Active after enable (got '${await tweakStateOf('mpo')}')`);
   }
   const mpoToast = await js(`document.querySelector('.toast-success .toast-message')?.textContent ?? ''`);
-  if (!/MPOHack=1 written to HKLM/.test(mpoToast)) fail(`mpo enable toast lacks the per-step detail: '${mpoToast}'`);
+  if (!/MPOHack=1 written to HKLM/.test(mpoToast) || !/OverlayTestMode=5 written to HKLM/.test(mpoToast)) {
+    fail(`mpo enable toast lacks the legacy + DWM per-step details: '${mpoToast}'`);
+  }
   await clearToasts();
   await js(`document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-action[data-action="revert"]').click()`);
   if (!(await waitFor(win, `(document.querySelector('.tweak-card[data-tweak="mpo"] .tweak-state-label')?.textContent ?? '').trim() === 'Default'`, 5000))) {

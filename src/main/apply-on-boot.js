@@ -53,7 +53,32 @@ function stableTargetMatchesKey(target, expectedKey) {
     const expectedPnp = expectedKey.slice(4).trim().replace(/[\u0000\s]+/g, '').toUpperCase();
     const targetPnp = String(target?.pnpDeviceId ?? target?.osController?.pnpDeviceId ?? '')
       .trim().replace(/[\u0000\s]+/g, '').toUpperCase();
-    return expectedPnp.length > 0 && expectedPnp === targetPnp;
+    if (targetPnp.length > 0) return expectedPnp.length > 0 && expectedPnp === targetPnp;
+
+    const expectedPci = pnpParts(expectedPnp);
+    if (!expectedPci) return false;
+    const normalizePciId = (value) => {
+      const text = typeof value === 'number' && Number.isInteger(value)
+        ? value.toString(16)
+        : typeof value === 'string' ? value.trim().replace(/^0x/i, '') : '';
+      return /^[0-9a-f]{1,8}$/i.test(text) ? text.toLowerCase().slice(-4).padStart(4, '0') : null;
+    };
+    const targetVendor = normalizePciId(target?.pciVendorId ?? target?.osController?.pciVendorId);
+    const targetDevice = normalizePciId(target?.pciDeviceId ?? target?.osController?.pciDeviceId);
+    if (targetVendor !== expectedPci.ven.slice(2) || targetDevice !== expectedPci.dev.slice(2)) return false;
+
+    // PNP SUBSYS_<device><vendor> maps to IGCL's separate subsystem fields.
+    // A zero/absent persisted subsystem is unknown; otherwise compare each
+    // subsystem field the raw row actually supplies. Vendor/device remain
+    // mandatory, so this never degrades to a name or ordinal match.
+    const expectedSubsys = expectedPci.subsys?.toLowerCase() ?? null;
+    if (expectedSubsys && expectedSubsys !== '00000000') {
+      const targetSubsysVendor = normalizePciId(target?.pciSubsysVendorId ?? target?.osController?.pciSubsysVendorId);
+      const targetSubsysId = normalizePciId(target?.pciSubsysId ?? target?.osController?.pciSubsysId);
+      if (targetSubsysVendor !== expectedSubsys.slice(4)
+        || targetSubsysId !== expectedSubsys.slice(0, 4)) return false;
+    }
+    return true;
   }
   return expectedKey.startsWith('pci:') && physicalTargetOf(target)?.legacyDeviceKey === expectedKey;
 }
@@ -79,13 +104,17 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
   const key = typeof explicitDeviceKey === 'string'
     ? explicitDeviceKey
     : (typeof settings?.deviceKey === 'string' ? settings.deviceKey : null);
-  const matched = key
-    ? devices.find((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key)
-    : null;
-  if (matched) return matched.id;
+  if (key) {
+    const exactMatches = devices.filter((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key);
+    if (exactMatches.length === 1) return exactMatches[0].id;
+    // An exact durable key is only safe when it identifies one current row.
+    // Duplicate rows can occur during a raw/PNP refresh; never let the first
+    // enumeration entry win merely because it happened to come first.
+    if (exactMatches.length > 1) return undefined;
+  }
   // M45: a raw boot backend may expose PCI/BDF rows while the persisted
   // inventory key is PNP-first. Reconcile only a unique writable row with
-  // the same PNP vendor/device pair; never use enumeration order.
+  // the same PNP vendor/device/subsystem proof; never use enumeration order.
   if (key) {
     const pnp = pnpParts(key);
     if (pnp) {
@@ -99,9 +128,14 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
         && device.backendKind !== 'os'
         && device.identityAmbiguous !== true
         && normalizePciId(device.pciVendorId) === pnp.ven
-        && normalizePciId(device.pciDeviceId) === pnp.dev);
+        && normalizePciId(device.pciDeviceId) === pnp.dev
+        && (!pnp.subsys || pnp.subsys === '00000000'
+          || (normalizePciId(device.pciSubsysVendorId) === `0x${pnp.subsys.slice(4).toLowerCase()}`
+            && normalizePciId(device.pciSubsysId) === `0x${pnp.subsys.slice(0, 4).toLowerCase()}`)));
       if (candidates.length === 1) return candidates[0].id;
-      if (candidates.length > 1) return undefined;
+      // A persisted subsystem-bearing PNP key requires exact subsystem proof;
+      // missing or mismatched raw fields are stale, never a fallback target.
+      return undefined;
     }
   }
   // A supplied key is identity-sensitive. Never pair it with a different

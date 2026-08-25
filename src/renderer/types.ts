@@ -13,6 +13,7 @@ export type OcErrorCode =
   | 'unsupported'
   | 'unavailable-symbol'
   | 'invalid-argument'
+  | 'permission-denied'
   | 'io-failed';
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
@@ -799,6 +800,8 @@ export interface GameApplication {
   displayName: string;
   source: 'scan' | 'manual';
   artwork?: string;
+  /** Optional local game banner cached by the main-process catalog. */
+  banner?: string;
 }
 
 export interface GameCatalogEntry extends GameApplication {
@@ -822,6 +825,7 @@ export interface GameAssociation {
   displayName: string;
   source: 'scan' | 'manual';
   artwork?: string;
+  banner?: string;
   enabled: boolean;
   graphics: GameProfileGraphics;
   createdAt: string;

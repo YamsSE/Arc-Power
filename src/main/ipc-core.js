@@ -638,7 +638,9 @@ export async function resolveBootDeviceId(backend, store) {
     // degraded: never re-persist over an unreadable store
   }
   const persistedKey = typeof settings?.deviceKey === 'string' ? settings.deviceKey : null;
-  let matched = persistedKey ? keyed.find((d) => d.deviceKey === persistedKey) : null;
+  const exactMatches = persistedKey ? keyed.filter((d) => d.deviceKey === persistedKey) : [];
+  if (exactMatches.length > 1) return null;
+  let matched = exactMatches[0] ?? null;
   let reconciledPnp = false;
   // M45: the raw --boot-apply backend enumerates PCI/BDF rows, while the
   // window path persists a PNP-first inventory key. Reconcile only a PNP
@@ -658,7 +660,10 @@ export async function resolveBootDeviceId(backend, store) {
         && device.backendKind !== 'os'
         && device.identityAmbiguous !== true
         && normalizePciId(device.pciVendorId) === pnp.ven
-        && normalizePciId(device.pciDeviceId) === pnp.dev);
+        && normalizePciId(device.pciDeviceId) === pnp.dev
+        && (!pnp.subsys || pnp.subsys === '00000000'
+          || (normalizePciId(device.pciSubsysVendorId) === `0x${pnp.subsys.slice(4).toLowerCase()}`
+            && normalizePciId(device.pciSubsysId) === `0x${pnp.subsys.slice(0, 4).toLowerCase()}`)));
       if (candidates.length === 1) {
         matched = candidates[0];
         reconciledPnp = true;
@@ -2360,8 +2365,15 @@ export function createIpcHandlers({
           source: 'manual',
         };
         try {
-          const artwork = await gameArtwork(safePath);
-          if (typeof artwork === 'string' && artwork.length > 0) entry.artwork = artwork;
+          const media = await gameArtwork(safePath);
+          // Keep compatibility with injected/test providers that return the
+          // legacy icon string, while the real provider supplies separate
+          // cached banner and icon values.
+          if (typeof media === 'string' && media.length > 0) entry.artwork = media;
+          else if (media && typeof media === 'object') {
+            if (typeof media.artwork === 'string' && media.artwork.length > 0) entry.artwork = media.artwork;
+            if (typeof media.banner === 'string' && media.banner.length > 0) entry.banner = media.banner;
+          }
         } catch { /* artwork is optional; the renderer uses its deterministic fallback */ }
         try { return { canceled: false, ...(await gameProfiles.addCatalogEntry(entry)) }; }
         catch (err) { throw new Error(`game-catalog-add: ${err instanceof Error ? err.message : String(err)}`); }

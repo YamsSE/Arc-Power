@@ -76,32 +76,38 @@ export const REGISTRY_CATALOG = [
     // M3-C-H: plain-language, 1-2 lines (the long canonical-location /
     // hive-caveat prose is gone).
     description:
-      'Windows uses MPO to composite windows on separate planes; some setups see stutter, flicker, or black screens. It is off by default in Windows. Enable this tweak to disable MPO for compatibility testing.',
+      'MPO can cause stutter, flicker, or black screens. Windows normally leaves it on; Enable writes legacy MPOHack plus DWM OverlayTestMode=5 as an experimental suppression to validate with PresentMon or GPUView.',
     requiresElevation: true,
     absentLabel: 'Not set - MPO follows the driver default (usually on)',
     reads: [
       { path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
       { path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
+      { path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode', type: 'DWORD', on: '5', off: '0' },
     ],
-    // M3-B apply: MPOHack=1 disables MPO (the tweak's active state). The
-    // inactive state is MPOHack=0; REVERT deletes the value in both hives,
-    // which restores the system default (MPO on). The live e2e confirms the
-    // canonical key/value on this machine (see the description note above).
+    // Enable writes both the legacy MPOHack pair and DWM's stronger
+    // OverlayTestMode=5 workaround. Disable writes the explicit inactive
+    // values (MPOHack=0 and OverlayTestMode=0); Revert deletes all values so
+    // Windows/driver defaults apply again. OverlayTestMode remains an
+    // experimental, behaviorally unverified workaround until measured with
+    // PresentMon or GPUView on the target system.
     apply: {
       applyable: true,
-      revertNote: 'Revert deletes MPOHack from both hives - MPO follows the driver default again (usually on).',
+      revertNote: 'Revert deletes MPOHack and OverlayTestMode from their hives - MPO follows the Windows/driver defaults again.',
       actions: {
         enable: [
           { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '1' },
           { kind: 'add', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '1' },
+          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode', type: 'REG_DWORD', data: '5' },
         ],
         disable: [
           { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '0' },
           { kind: 'add', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '0' },
+          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode', type: 'REG_DWORD', data: '0' },
         ],
         revert: [
           { kind: 'delete', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack' },
           { kind: 'delete', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack' },
+          { kind: 'delete', path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode' },
         ],
       },
     },
@@ -344,6 +350,7 @@ const MOCK_READ_STATES = {
   mpo: [
     { found: false, value: null, state: 'default', detail: 'not present' },
     { found: true, value: '0x0', state: 'disabled', detail: 'MPOHack=0x0' },
+    { found: false, value: null, state: 'default', detail: 'not present' },
   ],
   // HAGS on (HwSchMode=2 - the common Win11 default).
   hags: [{ found: true, value: '0x2', state: 'enabled', detail: 'HwSchMode=0x2' }],

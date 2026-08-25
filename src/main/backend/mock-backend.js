@@ -165,6 +165,21 @@ function displayFixtureFor(deviceKey, adapterName, options = {}) {
   if (options.displayArcSyncSymbolsMissing === true) {
     displays.forEach((display) => {
       display.vrrMode = displayCapability(null, false, false, 'The Arc Sync profile API is missing in the IGCL runtime.', 'mock-missing-symbol');
+      display.variableRefreshRate = displayCapability(null, false, false, 'The Intel Arc Sync profile API is missing in the IGCL runtime.', 'mock-missing-symbol');
+      display.supportedOptions.vrrModes = [];
+    });
+  }
+  if (options.displayArcSyncUnsupported === true || options.displayArcSyncUnrecognizedProfile === true) {
+    displays.forEach((display) => {
+      const monitorSupported = options.displayArcSyncUnsupported !== true;
+      display.arcSync = {
+        supported: monitorSupported,
+        minRefreshHz: monitorSupported ? display.arcSync.minRefreshHz : null,
+        maxRefreshHz: monitorSupported ? display.arcSync.maxRefreshHz : null,
+        profile: options.displayArcSyncUnrecognizedProfile === true ? null : (monitorSupported ? display.arcSync.profile : null),
+      };
+      display.vrrMode = displayCapability(null, false, false, 'The display does not report a recognized Arc Sync profile.', 'mock-unsupported');
+      display.variableRefreshRate = displayCapability(null, false, false, 'The display does not report supported Arc Sync monitor/profile state.', 'mock-unsupported');
       display.supportedOptions.vrrModes = [];
     });
   }
@@ -222,6 +237,8 @@ export class MockBackend {
    *                                      // silent/no-readback wire-format surface
    *   displayRetroSymbolsMissing?: boolean, // retro-scaling API unavailable
    *   displayArcSyncSymbolsMissing?: boolean, // Arc Sync API unavailable
+   *   displayArcSyncUnsupported?: boolean, // monitor does not support Arc Sync
+   *   displayArcSyncUnrecognizedProfile?: boolean, // profile read is unknown
    *   displayDuplicateIdentity?: boolean, // duplicate stable display key
    *   displayRetroSilentNoop?: boolean, // setter succeeds, read-back unchanged
    *   displayArcSyncSilentNoop?: boolean, // setter succeeds, read-back unchanged
@@ -297,6 +314,8 @@ export class MockBackend {
     this._displayWireReadonly = opts.displayWireReadonly === true || process.env.RID_MOCK_DISPLAY_WIRE_READONLY === '1';
     this._displayRetroSymbolsMissing = opts.displayRetroSymbolsMissing === true;
     this._displayArcSyncSymbolsMissing = opts.displayArcSyncSymbolsMissing === true;
+    this._displayArcSyncUnsupported = opts.displayArcSyncUnsupported === true;
+    this._displayArcSyncUnrecognizedProfile = opts.displayArcSyncUnrecognizedProfile === true;
     this._displayDuplicateIdentity = opts.displayDuplicateIdentity === true;
     this._displayRetroSilentNoop = opts.displayRetroSilentNoop === true;
     this._displayArcSyncSilentNoop = opts.displayArcSyncSilentNoop === true;
@@ -447,6 +466,8 @@ export class MockBackend {
           displayDuplicateIdentity: this._displayDuplicateIdentity,
           displayRetroSymbolsMissing: this._displayRetroSymbolsMissing,
           displayArcSyncSymbolsMissing: this._displayArcSyncSymbolsMissing,
+          displayArcSyncUnsupported: this._displayArcSyncUnsupported,
+          displayArcSyncUnrecognizedProfile: this._displayArcSyncUnrecognizedProfile,
         }),
       };
     };
@@ -1138,7 +1159,7 @@ export class MockBackend {
     const e = this._entry(id);
     const patch = request?.patch && typeof request.patch === 'object' ? request.patch : {};
     const result = { ok: true, perControl: {} };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((key) => patch[key] !== null && patch[key] !== undefined);
     const fail = (key, errorCode, message) => {
       result.perControl[key] = { ok: false, errorCode, message };
@@ -1239,6 +1260,12 @@ export class MockBackend {
       else if (display.variableRefreshRate?.controllable !== true) fail('variableRefreshRate', 'unsupported', 'Variable Refresh Rate is not supported by this display');
       else {
         display.variableRefreshRate.value = patch.variableRefreshRate;
+        // Intel Graphics Software implements this separate switch by moving
+        // the Arc Sync profile to RECOMMENDED when enabled and OFF when
+        // disabled. Keep the mock coupled to that same contract so renderer
+        // tests cannot accidentally validate an impossible independent state.
+        display.vrrMode.value = patch.variableRefreshRate ? 'recommended' : 'off';
+        display.arcSync.profile = display.vrrMode.value;
         result.perControl.variableRefreshRate = { ok: display.variableRefreshRate.value === patch.variableRefreshRate, readBackEqual: display.variableRefreshRate.value === patch.variableRefreshRate };
       }
     }
@@ -1267,6 +1294,7 @@ export class MockBackend {
       else {
         display.vrrMode.value = patch.vrrMode;
         display.arcSync.profile = patch.vrrMode;
+        display.variableRefreshRate.value = patch.vrrMode !== 'off';
         result.perControl.vrrMode = { ok: display.vrrMode.value === patch.vrrMode, readBackEqual: display.vrrMode.value === patch.vrrMode };
       }
     }

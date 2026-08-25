@@ -184,6 +184,24 @@ function artworkTile(artwork: string | undefined, label: string, className = '')
   ]);
 }
 
+function gameBannerTile(banner: string | undefined, artwork: string | undefined, label: string, className = ''): HTMLElement {
+  const isDataBanner = typeof banner === 'string' && banner.length <= 3000000
+    && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(banner);
+  const isDataArtwork = typeof artwork === 'string' && artwork.length <= 750000
+    && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(artwork);
+  const image = isDataBanner ? banner : isDataArtwork ? artwork : './assets/game-cover-fallback.png';
+  let hash = 0;
+  for (const char of label) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  const initials = label.split(/[^A-Za-z0-9]+/).filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('') || '?';
+  return el('span', {
+    class: `profile-artwork profile-artwork-tone-${Math.abs(hash) % 5}${isDataBanner || isDataArtwork ? ' has-artwork' : ''}${className ? ` ${className}` : ''}`,
+    dataset: { hasBanner: isDataBanner ? 'true' : 'false' },
+  }, [
+    el('img', { src: image, alt: '', 'aria-hidden': 'true', decoding: 'async' }),
+    el('span', { class: 'profile-artwork-initials', text: initials }),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Minimal prompt/confirm modals (same modal-root as the waiver dialog)
 // ---------------------------------------------------------------------------
@@ -367,7 +385,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const cards = gameCatalog.map((game) => {
       const settings = gameSettingFor(game.exePath);
       return el('button', { class: 'game-catalog-card', dataset: { exePath: game.exePath }, onclick: () => { selectedGameExePath = game.exePath; renderGameDetail(game); } }, [
-        artworkTile(game.artwork, game.displayName, 'game-catalog-artwork'),
+        gameBannerTile(game.banner, game.artwork, game.displayName, 'game-catalog-artwork'),
         el('span', { class: 'game-catalog-copy' }, [el('strong', { text: game.displayName }), el('small', { text: settings?.enabled === false ? 'Use Profile off' : 'Installed game' })]),
       ]);
     });
@@ -405,10 +423,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]) as HTMLSelectElement;
     const save = (patch: Partial<GameSettingsRecord>): void => { void onGameSettingsSave(game, patch); };
     const detail = el('div', { class: 'profile-detail game-profile-detail' }, [
-      el('div', { class: 'profile-detail-head game-profile-detail-head' }, [
-        el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }),
-        el('div', { class: 'game-profile-title' }, [el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
-      ]),
+        el('div', { class: 'profile-detail-head game-profile-detail-head' }, [
+          el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }),
+          el('div', { class: 'game-profile-title' }, [el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
+        ]),
+      el('div', { class: 'game-profile-hero' }, [gameBannerTile(game.banner, game.artwork, game.displayName, 'game-profile-banner')]),
       el('div', { class: 'profile-app-badge' }, [artworkTile(game.artwork, game.displayName, 'profile-artwork-small'), el('span', { text: `${game.displayName}  ·  ${game.exePath}` })]),
       el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled === true, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Game profiles start disabled; enable this only when this executable should use its settings.' })]),
       ...(gameProfileCapabilities.enduranceGaming ? [el('section', { class: 'profile-settings-section game-igs-settings' }, [

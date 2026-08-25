@@ -55,7 +55,7 @@ import { isElevated as isElevatedReal } from './elevation.js';
  *   gameProfiles?: object,  // D2: injected atomic per-game sidecar store
  *   gameScan?: { scan: () => Promise<{ apps: object[], error?: string }> },  // D2: read-only running-process scanner
  *   chooseGameExecutable?: () => Promise<string|null|{ canceled?: boolean, filePaths?: string[] }>,
- *   gameArtwork?: (exePath: string) => Promise<string|null>,
+ *   gameArtwork?: (exePath: string) => Promise<string|null|{ artwork?: string|null, banner?: string|null }>,
  * }} ctx
  * @returns {() => Promise<void>}
  */

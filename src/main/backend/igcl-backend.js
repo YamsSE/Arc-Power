@@ -4,8 +4,8 @@
 // Loading/init policy (docs/igcl-integration.md §1–§2):
 //   - the runtime DLL is re-discovered every launch via the DriverStore scan
 //     (findIgclDll: active-driver-version matching, never "newest folder");
-//   - ctlInit uses the all-zeros application UID + CTL_INIT_FLAG_USE_LEVEL_ZERO
-//     (invented UIDs are rejected on the current driver);
+//   - ctlInit uses the all-zeros application UID + Level Zero + IGSC full
+//     functionality flags (invented UIDs are rejected on the current driver);
 //   - V2 OC APIs + capability-unit conversion (canonical Settings fields in
 //     W/V/MHz/C/GTS; never assume mV/mW) - pinned per-API unit contract
 //     (docs/igcl-integration.md §4).
@@ -25,12 +25,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_RESULT, CTL_FAN_SPEED_MODE, CTL_FAN_SPEED_UNITS,
+  CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_INIT_FLAG_IGSC_FUL, CTL_RESULT, CTL_FAN_SPEED_MODE, CTL_FAN_SPEED_UNITS,
   describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem, decodePciProperties,
   CTL_3D_FEATURE, CTL_PROPERTY_VALUE_TYPE, CTL_GAMING_FLIP_MODE_FLAG,
   CTL_3D_LOW_LATENCY, CTL_3D_FRAME_GENERATION_OVERRIDE,
   encode3dFeatureGetset, decode3dFeatureGetsetValue, decode3dFeatureDetails,
-  encodeAdaptiveSyncFeatureGetset, decodeAdaptiveSyncFeatureGetset,
   // M10b (the Graphics "Display" view): the display-module surface.
   CTL_SCALING_TYPE, CTL_WIRE_COLOR_MODEL,
   displayFlagNames, encodeDisplayProperties, decodeDisplayProperties,
@@ -166,36 +165,43 @@ const GRAPHICS_LL_TO_IGCL = { off: 0, on: 1, 'on-boost': 2 };
 const GRAPHICS_LL_FROM_IGCL = { 0: 'off', 1: 'on', 2: 'on-boost' };
 const GLOBAL_OR_PER_APP_TO_IGCL = { global: 2, 'per-app': 1 };
 
-function encodeAdaptiveSyncForDetail(detail, bSet, adaptiveSync) {
-  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
-    return encodeAdaptiveSyncFeatureGetset({ bSet, adaptiveSync });
+function selectGlobal3dScope(lib, adapterHandle, features) {
+  const detail = features?.get(CTL_3D_FEATURE.GLOBAL_OR_PER_APP);
+  if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM) {
+    return {
+      ok: false,
+      errorCode: 'unsupported',
+      message: 'the driver does not expose the IGCL global/per-application scope selector',
+    };
   }
-  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
-    return encode3dFeatureGetset({
-      featureType: CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS,
-      valueType: detail.valueType,
-      bSet,
-      enumValue: adaptiveSync ? 1 : 0,
-    });
-  }
-  return encode3dFeatureGetset({
-    featureType: CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS,
-    valueType: detail?.valueType ?? CTL_PROPERTY_VALUE_TYPE.BOOL,
-    bSet,
-    intEnable: adaptiveSync,
-    intValue: adaptiveSync ? 1 : 0,
+  // IGS selects GLOBAL first, then reads/writes VRR_WINDOWED_BLT with an empty
+  // executable name. Sending feature 14 alone leaves the previous per-app
+  // scope selected on drivers that enforce the selector contract.
+  const scope = encode3dFeatureGetset({
+    featureType: CTL_3D_FEATURE.GLOBAL_OR_PER_APP,
+    valueType: CTL_PROPERTY_VALUE_TYPE.ENUM,
+    bSet: true,
+    enumValue: GLOBAL_OR_PER_APP_TO_IGCL.global,
+    applicationName: '',
   });
-}
-
-function decodeAdaptiveSyncForDetail(detail, encoded) {
-  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
-    return decodeAdaptiveSyncFeatureGetset(encoded.custom).adaptiveSync;
+  let result;
+  try {
+    result = lib.ctlGetSet3DFeature(adapterHandle, scope.buf);
+  } catch {
+    return {
+      ok: false,
+      errorCode: 'io-failed',
+      message: 'IGCL global VRR scope selection failed while calling the driver. No VRR value was changed.',
+    };
   }
-  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
-    return decode3dFeatureGetsetValue(encoded.buf, detail.valueType).enableType === 1;
+  if (result !== CTL_RESULT.SUCCESS) {
+    return {
+      ok: false,
+      errorCode: igclErrorCode(result) ?? 'io-failed',
+      message: `IGCL global VRR scope selection failed (${describeResult(result)}). Update the Intel graphics driver or apply this setting from Intel Graphics Software; no VRR value was changed.`,
+    };
   }
-  const value = decode3dFeatureGetsetValue(encoded.buf, detail?.valueType ?? CTL_PROPERTY_VALUE_TYPE.BOOL);
-  return value.enable === true || value.value === 1;
+  return { ok: true };
 }
 
 function endurancePlatformSupported(device, laptopInfo = null) {
@@ -250,6 +256,13 @@ const DISPLAY_ARC_SYNC_PROFILE_TO_IGCL = {
 // Fullscreen & Windowed, and Disabled respectively.
 const DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL = { 0: 'fullscreen', 1: 'fullscreen-windowed', 2: 'disabled' };
 const DISPLAY_GLOBAL_VRR_MODE_TO_IGCL = { fullscreen: 0, 'fullscreen-windowed': 1, disabled: 2 };
+function globalVrrOptionsOf(detail) {
+  if (detail?.enumSupportedTypes == null) return [];
+  return DISPLAY_GLOBAL_VRR_MODE_OPTIONS.filter((mode) => {
+    const value = DISPLAY_GLOBAL_VRR_MODE_TO_IGCL[mode];
+    return (detail.enumSupportedTypes & (1n << BigInt(value))) !== 0n;
+  });
+}
 // ctl_std_display_feature_flag_t is a bitmask. These values are deliberately
 // named here instead of treating the flags as anonymous shifts at each read.
 const DISPLAY_FEATURE_HDCP = 1 << 0;
@@ -673,6 +686,7 @@ export class IgclBackend {
     this._ocMode = opts.ocMode === 'advanced' ? 'advanced' : 'stock';
     this._apiHandle = null;
     this._levelZeroOk = false;
+    this._igscFullOk = null;
     this._initError = null;
     this._devices = null;
     this._caps = new Map(); // deviceId -> Capabilities
@@ -786,16 +800,38 @@ export class IgclBackend {
         throw new Error('ctlInit symbol unavailable in the IGCL runtime - driver too old or wrong DLL loaded.');
       }
       const initArgs = koffi.alloc('ctl_init_args_t', 1);
-      koffi.encode(initArgs, 'ctl_init_args_t', {
+      const apiHandleBuf = koffi.alloc('void*', 1);
+      const encodeInitArgs = (flags) => koffi.encode(initArgs, 'ctl_init_args_t', {
         Size: koffi.sizeof('ctl_init_args_t'),
         Version: 0,
         AppVersion: makeVersion(1, 1),
-        flags: CTL_INIT_FLAG_USE_LEVEL_ZERO,
+        flags,
         SupportedVersion: 0,
         ApplicationUID: ZERO_UID,
       });
-      const apiHandleBuf = koffi.alloc('void*', 1);
-      const result = lib.ctlInit(initArgs, apiHandleBuf);
+      const closeFailedHandle = () => {
+        const failedHandle = koffi.decode(apiHandleBuf, 0, 'void*');
+        if (failedHandle && typeof lib.ctlClose === 'function') {
+          try { lib.ctlClose(failedHandle); } catch { /* best effort */ }
+        }
+        koffi.encode(apiHandleBuf, 0, 'void*', 0n);
+      };
+      const initWithFlags = (flags) => {
+        encodeInitArgs(flags);
+        koffi.encode(apiHandleBuf, 0, 'void*', 0n);
+        return lib.ctlInit(initArgs, apiHandleBuf);
+      };
+      let result = initWithFlags(CTL_INIT_FLAG_USE_LEVEL_ZERO | CTL_INIT_FLAG_IGSC_FUL);
+      if ((result >>> 0) === CTL_RESULT.ERROR_IGSC_LOADER) {
+        // A missing Intel Graphics Software loader must not take down the
+        // Level-Zero telemetry/OC path. If a broken runtime returned a handle
+        // alongside the refusal, release it before the one permitted retry.
+        closeFailedHandle();
+        result = initWithFlags(CTL_INIT_FLAG_USE_LEVEL_ZERO);
+        this._igscFullOk = false;
+      } else {
+        this._igscFullOk = result === CTL_RESULT.SUCCESS;
+      }
       if (result !== CTL_RESULT.SUCCESS) {
         if ((result >>> 0) === CTL_RESULT.ERROR_ZE_LOADER) {
           throw new Error('ctlInit failed: Level Zero loader (ze_loader.dll) not resolvable (CTL_RESULT_ERROR_ZE_LOADER).');
@@ -2203,79 +2239,59 @@ export class IgclBackend {
   }
 
   /**
-   * Read the IGS Global VRR mode independently from the Arc Sync tuning
-   * profile. The public IGCL runtime exposes the feature in its 3D capability
-   * list, but some driver builds refuse the global read/write surface; those
-   * builds remain visible as read-only with the exact IGS option list.
+   * Read the IGS Global VRR mode independently from the Arc Sync profile.
+   * The separate Display > General > Variable Refresh Rate switch is backed
+   * by ctlGet/SetIntelArcSyncProfile; it is deliberately not inferred from
+   * Adaptive Sync Plus (feature 10), which is absent on the A770 runtime.
    */
   async _readGlobalVrrMode(deviceId, adapterHandle) {
     const unavailable = (reason) => ({
       capability: displayCapability(null, false, false, reason, 'igcl-global-vrr'),
       options: [],
-      variableRefreshRate: displayCapability(null, false, false, 'Adaptive Sync Plus is not reported by the driver.', 'igcl-adaptive-sync'),
     });
     try {
+      if (this._igscFullOk === false) {
+        return unavailable('The IGSC full loader is unavailable; global Variable Refresh Rate is not exposed by this runtime.');
+      }
       const lib = this._libOrThrow();
       if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
         return unavailable('The global Variable Refresh Rate Mode API is not available in this IGCL runtime.');
       }
       const features = await this._graphicsCapsOf(deviceId, adapterHandle);
-      let variableRefreshRate = displayCapability(null, false, false, 'Adaptive Sync Plus is not reported by the driver.', 'igcl-adaptive-sync');
-      const adaptiveDetail = features?.get(CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS);
-      if (adaptiveDetail && [CTL_PROPERTY_VALUE_TYPE.BOOL, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32, CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.CUSTOM].includes(adaptiveDetail.valueType)) {
-        const adaptive = encodeAdaptiveSyncForDetail(adaptiveDetail, false, false);
-        const adaptiveResult = lib.ctlGetSet3DFeature(adapterHandle, adaptive.buf);
-        if (adaptiveResult === CTL_RESULT.SUCCESS) {
-          variableRefreshRate = displayCapability(
-            decodeAdaptiveSyncForDetail(adaptiveDetail, adaptive),
-            true,
-            true,
-            null,
-            'igcl-adaptive-sync',
-          );
-        } else {
-          // Keep the control visible when the driver advertises the custom
-          // surface but refuses the initial read. Apply will still perform a
-          // set + read-back and report the exact native result.
-          variableRefreshRate = displayCapability(
-            null,
-            true,
-            true,
-            `The driver reported Adaptive Sync Plus but refused read-back (${describeResult(adaptiveResult)}).`,
-            'igcl-adaptive-sync',
-          );
-        }
-      }
       const detail = features?.get(CTL_3D_FEATURE.VRR_WINDOWED_BLT);
       if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM) {
+        return unavailable('The global Variable Refresh Rate Mode feature is not reported by the driver.');
+      }
+      const options = globalVrrOptionsOf(detail);
+      if (options.length === 0) {
+        return unavailable('The driver did not advertise any supported global Variable Refresh Rate modes.');
+      }
+      const scope = selectGlobal3dScope(lib, adapterHandle, features);
+      if (!scope.ok) {
         return {
-          ...unavailable('The global Variable Refresh Rate Mode feature is not reported by the driver.'),
-          variableRefreshRate,
+          capability: displayCapability(null, true, false, scope.message, 'igcl-global-vrr'),
+          options,
         };
       }
-      const options = [...DISPLAY_GLOBAL_VRR_MODE_OPTIONS];
-      const defaultMode = DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[detail.enumDefaultType ?? 0] ?? 'fullscreen';
-      const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
+      const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false, applicationName: '' });
       const readResult = lib.ctlGetSet3DFeature(adapterHandle, gs.buf);
       if (readResult !== CTL_RESULT.SUCCESS) {
         return {
-          capability: displayCapability(defaultMode, true, true, `The driver reported the global Variable Refresh Rate Mode but refused read-back (${describeResult(readResult)}); Apply will verify the requested value.`, 'igcl-global-vrr'),
+          capability: displayCapability(null, true, false, `The driver reported global Variable Refresh Rate modes but refused read-back (${describeResult(readResult)}).`, 'igcl-global-vrr'),
           options,
-          variableRefreshRate,
         };
       }
-      const mode = DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType] ?? null;
-      if (!mode) {
+      const value = decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType;
+      const mode = DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[value] ?? null;
+      if (!mode || !options.includes(mode)) {
         return {
-          capability: displayCapability(defaultMode, true, true, 'The driver returned an unknown global Variable Refresh Rate Mode; Apply will verify the requested value.', 'igcl-global-vrr'),
+          capability: displayCapability(null, true, false, 'The driver returned an unknown or unsupported global Variable Refresh Rate Mode.', 'igcl-global-vrr'),
           options,
-          variableRefreshRate,
         };
       }
       return {
         capability: displayCapability(mode, true, true, null, 'igcl-global-vrr'),
         options,
-        variableRefreshRate,
       };
     } catch {
       return unavailable('The global Variable Refresh Rate Mode could not be read from this driver runtime.');
@@ -2870,13 +2886,6 @@ export class IgclBackend {
           // decoded here, even though the driver reported all three flags.
           const vrrSupported = (p.featureSupportedFlags & DISPLAY_FEATURE_ADAPTIVE_SYNC_VRR) !== 0;
           const vrrEnabled = (p.featureEnabledFlags & DISPLAY_FEATURE_ADAPTIVE_SYNC_VRR) !== 0;
-          d.variableRefreshRate = displayCapability(
-            vrrEnabled,
-            vrrSupported,
-            false,
-            vrrSupported ? 'Variable refresh rate is controlled by Windows/the display path.' : 'Variable refresh rate is not supported by this display.',
-            'igcl-display-properties',
-          );
           d.hdcpSupport = displayCapability(
             (p.featureSupportedFlags & DISPLAY_FEATURE_HDCP) !== 0,
             (p.featureSupportedFlags & DISPLAY_FEATURE_HDCP) !== 0,
@@ -2891,16 +2900,6 @@ export class IgclBackend {
             'Read-only display capability.',
             'igcl-display-properties',
           );
-          const adaptive = globalVrr?.variableRefreshRate;
-          if (adaptive?.supported === true) {
-            d.variableRefreshRate = displayCapability(
-              adaptive.value ?? vrrEnabled,
-              true,
-              adaptive.controllable === true,
-              adaptive.reason,
-              adaptive.source,
-            );
-          }
           if (this._plausibleDisplayTiming(p.timing)) {
             d.resolution = { width: p.timing.hActive, height: p.timing.vActive };
             d.refreshRate = p.timing.refreshRate;
@@ -3054,19 +3053,9 @@ export class IgclBackend {
         const r = lib.ctlGetIntelArcSyncInfoForMonitor(handle, buf);
         if (r === CTL_RESULT.SUCCESS) {
           const m = decodeArcSyncMonitor(buf);
-          d.arcSync.supported = m.supported;
+          d.arcSync.supported = m.supported === true;
           d.arcSync.minRefreshHz = m.supported ? m.minRefreshHz : null;
           d.arcSync.maxRefreshHz = m.supported ? m.maxRefreshHz : null;
-          const existingVrr = d.variableRefreshRate;
-          d.variableRefreshRate = displayCapability(
-            existingVrr?.value ?? null,
-            m.supported || existingVrr?.supported === true,
-            existingVrr?.controllable === true,
-            existingVrr?.controllable === true
-              ? existingVrr.reason
-              : 'Variable refresh rate is controlled by Windows/the display path.',
-            existingVrr?.source ?? 'igcl-display-properties',
-          );
           d.vrrMaximumRange = displayCapability(m.supported ? `${m.minRefreshHz} Hz - ${m.maxRefreshHz} Hz` : null, m.supported, false, 'Read-only driver capability.');
         }
       }
@@ -3074,20 +3063,39 @@ export class IgclBackend {
       // degrade the arc-sync surface
     }
     try {
-      if (!this._isUnavailable(lib.ctlGetIntelArcSyncProfile)) {
+      if (this._igscFullOk !== false && !this._isUnavailable(lib.ctlGetIntelArcSyncProfile)) {
         const current = encodeArcSyncProfile();
         const buf = current.buf;
         const r = lib.ctlGetIntelArcSyncProfile(handle, buf);
         if (r === CTL_RESULT.SUCCESS) {
           const p = decodeArcSyncProfile(buf);
           d.arcSync.profile = DISPLAY_ARC_SYNC_PROFILE_CANONICAL[p.profile] ?? null;
-          const canControl = d.arcSync.supported
+          const canControl = !this._isUnavailable(lib.ctlGetIntelArcSyncProfile)
             && !this._isUnavailable(lib.ctlSetIntelArcSyncProfile);
           d.vrrMode = displayCapability(
             d.arcSync.profile,
             d.arcSync.supported,
-            canControl,
-            d.arcSync.supported && d.arcSync.profile ? (canControl ? null : 'Arc Sync setter is not available in this driver runtime.') : 'Arc Sync is not supported by this display.',
+            d.arcSync.supported && canControl,
+            d.arcSync.supported && d.arcSync.profile
+              ? (canControl ? null : 'Arc Sync setter is not available in this driver runtime.')
+              : 'Arc Sync is not supported by this display.',
+          );
+          // Intel Graphics Software implements its separate Variable Refresh
+          // Rate switch by selecting the Arc Sync RECOMMENDED profile (1) or
+          // OFF profile (5). Keep the profile's timing fields untouched and
+          // expose the switch as enabled for every non-OFF profile.
+          const variableRefreshRateControllable = !this._isUnavailable(lib.ctlGetIntelArcSyncProfile)
+            && !this._isUnavailable(lib.ctlSetIntelArcSyncProfile);
+          const recognizedProfile = d.arcSync.supported
+            && DISPLAY_ARC_SYNC_PROFILE_CANONICAL[p.profile] !== undefined;
+          d.variableRefreshRate = displayCapability(
+            recognizedProfile ? p.profile !== DISPLAY_ARC_SYNC_PROFILE_TO_IGCL.off : null,
+            recognizedProfile,
+            recognizedProfile && variableRefreshRateControllable,
+            recognizedProfile
+              ? (variableRefreshRateControllable ? null : 'Arc Sync setter is not available in this driver runtime.')
+              : 'Arc Sync monitor support or the current Arc Sync profile is unavailable.',
+            'igcl-arc-sync-profile',
           );
           if (Number.isFinite(p.minRefreshHz) && Number.isFinite(p.maxRefreshHz)
             && p.maxRefreshHz > 0 && p.maxRefreshHz >= p.minRefreshHz) {
@@ -3098,7 +3106,7 @@ export class IgclBackend {
               'Read-only driver capability.',
             );
           }
-          if (d.arcSync.supported && d.arcSync.profile) d.supportedOptions.vrrModes = [...DISPLAY_ARC_SYNC_PROFILE_OPTIONS];
+          if (recognizedProfile) d.supportedOptions.vrrModes = [...DISPLAY_ARC_SYNC_PROFILE_OPTIONS];
         }
       }
     } catch {
@@ -3263,6 +3271,7 @@ export class IgclBackend {
       return result;
     }
     const handle = matches[0].handle;
+    const selectedDisplay = matches[0].output;
 
     if (patch.quantizationRange !== null && patch.quantizationRange !== undefined) {
       if (this._isUnavailable(lib.ctlGetSetDisplaySettings)) {
@@ -3628,29 +3637,43 @@ export class IgclBackend {
       const requested = patch.variableRefreshRate === true;
       if (typeof patch.variableRefreshRate !== 'boolean') {
         fail('variableRefreshRate', 'out-of-range', 'Variable Refresh Rate must be enabled or disabled');
-      } else if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
-        fail('variableRefreshRate', 'unavailable-symbol', 'the Variable Refresh Rate API is missing in the IGCL runtime');
+      } else if (this._isUnavailable(lib.ctlGetIntelArcSyncProfile) || this._isUnavailable(lib.ctlSetIntelArcSyncProfile)) {
+        fail('variableRefreshRate', 'unavailable-symbol', 'the Intel Arc Sync profile API is missing in the IGCL runtime');
+      } else if (selectedDisplay.arcSync?.supported !== true
+        || !Object.prototype.hasOwnProperty.call(DISPLAY_ARC_SYNC_PROFILE_TO_IGCL, selectedDisplay.arcSync?.profile)) {
+        fail('variableRefreshRate', 'unsupported', 'Variable Refresh Rate is not supported by this display or its Arc Sync profile is unknown');
       } else {
-        const features = await this._graphicsCapsOf(deviceId, dev.handle);
-        const detail = features?.get(CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS);
-        if (!detail || ![CTL_PROPERTY_VALUE_TYPE.BOOL, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32, CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.CUSTOM].includes(detail.valueType)) {
-          fail('variableRefreshRate', 'unsupported', 'the driver does not expose Adaptive Sync Plus for Variable Refresh Rate');
+        // Mirror Intel Graphics Software's setVRRMode: GET the complete Arc
+        // Sync profile, change only the profile enum (RECOMMENDED=1 for
+        // enabled, OFF=5 for disabled), then SET the preserved timing and
+        // frame-time fields back through the Arc Sync profile API.
+        const current = encodeArcSyncProfile();
+        const currentResult = lib.ctlGetIntelArcSyncProfile(handle, current.buf);
+        if (currentResult !== CTL_RESULT.SUCCESS) {
+          fail('variableRefreshRate', igclErrorCode(currentResult) ?? 'io-failed', `Arc Sync profile read-back failed (${describeResult(currentResult)})`);
         } else {
-          const gs = encodeAdaptiveSyncForDetail(detail, true, requested);
-          const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          const now = decodeArcSyncProfile(current.buf);
+          const profile = requested ? DISPLAY_ARC_SYNC_PROFILE_TO_IGCL.recommended : DISPLAY_ARC_SYNC_PROFILE_TO_IGCL.off;
+          const set = encodeArcSyncProfile({
+            profile,
+            minRefreshHz: now.minRefreshHz,
+            maxRefreshHz: now.maxRefreshHz,
+            maxFrameTimeIncreaseUs: now.maxFrameTimeIncreaseUs,
+            maxFrameTimeDecreaseUs: now.maxFrameTimeDecreaseUs,
+          });
+          const setResult = lib.ctlSetIntelArcSyncProfile(handle, set.buf);
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('variableRefreshRate', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
-            const rb = encodeAdaptiveSyncForDetail(detail, false, false);
-            const readResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
-            const got = readResult === CTL_RESULT.SUCCESS
-              ? decodeAdaptiveSyncForDetail(detail, rb)
-              : null;
-            const readBackEqual = got === requested;
+            await new Promise((r) => setTimeout(r, 400));
+            const rb = encodeArcSyncProfile();
+            const readResult = lib.ctlGetIntelArcSyncProfile(handle, rb.buf);
+            const got = readResult === CTL_RESULT.SUCCESS ? decodeArcSyncProfile(rb.buf) : null;
+            const readBackEqual = got?.profile === profile;
             result.perControl.variableRefreshRate = {
               ok: readBackEqual,
-              errorCode: readBackEqual ? undefined : 'io-failed',
-              message: readBackEqual ? undefined : `read-back ${got === null ? describeResult(readResult) : got ? 'enabled' : 'disabled'} != requested ${requested ? 'enabled' : 'disabled'}`,
+              errorCode: readBackEqual ? undefined : (readResult === CTL_RESULT.SUCCESS ? 'io-failed' : (igclErrorCode(readResult) ?? 'io-failed')),
+              message: readBackEqual ? undefined : `read-back profile ${got?.profile ?? describeResult(readResult)} != requested ${profile}`,
               readBackEqual,
               silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
             };
@@ -3665,6 +3688,8 @@ export class IgclBackend {
       const igclValue = DISPLAY_GLOBAL_VRR_MODE_TO_IGCL[requested];
       if (igclValue === undefined) {
         fail('globalVrrMode', 'out-of-range', `unknown global Variable Refresh Rate Mode '${requested}'`);
+      } else if (this._igscFullOk === false) {
+        fail('globalVrrMode', 'unavailable-symbol', 'The IGSC full loader is unavailable after Level Zero-only fallback; global Variable Refresh Rate writes are disabled.');
       } else if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
         fail('globalVrrMode', 'unavailable-symbol', 'the global Variable Refresh Rate Mode API is missing in the IGCL runtime');
       } else {
@@ -3672,26 +3697,33 @@ export class IgclBackend {
         const detail = features?.get(CTL_3D_FEATURE.VRR_WINDOWED_BLT);
         if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM) {
           fail('globalVrrMode', 'unsupported', 'the driver does not expose the global Variable Refresh Rate Mode feature');
+        } else if (!globalVrrOptionsOf(detail).includes(requested)) {
+          fail('globalVrrMode', 'unsupported', 'the requested global Variable Refresh Rate Mode is not advertised by this driver');
         } else {
-          const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue });
-          const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
-          if (setResult !== CTL_RESULT.SUCCESS) {
-            fail('globalVrrMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          const scope = selectGlobal3dScope(lib, dev.handle, features);
+          if (!scope.ok) {
+            fail('globalVrrMode', scope.errorCode, scope.message);
           } else {
-            const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false });
-            const readResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
-            const got = readResult === CTL_RESULT.SUCCESS
-              ? DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType]
-              : null;
-            const readBackEqual = got === requested;
-            result.perControl.globalVrrMode = {
-              ok: readBackEqual,
-              errorCode: readBackEqual ? undefined : 'io-failed',
-              message: readBackEqual ? undefined : `read-back ${got ?? (readResult === CTL_RESULT.SUCCESS ? 'unknown' : describeResult(readResult))} != requested ${requested}`,
-              readBackEqual,
-              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
-            };
-            if (!readBackEqual) result.ok = false;
+            const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: true, enumValue: igclValue, applicationName: '' });
+            const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+            if (setResult !== CTL_RESULT.SUCCESS) {
+              fail('globalVrrMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+            } else {
+              const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.VRR_WINDOWED_BLT, valueType: CTL_PROPERTY_VALUE_TYPE.ENUM, bSet: false, applicationName: '' });
+              const readResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+              const got = readResult === CTL_RESULT.SUCCESS
+                ? DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL[decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.ENUM).enableType]
+                : null;
+              const readBackEqual = got === requested;
+              result.perControl.globalVrrMode = {
+                ok: readBackEqual,
+                errorCode: readBackEqual ? undefined : 'io-failed',
+                message: readBackEqual ? undefined : `read-back ${got ?? (readResult === CTL_RESULT.SUCCESS ? 'unknown' : describeResult(readResult))} != requested ${requested}`,
+                readBackEqual,
+                silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              };
+              if (!readBackEqual) result.ok = false;
+            }
           }
         }
       }
@@ -3700,6 +3732,9 @@ export class IgclBackend {
     if (patch.vrrMode !== null && patch.vrrMode !== undefined) {
       if (this._isUnavailable(lib.ctlGetIntelArcSyncProfile) || this._isUnavailable(lib.ctlSetIntelArcSyncProfile)) {
         fail('vrrMode', 'unavailable-symbol', 'the Arc Sync profile API is missing in the IGCL runtime');
+      } else if (selectedDisplay.arcSync?.supported !== true
+        || !Object.prototype.hasOwnProperty.call(DISPLAY_ARC_SYNC_PROFILE_TO_IGCL, selectedDisplay.arcSync?.profile)) {
+        fail('vrrMode', 'unsupported', 'Arc Sync profile control is not supported by this display or its current profile is unknown');
       } else {
         const profile = DISPLAY_ARC_SYNC_PROFILE_TO_IGCL[patch.vrrMode];
         if (profile === undefined) {
