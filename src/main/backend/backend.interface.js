@@ -141,6 +141,7 @@
  *   quantizationRange?: 'default' | 'limited' | 'full',
  *   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444', depth: number },
  *   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom',
+ *   displayScalingMethod?: 'maintain-display-scaling' | 'custom',
  * }} DisplaySettings
  */
 

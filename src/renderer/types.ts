@@ -763,9 +763,17 @@ export interface GraphicsApplyResponse {
 export interface DisplaySettings {
   quantizationRange?: 'default' | 'limited' | 'full';
   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444'; depth: number };
+  /** Raw IGCL ordinary scaling type used behind the IGS-style view. */
   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom';
+  /** IGS Display Scaling > Scaling Method abstraction. */
+  displayScalingMethod?: 'maintain-display-scaling' | 'custom';
+  /** Legacy retro-scaling shape retained for older callers. */
   scalingMethod?: { enabled: boolean; method: 'integer' | 'nearest-neighbour' };
   vrrMode?: 'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom';
+  hue?: number;
+  saturation?: number;
+  brightness?: number;
+  contrast?: number;
 }
 
 export interface GameProfileGraphics {
@@ -864,6 +872,7 @@ export interface DisplayState {
       wireFormats: string[];
       bpcDepths: number[];
       quantizationRanges: string[];
+      colorRanges?: Record<string, { min: number; max: number; step: number; default?: number }>;
     };
     flags: { active: boolean; attached: boolean; dongleConnected: boolean; ditheringEnabled: boolean };
     arcSync: { supported: boolean; minRefreshHz: number | null; maxRefreshHz: number | null; profile: string | null };

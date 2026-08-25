@@ -2220,6 +2220,7 @@ select {
 .profiles-mode-toggle { display: inline-flex; gap: 4px; margin-bottom: 14px; }
 .profiles-mode-toggle .active { border-color: var(--accent); color: var(--accent); background: var(--bg-inset); }
 .game-catalog-browser { margin-top: 2px; }
+.profile-browser-actions { display: inline-flex; gap: 8px; align-items: center; }
 .game-catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
 .game-catalog-card { display: flex; min-height: 210px; flex-direction: column; overflow: hidden; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-inset); color: var(--text); text-align: left; cursor: pointer; }
 .game-catalog-card:hover, .game-catalog-card:focus-visible { border-color: var(--accent); outline: none; }
@@ -2300,7 +2301,14 @@ select {
 .profile-name { font-weight: 650; font-size: 13.5px; }
 .profile-badge { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.4); }
 
-.profile-chips { flex: 1; }
+.profile-grid .profile-row { flex-direction: column; align-items: stretch; justify-content: space-between; }
+.profile-grid .profile-info { width: 100%; justify-content: center; min-width: 0; }
+.profile-grid .profile-name { text-align: center; }
+.profile-grid .profile-association-note { width: 100%; margin: -4px 0 0; text-align: center; }
+.profile-grid .profile-chips { justify-content: center; gap: 4px; }
+.profile-grid .profile-chips .chip { padding: 3px 7px; font-size: 11px; }
+.profile-grid .profile-actions { justify-content: center; flex-wrap: wrap; }
+.profile-chips { flex: 1; min-width: 0; }
 
 .profile-actions { display: inline-flex; gap: 6px; }
 

@@ -220,6 +220,12 @@ export const CTL_ARC_SYNC_PROFILE = {
   5: 'OFF', 6: 'VESA', 7: 'CUSTOM',
 };
 
+// Public IGCL Media API feature used by the IGS Color page. The current
+// Display page only needs Standard Color Correction (Hue, Saturation,
+// Brightness and Contrast); the other media features remain unbound.
+export const CTL_VIDEO_PROCESSING_FEATURE = { STANDARD_COLOR_CORRECTION: 5 };
+export const CTL_VIDEO_PROCESSING_VALUE_TYPE = { CUSTOM: 5 };
+
 // The EDID / panel-descriptor op codes used by the monitor-name read (the
 // values the probe used: READ_EDID=1, the MONITOR EdidType=3, the panel
 // READ=1).
@@ -1090,6 +1096,11 @@ export function loadIgcl(dllPath) {
   bind('ctlGetIntelArcSyncInfoForMonitor', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlGetIntelArcSyncProfile', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlSetIntelArcSyncProfile', 'ctl_result_t', ['void*', 'void*']);
+  // Standard Color Correction is adapter-scoped, not output-scoped. The
+  // caller still presents it beside the selected output because that is how
+  // IGS presents the global display calibration surface.
+  bind('ctlGetSupportedVideoProcessingCapabilities', 'ctl_result_t', ['void*', 'void*']);
+  bind('ctlGetSetVideoProcessingFeature', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlPanelDescriptorAccess', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlEdidManagement', 'ctl_result_t', ['void*', 'void*']);
 

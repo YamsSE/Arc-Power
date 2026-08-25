@@ -2,10 +2,10 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
-import { canonicalExePath, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
+import { canonicalExePath, isLikelyGameCandidate, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
 import { deterministicArtworkKey, isValidArtwork } from './store/game-profile-store.js';
 
-export { canonicalExePath, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
+export { canonicalExePath, isLikelyGameCandidate, isVerifiedExecutablePath, validateSafeGameCandidate } from './game-candidate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -51,6 +51,7 @@ export function normalizeScannedApps(rows, excludedPaths = [], opts = {}) {
     const displayNameRaw = typeof row?.displayName === 'string' && row.displayName.trim()
       ? row.displayName.trim()
       : processName || path.win32.basename(exePath);
+    if (opts.onlyGames === true && !isLikelyGameCandidate({ exePath, displayName: displayNameRaw, processName })) continue;
     const existing = apps.find((item) => item.exePath === exePath);
     const normalized = {
       exePath,
@@ -185,7 +186,7 @@ foreach ($process in @(Get-CimInstance Win32_Process | Where-Object { $_.Executa
       try {
         const { stdout } = await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
         const parsed = stdout.trim() ? JSON.parse(stdout) : [];
-        const apps = normalizeScannedApps(Array.isArray(parsed) ? parsed : [parsed], excluded, { requireExists: true });
+        const apps = normalizeScannedApps(Array.isArray(parsed) ? parsed : [parsed], excluded, { requireExists: true, onlyGames: true });
         if (typeof opts.getArtwork !== 'function') return { apps };
         const enriched = await enrichScannedApps(apps, opts.getArtwork, opts.artworkBudget);
         return { apps: enriched };

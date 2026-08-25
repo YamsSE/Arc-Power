@@ -352,7 +352,7 @@ export class GameProfileStore {
     });
   }
 
-  async syncCatalog(entries) {
+  async syncCatalog(entries, options = {}) {
     return this._mutate(() => {
       if (!Array.isArray(entries)) throw new Error('game-catalog-sync: entries must be an array');
       for (const entry of entries) {
@@ -362,7 +362,15 @@ export class GameProfileStore {
       }
       const data = this._loadDataUnlocked();
       const incoming = normalizeCatalog(entries);
-      const byPath = new Map(data.catalog.map((item) => [item.exePath, item]));
+      const incomingPaths = new Set(incoming.map((item) => item.exePath));
+      // The real full-machine scan opts into authoritative replacement. The
+      // default remains merge-safe for older callers and concurrent sidecar
+      // mutations: two queued partial syncs must not delete one another's
+      // rows before a settings save reaches the queue.
+      const authoritative = options?.authoritative === true;
+      const byPath = new Map(data.catalog
+        .filter((item) => !authoritative || item.source === 'manual' || incomingPaths.has(item.exePath))
+        .map((item) => [item.exePath, item]));
       for (const entry of incoming) {
         const previous = byPath.get(entry.exePath);
         byPath.set(entry.exePath, previous ? {
@@ -376,6 +384,8 @@ export class GameProfileStore {
         } : entry);
       }
       data.catalog = [...byPath.values()];
+      const catalogPaths = new Set(data.catalog.map((item) => item.exePath));
+      if (authoritative) data.settings = data.settings.filter((item) => catalogPaths.has(item.exePath));
       return this._saveDataUnlocked(data).catalog;
     });
   }

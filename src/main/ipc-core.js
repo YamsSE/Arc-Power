@@ -169,6 +169,9 @@ export function sanitizeDisplaySettings(payload) {
     } else if (key === 'scalingMode') {
       if (!DISPLAY_SCALING_MODE_OPTIONS.includes(value)) throw new Error(`scalingMode must be one of: ${DISPLAY_SCALING_MODE_OPTIONS.join(', ')}`);
       out[key] = value;
+    } else if (key === 'displayScalingMethod') {
+      if (!['maintain-display-scaling', 'custom'].includes(value)) throw new Error('displayScalingMethod must be maintain-display-scaling or custom');
+      out[key] = value;
     } else if (key === 'scalingMethod') {
       if (typeof value !== 'object' || value === null || Array.isArray(value)
         || typeof value.enabled !== 'boolean'
@@ -180,6 +183,9 @@ export function sanitizeDisplaySettings(payload) {
       if (!['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'].includes(value)) {
         throw new Error('vrrMode must be one of: recommended, excellent, good, compatible, off, vesa, custom');
       }
+      out[key] = value;
+    } else if (['hue', 'saturation', 'brightness', 'contrast'].includes(key)) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
       out[key] = value;
     } else {
       throw new Error(`unknown display setting: ${key}`);
@@ -2301,7 +2307,7 @@ export function createIpcHandlers({
         const apps = normalizeScannedApps(result?.apps ?? []);
         let catalog = null;
         let sidecarError;
-        try { catalog = await gameProfiles.syncCatalog(apps); }
+        try { catalog = await gameProfiles.syncCatalog(apps, { authoritative: true }); }
         catch (err) { sidecarError = `Game catalog unavailable: ${err instanceof Error ? err.message : String(err)}`; }
         return { ...(result ?? {}), apps, ...(catalog ? { catalog } : {}), ...(sidecarError ? { sidecarError } : {}) };
       },
@@ -2319,7 +2325,7 @@ export function createIpcHandlers({
             throw new Error('game-catalog-sync: executable is not a safe existing game candidate');
           }
         }
-        return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { requireExists: true })) };
+        return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { requireExists: true }), { authoritative: true }) };
       },
 
       'game-settings-save': async (payload) => {

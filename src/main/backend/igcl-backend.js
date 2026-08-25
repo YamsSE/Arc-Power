@@ -197,6 +197,156 @@ const displayCapability = (value, supported, controllable = false, reason = null
   value, supported, controllable, reason, source,
 });
 
+// Intel's Media API structures are not present in the older local binding
+// set. Keep the byte contract isolated here so a missing/newer runtime can
+// fail closed without taking down the Display page. The sizes/offsets mirror
+// the public v1.1 header: the feature list contains a custom-value pointer and
+// Standard Color Correction is a 88-byte custom structure.
+const MEDIA_FEATURE_CAPS_SIZE = 88;
+const MEDIA_FEATURE_DETAILS_SIZE = 120;
+const MEDIA_FEATURE_GETSET_SIZE = 120;
+const MEDIA_COLOR_INFO_SIZE = 152;
+const MEDIA_COLOR_VALUE_SIZE = 88;
+const MEDIA_COLOR_FEATURE = 5;
+const MEDIA_CUSTOM_VALUE_TYPE = 5;
+
+function mediaWrite(buf, offset, type, value) {
+  koffi.encode(buf, offset, type, value);
+}
+
+function mediaRead(buf, offset, type) {
+  return koffi.decode(buf, offset, type);
+}
+
+function mediaRange(buf, offset) {
+  return {
+    min: Number(mediaRead(buf, offset + 4, 'float')),
+    max: Number(mediaRead(buf, offset + 8, 'float')),
+    step: Number(mediaRead(buf, offset + 12, 'float')),
+    default: Number(mediaRead(buf, offset + 16, 'float')),
+  };
+}
+
+/**
+ * Probe/read the adapter-global Standard Color Correction feature. A driver
+ * must advertise the feature, return all four ranges, and accept a read-back
+ * before the renderer is allowed to show writable sliders.
+ */
+function readMediaColorCorrection(lib, adapterHandle) {
+  if (!adapterHandle || typeof lib?.ctlGetSupportedVideoProcessingCapabilities !== 'function'
+    || typeof lib?.ctlGetSetVideoProcessingFeature !== 'function'
+    || lib.ctlGetSupportedVideoProcessingCapabilities.unavailable
+    || lib.ctlGetSetVideoProcessingFeature.unavailable) return null;
+  try {
+    const caps = koffi.alloc('uint8', MEDIA_FEATURE_CAPS_SIZE + 16);
+    mediaWrite(caps, 0, 'uint32', MEDIA_FEATURE_CAPS_SIZE);
+    mediaWrite(caps, 4, 'uint8', 0);
+    mediaWrite(caps, 8, 'uint32', 0);
+    mediaWrite(caps, 16, 'void*', 0n);
+    let result = lib.ctlGetSupportedVideoProcessingCapabilities(adapterHandle, caps);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+    const count = Number(mediaRead(caps, 8, 'uint32'));
+    if (!Number.isInteger(count) || count < 1 || count > 64) return null;
+    const details = koffi.alloc('uint8', MEDIA_FEATURE_DETAILS_SIZE * count + 16);
+    for (let i = 0; i < count; i++) {
+      const off = i * MEDIA_FEATURE_DETAILS_SIZE;
+      mediaWrite(details, off, 'uint32', MEDIA_FEATURE_DETAILS_SIZE);
+      mediaWrite(details, off + 4, 'uint8', 0);
+    }
+    mediaWrite(caps, 16, 'void*', koffi.address(details));
+    result = lib.ctlGetSupportedVideoProcessingCapabilities(adapterHandle, caps);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+    let detailOffset = -1;
+    let customSize = MEDIA_COLOR_INFO_SIZE;
+    for (let i = 0; i < count; i++) {
+      const off = i * MEDIA_FEATURE_DETAILS_SIZE;
+      if (Number(mediaRead(details, off + 8, 'int32')) === MEDIA_COLOR_FEATURE) {
+        detailOffset = off;
+        const advertised = Number(mediaRead(details, off + 40, 'int32'));
+        if (advertised > 0 && advertised <= 4096) customSize = advertised;
+        break;
+      }
+    }
+    if (detailOffset < 0) return null;
+    const info = koffi.alloc('uint8', Math.max(customSize, MEDIA_COLOR_INFO_SIZE) + 16);
+    mediaWrite(details, detailOffset + 40, 'int32', Math.max(customSize, MEDIA_COLOR_INFO_SIZE));
+    mediaWrite(details, detailOffset + 48, 'void*', koffi.address(info));
+    result = lib.ctlGetSupportedVideoProcessingCapabilities(adapterHandle, caps);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+
+    // ctl_property_info_float_t is { bool enable; padding; four floats }.
+    const ranges = {
+      brightness: mediaRange(info, 8),
+      contrast: mediaRange(info, 28),
+      hue: mediaRange(info, 48),
+      saturation: mediaRange(info, 68),
+    };
+    if (!Object.values(ranges).every((range) => Number.isFinite(range.min)
+      && Number.isFinite(range.max) && Number.isFinite(range.step)
+      && range.max >= range.min && range.step > 0)) return null;
+
+    const appName = koffi.alloc('uint8', 1);
+    mediaWrite(appName, 0, 'uint8', 0);
+    const custom = koffi.alloc('uint8', MEDIA_COLOR_VALUE_SIZE + 16);
+    const getset = koffi.alloc('uint8', MEDIA_FEATURE_GETSET_SIZE + 16);
+    mediaWrite(getset, 0, 'uint32', MEDIA_FEATURE_GETSET_SIZE);
+    mediaWrite(getset, 4, 'uint8', 0);
+    mediaWrite(getset, 8, 'int32', MEDIA_COLOR_FEATURE);
+    mediaWrite(getset, 16, 'void*', koffi.address(appName));
+    mediaWrite(getset, 24, 'int8', 0);
+    mediaWrite(getset, 25, 'bool', false);
+    mediaWrite(getset, 28, 'int32', MEDIA_CUSTOM_VALUE_TYPE);
+    mediaWrite(getset, 40, 'int32', MEDIA_COLOR_VALUE_SIZE);
+    mediaWrite(getset, 48, 'void*', koffi.address(custom));
+    result = lib.ctlGetSetVideoProcessingFeature(adapterHandle, getset);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+    return {
+      enabled: mediaRead(custom, 5, 'bool'),
+      values: {
+        brightness: Number(mediaRead(custom, 8, 'float')),
+        contrast: Number(mediaRead(custom, 12, 'float')),
+        hue: Number(mediaRead(custom, 16, 'float')),
+        saturation: Number(mediaRead(custom, 20, 'float')),
+      },
+      ranges,
+      buffers: { appName, custom, getset },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function mediaColorReadback(lib, adapterHandle) {
+  return readMediaColorCorrection(lib, adapterHandle);
+}
+
+function mediaColorApply(lib, adapterHandle, patch, before) {
+  const current = before ?? readMediaColorCorrection(lib, adapterHandle);
+  if (!current) return { ok: false, errorCode: 'unsupported', message: 'standard color correction is not exposed by this driver' };
+  const appName = current.buffers.appName;
+  const custom = koffi.alloc('uint8', MEDIA_COLOR_VALUE_SIZE + 16);
+  const getset = koffi.alloc('uint8', MEDIA_FEATURE_GETSET_SIZE + 16);
+  mediaWrite(custom, 5, 'bool', true);
+  mediaWrite(custom, 8, 'float', Number(patch.brightness ?? current.values.brightness));
+  mediaWrite(custom, 12, 'float', Number(patch.contrast ?? current.values.contrast));
+  mediaWrite(custom, 16, 'float', Number(patch.hue ?? current.values.hue));
+  mediaWrite(custom, 20, 'float', Number(patch.saturation ?? current.values.saturation));
+  mediaWrite(getset, 0, 'uint32', MEDIA_FEATURE_GETSET_SIZE);
+  mediaWrite(getset, 4, 'uint8', 0);
+  mediaWrite(getset, 8, 'int32', MEDIA_COLOR_FEATURE);
+  mediaWrite(getset, 16, 'void*', koffi.address(appName));
+  mediaWrite(getset, 24, 'int8', 0);
+  mediaWrite(getset, 25, 'bool', true);
+  mediaWrite(getset, 28, 'int32', MEDIA_CUSTOM_VALUE_TYPE);
+  mediaWrite(getset, 40, 'int32', MEDIA_COLOR_VALUE_SIZE);
+  mediaWrite(getset, 48, 'void*', koffi.address(custom));
+  const setResult = lib.ctlGetSetVideoProcessingFeature(adapterHandle, getset);
+  if (setResult !== CTL_RESULT.SUCCESS) return { ok: false, errorCode: igclErrorCode(setResult) ?? 'io-failed', message: `IGCL ${describeResult(setResult)}` };
+  const readBack = mediaColorReadback(lib, adapterHandle);
+  if (!readBack) return { ok: false, errorCode: 'io-failed', message: 'set succeeded but color read-back failed', readBackEqual: false };
+  return { ok: true, readBack, requested: { ...patch }, readBackEqual: Object.entries(patch).every(([key, value]) => Math.abs(readBack.values[key] - Number(value)) <= Math.max(0.0001, current.ranges[key]?.step ?? 0.0001)) };
+}
+
 export class IgclBackend {
   /**
    * @param {{
@@ -2107,9 +2257,11 @@ export class IgclBackend {
    * @param {number} index the output index (display-only presentation id)
    * @param {object} handle the display handle
    * @param {string|null} deviceKey the stable physical adapter key
+   * @param {object|null} adapterHandle the parent adapter handle (required by
+   * the adapter-scoped retro/media APIs)
    * @returns {Promise<object>} the canonical display shape
    */
-  async _readDisplayOutput(index, handle, deviceKey = null) {
+  async _readDisplayOutput(index, handle, deviceKey = null, adapterHandle = null) {
     const lib = this._libOrThrow();
     const d = {
       id: index,
@@ -2142,6 +2294,7 @@ export class IgclBackend {
         wireFormats: [],
         bpcDepths: [],
         quantizationRanges: [],
+        colorRanges: {},
       },
       flags: { active: false, attached: false, dongleConnected: false, ditheringEnabled: false },
       arcSync: { supported: false, minRefreshHz: null, maxRefreshHz: null, profile: null },
@@ -2176,6 +2329,20 @@ export class IgclBackend {
             dongleConnected: (p.configFlags & 4) !== 0,
             ditheringEnabled: (p.configFlags & 8) !== 0,
           };
+          // IGCL exposes Adaptive Sync/VRR support and its current enabled
+          // state in the display feature flags. This is a capability read;
+          // the public generic VRR setter is still not available, so the
+          // renderer keeps the toggle read-only unless a verified setter is
+          // added for the driver family.
+          const vrrSupported = (p.featureSupportedFlags & (1 << 3)) !== 0;
+          const vrrEnabled = (p.featureEnabledFlags & (1 << 3)) !== 0;
+          d.variableRefreshRate = displayCapability(
+            vrrEnabled,
+            vrrSupported,
+            false,
+            vrrSupported ? 'Variable refresh rate is controlled by Windows/the display path.' : 'Variable refresh rate is not supported by this display.',
+            'igcl-display-properties',
+          );
           if (this._plausibleDisplayTiming(p.timing)) {
             d.resolution = { width: p.timing.hActive, height: p.timing.vActive };
             d.refreshRate = p.timing.refreshRate;
@@ -2265,7 +2432,7 @@ export class IgclBackend {
       if (!this._isUnavailable(lib.ctlGetSupportedRetroScalingCapability)
         && !this._isUnavailable(lib.ctlGetSetRetroScaling)) {
         const caps = encodeRetroScalingCaps();
-        const capsResult = lib.ctlGetSupportedRetroScalingCapability(handle, caps.buf);
+        const capsResult = lib.ctlGetSupportedRetroScalingCapability(adapterHandle ?? handle, caps.buf);
         if (capsResult === CTL_RESULT.SUCCESS) {
           const flags = decodeRetroScalingCaps(caps.buf).supportedRetroScaling;
           d.supportedOptions.scalingMethods = displayFlagNames(flags, CTL_RETRO_SCALING_TYPE)
@@ -2276,7 +2443,7 @@ export class IgclBackend {
           // writable option by accident.
           d.supportedOptions.scalingMethods = [...new Set(d.supportedOptions.scalingMethods)];
           const current = encodeRetroScalingSettings({ get: true });
-          const currentResult = lib.ctlGetSetRetroScaling(handle, current.buf);
+          const currentResult = lib.ctlGetSetRetroScaling(adapterHandle ?? handle, current.buf);
           if (currentResult === CTL_RESULT.SUCCESS) {
             const value = decodeRetroScalingSettings(current.buf);
             const method = DISPLAY_RETRO_SCALING_METHOD_FROM_IGCL[value.retroScalingType] ?? null;
@@ -2339,6 +2506,21 @@ export class IgclBackend {
       // degrade the arc-sync profile
     }
 
+    // Standard Color Correction is adapter-global in IGCL. Present its
+    // read-back on the active output and only mark the four rows writable
+    // when the capability query + current-value read both succeeded.
+    try {
+      const color = readMediaColorCorrection(lib, adapterHandle);
+      if (color) {
+        for (const key of ['hue', 'saturation', 'brightness', 'contrast']) {
+          d[key] = displayCapability(color.values[key], true, true, null, 'igcl-media');
+          d.supportedOptions.colorRanges[key] = color.ranges[key];
+        }
+      }
+    } catch {
+      // Keep the honest read-only color capability defaults.
+    }
+
     // The EDID monitor name (defensive - a failing name read keeps null).
     try {
       d.name = await this._readDisplayName(handle);
@@ -2371,7 +2553,7 @@ export class IgclBackend {
       const handles = await this._displayOutputsOf(deviceId, true);
       const displays = [];
       for (let i = 0; i < handles.length; i++) {
-        const d = await this._readDisplayOutput(i, handles[i], deviceKey);
+        const d = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle);
         if (d.flags.active) displays.push(d);
       }
       return { deviceKey, adapterName: dev.name ?? null, displays };
@@ -2409,7 +2591,7 @@ export class IgclBackend {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'scalingMethod', 'vrrMode']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((c) => patch[c] !== null && patch[c] !== undefined);
 
     // The whole-surface gate (the M8 setGraphicsSettings pattern): when NO
@@ -2420,7 +2602,8 @@ export class IgclBackend {
       && this._isUnavailable(lib.ctlGetSetWireFormat)
       && this._isUnavailable(lib.ctlSetCurrentScaling)
       && this._isUnavailable(lib.ctlGetSetRetroScaling)
-      && this._isUnavailable(lib.ctlSetIntelArcSyncProfile)) {
+      && this._isUnavailable(lib.ctlSetIntelArcSyncProfile)
+      && this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)) {
       for (const c of controls) {
         fail(c, 'unavailable-symbol', 'the display-settings API is missing in the IGCL runtime');
       }
@@ -2436,7 +2619,7 @@ export class IgclBackend {
     const handles = await this._displayOutputsOf(deviceId, true);
     const fresh = [];
     for (let i = 0; i < handles.length; i++) {
-      const output = await this._readDisplayOutput(i, handles[i], deviceKey);
+      const output = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle);
       if (output.flags.active) fresh.push({ output, handle: handles[i] });
     }
     const matches = fresh.filter(({ output }) => output.displayKey === displayKey && output.identityVerified === true);
@@ -2599,6 +2782,40 @@ export class IgclBackend {
       }
     }
 
+    if (patch.displayScalingMethod !== null && patch.displayScalingMethod !== undefined) {
+      if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {
+        fail('displayScalingMethod', 'unavailable-symbol', 'the scaling API is missing in the IGCL runtime');
+      } else {
+        const flag = patch.displayScalingMethod === 'custom' ? DISPLAY_SCALING_MODE_TO_IGCL.custom : DISPLAY_SCALING_MODE_TO_IGCL.identity;
+        if (flag === undefined) {
+          fail('displayScalingMethod', 'out-of-range', `unknown Display Scaling method '${patch.displayScalingMethod}'`);
+        } else {
+          const gs = encodeScalingSettings({ enable: true, scalingType: flag });
+          const setResult = lib.ctlSetCurrentScaling(handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            fail('displayScalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+          } else {
+            await new Promise((r) => setTimeout(r, 400));
+            const rb = encodeScalingSettings();
+            const getResult = lib.ctlGetCurrentScaling(handle, rb.buf);
+            const got = getResult === CTL_RESULT.SUCCESS ? decodeScalingSettings(rb.buf).scalingType : null;
+            const readBackEqual = got === flag;
+            result.perControl.displayScalingMethod = {
+              ok: readBackEqual,
+              errorCode: readBackEqual ? undefined : 'io-failed',
+              message: readBackEqual ? undefined : (getResult === CTL_RESULT.SUCCESS
+                ? `read-back 0x${got.toString(16)} != requested 0x${flag.toString(16)}`
+                : `set succeeded but read-back failed (${describeResult(getResult)})`),
+              readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              warning: DISPLAY_SCALING_FLASH_WARNING,
+            };
+            if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
     if (patch.scalingMethod !== null && patch.scalingMethod !== undefined) {
       if (this._isUnavailable(lib.ctlGetSetRetroScaling)) {
         fail('scalingMethod', 'unavailable-symbol', 'the retro-scaling API is missing in the IGCL runtime');
@@ -2608,14 +2825,15 @@ export class IgclBackend {
         if (!requested || typeof requested.enabled !== 'boolean' || type === undefined) {
           fail('scalingMethod', 'out-of-range', 'unknown retro-scaling method or enable value');
         } else {
+          const retroHandle = dev.handle;
           const gs = encodeRetroScalingSettings({ get: false, enable: requested.enabled, retroScalingType: type });
-          const setResult = lib.ctlGetSetRetroScaling(handle, gs.buf);
+          const setResult = lib.ctlGetSetRetroScaling(retroHandle, gs.buf);
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('scalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
             await new Promise((r) => setTimeout(r, 400));
             const rb = encodeRetroScalingSettings({ get: true });
-            const getResult = lib.ctlGetSetRetroScaling(handle, rb.buf);
+            const getResult = lib.ctlGetSetRetroScaling(retroHandle, rb.buf);
             let readBackEqual = false;
             let message;
             if (getResult !== CTL_RESULT.SUCCESS) {
@@ -2634,6 +2852,45 @@ export class IgclBackend {
               warning: DISPLAY_SCALING_FLASH_WARNING,
             };
             if (!readBackEqual) result.ok = false;
+          }
+        }
+      }
+    }
+
+    const colorKeys = ['hue', 'saturation', 'brightness', 'contrast'].filter((key) => patch[key] !== null && patch[key] !== undefined);
+    if (colorKeys.length > 0) {
+      if (this._isUnavailable(lib.ctlGetSupportedVideoProcessingCapabilities)
+        || this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)) {
+        for (const key of colorKeys) fail(key, 'unavailable-symbol', 'the color-correction API is missing in the IGCL runtime');
+      } else {
+        const current = readMediaColorCorrection(lib, dev.handle);
+        if (!current) {
+          for (const key of colorKeys) fail(key, 'unsupported', 'standard color correction is not exposed by this driver');
+        } else {
+          const normalized = {};
+          for (const key of colorKeys) {
+            const range = current.ranges[key];
+            const requested = Number(patch[key]);
+            const bounded = Math.min(range.max, Math.max(range.min, requested));
+            const snapped = range.step > 0 ? range.min + Math.round((bounded - range.min) / range.step) * range.step : bounded;
+            normalized[key] = Math.min(range.max, Math.max(range.min, snapped));
+          }
+          const applied = mediaColorApply(lib, dev.handle, normalized, current);
+          if (!applied.ok || !applied.readBack) {
+            for (const key of colorKeys) fail(key, applied.errorCode ?? 'io-failed', applied.message ?? 'color correction read-back failed');
+          } else {
+            for (const key of colorKeys) {
+              const range = current.ranges[key];
+              const readBackEqual = Math.abs(applied.readBack.values[key] - normalized[key]) <= Math.max(0.0001, range.step);
+              result.perControl[key] = {
+                ok: readBackEqual,
+                errorCode: readBackEqual ? undefined : 'io-failed',
+                message: readBackEqual ? undefined : `read-back ${applied.readBack.values[key]} != requested ${normalized[key]}`,
+                readBackEqual,
+                silentNoop: !readBackEqual,
+              };
+              if (!readBackEqual) result.ok = false;
+            }
           }
         }
       }

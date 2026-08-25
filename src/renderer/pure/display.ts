@@ -14,15 +14,22 @@ export const DISPLAY_BPC_OPTIONS = [6, 8, 10, 12];
 export const DISPLAY_SCALING_MODE_OPTIONS: NonNullable<DisplaySettings['scalingMode']>[] = ['identity', 'centered', 'stretched', 'aspect-ratio-centered-max', 'custom'];
 export const DISPLAY_RETRO_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['scalingMethod']>['method'][] = ['integer', 'nearest-neighbour'];
 export const DISPLAY_ARC_SYNC_PROFILE_OPTIONS: NonNullable<DisplaySettings['vrrMode']>[] = ['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'];
+export const DISPLAY_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['displayScalingMethod']>[] = ['maintain-display-scaling', 'custom'];
+export const DISPLAY_COLOR_CONTROLS = ['hue', 'saturation', 'brightness', 'contrast'] as const;
 
 export function isDisplayControlSupported(display: Display | null | undefined, control: string): boolean {
   if (!display || display.identityVerified !== true || typeof display.displayKey !== 'string' || display.displayKey.length === 0) return false;
   switch (control) {
     case 'quantizationRange': return display.supportedOptions.quantizationRanges.length > 0;
     case 'scalingMode': return display.supportedOptions.scalingModes.length > 0;
+    case 'displayScalingMethod': return display.supportedOptions.scalingModes.length > 0;
     case 'scalingMethod': return display.scalingMethod?.controllable === true && display.supportedOptions.scalingMethods.length > 0;
     case 'vrrMode': return display.vrrMode?.controllable === true && (display.supportedOptions.vrrModes ?? []).length > 0;
     case 'wireFormat': return display.supportedOptions.wireFormats.length > 0 && display.supportedOptions.bpcDepths.length > 0;
+    case 'hue': return display.hue?.controllable === true;
+    case 'saturation': return display.saturation?.controllable === true;
+    case 'brightness': return display.brightness?.controllable === true;
+    case 'contrast': return display.contrast?.controllable === true;
     default: return false;
   }
 }
@@ -32,12 +39,17 @@ export function displayDriverValue(display: Display | null | undefined, control:
   switch (control) {
     case 'quantizationRange': return display.quantizationRange;
     case 'scalingMode': return display.scalingMode;
+    case 'displayScalingMethod': return display.scalingMode === 'custom' ? 'custom' : 'maintain-display-scaling';
     case 'scalingMethod': return display.scalingMethod?.value;
     case 'vrrMode': return display.vrrMode?.value;
     case 'wireFormat': {
       if (display.colorFormat === null || display.colorDepth === null) return null;
       return { model: display.colorFormat, depth: display.colorDepth };
     }
+    case 'hue': return display.hue?.value;
+    case 'saturation': return display.saturation?.value;
+    case 'brightness': return display.brightness?.value;
+    case 'contrast': return display.contrast?.value;
     default: return null;
   }
 }
@@ -50,6 +62,9 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   }
   if (isDisplayControlSupported(display, 'scalingMode')) {
     out.scalingMode = (display.scalingMode ?? display.supportedOptions.scalingModes[0]) as DisplaySettings['scalingMode'];
+  }
+  if (isDisplayControlSupported(display, 'displayScalingMethod')) {
+    out.displayScalingMethod = display.scalingMode === 'custom' ? 'custom' : 'maintain-display-scaling';
   }
   if (isDisplayControlSupported(display, 'scalingMethod') && display.scalingMethod?.value) {
     out.scalingMethod = {
@@ -66,6 +81,11 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
       depth: display.colorDepth ?? display.supportedOptions.bpcDepths[0],
     };
   }
+  for (const key of DISPLAY_COLOR_CONTROLS) {
+    if (!isDisplayControlSupported(display, key)) continue;
+    const value = displayDriverValue(display, key);
+    if (typeof value === 'number' && Number.isFinite(value)) (out as Record<string, unknown>)[key] = value;
+  }
   return out;
 }
 
@@ -74,6 +94,7 @@ const WIRE_FORMAT_SET = new Set<unknown>(DISPLAY_WIRE_FORMAT_OPTIONS);
 const SCALING_MODE_SET = new Set<unknown>(DISPLAY_SCALING_MODE_OPTIONS);
 const RETRO_SCALING_METHOD_SET = new Set<unknown>(DISPLAY_RETRO_SCALING_METHOD_OPTIONS);
 const ARC_SYNC_PROFILE_SET = new Set<unknown>(DISPLAY_ARC_SYNC_PROFILE_OPTIONS);
+const SCALING_METHOD_SET = new Set<unknown>(DISPLAY_SCALING_METHOD_OPTIONS);
 
 export function validateDisplaySettings(value: unknown): value is DisplaySettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -82,6 +103,8 @@ export function validateDisplaySettings(value: unknown): value is DisplaySetting
       if (!QUANTIZATION_SET.has(v)) return false;
     } else if (key === 'scalingMode') {
       if (!SCALING_MODE_SET.has(v)) return false;
+    } else if (key === 'displayScalingMethod') {
+      if (!SCALING_METHOD_SET.has(v)) return false;
     } else if (key === 'scalingMethod') {
       if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
       const sm = v as { enabled?: unknown; method?: unknown };
@@ -92,6 +115,8 @@ export function validateDisplaySettings(value: unknown): value is DisplaySetting
       if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
       const wf = v as { model?: unknown; depth?: unknown };
       if (!WIRE_FORMAT_SET.has(wf.model) || typeof wf.depth !== 'number' || !Number.isFinite(wf.depth) || !DISPLAY_BPC_OPTIONS.includes(wf.depth)) return false;
+    } else if (DISPLAY_COLOR_CONTROLS.includes(key as typeof DISPLAY_COLOR_CONTROLS[number])) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) return false;
     } else {
       return false;
     }

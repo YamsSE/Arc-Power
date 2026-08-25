@@ -122,10 +122,10 @@ const DISPLAY_FIXTURE = Object.freeze({
     hdcpSupport: displayCapability(true, true),
     fourKSupport: displayCapability(false, true),
     hdrSupport: displayCapability(false, true),
-    hue: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
-    saturation: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
-    brightness: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
-    contrast: displayCapability(null, false, false, 'Color calibration is not exposed by the driver interface'),
+    hue: displayCapability(0, true, true, null, 'mock-color-correction'),
+    saturation: displayCapability(50, true, true, null, 'mock-color-correction'),
+    brightness: displayCapability(50, true, true, null, 'mock-color-correction'),
+    contrast: displayCapability(50, true, true, null, 'mock-color-correction'),
     supportedOptions: {
       scalingModes: [...DISPLAY_SCALING_MODE_OPTIONS],
       scalingMethods: [...DISPLAY_RETRO_SCALING_METHOD_OPTIONS],
@@ -133,6 +133,12 @@ const DISPLAY_FIXTURE = Object.freeze({
       wireFormats: [...DISPLAY_WIRE_FORMAT_OPTIONS],
       bpcDepths: [...DISPLAY_BPC_OPTIONS].filter((depth) => depth === 8 || depth === 10),
       quantizationRanges: [...DISPLAY_QUANTIZATION_OPTIONS],
+      colorRanges: {
+        hue: { min: -180, max: 180, step: 1, default: 0 },
+        saturation: { min: 0, max: 100, step: 1, default: 50 },
+        brightness: { min: 0, max: 100, step: 1, default: 50 },
+        contrast: { min: 0, max: 100, step: 1, default: 50 },
+      },
     },
     flags: { active: true, attached: true, dongleConnected: false, ditheringEnabled: false },
     arcSync: { supported: true, minRefreshHz: 48, maxRefreshHz: 180, profile: 'recommended' },
@@ -1070,7 +1076,7 @@ export class MockBackend {
     const e = this._entry(id);
     const patch = request?.patch && typeof request.patch === 'object' ? request.patch : {};
     const result = { ok: true, perControl: {} };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'scalingMethod', 'vrrMode']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((key) => patch[key] !== null && patch[key] !== undefined);
     const fail = (key, errorCode, message) => {
       result.perControl[key] = { ok: false, errorCode, message };
@@ -1118,6 +1124,17 @@ export class MockBackend {
         result.perControl.scalingMode = { ok: true, readBackEqual: true, warning: DISPLAY_SCALING_FLASH_WARNING };
       }
     }
+    if (patch.displayScalingMethod !== undefined && patch.displayScalingMethod !== null) {
+      if (!['maintain-display-scaling', 'custom'].includes(patch.displayScalingMethod)) fail('displayScalingMethod', 'out-of-range', 'unknown Display Scaling method');
+      else {
+        const next = patch.displayScalingMethod === 'custom' ? 'custom' : 'identity';
+        if (!display.supportedOptions.scalingModes.includes(next)) fail('displayScalingMethod', 'unsupported', 'Display Scaling method is not supported by this display');
+        else {
+          display.scalingMode = next;
+          result.perControl.displayScalingMethod = { ok: true, readBackEqual: true, warning: DISPLAY_SCALING_FLASH_WARNING };
+        }
+      }
+    }
     if (patch.scalingMethod !== undefined && patch.scalingMethod !== null) {
       const value = patch.scalingMethod;
       if (typeof value !== 'object' || typeof value.enabled !== 'boolean' || !DISPLAY_RETRO_SCALING_METHOD_OPTIONS.includes(value.method)) fail('scalingMethod', 'out-of-range', 'unknown retro-scaling method');
@@ -1158,6 +1175,18 @@ export class MockBackend {
         display.arcSync.profile = patch.vrrMode;
         result.perControl.vrrMode = { ok: display.vrrMode.value === patch.vrrMode, readBackEqual: display.vrrMode.value === patch.vrrMode };
       }
+    }
+    for (const key of ['hue', 'saturation', 'brightness', 'contrast']) {
+      if (patch[key] === undefined || patch[key] === null) continue;
+      const range = display.supportedOptions.colorRanges?.[key];
+      const capability = display[key];
+      if (!range || capability?.controllable !== true) {
+        fail(key, 'unsupported', 'color correction is not supported by this display');
+        continue;
+      }
+      const value = Math.min(range.max, Math.max(range.min, Number(patch[key])));
+      capability.value = value;
+      result.perControl[key] = { ok: capability.value === value, readBackEqual: capability.value === value };
     }
     if (controls.length > 0) {
       this._displayApplies.push({ deviceId: id, displayKey: request.displayKey ?? null, patch: JSON.parse(JSON.stringify(patch)) });

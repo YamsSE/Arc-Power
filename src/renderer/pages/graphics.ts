@@ -98,7 +98,7 @@ const DISPLAY_SCALING_METHOD_NOTE = 'Retro scaling changes can briefly modeset t
 // the honest note is unconditional. The plain VRR on/off is OS-controlled
 // in Windows (plan 5 - out of scope).
 const DISPLAY_VRR_NOTE = 'Variable refresh rate is OS-controlled in Windows; the driver does not expose a VRR-mode surface here.';
-const DISPLAY_SLIDERS_NOTE = 'The Hue/Saturation/Brightness/Contrast calibration sliders are not exposed by the public driver interface - they are applied by the Intel Graphics Software service';
+const DISPLAY_SLIDERS_NOTE = 'These values use the driver’s Standard Color Correction surface and are verified by read-back after every change.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The wire-format set is a silent no-op on this driver build - the driver does not accept wire-format changes (the read-back never changes).';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
@@ -127,6 +127,17 @@ const SCALING_MODE_LABELS: Record<string, string> = {
   centered: 'Centered',
   stretched: 'Stretched',
   'aspect-ratio-centered-max': 'Aspect Ratio Centered Max',
+  custom: 'Custom',
+};
+const IGS_SCALING_MODE_OPTIONS = ['gpu-scaling', 'display-scaling', 'retro-scaling'];
+const IGS_SCALING_MODE_LABELS: Record<string, string> = {
+  'gpu-scaling': 'GPU Scaling',
+  'display-scaling': 'Display Scaling',
+  'retro-scaling': 'Retro Scaling',
+};
+const IGS_SCALING_METHOD_OPTIONS = ['maintain-display-scaling', 'custom'];
+const IGS_SCALING_METHOD_LABELS: Record<string, string> = {
+  'maintain-display-scaling': 'Maintain Display Scaling',
   custom: 'Custom',
 };
 const RETRO_SCALING_LABELS: Record<string, string> = {
@@ -164,6 +175,8 @@ let selectedDisplayId: number | null = null;
 let selectedDisplayKey: string | null = null;
 let displayDraft: DisplaySettings = {};
 let displayApplied: DisplaySettings = {};
+let displayScalingViewDraft = 'display-scaling';
+let displayScalingMethodDraft = 'maintain-display-scaling';
 let applying = false;
 let applyBtn: HTMLButtonElement | null = null;
 const chipNodes = new Map<string, HTMLElement>();
@@ -219,6 +232,8 @@ function resetPageState() {
   selectedDisplayKey = null;
   displayDraft = {};
   displayApplied = {};
+  displayScalingViewDraft = 'display-scaling';
+  displayScalingMethodDraft = 'maintain-display-scaling';
   applying = false;
   applyBtn = null;
   chipNodes.clear();
@@ -240,6 +255,26 @@ function selectedDisplay(): DisplayState['displays'][number] | null {
   return displayState.displays.find((d) => d.displayKey === selectedDisplayKey)
     ?? displayState.displays.find((d) => d.id === selectedDisplayId)
     ?? displayState.displays[0] ?? null;
+}
+
+function scalingViewOf(display: DisplayState['displays'][number] | null): string {
+  if (!display) return 'display-scaling';
+  if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
+  return display.scalingMode && display.scalingMode !== 'identity' ? 'gpu-scaling' : 'display-scaling';
+}
+
+function scalingMethodViewOf(display: DisplayState['displays'][number] | null): string {
+  return display?.scalingMode === 'custom' ? 'custom' : 'maintain-display-scaling';
+}
+
+function rawScalingForView(display: DisplayState['displays'][number], view: string): DisplaySettings['scalingMode'] {
+  const supported = display.supportedOptions.scalingModes;
+  if (view === 'display-scaling') return supported.includes('identity') ? 'identity' : (supported[0] as DisplaySettings['scalingMode']);
+  if (view === 'retro-scaling') {
+    return display.scalingMode && supported.includes(display.scalingMode) ? display.scalingMode as DisplaySettings['scalingMode'] : (supported[0] as DisplaySettings['scalingMode']);
+  }
+  const gpuMode = ['stretched', 'centered', 'aspect-ratio-centered-max', 'custom'].find((mode) => supported.includes(mode));
+  return (gpuMode ?? supported[0]) as DisplaySettings['scalingMode'];
 }
 
 /** M9: the shared chip state machine (pure/chip.ts) drives the per-card
@@ -282,13 +317,18 @@ function refreshDisplayChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
   const display = selectedDisplay();
-  const state = chipState(
-    key,
-    displayDraft as Record<string, unknown>,
-    displayApplied as Record<string, unknown>,
-    displayDriverValue(display, key),
-    isDisplayControlSupported(display, key),
-  );
+  const viewKey = key === 'scalingMode' ? displayScalingViewDraft
+    : key === 'displayScalingMethod' ? displayScalingMethodDraft
+      : (displayDraft as Record<string, unknown>)[key];
+  const appliedKey = key === 'scalingMode' ? (displayApplied as Record<string, unknown>)[key]
+    : key === 'displayScalingMethod' ? (displayApplied as Record<string, unknown>)[key]
+      : (displayApplied as Record<string, unknown>)[key];
+  const driverValue = key === 'scalingMode' ? scalingViewOf(display)
+    : key === 'displayScalingMethod' ? scalingMethodViewOf(display)
+      : displayDriverValue(display, key);
+  const state = chipState(key, { [key]: viewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
+    ? isDisplayControlSupported(display, 'scalingMode')
+    : isDisplayControlSupported(display, key));
   chip.hidden = state !== 'applied';
   if (state === 'applied') {
     chip.textContent = 'Applied';
@@ -729,6 +769,8 @@ async function renderDisplayView(view: HTMLElement, ctx: PageContext, generation
   selectedDisplayId = state.displays[0]?.id ?? null;
   selectedDisplayKey = state.displays[0]?.displayKey ?? null;
   displayDraft = normalizeDisplaySettings(selectedDisplay());
+  displayScalingViewDraft = scalingViewOf(selectedDisplay());
+  displayScalingMethodDraft = scalingMethodViewOf(selectedDisplay());
   displayApplied = {};
   renderDisplayCards(view, ctx);
 }
@@ -745,6 +787,7 @@ function buildDisplayDropdownRow(
   options: string[],
   labels: Record<string, string>,
 ): HTMLElement {
+  if (key === 'scalingMode') return buildDisplayScalingModeRow(ctx);
   const display = selectedDisplay();
   const supported = display !== null && isDisplayControlSupported(display, key);
   if (!supported || options.length === 0) {
@@ -804,63 +847,97 @@ function buildDisplayDropdownRow(
   return row;
 }
 
-/** The retro-scaling setting is a compound driver value: enabled plus the
- * selected method. Keep both parts in one card and one atomic payload so an
- * apply can never accidentally reset the other half. */
-function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
+/** IGS presents ordinary, display, and retro scaling as one three-way view.
+ * Keep the raw IGCL scaling flags internal and translate the selection into
+ * the driver payload only when Apply is pressed. */
+function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
-  const capability = display?.scalingMethod;
-  const options = display?.supportedOptions.scalingMethods ?? [];
-  const supported = display !== null && isDisplayControlSupported(display, 'scalingMethod') && options.length > 0;
+  const supported = display !== null && isDisplayControlSupported(display, 'scalingMode');
   if (!supported) {
-    const value = capability?.value;
-    const valueText = value ? `${value.enabled ? 'Enabled' : 'Disabled'} · ${RETRO_SCALING_LABELS[value.method] ?? value.method}` : 'Not available';
-    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'scalingMethod' }, title: capability?.reason ?? DISPLAY_SCALING_METHOD_NOTE }, [
-      el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
-      el('div', { class: 'display-readonly-value', text: valueText }),
-      el('p', { class: 'card-note', text: capability?.reason ?? (capability?.supported === false ? 'Not supported on this GPU.' : DISPLAY_SCALING_METHOD_NOTE) }),
+    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'scalingMode' } }, [
+      el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
+      el('p', { class: 'card-note', text: 'Not supported on this GPU.' }),
     ]);
   }
-  const current = displayDraft.scalingMethod ?? capability?.value ?? { enabled: false, method: options[0] as 'integer' | 'nearest-neighbour' };
-  const methodSelect = el('select', {
+  const select = el('select', {
     class: 'graphics-select display-select',
-    dataset: { displaySelect: 'scalingMethod' },
+    dataset: { displaySelect: 'scalingMode' },
     onchange: (e: Event) => {
-      displayDraft.scalingMethod = { enabled: enabledToggle.checked, method: (e.target as HTMLSelectElement).value as 'integer' | 'nearest-neighbour' };
-      refreshDisplayChip('scalingMethod');
+      displayScalingViewDraft = (e.target as HTMLSelectElement).value;
+      displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
+      displayDraft.scalingMethod = {
+        enabled: displayScalingViewDraft === 'retro-scaling',
+        method: display.scalingMethod?.value?.method ?? 'integer',
+      };
+      refreshDisplayChip('scalingMode');
     },
-  }, options.map((option) => el('option', { value: option, text: RETRO_SCALING_LABELS[option] ?? option, selected: option === current.method })));
-  const enabledToggle = el('input', {
-    type: 'checkbox',
-    class: 'display-inline-toggle',
-    checked: current.enabled,
-    onchange: () => {
-      displayDraft.scalingMethod = { enabled: enabledToggle.checked, method: methodSelect.value as 'integer' | 'nearest-neighbour' };
-      refreshDisplayChip('scalingMethod');
-    },
-  });
-  const row = el('div', { class: 'display-control', dataset: { control: 'scalingMethod' } }, [
-    el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
-    el('p', { class: 'card-note', text: DISPLAY_SCALING_METHOD_NOTE }),
-    el('div', { class: 'graphics-control display-compound-control' }, [
-      el('label', { class: 'display-inline-field' }, [enabledToggle, el('span', { text: 'Enabled' })]),
-      methodSelect,
-    ]),
+  }, IGS_SCALING_MODE_OPTIONS.map((option) => el('option', {
+    value: option,
+    text: IGS_SCALING_MODE_LABELS[option],
+    selected: option === displayScalingViewDraft,
+  })));
+  selectNodes.set('scalingMode', select);
+  const row = el('div', { class: 'display-control', dataset: { control: 'scalingMode' } }, [
+    el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
+    el('p', { class: 'card-note', text: DISPLAY_SCALING_NOTE }),
+    el('div', { class: 'graphics-control' }, [select]),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
-      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMethod'); } }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMode'); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
-        const method = options[0] as 'integer' | 'nearest-neighbour';
-        enabledToggle.checked = true;
-        methodSelect.value = method;
-        displayDraft.scalingMethod = { enabled: true, method };
-        refreshDisplayChip('scalingMethod');
+        displayScalingViewDraft = 'display-scaling';
+        displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
+        displayDraft.scalingMethod = { enabled: false, method: display.scalingMethod?.value?.method ?? 'integer' };
+        select.value = displayScalingViewDraft;
+        refreshDisplayChip('scalingMode');
       } }),
     ]),
   ]);
-  chipNodes.set('scalingMethod', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
-  chipApplyNodes.set('scalingMethod', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
-  refreshDisplayChip('scalingMethod');
+  chipNodes.set('scalingMode', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+  chipApplyNodes.set('scalingMode', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+  refreshDisplayChip('scalingMode');
+  return row;
+}
+
+/** IGS's second scaling row is the ordinary Display Scaling method. Retro's
+ * raw enable/type pair stays an internal compatibility payload. */
+function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
+  const display = selectedDisplay();
+  const supported = display !== null && isDisplayControlSupported(display, 'displayScalingMethod');
+  if (!supported) {
+    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'displayScalingMethod' }, title: DISPLAY_SCALING_METHOD_NOTE }, [
+      el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
+      el('p', { class: 'card-note', text: 'Not supported on this GPU.' }),
+    ]);
+  }
+  const methodSelect = el('select', {
+    class: 'graphics-select display-select',
+    dataset: { displaySelect: 'displayScalingMethod' },
+    onchange: (e: Event) => {
+      displayScalingMethodDraft = (e.target as HTMLSelectElement).value;
+      displayDraft.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
+      refreshDisplayChip('displayScalingMethod');
+    },
+  }, IGS_SCALING_METHOD_OPTIONS.map((option) => el('option', { value: option, text: IGS_SCALING_METHOD_LABELS[option], selected: option === displayScalingMethodDraft })));
+  selectNodes.set('displayScalingMethod', methodSelect);
+  const row = el('div', { class: 'display-control', dataset: { control: 'displayScalingMethod' } }, [
+    el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
+    el('p', { class: 'card-note', text: DISPLAY_SCALING_METHOD_NOTE }),
+    el('div', { class: 'graphics-control' }, [methodSelect]),
+    el('div', { class: 'graphics-card-actions' }, [
+      el('span', { class: 'chip oc-chip-status', hidden: true }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'displayScalingMethod'); } }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
+        displayScalingMethodDraft = 'maintain-display-scaling';
+        displayDraft.displayScalingMethod = 'maintain-display-scaling';
+        methodSelect.value = displayScalingMethodDraft;
+        refreshDisplayChip('displayScalingMethod');
+      } }),
+    ]),
+  ]);
+  chipNodes.set('displayScalingMethod', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+  chipApplyNodes.set('displayScalingMethod', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+  refreshDisplayChip('displayScalingMethod');
   return row;
 }
 
@@ -989,16 +1066,64 @@ function buildDisplayReadonlyRow<T>(title: string, capability: DisplayCapability
   ]);
 }
 
-function buildDisplayReadonlySlider(title: string, capability: DisplayCapability<number> | undefined, min: number, max: number, fallbackReason: string): HTMLElement {
-  const value = capability?.value ?? 50;
-  return el('div', { class: 'display-control display-slider-row display-control-readonly', dataset: { control: title.toLowerCase() } }, [
+function buildDisplaySlider(ctx: PageContext, key: 'hue' | 'saturation' | 'brightness' | 'contrast', title: string, capability: DisplayCapability<number> | undefined, fallbackMin: number, fallbackMax: number, fallbackReason: string): HTMLElement {
+  const display = selectedDisplay();
+  const supported = display !== null && isDisplayControlSupported(display, key);
+  const range = display?.supportedOptions.colorRanges?.[key];
+  const min = range?.min ?? fallbackMin;
+  const max = range?.max ?? fallbackMax;
+  const step = range?.step ?? 1;
+  const value = capability?.value ?? range?.default ?? 50;
+  if (!supported) {
+    return el('div', { class: 'display-control display-slider-row display-control-readonly', dataset: { control: key } }, [
+      el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
+      el('div', { class: 'display-slider-line' }, [
+        el('input', { class: 'graphics-slider', type: 'range', min, max, step, value, disabled: true, 'aria-label': title }),
+        el('input', { class: 'display-number-input', type: 'number', min, max, value: capability?.value ?? '', disabled: true, 'aria-label': `${title} value` }),
+      ]),
+      el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
+    ]);
+  }
+  const slider = el('input', {
+    class: 'graphics-slider', type: 'range', min, max, step, value, 'aria-label': title,
+    oninput: (e: Event) => {
+      const next = Number((e.target as HTMLInputElement).value);
+      (displayDraft as Record<string, unknown>)[key] = next;
+      numberInput.value = String(next);
+      refreshDisplayChip(key);
+    },
+  });
+  const numberInput = el('input', {
+    class: 'display-number-input', type: 'number', min, max, step, value, 'aria-label': `${title} value`,
+    onchange: (e: Event) => {
+      const next = Math.min(max, Math.max(min, Number((e.target as HTMLInputElement).value)));
+      if (!Number.isFinite(next)) return;
+      (displayDraft as Record<string, unknown>)[key] = next;
+      slider.value = String(next);
+      numberInput.value = String(next);
+      refreshDisplayChip(key);
+    },
+  });
+  const row = el('div', { class: 'display-control display-slider-row', dataset: { control: key } }, [
     el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
-    el('div', { class: 'display-slider-line' }, [
-      el('input', { class: 'graphics-slider', type: 'range', min, max, value, disabled: true, 'aria-label': title }),
-      el('input', { class: 'display-number-input', type: 'number', min, max, value: capability?.value ?? '', disabled: true, 'aria-label': `${title} value` }),
-    ]),
+    el('div', { class: 'display-slider-line' }, [slider, numberInput]),
     el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
+    el('div', { class: 'graphics-card-actions' }, [
+      el('span', { class: 'chip oc-chip-status', hidden: true }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, key); } }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
+        const reset = range?.default ?? value;
+        (displayDraft as Record<string, unknown>)[key] = reset;
+        slider.value = String(reset);
+        numberInput.value = String(reset);
+        refreshDisplayChip(key);
+      } }),
+    ]),
   ]);
+  chipNodes.set(key, row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+  chipApplyNodes.set(key, row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+  refreshDisplayChip(key);
+  return row;
 }
 
 function buildDisplayModeRow(title: string, value: string, reason: string): HTMLElement {
@@ -1034,6 +1159,8 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
       selectedDisplayId = Number((e.target as HTMLSelectElement).value);
       selectedDisplayKey = displayState?.displays.find((d) => d.id === selectedDisplayId)?.displayKey ?? null;
       displayDraft = normalizeDisplaySettings(selectedDisplay());
+      displayScalingViewDraft = scalingViewOf(selectedDisplay());
+      displayScalingMethodDraft = scalingMethodViewOf(selectedDisplay());
       displayApplied = {};
       renderDisplayCards(view, ctx);
     },
@@ -1053,12 +1180,12 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
 
   const color = el('section', { class: 'card display-group', dataset: { displayGroup: 'color' } }, [
     el('h2', { class: 'card-title', text: 'Color' }),
-    buildDisplayReadonlySlider('Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
-    buildDisplayReadonlySlider('Saturation', display.saturation, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'hue', 'Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'saturation', 'Saturation', display.saturation, 0, 100, DISPLAY_SLIDERS_NOTE),
     buildDisplayModeRow('Brightness', 'Basic', DISPLAY_SLIDERS_NOTE),
-    buildDisplayReadonlySlider('All', display.brightness, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'brightness', 'All', display.brightness, 0, 100, DISPLAY_SLIDERS_NOTE),
     buildDisplayModeRow('Contrast', 'Basic', DISPLAY_SLIDERS_NOTE),
-    buildDisplayReadonlySlider('All', display.contrast, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'contrast', 'All', display.contrast, 0, 100, DISPLAY_SLIDERS_NOTE),
     buildDisplayDropdownRow(ctx, 'quantizationRange', 'Quantization Range', 'The color-quantization range of the display output.', display.supportedOptions.quantizationRanges, QUANTIZATION_LABELS),
     buildWireFormatRow(ctx),
   ]);
@@ -1178,9 +1305,24 @@ async function applyDisplay(ctx: PageContext, only: string) {
   const deviceId = live.deviceId;
   const display = selectedDisplay();
   if (deviceId === null || !display || !displayState) return;
-  const payload = isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)
-    ? { [only]: (displayDraft as Record<string, unknown>)[only] } as unknown as DisplaySettings
-    : {};
+  let payload: DisplaySettings = {};
+  if (only === 'scalingMode') {
+    if (displayScalingViewDraft !== scalingViewOf(display)) {
+      payload = {
+        scalingMode: rawScalingForView(display, displayScalingViewDraft),
+        scalingMethod: {
+          enabled: displayScalingViewDraft === 'retro-scaling',
+          method: display.scalingMethod?.value?.method ?? 'integer',
+        },
+      };
+    }
+  } else if (only === 'displayScalingMethod') {
+    if (displayScalingMethodDraft !== scalingMethodViewOf(display)) {
+      payload = { displayScalingMethod: displayScalingMethodDraft as DisplaySettings['displayScalingMethod'] };
+    }
+  } else if (isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)) {
+    payload = { [only]: (displayDraft as Record<string, unknown>)[only] } as unknown as DisplaySettings;
+  }
   if (!validateDisplaySettings(payload)) {
     toast('error', 'Apply aborted', 'The display payload failed validation - this is a bug.');
     return;
@@ -1206,7 +1348,9 @@ async function applyDisplay(ctx: PageContext, only: string) {
     }
     for (const [key, per] of Object.entries(out.perControl)) {
       if (per.ok) {
-        (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
+        if (key === 'scalingMode') (displayApplied as Record<string, unknown>)[key] = displayScalingViewDraft;
+        else if (key === 'displayScalingMethod') (displayApplied as Record<string, unknown>)[key] = displayScalingMethodDraft;
+        else (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
         // The scaling card's honest modeset note rides the apply result
         // (the M10b probe skipped the scaling SET by design - a scaling
