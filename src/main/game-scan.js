@@ -30,7 +30,21 @@ const POSTER_EXTENSIONS = new Map([
   ['.jpeg', 'image/jpeg'],
   ['.webp', 'image/webp'],
 ]);
-const STEAM_ARTWORK_FILES = ['library_600x900_2x.jpg', 'library_600x900.jpg', 'library_capsule.jpg', 'header.jpg'];
+const STEAM_ARTWORK_FILES = [
+  'library_hero_2x', 'library_hero',
+  'library_capsule_2x', 'library_capsule',
+  'library_600x900_2x', 'library_600x900',
+  'header_2x', 'header',
+  // Some Steam cache entries have only a 640px-wide logo. It is still a
+  // materially better full-card fallback than a tiny executable icon.
+  'logo',
+];
+const STEAM_GRID_ARTWORK_FILES = [
+  'p', 'p_2x', '', '_2x',
+  '_hero', '_hero_2x', '_header', '_header_2x',
+  '_capsule', '_capsule_2x',
+];
+const steamRootsCache = new Map();
 
 const withTimeout = (promise, timeoutMs) => Promise.race([
   promise,
@@ -86,6 +100,75 @@ async function chooseBestArtwork(candidates, maxBytes) {
   });
   const selected = accepted[0];
   return selected ? `data:${selected.mime};base64,${selected.bytes.toString('base64')}` : null;
+}
+
+function decodeVdfPath(value) {
+  return String(value ?? '').replaceAll('\\\\', '\\').replaceAll('\\"', '"').trim();
+}
+
+function configuredSteamRoots() {
+  const roots = [
+    process.env['ProgramFiles(x86)'] ? path.win32.join(process.env['ProgramFiles(x86)'], 'Steam') : null,
+    process.env.ProgramFiles ? path.win32.join(process.env.ProgramFiles, 'Steam') : null,
+    process.env.LOCALAPPDATA ? path.win32.join(process.env.LOCALAPPDATA, 'Steam') : null,
+    'C:\\Program Files (x86)\\Steam',
+    'C:\\Program Files\\Steam',
+  ];
+  return roots.filter(Boolean);
+}
+
+async function discoverSteamRoots(libraryRoot) {
+  const roots = [...new Set([libraryRoot, ...configuredSteamRoots()].filter(Boolean))];
+  // A Steam library folder's libraryfolders.vdf points back to the install
+  // root and every other library. Reading that small local file lets a game
+  // installed on D:/ or F:/ reuse the artwork cache held under C:/Steam.
+  for (const root of roots.slice()) {
+    for (const filePath of [
+      path.win32.join(root, 'steamapps', 'libraryfolders.vdf'),
+      path.win32.join(root, 'libraryfolders.vdf'),
+    ]) {
+      try {
+        const text = await readFile(filePath, 'utf8');
+        for (const match of text.matchAll(/"path"\s+"((?:[^"\\]|\\.)*)"/gi)) {
+          const candidate = decodeVdfPath(match[1]);
+          if (candidate && !roots.some((item) => item.toLowerCase() === candidate.toLowerCase())) roots.push(candidate);
+        }
+      } catch { /* optional Steam metadata */ }
+    }
+  }
+  return roots;
+}
+
+function steamFileCandidates(root, appId) {
+  const candidates = [];
+  const libraryCache = path.win32.join(root, 'appcache', 'librarycache');
+  const appCacheDirectory = path.win32.join(libraryCache, appId);
+  for (const base of STEAM_ARTWORK_FILES) {
+    for (const [extension, mime] of POSTER_EXTENSIONS) {
+      candidates.push({ filePath: path.win32.join(libraryCache, `${appId}_${base}${extension}`), extension, mime });
+      candidates.push({ filePath: path.win32.join(appCacheDirectory, `${base}${extension}`), extension, mime });
+    }
+  }
+  // Steam also keeps square icon/logo variants beside the library art. Grid
+  // variants are handled separately so a real banner/poster wins whenever it
+  // exists; the cache logo remains the bounded full-card fallback.
+  return candidates;
+}
+
+async function steamGridCandidates(root, appId) {
+  const candidates = [];
+  try {
+    const users = await readdir(path.win32.join(root, 'userdata'), { withFileTypes: true });
+    for (const user of users.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name)).slice(0, STEAM_MAX_USERS)) {
+      const grid = path.win32.join(root, 'userdata', user.name, 'config', 'grid');
+      for (const suffix of STEAM_GRID_ARTWORK_FILES) {
+        for (const [extension, mime] of POSTER_EXTENSIONS) {
+          candidates.push({ filePath: path.win32.join(grid, `${appId}${suffix}${extension}`), extension, mime });
+        }
+      }
+    }
+  } catch { /* optional Steam cache */ }
+  return candidates;
 }
 
 function candidateScore(item, row) {
@@ -187,21 +270,15 @@ export async function findGamePosterArtwork(exePath, opts = {}) {
   // network scan or remote-content fetch.
   const steam = await steamContext(canonical);
   if (steam) {
+    const rootKey = steam.root.toLowerCase();
+    if (!steamRootsCache.has(rootKey)) steamRootsCache.set(rootKey, discoverSteamRoots(steam.root));
+    const steamRoots = await steamRootsCache.get(rootKey);
     const localCandidates = [];
-    const libraryCache = path.win32.join(steam.root, 'appcache', 'librarycache');
-    for (const name of STEAM_ARTWORK_FILES) localCandidates.push(path.win32.join(libraryCache, `${steam.appId}_${name}`));
-    try {
-      const users = await readdir(path.win32.join(steam.root, 'userdata'), { withFileTypes: true });
-      for (const user of users.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name)).slice(0, STEAM_MAX_USERS)) {
-        for (const name of ['.png', '.jpg', '.jpeg', '.webp']) {
-          localCandidates.push(path.win32.join(steam.root, 'userdata', user.name, 'config', 'grid', `${steam.appId}p${name}`));
-        }
-      }
-    } catch { /* optional Steam cache */ }
-    const steamArtwork = await chooseBestArtwork(localCandidates.map((filePath) => {
-      const extension = path.win32.extname(filePath).toLowerCase();
-      return { filePath, extension, mime: POSTER_EXTENSIONS.get(extension) };
-    }).filter((candidate) => candidate.mime), maxBytes);
+    for (const root of steamRoots) {
+      localCandidates.push(...steamFileCandidates(root, steam.appId));
+      localCandidates.push(...await steamGridCandidates(root, steam.appId));
+    }
+    const steamArtwork = await chooseBestArtwork(localCandidates, maxBytes);
     if (steamArtwork) return steamArtwork;
   }
   return null;

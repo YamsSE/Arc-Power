@@ -769,8 +769,12 @@ export interface DisplaySettings {
   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444'; depth: number };
   /** Raw IGCL ordinary scaling type used behind the IGS-style view. */
   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom';
-  /** IGS Display Scaling > Scaling Method abstraction. */
-  displayScalingMethod?: 'maintain-display-scaling' | 'custom';
+  /**
+   * IGS Display > Scaling Method. The available values depend on the
+   * selected Scaling Mode: GPU uses the raw GPU scaler flags, Display uses
+   * Maintain Display Scaling/Custom, and Retro uses its two retro methods.
+   */
+  displayScalingMethod?: 'maintain-display-scaling' | 'custom' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'integer' | 'nearest-neighbour';
   /** Custom GPU-scaling percentages from ctl_scaling_settings_t. */
   scalingCustom?: { x: number; y: number; hardwareModeSet?: boolean };
   /** Legacy retro-scaling shape retained for older callers. */
@@ -868,7 +872,10 @@ export interface DisplayState {
     colorFormat: string | null;
     quantizationRange: 'default' | 'limited' | 'full' | null;
     scalingMode: string | null;
-    scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null } | null;
+    /** Active/native scaler state. The IGS-style selector uses the persisted
+     * preference below when the driver reports an identity active mode. */
+    preferredScalingMode?: string | null;
+    scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null; registryScalingState?: number } | null;
     scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' }>;
     vrrMode?: DisplayCapability<'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom'>;
     globalVrrMode?: DisplayCapability<'fullscreen' | 'fullscreen-windowed' | 'disabled'>;

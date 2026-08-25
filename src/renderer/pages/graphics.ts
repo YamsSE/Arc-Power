@@ -64,6 +64,11 @@ import {
   normalizeDisplaySettings,
   validateDisplaySettings,
   snapDisplayColorValue,
+  rawScalingForView,
+  effectiveScalingModeOf,
+  scalingViewOf as displayScalingViewOf,
+  scalingMethodViewOf as displayScalingMethodViewOf,
+  scalingMethodOptionsForView,
   type DisplayColorRange,
   isDisplayControlDirtyVsApplied as isDisplayControlDirtyVsAppliedPure,
 } from '../pure/display.ts';
@@ -130,10 +135,14 @@ const IGS_SCALING_MODE_LABELS: Record<string, string> = {
   'display-scaling': 'Display Scaling',
   'retro-scaling': 'Retro Scaling',
 };
-const IGS_SCALING_METHOD_OPTIONS = ['maintain-display-scaling', 'custom'];
 const IGS_SCALING_METHOD_LABELS: Record<string, string> = {
   'maintain-display-scaling': 'Maintain Display Scaling',
   custom: 'Custom',
+  centered: 'Centered',
+  stretched: 'Stretched',
+  'aspect-ratio-centered-max': 'Aspect Ratio Centered Max',
+  integer: 'Integer Scaling',
+  'nearest-neighbour': 'Nearest Neighbour',
 };
 const GLOBAL_VRR_LABELS: Record<string, string> = {
   fullscreen: 'Fullscreen',
@@ -297,31 +306,16 @@ function selectedDisplay(): DisplayState['displays'][number] | null {
 }
 
 function scalingViewOf(display: DisplayState['displays'][number] | null): string {
-  if (!display) return 'display-scaling';
-  if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
-  return display.scalingMode && display.scalingMode !== 'identity' ? 'gpu-scaling' : 'display-scaling';
+  return displayScalingViewOf(display);
 }
 
 function scalingMethodViewOf(display: DisplayState['displays'][number] | null): string {
-  return display?.scalingMode === 'custom' ? 'custom' : 'maintain-display-scaling';
-}
-
-function rawScalingForView(display: DisplayState['displays'][number], view: string): DisplaySettings['scalingMode'] {
-  const supported = display.supportedOptions.scalingModes;
-  if (view === 'display-scaling') return supported.includes('identity') ? 'identity' : (supported[0] as DisplaySettings['scalingMode']);
-  if (view === 'retro-scaling') {
-    return display.scalingMode && supported.includes(display.scalingMode) ? display.scalingMode as DisplaySettings['scalingMode'] : (supported[0] as DisplaySettings['scalingMode']);
-  }
-  // The A770 exposes only the raw CUSTOM bit as the writable GPU-scaling
-  // surface. Prefer it so the IGS GPU Scaling choice round-trips instead of
-  // sending the unsupported STRETCHED flag.
-  const gpuMode = ['custom', 'stretched', 'aspect-ratio-centered-max', 'centered'].find((mode) => supported.includes(mode));
-  return (gpuMode ?? supported[0]) as DisplaySettings['scalingMode'];
+  return displayScalingMethodViewOf(display);
 }
 
 function customScalingOf(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['scalingCustom']> {
   const details = display.scalingDetails;
-  const isCustom = display.scalingMode === 'custom';
+  const isCustom = effectiveScalingModeOf(display) === 'custom';
   return {
     // Identity/centered read-backs commonly return zero because the custom
     // fields are inactive. IGS treats Custom as 100/100 until that mode is
@@ -1022,19 +1016,28 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'scalingMode' },
     onchange: (e: Event) => {
       displayScalingViewDraft = (e.target as HTMLSelectElement).value;
+      displayScalingMethodDraft = scalingMethodOptionsForView(display!, displayScalingViewDraft)[0] ?? 'maintain-display-scaling';
       const raw = rawScalingForView(display!, displayScalingViewDraft);
-      displayDraft.scalingMode = raw;
-      if (raw === 'custom') displayDraft.scalingCustom = customScalingOf(display!);
-      else delete displayDraft.scalingCustom;
-      if (displayScalingViewDraft === 'retro-scaling' || display.scalingMethod?.value?.enabled === true) {
-        displayDraft.scalingMethod = {
-          enabled: displayScalingViewDraft === 'retro-scaling',
-          method: display.scalingMethod?.value?.method ?? 'integer',
-        };
-      } else {
+      if (displayScalingViewDraft === 'gpu-scaling') {
+        displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+        delete displayDraft.scalingCustom;
         delete displayDraft.scalingMethod;
+      } else if (displayScalingViewDraft === 'display-scaling') {
+        displayDraft.scalingMode = raw;
+        delete displayDraft.scalingCustom;
+        delete displayDraft.scalingMethod;
+      } else {
+        displayDraft.scalingMode = raw;
+        delete displayDraft.scalingCustom;
+        displayDraft.scalingMethod = {
+          enabled: true,
+          method: displayScalingMethodDraft as NonNullable<DisplaySettings['scalingMethod']>['method'],
+        };
       }
-      refreshDisplayChip('scalingMode');
+      // The second row is mode-dependent. Rebuild the local card stack so
+      // the new IGS method list appears immediately instead of leaving the
+      // Display/Retro choices from the previous mode in the DOM.
+      if (viewContainer && viewContainer.isConnected) renderDisplayCards(viewContainer, ctx);
     },
   }, IGS_SCALING_MODE_OPTIONS.map((option) => el('option', {
     value: option,
@@ -1073,7 +1076,12 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
  * raw enable/type pair stays an internal compatibility payload. */
 function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
-  const supported = display !== null && isDisplayControlSupported(display, 'displayScalingMethod');
+  const view = displayScalingViewDraft;
+  const methodOptions = scalingMethodOptionsForView(display, view);
+  const supported = display !== null && methodOptions.length > 0
+    && (view === 'retro-scaling'
+      ? isDisplayControlSupported(display, 'scalingMethod')
+      : isDisplayControlSupported(display, 'scalingMode'));
   if (!supported) {
     return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'displayScalingMethod' }, title: DISPLAY_SCALING_METHOD_NOTE }, [
       el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
@@ -1085,18 +1093,30 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'displayScalingMethod' },
     onchange: (e: Event) => {
       displayScalingMethodDraft = (e.target as HTMLSelectElement).value;
-      displayDraft.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
-      if (displayScalingMethodDraft === 'custom') displayDraft.scalingCustom = customScalingOf(display!);
-      else delete displayDraft.scalingCustom;
-      customX.hidden = displayScalingMethodDraft !== 'custom';
-      customY.hidden = displayScalingMethodDraft !== 'custom';
+      if (view === 'gpu-scaling') {
+        displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+        delete displayDraft.scalingCustom;
+        delete displayDraft.scalingMethod;
+      } else if (view === 'retro-scaling') {
+        displayDraft.scalingMethod = {
+          enabled: true,
+          method: displayScalingMethodDraft as NonNullable<DisplaySettings['scalingMethod']>['method'],
+        };
+      } else {
+        displayDraft.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
+        displayDraft.scalingMode = displayScalingMethodDraft === 'custom' ? 'custom' : 'identity';
+        if (displayScalingMethodDraft === 'custom') displayDraft.scalingCustom = customScalingOf(display!);
+        else delete displayDraft.scalingCustom;
+      }
+      customX.hidden = view !== 'display-scaling' || displayScalingMethodDraft !== 'custom';
+      customY.hidden = view !== 'display-scaling' || displayScalingMethodDraft !== 'custom';
       refreshDisplayChip('displayScalingMethod');
     },
-  }, IGS_SCALING_METHOD_OPTIONS.map((option) => el('option', { value: option, text: IGS_SCALING_METHOD_LABELS[option], selected: option === displayScalingMethodDraft })));
+  }, methodOptions.map((option) => el('option', { value: option, text: IGS_SCALING_METHOD_LABELS[option] ?? option, selected: option === displayScalingMethodDraft })));
   selectNodes.set('displayScalingMethod', methodSelect);
   const custom = customScalingOf(display!);
-  const customX = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.x, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom horizontal scaling' }) as HTMLInputElement;
-  const customY = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.y, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom vertical scaling' }) as HTMLInputElement;
+  const customX = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.x, hidden: view !== 'display-scaling' || displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom horizontal scaling' }) as HTMLInputElement;
+  const customY = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.y, hidden: view !== 'display-scaling' || displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom vertical scaling' }) as HTMLInputElement;
   const setCustom = (): void => {
     displayDraft.scalingCustom = { x: Math.max(0, Math.min(100, Number(customX.value))), y: Math.max(0, Math.min(100, Number(customY.value))), hardwareModeSet: true };
     refreshDisplayChip('displayScalingMethod');
@@ -1111,12 +1131,21 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'displayScalingMethod'); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
-        displayScalingMethodDraft = 'maintain-display-scaling';
-        displayDraft.displayScalingMethod = 'maintain-display-scaling';
-        delete displayDraft.scalingCustom;
+        displayScalingMethodDraft = methodOptions[0] ?? 'maintain-display-scaling';
+        if (view === 'gpu-scaling') {
+          displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+          delete displayDraft.scalingCustom;
+          delete displayDraft.scalingMethod;
+        } else if (view === 'retro-scaling') {
+          displayDraft.scalingMethod = { enabled: true, method: displayScalingMethodDraft as NonNullable<DisplaySettings['scalingMethod']>['method'] };
+        } else {
+          displayDraft.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
+          displayDraft.scalingMode = displayScalingMethodDraft === 'custom' ? 'custom' : 'identity';
+          delete displayDraft.scalingCustom;
+        }
         methodSelect.value = displayScalingMethodDraft;
-        customX.hidden = true;
-        customY.hidden = true;
+        customX.hidden = view !== 'display-scaling' || displayScalingMethodDraft !== 'custom';
+        customY.hidden = view !== 'display-scaling' || displayScalingMethodDraft !== 'custom';
         refreshDisplayChip('displayScalingMethod');
       } }),
     ]),
@@ -1598,22 +1627,55 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
     if (displayScalingViewDraft !== scalingViewOf(display)) {
       const raw = rawScalingForView(display, displayScalingViewDraft);
       payload = { scalingMode: raw };
-      if (raw === 'custom') payload.scalingCustom = customScalingOf(display);
-      if (displayScalingViewDraft === 'retro-scaling' || display.scalingMethod?.value?.enabled === true) {
+      if (displayScalingViewDraft === 'gpu-scaling') {
+        payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
+      } else if (displayScalingViewDraft === 'display-scaling') {
+        payload.scalingMode = raw;
+        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
+      } else {
         payload.scalingMethod = {
-          enabled: displayScalingViewDraft === 'retro-scaling',
-          method: display.scalingMethod?.value?.method ?? 'integer',
+          enabled: true,
+          method: displayScalingMethodDraft as NonNullable<DisplaySettings['scalingMethod']>['method'],
+        };
+        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
+      }
+      // Retro is a separate adapter-level scaler. Leaving it requires the
+      // explicit disable pair to be sent together with the new ordinary mode;
+      // otherwise the backend quite correctly keeps Retro enabled.
+      if (displayScalingViewDraft !== 'retro-scaling' && display.scalingMethod?.value?.enabled === true) {
+        payload.scalingMethod = {
+          enabled: false,
+          method: display.scalingMethod.value.method ?? 'integer',
         };
       }
+      if (payload.scalingMode === 'custom') payload.scalingCustom = customScalingOf(display);
     }
   } else if (only === 'displayScalingMethod') {
-    const customDirty = displayScalingMethodDraft === 'custom'
+    const view = displayScalingViewDraft;
+    const customDirty = view === 'display-scaling' && displayScalingMethodDraft === 'custom'
       && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display));
     if (displayScalingMethodDraft !== scalingMethodViewOf(display) || customDirty) {
       payload = { displayScalingMethod: displayScalingMethodDraft as DisplaySettings['displayScalingMethod'] };
-      if (displayScalingMethodDraft === 'custom') {
+      if (view === 'gpu-scaling') {
+        payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+      } else if (view === 'retro-scaling') {
+        payload.scalingMode = rawScalingForView(display, view);
+        payload.scalingMethod = {
+          enabled: true,
+          method: displayScalingMethodDraft as NonNullable<DisplaySettings['scalingMethod']>['method'],
+        };
+      } else if (displayScalingMethodDraft === 'custom') {
         payload.scalingMode = 'custom';
         payload.scalingCustom = displayDraft.scalingCustom ?? { ...customScalingOf(display), hardwareModeSet: true };
+      } else {
+        payload.scalingMode = 'identity';
+      }
+      if (view !== 'retro-scaling' && display.scalingMethod?.value?.enabled === true) {
+        payload.scalingMethod = {
+          enabled: false,
+          method: display.scalingMethod.value.method ?? 'integer',
+        };
       }
     }
   } else if (isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)) {

@@ -15,8 +15,86 @@ export const DISPLAY_SCALING_MODE_OPTIONS: NonNullable<DisplaySettings['scalingM
 export const DISPLAY_RETRO_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['scalingMethod']>['method'][] = ['integer', 'nearest-neighbour'];
 export const DISPLAY_ARC_SYNC_PROFILE_OPTIONS: NonNullable<DisplaySettings['vrrMode']>[] = ['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'];
 export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS: NonNullable<DisplaySettings['globalVrrMode']>[] = ['fullscreen', 'fullscreen-windowed', 'disabled'];
-export const DISPLAY_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['displayScalingMethod']>[] = ['maintain-display-scaling', 'custom'];
+export const DISPLAY_GPU_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['scalingMode']>[] = ['centered', 'stretched', 'aspect-ratio-centered-max'];
+export const DISPLAY_DISPLAY_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['displayScalingMethod']>[] = ['maintain-display-scaling', 'custom'];
+export const DISPLAY_SCALING_METHOD_OPTIONS: string[] = [
+  ...DISPLAY_DISPLAY_SCALING_METHOD_OPTIONS,
+  ...DISPLAY_GPU_SCALING_METHOD_OPTIONS,
+  ...DISPLAY_RETRO_SCALING_METHOD_OPTIONS,
+];
 export const DISPLAY_COLOR_CONTROLS = ['hue', 'saturation', 'brightness', 'contrast'] as const;
+
+export type DisplayScalingView = 'gpu-scaling' | 'display-scaling' | 'retro-scaling';
+
+/** The active scaler can be reported as Identity while IGS has selected a
+ * persisted GPU/Display preference. Prefer that persisted value for the
+ * user-facing view, while retaining `scalingMode` as the native active mode. */
+export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
+  return display?.preferredScalingMode ?? display?.scalingMode ?? null;
+}
+
+export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
+  if (!display) return 'display-scaling';
+  if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
+  const raw = effectiveScalingModeOf(display);
+  // IGCL's Custom flag belongs to IGS Display Scaling > Scaling Method; it
+  // must not be mistaken for one of the GPU scaler modes.
+  return raw && raw !== 'identity' && raw !== 'custom'
+    ? 'gpu-scaling'
+    : 'display-scaling';
+}
+
+/** Return only the Scaling Method choices belonging to the selected IGS
+ * Scaling Mode. The driver capability lists still narrow the raw methods so
+ * we never render an option this adapter cannot prove. */
+export function scalingMethodOptionsForView(display: Display | null | undefined, view: string): string[] {
+  if (view === 'gpu-scaling') {
+    const supported = display?.supportedOptions.scalingModes ?? [];
+    return DISPLAY_GPU_SCALING_METHOD_OPTIONS.filter((mode) => supported.includes(mode));
+  }
+  if (view === 'retro-scaling') {
+    const supported = display?.supportedOptions.scalingMethods ?? [];
+    return DISPLAY_RETRO_SCALING_METHOD_OPTIONS.filter((method) => supported.includes(method));
+  }
+  return [...DISPLAY_DISPLAY_SCALING_METHOD_OPTIONS];
+}
+
+export function scalingMethodViewOf(display: Display | null | undefined): string {
+  const view = scalingViewOf(display);
+  if (view === 'retro-scaling') {
+    const method = display?.scalingMethod?.value?.method;
+    return method && scalingMethodOptionsForView(display, view).includes(method) ? method : scalingMethodOptionsForView(display, view)[0];
+  }
+  const raw = effectiveScalingModeOf(display);
+  if (view === 'gpu-scaling') {
+    const options = scalingMethodOptionsForView(display, view);
+    return raw && options.includes(raw) ? raw : options[0];
+  }
+  return raw === 'custom' ? 'custom' : 'maintain-display-scaling';
+}
+
+/**
+ * Translate the compact IGS three-way Scaling Mode view to the raw IGCL
+ * scaling flag. Custom is intentionally owned by the separate Scaling Method
+ * control; selecting ordinary GPU Scaling must never silently submit Custom.
+ * When an existing non-custom GPU flag is active, preserve it. Otherwise use
+ * the IGS stretch flag as the generic GPU-scaling default.
+ */
+export function rawScalingForView(display: Display, view: string): NonNullable<DisplaySettings['scalingMode']> {
+  const supported = display.supportedOptions.scalingModes;
+  if (view === 'display-scaling') return supported.includes('identity') ? 'identity' : (supported[0] as NonNullable<DisplaySettings['scalingMode']>);
+  if (view === 'retro-scaling') {
+    // Retro scaling is an adapter-level surface. Keep the ordinary output
+    // scaler at IGS's neutral Display Scaling identity while Retro is active;
+    // do not carry a prior Custom/GPU flag into the coupled write.
+    return supported.includes('identity') ? 'identity' : (supported[0] as NonNullable<DisplaySettings['scalingMode']>);
+  }
+  const currentGpuMode = ['centered', 'stretched', 'aspect-ratio-centered-max']
+    .find((mode) => effectiveScalingModeOf(display) === mode && supported.includes(mode as NonNullable<DisplaySettings['scalingMode']>));
+  const gpuMode = currentGpuMode
+    ?? ['stretched', 'aspect-ratio-centered-max', 'centered'].find((mode) => supported.includes(mode as NonNullable<DisplaySettings['scalingMode']>));
+  return (gpuMode ?? supported[0]) as NonNullable<DisplaySettings['scalingMode']>;
+}
 
 export type DisplayColorRange = { min: number; max: number; step: number; default?: number };
 
@@ -63,7 +141,7 @@ export function displayDriverValue(display: Display | null | undefined, control:
   switch (control) {
     case 'quantizationRange': return display.quantizationRange;
     case 'scalingMode': return display.scalingMode;
-    case 'displayScalingMethod': return display.scalingMode === 'custom' ? 'custom' : 'maintain-display-scaling';
+    case 'displayScalingMethod': return scalingMethodViewOf(display);
     case 'scalingMethod': return display.scalingMethod?.value;
     case 'vrrMode': return display.vrrMode?.value;
     case 'globalVrrMode': return display.globalVrrMode?.value;
@@ -95,7 +173,7 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
     out.scalingMode = (display.scalingMode ?? display.supportedOptions.scalingModes[0]) as DisplaySettings['scalingMode'];
   }
   if (isDisplayControlSupported(display, 'displayScalingMethod')) {
-    out.displayScalingMethod = display.scalingMode === 'custom' ? 'custom' : 'maintain-display-scaling';
+    out.displayScalingMethod = scalingMethodViewOf(display) as DisplaySettings['displayScalingMethod'];
   }
   if (isDisplayControlSupported(display, 'scalingMethod') && display.scalingMethod?.value) {
     out.scalingMethod = {
