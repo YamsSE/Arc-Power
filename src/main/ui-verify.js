@@ -782,9 +782,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // M51: the 1.0.4 stable release pins the titlebar version surface.
-  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.0.4'`))) {
-    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.0.4')`);
+  // M62: the 1.0.5 release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.0.5'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.0.5')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -4628,9 +4628,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// M51: the 1.0.4 stable bump - Settings displays 'Arc Power Ver. 1.0.4'.
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.4'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.4')`);
+// M62: the 1.0.5 stable bump - Settings displays 'Arc Power Ver. 1.0.5'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.5'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.5')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -4692,7 +4692,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' : '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.4`);
+  step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' : '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.5`);
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -5071,8 +5071,11 @@ export async function runDisplayVerify(win, backend) {
   }
   step('d1-display-toolbar', 'D1: Display view toggle is first in the left toolbar; the monitor selector is immediately below it');
   const labels = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.display-group')).flatMap((g) => Array.from(g.querySelectorAll('.display-control-title, .display-info-label, .display-wire-format-field-label')).map((n) => (n.textContent ?? '').trim())))`));
-  for (const expected of ['Scaling Mode', 'Scaling Method', 'Variable Refresh Rate Mode', 'Variable Refresh Rate', 'Hue', 'Saturation', 'Brightness', 'Contrast', 'Quantization Range', 'Color Depth', 'Color Format', 'Graphics Adapter', 'Display Connection', 'HDCP Support', '4K Support', 'HDR Support']) {
+  for (const expected of ['Scaling Mode', 'Scaling Method', 'Variable Refresh Rate Mode', 'Variable Refresh Rate', 'Quantization Range', 'Graphics Adapter', 'Display Connection', 'HDCP Support', '4K Support', 'HDR Support']) {
     if (!labels.includes(expected)) fail(`D1: Display view is missing the '${expected}' row`);
+  }
+  for (const hidden of ['Hue', 'Saturation', 'Brightness', 'Contrast', 'Color Depth', 'Color Format']) {
+    if (labels.includes(hidden)) fail(`D1: temporarily hidden Display color control '${hidden}' is still rendered`);
   }
   const before = await js(`window.arcPower.displayGet(0)`);
   const target = before?.displays?.[0];

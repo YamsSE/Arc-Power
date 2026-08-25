@@ -1301,8 +1301,22 @@ export function encode3dFeatureGetset({ featureType, valueType, bSet, enumValue,
   return { buf, appName };
 }
 
-/** Build the CUSTOM payload used by IGCL Adaptive Sync Plus. */
-export function encodeAdaptiveSyncFeatureGetset({ bSet, adaptiveSync = false, applicationName = '' } = {}) {
+/**
+ * Build the CUSTOM payload used by IGCL Adaptive Sync Plus.
+ *
+ * ctl_adaptivesync_getset_t is four fields, not a one-byte boolean:
+ * AdaptiveSync, AdaptiveBalance, AllowAsyncForHighFPS, and the float
+ * AdaptiveBalanceStrength. The three bools occupy bytes 0..2 and the float
+ * is naturally aligned at byte 4; the v290 payload is therefore 8 bytes.
+ */
+export function encodeAdaptiveSyncFeatureGetset({
+  bSet,
+  adaptiveSync = false,
+  adaptiveBalance = false,
+  allowAsyncForHighFPS = false,
+  adaptiveBalanceStrength = 0,
+  applicationName = '',
+} = {}) {
   const { buf, appName } = encode3dFeatureGetset({
     featureType: CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS,
     valueType: CTL_PROPERTY_VALUE_TYPE.CUSTOM,
@@ -1311,13 +1325,21 @@ export function encodeAdaptiveSyncFeatureGetset({ bSet, adaptiveSync = false, ap
   });
   const custom = koffi.alloc('uint8', ADAPTIVE_SYNC_CUSTOM_SIZE);
   koffi.encode(custom, 0, 'bool', adaptiveSync === true);
+  koffi.encode(custom, 1, 'bool', adaptiveBalance === true);
+  koffi.encode(custom, 2, 'bool', allowAsyncForHighFPS === true);
+  koffi.encode(custom, 4, 'float', Number.isFinite(adaptiveBalanceStrength) ? adaptiveBalanceStrength : 0);
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'CustomValueSize'), 'int32', ADAPTIVE_SYNC_CUSTOM_SIZE);
   koffi.encode(buf, koffi.offsetof('ctl_3d_feature_getset_t', 'pCustomValue'), 'void*', koffi.address(custom));
   return { buf, appName, custom };
 }
 
 export function decodeAdaptiveSyncFeatureGetset(custom) {
-  return { adaptiveSync: koffi.decode(custom, 0, 'bool') === true };
+  return {
+    adaptiveSync: koffi.decode(custom, 0, 'bool') === true,
+    adaptiveBalance: koffi.decode(custom, 1, 'bool') === true,
+    allowAsyncForHighFPS: koffi.decode(custom, 2, 'bool') === true,
+    adaptiveBalanceStrength: koffi.decode(custom, 4, 'float'),
+  };
 }
 
 /**

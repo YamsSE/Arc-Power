@@ -23,6 +23,7 @@
 //     the store is never flipped back to false (persistWaiverLost removed).
 
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
@@ -903,6 +904,8 @@ export function createIpcHandlers({
   vendorTelemetry = createVendorTelemetry({ sysinfo }),
   gameProfiles = null,
   gameScan = createGameScanAdapter(),
+  chooseGameExecutable = async () => null,
+  gameArtwork = async () => null,
 }) {
   // D2: the real app injects its sidecar store, while tests can provide an
   // in-memory adapter. The fallback is isolated to the ProfileStore data
@@ -918,6 +921,7 @@ export function createIpcHandlers({
       async cleanupProfile(profileId) { this._items = this._items.filter((x) => x.profileId !== profileId); return this._items; },
       async loadCatalog() { return { catalog: this._catalog, settings: this._settings }; },
       async syncCatalog(entries) { this._catalog = [...this._catalog, ...entries.filter((entry) => !this._catalog.some((x) => x.exePath === entry.exePath))]; return this._catalog; },
+      async addCatalogEntry(entry) { this._catalog = [...this._catalog.filter((x) => x.exePath !== entry.exePath), entry]; return { catalog: this._catalog, settings: this._settings }; },
       async saveSettings(item) { this._settings = [...this._settings.filter((x) => x.exePath !== item.exePath), item]; return item; },
       async deleteSettings(exePath) { this._settings = this._settings.filter((x) => x.exePath !== exePath); return { catalog: this._catalog, settings: this._settings }; },
     };
@@ -2333,6 +2337,34 @@ export function createIpcHandlers({
         assertNoPayload(args, 'game-catalog-list');
         try { return await gameProfiles.loadCatalog(); }
         catch (err) { throw new Error(`game-catalog-list: ${err instanceof Error ? err.message : String(err)}`); }
+      },
+
+      'game-catalog-add': async (...args) => {
+        assertNoPayload(args, 'game-catalog-add');
+        const selected = await chooseGameExecutable();
+        const pickedPath = typeof selected === 'string'
+          ? selected
+          : selected && selected.canceled !== true && Array.isArray(selected.filePaths)
+            ? selected.filePaths[0]
+            : null;
+        if (pickedPath && !validateSafeGameCandidate(pickedPath, { requireExists: true })) {
+          throw new Error('game-catalog-add: selected executable is not a safe existing game candidate');
+        }
+        const safePath = validateSafeGameCandidate(pickedPath, { requireExists: true });
+        if (!safePath) return { canceled: true, ...(await gameProfiles.loadCatalog()) };
+        const base = path.win32.basename(safePath);
+        const entry = {
+          exePath: safePath,
+          processName: base,
+          displayName: base.replace(/\.exe$/i, ''),
+          source: 'manual',
+        };
+        try {
+          const artwork = await gameArtwork(safePath);
+          if (typeof artwork === 'string' && artwork.length > 0) entry.artwork = artwork;
+        } catch { /* artwork is optional; the renderer uses its deterministic fallback */ }
+        try { return { canceled: false, ...(await gameProfiles.addCatalogEntry(entry)) }; }
+        catch (err) { throw new Error(`game-catalog-add: ${err instanceof Error ? err.message : String(err)}`); }
       },
 
       'game-profile-capabilities': async (deviceId) => {

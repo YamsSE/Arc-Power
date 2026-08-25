@@ -376,6 +376,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'profile-browser-head' }, [
         el('div', { class: 'profile-browser-title' }, [el('h2', { class: 'card-title', text: 'Installed Games' }), el('p', { class: 'card-note', text: 'Installed games remain here even when they are not running.' })]),
         el('div', { class: 'profile-browser-actions' }, [
+          el('button', { class: 'btn btn-primary btn-sm game-catalog-add', text: 'Manually Add Game', onclick: () => void addGameManually() }),
           el('button', { class: 'btn btn-ghost btn-sm game-catalog-scan', text: 'Scan for Games', onclick: () => void scanGameCatalog() }),
           el('button', { class: 'btn btn-ghost btn-sm game-catalog-refresh', text: 'Refresh', onclick: () => void scanGameCatalog() }),
         ]),
@@ -436,6 +437,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       if (viewMode === 'game') renderGameCatalog();
     } catch {
       if (viewMode === 'game') renderGameCatalog();
+    }
+  };
+
+  const addGameManually = async (): Promise<void> => {
+    try {
+      const result = await api.gameCatalogAdd();
+      if (result.canceled) return;
+      gameCatalogSession.catalog = Array.isArray(result.catalog) ? result.catalog : gameCatalogSession.catalog;
+      gameCatalogSession.settings = Array.isArray(result.settings) ? result.settings : gameCatalogSession.settings;
+      gameCatalogSession.loaded = true;
+      syncGameCatalogSession();
+      toast('success', 'Game added', 'The executable was added to Game Profiles and will survive future scans.');
+      if (viewMode === 'game') renderGameCatalog();
+    } catch (err) {
+      toast('error', 'Game could not be added', err instanceof Error ? err.message : String(err));
     }
   };
 

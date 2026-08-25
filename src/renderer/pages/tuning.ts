@@ -797,6 +797,9 @@ export const tuningPage: Page = {
         // only (single line; the freed space makes the tab more compact).
         el('div', { class: 'oc-meta' }, [
           el('span', { class: 'oc-range', text: `${sliderRange.min} – ${sliderRange.max} ${sliderRange.units} · step ${sliderRange.step}` }),
+          ...(key === 'gpuFreqOffsetMhz' && caps.controlStatus?.gpuLock?.reason
+            ? [el('span', { class: 'oc-control-status', text: caps.controlStatus.gpuLock.reason })]
+            : []),
           // M17f: the power-limit card's sysman PL1/PL2 read-out line - the
           // Level Zero Sysman layer's limits when it answers, the honest
           // 'PL1 - / PL2 -' when absent (the burst/PL2 domain is invisible

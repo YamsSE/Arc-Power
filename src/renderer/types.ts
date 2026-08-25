@@ -115,6 +115,9 @@ export interface Capabilities {
   extendedRanges?: boolean;
   /** M48: independent Advanced writers (Sysman W, bundled V1 C). */
   extendedControls?: { powerLimitW?: boolean; tempLimitC?: boolean };
+  /** Native capability versus runtime refusal status for controls whose
+   * symbols may exist without a writable driver implementation. */
+  controlStatus?: Record<string, { state: 'unknown' | 'available' | 'unsupported' | 'runtime-refused'; reason: string | null }>;
   /** M46: selected OC mode controls displayed W/C ceilings independently
    * from the bundled-runtime capability flag. */
   ocMode?: 'stock' | 'advanced';

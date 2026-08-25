@@ -165,6 +165,39 @@ const GRAPHICS_FLIP_FROM_IGCL = Object.fromEntries(
 const GRAPHICS_LL_TO_IGCL = { off: 0, on: 1, 'on-boost': 2 };
 const GRAPHICS_LL_FROM_IGCL = { 0: 'off', 1: 'on', 2: 'on-boost' };
 const GLOBAL_OR_PER_APP_TO_IGCL = { global: 2, 'per-app': 1 };
+
+function encodeAdaptiveSyncForDetail(detail, bSet, adaptiveSync) {
+  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
+    return encodeAdaptiveSyncFeatureGetset({ bSet, adaptiveSync });
+  }
+  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
+    return encode3dFeatureGetset({
+      featureType: CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS,
+      valueType: detail.valueType,
+      bSet,
+      enumValue: adaptiveSync ? 1 : 0,
+    });
+  }
+  return encode3dFeatureGetset({
+    featureType: CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS,
+    valueType: detail?.valueType ?? CTL_PROPERTY_VALUE_TYPE.BOOL,
+    bSet,
+    intEnable: adaptiveSync,
+    intValue: adaptiveSync ? 1 : 0,
+  });
+}
+
+function decodeAdaptiveSyncForDetail(detail, encoded) {
+  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
+    return decodeAdaptiveSyncFeatureGetset(encoded.custom).adaptiveSync;
+  }
+  if (detail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
+    return decode3dFeatureGetsetValue(encoded.buf, detail.valueType).enableType === 1;
+  }
+  const value = decode3dFeatureGetsetValue(encoded.buf, detail?.valueType ?? CTL_PROPERTY_VALUE_TYPE.BOOL);
+  return value.enable === true || value.value === 1;
+}
+
 function endurancePlatformSupported(device, laptopInfo = null) {
   const name = String(device?.name ?? '');
   // Reuse the inventory's conservative model classification, then add the
@@ -645,6 +678,7 @@ export class IgclBackend {
     this._caps = new Map(); // deviceId -> Capabilities
     this._ocUnits = new Map(); // deviceId -> {field -> CTL_UNITS}
     this._fanHandles = new Map(); // deviceId -> [handles]
+    this._fanPreferredHandle = new Map(); // deviceId -> handle with control-capable properties
     this._waiverAccepted = new Map(); // deviceId -> bool
     this._telemetryCbs = new Map(); // deviceId -> Set<cb>
     this._activity = new Map(); // M3-C-L: deviceId -> { t, counter } for the utilPct delta method
@@ -981,6 +1015,36 @@ export class IgclBackend {
   }
 
   /**
+   * Battlemage boards can enumerate more than one fan handle. The first
+   * handle is not guaranteed to be the writable controller, so prefer a
+   * handle whose properties explicitly advertise control and retain the
+   * first handle as the honest read-only fallback for telemetry/config reads.
+   */
+  async _fanHandleForControl(deviceId) {
+    if (this._fanPreferredHandle.has(deviceId)) return this._fanPreferredHandle.get(deviceId);
+    const handles = await this._fanHandlesOf(deviceId);
+    if (handles.length === 0) return null;
+    const lib = this._libOrThrow();
+    if (this._isUnavailable(lib.ctlFanGetProperties)) {
+      this._fanPreferredHandle.set(deviceId, handles[0]);
+      return handles[0];
+    }
+    for (const handle of handles) {
+      try {
+        const buf = koffi.alloc('ctl_fan_properties_t', 1);
+        koffi.encode(buf, 'ctl_fan_properties_t', { Size: koffi.sizeof('ctl_fan_properties_t'), Version: 0 });
+        if (lib.ctlFanGetProperties(handle, buf) === CTL_RESULT.SUCCESS
+          && koffi.decode(buf, 'ctl_fan_properties_t').bCanControl === true) {
+          this._fanPreferredHandle.set(deviceId, handle);
+          return handle;
+        }
+      } catch { /* try the next enumerated fan */ }
+    }
+    this._fanPreferredHandle.set(deviceId, handles[0]);
+    return handles[0];
+  }
+
+  /**
    * M3-D: the fan-capability probe cache accessor - deviceId ->
    * Promise<{probeOk: boolean, writeAccepted: boolean, fixedOk: boolean}>
    * (M4-C: the fixed-write sub-probe extends the shape - one probe per
@@ -1137,7 +1201,7 @@ export class IgclBackend {
   async _runFanProbe(deviceId, maxPoints) {
     const lib = this._libOrThrow();
     const fanHandles = await this._fanHandlesOf(deviceId);
-    const fan = fanHandles[0];
+    const fan = await this._fanHandleForControl(deviceId);
     if (!fan || this._isUnavailable(lib.ctlFanSetSpeedTableMode)
       || this._isUnavailable(lib.ctlFanSetDefaultMode)
       || this._isUnavailable(lib.ctlFanGetConfig)) {
@@ -1504,6 +1568,7 @@ export class IgclBackend {
         powerLimit: false, tempLimit: false, vfCurve: false,
       },
       ranges: {},
+      controlStatus: { gpuLock: { state: 'unknown', reason: null } },
       // M48: independent W Sysman and C V1 extension capabilities.
       extendedControls: { powerLimitW: false, tempLimitC: false },
       fan: { canControl: false, modes: [], maxRpm: -1, maxCurvePoints: 0 },
@@ -1620,10 +1685,25 @@ export class IgclBackend {
             caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
           }
         }
-        // gpuLock: supported when the symbol pair exists (0,0 pair = dynamic,
-        // still supported).
-        caps.controls.gpuLock = !this._isUnavailable(lib.ctlOverclockGpuLockGet)
+        // gpuLock: the pair API is a VOLT/MHz fixed-lock surface. Battlemage
+        // exposes its voltage offset in percent units and may still export
+        // the legacy symbols; accepting those symbols would send a bogus
+        // mV lock to the driver and produce the observed fixed-frequency
+        // refusal. Require the native units to be unambiguous before the
+        // control is exposed. Offsets remain independently editable.
+        const lockUnitsSupported = caps.ranges.gpuVoltOffsetV?.units === 'V'
+          && caps.ranges.gpuFreqOffsetMhz?.units === 'MHz';
+        caps.controls.gpuLock = lockUnitsSupported
+          && !this._isUnavailable(lib.ctlOverclockGpuLockGet)
           && !this._isUnavailable(lib.ctlOverclockGpuLockSet);
+        caps.controlStatus.gpuLock = caps.controls.gpuLock
+          ? { state: 'available', reason: null }
+          : {
+            state: 'unsupported',
+            reason: !lockUnitsSupported
+              ? 'Fixed Clock / Voltage lock is not exposed for this adapter’s native voltage units.'
+              : 'The driver does not expose both GPU lock read/write symbols.',
+          };
         // vfCurve: supported only when the read path answers (on Alchemist it
         // errors with DATA_READ - report unsupported so the UI hides it).
         caps.controls.vfCurve = this._vfCurveReadable(dev.handle);
@@ -1693,7 +1773,7 @@ export class IgclBackend {
     if (fanHandles.length > 0 && !this._isUnavailable(lib.ctlFanGetProperties)) {
       const propBuf = koffi.alloc('ctl_fan_properties_t', 1);
       koffi.encode(propBuf, 'ctl_fan_properties_t', { Size: koffi.sizeof('ctl_fan_properties_t'), Version: 0 });
-      const result = lib.ctlFanGetProperties(fanHandles[0], propBuf);
+      const result = lib.ctlFanGetProperties(await this._fanHandleForControl(deviceId), propBuf);
       if (result === CTL_RESULT.SUCCESS) {
         const fp = koffi.decode(propBuf, 'ctl_fan_properties_t');
         // M3-D: canControl=false is a LIE on this A770 - the driver honors
@@ -2022,7 +2102,7 @@ export class IgclBackend {
     if (fanHandles.length > 0 && !this._isUnavailable(lib.ctlFanGetConfig)) {
       const cfgBuf = koffi.alloc('ctl_fan_config_t', 1);
       koffi.encode(cfgBuf, 'ctl_fan_config_t', { Size: koffi.sizeof('ctl_fan_config_t'), Version: 0 });
-      const result = lib.ctlFanGetConfig(fanHandles[0], cfgBuf);
+      const result = lib.ctlFanGetConfig(await this._fanHandleForControl(deviceId), cfgBuf);
       if (result === CTL_RESULT.SUCCESS) {
         const cfg = koffi.decode(cfgBuf, 'ctl_fan_config_t');
         state.fanMode = FAN_MODE_CANONICAL[cfg.mode] ?? null;
@@ -2142,12 +2222,12 @@ export class IgclBackend {
       const features = await this._graphicsCapsOf(deviceId, adapterHandle);
       let variableRefreshRate = displayCapability(null, false, false, 'Adaptive Sync Plus is not reported by the driver.', 'igcl-adaptive-sync');
       const adaptiveDetail = features?.get(CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS);
-      if (adaptiveDetail?.valueType === CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
-        const adaptive = encodeAdaptiveSyncFeatureGetset({ bSet: false });
+      if (adaptiveDetail && [CTL_PROPERTY_VALUE_TYPE.BOOL, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32, CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.CUSTOM].includes(adaptiveDetail.valueType)) {
+        const adaptive = encodeAdaptiveSyncForDetail(adaptiveDetail, false, false);
         const adaptiveResult = lib.ctlGetSet3DFeature(adapterHandle, adaptive.buf);
         if (adaptiveResult === CTL_RESULT.SUCCESS) {
           variableRefreshRate = displayCapability(
-            decodeAdaptiveSyncFeatureGetset(adaptive.custom).adaptiveSync,
+            decodeAdaptiveSyncForDetail(adaptiveDetail, adaptive),
             true,
             true,
             null,
@@ -3345,6 +3425,14 @@ export class IgclBackend {
       }
     }
     if (patch.displayScalingMethod !== null && patch.displayScalingMethod !== undefined) {
+      // The renderer sends the method together with the coupled raw scaling
+      // type when Custom is selected. Reusing the result of that write is
+      // important: two back-to-back physical scaling writes can race the
+      // driver's read-back and make a valid Custom request look like a
+      // silent no-op.
+      if (patch.scalingMode !== null && patch.scalingMode !== undefined && result.perControl.scalingMode) {
+        result.perControl.displayScalingMethod = { ...result.perControl.scalingMode };
+      } else {
       if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {
         fail('displayScalingMethod', 'unavailable-symbol', 'the scaling API is missing in the IGCL runtime');
       } else {
@@ -3386,6 +3474,7 @@ export class IgclBackend {
             }
           }
         }
+      }
       }
     }
 
@@ -3544,18 +3633,18 @@ export class IgclBackend {
       } else {
         const features = await this._graphicsCapsOf(deviceId, dev.handle);
         const detail = features?.get(CTL_3D_FEATURE.ADAPTIVE_SYNC_PLUS);
-        if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.CUSTOM) {
+        if (!detail || ![CTL_PROPERTY_VALUE_TYPE.BOOL, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32, CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.CUSTOM].includes(detail.valueType)) {
           fail('variableRefreshRate', 'unsupported', 'the driver does not expose Adaptive Sync Plus for Variable Refresh Rate');
         } else {
-          const gs = encodeAdaptiveSyncFeatureGetset({ bSet: true, adaptiveSync: requested });
+          const gs = encodeAdaptiveSyncForDetail(detail, true, requested);
           const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('variableRefreshRate', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
-            const rb = encodeAdaptiveSyncFeatureGetset({ bSet: false });
+            const rb = encodeAdaptiveSyncForDetail(detail, false, false);
             const readResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
             const got = readResult === CTL_RESULT.SUCCESS
-              ? decodeAdaptiveSyncFeatureGetset(rb.custom).adaptiveSync
+              ? decodeAdaptiveSyncForDetail(detail, rb)
               : null;
             const readBackEqual = got === requested;
             result.perControl.variableRefreshRate = {
@@ -3702,7 +3791,7 @@ export class IgclBackend {
     // lock-vs-offset fight the atomic design targets. The zeroed offsets'
     // per-control entries land too (the driver state ends at lock +
     // offsets 0 - the pinned behavior).
-    if (settings.gpuLock
+    if (caps.controls.gpuLock && settings.gpuLock
       && !(settings.gpuLock.voltageV === 0 && settings.gpuLock.freqMhz === 0)) {
       const out = { ...settings };
       out.gpuFreqOffsetMhz = 0;
@@ -3777,7 +3866,10 @@ export class IgclBackend {
     const applyLock = async (lock) => {
       if (!lock) return;
       if (!caps.controls.gpuLock) {
-        fail('gpuLock', 'unsupported', 'GPU lock not supported on this device');
+        const percentVoltage = caps.ranges.gpuVoltOffsetV?.units === '%';
+        fail('gpuLock', 'unsupported', percentVoltage
+          ? 'Fixed Clock / Voltage lock is not supported on Battlemage percent-unit voltage controls; use the independent frequency and voltage offsets.'
+          : 'GPU lock not supported on this device');
         return;
       }
       if (this._isUnavailable(lib.ctlOverclockGpuLockSet) || this._isUnavailable(lib.ctlOverclockGpuLockGet)) {
@@ -3807,7 +3899,10 @@ export class IgclBackend {
       const pair = { Size: koffi.sizeof('ctl_oc_vf_pair_t'), Version: 0, Voltage: Math.round(bounded.voltageV * 1000), Frequency: bounded.freqMhz };
       const setResult = lib.ctlOverclockGpuLockSet(dev.handle, pair);
       if (setResult !== CTL_RESULT.SUCCESS) {
-        fail('gpuLock', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+        const message = `Fixed Clock / Voltage lock was refused by the driver (${describeResult(setResult)}).`;
+        fail('gpuLock', igclErrorCode(setResult) ?? 'io-failed', message);
+        const cached = this._caps.get(deviceId);
+        if (cached) cached.controlStatus = { ...(cached.controlStatus ?? {}), gpuLock: { state: 'runtime-refused', reason: message } };
         return;
       }
       const lockBuf = koffi.alloc('ctl_oc_vf_pair_t', 1);
@@ -3832,6 +3927,10 @@ export class IgclBackend {
         silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
       };
       if (!readBackEqual) result.ok = false;
+      if (!readBackEqual) {
+        const cached = this._caps.get(deviceId);
+        if (cached) cached.controlStatus = { ...(cached.controlStatus ?? {}), gpuLock: { state: 'runtime-refused', reason: message ?? 'The driver did not verify the requested fixed lock.' } };
+      }
     };
 
     const applyFan = async () => {
@@ -3852,7 +3951,7 @@ export class IgclBackend {
         for (const c of requested) fail(c, 'unsupported', 'no fans enumerated on this device');
         return;
       }
-      const fan = fanHandles[0];
+      const fan = await this._fanHandleForControl(deviceId);
 
       // Resolve the mode to switch to (explicit fanMode, else implied by data).
       let mode = settings.fanMode;

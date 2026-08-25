@@ -42,6 +42,22 @@ import { physicalTargetOf, pnpParts } from './gpu-inventory.js';
 import { clampSettings } from './ipc-core.js';
 import { deviceHardwareKey } from './backend/units.js';
 
+function stableTargetMatchesKey(target, expectedKey) {
+  if (typeof expectedKey !== 'string' || expectedKey.length === 0) return true;
+  if (target?.deviceKey === expectedKey || deviceHardwareKey(target) === expectedKey) return true;
+
+  // During startup refresh the window inventory can persist a PNP-first key
+  // while raw IGCL briefly exposes the same physical adapter as PCI/BDF.
+  // Reconcile only equivalent physical proofs; never use ordinal or name.
+  if (expectedKey.startsWith('pnp:')) {
+    const expectedPnp = expectedKey.slice(4).trim().replace(/[\u0000\s]+/g, '').toUpperCase();
+    const targetPnp = String(target?.pnpDeviceId ?? target?.osController?.pnpDeviceId ?? '')
+      .trim().replace(/[\u0000\s]+/g, '').toUpperCase();
+    return expectedPnp.length > 0 && expectedPnp === targetPnp;
+  }
+  return expectedKey.startsWith('pci:') && physicalTargetOf(target)?.legacyDeviceKey === expectedKey;
+}
+
 /** Any per-control result carrying the waiver-not-set driver answer. */
 const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
   .some((p) => p?.errorCode === 'waiver-not-set');
@@ -157,7 +173,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     resolvedTarget = target ?? null;
     targetDeviceKey = target?.deviceKey ?? (target ? deviceHardwareKey(target) : null);
     const persistedKey = typeof settings.deviceKey === 'string' ? settings.deviceKey : null;
-    if (typeof backend.getDeviceTarget === 'function' && persistedKey && targetDeviceKey !== persistedKey) {
+    if (typeof backend.getDeviceTarget === 'function' && persistedKey && !stableTargetMatchesKey(target, persistedKey)) {
       return { applied: false, reason: 'stale GPU target: the persisted device no longer matches the selected session' };
     }
   } catch (err) {

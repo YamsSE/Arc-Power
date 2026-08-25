@@ -2620,6 +2620,23 @@ async function main() {
     sysmanPowerLimits,
     gameProfiles,
     gameScan,
+    chooseGameExecutable: async () => {
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Add game executable',
+        properties: ['openFile'],
+        filters: [{ name: 'Executable', extensions: ['exe'] }],
+      });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    },
+    gameArtwork: async (exePath) => {
+      const poster = await findGamePosterArtwork(exePath, { allowRemote: true });
+      if (poster) return poster;
+      try {
+        const icon = await app.getFileIcon(exePath, { size: 'large' });
+        const dataUrl = icon.toDataURL();
+        return /^data:image\/(?:png|jpeg|webp);base64,/.test(dataUrl) ? dataUrl : null;
+      } catch { return null; }
+    },
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach

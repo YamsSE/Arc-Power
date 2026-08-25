@@ -398,6 +398,26 @@ export class GameProfileStore {
     });
   }
 
+  /** Add one user-selected executable without replacing scan results. */
+  async addCatalogEntry(raw) {
+    const safePath = validateSafeGameCandidate(raw?.exePath, { requireExists: true });
+    if (!safePath) throw new Error('game-catalog-add: executable is not a safe existing game candidate');
+    return this._mutate(() => {
+      const data = this._loadDataUnlocked();
+      const incoming = normalizeCatalogEntry({ ...raw, exePath: safePath, source: 'manual' });
+      const previous = data.catalog.find((item) => item.exePath === safePath);
+      const entry = previous ? {
+        ...previous,
+        ...incoming,
+        source: 'manual',
+        artwork: isValidArtwork(raw?.artwork) && !/^fallback-/.test(raw.artwork) ? raw.artwork : previous.artwork,
+        createdAt: previous.createdAt || incoming.createdAt,
+      } : incoming;
+      data.catalog = normalizeCatalog([...data.catalog.filter((item) => item.exePath !== safePath), entry]);
+      return this._saveDataUnlocked(data);
+    });
+  }
+
   async saveSettings(raw) {
     const settings = normalizeGameSettings(raw);
     if (!settings) throw new Error('game-settings-save: invalid executable settings');

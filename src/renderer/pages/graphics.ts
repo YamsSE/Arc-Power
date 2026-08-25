@@ -412,7 +412,12 @@ function refreshAll() {
   updateFloating();
 }
 
-const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'hue', 'saturation', 'brightness', 'contrast', 'quantizationRange', 'wireFormat'];
+// Color correction and wire-format editing stay implemented in the native
+// layer, but the Display UI intentionally exposes only Quantization Range
+// until those driver paths are revalidated on every adapter. Keeping the
+// hidden keys out of this list prevents a global Apply from sending controls
+// the user cannot see or edit.
+const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange'];
 const DISPLAY_COLOR_KEYS = ['hue', 'saturation', 'brightness', 'contrast'];
 
 function displayHasDirtyDraft(display: DisplayState['displays'][number] | null): boolean {
@@ -1090,7 +1095,7 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
   const customX = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.x, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom horizontal scaling' }) as HTMLInputElement;
   const customY = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.y, hidden: displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom vertical scaling' }) as HTMLInputElement;
   const setCustom = (): void => {
-    displayDraft.scalingCustom = { x: Math.max(0, Math.min(100, Number(customX.value))), y: Math.max(0, Math.min(100, Number(customY.value))), hardwareModeSet: custom.hardwareModeSet };
+    displayDraft.scalingCustom = { x: Math.max(0, Math.min(100, Number(customX.value))), y: Math.max(0, Math.min(100, Number(customY.value))), hardwareModeSet: false };
     refreshDisplayChip('displayScalingMethod');
   };
   customX.addEventListener('change', setCustom);
@@ -1454,14 +1459,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   ], false);
 
   const color = buildDisplayGroup('color', 'Color', [
-    buildDisplaySlider(ctx, 'hue', 'Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
-    buildDisplaySlider(ctx, 'saturation', 'Saturation', display.saturation, 0, 10, DISPLAY_SLIDERS_NOTE),
-    buildDisplayModeRow('Brightness', 'Basic', DISPLAY_SLIDERS_NOTE),
-    buildDisplaySlider(ctx, 'brightness', 'All', display.brightness, -100, 100, DISPLAY_SLIDERS_NOTE),
-    buildDisplayModeRow('Contrast', 'Basic', DISPLAY_SLIDERS_NOTE),
-    buildDisplaySlider(ctx, 'contrast', 'All', display.contrast, 0, 10, DISPLAY_SLIDERS_NOTE),
     buildDisplayDropdownRow(ctx, 'quantizationRange', 'Quantization Range', 'The color-quantization range of the display output.', display.supportedOptions.quantizationRanges, QUANTIZATION_LABELS),
-    buildWireFormatRow(ctx),
   ], false);
 
   const infoRow = (label: string, value: string): HTMLElement => el('div', { class: 'display-info-row' }, [
@@ -1610,7 +1608,10 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
       && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display));
     if (displayScalingMethodDraft !== scalingMethodViewOf(display) || customDirty) {
       payload = { displayScalingMethod: displayScalingMethodDraft as DisplaySettings['displayScalingMethod'] };
-      if (displayScalingMethodDraft === 'custom') payload.scalingCustom = displayDraft.scalingCustom ?? customScalingOf(display);
+      if (displayScalingMethodDraft === 'custom') {
+        payload.scalingMode = 'custom';
+        payload.scalingCustom = displayDraft.scalingCustom ?? { ...customScalingOf(display), hardwareModeSet: false };
+      }
     }
   } else if (isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)) {
     let value = (displayDraft as Record<string, unknown>)[only];

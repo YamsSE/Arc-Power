@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   profilesSettingsSave: (patch) => ipcRenderer.invoke('profiles-settings-save', patch),
   gamesScan: () => ipcRenderer.invoke('games-scan'),
   gameCatalogList: () => ipcRenderer.invoke('game-catalog-list'),
+  gameCatalogAdd: () => ipcRenderer.invoke('game-catalog-add'),
   gameProfileCapabilities: (deviceId) => ipcRenderer.invoke('game-profile-capabilities', deviceId),
   gameCatalogSync: (apps) => ipcRenderer.invoke('game-catalog-sync', apps),
   gameSettingsSave: (settings) => ipcRenderer.invoke('game-settings-save', settings),
