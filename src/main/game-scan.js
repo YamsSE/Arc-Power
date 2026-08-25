@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
@@ -16,6 +17,14 @@ const ARTWORK_CONCURRENCY = 4;
 const SCAN_MAX_START_MENU_ITEMS = 256;
 const SCAN_MAX_REGISTRY_ITEMS = 512;
 const SCAN_MAX_INSTALL_CANDIDATES = 16;
+const POSTER_MAX_BYTES = 512 * 1024;
+const POSTER_NAMES = ['library_hero', 'library_capsule', 'capsule', 'cover', 'poster', 'banner', 'steam_grid'];
+const POSTER_EXTENSIONS = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.webp', 'image/webp'],
+]);
 
 const withTimeout = (promise, timeoutMs) => Promise.race([
   promise,
@@ -83,6 +92,35 @@ export function normalizeScannedApps(rows, excludedPaths = [], opts = {}) {
     }
   }
   return apps.sort((a, b) => `${a.displayName}\0${a.exePath}`.localeCompare(`${b.displayName}\0${b.exePath}`, undefined, { sensitivity: 'base' }));
+}
+
+/** Resolve optional poster art without recursively scanning a game install. */
+export async function findGamePosterArtwork(exePath, opts = {}) {
+  const canonical = canonicalExePath(exePath);
+  if (!canonical) return null;
+  const maxBytes = Number.isFinite(opts.maxBytes) ? Math.max(1, opts.maxBytes) : POSTER_MAX_BYTES;
+  const directories = [];
+  let directory = path.win32.dirname(canonical);
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!directories.includes(directory)) directories.push(directory);
+    const parent = path.win32.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  for (const dir of directories) {
+    for (const base of POSTER_NAMES) {
+      for (const [extension, mime] of POSTER_EXTENSIONS) {
+        try {
+          const bytes = await readFile(path.win32.join(dir, base + extension));
+          if (bytes.length === 0 || bytes.length > maxBytes) continue;
+          return 'data:' + mime + ';base64,' + bytes.toString('base64');
+        } catch {
+          // Optional artwork is allowed to be absent.
+        }
+      }
+    }
+  }
+  return null;
 }
 
 export async function enrichScannedApps(apps, getArtwork, opts = {}) {

@@ -424,6 +424,28 @@ export const tuningPage: Page = {
         void apply(ctx);
       });
     }
+    const resetAllBtn = el('button', {
+      class: 'btn btn-ghost btn-sm',
+      text: 'Reset to default',
+      onClick: () => {
+        applied = {};
+        for (const key of controls) {
+          const range = cardSliderRange(caps, key);
+          if (!range) continue;
+          values[key] = snapToRange(range.default, range);
+          hiddenNegativeControls.delete(key);
+          const card = cards.get(key);
+          const slider = card?.querySelector<HTMLInputElement>('input[type="range"]');
+          if (slider) slider.value = String(values[key]);
+        }
+        for (const key of controls) refreshCard(key);
+        updateFloating();
+      },
+    });
+    const generalActions = el('div', { class: 'graphics-general-actions tuning-general-actions' }, [
+      ...(applyBtn ? [applyBtn as Node] : []),
+      resetAllBtn,
+    ]);
     const setBusy = (busy: boolean) => {
       applying = busy;
       // M9: the per-card Apply buttons share the busy state (disabled while
@@ -1192,6 +1214,7 @@ export const tuningPage: Page = {
         return;
       }
       const body: Array<Node | string> = [
+        generalActions,
         controls.length > 0
           ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
@@ -1202,7 +1225,6 @@ export const tuningPage: Page = {
         // rows are gone per the user (profiles can still apply those values
         // via the state machinery - documented).
 
-        ...(controls.length > 0 && applyBtn ? [applyBtn] : []),
       ];
       viewContainer.append(...body);
       lockCurrentNode = viewContainer.querySelector<HTMLElement>('.gpu-lock-current');

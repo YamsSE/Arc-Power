@@ -58,6 +58,7 @@ import {
   CARD_TITLES,
   DROPDOWN_LABELS,
   DROPDOWN_OPTIONS,
+  GRAPHICS_RESET_DEFAULTS,
 } from './pages/graphics.ts';
 import {
   isGraphicsControlSupported,
@@ -503,6 +504,21 @@ async function renderTuning(): Promise<void> {
     if (applying) return;
     void applyScalar();
   });
+  const tuningResetBtn = el('button', {
+    class: 'btn btn-ghost btn-sm',
+    text: 'Reset to default',
+    onClick: () => {
+      applied = {};
+      hiddenNegativeControls = new Set<string>();
+      for (const key of controls) {
+        const range = cardSliderRange(caps, key);
+        if (range) values[key] = snapToRange(range.default, range);
+      }
+      renderTuningInPlace();
+      updateFloating();
+    },
+  });
+  const tuningActions = el('div', { class: 'graphics-general-actions tuning-general-actions' }, [tuningApplyBtn, tuningResetBtn]);
 
   const applyScalar = async (only?: string): Promise<void> => {
     const live = store.get();
@@ -623,7 +639,7 @@ async function renderTuning(): Promise<void> {
   stack.append(
     ...controls.filter((k) => k !== 'powerLimitW').map(buildCard),
     ...(controls.includes('powerLimitW') ? [buildPlCard()] : []),
-    tuningApplyBtn as HTMLElement,
+    tuningActions,
   );
   contentEl.append(view);
   view.append(tuningHeading, stack);
@@ -863,6 +879,36 @@ function renderGraphicsCards(view: HTMLElement): void {
     if (graphicsApplying) return;
     void applyGraphics();
   });
+  const graphicsResetBtn = el('button', {
+    class: 'btn btn-ghost btn-sm',
+    text: 'Reset to default',
+    onClick: () => {
+      graphicsApplied = {};
+      for (const key of ['frameGenOverride', 'flipMode', 'lowLatency']) {
+        const options = graphicsOptionsOf(state, key);
+        const documentedDefault = GRAPHICS_RESET_DEFAULTS[key];
+        const defaultValue = documentedDefault && options.includes(documentedDefault) ? documentedDefault : options[0];
+        if (defaultValue) {
+          (graphicsDraft as Record<string, unknown>)[key] = defaultValue;
+          const select = view.querySelector<HTMLSelectElement>('select[data-graphics-select="' + key + '"]');
+          if (select) select.value = defaultValue;
+        }
+      }
+      const range = frameLimitRange(state);
+      graphicsDraft.frameLimit = { enabled: false, value: range.default };
+      const toggle = view.querySelector<HTMLSelectElement>('select[data-graphics-toggle="frameLimit"]');
+      if (toggle) toggle.value = 'off';
+      const slider = view.querySelector<HTMLInputElement>('.graphics-fps-slider-row input[type="range"]');
+      if (slider) slider.value = String(range.default);
+      const value = view.querySelector<HTMLElement>('.graphics-fps-value');
+      if (value) value.textContent = String(range.default) + ' FPS';
+      const row = view.querySelector<HTMLElement>('.graphics-fps-slider-row');
+      if (row) row.hidden = true;
+      for (const key of GRAPHICS_CONTROLS) refreshChip(key);
+      updateFloating();
+    },
+  });
+  const graphicsActions = el('div', { class: 'graphics-general-actions tuning-general-actions' }, [graphicsApplyBtn, graphicsResetBtn]);
 
   const applyGraphics = async (only?: string): Promise<void> => {
     const live = store.get();
@@ -928,7 +974,7 @@ function renderGraphicsCards(view: HTMLElement): void {
       buildDropdownCard('flipMode'),
       buildFrameLimitCard(),
       buildDropdownCard('lowLatency'),
-      graphicsApplyBtn as HTMLElement,
+      graphicsActions,
     ]),
   );
   updateFloating();

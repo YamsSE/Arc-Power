@@ -65,6 +65,8 @@ import {
   displayDriverValue,
   normalizeDisplaySettings,
   validateDisplaySettings,
+  snapDisplayColorValue,
+  type DisplayColorRange,
   isDisplayControlDirtyVsApplied as isDisplayControlDirtyVsAppliedPure,
 } from '../pure/display.ts';
 import type { DisplayCapability, DisplaySettings, DisplayState, FrameGenOverride, FlipMode, GraphicsSettings, GraphicsState, LowLatency } from '../types.ts';
@@ -95,7 +97,7 @@ const DISPLAY_SCALING_NOTE = 'Changing the scaling mode causes a brief screen fl
 const DISPLAY_SCALING_METHOD_NOTE = 'Custom scaling exposes the driver percentages used by the display path.';
 const DISPLAY_GLOBAL_VRR_NOTE = 'Sets the default Variable Refresh Rate mode globally across all displays.';
 const DISPLAY_VRR_NOTE = 'Enables the display to present frames at a variable rate instead of a fixed rate.';
-const DISPLAY_SLIDERS_NOTE = 'These values use the driver’s Standard Color Correction surface and are verified by read-back after every change.';
+const DISPLAY_SLIDERS_NOTE = 'IGS uses 0–100 with 50 as the neutral value. These controls are sent to IGCL Standard Color Correction and verified by driver read-back; the surface applies to the driver’s video-processing path.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The wire-format set is a silent no-op on this driver build - the driver does not accept wire-format changes (the read-back never changes).';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
@@ -156,14 +158,40 @@ const ARC_SYNC_LABELS: Record<string, string> = {
   custom: 'Custom',
 };
 
-// The dropdown default (a "Reset to default" target): the FIRST SUPPORTED
-// option - the probe + the mock + the driver's caps DefaultType all agree
-// (app-choice / application-default / off).
+// Documented IGS defaults. A driver may omit one of these values from its
+// capability list; callers then retain the historical first-supported
+// fallback instead of manufacturing an unsupported reset payload.
+export const GRAPHICS_RESET_DEFAULTS: Record<string, string> = {
+  frameGenOverride: 'app-choice',
+  flipMode: 'application-default',
+  lowLatency: 'off',
+};
 export const DROPDOWN_OPTIONS: Record<string, string[]> = {
   frameGenOverride: FRAME_GEN_OPTIONS,
   flipMode: FLIP_MODE_OPTIONS,
   lowLatency: LOW_LATENCY_OPTIONS,
 };
+
+const DISPLAY_RESET_DEFAULTS: Record<string, string> = {
+  globalVrrMode: 'fullscreen',
+  quantizationRange: 'default',
+};
+
+function resetOption(key: string, options: string[], defaults: Record<string, string>): string | null {
+  if (options.length === 0) return null;
+  const documented = defaults[key];
+  return documented && options.includes(documented) ? documented : options[0];
+}
+
+function displayWireFormatDefault(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['wireFormat']> | null {
+  const models = display.supportedOptions.wireFormats;
+  const depths = display.supportedOptions.bpcDepths;
+  if (models.length === 0 || depths.length === 0) return null;
+  return {
+    model: (models.includes('RGB') ? 'RGB' : models[0]) as NonNullable<DisplaySettings['wireFormat']>['model'],
+    depth: depths.includes(8) ? 8 : depths[0],
+  };
+}
 
 // Per-render mutable state (hoisted so onUpdate can refresh in place -
 // only one page renders at a time, the Tuning pattern).
@@ -181,6 +209,8 @@ let displayScalingViewDraft = 'display-scaling';
 let displayScalingMethodDraft = 'maintain-display-scaling';
 let applying = false;
 let applyBtn: HTMLButtonElement | null = null;
+let displayApplyBtn: HTMLButtonElement | null = null;
+let displayResetBtn: HTMLButtonElement | null = null;
 const chipNodes = new Map<string, HTMLElement>();
 // M9: the per-card Apply button (the chip state machine) - visible ONLY
 // while that card is dirty; clicking it applies THAT card only.
@@ -238,6 +268,8 @@ function resetPageState() {
   displayScalingMethodDraft = 'maintain-display-scaling';
   applying = false;
   applyBtn = null;
+  displayApplyBtn = null;
+  displayResetBtn = null;
   chipNodes.clear();
   chipApplyNodes.clear();
   valueNodes.clear();
@@ -359,6 +391,7 @@ function refreshDisplayChip(key: string) {
   }
   const btn = chipApplyNodes.get(key);
   if (btn) btn.hidden = state !== 'dirty';
+  updateDisplayFloating();
 }
 
 function updateFloating() {
@@ -370,6 +403,55 @@ function updateFloating() {
 function refreshAll() {
   for (const key of ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']) refreshChip(key);
   updateFloating();
+}
+
+const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'hue', 'saturation', 'brightness', 'contrast', 'quantizationRange', 'wireFormat'];
+const DISPLAY_COLOR_KEYS = ['hue', 'saturation', 'brightness', 'contrast'];
+
+function displayHasDirtyDraft(display: DisplayState['displays'][number] | null): boolean {
+  if (!display) return false;
+  return DISPLAY_APPLY_KEYS.some((key) => {
+    if (key === 'scalingMode' || key === 'displayScalingMethod') return displayPayloadForControl(key, display) !== null;
+    return isDisplayControlDirtyVsAppliedPure(key, displayDraft, display, displayApplied);
+  });
+}
+
+function updateDisplayFloating(): void {
+  if (!displayApplyBtn) return;
+  displayApplyBtn.hidden = applying ? false : !displayHasDirtyDraft(selectedDisplay());
+  displayApplyBtn.disabled = applying;
+  displayApplyBtn.textContent = applying ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
+}
+
+function resetDisplayDraft(display: DisplayState['displays'][number]): void {
+  displayDraft = normalizeDisplaySettings(display);
+  if (isDisplayControlSupported(display, 'scalingMode')) {
+    displayScalingViewDraft = 'display-scaling';
+    displayDraft.scalingMode = rawScalingForView(display, displayScalingViewDraft);
+    delete displayDraft.scalingCustom;
+  }
+  if (isDisplayControlSupported(display, 'displayScalingMethod')) {
+    displayScalingMethodDraft = 'maintain-display-scaling';
+    displayDraft.displayScalingMethod = 'maintain-display-scaling';
+  }
+  if (isDisplayControlSupported(display, 'scalingMethod')) {
+    displayDraft.scalingMethod = { enabled: false, method: display.scalingMethod?.value?.method ?? 'integer' };
+  }
+  for (const key of ['hue', 'saturation', 'brightness', 'contrast'] as DisplayColorKey[]) {
+    const range = display.supportedOptions.colorRanges?.[key];
+    if (range?.default !== undefined) (displayDraft as Record<string, unknown>)[key] = range.default;
+  }
+  if (display.supportedOptions.globalVrrModes.length > 0) {
+    const defaultValue = resetOption('globalVrrMode', display.supportedOptions.globalVrrModes, DISPLAY_RESET_DEFAULTS);
+    if (defaultValue !== null) displayDraft.globalVrrMode = defaultValue as DisplaySettings['globalVrrMode'];
+  }
+  if (display.supportedOptions.quantizationRanges.length > 0) {
+    const defaultValue = resetOption('quantizationRange', display.supportedOptions.quantizationRanges, DISPLAY_RESET_DEFAULTS);
+    if (defaultValue !== null) displayDraft.quantizationRange = defaultValue as DisplaySettings['quantizationRange'];
+  }
+  const defaultWireFormat = displayWireFormatDefault(display);
+  if (defaultWireFormat) displayDraft.wireFormat = defaultWireFormat;
+  displayApplied = {};
 }
 
 export const graphicsPage: Page = {
@@ -559,6 +641,33 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     void apply(ctx);
   });
 
+  const resetAllBtn = el('button', {
+    class: 'btn btn-ghost btn-sm',
+    text: 'Reset to default',
+    onClick: () => {
+      for (const key of ['frameGenOverride', 'flipMode', 'lowLatency']) {
+        const options = optionsOf(state, key);
+        const defaultValue = resetOption(key, options, GRAPHICS_RESET_DEFAULTS);
+        if (defaultValue !== null) {
+          (draft as Record<string, unknown>)[key] = defaultValue;
+          const select = selectNodes.get(key);
+          if (select) select.value = defaultValue;
+        }
+      }
+      const range = frameLimitRange(state);
+      draft.frameLimit = { enabled: false, value: range.default };
+      const toggle = toggleNodes.get('frameLimit');
+      if (toggle) toggle.value = 'off';
+      const slider = sliderNodes.get('frameLimit');
+      if (slider) slider.value = String(range.default);
+      const value = valueNodes.get('frameLimit');
+      if (value) value.textContent = String(range.default) + ' FPS';
+      const row = sliderRowNodes.get('frameLimit');
+      if (row) row.hidden = true;
+      refreshAll();
+    },
+  });
+
   const buildDropdownCard = (key: string): HTMLElement => {
     const supported = supportedOf(state, key);
     if (!supported) {
@@ -614,9 +723,11 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
           class: 'btn btn-ghost btn-sm',
           text: 'Reset to default',
           onClick: () => {
-            (draft as Record<string, unknown>)[key] = options[0];
+            const defaultValue = resetOption(key, options, GRAPHICS_RESET_DEFAULTS);
+            if (defaultValue === null) return;
+            (draft as Record<string, unknown>)[key] = defaultValue;
             const sel = selectNodes.get(key);
-            if (sel) sel.value = options[0];
+            if (sel) sel.value = defaultValue;
             refreshChip(key);
             updateFloating();
           },
@@ -737,12 +848,15 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   // The four cards in the planned order (plan 2): FG override, Frame Sync,
   // FPS Limit, Low Latency.
   view.append(
+    el('div', { class: 'graphics-general-actions' }, [
+      ...(applyBtn ? [applyBtn as Node] : []),
+      resetAllBtn,
+    ]),
     el('div', { class: 'card-stack graphics-stack' }, [
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),
       buildFrameLimitCard(),
       buildDropdownCard('lowLatency'),
-      ...(applyBtn ? [applyBtn as Node] : []),
     ]),
   );
   updateFloating();
@@ -857,9 +971,11 @@ function buildDisplayDropdownRow(
         class: 'btn btn-ghost btn-sm',
         text: 'Reset to default',
         onClick: () => {
-          (displayDraft as Record<string, unknown>)[key] = options[0];
+          const defaultValue = resetOption(key, options, DISPLAY_RESET_DEFAULTS);
+          if (defaultValue === null) return;
+          (displayDraft as Record<string, unknown>)[key] = defaultValue;
           const sel = selectNodes.get(key);
-          if (sel) sel.value = options[0];
+          if (sel) sel.value = defaultValue;
           refreshDisplayChip(key);
         },
       }),
@@ -1018,10 +1134,7 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
       ]),
     ]);
   }
-  const wf: NonNullable<DisplaySettings['wireFormat']> = displayDraft.wireFormat ?? {
-    model: display!.supportedOptions.wireFormats[0] as NonNullable<DisplaySettings['wireFormat']>['model'],
-    depth: display!.supportedOptions.bpcDepths[0],
-  };
+  const wf: NonNullable<DisplaySettings['wireFormat']> = displayDraft.wireFormat ?? displayWireFormatDefault(display!)!;
   const modelSelect = el('select', {
     class: 'graphics-select display-select',
     dataset: { displaySelect: 'colorFormat' },
@@ -1076,11 +1189,13 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
         class: 'btn btn-ghost btn-sm',
         text: 'Reset to default',
         onClick: () => {
-          displayDraft.wireFormat = { model: display!.supportedOptions.wireFormats[0] as NonNullable<DisplaySettings['wireFormat']>['model'], depth: display!.supportedOptions.bpcDepths[0] };
+          const defaultWireFormat = displayWireFormatDefault(display!);
+          if (!defaultWireFormat) return;
+          displayDraft.wireFormat = defaultWireFormat;
           const m = selectNodes.get('wireFormat');
-          if (m) m.value = display!.supportedOptions.wireFormats[0];
+          if (m) m.value = defaultWireFormat.model;
           const d = selectNodes.get('wireFormatDepth');
-          if (d) d.value = String(display!.supportedOptions.bpcDepths[0]);
+          if (d) d.value = String(defaultWireFormat.depth);
           refreshDisplayChip('wireFormat');
         },
       }),
@@ -1101,6 +1216,30 @@ function displayCapabilityText<T>(capability: DisplayCapability<T> | undefined, 
   return String(capability.value);
 }
 
+type DisplayColorKey = 'hue' | 'saturation' | 'brightness' | 'contrast';
+
+// IGCL exposes native correction factors while IGS presents the same controls
+// as a 0-100 editor with 50 as the neutral/default midpoint. Keep drafts in
+// native units for the driver payload, but make the visible controls match
+// IGS and avoid showing values such as saturation=1 or brightness=0.
+function colorUiValue(key: DisplayColorKey, native: number, range: DisplayColorRange): number {
+  if (key === 'hue') return native;
+  const neutral = Number.isFinite(range.default) ? Number(range.default) : (range.min + range.max) / 2;
+  const ui = native <= neutral
+    ? 50 * (native - range.min) / Math.max(0.0001, neutral - range.min)
+    : 50 + 50 * (native - neutral) / Math.max(0.0001, range.max - neutral);
+  return Math.max(0, Math.min(100, Math.round(ui)));
+}
+
+function colorNativeValue(key: DisplayColorKey, ui: number, range: DisplayColorRange): number {
+  if (key === 'hue') return snapDisplayColorValue(ui, range);
+  const neutral = Number.isFinite(range.default) ? Number(range.default) : (range.min + range.max) / 2;
+  const native = ui <= 50
+    ? range.min + (neutral - range.min) * (ui / 50)
+    : neutral + (range.max - neutral) * ((ui - 50) / 50);
+  return snapDisplayColorValue(native, range);
+}
+
 function displaySupportText(capability: DisplayCapability<boolean> | undefined): string {
   if (!capability || capability.value === null || capability.value === undefined) return capability?.supported === false ? 'Not supported' : 'Not available';
   return capability.value ? 'Supported' : 'Not supported';
@@ -1118,41 +1257,44 @@ function buildDisplayReadonlyRow<T>(title: string, capability: DisplayCapability
   ]);
 }
 
-function buildDisplaySlider(ctx: PageContext, key: 'hue' | 'saturation' | 'brightness' | 'contrast', title: string, capability: DisplayCapability<number> | undefined, fallbackMin: number, fallbackMax: number, fallbackReason: string): HTMLElement {
+function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: string, capability: DisplayCapability<number> | undefined, fallbackMin: number, fallbackMax: number, fallbackReason: string): HTMLElement {
   const display = selectedDisplay();
   const supported = display !== null && isDisplayControlSupported(display, key);
   const range = display?.supportedOptions.colorRanges?.[key];
   const min = range?.min ?? fallbackMin;
   const max = range?.max ?? fallbackMax;
   const step = range?.step ?? 1;
-  const value = capability?.value ?? range?.default ?? 50;
+  const nativeValue = capability?.value ?? range?.default ?? 50;
+  const uiRange = key === 'hue' ? { min: fallbackMin, max: fallbackMax, step: 1, default: 0 } : { min: 0, max: 100, step: 1, default: 50 };
+  const value = colorUiValue(key, nativeValue, { min, max, step, default: range?.default });
   if (!supported) {
     return el('div', { class: 'display-control display-slider-row display-control-readonly', dataset: { control: key } }, [
       el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
       el('div', { class: 'display-slider-line' }, [
-        el('input', { class: 'graphics-slider', type: 'range', min, max, step, value, disabled: true, 'aria-label': title }),
-        el('input', { class: 'display-number-input', type: 'number', min, max, value: capability?.value ?? '', disabled: true, 'aria-label': `${title} value` }),
+        el('input', { class: 'graphics-slider', type: 'range', min: uiRange.min, max: uiRange.max, step: uiRange.step, value, disabled: true, 'aria-label': title }),
+        el('input', { class: 'display-number-input', type: 'number', min: uiRange.min, max: uiRange.max, value: capability?.value === null || capability?.value === undefined ? '' : value, disabled: true, 'aria-label': title + ' value' }),
       ]),
       el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
     ]);
   }
   const slider = el('input', {
-    class: 'graphics-slider', type: 'range', min, max, step, value, 'aria-label': title,
+    class: 'graphics-slider', type: 'range', min: uiRange.min, max: uiRange.max, step: uiRange.step, value, 'aria-label': title,
     oninput: (e: Event) => {
-      const next = Number((e.target as HTMLInputElement).value);
+      const nextUi = Number((e.target as HTMLInputElement).value);
+      const next = colorNativeValue(key, nextUi, { min, max, step, default: range?.default });
       (displayDraft as Record<string, unknown>)[key] = next;
-      numberInput.value = String(next);
+      numberInput.value = String(nextUi);
       refreshDisplayChip(key);
     },
   });
   const numberInput = el('input', {
-    class: 'display-number-input', type: 'number', min, max, step, value, 'aria-label': `${title} value`,
+    class: 'display-number-input', type: 'number', min: uiRange.min, max: uiRange.max, step: uiRange.step, value, 'aria-label': title + ' value',
     onchange: (e: Event) => {
-      const next = Math.min(max, Math.max(min, Number((e.target as HTMLInputElement).value)));
-      if (!Number.isFinite(next)) return;
-      (displayDraft as Record<string, unknown>)[key] = next;
-      slider.value = String(next);
-      numberInput.value = String(next);
+      const nextUi = Math.min(uiRange.max, Math.max(uiRange.min, Number((e.target as HTMLInputElement).value)));
+      if (!Number.isFinite(nextUi)) return;
+      (displayDraft as Record<string, unknown>)[key] = colorNativeValue(key, nextUi, { min, max, step, default: range?.default });
+      slider.value = String(nextUi);
+      numberInput.value = String(nextUi);
       refreshDisplayChip(key);
     },
   });
@@ -1164,10 +1306,13 @@ function buildDisplaySlider(ctx: PageContext, key: 'hue' | 'saturation' | 'brigh
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, key); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
-        const reset = range?.default ?? value;
-        (displayDraft as Record<string, unknown>)[key] = reset;
-        slider.value = String(reset);
-        numberInput.value = String(reset);
+        const resetNative = range
+          ? snapDisplayColorValue(range.default ?? nativeValue, range)
+          : nativeValue;
+        const resetUi = colorUiValue(key, resetNative, { min, max, step, default: range?.default });
+        (displayDraft as Record<string, unknown>)[key] = resetNative;
+        slider.value = String(resetUi);
+        numberInput.value = String(resetUi);
         refreshDisplayChip(key);
       } }),
     ]),
@@ -1267,7 +1412,25 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     clear(displayPickerHost);
     displayPickerHost.append(pickerRow);
   }
-  view.append(el('div', { class: 'display-stack' }, [general, color, info]));
+  displayApplyBtn = el('button', {
+    class: 'btn btn-primary btn-sm',
+    text: APPLY_BTN_TEXT,
+    hidden: true,
+    onClick: () => { if (!applying) void applyDisplay(ctx, 'all'); },
+  });
+  displayResetBtn = el('button', {
+    class: 'btn btn-ghost btn-sm',
+    text: 'Reset to default',
+    onClick: () => {
+      resetDisplayDraft(display!);
+      renderDisplayCards(view, ctx);
+    },
+  });
+  view.append(
+    el('div', { class: 'graphics-general-actions display-general-actions' }, [displayApplyBtn, displayResetBtn]),
+    el('div', { class: 'display-stack' }, [general, color, info]),
+  );
+  updateDisplayFloating();
 }
 
 // ---------------------------------------------------------------------------
@@ -1352,18 +1515,12 @@ async function apply(ctx: PageContext, only?: string) {
  *  lesson); the FRESH read-back envelope refreshes the display state; the
  *  scaling success carries the honest modeset-flash warning, surfaced via
  *  the apply-result toast. NO OC waiver anywhere in the flow. */
-async function applyDisplay(ctx: PageContext, only: string) {
-  const live = ctx.store.get();
-  const deviceId = live.deviceId;
-  const display = selectedDisplay();
-  if (deviceId === null || !display || !displayState) return;
+function displayPayloadForControl(only: string, display: DisplayState['displays'][number]): DisplaySettings | null {
   let payload: DisplaySettings = {};
   if (only === 'scalingMode') {
     if (displayScalingViewDraft !== scalingViewOf(display)) {
       const raw = rawScalingForView(display, displayScalingViewDraft);
-      payload = {
-        scalingMode: raw,
-      };
+      payload = { scalingMode: raw };
       if (raw === 'custom') payload.scalingCustom = customScalingOf(display);
       if (displayScalingViewDraft === 'retro-scaling' || display.scalingMethod?.value?.enabled === true) {
         payload.scalingMethod = {
@@ -1380,7 +1537,29 @@ async function applyDisplay(ctx: PageContext, only: string) {
       if (displayScalingMethodDraft === 'custom') payload.scalingCustom = displayDraft.scalingCustom ?? customScalingOf(display);
     }
   } else if (isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)) {
-    payload = { [only]: (displayDraft as Record<string, unknown>)[only] } as unknown as DisplaySettings;
+    let value = (displayDraft as Record<string, unknown>)[only];
+    if (DISPLAY_COLOR_KEYS.includes(only as DisplayColorKey)) {
+      const range = display.supportedOptions.colorRanges?.[only];
+      if (range && typeof value === 'number') value = snapDisplayColorValue(value, range);
+    }
+    payload = { [only]: value } as unknown as DisplaySettings;
+  }
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+async function applyDisplay(ctx: PageContext, only: string) {
+  const live = ctx.store.get();
+  const deviceId = live.deviceId;
+  const display = selectedDisplay();
+  if (deviceId === null || !display || !displayState) return;
+  const payload: DisplaySettings = {};
+  if (only === 'all') {
+    for (const key of DISPLAY_APPLY_KEYS) {
+      const part = displayPayloadForControl(key, display);
+      if (part) Object.assign(payload, part);
+    }
+  } else {
+    Object.assign(payload, displayPayloadForControl(only, display) ?? {});
   }
   if (!validateDisplaySettings(payload)) {
     toast('error', 'Apply aborted', 'The display payload failed validation - this is a bug.');
@@ -1395,6 +1574,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
   }
   applying = true;
   for (const b of chipApplyNodes.values()) b.disabled = true;
+  updateDisplayFloating();
   try {
     const deviceKey = displayState.deviceKey ?? live.devices.find((d) => d.id === deviceId)?.deviceKey ?? null;
     if (!deviceKey || !display.displayKey || display.identityVerified !== true) {
@@ -1405,11 +1585,21 @@ async function applyDisplay(ctx: PageContext, only: string) {
     if (out.displayState) {
       displayState = out.displayState;
     }
+    const freshDisplay = selectedDisplay();
     for (const [key, per] of Object.entries(out.perControl)) {
       if (per.ok) {
-        if (key === 'scalingMode') (displayApplied as Record<string, unknown>)[key] = displayScalingViewDraft;
-        else if (key === 'displayScalingMethod') (displayApplied as Record<string, unknown>)[key] = displayScalingMethodDraft;
-        else (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
+        if (freshDisplay && (key === 'scalingMode' || key === 'displayScalingMethod' || DISPLAY_APPLY_KEYS.includes(key))) {
+          const readBackKey = key === 'scalingMode' ? 'scalingMode' : key === 'displayScalingMethod' ? 'displayScalingMethod' : key;
+          const readBack = readBackKey === 'scalingMode' ? scalingViewOf(freshDisplay)
+            : readBackKey === 'displayScalingMethod' ? scalingMethodViewOf(freshDisplay)
+              : displayDriverValue(freshDisplay, readBackKey);
+          (displayApplied as Record<string, unknown>)[key] = readBack;
+          if (DISPLAY_COLOR_KEYS.includes(key) && typeof readBack === 'number') {
+            (displayDraft as Record<string, unknown>)[key] = readBack;
+          }
+        } else {
+          (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
+        }
         toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
         // The scaling card's honest modeset note rides the apply result
         // (the M10b probe skipped the scaling SET by design - a scaling
@@ -1419,7 +1609,8 @@ async function applyDisplay(ctx: PageContext, only: string) {
         toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
       }
     }
-    refreshDisplayChip(only);
+    for (const key of DISPLAY_APPLY_KEYS) refreshDisplayChip(key);
+    updateDisplayFloating();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('administrator approval') || msg.includes('Administrator approval')) {
@@ -1430,5 +1621,6 @@ async function applyDisplay(ctx: PageContext, only: string) {
   } finally {
     applying = false;
     for (const b of chipApplyNodes.values()) b.disabled = false;
+    updateDisplayFloating();
   }
 }

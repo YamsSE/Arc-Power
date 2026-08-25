@@ -2314,8 +2314,47 @@ select {
 
 .profile-actions { display: inline-flex; gap: 6px; }
 
+/* OC profiles are global actions, not navigation tiles. Keep every summary
+   and action inside the same card in both browser layouts. */
+.profile-row { cursor: default; }
+.profile-grid .profile-row {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  min-height: 214px;
+  align-items: start;
+}
+.profile-grid .profile-info { min-height: 36px; }
+.profile-grid .profile-association-note { margin: 0; }
+.profile-grid .profile-chips { align-self: start; }
+.profile-grid .profile-actions { align-self: end; margin-top: 12px; }
+.profile-list-mode .profile-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.1fr) minmax(120px, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  min-height: 104px;
+}
+.profile-list-mode .profile-info { grid-row: 1 / -1; }
+.profile-list-mode .profile-association-note { grid-column: 2; margin: 0; }
+.profile-list-mode .profile-chips { grid-column: 2; }
+.profile-list-mode .profile-actions { grid-column: 3; grid-row: 1 / -1; justify-content: flex-end; flex-wrap: wrap; }
+
 .btn-danger-text { color: var(--error); }
 .btn-danger-text:hover { border-color: var(--error); }
+
+.graphics-general-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.graphics-general-actions .floating-apply,
+.graphics-general-actions .adv-floating-apply {
+  position: static;
+  left: auto;
+  bottom: auto;
+}
 
 .modal-input {
   width: 100%;

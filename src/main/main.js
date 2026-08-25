@@ -54,7 +54,7 @@ import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
 import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
-import { createGameScanAdapter } from './game-scan.js';
+import { createGameScanAdapter, findGamePosterArtwork } from './game-scan.js';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
 // M23 (Part B): the ADVANCED overlay module (the AMD-Adrenaline-style
@@ -1189,6 +1189,8 @@ async function main() {
     }
     : createGameScanAdapter({
       getArtwork: async (exePath) => {
+        const poster = await findGamePosterArtwork(exePath);
+        if (poster) return poster;
         try {
           const icon = await app.getFileIcon(exePath, { size: 'large' });
           const dataUrl = icon.toDataURL();

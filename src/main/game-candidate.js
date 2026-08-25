@@ -14,6 +14,7 @@ const UNSAFE_CANDIDATE_RE = /^(?:uninstall(?:er|helper)?|unins\d*|crash(?:report
 const GAME_LIBRARY_PATH_RE = /\\(?:steamapps\\common|epic games\\[^\\]+\\(?!directxredist)|gog galaxy\\games|xboxgames|riot games\\[^\\]+\\game|ubisoft(?: game launcher)?\\(?:games|[^\\]+)|battle\.net\\games)\\/i;
 const GAME_TITLE_RE = /(?:3dmark|assassin['’]?s creed|crusader kings|final fantasy|league of legends|monster hunter|palworld|\bpeak\b|star wars outlaws|teamfight tactics|valorant|counter[- ]strike|fortnite|apex legends|dota(?: 2)?|elden ring|cyberpunk|grand theft auto|red dead redemption|the witcher|baldur['’]?s gate|diablo|overwatch|destiny|minecraft)/i;
 const NON_GAME_RE = /(?:^|[\\/ ._-])(?:7[- ]?zip|administrative tools|aida64|applicationframehost|ascent(?:[-_]gep)?|asrrgbled|backgroundtaskhost|benchmate|charmap|chatgpt|codex|conhost|cpu[- ]?z|crashhelper|crossdevice|dataexchangehost|desktop overlay host|discord|disk cleanup|dismhost|enhancedrpc|explorer|firefox|free download manager|gameinputredistservice|git(?:[- ]|$)|google chrome|hisuite|hwinfo|intel(?:r)? graphics|iscsicpl|lm studio|magnify|microsoft|morepowertool|msiafterburner|msedgewebview2|narrator|node(?:\.exe)?|obs(?: studio)?|opencode|paint\.net|paradox launcher|pawnio|powershell|predatorbifrost|rpcs3|riot client|riotclientservices|rivatuner|roccat|runtimebroker|searchhost|shell(?:experience)?host|snippingtool|steam(?:webhelper)?|systemsettings|task(?:mgr|host)|teamspeak|turtle beach|ubisoft connect|vanguard|wallpaper engine|windows|winrar|xboxpcappft)(?:$|[\\/ ._-])/i;
+const LEAGUE_CLIENT_HELPER_RE = /^leagueclientux(?:render)?(?:\.exe)?$/i;
 
 export function canonicalExePath(value) {
   if (typeof value !== 'string') return null;
@@ -31,7 +32,14 @@ export function canonicalExePath(value) {
 
 export function isVerifiedExecutablePath(value) {
   const canonical = canonicalExePath(value);
-  return !!canonical && !UNSAFE_CANDIDATE_RE.test(path.win32.basename(canonical));
+  const basename = canonical ? path.win32.basename(canonical) : '';
+  return !!canonical
+    && !UNSAFE_CANDIDATE_RE.test(basename)
+    // LeagueClientUX.exe and LeagueClientUxRender.exe are helper processes,
+    // not game executables. Keep this exclusion in the shared ingress gate
+    // so catalog sync and persisted-catalog sanitization cannot re-admit them
+    // when their metadata looks game-like.
+    && !LEAGUE_CLIENT_HELPER_RE.test(basename);
 }
 
 /**
@@ -42,6 +50,9 @@ export function isVerifiedExecutablePath(value) {
 export function isLikelyGameCandidate({ exePath, displayName = '', processName = '' } = {}) {
   const canonical = canonicalExePath(exePath);
   if (!canonical || !isVerifiedExecutablePath(canonical)) return false;
+  if (LEAGUE_CLIENT_HELPER_RE.test(path.win32.basename(canonical))
+    || LEAGUE_CLIENT_HELPER_RE.test(String(processName).trim())
+    || LEAGUE_CLIENT_HELPER_RE.test(String(displayName).trim())) return false;
   const text = `${canonical} ${String(displayName)} ${String(processName)}`;
   if (NON_GAME_RE.test(text)) {
     // A title such as "League of Legends" or "Crusader Kings III" wins over

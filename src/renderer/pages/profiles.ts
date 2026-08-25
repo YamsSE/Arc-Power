@@ -39,6 +39,55 @@ const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempL
 // as the OC page).
 let waiverRetryCount = 0;
 
+type GameCatalogSessionCache = {
+  catalog: GameCatalogEntry[];
+  settings: GameSettingsRecord[];
+  loaded: boolean;
+  loading: Promise<void> | null;
+  scanStarted: boolean;
+  scanLoading: Promise<void> | null;
+};
+
+// The sidecar catalog is persisted by the main process, but this cache keeps
+// the already-read catalog available when the Profiles page is remounted.
+// A remount must not turn the page navigation into another synchronous scan.
+const gameCatalogSession: GameCatalogSessionCache = {
+  catalog: [],
+  settings: [],
+  loaded: false,
+  loading: null,
+  scanStarted: false,
+  scanLoading: null,
+};
+
+function loadGameCatalogSession(force = false): Promise<void> {
+  if (gameCatalogSession.loading) return gameCatalogSession.loading;
+  if (gameCatalogSession.loaded && !force) return Promise.resolve();
+  gameCatalogSession.loading = api.gameCatalogList().then((result) => {
+    gameCatalogSession.catalog = Array.isArray(result.catalog) ? result.catalog : [];
+    gameCatalogSession.settings = Array.isArray(result.settings) ? result.settings : [];
+    gameCatalogSession.loaded = true;
+  }).finally(() => {
+    gameCatalogSession.loading = null;
+  });
+  return gameCatalogSession.loading;
+}
+
+function refreshGameCatalogSession(scan: boolean): Promise<void> {
+  if (!scan) return loadGameCatalogSession();
+  if (gameCatalogSession.scanLoading) return gameCatalogSession.scanLoading;
+  gameCatalogSession.scanStarted = true;
+  gameCatalogSession.scanLoading = (async () => {
+    const result = await api.gamesScan();
+    if (result.error) toast('warn', 'Game scan unavailable', result.error);
+    if (result.sidecarError) toast('warn', 'Game catalog unavailable', result.sidecarError);
+    await loadGameCatalogSession(true);
+  })().finally(() => {
+    gameCatalogSession.scanLoading = null;
+  });
+  return gameCatalogSession.scanLoading;
+}
+
 function newProfileId(): string {
   return `profile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -245,8 +294,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let envelope: ProfilesEnvelope;
   let bootState: StartupGetState | null = null;
   let associations: GameAssociation[] = [];
-  let gameCatalog: GameCatalogEntry[] = [];
-  let gameSettings: GameSettingsRecord[] = [];
+  let gameCatalog: GameCatalogEntry[] = gameCatalogSession.catalog;
+  let gameSettings: GameSettingsRecord[] = gameCatalogSession.settings;
+  let gameCatalogLoaded = gameCatalogSession.loaded;
+  let gameCatalogLoading = Boolean(gameCatalogSession.loading || gameCatalogSession.scanLoading);
+  let gameCatalogError: string | null = null;
   let gameProfileCapabilities: { enduranceGaming: boolean; reason?: string | null } = { enduranceGaming: false };
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
@@ -285,10 +337,34 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     el('button', { class: `btn btn-ghost btn-sm${viewMode === 'game' ? ' active' : ''}`, text: 'Game Profile', onclick: () => void openGameView() }),
   ]);
 
+  const syncGameCatalogSession = (): void => {
+    gameCatalog = gameCatalogSession.catalog;
+    gameSettings = gameCatalogSession.settings;
+    gameCatalogLoaded = gameCatalogSession.loaded;
+  };
+
   const loadGameCatalog = async (): Promise<void> => {
-    const result = await api.gameCatalogList();
-    gameCatalog = Array.isArray(result.catalog) ? result.catalog : [];
-    gameSettings = Array.isArray(result.settings) ? result.settings : [];
+    gameCatalogLoading = true;
+    try {
+      await loadGameCatalogSession();
+      syncGameCatalogSession();
+    } finally {
+      gameCatalogLoading = false;
+    }
+  };
+
+  const refreshGameCatalog = (scan: boolean, quiet = false): Promise<void> => {
+    gameCatalogError = null;
+    gameCatalogLoading = true;
+    return refreshGameCatalogSession(scan).then(() => {
+      syncGameCatalogSession();
+    }).catch((err) => {
+      gameCatalogError = err instanceof Error ? err.message : String(err);
+      if (!quiet) toast('error', 'Game catalog unavailable', gameCatalogError);
+      throw err;
+    }).finally(() => {
+      gameCatalogLoading = false;
+    });
   };
 
   const gameSettingFor = (exePath: string): GameSettingsRecord | null => gameSettings.find((item) => item.exePath === exePath) ?? null;
@@ -306,11 +382,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'profile-browser-head' }, [
         el('div', { class: 'profile-browser-title' }, [el('h2', { class: 'card-title', text: 'Installed Games' }), el('p', { class: 'card-note', text: 'Installed games remain here even when they are not running.' })]),
         el('div', { class: 'profile-browser-actions' }, [
-          el('button', { class: 'btn btn-ghost btn-sm game-catalog-scan', text: 'Scan for Games', onclick: () => void openGameView() }),
-          el('button', { class: 'btn btn-ghost btn-sm game-catalog-refresh', text: 'Refresh', onclick: () => void openGameView() }),
+          el('button', { class: 'btn btn-ghost btn-sm game-catalog-scan', text: 'Scan for Games', onclick: () => void scanGameCatalog() }),
+          el('button', { class: 'btn btn-ghost btn-sm game-catalog-refresh', text: 'Refresh', onclick: () => void scanGameCatalog() }),
         ]),
       ]),
-      gameCatalog.length ? el('div', { class: 'game-catalog-grid' }, cards) : el('p', { class: 'card-note game-catalog-empty', text: 'No installed games were found.' }),
+      gameCatalogError && !gameCatalog.length
+        ? el('p', { class: 'text-error game-catalog-empty', text: gameCatalogError })
+        : gameCatalog.length
+          ? el('div', { class: 'game-catalog-grid' }, cards)
+          : el('p', { class: 'card-note game-catalog-empty', text: gameCatalogLoading || gameCatalogSession.loading || gameCatalogSession.scanLoading ? 'Loading installed games…' : 'No installed games were found.' }),
     ]));
   };
 
@@ -353,22 +433,32 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     clear(root); root.append(modeToggle(), detail);
   };
 
-  const openGameView = async (): Promise<void> => {
-    viewMode = 'game';
+  const scanGameCatalog = async (): Promise<void> => {
     try {
-      const scan = await api.gamesScan();
-      if (scan.error) toast('warn', 'Game scan unavailable', scan.error);
-      if (scan.sidecarError) toast('warn', 'Game catalog unavailable', scan.sidecarError);
-      await loadGameCatalog();
-      if (selectedGameExePath) {
-        const selected = gameCatalog.find((item) => item.exePath === selectedGameExePath);
-        if (selected) { renderGameDetail(selected); return; }
-        selectedGameExePath = null;
-      }
-      renderGameCatalog();
-    } catch (err) {
-      toast('error', 'Game catalog unavailable', err instanceof Error ? err.message : String(err));
-      try { await loadGameCatalog(); renderGameCatalog(); } catch { clear(root); root.append(modeToggle(), el('p', { class: 'text-error', text: 'Installed game catalog is unavailable.' })); }
+      await refreshGameCatalog(true);
+      if (viewMode === 'game') renderGameCatalog();
+    } catch {
+      if (viewMode === 'game') renderGameCatalog();
+    }
+  };
+
+  const openGameView = (): void => {
+    viewMode = 'game';
+    renderGameCatalog();
+    if (selectedGameExePath) {
+      const selected = gameCatalog.find((item) => item.exePath === selectedGameExePath);
+      if (selected) { renderGameDetail(selected); return; }
+      selectedGameExePath = null;
+    }
+    if (!gameCatalogLoaded) {
+      void loadGameCatalog().then(() => {
+        if (viewMode !== 'game') return;
+        if (selectedGameExePath) {
+          const selected = gameCatalog.find((item) => item.exePath === selectedGameExePath);
+          if (selected) { renderGameDetail(selected); return; }
+        }
+        renderGameCatalog();
+      }).catch(() => { if (viewMode === 'game') renderGameCatalog(); });
     }
   };
 
@@ -473,18 +563,16 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       loadInFlight = true;
       void onLoad(p, () => { loadInFlight = false; });
     });
-    const linked = associations.filter((a) => a.profileId === p.id);
     const row = el('div', {
       class: `profile-row${active ? ' profile-active' : ''}`,
       dataset: { id: p.id },
     }, [
       el('div', { class: 'profile-info' }, [
-        linked[0] ? artworkTile(linked[0].artwork, linked[0].displayName, 'profile-artwork-small') : null,
         el('span', { class: 'profile-avatar', text: p.name.slice(0, 1).toUpperCase() }),
         el('span', { class: 'profile-name', text: p.name }),
         active ? el('span', { class: 'badge profile-badge', text: 'Active' }) : null,
       ]),
-      el('p', { class: 'profile-association-note', text: linked.length ? `${linked.length} game/app association${linked.length === 1 ? '' : 's'}` : 'Global profile' }),
+      el('p', { class: 'profile-association-note', text: 'Global graphics profile' }),
       el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps).map((t) => el('span', { class: 'chip', text: t }))),
       el('div', { class: 'profile-actions' }, [
         loadBtn,
@@ -493,7 +581,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('button', { class: 'btn btn-ghost btn-sm btn-danger-text', text: 'Delete', onClick: () => void onDelete(p) }),
       ]),
     ]);
-    row.addEventListener('click', (ev) => { if (!(ev.target as HTMLElement).closest('button,input,select')) { selectedProfileId = p.id; renderDetail(p); } });
     return row;
   };
 
@@ -626,6 +713,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           graphics: patch.graphics ? { ...(current?.graphics ?? {}), ...patch.graphics } : (current?.graphics ?? {}),
         });
         gameSettings = [...gameSettings.filter((item) => item.exePath !== game.exePath), result.settings];
+        gameCatalogSession.settings = gameSettings;
         if (result.apply && result.apply.ok === false) {
           toast('warn', 'Game settings saved, driver apply failed', result.apply.message ?? 'The per-game sidecar was saved, but the driver rejected one or more per-application settings.');
         } else if (result.apply?.skipped === true) {
@@ -878,4 +966,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   renderList();
+  // Load the persisted catalog first so a remount can render it immediately;
+  // only the first session mount starts the optional scan, in the background.
+  void loadGameCatalog().then(() => {
+    if (!gameCatalogSession.scanStarted) return refreshGameCatalog(true, true);
+    return undefined;
+  }).then(() => {
+    // A background scan must not make the user switch away from an open game
+    // detail page, but the catalog view should reflect newly discovered games
+    // as soon as the background refresh completes.
+    if (viewMode === 'game' && !selectedGameExePath) renderGameCatalog();
+  }).catch(() => {});
 }

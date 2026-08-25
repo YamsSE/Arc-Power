@@ -18,6 +18,23 @@ export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS: NonNullable<DisplaySettings['globa
 export const DISPLAY_SCALING_METHOD_OPTIONS: NonNullable<DisplaySettings['displayScalingMethod']>[] = ['maintain-display-scaling', 'custom'];
 export const DISPLAY_COLOR_CONTROLS = ['hue', 'saturation', 'brightness', 'contrast'] as const;
 
+export type DisplayColorRange = { min: number; max: number; step: number; default?: number };
+
+/** Clamp a native IGCL color value to the exact step reported by the driver. */
+export function snapDisplayColorValue(value: number, range: DisplayColorRange): number {
+  const min = Number.isFinite(range.min) ? range.min : 0;
+  const max = Number.isFinite(range.max) && range.max >= min ? range.max : min;
+  const step = Number.isFinite(range.step) && range.step > 0 ? range.step : 1;
+  const fallback = Number.isFinite(range.default) ? Number(range.default) : min;
+  const numeric = Number.isFinite(value) ? value : fallback;
+  const clamped = Math.max(min, Math.min(max, numeric));
+  const snapped = min + Math.round((clamped - min) / step) * step;
+  // Avoid exposing binary floating-point tails in the IPC payload/read-back
+  // comparison (for example 1.2 + 0.01 becoming 1.2099999999999997).
+  const rounded = Number(snapped.toFixed(12));
+  return Math.max(min, Math.min(max, rounded));
+}
+
 export function isDisplayControlSupported(display: Display | null | undefined, control: string): boolean {
   if (!display || display.identityVerified !== true || typeof display.displayKey !== 'string' || display.displayKey.length === 0) return false;
   switch (control) {
@@ -185,7 +202,12 @@ export function buildDisplaySettings(draft: DisplaySettings, display: Display | 
   for (const key of Object.keys(draft) as (keyof DisplaySettings)[]) {
     if (display && !isDisplayControlSupported(display, key)) continue;
     if (isDisplayControlDirtyVsApplied(key, draft, display, applied)) {
-      (out as Record<string, unknown>)[key] = (draft as Record<string, unknown>)[key];
+      let value = (draft as Record<string, unknown>)[key];
+      if (display && DISPLAY_COLOR_CONTROLS.includes(key as typeof DISPLAY_COLOR_CONTROLS[number])) {
+        const range = display.supportedOptions.colorRanges?.[key];
+        if (range && typeof value === 'number') value = snapDisplayColorValue(value, range);
+      }
+      (out as Record<string, unknown>)[key] = value;
     }
   }
   return out;
