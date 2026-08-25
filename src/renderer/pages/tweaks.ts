@@ -147,32 +147,61 @@ function actionButtons(entry: RegistryEntry, onApply: (action: ApplyAction) => v
   ]);
 }
 
+function tweakDescription(entry: RegistryEntry, state: RegistryEntryState | undefined): string {
+  if (entry.id === 'mpo') {
+    if (state?.state === 'enabled') return 'MPO is disabled by this tweak. Disable the tweak to restore MPO.';
+    if (state?.state === 'disabled') return 'MPO is active. Enable the tweak to disable MPO.';
+    return 'MPO follows the Windows default. Enable the tweak to disable MPO.';
+  }
+  if (entry.id === 'game-dvr') {
+    if (state?.state === 'enabled') return 'Background recording is disabled by this tweak. Disable the tweak to restore it.';
+    if (state?.state === 'disabled') return 'Background recording is active. Enable the tweak to disable it.';
+    return 'Background recording follows the Windows default. Enable the tweak to disable it.';
+  }
+  if (entry.id === 'fullscreen-optimizations') {
+    return 'Windows fullscreen optimizations are controlled per app. Enable this tweak to disable them for the listed apps.';
+  }
+  return entry.description;
+}
+
 function tweakCard(entry: RegistryEntry, state: RegistryEntryState | undefined, onApply: (action: ApplyAction) => void): HTMLElement {
   const level = state ? STATE_LEVEL[state.state] : 'unknown';
   const label = state ? STATE_LABEL[state.state] : 'Unknown';
   const detail = state?.detail ?? 'State not read yet';
-  return el('section', { class: 'card tweak-card', 'data-tweak': entry.id }, [
-    el('h2', { class: 'card-title tweak-title' }, [
+  const content = el('div', { class: 'tweak-collapse-body is-collapsed', 'aria-hidden': 'true' }, [
+    el('div', { class: 'tweak-collapse-inner' }, [
+      el('div', { class: 'card-body' }, [
+        el('p', { class: 'tweak-desc', text: tweakDescription(entry, state) }),
+        el('div', { class: 'tweak-state' }, [
+          el('span', { class: `tweak-state-label text-${level}`, text: label }),
+          el('span', { class: 'tweak-state-detail', text: detail }),
+        ]),
+        state && state.reads.length > 0
+          ? el('div', { class: 'tweak-reads' }, state.reads.map((r) =>
+              el('div', { class: 'tweak-read' }, [
+                el('span', { class: 'tweak-read-path', text: r.read.value ? `${r.read.path}\\${r.read.value}` : r.read.path }),
+                el('span', { class: 'tweak-read-data', text: r.found ? (r.value ?? r.detail) : 'not present' }),
+              ]),
+            ))
+          : null,
+      ]),
+      el('div', { class: 'card-footer' }, [actionButtons(entry, onApply)]),
+    ]),
+  ]);
+  const title = el('button', { class: 'card-title tweak-title', type: 'button', 'aria-expanded': 'false' }, [
       el('span', { class: `status-dot status-${level}`, title: `${label} - ${detail}` }),
       el('span', { text: entry.name }),
-    ]),
-    el('div', { class: 'card-body' }, [
-      el('p', { class: 'tweak-desc', text: entry.description }),
-      el('div', { class: 'tweak-state' }, [
-        el('span', { class: `tweak-state-label text-${level}`, text: label }),
-        el('span', { class: 'tweak-state-detail', text: detail }),
-      ]),
-      state && state.reads.length > 0
-        ? el('div', { class: 'tweak-reads' }, state.reads.map((r) =>
-            el('div', { class: 'tweak-read' }, [
-              el('span', { class: 'tweak-read-path', text: r.read.value ? `${r.read.path}\\${r.read.value}` : r.read.path }),
-              el('span', { class: 'tweak-read-data', text: r.found ? (r.value ?? r.detail) : 'not present' }),
-            ]),
-          ))
-        : null,
-    ]),
-    el('div', { class: 'card-footer' }, [actionButtons(entry, onApply)]),
+      el('span', { class: 'tweak-chevron', text: '▸', 'aria-hidden': 'true' }),
   ]);
+  title.addEventListener('click', () => {
+    const open = !content.classList.contains('is-collapsed');
+    content.classList.toggle('is-collapsed', open);
+    content.setAttribute('aria-hidden', String(open));
+    title.setAttribute('aria-expanded', String(!open));
+    const chevron = title.querySelector<HTMLElement>('.tweak-chevron');
+    if (chevron) chevron.textContent = open ? '▸' : '▾';
+  });
+  return el('section', { class: 'card tweak-card', 'data-tweak': entry.id }, [title, content]);
 }
 
 let lastCatalog: RegistryCatalogResponse | null = null;

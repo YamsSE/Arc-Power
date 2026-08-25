@@ -695,6 +695,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       persisted.theme = previous;
       syncThemeButtons(previous);
     }
+    // Classic exposes additional background controls. Rebuild the settings
+    // surface immediately so the card appears/disappears with the theme.
+    render();
   };
 
   const onColorSelect = async (hex: string): Promise<void> => {

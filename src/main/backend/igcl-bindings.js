@@ -1097,6 +1097,12 @@ export function loadIgcl(dllPath) {
   bind('ctlGetDisplayProperties', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlGetSetWireFormat', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlGetSetDisplaySettings', 'ctl_result_t', ['void*', 'void*']);
+  // Pixel transformation is the display-output color pipeline used for
+  // desktop calibration (the media color-correction surface is adapter-wide
+  // and is intended for video processing). Keep both symbols optional so an
+  // older IGCL runtime still degrades per-capability.
+  bind('ctlPixelTransformationGetConfig', 'ctl_result_t', ['void*', 'void*']);
+  bind('ctlPixelTransformationSetConfig', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlGetSupportedScalingCapability', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlGetCurrentScaling', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlSetCurrentScaling', 'ctl_result_t', ['void*', 'void*']);
@@ -1463,6 +1469,7 @@ export function encodeWireFormatConfig({ operation, colorModel, colorDepth }) {
  * @param {unknown} buf
  * @returns {{
  *   supported: Array<{ model: string, depth: number }>,
+ *   supportedModels: string[],
  *   current: { model: string, depth: number } | null,
  *   currentModel: string | null,
  *   currentUnavailable: boolean,
@@ -1470,13 +1477,21 @@ export function encodeWireFormatConfig({ operation, colorModel, colorDepth }) {
  */
 export function decodeWireFormatConfig(buf) {
   const supported = [];
+  const supportedModels = [];
   const supportedOff = koffi.offsetof('ctl_get_set_wire_format_config_t', 'SupportedWireFormat');
   const entrySize = koffi.sizeof('ctl_wire_format_t');
   for (let i = 0; i < 4; i++) {
     const o = supportedOff + i * entrySize;
     const model = koffi.decode(buf, o + koffi.offsetof('ctl_wire_format_t', 'ColorModel'), 'int32') | 0;
     const depthFlags = Number(koffi.decode(buf, o + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32')) >>> 0;
-    if (depthFlags === 0) continue; // a zero-filled slot (depth 0 = empty, never a real entry)
+    // Some Intel driver builds advertise the model in a model-only slot and
+    // expose the usable depth in a neighbouring slot. Keep the model even
+    // when ColorDepth is zero; dropping it made an active RGB output appear
+    // as an unsupported YCbCr422 current value in the renderer.
+    if (model >= 0 && model <= 3 && !supportedModels.includes(CTL_WIRE_COLOR_MODEL[model])) {
+      supportedModels.push(CTL_WIRE_COLOR_MODEL[model]);
+    }
+    if (depthFlags === 0) continue; // model-only entry; no BPC option here
     for (const [flag, depth] of Object.entries(CTL_DISPLAY_BPC_FROM_FLAG)) {
       if ((depthFlags & Number(flag)) !== 0) supported.push({ model: CTL_WIRE_COLOR_MODEL[model] ?? `MODEL_${model}`, depth });
     }
@@ -1487,6 +1502,7 @@ export function decodeWireFormatConfig(buf) {
   const currentDepth = CTL_DISPLAY_BPC_FROM_FLAG[currentDepthFlags] ?? null;
   return {
     supported,
+    supportedModels,
     current: currentDepth !== null ? { model: CTL_WIRE_COLOR_MODEL[currentModel] ?? `MODEL_${currentModel}`, depth: currentDepth } : null,
     currentModel: currentDepth === null ? (CTL_WIRE_COLOR_MODEL[currentModel] ?? `MODEL_${currentModel}`) : null,
     currentUnavailable: currentDepth === null,

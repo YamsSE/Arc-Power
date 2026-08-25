@@ -1,7 +1,8 @@
 // Arc Power - Monitoring page (M2b-B): live readout grid fed by the
 // telemetry IPC push + one rolling Canvas graph per segment (core clock,
 // temperature, power, utilization, fan) with a 60 s window. Each segment is
-// COLLAPSIBLE (header row + chevron; collapsed by default except the first).
+// COLLAPSIBLE (header row + chevron; every segment starts collapsed so the
+// monitoring page does not expand a large graph unexpectedly on entry).
 // FPS comes from the fps-poll IPC channel (the ETW/PresentMon lane first -
 // the foreground program's per-frame present stream; the DXGI
 // frame-statistics / output-duplication adapter as the fallback); when no
@@ -435,10 +436,14 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     const canvas = el('canvas', { class: 'seg-canvas' });
     m.canvases.set(seg.id, canvas);
     const popup = el('div', { class: 'seg-popup', hidden: true });
-    const body = el('div', { class: `seg-body${idx === 0 ? '' : ' is-collapsed'}`, 'aria-hidden': String(idx !== 0) }, [canvas, popup]);
+    // Keep the canvas and its absolutely-positioned popup inside one grid
+    // child.  With two direct children, the collapsed grid only removed the
+    // first implicit row and left a visible popup row behind.
+    const bodyInner = el('div', { class: 'seg-body-inner' }, [canvas, popup]);
+    const body = el('div', { class: 'seg-body is-collapsed', 'aria-hidden': 'true' }, [bodyInner]);
     const head = el('button', {
       class: 'seg-head',
-      'aria-expanded': String(idx === 0),
+      'aria-expanded': 'false',
       onClick: () => {
         const collapsed = body.classList.contains('is-collapsed');
         body.classList.toggle('is-collapsed', !collapsed);
@@ -454,11 +459,12 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
         drawSeries(canvas, mon?.series[seg.id] ?? []);
       },
     }, [
-      el('span', { class: 'seg-chevron', text: idx === 0 ? '▾' : '▸' }),
+      el('span', { class: 'seg-chevron', text: '▸' }),
       el('span', { class: 'seg-label', text: seg.label }),
       el('span', { class: 'seg-unit', text: seg.unit }),
     ]);
-    // Collapsed by default except the first segment.
+    // All segments are collapsed by default; expanding one draws its current
+    // series and keeps the initial monitoring paint compact.
     // M4-C: hover crosshair + nearest-sample popup - only while the
     // segment is EXPANDED (the collapsed body is visually closed, and the handler
     // re-checks so a collapse mid-hover can never leave a popup behind).
@@ -515,7 +521,17 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
         const py = 8 + y;
         const flipBelow = py - 6 - box.height < 0 && py + 10 + box.height <= br.height;
         popup.classList.toggle('seg-popup-below', flipBelow);
-        popup.style.left = `${Math.min(Math.max(box.width / 2, px), br.width - box.width / 2)}px`;
+        // The inner graph wrapper can be wider than the visible card while a
+        // responsive grid is settling. Clamp in viewport space against the
+        // card itself, then convert the final center back to the popup's
+        // containing block; this prevents the newest-sample tooltip from
+        // escaping through the right edge.
+        const cardRect = bodyEl?.closest('.seg-card')?.getBoundingClientRect() ?? br;
+        const desiredCenter = br.left + px;
+        const minCenter = cardRect.left + box.width / 2 + 2;
+        const maxCenter = cardRect.right - box.width / 2 - 2;
+        const center = Math.min(Math.max(desiredCenter, minCenter), Math.max(minCenter, maxCenter));
+        popup.style.left = `${center - br.left}px`;
         popup.style.top = `${py}px`;
       } else {
         popup.classList.remove('seg-popup-below');

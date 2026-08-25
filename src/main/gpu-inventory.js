@@ -515,12 +515,14 @@ export function physicalTargetMatches(device, proof, inventory = [device]) {
 }
 
 /** Wrap an IOCBackend so every device-scoped call uses the inventory route. */
-export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = null } = {}) {
+export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = null, deferInitialSysinfo = false } = {}) {
   if (!backend) throw new Error('createUnifiedGpuBackend requires a backend');
   let inventory = [];
   let refreshPromise = null;
   let buildingInventory = false;
   let lastSysinfo = null;
+  let deferredSysinfoResult = null;
+  let deferredSysinfoSettled = false;
   const routes = new Map();
   const sessionIds = new Map();
   const retiredIds = new Set();
@@ -539,27 +541,96 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
     if (buildingInventory && lastSysinfo !== null) return lastSysinfo;
     try { return typeof sysinfo?.get === 'function' ? await sysinfo.get() : sysinfo; } catch { return null; }
   };
+  // Start the expensive OS snapshot as soon as the wrapper exists, but do
+  // not make any pre-window inventory caller await it. Several boot gates
+  // ask for capabilities after the first list; guarding only the first
+  // refresh therefore reintroduced the CIM delay on the second route call.
+  // The settled result is consumed by the next refresh and still joins by
+  // stable PNP/BDF identity through buildGpuInventory.
+  if (deferInitialSysinfo && !Array.isArray(videoControllers)) {
+    void getSysinfo().then((info) => {
+      deferredSysinfoResult = info;
+      deferredSysinfoSettled = true;
+    }).catch(() => {
+      deferredSysinfoResult = null;
+      deferredSysinfoSettled = true;
+    });
+  }
   const refresh = async () => {
     if (refreshPromise) return buildingInventory ? inventory : refreshPromise;
     refreshPromise = (async () => {
       buildingInventory = true;
       let backendDevices = [];
       try { backendDevices = await backend.listDevices(); } catch { backendDevices = []; }
-      const info = await getSysinfo();
+      // The main window already has a sysinfo query in flight. Let the first
+      // inventory paint from the backend's own stable identity instead of
+      // blocking startup on the CIM/PowerShell result; the renderer asks for
+      // sysinfo immediately after paint and its following listDevices refresh
+      // joins the OS controller data before any normal interaction.
+      const info = deferInitialSysinfo && lastSysinfo === null
+        ? (deferredSysinfoSettled ? deferredSysinfoResult : null)
+        : await getSysinfo();
       lastSysinfo = info ?? lastSysinfo;
       const fresh = buildGpuInventory({ backendDevices, videoControllers: info?.videoControllers ?? [], backendKind: backend.kind ?? 'igcl' });
       const used = new Set();
-      for (const row of fresh) {
+      const assignedRows = new Set();
+      // A backend refresh can temporarily expose both the new writable row
+      // and the previous Windows controller as an unmatched synthetic row.
+      // Match writable rows to their physical proof first so the stale
+      // synthetic row cannot reserve the session id needed by the backend.
+      const transitionMatches = (old, next) => {
+        const before = physicalTargetOf(old);
+        const after = physicalTargetOf(next);
+        if (!before || !after) return false;
+        if (before.pnpDeviceId && after.pnpDeviceId && before.pnpDeviceId !== after.pnpDeviceId) return false;
+        const exact = [
+          ['bdf', before.bdf, after.bdf],
+          ['luid', before.osLuid ?? before.controllerLuid, after.osLuid ?? after.controllerLuid],
+          ['token', before.physicalToken, after.physicalToken],
+        ].filter(([, a, b]) => a !== null && a !== undefined && a !== '' && b !== null && b !== undefined && b !== '');
+        return exact.some(([kind, a, b]) => kind === 'luid' ? JSON.stringify(a) === JSON.stringify(b) : a === b);
+      };
+      for (const row of fresh.filter((candidate) => candidate.backendKind !== 'os')) {
+        const candidates = inventory.filter((old) => !used.has(old.id) && transitionMatches(old, row));
+        if (candidates.length === 1) {
+          row.id = candidates[0].id;
+          row.sessionId = candidates[0].id;
+          used.add(row.id);
+          assignedRows.add(row);
+        }
+      }
+      // Exact durable keys remain the normal path. Process writable rows
+      // before synthetic OS-only rows when both are present.
+      const durableRows = [...fresh].sort((a, b) => Number(a.backendKind === 'os') - Number(b.backendKind === 'os'));
+      for (const row of durableRows) {
+        if (assignedRows.has(row)) continue;
         const durableKey = typeof row.deviceKey === 'string' && row.deviceKey.length > 0 ? row.deviceKey : null;
         const prior = durableKey === null ? null : sessionIds.get(durableKey);
         if (Number.isInteger(prior) && !used.has(prior)) {
           row.id = prior;
           row.sessionId = prior;
           used.add(prior);
+          assignedRows.add(row);
+        }
+      }
+      // A backend-only first paint may have a PCI/BDF identity while the
+      // later Windows-enriched refresh gains the stronger PNP identity. That
+      // is an identity refinement, not a new GPU; keep the renderer session
+      // id stable when one physical proof is shared. Never fall back to
+      // enumeration order or names, and reject conflicting PNP evidence.
+      for (const row of fresh) {
+        if (assignedRows.has(row)) continue;
+        const candidates = inventory.filter((old) => !used.has(old.id) && transitionMatches(old, row));
+        if (candidates.length === 1) {
+          row.id = candidates[0].id;
+          row.sessionId = candidates[0].id;
+          used.add(row.id);
+          assignedRows.add(row);
         }
       }
       for (const row of fresh) {
         const durableKey = typeof row.deviceKey === 'string' && row.deviceKey.length > 0 ? row.deviceKey : null;
+        if (assignedRows.has(row)) continue;
         if (durableKey !== null && sessionIds.has(durableKey)) continue;
         const preferred = !initialized && Number.isInteger(row.backendId) && row.backendId >= 0
           ? row.backendId : null;
@@ -568,8 +639,11 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
         row.id = id;
         row.sessionId = id;
         used.add(id);
+        assignedRows.add(row);
       }
-      for (const old of inventory) if (!fresh.some((row) => row.deviceKey === old.deviceKey)) retiredIds.add(old.id);
+      for (const old of inventory) {
+        if (!fresh.some((row) => row.id === old.id || row.deviceKey === old.deviceKey)) retiredIds.add(old.id);
+      }
       for (const row of fresh) {
         if (typeof row.deviceKey === 'string' && row.deviceKey.length > 0) sessionIds.set(row.deviceKey, row.id);
         nextSessionId = Math.max(nextSessionId, row.id + 1);

@@ -8,13 +8,11 @@
 // M10b: the page gains a second view mode - "Graphics | Display" (the M9
 // Monitoring-view pattern: the segmented pill + the view container + the
 // module view state). The Display view mirrors the IGS "Display" tab: the
-// per-display selector, GENERAL (scaling + the honest scaling-method/VRR
-// notes), COLOR (quantization + the wire-format controls + the honest
-// sliders note) and INFORMATION (the read-only rows). The M10b
-// checkpoint-1 probe recorded this driver's honest surface: the wire-format
-// SET is a silent no-op (wireFormats/bpcDepths come back EMPTY - the
-// color format/depth controls show the honest read-only state), and the
-// scaling-method + VRR surfaces are not exposed (the honest notes).
+// per-display selector, GENERAL (scaling + VRR), COLOR (quantization + the
+// driver-backed color controls) and INFORMATION (the read-only rows). Each
+// writable surface is capability-gated and verified by native read-back;
+// unavailable controls remain visibly read-only instead of pretending to
+// apply.
 //
 // The DEDICATED graphics + display apply paths (plan-review S1): the page
 // NEVER rides the OC apply-routing machinery - the 'graphics:apply' +
@@ -79,7 +77,7 @@ export const APPLY_BTN_BUSY_TEXT = 'Applying…';
 export const ELEVATION_TOAST_TEXT = 'Administrator approval is needed to apply GPU settings.';
 export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 
-// The honest notes (plan 2.3 - one per card).
+// The driver notes (one per card).
 // M23: EXPORTED - the ADVANCED overlay's Graphics tab imports them (export,
 // never duplicate - the option lists/labels/titles/notes are the single
 // source both surfaces render from).
@@ -89,15 +87,13 @@ export const CARD_NOTES: Record<string, string> = {
   frameLimit: 'A driver-level frame-rate cap. The limiter works independently of Arc Power.',
   lowLatency: 'The driver\'s XeLL-based low-latency mode.',
 };
-const PAGE_NOTE = 'These settings are applied via the Intel driver\'s control interface (the same state the Intel Graphics Software app manages). Per-game profiles stay in Intel Graphics Software - this tab applies the global settings.';
 
-// M10b: the Display view's honest notes (plan 2.4 - the IGS "Display" tab
-// mirror; the M10b checkpoint-1 probe recorded what this driver exposes).
+// Display-view notes for the driver-backed IGS-style controls.
 const DISPLAY_SCALING_NOTE = 'Changes may briefly flash the display.';
 const DISPLAY_SCALING_METHOD_NOTE = 'Custom mode exposes horizontal and vertical scaling.';
 const DISPLAY_GLOBAL_VRR_NOTE = 'Choose when variable refresh rate is used.';
 const DISPLAY_VRR_NOTE = 'Choose whether variable refresh rate is enabled.';
-const DISPLAY_SLIDERS_NOTE = 'IGS-style video color controls; Apply verifies the driver read-back.';
+const DISPLAY_SLIDERS_NOTE = 'IGS-style display color controls; Apply verifies the driver read-back.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The driver did not report writable color-format data.';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
@@ -372,10 +368,8 @@ function refreshChip(key: string) {
   if (btn) btn.hidden = state !== 'dirty';
 }
 
-/** M10b: the Display view's chip machine - the same chipState call with the
- *  display-side driver value + the supportedOptions gate (an optionless
- *  control - the wire-format surface on this driver build - is never dirty
- *  and never shows an Apply button). */
+/** Display-view chip state uses the driver value and its capability gate;
+ *  controls without a complete writable contract remain read-only. */
 function refreshDisplayChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
@@ -521,7 +515,6 @@ export const graphicsPage: Page = {
           ? 'Display settings and capabilities reported by the graphics driver.'
           : 'Driver-level graphics settings (the same state the Intel Graphics Software app manages). Changes apply on demand - nothing is applied until you press Apply.',
       }),
-      el('p', { class: 'card-note graphics-page-note', text: PAGE_NOTE }),
       el('div', { class: 'graphics-view-toolbar' }, [viewToggle, displayPickerHost]),
       viewContainer,
     );
@@ -1126,12 +1119,9 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
   return row;
 }
 
-/** M10b: the wire-format control row - ONE card holding the two IGS-style
- *  selects (Color Format + Color Depth) that compose the single wireFormat
- *  patch key { model, depth }. The M8 S1 lesson: on this driver build the
- *  wire-format surface is read-only in effect (wireFormats/bpcDepths come
- *  back EMPTY) - the row then shows the honest read-only state (the current
- *  values + the silent-no-op note), never a dead control. */
+/** The wire-format row holds the two IGS-style selects (Color Format + Color
+ *  Depth) that compose the single wireFormat patch key { model, depth }.
+ *  Capability data decides whether the row is writable or read-only. */
 function buildWireFormatRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
   const supported = display !== null && isDisplayControlSupported(display, 'wireFormat');
@@ -1380,13 +1370,25 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
 }
 
 function buildDisplayModeRow(title: string, value: string, reason: string): HTMLElement {
-  return el('div', { class: 'display-control display-mode-row display-control-readonly' }, [
+  let mode = value.toLowerCase();
+  const basic = el('button', { class: 'display-mode-btn', type: 'button', text: 'Basic' });
+  const advanced = el('button', { class: 'display-mode-btn', type: 'button', text: 'Advanced' });
+  const advancedNote = el('p', { class: 'card-note display-mode-advanced-note', hidden: mode !== 'advanced', text: 'Advanced per-channel controls are not available through the current display control surface.' });
+  const sync = (): void => {
+    basic.classList.toggle('active', mode === 'basic');
+    advanced.classList.toggle('active', mode === 'advanced');
+    basic.setAttribute('aria-pressed', String(mode === 'basic'));
+    advanced.setAttribute('aria-pressed', String(mode === 'advanced'));
+    advancedNote.hidden = mode !== 'advanced';
+  };
+  basic.onclick = () => { mode = 'basic'; sync(); };
+  advanced.onclick = () => { mode = 'advanced'; sync(); };
+  sync();
+  return el('div', { class: 'display-control display-mode-row' }, [
     el('h3', { class: 'display-control-title', text: title }),
-    el('div', { class: 'display-mode-toggle disabled', role: 'group', 'aria-label': title }, [
-      el('button', { class: 'display-mode-btn active', type: 'button', disabled: true, text: value }),
-      el('button', { class: 'display-mode-btn', type: 'button', disabled: true, text: 'Advanced' }),
-    ]),
-    el('p', { class: 'card-note', text: reason }),
+    el('div', { class: 'display-mode-toggle', role: 'group', 'aria-label': title }, [basic, advanced]),
+    advancedNote,
+    el('p', { class: 'card-note display-mode-description', text: reason }),
   ]);
 }
 
@@ -1449,7 +1451,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     buildDisplayScalingMethodRow(ctx),
     buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),
     buildDisplayDropdownRow(ctx, 'variableRefreshRate', 'Variable Refresh Rate', DISPLAY_VRR_NOTE, ['enabled', 'disabled'], VARIABLE_REFRESH_RATE_LABELS),
-  ]);
+  ], false);
 
   const color = buildDisplayGroup('color', 'Color', [
     buildDisplaySlider(ctx, 'hue', 'Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
@@ -1460,7 +1462,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     buildDisplaySlider(ctx, 'contrast', 'All', display.contrast, 0, 10, DISPLAY_SLIDERS_NOTE),
     buildDisplayDropdownRow(ctx, 'quantizationRange', 'Quantization Range', 'The color-quantization range of the display output.', display.supportedOptions.quantizationRanges, QUANTIZATION_LABELS),
     buildWireFormatRow(ctx),
-  ]);
+  ], false);
 
   const infoRow = (label: string, value: string): HTMLElement => el('div', { class: 'display-info-row' }, [
     el('span', { class: 'display-info-label', text: label }),
@@ -1476,7 +1478,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     infoRow('HDCP Support', displaySupportText(display.hdcpSupport)),
     infoRow('4K Support', displaySupportText(display.fourKSupport)),
     infoRow('HDR Support', displaySupportText(display.hdrSupport)),
-  ]);
+  ], false);
 
   const pickerRow = el('div', { class: 'display-picker-row' }, [
     el('span', { class: 'display-picker-label', text: 'Display' }),

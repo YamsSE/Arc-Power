@@ -701,20 +701,6 @@ export const tuningPage: Page = {
             class: 'gpu-lock-warning',
             text: 'Warning: gpuLock seems to fully ignore in-place Power Limits and CAN draw up to 400W. Only use if you know what you are doing',
           }),
-          el('p', {
-            class: 'card-note',
-            // M17f (the round-1/round-3 fold - the user's SIMPLIFIED
-            // description): the M17e-era long text is REPLACED by the
-            // pinned short version. M22: the LAST sentence is now FALSE in
-            // both backends (offset applies while locked REFUSE - the lock
-            // stays), so it is reworded: 0 V / 0 MHz resets the offsets
-            // (NEVER writes the lock - a {0,0} GpuLockSet write switches
-            // the 8974 driver into a lock mode); setting a real lock clears
-            // the offsets; applying offsets while a lock is held is refused
-            // - clear the lock (reboot) first (the exact wording asserted
-            // by the ui-verify pin).
-            text: 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz resets the core and voltage offsets (never writes the lock); setting a real lock clears the offsets; applying offsets while a lock is held is refused - clear the lock (reboot) first.',
-          }),
           el('div', { class: 'gpu-lock-fields' }, [
             el('label', { class: 'gpu-lock-field' }, [
               el('span', { class: 'gpu-lock-label', text: 'Voltage (V)' }),

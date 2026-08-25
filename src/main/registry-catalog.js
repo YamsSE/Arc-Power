@@ -72,11 +72,11 @@ export const REG_NOT_FOUND = 1;
 export const REGISTRY_CATALOG = [
   {
     id: 'mpo',
-    name: 'Disable Multiplane Overlay (MPO)',
+    name: 'Multiplane Overlay (MPO)',
     // M3-C-H: plain-language, 1-2 lines (the long canonical-location /
     // hive-caveat prose is gone).
     description:
-      'MPO lets Windows composite windows on separate planes; some GPUs/drivers stutter, flicker or black-screen with it active. Disabling it fixes that on some setups - it is off by default in Windows anyway.',
+      'Windows uses MPO to composite windows on separate planes; some setups see stutter, flicker, or black screens. It is off by default in Windows. Enable this tweak to disable MPO for compatibility testing.',
     requiresElevation: true,
     absentLabel: 'Not set - MPO follows the driver default (usually on)',
     reads: [
@@ -136,7 +136,7 @@ export const REGISTRY_CATALOG = [
   },
   {
     id: 'game-dvr',
-    name: 'Disable Game DVR / background recording',
+    name: 'Game DVR / Background Recording',
     description:
       'Game Bar background recording can cost a few percent of FPS; this disables it machine-wide.',
     requiresElevation: true,
@@ -166,7 +166,7 @@ export const REGISTRY_CATALOG = [
   },
   {
     id: 'fullscreen-optimizations',
-    name: 'Disable fullscreen optimizations (per-app)',
+    name: 'Fullscreen Optimizations (per-app)',
     description:
       'A per-app compatibility flag - some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.',
     requiresElevation: true,

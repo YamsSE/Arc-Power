@@ -2392,8 +2392,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const lockTitleFlipped = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .card-title')?.textContent ?? ''`);
     if (lockTitleFlipped.trim() !== 'GPU Lock') fail(`M17f: the card title must flip to 'GPU Lock' in Lock mode (got '${lockTitleFlipped}')`);
     const lockNoteText = await js(`document.querySelector('.gpu-lock-editor .card-note')?.textContent ?? ''`);
-    if (lockNoteText.trim() !== 'Fix the GPU to one voltage and frequency. 0 V / 0 MHz resets the core and voltage offsets (never writes the lock); setting a real lock clears the offsets; applying offsets while a lock is held is refused - clear the lock (reboot) first.') {
-      fail(`M17f/M22: the lock description is '${lockNoteText}' (expected the pinned M22 wording - the old "setting offsets clears the lock" is FALSE now)`);
+    if (lockNoteText.includes('0 V / 0 MHz resets the core and voltage offsets')) {
+      fail('M17f/M22: the removed GPU lock implementation note is still visible');
     }
     // M17q: the gpuLock power warning - the user's exact wording in the
     // --danger red (the lock ignores the in-place power limits and can
@@ -3832,17 +3832,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === 5`))) {
     fail(`expected 5 monitoring segments, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
   }
-  const firstOpen = await js(`!document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
-  const othersHidden = await js(`Array.from(document.querySelectorAll('.seg-card .seg-body')).slice(1).every((b) => b.classList.contains('is-collapsed'))`);
-  if (!firstOpen || !othersHidden) fail(`segment defaults wrong: firstOpen=${firstOpen} othersHidden=${othersHidden}`);
-  step('mon-segments', '5 segments render; first expanded, rest collapsed');
+  const allHidden = await js(`Array.from(document.querySelectorAll('.seg-card .seg-body')).every((b) => b.classList.contains('is-collapsed'))`);
+  if (!allHidden) fail('segment defaults wrong: every segment should start collapsed');
+  step('mon-segments', '5 segments render; every graph starts collapsed');
 
   await js(`document.querySelector('.seg-head').click()`);
-  const collapsedNow = await js(`document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
-  if (!collapsedNow) fail('first segment did not collapse on header click');
+  const expandedNow = await js(`!document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
+  if (!expandedNow) fail('first segment did not expand on header click');
   await js(`document.querySelector('.seg-head').click()`);
-  const reopened = await js(`!document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
-  if (!reopened) fail('first segment did not re-expand');
+  const collapsedAgain = await js(`document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
+  if (!collapsedAgain) fail('first segment did not collapse again');
   step('mon-collapse', 'segment header click toggles collapse/expand (chevron)');
 
   // M4M (B)/M4N (B): the readout is TWO groups - CPU (the dashboard tiles
@@ -3988,9 +3987,20 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
 
   // --- M4-C: canvas hover crosshair + nearest-sample popup ------------------
-  // The first segment is expanded (re-opened above): pointer-move over its
-  // canvas shows the popup at the NEAREST sample ("1410 MHz · 12 s ago"
-  // style); pointer-leave hides it; a COLLAPSED segment never shows it.
+  // The view switch rebuilt the monitoring cards, so explicitly expand the
+  // first segment for this interaction test. Stock state remains fully
+  // collapsed; pointer-move over an expanded canvas shows the popup at the
+  // NEAREST sample ("1410 MHz · 12 s ago" style), while a COLLAPSED segment
+  // never shows it.
+  await js(`document.querySelector('.seg-head').click()`);
+  if (!(await waitFor(win, `!document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`, 5000))) {
+    fail('M4-C: the first segment did not expand for the hover test');
+  }
+  // Let the animated body reach its stable viewport before dispatching the
+  // synthetic hover.  The real user can only see the popup after this same
+  // transition has completed; probing during the first animation frame would
+  // intentionally measure the clipped intermediate height.
+  await new Promise((resolve) => setTimeout(resolve, 320));
   if (!(await waitFor(win, `(() => {
     const canvas = document.querySelector('.seg-card .seg-canvas');
     if (!canvas) return false;
@@ -4150,10 +4160,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // D2/M55: OC Profile owns the normal tuning browser. Game discovery is
   // intentionally on the separate Game Profile view, so the scan button is
   // absent here and appears after the view toggle is switched.
-  if (!(await js(`!document.querySelector('.profile-scan') && !!document.querySelector('.profile-search') && document.querySelectorAll('.profile-filter').length >= 2 && document.querySelectorAll('.profile-view-toggle button').length === 2`))) {
+  if (!(await js(`!document.querySelector('.profile-scan') && !document.querySelector('.profile-search') && !Array.from(document.querySelectorAll('.profile-filter option')).some((o) => o.textContent.trim() === 'With a game/app') && document.querySelectorAll('.profile-filter').length >= 2 && document.querySelectorAll('.profile-view-toggle button').length === 2`))) {
     fail('D2: reconstructed Profiles browser controls are missing');
   }
-  step('profiles-browser', 'D2: OC Profile browser renders search, Show/Sort filters, and Grid/List controls; game scanning stays in Game Profile');
+  step('profiles-browser', 'D2: Tuning Profile browser renders Show/Sort filters and Grid/List controls; game scanning stays in Game Profile');
 
   // M55b: the explicit Profiles-level Game Profile view is catalog-backed,
   // not process-list-backed. It must show both installed fixture cards,
@@ -5183,10 +5193,10 @@ export async function runGraphicsVerify(win, backend) {
   if (!flipNote.includes('Smart VSync is not exposed')) {
     fail(`M8: the Frame Sync note must carry the Smart-VSync-out honesty: '${flipNote}'`);
   }
-  if (!(await js(`document.body.textContent.includes('Per-game profiles stay in Intel Graphics Software')`))) {
-    fail('M8: the page-level honest note (per-game profiles stay in IGS) is missing');
+  if (await js(`document.body.textContent.includes("These settings are applied via the Intel driver's control interface")`)) {
+    fail('M8: the removed Graphics/Display implementation note is still visible');
   }
-  step('m8-cards', `M8: #/graphics renders the four cards in the planned order ${JSON.stringify(wantTitles)}; the Frame Sync note carries the Smart-VSync-out honesty; the page-level IGS note is present`);
+  step('m8-cards', `M8: #/graphics renders the four cards in the planned order ${JSON.stringify(wantTitles)}; the Frame Sync note carries the Smart-VSync-out honesty; the removed implementation note is absent`);
 
   // --- 2. the fixture values + the driver-gated options ----------------------
   const fixtureValues = await js(`JSON.stringify({

@@ -27,7 +27,7 @@ import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
-import type { Capabilities, DeviceState, FlipMode, GameAssociation, GameCatalogEntry, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
+import type { Capabilities, DeviceState, FlipMode, GameCatalogEntry, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 
@@ -293,7 +293,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   let envelope: ProfilesEnvelope;
   let bootState: StartupGetState | null = null;
-  let associations: GameAssociation[] = [];
   let gameCatalog: GameCatalogEntry[] = gameCatalogSession.catalog;
   let gameSettings: GameSettingsRecord[] = gameCatalogSession.settings;
   let gameCatalogLoaded = gameCatalogSession.loaded;
@@ -302,12 +301,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let gameProfileCapabilities: { enduranceGaming: boolean; reason?: string | null } = { enduranceGaming: false };
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
-  let selectedProfileId: string | null = null;
-  let selectedAssociationExePath: string | null = null;
-  let sidecarWarning: string | null = null;
   let startupWarning: string | null = null;
-  let sidecarAvailable = true;
-  let searchTerm = '';
   let showFilter = 'all';
   let sortMode = 'alphabetical';
   let cardMode: 'grid' | 'list' = 'grid';
@@ -331,13 +325,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   }
   try { bootState = await api.startupGet(); }
   catch (err) { startupWarning = `Start-at-boot state unavailable: ${err instanceof Error ? err.message : String(err)}`; }
-  try {
-    associations = (await api.gameProfilesList()).associations;
-  } catch (err) {
-    associations = [];
-    sidecarAvailable = false;
-    sidecarWarning = `Per-game settings unavailable: ${err instanceof Error ? err.message : String(err)}`;
-  }
 
   const modeToggle = (): HTMLElement => el('div', { class: 'profiles-mode-toggle', role: 'group', 'aria-label': 'Profiles view' }, [
     el('button', { class: `btn btn-ghost btn-sm${viewMode === 'oc' ? ' active' : ''}`, text: 'Tuning Profile', onclick: () => { viewMode = 'oc'; selectedGameExePath = null; updateProfileCopy(); renderList(); } }),
@@ -480,14 +467,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     try {
       bootState = await api.startupGet();
     } catch { /* keep the last known Run-key state */ }
-    try {
-      associations = (await api.gameProfilesList()).associations;
-      sidecarAvailable = true;
-      sidecarWarning = null;
-    } catch (err) {
-      sidecarAvailable = false;
-      sidecarWarning = `Per-game settings unavailable: ${err instanceof Error ? err.message : String(err)}`;
-    }
     renderList();
   };
 
@@ -527,22 +506,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     const filtered = envelope.profiles
-      .filter((p) => !searchTerm || p.name.toLowerCase().includes(searchTerm.toLowerCase()))
-      .filter((p) => showFilter === 'all' || (showFilter === 'active' ? p.id === activeId : associations.some((a) => a.profileId === p.id)));
+      .filter((p) => showFilter === 'all' || p.id === activeId);
     filtered.sort((a, b) => sortMode === 'recent' ? b.createdAt.localeCompare(a.createdAt) : a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     const listCard = el('section', { class: 'profile-browser' }, [
       el('div', { class: 'profile-browser-head' }, [
         el('div', { class: 'profile-browser-title' }, [
           el('h2', { class: 'card-title', text: 'Profiles' }),
-          el('p', { class: 'card-note', text: 'Save GPU tuning presets and associate them with detected games or apps.' }),
+          el('p', { class: 'card-note', text: 'Save GPU tuning presets.' }),
         ]),
       ]),
       el('div', { class: 'profile-browser-toolbar' }, [
         el('button', { class: 'btn btn-primary btn-sm profile-create', text: 'Add Profile +', onClick: () => void onCreate() }),
-        el('input', { class: 'profile-search', type: 'search', placeholder: 'Find a profile', value: searchTerm, oninput: (ev: Event) => { searchTerm = (ev.target as HTMLInputElement).value; renderList(); } }),
         el('label', { class: 'profile-filter-label', text: 'Show' }),
         el('select', { class: 'profile-filter', onchange: (ev: Event) => { showFilter = (ev.target as HTMLSelectElement).value; renderList(); } }, [
-          el('option', { value: 'all', text: 'All Profiles' }), el('option', { value: 'active', text: 'Active' }), el('option', { value: 'associated', text: 'With a game/app' }),
+          el('option', { value: 'all', text: 'All Profiles' }), el('option', { value: 'active', text: 'Active' }),
         ]),
         el('label', { class: 'profile-filter-label', text: 'Sort' }),
         el('select', { class: 'profile-filter', onchange: (ev: Event) => { sortMode = (ev.target as HTMLSelectElement).value; renderList(); } }, [
@@ -559,7 +536,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     clear(root);
-    if (sidecarWarning) root.append(el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: sidecarWarning }));
     if (startupWarning) root.append(el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: startupWarning }));
     root.append(modeToggle(), bootCard, listCard);
   };
@@ -593,122 +569,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     return row;
   };
 
-  const profileActionButtons = (p: Profile): HTMLElement => {
-    const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load' });
-    loadBtn.addEventListener('click', () => void onLoad(p, () => {}));
-    return el('div', { class: 'profile-actions profile-detail-actions' }, [
-      loadBtn,
-      el('button', { class: 'btn btn-ghost btn-sm', text: 'Save', onClick: () => void onSave(p) }),
-      el('button', { class: 'btn btn-ghost btn-sm', text: 'Rename', onClick: () => void onRename(p) }),
-      el('button', { class: 'btn btn-ghost btn-sm btn-danger-text', text: 'Delete', onClick: () => void onDelete(p) }),
-    ]);
-  };
-
-  const renderDetail = (p: Profile): void => {
-    const links = associations.filter((a) => a.profileId === p.id);
-    const selected = links.find((a) => a.exePath === selectedAssociationExePath) ?? links[0] ?? null;
-    selectedAssociationExePath = selected?.exePath ?? null;
-    const graphics: GameProfileGraphics = selected?.graphics ?? {};
-    const frame = el('select', { class: 'profile-setting-control', value: graphics.flipMode ?? 'application-default', disabled: !selected || !sidecarAvailable }, [
-      el('option', { value: 'application-default', text: 'Application Choice' }), el('option', { value: 'vsync-on', text: 'VSync On' }), el('option', { value: 'vsync-off', text: 'VSync Off' }), el('option', { value: 'smooth-sync', text: 'Smooth Sync' }), el('option', { value: 'speed-frame', text: 'Speed / Frame' }),
-    ]) as HTMLSelectElement;
-    const fps = el('input', { class: 'profile-setting-check', type: 'checkbox', checked: graphics.frameLimit?.enabled === true, disabled: !selected || !sidecarAvailable }) as HTMLInputElement;
-    const fpsValue = el('input', { class: 'profile-setting-number', type: 'number', min: 1, max: 1000, value: graphics.frameLimit?.value ?? 60, disabled: !selected || !sidecarAvailable }) as HTMLInputElement;
-    const latency = el('select', { class: 'profile-setting-control', value: graphics.lowLatency ?? 'off', disabled: !selected || !sidecarAvailable }, [
-      el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }), el('option', { value: 'on-boost', text: 'On + Boost' }),
-    ]) as HTMLSelectElement;
-    const associationPicker = links.length
-      ? el('div', { class: 'profile-associated-apps' }, [
-        el('h3', { class: 'profile-section-title', text: 'Associated Games / Apps' }),
-        ...links.map((link) => el('button', {
-          class: `profile-associated-app${link.exePath === selected?.exePath ? ' selected' : ''}`,
-          dataset: { exePath: link.exePath },
-          onClick: () => { selectedAssociationExePath = link.exePath; renderDetail(p); },
-        }, [
-          artworkTile(link.artwork, link.displayName, 'profile-artwork-small'),
-          el('span', { class: 'profile-associated-app-name', text: link.displayName }),
-          el('span', { class: 'profile-associated-app-path', text: link.exePath }),
-          link.enabled ? el('span', { class: 'badge profile-badge', text: 'On' }) : el('span', { class: 'badge', text: 'Off' }),
-        ])),
-      ])
-      : el('p', { class: 'card-note', text: 'No game or app is associated with this profile yet.' });
-    const detail = el('div', { class: 'profile-detail' }, [
-      el('div', { class: 'profile-detail-head' }, [
-        el('button', { class: 'btn btn-ghost btn-sm profile-back', text: 'Profiles', onClick: () => { selectedProfileId = null; renderList(); } }),
-        el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: p.name }),
-        activeBadge(p.id === envelope.settings.activeProfileId),
-      ]),
-      selected ? el('div', { class: 'profile-app-badge' }, [artworkTile(selected.artwork, selected.displayName, 'profile-artwork-small'), el('span', { class: 'profile-app-dot', text: '●' }), el('span', { text: `${selected.displayName}  ·  ${selected.exePath}` })]) : el('p', { class: 'card-note', text: 'Global profile · associate a scanned app below to use this page for a game.' }),
-      associationPicker,
-      sidecarWarning ? el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: sidecarWarning }) : null,
-      el('section', { class: 'card profile-use-card' }, [
-        el('label', { class: 'profile-use-toggle' }, [el('input', { type: 'checkbox', checked: selected?.enabled === true, disabled: !selected || !sidecarAvailable, onchange: (ev: Event) => void onGameSave(p, selected, { enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]),
-        el('span', { class: 'card-note', text: selected ? 'Controls whether this association is enabled when the application is detected.' : 'Associate a scanned game/app to enable per-game controls.' }),
-      ]),
-      el('section', { class: 'profile-settings-section' }, [
-        el('h3', { class: 'profile-section-title', text: 'Frame Delivery' }),
-        settingRow('Frame Synchronization', 'How rendered frames are synchronized for this application.', frame),
-        settingRow('FPS Limiter', 'Limits the rate at which frames are displayed.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
-        settingRow('Low Latency Mode', 'Improves responsiveness between input and rendering.', latency),
-      ]),
-      el('p', { class: 'profile-capability-note', text: 'Per-game values are saved and read back from the sidecar. Driver per-app IGCL application is not available yet, so these controls never apply a global graphics setting.' }),
-      el('div', { class: 'profile-detail-footer' }, [profileActionButtons(p), selected ? el('button', { class: 'btn btn-ghost btn-sm btn-danger-text', text: 'Remove association', onClick: () => void onGameDelete(p, selected) }) : el('p', { class: 'card-note', text: 'Per-game settings are managed in the Game Profile view.' })]),
-    ]);
-    frame.addEventListener('change', () => void onGameSave(p, selected, { graphics: { flipMode: frame.value as FlipMode } }));
-    latency.addEventListener('change', () => void onGameSave(p, selected, { graphics: { lowLatency: latency.value as LowLatency } }));
-    fps.addEventListener('change', () => void onGameSave(p, selected, { graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));
-    fpsValue.addEventListener('change', () => void onGameSave(p, selected, { graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));
-    clear(root); root.append(detail);
-  };
-
-  const activeBadge = (active: boolean): HTMLElement | null => active ? el('span', { class: 'badge profile-badge', text: 'Active' }) : null;
   const settingRow = (label: string, note: string, control: Node): HTMLElement => el('div', { class: 'profile-setting-row' }, [el('div', { class: 'profile-setting-label' }, [el('strong', { text: label }), el('small', { text: note })]), control]);
-
-  let gameSaveQueue: Promise<void> = Promise.resolve();
-  const onGameSave = async (p: Profile, association: GameAssociation | null, patch: Partial<GameAssociation>): Promise<void> => {
-    if (!association || !sidecarAvailable) return;
-    const operation = gameSaveQueue.then(async () => {
-      try {
-        // Read the latest association at execution time.  A user can change
-        // two controls before the first IPC round trip finishes; rebuilding
-        // from the render-time snapshot would otherwise drop the first edit.
-        const current = associations.find((item) => item.profileId === p.id && item.exePath === association.exePath);
-        if (!current) return;
-        const result = await api.gameProfileSave({
-          ...current,
-          ...patch,
-          profileId: p.id,
-          exePath: current.exePath,
-          graphics: patch.graphics ? { ...current.graphics, ...patch.graphics } : current.graphics,
-        });
-        associations = result.associations;
-        toast('success', 'Per-game settings saved', 'Saved to the per-game sidecar; no global graphics setting was changed.');
-        renderDetail(p);
-      } catch (err) {
-        toast('error', 'Per-game save failed', err instanceof Error ? err.message : String(err));
-        try { associations = (await api.gameProfilesList()).associations; renderDetail(p); } catch { /* retain the last known state */ }
-      }
-    });
-    gameSaveQueue = operation.catch(() => {});
-    await operation;
-  };
-
-  const onGameDelete = async (p: Profile, association: GameAssociation): Promise<void> => {
-    const operation = gameSaveQueue.then(async () => {
-      try {
-        associations = (await api.gameProfileDelete({ profileId: p.id, exePath: association.exePath })).associations;
-        selectedAssociationExePath = null;
-        toast('info', 'Association removed', association.displayName);
-        renderDetail(p);
-      }
-      catch (err) {
-        toast('error', 'Association removal failed', err instanceof Error ? err.message : String(err));
-        try { associations = (await api.gameProfilesList()).associations; renderDetail(p); } catch { /* retain the last known state */ }
-      }
-    });
-    gameSaveQueue = operation.catch(() => {});
-    await operation;
-  };
 
   let gameSettingsSaveQueue: Promise<void> = Promise.resolve();
   const onGameSettingsSave = async (game: GameCatalogEntry, patch: Partial<GameSettingsRecord>): Promise<void> => {

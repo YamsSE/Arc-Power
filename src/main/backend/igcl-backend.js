@@ -240,6 +240,203 @@ const MEDIA_COLOR_FEATURE = 5;
 const MEDIA_CUSTOM_VALUE_TYPE = 5;
 const MEDIA_STRUCT_VERSION = 0;
 
+// ctl_pixel_transformation_* is a display-output pipeline, not an adapter
+// video-processing feature.  The local IGCL headers do not contain these
+// structs, so keep their byte layout isolated and versioned here.  These
+// offsets were checked against the installed A770 runtime and the public
+// IGCL v1.1 header: the matrix-and-offsets block is the writable 3x3 color
+// transform used for desktop output calibration.
+const PIXEL_FORMAT_SIZE = 120;
+const PIXEL_BLOCK_CONFIG_SIZE = 144;
+const PIXEL_MATRIX_CONFIG_SIZE = 128;
+const PIXEL_GET_CONFIG_SIZE = 272;
+const PIXEL_SET_CONFIG_SIZE = 32;
+const PIXEL_BLOCK_TYPE_MATRIX_AND_OFFSETS = 4;
+const PIXEL_QUERY_CAPABILITIES = 0;
+const PIXEL_QUERY_CURRENT = 1;
+const PIXEL_OPERATION_RESTORE_DEFAULT = 1;
+const PIXEL_OPERATION_SET = 2;
+// ctl_pixtx_color_model_t has separate full/limited entries, unlike the
+// legacy wire-format enum. Collapse those pairs only when presenting the
+// active output format to the Display page.
+const PIXEL_COLOR_MODEL_TO_WIRE = {
+  0: 'RGB', 1: 'RGB',
+  2: 'YCbCr422', 3: 'YCbCr422',
+  4: 'YCbCr420', 5: 'YCbCr420',
+  6: 'YCbCr444', 7: 'YCbCr444',
+};
+
+function pixelWrite(buf, offset, type, value) {
+  koffi.encode(buf, offset, type, value);
+}
+
+function pixelRead(buf, offset, type) {
+  return koffi.decode(buf, offset, type);
+}
+
+function pixelFormatOf(buf, offset) {
+  const model = Number(pixelRead(buf, offset + 24, 'int32')) | 0;
+  const bits = Number(pixelRead(buf, offset + 8, 'uint32')) | 0;
+  return { model, bitsPerColor: bits };
+}
+
+function pixelGetConfigBuffer(blocks = null, queryType = PIXEL_QUERY_CAPABILITIES) {
+  const buf = koffi.alloc('uint8', PIXEL_GET_CONFIG_SIZE + 16);
+  pixelWrite(buf, 0, 'uint32', PIXEL_GET_CONFIG_SIZE);
+  pixelWrite(buf, 4, 'uint8', 0);
+  pixelWrite(buf, 8, 'uint32', queryType);
+  pixelWrite(buf, 16, 'uint32', PIXEL_FORMAT_SIZE);
+  pixelWrite(buf, 136, 'uint32', PIXEL_FORMAT_SIZE);
+  pixelWrite(buf, 256, 'uint32', blocks?.count ?? 0);
+  pixelWrite(buf, 264, 'void*', blocks?.address ?? 0n);
+  return buf;
+}
+
+function pixelBlockOf(buf, offset) {
+  const configOffset = offset + 16;
+  const preOffsets = [];
+  const postOffsets = [];
+  const matrixOffset = configOffset + 56;
+  const matrix = [];
+  // ctl_pixtx_matrix_config_t stores PreOffsets, PostOffsets, and Matrix
+  // as doubles. Reading/writing these as float32 values produces a buffer
+  // the driver may accept while applying no visible transform.
+  for (let i = 0; i < 3; i += 1) {
+    preOffsets.push(Number(pixelRead(buf, configOffset + 8 + i * 8, 'double')));
+    postOffsets.push(Number(pixelRead(buf, configOffset + 32 + i * 8, 'double')));
+  }
+  for (let i = 0; i < 9; i += 1) matrix.push(Number(pixelRead(buf, matrixOffset + i * 8, 'double')));
+  return {
+    id: Number(pixelRead(buf, offset + 8, 'uint32')) >>> 0,
+    type: Number(pixelRead(buf, offset + 12, 'uint32')) >>> 0,
+    preOffsets,
+    postOffsets,
+    matrix,
+  };
+}
+
+/**
+ * Read the display-output pixel transformation capabilities or current
+ * configuration through the same GET surface. The query type is kept
+ * explicit because capability data must never be mistaken for apply
+ * read-back. GET availability is independent from SET availability.
+ */
+function readPixelTransformation(lib, displayHandle, { queryType = PIXEL_QUERY_CAPABILITIES, requireSet = false } = {}) {
+  if (!displayHandle || typeof lib?.ctlPixelTransformationGetConfig !== 'function'
+    || lib.ctlPixelTransformationGetConfig.unavailable
+    || (requireSet && (typeof lib?.ctlPixelTransformationSetConfig !== 'function'
+      || lib.ctlPixelTransformationSetConfig.unavailable))) return null;
+  try {
+    const countBuf = pixelGetConfigBuffer(null, queryType);
+    let result = lib.ctlPixelTransformationGetConfig(displayHandle, countBuf);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+    const count = Number(pixelRead(countBuf, 256, 'uint32'));
+    if (!Number.isInteger(count) || count < 1 || count > 64) return null;
+    const blockBuf = koffi.alloc('uint8', PIXEL_BLOCK_CONFIG_SIZE * count + 16);
+    for (let i = 0; i < count; i += 1) {
+      const offset = i * PIXEL_BLOCK_CONFIG_SIZE;
+      pixelWrite(blockBuf, offset, 'uint32', PIXEL_MATRIX_CONFIG_SIZE + 16);
+      pixelWrite(blockBuf, offset + 4, 'uint8', 0);
+    }
+    const get = pixelGetConfigBuffer({ count, address: koffi.address(blockBuf) }, queryType);
+    result = lib.ctlPixelTransformationGetConfig(displayHandle, get);
+    if (result !== CTL_RESULT.SUCCESS) return null;
+    const blocks = [];
+    for (let i = 0; i < count; i += 1) blocks.push(pixelBlockOf(blockBuf, i * PIXEL_BLOCK_CONFIG_SIZE));
+    return {
+      inputFormat: pixelFormatOf(get, 16),
+      outputFormat: pixelFormatOf(get, 136),
+      queryType,
+      blocks,
+      matrixBlock: blocks.find((block) => block.type === PIXEL_BLOCK_TYPE_MATRIX_AND_OFFSETS) ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function pixelMatrixForColors({ hue = 0, saturation = 1, brightness = 0, contrast = 1 }) {
+  const angle = (Number(hue) * Math.PI) / 180;
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const lum = [0.2126, 0.7152, 0.0722];
+  const sat = Number(saturation);
+  const satMatrix = [
+    lum[0] * (1 - sat) + sat, lum[1] * (1 - sat), lum[2] * (1 - sat),
+    lum[0] * (1 - sat), lum[1] * (1 - sat) + sat, lum[2] * (1 - sat),
+    lum[0] * (1 - sat), lum[1] * (1 - sat), lum[2] * (1 - sat) + sat,
+  ];
+  const hueMatrix = [
+    lum[0] + c * (1 - lum[0]) - s * lum[0], lum[1] * (1 - c) + s * lum[1], lum[2] * (1 - c) + s * lum[2],
+    lum[0] * (1 - c) + s * 0.143, lum[1] + c * (1 - lum[1]) - s * 0.14, lum[2] * (1 - c) + s * 0.283,
+    lum[0] * (1 - c) - s * (1 - lum[0]), lum[1] * (1 - c) + s * lum[1], lum[2] + c * (1 - lum[2]) - s * lum[2],
+  ];
+  const multiply = (a, b) => {
+    const out = Array(9).fill(0);
+    for (let row = 0; row < 3; row += 1) {
+      for (let col = 0; col < 3; col += 1) {
+        for (let k = 0; k < 3; k += 1) out[row * 3 + col] += a[row * 3 + k] * b[k * 3 + col];
+      }
+    }
+    return out;
+  };
+  const scale = Number(contrast);
+  const matrix = multiply(hueMatrix, satMatrix).map((value) => value * scale);
+  const offset = 0.5 * (1 - scale) + Number(brightness) / 100;
+  return { matrix, offsets: [offset, offset, offset] };
+}
+
+function pixelMatrixMatches(block, expected, tolerance = 0.00001) {
+  if (!block || !Array.isArray(block.matrix) || block.matrix.length !== 9
+    || !Array.isArray(block.preOffsets) || !Array.isArray(block.postOffsets)) return false;
+  const values = [...block.preOffsets, ...block.postOffsets, ...block.matrix];
+  const wanted = [0, 0, 0, ...expected.offsets, ...expected.matrix];
+  return values.length === wanted.length
+    && values.every((value, index) => Number.isFinite(value) && Math.abs(value - wanted[index]) <= tolerance);
+}
+
+function pixelMatrixIsNeutral(block) {
+  return pixelMatrixMatches(block, {
+    offsets: [0, 0, 0],
+    matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+  });
+}
+
+function pixelSetMatrix(lib, displayHandle, block, colors) {
+  if (!block || typeof lib?.ctlPixelTransformationSetConfig !== 'function'
+    || lib.ctlPixelTransformationSetConfig.unavailable) {
+    return { ok: false, errorCode: 'unsupported', message: 'display pixel color transformation is not exposed by this driver' };
+  }
+  try {
+    const blocks = koffi.alloc('uint8', PIXEL_BLOCK_CONFIG_SIZE + 16);
+    pixelWrite(blocks, 0, 'uint32', PIXEL_MATRIX_CONFIG_SIZE + 16);
+    pixelWrite(blocks, 4, 'uint8', 0);
+    pixelWrite(blocks, 8, 'uint32', block.id);
+    pixelWrite(blocks, 12, 'uint32', PIXEL_BLOCK_TYPE_MATRIX_AND_OFFSETS);
+    const matrix = pixelMatrixForColors(colors);
+    pixelWrite(blocks, 16, 'uint32', PIXEL_MATRIX_CONFIG_SIZE);
+    pixelWrite(blocks, 20, 'uint8', 0);
+    for (let i = 0; i < 3; i += 1) {
+      pixelWrite(blocks, 24 + i * 8, 'double', 0);
+      pixelWrite(blocks, 48 + i * 8, 'double', matrix.offsets[i]);
+    }
+    for (let i = 0; i < matrix.matrix.length; i += 1) pixelWrite(blocks, 72 + i * 8, 'double', matrix.matrix[i]);
+    const set = koffi.alloc('uint8', PIXEL_SET_CONFIG_SIZE + 16);
+    pixelWrite(set, 0, 'uint32', PIXEL_SET_CONFIG_SIZE);
+    pixelWrite(set, 4, 'uint8', 0);
+    pixelWrite(set, 8, 'uint32', PIXEL_OPERATION_SET);
+    pixelWrite(set, 12, 'uint32', 1);
+    pixelWrite(set, 16, 'uint32', 1);
+    pixelWrite(set, 24, 'void*', koffi.address(blocks));
+    const result = lib.ctlPixelTransformationSetConfig(displayHandle, set);
+    return result === CTL_RESULT.SUCCESS
+      ? { ok: true, readBackEqual: undefined, requested: { ...colors }, matrix }
+      : { ok: false, errorCode: igclErrorCode(result) ?? 'io-failed', message: `IGCL ${describeResult(result)}` };
+  } catch (error) {
+    return { ok: false, errorCode: 'io-failed', message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function mediaStructHeader(buf, size) {
   mediaWrite(buf, 0, 'uint32', size);
   mediaWrite(buf, 4, 'uint8', MEDIA_STRUCT_VERSION);
@@ -490,6 +687,10 @@ export class IgclBackend {
     // the fan handles; the per-display VALUES are never cached, every
     // getDisplaySettings reads fresh).
     this._displayHandles = new Map();
+    // Keep the complete color state only after a verified pixel-transform
+    // write. A fresh process never assumes that the driver's transform is
+    // neutral; the GET path establishes that before exposing a writable row.
+    this._displayPixelColors = new Map();
   }
 
   /**
@@ -2660,7 +2861,7 @@ export class IgclBackend {
         const r = lib.ctlGetSetWireFormat(handle, buf);
         if (r === CTL_RESULT.SUCCESS) {
           const wf = decodeWireFormatConfig(buf);
-          d.supportedOptions.wireFormats = [...new Set(wf.supported.map((s) => canonicalWireModel(s.model)))].filter(Boolean);
+          d.supportedOptions.wireFormats = [...new Set((wf.supportedModels ?? wf.supported.map((s) => s.model)).map((s) => canonicalWireModel(s)))].filter(Boolean);
           d.supportedOptions.bpcDepths = [...new Set(wf.supported.map((s) => s.depth))];
           if (wf.currentUnavailable) {
             d.colorFormat = canonicalWireModel(wf.currentModel);
@@ -2673,6 +2874,24 @@ export class IgclBackend {
       }
     } catch {
       // degrade the wire-format surface
+    }
+
+    // Pixel transformation is the per-output desktop color path. Prefer its
+    // output format over the legacy wire-format read when both are present:
+    // the A770 reports an empty-depth YCbCr422 wire slot even while the
+    // active output is RGB (the state shown by IGS).
+    let pixelTransform = null;
+    let pixelCurrent = null;
+    try {
+      pixelTransform = readPixelTransformation(lib, handle);
+      pixelCurrent = readPixelTransformation(lib, handle, { queryType: PIXEL_QUERY_CURRENT });
+      if (pixelTransform?.outputFormat) {
+        const outputModel = PIXEL_COLOR_MODEL_TO_WIRE[pixelTransform.outputFormat.model] ?? null;
+        if (outputModel) d.colorFormat = outputModel;
+        if (pixelTransform.outputFormat.bitsPerColor > 0) d.colorDepth = pixelTransform.outputFormat.bitsPerColor;
+      }
+    } catch {
+      pixelTransform = null;
     }
 
     // Scaling: the driver's SupportedScaling bitmask (the offered options)
@@ -2806,12 +3025,45 @@ export class IgclBackend {
       // degrade the arc-sync profile
     }
 
-    // Standard Color Correction is adapter-global in IGCL. Present its
-    // read-back on the active output and only mark the four rows writable
-    // when the capability query + current-value read both succeeded.
+    // Standard Color Correction is adapter-global in IGCL, while pixel
+    // transformation is the per-output desktop path. Prefer the latter when
+    // its matrix block is available so Apply changes the visible desktop
+    // output rather than only the adapter's video-processing path.
     try {
       const color = readMediaColorCorrection(lib, adapterHandle);
-      if (color) {
+      const ranges = color?.ranges ?? {
+        hue: { min: -180, max: 180, step: 1, default: 0 },
+        saturation: { min: 0, max: 10, step: 0.1, default: 1 },
+        brightness: { min: -100, max: 100, step: 1, default: 0 },
+        contrast: { min: 0, max: 10, step: 0.1, default: 1 },
+      };
+      if (pixelTransform?.matrixBlock) {
+        const key = d.displayKey;
+        const cached = typeof key === 'string' ? this._displayPixelColors.get(key) : null;
+        const nativeCurrent = pixelCurrent?.matrixBlock ?? null;
+        const defaults = Object.fromEntries(Object.entries(ranges).map(([name, range]) => [name, range.default]));
+        const cachedMatchesDriver = cached && nativeCurrent
+          ? pixelMatrixMatches(nativeCurrent, pixelMatrixForColors(cached))
+          : false;
+        const values = cachedMatchesDriver
+          ? cached
+          : (!cached && pixelMatrixIsNeutral(nativeCurrent) ? defaults : null);
+        if (typeof key === 'string' && !cached && values) this._displayPixelColors.set(key, values);
+        const setterAvailable = !this._isUnavailable(lib.ctlPixelTransformationSetConfig);
+        const currentAvailable = nativeCurrent !== null;
+        const canControl = setterAvailable && currentAvailable && values !== null;
+        const reason = canControl
+          ? null
+          : !setterAvailable
+            ? 'Pixel transformation setter is not available in this driver runtime.'
+            : !currentAvailable
+              ? 'Pixel transformation current configuration is not available for safe partial updates.'
+              : 'The driver has an existing color transform that Arc Power cannot safely merge; reset it in IGS first.';
+        for (const name of ['hue', 'saturation', 'brightness', 'contrast']) {
+          d[name] = displayCapability(values?.[name] ?? null, true, canControl, reason, 'igcl-pixel-transformation');
+          d.supportedOptions.colorRanges[name] = ranges[name];
+        }
+      } else if (color) {
         for (const key of ['hue', 'saturation', 'brightness', 'contrast']) {
           d[key] = displayCapability(color.values[key], true, true, null, 'igcl-media');
           d.supportedOptions.colorRanges[key] = color.ranges[key];
@@ -2904,6 +3156,7 @@ export class IgclBackend {
       && this._isUnavailable(lib.ctlSetCurrentScaling)
       && this._isUnavailable(lib.ctlGetSetRetroScaling)
       && this._isUnavailable(lib.ctlSetIntelArcSyncProfile)
+      && this._isUnavailable(lib.ctlPixelTransformationSetConfig)
       && this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)
       && this._isUnavailable(lib.ctlGetSet3DFeature)) {
       for (const c of controls) {
@@ -3179,11 +3432,77 @@ export class IgclBackend {
 
     const colorKeys = ['hue', 'saturation', 'brightness', 'contrast'].filter((key) => patch[key] !== null && patch[key] !== undefined);
     if (colorKeys.length > 0) {
-      if (this._isUnavailable(lib.ctlGetSupportedVideoProcessingCapabilities)
+      // Capability and current-configuration queries are separate IGCL
+      // operations. The former tells us which block can be written; the
+      // latter is the only safe source for verifying a completed transform.
+      const pixel = readPixelTransformation(lib, handle);
+      const pixelCurrent = readPixelTransformation(lib, handle, { queryType: PIXEL_QUERY_CURRENT });
+      const media = readMediaColorCorrection(lib, dev.handle);
+      const ranges = media?.ranges ?? {
+        hue: { min: -180, max: 180, step: 1, default: 0 },
+        saturation: { min: 0, max: 10, step: 0.1, default: 1 },
+        brightness: { min: -100, max: 100, step: 1, default: 0 },
+        contrast: { min: 0, max: 10, step: 0.1, default: 1 },
+      };
+      if (pixel?.matrixBlock) {
+        const setterAvailable = !this._isUnavailable(lib.ctlPixelTransformationSetConfig);
+        if (!setterAvailable) {
+          for (const key of colorKeys) fail(key, 'unavailable-symbol', 'the pixel-transformation setter is missing in the IGCL runtime');
+        } else {
+          const cached = this._displayPixelColors.get(displayKey);
+          const nativeCurrent = pixelCurrent?.matrixBlock ?? null;
+          const defaults = Object.fromEntries(Object.entries(ranges).map(([name, range]) => [name, range.default]));
+          const cachedMatchesDriver = cached && nativeCurrent
+            ? pixelMatrixMatches(nativeCurrent, pixelMatrixForColors(cached))
+            : false;
+          const current = cachedMatchesDriver
+            ? cached
+            : pixelMatrixIsNeutral(nativeCurrent)
+              ? defaults
+              : null;
+          // A partial slider apply must not replace an existing transform with
+          // neutral or stale defaults. Only a verified complete state, or an
+          // explicitly neutral current transform, can be used as the base.
+          if (!current) {
+            for (const key of colorKeys) fail(key, 'unsupported', nativeCurrent
+              ? 'the driver has an existing color transform that Arc Power cannot safely merge; reset it in IGS first'
+              : 'the driver current color transform could not be read safely');
+          } else {
+            const normalized = {};
+            for (const key of colorKeys) {
+              const range = ranges[key];
+              const requested = Number(patch[key]);
+              const bounded = Math.min(range.max, Math.max(range.min, requested));
+              const snapped = range.step > 0 ? range.min + Math.round((bounded - range.min) / range.step) * range.step : bounded;
+              normalized[key] = Math.min(range.max, Math.max(range.min, snapped));
+            }
+            const next = { ...current, ...normalized };
+            const applied = pixelSetMatrix(lib, handle, nativeCurrent ?? pixel.matrixBlock, next);
+            if (!applied.ok) {
+              for (const key of colorKeys) fail(key, applied.errorCode ?? 'io-failed', applied.message ?? 'display color transformation failed');
+            } else {
+              const readBack = readPixelTransformation(lib, handle, { queryType: PIXEL_QUERY_CURRENT, requireSet: true });
+              const readBackEqual = pixelMatrixMatches(readBack?.matrixBlock, applied.matrix);
+              if (!readBackEqual) {
+                for (const key of colorKeys) fail(key, 'io-failed', 'the driver accepted the color transform but current-configuration read-back did not match it');
+              } else {
+                this._displayPixelColors.set(displayKey, next);
+                for (const key of colorKeys) {
+                  result.perControl[key] = {
+                    ok: true,
+                    readBackEqual: true,
+                    silentNoop: false,
+                  };
+                }
+              }
+            }
+          }
+        }
+      } else if (this._isUnavailable(lib.ctlGetSupportedVideoProcessingCapabilities)
         || this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)) {
         for (const key of colorKeys) fail(key, 'unavailable-symbol', 'the color-correction API is missing in the IGCL runtime');
       } else {
-        const current = readMediaColorCorrection(lib, dev.handle);
+        const current = media;
         if (!current) {
           for (const key of colorKeys) fail(key, 'unsupported', 'standard color correction is not exposed by this driver');
         } else {

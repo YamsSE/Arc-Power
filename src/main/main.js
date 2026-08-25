@@ -1028,7 +1028,12 @@ async function main() {
   // wrapper is intentionally installed before oldIgcl, boot/profile/tray,
   // IPC, and sysman closures are created so no path can bypass its target
   // resolution or accidentally apply an OS-only adapter.
-  backend = createUnifiedGpuBackend({ backend, sysinfo });
+  // The sysinfo query is already running in parallel. Allow the first
+  // inventory request to paint from IGCL's own stable identity, then merge
+  // the Windows controller/ReBAR/VRAM snapshot on the renderer's immediate
+  // post-paint refresh. This removes the multi-second CIM wait from the
+  // first interactive window without changing write-target identity rules.
+  backend = createUnifiedGpuBackend({ backend, sysinfo, deferInitialSysinfo: !mock });
   // M2C-C: the bundled 2023 IGCL runtime adapter (extended-range writes).
   // Mock mode (incl. --ui-verify) uses the mock adapter - the real DLL is
   // never loaded there. In the real path the OLD runtime is probed lazily
@@ -2389,6 +2394,7 @@ async function main() {
       profileId: settings.activeProfileId,
       deviceId: mockBootDeviceId,
       oldIgcl,
+      sysmanPowerLimits,
       log: (s) => console.log(`[mock-boot-apply] ${s}`),
     });
     recordBootApply(settings.activeProfileId, out);
@@ -2512,7 +2518,10 @@ async function main() {
       try {
         const args = [...filterRelaunchArgs(process.argv.slice(1)), '--clear-cache'];
         app.relaunch({ args });
-        app.quit();
+        // app.quit() can be held by a renderer close-to-tray handler while
+        // the relaunch target is already queued. Exit deterministically after
+        // scheduling the relaunch so Maintenance really restarts Arc Power.
+        app.exit(0);
         return { ok: true, restarting: true };
       } catch (err) {
         console.error(`[cache] restart scheduling failed: ${err.message}`);
