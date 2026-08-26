@@ -1,11 +1,15 @@
-// Arc Power - M4-D2 startup registration: the HKCU Run value ONLY.
+// Arc Power - M4-D2 startup registration: the HKCU Run value, with a
+// one-time cleanup of the legacy portable registrations.
 //
 // M2b/M2C-C used scheduled tasks (onlogon /rl highest) for start-with-
 // Windows + apply-on-boot - every enable/disable UAC'd, and the user
 // declined, so "none of them work" (M4-D2 §12 root cause b). Tasks are
 // GONE. The ONLY registration is the HKCU Run value:
 //   HKCU\Software\Microsoft\Windows\CurrentVersion\Run\ArcPower = "<exe>"
-// via reg.exe - zero UAC, unelevated, HKCU-only.
+// via reg.exe - zero UAC, unelevated, HKCU-only. New versions also remove
+// the old M4-D scheduled-task registrations when the user explicitly changes
+// this setting. Those tasks pointed portable builds at a temporary extracted
+// path and otherwise remain visible as stale Startup-app entries.
 //
 // "Active" = the value exists. ONE value serves both toggles: the
 // Settings "Start with Windows" toggle and the Profiles "start at boot"
@@ -26,6 +30,13 @@ const execFile = promisify(nodeExecFile);
 
 export const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 export const RUN_VALUE = 'ArcPower';
+// M4-D/M2C-C registrations left by older portable builds. Do not remove
+// ArcPowerBootApply: that is the current installed-build profile task.
+export const LEGACY_TASK_NAMES = ['ArcPowerAppOnBoot', 'ArcPowerApplyOnBoot'];
+// Electron's former app.setLoginItemSettings registration used the product
+// name as the Run value name. The current ArcPower value is retained for
+// compatibility with releases since M4-D2.
+export const LEGACY_RUN_VALUE_NAMES = ['Arc Power'];
 // reg.exe exit code when the queried/deleted value does not exist.
 export const REG_NOT_FOUND = 1;
 
@@ -108,6 +119,30 @@ export async function resolveLogonExecPath(deps = {}) {
 }
 
 /**
+ * Remove registrations written by releases that used elevated scheduled
+ * tasks or Electron's product-name Run value. Cleanup is deliberately
+ * best-effort: the new Run value must still be usable if an old task is
+ * already absent or Windows refuses an old task deletion.
+ * @param {typeof execFile} exec
+ */
+async function cleanupLegacyRegistrations(exec) {
+  for (const taskName of LEGACY_TASK_NAMES) {
+    try {
+      await exec('schtasks', ['/delete', '/tn', taskName, '/f'], { windowsHide: true });
+    } catch {
+      // Missing or inaccessible legacy task - do not block the new setting.
+    }
+  }
+  for (const valueName of LEGACY_RUN_VALUE_NAMES) {
+    try {
+      await exec('reg', ['delete', RUN_KEY, '/v', valueName, '/f'], { windowsHide: true });
+    } catch {
+      // Missing or inaccessible legacy value - do not block the new setting.
+    }
+  }
+}
+
+/**
  * Real adapter (reg.exe via injectable execFile for tests). The Run value
  * is written/removed unelevated - NEVER any elevated helper, NEVER a UAC
  * (M4-D2 hard constraint). The value points at the LOGON-STABLE executable
@@ -116,11 +151,13 @@ export async function resolveLogonExecPath(deps = {}) {
  *   execFile?: typeof execFile,
  *   execPath?: string,
  *   logonExecPath?: string,
+ *   cleanupLegacy?: boolean,
  * }} [deps]
  */
 export function createStartup(deps = {}) {
   const exec = deps.execFile ?? execFile;
   const execPath = deps.logonExecPath ?? deps.execPath ?? process.execPath;
+  const cleanupLegacy = deps.cleanupLegacy !== false;
   return {
     /**
      * The raw registry truth: whether our Run value exists and its value.
@@ -155,6 +192,7 @@ export function createStartup(deps = {}) {
         } catch (err) {
           throw new Error(`startup-set: reg add failed: ${err.message}`);
         }
+        if (cleanupLegacy) await cleanupLegacyRegistrations(exec);
         return this.get();
       }
       try {
@@ -162,6 +200,7 @@ export function createStartup(deps = {}) {
       } catch (err) {
         if (err?.code !== REG_NOT_FOUND) throw new Error(`startup-set: reg delete failed: ${err.message}`);
       }
+      if (cleanupLegacy) await cleanupLegacyRegistrations(exec);
       return this.get();
     },
   };
