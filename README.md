@@ -30,10 +30,10 @@ Details on expert controls, the safety design, and the capability model live in 
 
 | GPU | Family | Status |
 |---|---|---|
-| Arc A3 / A5 / A7 series (incl. A770) | Alchemist | **Verified - Fully working** |
-| Arc B580 / B570 | Battlemage | Code paths complete, unverified on hardware |
-| Arc Pro B50 | Battlemage (pro) | Estimated - OC may be locked, telemetry + fan only |
-| Arc iGPU | Alchemist & Battlemage | **Verified - Telemetry, Graphic Settings & Tweaks only** |
+| Arc A3 / A5 / A7 series (incl. A770) | Alchemist | **Verified - Working** |
+| Arc B580 / B570 | Battlemage | **Verified - Working** |
+| Arc Pro B50 | Battlemage (pro) | **Verified - Tweaks & Telemetry only** |
+| Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
 
 ## Requirements
 
@@ -97,7 +97,7 @@ Architecture notes and the IGCL integration write-up (struct mappings, capabilit
 - [x] Installer (portable EXE + NSIS setup) and silent elevated logon applies
 - [x] 1.0.x feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics + display tuning)
 - [x] Published releases on GitHub
-- [ ] Battlemage enablement (live verification on B580 / B570)
+- [x] Battlemage enablement (live verification on B580 / B570)
 - [x] Advanced Overlay (the AMD-Adrenaline-style interactive side panel - tuning / fan / graphics, CTRL+P)
 - [x] Arc overlay theme (the glass-harness HUD theme, switchable via Overlay Settings)
 - [x] Cross-window settings sync (advanced-overlay applies refresh the main window pages in place)
