@@ -919,6 +919,7 @@ select {
   flex: 0 0 48px;
   object-fit: contain;
   border-radius: 0;
+  border: 1px solid #000;
 }
 .device-card-head .hardware-card-icon { margin-right: 2px; }
 
