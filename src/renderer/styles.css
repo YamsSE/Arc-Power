@@ -913,9 +913,12 @@ select {
   display: block;
   width: 48px;
   height: 48px;
+  min-width: 48px;
+  min-height: 48px;
+  aspect-ratio: 1;
   flex: 0 0 48px;
   object-fit: contain;
-  border-radius: 7px;
+  border-radius: 0;
 }
 .device-card-head .hardware-card-icon { margin-right: 2px; }
 
