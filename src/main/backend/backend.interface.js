@@ -331,6 +331,14 @@ export const DISPLAY_WIRE_FORMAT_OPTIONS = ['RGB', 'YCbCr420', 'YCbCr422', 'YCbC
 export const DISPLAY_BPC_OPTIONS = [6, 8, 10, 12];
 export const DISPLAY_SCALING_MODE_OPTIONS = ['identity', 'centered', 'stretched', 'aspect-ratio-centered-max', 'custom'];
 export const DISPLAY_RETRO_SCALING_METHOD_OPTIONS = ['integer', 'nearest-neighbour'];
+// The renderer presents all three IGS Scaling Mode views through the same
+// second-row control. These aliases are UI vocabulary; the backend still
+// applies the coupled raw scalingMode/scalingMethod fields.
+export const DISPLAY_SCALING_METHOD_OPTIONS = [
+  'maintain-display-scaling', 'custom',
+  'centered', 'stretched', 'aspect-ratio-centered-max',
+  'integer', 'nearest-neighbour',
+];
 export const DISPLAY_ARC_SYNC_PROFILE_OPTIONS = ['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'];
 export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS = ['fullscreen', 'fullscreen-windowed', 'disabled'];
 

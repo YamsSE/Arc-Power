@@ -344,6 +344,44 @@ const DISPLAY_ARC_SYNC_PROFILE_TO_IGCL = {
 // Fullscreen & Windowed, and Disabled respectively.
 const DISPLAY_GLOBAL_VRR_MODE_FROM_IGCL = { 0: 'fullscreen', 1: 'fullscreen-windowed', 2: 'disabled' };
 const DISPLAY_GLOBAL_VRR_MODE_TO_IGCL = { fullscreen: 0, 'fullscreen-windowed': 1, disabled: 2 };
+function scalingAliasPayloadError(patch) {
+  const alias = patch?.displayScalingMethod;
+  if (alias === undefined || alias === null) return null;
+  const gpuAlias = alias === 'centered' || alias === 'stretched' || alias === 'aspect-ratio-centered-max';
+  const retroAlias = alias === 'integer' || alias === 'nearest-neighbour';
+  if (gpuAlias) {
+    if (patch.scalingMode !== alias) return 'a GPU Scaling Method must match the coupled raw scalingMode';
+    if (patch.scalingMethod?.enabled === true) return 'a GPU Scaling Method cannot enable Retro Scaling in the same request';
+    return null;
+  }
+  if (retroAlias) {
+    if (patch.scalingMode !== 'identity'
+      || !patch.scalingMethod
+      || patch.scalingMethod.method !== alias
+      || typeof patch.scalingMethod.enabled !== 'boolean') {
+      return 'a Retro Scaling Method must match the coupled raw scalingMode and scalingMethod';
+    }
+    return null;
+  }
+  if (alias === 'maintain-display-scaling' && patch.scalingMode !== undefined && patch.scalingMode !== 'identity') {
+    return 'Maintain Display Scaling must match raw scalingMode identity';
+  }
+  if ((alias === 'maintain-display-scaling' || alias === 'custom') && patch.scalingMethod?.enabled === true) {
+    return 'Display Scaling cannot enable Retro Scaling in the same request';
+  }
+  if (alias === 'custom' && patch.scalingMode !== undefined && patch.scalingMode !== 'custom') {
+    return 'Custom Display Scaling must match raw scalingMode custom';
+  }
+  if (alias === 'custom') {
+    const custom = patch.scalingCustom;
+    if (!custom || typeof custom !== 'object'
+      || !Number.isFinite(custom.x) || custom.x < 0 || custom.x > 100
+      || !Number.isFinite(custom.y) || custom.y < 0 || custom.y > 100) {
+      return 'Custom Display Scaling requires valid horizontal and vertical percentages';
+    }
+  }
+  return null;
+}
 function globalVrrOptionsOf(detail) {
   if (detail?.enumSupportedTypes == null) return [];
   return DISPLAY_GLOBAL_VRR_MODE_OPTIONS.filter((mode) => {
@@ -3412,6 +3450,18 @@ export class IgclBackend {
     }
     const handle = matches[0].handle;
     const selectedDisplay = matches[0].output;
+
+    // Compatibility callers may still send the old user-facing method alias.
+    // Validate the complete coupled shape before any native or registry write;
+    // a contradictory alias must never partially change Scaling Mode first.
+    const scalingAliasError = scalingAliasPayloadError(patch);
+    if (scalingAliasError) {
+      fail('displayScalingMethod', 'out-of-range', scalingAliasError);
+      if (patch.scalingMode !== null && patch.scalingMode !== undefined) {
+        fail('scalingMode', 'out-of-range', 'the coupled scaling payload was rejected before any write');
+      }
+      return result;
+    }
 
     // The renderer couples the three-way raw scaling selector to the legacy
     // retro enable/type payload. Leaving Retro must disable the adapter-level

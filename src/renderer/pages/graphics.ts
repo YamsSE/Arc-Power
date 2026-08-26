@@ -330,6 +330,16 @@ function sameCustomScaling(a: DisplaySettings['scalingCustom'] | null | undefine
   return !!a && !!b && a.x === b.x && a.y === b.y && a.hardwareModeSet === b.hardwareModeSet;
 }
 
+/** Keep the chip baseline in the same user-facing vocabulary as the two
+ * scaling selectors. `normalizeDisplaySettings` intentionally retains raw
+ * IGCL scalingMode values for payload construction, so the UI baseline must
+ * be overlaid separately. */
+function setDisplayAppliedScalingBaseline(): void {
+  displayApplied = { ...displayDraft };
+  (displayApplied as Record<string, unknown>).scalingMode = displayScalingViewDraft;
+  (displayApplied as Record<string, unknown>).displayScalingMethod = displayScalingMethodDraft;
+}
+
 /** M9: the shared chip state machine (pure/chip.ts) drives the per-card
  *  status + the per-card Apply button: 'none' (pristine or unsupported -
  *  the hidden attribute, invisible via the CSS [hidden] fix), 'applied'
@@ -916,7 +926,7 @@ async function renderDisplayView(view: HTMLElement, ctx: PageContext, generation
   // Establish a clean baseline from the fresh driver read-back. Without this
   // the first render treated every exposed value as an unapplied edit when a
   // driver temporarily omitted a value (notably global VRR).
-  displayApplied = { ...displayDraft };
+  setDisplayAppliedScalingBaseline();
   renderDisplayCards(view, ctx);
 }
 
@@ -1474,7 +1484,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
       displayDraft = normalizeDisplaySettings(selectedDisplay());
       displayScalingViewDraft = scalingViewOf(selectedDisplay());
       displayScalingMethodDraft = scalingMethodViewOf(selectedDisplay());
-      displayApplied = { ...displayDraft };
+      setDisplayAppliedScalingBaseline();
       renderDisplayCards(view, ctx);
     },
   }, displayState.displays.map((d) => el('option', {
@@ -1629,16 +1639,13 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
       payload = { scalingMode: raw };
       if (displayScalingViewDraft === 'gpu-scaling') {
         payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
-        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
       } else if (displayScalingViewDraft === 'display-scaling') {
         payload.scalingMode = raw;
-        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
       } else {
         payload.scalingMethod = {
           enabled: true,
           method: displayScalingMethodDraft as NonNullable<DisplaySettings['scalingMethod']>['method'],
         };
-        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
       }
       // Retro is a separate adapter-level scaler. Leaving it requires the
       // explicit disable pair to be sent together with the new ordinary mode;
@@ -1656,7 +1663,7 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
     const customDirty = view === 'display-scaling' && displayScalingMethodDraft === 'custom'
       && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display));
     if (displayScalingMethodDraft !== scalingMethodViewOf(display) || customDirty) {
-      payload = { displayScalingMethod: displayScalingMethodDraft as DisplaySettings['displayScalingMethod'] };
+      payload = {};
       if (view === 'gpu-scaling') {
         payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
       } else if (view === 'retro-scaling') {
@@ -1750,6 +1757,15 @@ async function applyDisplay(ctx: PageContext, only: string) {
       } else {
         toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
       }
+    }
+    // Scaling Mode and Scaling Method are one IGS three-way control in the
+    // UI, but the native payload uses the raw coupled fields. Keep both chip
+    // baselines synchronized after either half succeeds; otherwise the
+    // method row can remain blue even though the fresh driver state matches.
+    if (freshDisplay && (out.perControl.scalingMode?.ok || out.perControl.scalingMethod?.ok || out.perControl.displayScalingMethod?.ok)) {
+      (displayApplied as Record<string, unknown>).scalingMode = scalingViewOf(freshDisplay);
+      (displayApplied as Record<string, unknown>).displayScalingMethod = scalingMethodViewOf(freshDisplay);
+      if (freshDisplay.scalingMethod?.value) displayApplied.scalingMethod = freshDisplay.scalingMethod.value;
     }
     for (const key of DISPLAY_APPLY_KEYS) refreshDisplayChip(key);
     updateDisplayFloating();

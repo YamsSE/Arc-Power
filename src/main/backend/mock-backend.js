@@ -1181,6 +1181,41 @@ export class MockBackend {
       return result;
     }
     const display = matches[0];
+    const scalingAlias = patch.displayScalingMethod;
+    const gpuScalingAlias = ['centered', 'stretched', 'aspect-ratio-centered-max'].includes(scalingAlias);
+    const retroScalingAlias = ['integer', 'nearest-neighbour'].includes(scalingAlias);
+    const scalingAliasError = gpuScalingAlias
+      ? (patch.scalingMode !== scalingAlias
+        ? 'a GPU Scaling Method must match the coupled raw scalingMode'
+        : patch.scalingMethod?.enabled === true
+          ? 'a GPU Scaling Method cannot enable Retro Scaling in the same request'
+          : null)
+      : retroScalingAlias
+        ? (patch.scalingMode !== 'identity'
+          || !patch.scalingMethod
+          || patch.scalingMethod.method !== scalingAlias
+          || typeof patch.scalingMethod.enabled !== 'boolean'
+          ? 'a Retro Scaling Method must match the coupled raw scalingMode and scalingMethod'
+          : null)
+        : scalingAlias === 'maintain-display-scaling' && patch.scalingMode !== undefined && patch.scalingMode !== 'identity'
+          ? 'Maintain Display Scaling must match raw scalingMode identity'
+          : (scalingAlias === 'maintain-display-scaling' || scalingAlias === 'custom') && patch.scalingMethod?.enabled === true
+            ? 'Display Scaling cannot enable Retro Scaling in the same request'
+            : scalingAlias === 'custom' && patch.scalingMode !== undefined && patch.scalingMode !== 'custom'
+              ? 'Custom Display Scaling must match raw scalingMode custom'
+              : scalingAlias === 'custom'
+                && (!patch.scalingCustom || typeof patch.scalingCustom !== 'object'
+                  || !Number.isFinite(patch.scalingCustom.x) || patch.scalingCustom.x < 0 || patch.scalingCustom.x > 100
+                  || !Number.isFinite(patch.scalingCustom.y) || patch.scalingCustom.y < 0 || patch.scalingCustom.y > 100)
+                ? 'Custom Display Scaling requires valid horizontal and vertical percentages'
+            : null;
+    if (scalingAliasError) {
+      fail('displayScalingMethod', 'out-of-range', scalingAliasError);
+      if (patch.scalingMode !== undefined && patch.scalingMode !== null) {
+        fail('scalingMode', 'out-of-range', 'the coupled scaling payload was rejected before any write');
+      }
+      return result;
+    }
     if (patch.quantizationRange !== undefined && patch.quantizationRange !== null) {
       if (!DISPLAY_QUANTIZATION_OPTIONS.includes(patch.quantizationRange)) fail('quantizationRange', 'out-of-range', `unknown quantization range '${patch.quantizationRange}'`);
       else if (!display.supportedOptions.quantizationRanges.includes(patch.quantizationRange)) fail('quantizationRange', 'unsupported', 'quantization range is not supported by this display');
@@ -1215,8 +1250,19 @@ export class MockBackend {
         result.perControl.scalingMode = { ok: true, readBackEqual: true, warning: DISPLAY_SCALING_FLASH_WARNING };
       }
     }
+    let retroMethodAlias = false;
     if (patch.displayScalingMethod !== undefined && patch.displayScalingMethod !== null) {
-      if (!['maintain-display-scaling', 'custom'].includes(patch.displayScalingMethod)) fail('displayScalingMethod', 'out-of-range', 'unknown Display Scaling method');
+      const gpuMethodAlias = ['centered', 'stretched', 'aspect-ratio-centered-max'].includes(patch.displayScalingMethod);
+      retroMethodAlias = ['integer', 'nearest-neighbour'].includes(patch.displayScalingMethod);
+      if (gpuMethodAlias || retroMethodAlias) {
+        const coupled = gpuMethodAlias
+          ? patch.scalingMode === patch.displayScalingMethod
+          : patch.scalingMethod && patch.scalingMode !== undefined && patch.scalingMode !== null;
+        if (!coupled) fail('displayScalingMethod', 'out-of-range', 'a raw GPU or Retro Scaling Method must include its matching coupled payload');
+        else if (gpuMethodAlias && result.perControl.scalingMode) result.perControl.displayScalingMethod = { ...result.perControl.scalingMode };
+        // Retro is processed below; its result is mirrored after the native
+        // compatibility path so the mock matches the IGCL backend ordering.
+      } else if (!['maintain-display-scaling', 'custom'].includes(patch.displayScalingMethod)) fail('displayScalingMethod', 'out-of-range', 'unknown Display Scaling method');
       else {
         const next = patch.displayScalingMethod === 'custom' ? 'custom' : 'identity';
         if (!display.supportedOptions.scalingModes.includes(next)) fail('displayScalingMethod', 'unsupported', 'Display Scaling method is not supported by this display');
@@ -1254,6 +1300,9 @@ export class MockBackend {
         display.scalingMethod.value = { enabled: value.enabled, method: value.method };
         result.perControl.scalingMethod = { ok: true, readBackEqual: display.scalingMethod.value.enabled === value.enabled && display.scalingMethod.value.method === value.method, warning: DISPLAY_SCALING_FLASH_WARNING };
       }
+    }
+    if (retroMethodAlias && result.perControl.scalingMethod) {
+      result.perControl.displayScalingMethod = { ...result.perControl.scalingMethod };
     }
     if (patch.variableRefreshRate !== undefined && patch.variableRefreshRate !== null) {
       if (typeof patch.variableRefreshRate !== 'boolean') fail('variableRefreshRate', 'out-of-range', 'Variable Refresh Rate must be enabled or disabled');

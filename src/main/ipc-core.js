@@ -26,7 +26,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
-import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
+import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey } from './backend/units.js';
 import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
@@ -171,7 +171,7 @@ export function sanitizeDisplaySettings(payload) {
       if (!DISPLAY_SCALING_MODE_OPTIONS.includes(value)) throw new Error(`scalingMode must be one of: ${DISPLAY_SCALING_MODE_OPTIONS.join(', ')}`);
       out[key] = value;
     } else if (key === 'displayScalingMethod') {
-      if (!['maintain-display-scaling', 'custom'].includes(value)) throw new Error('displayScalingMethod must be maintain-display-scaling or custom');
+      if (!DISPLAY_SCALING_METHOD_OPTIONS.includes(value)) throw new Error(`displayScalingMethod must be one of: ${DISPLAY_SCALING_METHOD_OPTIONS.join(', ')}`);
       out[key] = value;
     } else if (key === 'scalingCustom') {
       if (typeof value !== 'object' || value === null || Array.isArray(value)
