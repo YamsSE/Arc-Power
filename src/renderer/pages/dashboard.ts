@@ -23,6 +23,7 @@ import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue, ghzFreq } from '../pure/sysinfo.ts';
+import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { selectedDashboardController } from '../pure/dashboard.ts';
 import { aibOfPnpDeviceId } from '../pure/aib.ts';
@@ -69,6 +70,14 @@ function noIntelClocksText(sample: TelemetrySample | null): string {
 
 function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
+}
+
+function sharedMemoryBytesOf(
+  device: { sharedMemoryBytes?: number | null; osController?: { sharedMemoryBytes?: number | null } | null } | null,
+  osGpu: { sharedMemoryBytes?: number | null } | null,
+): number | null {
+  const bytes = device?.sharedMemoryBytes ?? device?.osController?.sharedMemoryBytes ?? osGpu?.sharedMemoryBytes;
+  return typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
 }
 
 function hardwareIcon(path: string | null, alt: string, kind: 'cpu' | 'gpu'): HTMLElement | null {
@@ -137,6 +146,10 @@ function currentSig(ctx: PageContext): DashboardSig {
     // (an apply from any path refreshes the store state, so the row flips
     // on the re-render).
     state: s.state,
+    // Device enumeration can land again after late memory enrichment. Keep
+    // it in the static-card signature so the new shared-capacity row appears
+    // without waiting for navigation or a telemetry tick.
+    devices: s.devices,
   };
 }
 
@@ -349,6 +362,9 @@ export const dashboardPage: Page = {
                   })]),
                   el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { class: 'kv-clocks', text: noIntelClocksText(s.latestSample) })]),
                   el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(s.vendorInfo?.vramBytes ?? s.osGpu?.vramBytes, null) })]),
+                  ...(sharedMemoryBytesOf(null, s.osGpu) !== null
+                    ? [el('div', { class: 'kv', 'data-label': 'Shared GPU Memory' }, [el('span', { text: `${formatGpuMemoryGb(sharedMemoryBytesOf(null, s.osGpu))} GB` })])]
+                    : []),
                   el('div', { class: 'kv kv-rebar' }, [
                     el('span', { class: `chip rebar-pill status-${osRebar.level}`, text: osRebar.label }),
                   ]),
@@ -386,6 +402,9 @@ export const dashboardPage: Page = {
                 // ceil contract as formatDeviceName with the memType CARRIED
                 // ON THE DEVICE PAYLOAD (no renderer-side table).
                 el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(device.vramBytes, device.memType) })]),
+                ...(sharedMemoryBytesOf(device, null) !== null
+                  ? [el('div', { class: 'kv', 'data-label': 'Shared GPU Memory' }, [el('span', { text: `${formatGpuMemoryGb(sharedMemoryBytesOf(device, null))} GB` })])]
+                  : []),
                 // M4-D2 (§3): the ReBAR pill is STANDALONE - no label kv row
                 // around it (the "Resizable BAR" row is gone). Green "ReBAR
                 // on" / red "ReBAR off" / grey "ReBAR -", data-driven from

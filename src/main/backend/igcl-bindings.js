@@ -34,6 +34,7 @@ export const CTL_RESULT = {
   ERROR_INVALID_NULL_HANDLE: 0x4000000d,
   ERROR_INVALID_NULL_POINTER: 0x4000000e,
   ERROR_INVALID_SIZE: 0x4000000f,
+  ERROR_UNSUPPORTED_SIZE: 0x40000010,
   ERROR_DATA_READ: 0x40000012,
   ERROR_DATA_WRITE: 0x40000013,
   ERROR_DATA_NOT_FOUND: 0x40000014,
@@ -224,6 +225,10 @@ export const CTL_ARC_SYNC_PROFILE = {
   0: 'INVALID', 1: 'RECOMMENDED', 2: 'EXCELLENT', 3: 'GOOD', 4: 'COMPATIBLE',
   5: 'OFF', 6: 'VESA', 7: 'CUSTOM',
 };
+
+// ctl_device_adapter_properties_t::graphics_adapter_properties flags from
+// the official IGCL header.
+export const CTL_ADAPTER_PROPERTIES_FLAG = { INTEGRATED: 1 << 0 };
 
 // Public IGCL Media API feature used by the IGS Color page. The current
 // Display page only needs Standard Color Correction (Hue, Saturation,
@@ -427,6 +432,47 @@ const ctl_power_telemetry_t = koffi.struct('ctl_power_telemetry_t', {
   vramReadBandwidth: 'ctl_oc_telemetry_item_t',
   vramWriteBandwidth: 'ctl_oc_telemetry_item_t',
 }); // 1024 bytes, align 8
+
+// IGCL ctl_power_telemetry_v2_t: identical to V1 through
+// vramCurrentTemperature, but the five deprecated vram*Limited bools are
+// absent. The official V2 structure ends at vramWriteBandwidth; do not add
+// padding or a synthetic tail to make it match the V1 allocation size.
+const ctl_power_telemetry_v2_t = koffi.struct('ctl_power_telemetry_v2_t', {
+  Size: 'uint32',
+  Version: 'uint8',
+  timeStamp: 'ctl_oc_telemetry_item_t',
+  gpuEnergyCounter: 'ctl_oc_telemetry_item_t',
+  gpuVoltage: 'ctl_oc_telemetry_item_t',
+  gpuCurrentClockFrequency: 'ctl_oc_telemetry_item_t',
+  gpuCurrentTemperature: 'ctl_oc_telemetry_item_t',
+  globalActivityCounter: 'ctl_oc_telemetry_item_t',
+  renderComputeActivityCounter: 'ctl_oc_telemetry_item_t',
+  mediaActivityCounter: 'ctl_oc_telemetry_item_t',
+  gpuPowerLimited: 'bool',
+  gpuTemperatureLimited: 'bool',
+  gpuCurrentLimited: 'bool',
+  gpuVoltageLimited: 'bool',
+  gpuUtilizationLimited: 'bool',
+  vramEnergyCounter: 'ctl_oc_telemetry_item_t',
+  vramVoltage: 'ctl_oc_telemetry_item_t',
+  vramCurrentClockFrequency: 'ctl_oc_telemetry_item_t',
+  vramCurrentEffectiveFrequency: 'ctl_oc_telemetry_item_t',
+  vramReadBandwidthCounter: 'ctl_oc_telemetry_item_t',
+  vramWriteBandwidthCounter: 'ctl_oc_telemetry_item_t',
+  vramCurrentTemperature: 'ctl_oc_telemetry_item_t',
+  totalCardEnergyCounter: 'ctl_oc_telemetry_item_t',
+  psu: 'ctl_psu_info_t[5]',
+  fanSpeed: 'ctl_oc_telemetry_item_t[5]',
+  gpuVrTemp: 'ctl_oc_telemetry_item_t',
+  vramVrTemp: 'ctl_oc_telemetry_item_t',
+  saVrTemp: 'ctl_oc_telemetry_item_t',
+  gpuEffectiveClock: 'ctl_oc_telemetry_item_t',
+  gpuOverVoltagePercent: 'ctl_oc_telemetry_item_t',
+  gpuPowerPercent: 'ctl_oc_telemetry_item_t',
+  gpuTemperaturePercent: 'ctl_oc_telemetry_item_t',
+  vramReadBandwidth: 'ctl_oc_telemetry_item_t',
+  vramWriteBandwidth: 'ctl_oc_telemetry_item_t',
+}); // 1016 bytes, align 8
 
 const ctl_voltage_frequency_point_t = koffi.struct('ctl_voltage_frequency_point_t', {
   Voltage: 'uint32',
@@ -724,6 +770,7 @@ const EXPECTED_SIZES = {
   ctl_oc_telemetry_item_t: 24,
   ctl_psu_info_t: 56,
   ctl_power_telemetry_t: 1024,
+  ctl_power_telemetry_v2_t: 1016,
   ctl_voltage_frequency_point_t: 8,
   // M4-D2 (driver ReBAR state): ctl_pci_address_t 24, ctl_pci_speed_t 20
   // (koffi/MSVC 8-aligns the tail � the DRIVER's real layout is 20 bytes
@@ -1059,6 +1106,7 @@ export function loadIgcl(dllPath) {
   bind('ctlFanSetDefaultMode', 'ctl_result_t', ['void*']);
 
   bind('ctlPowerTelemetryGet', 'ctl_result_t', ['void*', 'ctl_power_telemetry_t*']);
+  bind('ctlPowerTelemetryGetV2', 'ctl_result_t', ['void*', 'ctl_power_telemetry_v2_t*']);
 
   // M4-D2: the driver's PCI properties - resizable_bar_supported /
   // resizable_bar_enabled (the same driver state IGS + GPU-Z report).
@@ -1150,8 +1198,12 @@ export function decodeItem(buf, structType, fieldName) {
   };
   if (item.bSupported && ['INT64', 'UINT64'].includes(out.type)) {
     const raw = koffi.decode(buf, offset + 16, out.type === 'UINT64' ? 'uint64' : 'int64');
-    out.value = raw.toString();
     out.rawInt = raw;
+    const numeric = Number(raw);
+    // Telemetry consumers use Number arithmetic. Keep exact integers in that
+    // representation only inside the safe range; retain the raw integer for
+    // diagnostics but omit larger counters that cannot be represented exactly.
+    out.value = Number.isSafeInteger(numeric) ? numeric : undefined;
   }
   return out;
 }

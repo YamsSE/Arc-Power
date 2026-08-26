@@ -165,7 +165,13 @@ export interface AppState {
    *  dashboard GPU card and the health rows read it; null while sysinfo has
    *  nothing. M17d: the payload carries the controller's pnpDeviceId too
    *  (the no-Intel Board-partner row's SUBSYS decode source). */
-  osGpu: { name: string; vramBytes: number | null; pnpDeviceId: string | null } | null;
+  osGpu: {
+    name: string;
+    vramBytes: number | null;
+    sharedMemoryBytes?: number | null;
+    sharedMemorySource?: string | null;
+    pnpDeviceId: string | null;
+  } | null;
   /** M17d: the vendor-lane STATIC-INFO (vendor-info:get - the no-Intel
    *  dashboard VRAM/Compute rows' source: the NVML total + core count;
    *  null while the boot fetch hasn't landed / on Intel machines). */

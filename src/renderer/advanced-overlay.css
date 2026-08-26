@@ -229,7 +229,7 @@ html, body {
    same sample stream). Honest '-' per field before the first sample. */
 .adv-readout {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
   padding: 6px 10px 8px;
 }

@@ -332,7 +332,13 @@ export interface DashboardSig {
    *  (the GPU card re-renders when they land at the end of the no-Intel
    *  boot). */
   noIntel: boolean;
-  osGpu: { name: string; vramBytes: number | null; pnpDeviceId: string | null } | null;
+  osGpu: {
+    name: string;
+    vramBytes: number | null;
+    sharedMemoryBytes?: number | null;
+    sharedMemorySource?: string | null;
+    pnpDeviceId: string | null;
+  } | null;
   /** M17d: the vendor-lane static info (the no-Intel VRAM/Compute rows'
    *  source) - a status slot (the GPU card re-renders when it lands). */
   vendorInfo: VendorDeviceInfo | null;
@@ -340,6 +346,8 @@ export interface DashboardSig {
    *  source (an apply from ANY path refreshes the store state, so the row
    *  flips Overclock Applied / No Overclock Applied on the re-render). */
   state: DeviceState | null;
+  /** Device inventory identity/data, including late shared-memory enrichment. */
+  devices?: DeviceInfo[];
 }
 
 /**
@@ -358,5 +366,6 @@ export function dashboardNeedsFullRender(prev: DashboardSig | null, next: Dashbo
     || prev.noIntel !== next.noIntel
     || prev.osGpu !== next.osGpu
     || prev.vendorInfo !== next.vendorInfo
-    || prev.state !== next.state;
+    || prev.state !== next.state
+    || prev.devices !== next.devices;
 }

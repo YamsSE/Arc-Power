@@ -51,7 +51,12 @@ import {
   cardSliderRange,
 } from './pure/settings.ts';
 import { applyFailureText, CONTROL_LABELS } from './pure/errors.ts';
-import { resolveBootDevice } from './pure/device.ts';
+import {
+  normalizeDeviceKey,
+  resolveBootDevice,
+  resolveSelectionDevice,
+  telemetryMatchesSelection,
+} from './pure/device.ts';
 import { chipState } from './pure/chip.ts';
 import { renderFanEditor, updateFanReadout } from './pages/fan-editor.ts';
 import {
@@ -71,6 +76,7 @@ import {
   isGraphicsControlDirtyVsApplied,
 } from './pure/graphics.ts';
 import { isValidTheme } from './pure/theme.ts';
+import { formatGpuMemoryGb, gpuMemoryLabel } from './pure/gpu-memory.ts';
 
 // ---------------------------------------------------------------------------
 // The panel store + boot state
@@ -88,7 +94,7 @@ let pendingSelection: PanelSelection | null = null;
 
 function selectedDeviceKey(state: ReturnType<Store['get']>): string | null {
   const selected = state.devices.find((device) => device.id === state.deviceId);
-  return selected?.deviceKey ?? state.caps?.deviceKey ?? null;
+  return normalizeDeviceKey(selected?.deviceKey) ?? normalizeDeviceKey(state.caps?.deviceKey);
 }
 
 function panelIdentityMatches(deviceId: number, deviceKey: string | null, generation: number): boolean {
@@ -104,6 +110,8 @@ const clockEl = document.getElementById('adv-readout-clock') as HTMLElement;
 const tempEl = document.getElementById('adv-readout-temp') as HTMLElement;
 const fanEl = document.getElementById('adv-readout-fan') as HTMLElement;
 const powerEl = document.getElementById('adv-readout-power') as HTMLElement;
+const memoryLabelEl = document.getElementById('adv-readout-memory-label') as HTMLElement;
+const memoryEl = document.getElementById('adv-readout-memory') as HTMLElement;
 const closeBtn = document.getElementById('adv-close') as HTMLButtonElement;
 
 function applyAdvancedTheme(theme: string): void {
@@ -140,9 +148,10 @@ clockEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minut
 // fan editor's RPM marker in place.
 api.onTelemetrySample((sample) => {
   const live = store.get();
-  if (sample.deviceId !== undefined && sample.deviceId !== live.deviceId) return;
   const selected = live.devices.find((device) => device.id === live.deviceId);
-  if (sample.deviceKey && selected?.deviceKey && sample.deviceKey !== selected.deviceKey) return;
+  const sampleKey = normalizeDeviceKey(sample.deviceKey);
+  const selectedKey = normalizeDeviceKey(selected?.deviceKey) ?? normalizeDeviceKey(live.caps?.deviceKey);
+  if (!telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)) return;
   store.set({ latestSample: sample });
   renderReadout(sample);
   if (activeTab === 'fan') {
@@ -163,20 +172,21 @@ api.onStateUpdated((payload) => {
   if (!payload || !payload.state || payload.deviceId !== live.deviceId) return;
   store.set({ state: payload.state });
 });
-// M31: one atomic main-owned selection push updates the panel's durable
-// selection and its matching caps/state pair. The panel never starts/stops
-// telemetry and never persists directly.
-api.onDeviceSelectionUpdated((payload) => {
+// M31: one atomic main-owned selection push updates the panel's current
+// inventory, durable selection, and matching caps/state pair. The panel
+// never starts/stops telemetry and never persists directly.
+let selectionPushSerial = 0;
+
+function applyDeviceSelectionPush(payload: PanelSelection, devices: DeviceInfo[]): boolean {
+  const target = resolveSelectionDevice(devices, payload.deviceId, payload.deviceKey);
+  if (!target) return false;
+  const nextKey = normalizeDeviceKey(target.deviceKey);
   const live = store.get();
-  const target = live.devices.find((device) => device.id === payload.deviceId
-    && (payload.deviceKey === null || device.deviceKey === payload.deviceKey));
-  const nextKey = payload.deviceKey ?? target?.deviceKey ?? payload.caps.deviceKey ?? null;
-  pendingSelection = payload;
-  if (live.deviceId !== payload.deviceId || selectedDeviceKey(live) !== nextKey) panelGeneration += 1;
-  if (!target || (live.deviceId === payload.deviceId
-    && live.caps === payload.caps && live.state === payload.state)) return;
+  const changed = live.deviceId !== target.id || selectedDeviceKey(live) !== nextKey;
+  if (changed) panelGeneration += 1;
   store.set({
-    deviceId: payload.deviceId,
+    devices,
+    deviceId: target.id,
     caps: payload.caps,
     state: payload.state,
     latestSample: null,
@@ -193,6 +203,18 @@ api.onDeviceSelectionUpdated((payload) => {
   graphicsApplying = false;
   graphicsApplyBtn = null;
   renderTab();
+  return true;
+}
+
+api.onDeviceSelectionUpdated((payload) => {
+  pendingSelection = payload;
+  const serial = ++selectionPushSerial;
+  // The main renderer owns the authoritative inventory. Re-enumerate here so
+  // a durable-key push can map a renumbered device to its new session id.
+  void api.listDevices().then((devices) => {
+    if (serial !== selectionPushSerial) return;
+    if (applyDeviceSelectionPush(payload, devices) && pendingSelection === payload) pendingSelection = null;
+  }).catch(() => { /* retain pendingSelection for the boot handshake */ });
 });
 
 // M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
@@ -213,6 +235,9 @@ function renderReadout(sample: TelemetrySample | null): void {
   tempEl.textContent = temp === null ? '-' : `${Math.round(temp)}°C`;
   fanEl.textContent = fan === null ? '-' : `${Math.round(fan)} RPM`;
   powerEl.textContent = power === null ? '-' : `${power.toFixed(1)} W`;
+  memoryLabelEl.textContent = gpuMemoryLabel(s.gpuMemorySource);
+  const memory = formatGpuMemoryGb(s.gpuMemUsedBytes);
+  memoryEl.textContent = memory === '-' ? '-' : `${memory} GB`;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,12 +271,12 @@ async function boot(): Promise<void> {
   const selection = await resolveAdvancedOverlaySelection();
   const pushed = pendingSelection;
   pendingSelection = null;
-  const pushedTarget = pushed && selection.devices.find((device) => device.id === pushed.deviceId
-    && (pushed.deviceKey === null || device.deviceKey === pushed.deviceKey));
+  const pushedTarget = pushed && resolveSelectionDevice(selection.devices, pushed.deviceId, pushed.deviceKey);
   if (pushed && pushedTarget) {
+    selectionPushSerial += 1;
     store.set({
       devices: selection.devices,
-      deviceId: pushed.deviceId,
+      deviceId: pushedTarget.id,
       caps: pushed.caps,
       state: pushed.state,
     });

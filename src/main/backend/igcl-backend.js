@@ -26,6 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   CTL_INIT_FLAG_USE_LEVEL_ZERO, CTL_INIT_FLAG_IGSC_FUL, CTL_RESULT, CTL_FAN_SPEED_MODE, CTL_FAN_SPEED_UNITS,
+  CTL_ADAPTER_PROPERTIES_FLAG,
   describeResult, makeVersion, loadIgcl, findIgclDll, decodeItem, decodePciProperties,
   CTL_3D_FEATURE, CTL_PROPERTY_VALUE_TYPE, CTL_GAMING_FLIP_MODE_FLAG,
   CTL_3D_LOW_LATENCY, CTL_3D_FRAME_GENERATION_OVERRIDE,
@@ -77,6 +78,20 @@ import {
 } from './vrr-registry.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
+
+// V2 -> V1 is an ABI compatibility fallback only. Runtime/device failures
+// must remain visible to the caller instead of being hidden by a second API
+// attempt that may report a misleading result.
+const POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS = new Set([
+  CTL_RESULT.ERROR_UNSUPPORTED_FEATURE,
+  CTL_RESULT.ERROR_UNSUPPORTED_VERSION,
+  CTL_RESULT.ERROR_UNSUPPORTED_SIZE,
+  CTL_RESULT.ERROR_NOT_IMPLEMENTED,
+]);
+
+function isPowerTelemetryV2CompatibilityError(result) {
+  return POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS.has(result);
+}
 
 // ctl_fan_config_t.mode -> canonical fanMode.
 const FAN_MODE_CANONICAL = { 0: 'auto', 1: 'fixed', 2: 'curve' };
@@ -818,6 +833,10 @@ export class IgclBackend {
    *   vramBytesOf?: (device: object) => number|null,  // M4-D: VRAM source for
    *                                   // the display-name suffix (the sysinfo
    *                                   // cache in main.js; null = plain name)
+   *   adapterMemoryInfoOf?: (device: object) => object|null, // synchronous
+   *                                   // DXGI dedicated/shared capacity source
+   *   sharedMemoryBytesOf?: (device: object) => number|object|null, // synchronous
+   *                                   // shared-capacity fallback seam
    *   laptopInfoOf?: () => object|null,  // M17c: the laptop sysinfo provider
    *                                   // ({ manufacturer, model, pcSystemType,
    *                                   // chassisTypes } from the CIM query -
@@ -845,6 +864,8 @@ export class IgclBackend {
     // is available at enumeration time; setVramBytesOf re-formats an already
     // enumerated device list).
     this._vramBytesOf = typeof opts.vramBytesOf === 'function' ? opts.vramBytesOf : null;
+    this._adapterMemoryInfoOf = typeof opts.adapterMemoryInfoOf === 'function' ? opts.adapterMemoryInfoOf : null;
+    this._sharedMemoryBytesOf = typeof opts.sharedMemoryBytesOf === 'function' ? opts.sharedMemoryBytesOf : null;
     // M17c: the laptop sysinfo provider (the cached CIM laptop fields) - the
     // vramBytesOf injection pattern; null on desktops (the subsystem decode
     // then stays authoritative).
@@ -1091,6 +1112,7 @@ export class IgclBackend {
       // trustworthy. Honest null when unmatched - the plain IGCL name. A
       // future ctlGetMemoryInfo binding would land here as a better source.
       const plainName = (p.name || '').replace(/\0+$/, '');
+      const mobile = /\b(?:A|B)\d{3,4}M\b|\bMobile\b/i.test(plainName);
       const dev = {
         id: i,
         handle,
@@ -1103,6 +1125,8 @@ export class IgclBackend {
         driverVersion: '0x' + p.driver_version.toString(16).padStart(16, '0'),
         graphicsClockMHz: p.Frequency,
         numXeCores: p.num_xe_cores,
+        integrated: (Number(p.graphics_adapter_properties) & CTL_ADAPTER_PROPERTIES_FLAG.INTEGRATED) !== 0,
+        mobile,
         vramBytes: null,
         // M17c: the ALREADY-BOUND IGCL subsystem fields (igcl-bindings.js:
         // 217-218 - pci_subsys_vendor_id / pci_subsys_id, a 1:1 mapping to
@@ -1121,8 +1145,7 @@ export class IgclBackend {
       // Internal-only: the pre-suffix name (setVramBytesOf re-formats from
       // it) - never surfaced by listDevices (it destructures explicit fields).
       dev._plainName = plainName;
-      const vramBytes = this._vramBytesOf ? this._vramBytesOf(dev) : null;
-      dev.vramBytes = Number.isInteger(vramBytes) && vramBytes > 0 ? vramBytes : null;
+      this._refreshMemoryInfo(dev);
       dev.name = formatDeviceName(plainName, dev.vramBytes);
       devices.push(dev);
     }
@@ -1145,17 +1168,64 @@ export class IgclBackend {
     this._vramBytesOf = typeof fn === 'function' ? fn : null;
     if (this._devices) {
       for (const dev of this._devices) {
-        const vramBytes = this._vramBytesOf ? this._vramBytesOf(dev) : null;
-        dev.vramBytes = Number.isInteger(vramBytes) && vramBytes > 0 ? vramBytes : null;
+        this._refreshMemoryInfo(dev);
         dev.name = formatDeviceName(dev._plainName ?? dev.name, dev.vramBytes);
       }
     }
   }
 
+  _refreshMemoryInfo(dev) {
+    const validBytes = (value) => Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
+    let info = null;
+    try { info = this._adapterMemoryInfoOf ? this._adapterMemoryInfoOf(dev) : null; } catch { info = null; }
+    const dedicatedFromVram = validBytes(this._vramBytesOf ? this._vramBytesOf(dev) : null);
+    const dedicatedFromDxgi = validBytes(info?.dedicatedVideoMemoryBytes);
+    dev.vramBytes = dedicatedFromVram ?? dedicatedFromDxgi;
+    dev.sharedMemoryBytes = null;
+    dev.sharedMemorySource = null;
+    // Shared capacity is not VRAM. It is eligible only for an explicitly
+    // integrated/mobile adapter, and only while dedicated capacity is absent.
+    if (dev.vramBytes === null && (dev.integrated === true || dev.mobile === true)) {
+      let shared = validBytes(info?.sharedSystemMemoryBytes);
+      let source = shared === null ? null : 'dxgi';
+      if (shared === null && this._sharedMemoryBytesOf) {
+        let provided = null;
+        try { provided = this._sharedMemoryBytesOf(dev); } catch { provided = null; }
+        if (typeof provided === 'object' && provided !== null) {
+          shared = validBytes(provided.bytes ?? provided.sharedMemoryBytes ?? provided.sharedSystemMemoryBytes);
+          source = shared === null ? null : (typeof provided.source === 'string' ? provided.source : 'provider');
+        } else {
+          shared = validBytes(provided);
+          source = shared === null ? null : 'provider';
+        }
+      }
+      dev.sharedMemoryBytes = shared;
+      dev.sharedMemorySource = source;
+    }
+  }
+
+  /** Install the synchronous DXGI dedicated/shared capacity provider. */
+  setAdapterMemoryInfoOf(fn) {
+    this._adapterMemoryInfoOf = typeof fn === 'function' ? fn : null;
+    if (this._devices) {
+      for (const dev of this._devices) {
+        this._refreshMemoryInfo(dev);
+        dev.name = formatDeviceName(dev._plainName ?? dev.name, dev.vramBytes);
+      }
+    }
+  }
+
+  /** Install a synchronous shared-capacity provider used only for
+   * explicitly integrated/mobile devices without dedicated capacity. */
+  setSharedMemoryBytesOf(fn) {
+    this._sharedMemoryBytesOf = typeof fn === 'function' ? fn : null;
+    if (this._devices) for (const dev of this._devices) this._refreshMemoryInfo(dev);
+  }
+
   async listDevices() {
     const devices = await this._ensureDevices();
-    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId, deviceKey }) => ({
-      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, vramBytes, memType, pciSubsysVendorId, pciSubsysId, deviceKey,
+    return devices.map(({ id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, integrated, mobile, vramBytes, sharedMemoryBytes, sharedMemorySource, memType, pciSubsysVendorId, pciSubsysId, deviceKey }) => ({
+      id, name, type, pciVendorId, pciDeviceId, revId, bdf, driverVersion, graphicsClockMHz, numXeCores, integrated, mobile, vramBytes, sharedMemoryBytes, sharedMemorySource, memType, pciSubsysVendorId, pciSubsysId, deviceKey,
     }));
   }
 
@@ -4838,34 +4908,64 @@ export class IgclBackend {
     await this._device(deviceId);
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);
-    if (this._isUnavailable(lib.ctlPowerTelemetryGet)) {
-      throw new Error('ctlPowerTelemetryGet symbol unavailable in the IGCL runtime');
+    const integratedOrMobile = dev.integrated === true || dev.mobile === true;
+    const hasV2 = !this._isUnavailable(lib.ctlPowerTelemetryGetV2);
+    const hasV1 = !this._isUnavailable(lib.ctlPowerTelemetryGet);
+    if (!hasV2 && !hasV1) throw new Error('no IGCL power telemetry API is available in the runtime');
+
+    let telemetryType;
+    let telBuf;
+    let result;
+    if (hasV2) {
+      telemetryType = 'ctl_power_telemetry_v2_t';
+      telBuf = koffi.alloc(telemetryType, 1);
+      koffi.encode(telBuf, telemetryType, { Size: koffi.sizeof(telemetryType), Version: 1 });
+      result = lib.ctlPowerTelemetryGetV2(dev.handle, telBuf);
+      if (isPowerTelemetryV2CompatibilityError(result) && hasV1) {
+        telemetryType = 'ctl_power_telemetry_t';
+        telBuf = koffi.alloc(telemetryType, 1);
+        koffi.encode(telBuf, telemetryType, { Size: koffi.sizeof(telemetryType), Version: 1 });
+        result = lib.ctlPowerTelemetryGet(dev.handle, telBuf);
+      }
+    } else {
+      telemetryType = 'ctl_power_telemetry_t';
+      telBuf = koffi.alloc(telemetryType, 1);
+      koffi.encode(telBuf, telemetryType, { Size: koffi.sizeof(telemetryType), Version: 1 });
+      result = lib.ctlPowerTelemetryGet(dev.handle, telBuf);
     }
-    const telBuf = koffi.alloc('ctl_power_telemetry_t', 1);
-    koffi.encode(telBuf, 'ctl_power_telemetry_t', { Size: koffi.sizeof('ctl_power_telemetry_t'), Version: 1 });
-    const result = lib.ctlPowerTelemetryGet(dev.handle, telBuf);
     if (result !== CTL_RESULT.SUCCESS) {
-      throw new Error(`ctlPowerTelemetryGet failed: ${describeResult(result)}`);
+      const api = telemetryType === 'ctl_power_telemetry_v2_t' ? 'ctlPowerTelemetryGetV2' : 'ctlPowerTelemetryGet';
+      throw new Error(`${api} failed: ${describeResult(result)}`);
     }
 
     const item = (n) => {
-      const it = decodeItem(telBuf, 'ctl_power_telemetry_t', n);
+      const it = decodeItem(telBuf, telemetryType, n);
       return it.bSupported ? it.value : undefined;
     };
     const throttleBool = (n) => {
-      try { return koffi.decode(telBuf, koffi.offsetof('ctl_power_telemetry_t', n), 'bool'); } catch { return undefined; }
+      try { return koffi.decode(telBuf, koffi.offsetof(telemetryType, n), 'bool'); } catch { return undefined; }
     };
 
+    const currentClockMhz = item('gpuCurrentClockFrequency');
+    const effectiveClockMhz = item('gpuEffectiveClock');
+    const gpuEnergyJ = item('gpuEnergyCounter');
+    const totalEnergyJ = item('totalCardEnergyCounter');
     const sample = {
       t: item('timeStamp'),
-      gpuClockMhz: item('gpuCurrentClockFrequency'),
+      // IGCL exposes both an instantaneous clock and an effective clock. The
+      // effective value matches the shared-clock behavior of iGPUs/mobile
+      // parts, while discrete adapters must retain the instantaneous value
+      // used by the existing telemetry contract. Either field can be absent.
+      gpuClockMhz: integratedOrMobile
+        ? (effectiveClockMhz ?? currentClockMhz)
+        : (currentClockMhz ?? effectiveClockMhz),
       memClockMhz: item('vramCurrentClockFrequency'),
       tempC: item('gpuCurrentTemperature'),
       vramTempC: item('vramCurrentTemperature'),
       gpuVoltageV: item('gpuVoltage'),
-      gpuEnergyJ: item('gpuEnergyCounter'),
+      gpuEnergyJ,
       vramEnergyJ: item('vramEnergyCounter'),
-      totalEnergyJ: item('totalCardEnergyCounter'),
+      totalEnergyJ,
       fanRpm: [],
       throttle: {
         power: throttleBool('gpuPowerLimited'),
@@ -4875,8 +4975,9 @@ export class IgclBackend {
         util: throttleBool('gpuUtilizationLimited'),
       },
     };
+    if (integratedOrMobile) sample.powerEnergyJ = totalEnergyJ ?? gpuEnergyJ;
     try {
-      const off = koffi.offsetof('ctl_power_telemetry_t', 'fanSpeed');
+      const off = koffi.offsetof(telemetryType, 'fanSpeed');
       const sz = koffi.sizeof('ctl_oc_telemetry_item_t');
       for (let i = 0; i < 5; i++) {
         const f = koffi.decode(telBuf, off + i * sz, 'ctl_oc_telemetry_item_t');

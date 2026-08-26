@@ -81,14 +81,17 @@ export class TelemetryService {
    */
   handleSample(raw) {
     const sample = { ...raw };
-    if (this._lastRaw && raw && raw.gpuEnergyJ !== undefined && this._lastRaw.gpuEnergyJ !== undefined) {
+    const energyKey = raw && raw.powerEnergyJ !== undefined ? 'powerEnergyJ' : 'gpuEnergyJ';
+    const previousEnergyKey = this._lastRaw?._powerEnergyKey;
+    if (this._lastRaw && raw && energyKey === previousEnergyKey
+      && raw[energyKey] !== undefined && this._lastRaw[energyKey] !== undefined) {
       const dt = raw.t - this._lastRaw.t;
-      const de = raw.gpuEnergyJ - this._lastRaw.gpuEnergyJ;
+      const de = raw[energyKey] - this._lastRaw[energyKey];
       if (Number.isFinite(dt) && Number.isFinite(de) && dt > 0 && de >= 0) {
         sample.powerW = de / dt;
       }
     }
-    this._lastRaw = { ...raw };
+    this._lastRaw = { ...raw, _powerEnergyKey: energyKey };
     this._ring.push(sample);
     if (this._ring.length > this.ringSize) this._ring.splice(0, this._ring.length - this.ringSize);
     for (const cb of this._sampleCbs) { try { cb(sample); } catch { /* ignore */ } }

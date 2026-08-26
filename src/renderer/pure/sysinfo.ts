@@ -5,6 +5,7 @@
 // degrades honestly to '-' when null - the card never invents a number.
 
 import type { SysInfo, VideoControllerInfo } from '../types.ts';
+import { formatGpuMemoryGb } from './gpu-memory.ts';
 
 /**
  * Format a byte count as a human size ('32 GB'), '-' when null.
@@ -49,8 +50,7 @@ export function ghzFreq(mhz: number | null | undefined): string {
  * Honest '-' for null/non-finite/<= 0.
  */
 export function gbValue(bytes: number | null | undefined): string {
-  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) return '-';
-  return (bytes / 1e9).toFixed(1);
+  return formatGpuMemoryGb(bytes);
 }
 
 /**
@@ -286,12 +286,24 @@ export function isRealGpuController(c: { name?: string | null; pnpDeviceId?: str
  * Board-partner row decodes the AIB from the controller's SUBSYS through
  * pure/aib.ts aibOfPnpDeviceId (works for ANY GPU).
  * @param {SysInfo | null} sysinfo
- * @returns {{ name: string, vramBytes: number | null, pnpDeviceId: string | null } | null}
+ * @returns {{ name: string, vramBytes: number | null, sharedMemoryBytes?: number | null, pnpDeviceId: string | null } | null}
  */
-export function primaryVideoController(sysinfo: SysInfo | null): { name: string; vramBytes: number | null; pnpDeviceId: string | null } | null {
+export function primaryVideoController(sysinfo: SysInfo | null): {
+  name: string;
+  vramBytes: number | null;
+  sharedMemoryBytes?: number | null;
+  sharedMemorySource?: string | null;
+  pnpDeviceId: string | null;
+} | null {
   const controllers = Array.isArray(sysinfo?.videoControllers) ? sysinfo.videoControllers : [];
   const primary = controllers.find((c) => c.name && isRealGpuController(c));
   if (!primary?.name) return null;
+  const sharedMemoryBytes = typeof primary.sharedMemoryBytes === 'number' && Number.isFinite(primary.sharedMemoryBytes) && primary.sharedMemoryBytes > 0
+    ? primary.sharedMemoryBytes
+    : null;
+  const sharedMemorySource = typeof primary.sharedMemorySource === 'string' && primary.sharedMemorySource.length > 0
+    ? primary.sharedMemorySource
+    : null;
   return {
     name: primary.name,
     vramBytes: typeof primary.vramBytes === 'number' && Number.isFinite(primary.vramBytes) && primary.vramBytes > 0
@@ -300,5 +312,7 @@ export function primaryVideoController(sysinfo: SysInfo | null): { name: string;
     pnpDeviceId: typeof primary.pnpDeviceId === 'string' && primary.pnpDeviceId.length > 0
       ? primary.pnpDeviceId
       : null,
+    ...(sharedMemoryBytes !== null ? { sharedMemoryBytes } : {}),
+    ...(sharedMemorySource !== null ? { sharedMemorySource } : {}),
   };
 }

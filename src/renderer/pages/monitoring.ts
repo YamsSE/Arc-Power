@@ -25,7 +25,8 @@ import { consumeOverlayViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
 import type { TelemetrySample } from '../types.ts';
 import { setLatestFps } from '../log-state.ts';
-import { ghzFreq, gbValue } from '../pure/sysinfo.ts';
+import { ghzFreq } from '../pure/sysinfo.ts';
+import { formatGpuMemoryGb, gpuMemoryLabel } from '../pure/gpu-memory.ts';
 import { renderOverlaySettings } from './overlay-settings.ts';
 import {
   pushSeries,
@@ -124,8 +125,8 @@ function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; va
 
 /** M4M (B)/M4N (B): the GPU group - the DASHBOARD GPU tile set (Util FIRST,
  *  the M4N rename of 'Utilization' -> 'Util', 'Power' already matched) +
- *  the VRAM tile (M4N: the GPU-memory MiB tile becomes 'VRAM' in GB via the
- *  shared gbValue helper - 2971324416 bytes -> '3.0') + the FPS tile (the
+ *  the GPU-memory tile (M4N: the GPU-memory MiB tile becomes a source-aware
+ *  label in GB via the shared formatter - 2971324416 bytes -> '3.0') + the FPS tile (the
  *  mon-fps-tile class - pollFps owns it, last). */
 function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string; extraClass?: string }> {
   return [
@@ -134,7 +135,7 @@ function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; va
     { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
     { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
     { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
-    { label: 'VRAM', value: gbValue(sample?.gpuMemUsedBytes), unit: 'GB' },
+    { label: gpuMemoryLabel(sample?.gpuMemorySource), value: formatGpuMemoryGb(sample?.gpuMemUsedBytes), unit: 'GB' },
     // M16: the GPU voltage + the VRAM temperature tiles (the same fields
     // the overlay's new rows show - gpuVoltageV volts with 3 decimals,
     // vramTempC °C; both already ride the telemetry stream).

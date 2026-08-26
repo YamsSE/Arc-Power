@@ -647,6 +647,11 @@ export class MockBackend {
           : null
       : id === 0 ? { bus: 3, device: 0, function: 0 } : { bus: 0, device: 2, function: 0 };
     const duplicatePnpId = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_DUPLICATE';
+    const plainName = duplicatePnp && id === 2
+      ? 'Mock Ambiguous Arc Graphics'
+      : fs.deviceName;
+    const integrated = fs.integrated === true || isIntegratedStyleDevice({ name: plainName });
+    const mobile = fs.mobile === true || /\b(?:A|B)\d{3,4}M\b|\bMobile\b/i.test(plainName);
     return {
       id,
       // M4-B: the VRAM suffix is formatted ONCE here (listDevices time) -
@@ -668,7 +673,11 @@ export class MockBackend {
       driverVersion: fs.driverVersion,
       graphicsClockMHz: fs.graphicsClockMHz,
       numXeCores: fs.numXeCores,
+      integrated,
+      mobile,
       vramBytes: fs.vramBytes ?? null,
+      sharedMemoryBytes: fs.sharedMemoryBytes ?? null,
+      sharedMemorySource: fs.sharedMemorySource ?? null,
       memType: fs.memType ?? null,
       ...(duplicatePnp ? { pnpDeviceId: duplicatePnpId } : {}),
       deviceKey: deviceHardwareKey({

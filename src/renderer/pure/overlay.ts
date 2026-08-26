@@ -27,6 +27,7 @@
 // is a float and the raw digits used to show in the overlay readout).
 
 import { ghzFreq, gbValue } from './sysinfo.ts';
+import { gpuMemoryLabel, isUsableGpuMemoryBytes } from './gpu-memory.ts';
 import type { OverlayPosition } from '../types.ts';
 
 /** The 4 overlay corners (the persisted-truth owner is profile-store.js;
@@ -300,6 +301,7 @@ export interface OverlaySample {
   gpuClockMhz?: number | null;
   memClockMhz?: number | null;
   gpuMemUsedBytes?: number | null;
+  gpuMemorySource?: 'dedicated' | 'shared' | null;
   tempC?: number | null;
   powerW?: number | null;
   fanRpm?: number[] | null;
@@ -524,13 +526,19 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // ALL THREE are off.
   const vramFields: string[] = [];
   if (enabled.has('gpu-mem-clock')) vramFields.push(unit(memClock, (n) => String(n), 'MHz'));
-  if (enabled.has('gpu-vram')) vramFields.push(unit(vram, (n) => gbValue(n), 'GB'));
+  // A shared-memory source is only a meaningful overlay row when its live
+  // usage value exists. Do not show a misleading "Shared GPU Memory -" row
+  // during an unavailable shared-memory interval. Dedicated VRAM retains its
+  // established '-' degrade.
+  if (enabled.has('gpu-vram') && (s.gpuMemorySource !== 'shared' || isUsableGpuMemoryBytes(vram))) {
+    vramFields.push(unit(vram, (n) => gbValue(n), 'GB'));
+  }
   if (enabled.has('gpu-vram-temp')) vramFields.push(unit(vramTemp, (n) => String(Math.round(n)), '°C'));
   // M18/M19b: the header-divider column labels - the SIX labeled rows (the
   // cpu/gpu entries carry the chip labels when enabled); M19b: the api
   // entry joins - the API row is the SIXTH labeled row of the divider
   // column (the M18 headerless decision REVERSED).
-  const labels = { fps: 'FPS', cpu: cpuPrefix, memory: 'RAM', gpu: gpuPrefix, vram: 'VRAM', api: 'API' };
+  const labels = { fps: 'FPS', cpu: cpuPrefix, memory: 'RAM', gpu: gpuPrefix, vram: gpuMemoryLabel(s.gpuMemorySource), api: 'API' };
   // M19/M19b (the divider alignment - ONE rule): every NON-EMPTY row's
   // label is padded to the max label length with a TWO-space separator
   // after it (`label.padEnd(maxLabelLen) + '  ' + fields`), so EVERY

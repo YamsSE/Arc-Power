@@ -5,6 +5,45 @@
 
 import type { DeviceInfo } from '../types.ts';
 
+/** Return a durable identity only when the value is a non-empty string. */
+export function normalizeDeviceKey(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+/**
+ * Resolve a main-renderer selection push against the current inventory.
+ * Durable identity wins over the session-local numeric id; numeric fallback
+ * is allowed only for an unkeyed payload and an unkeyed inventory row.
+ */
+export function resolveSelectionDevice(
+  devices: DeviceInfo[],
+  deviceId: number,
+  deviceKey: string | null | undefined,
+): DeviceInfo | null {
+  const key = normalizeDeviceKey(deviceKey);
+  if (key !== null) return devices.find((device) => normalizeDeviceKey(device.deviceKey) === key) ?? null;
+  return devices.find((device) => device.id === deviceId && normalizeDeviceKey(device.deviceKey) === null) ?? null;
+}
+
+/**
+ * Match telemetry to the selected adapter. If either side has a durable
+ * identity, both must have the same identity; numeric IDs are a fallback
+ * only when neither side is durably identified.
+ */
+export function telemetryMatchesSelection(
+  sampleDeviceId: number | null | undefined,
+  sampleKey: string | null | undefined,
+  selectedDeviceId: number | null,
+  selectedKey: string | null | undefined,
+): boolean {
+  const sampleIdentity = normalizeDeviceKey(sampleKey);
+  const selectedIdentity = normalizeDeviceKey(selectedKey);
+  if (sampleIdentity !== null || selectedIdentity !== null) {
+    return sampleIdentity !== null && selectedIdentity !== null && sampleIdentity === selectedIdentity;
+  }
+  return sampleDeviceId === undefined || sampleDeviceId === selectedDeviceId;
+}
+
 /**
  * Resolve a boot selection. With a durable key, identity wins; an explicit
  * null/absent key marks a legacy numeric-only setting as unverified.

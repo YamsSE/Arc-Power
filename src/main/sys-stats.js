@@ -128,7 +128,7 @@ export function buildSysStatsScript() {
     // The class is EMPTY on this Z97 desktop (honest degrade to the perf
     // counter below).
     '$msa = @(Get-CimInstance -Namespace root\\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object CurrentTemperature)',
-    '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage)',
+    '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage,SharedUsage)',
     // M4-I: the GPUEngine rows (Name + UtilizationPercentage) - the OS
     // GPU-utilization counter. Instance names encode the adapter LUID +
     // the engine: "pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_
@@ -152,7 +152,7 @@ export function buildSysStatsScript() {
  *   fmtUtil: number | null, fmtPerf: number | null,
  *   maxClockMhz: number | null, tempK10Max: number | null,
  *   msaTempK10Max: number | null,
- *   gpuMemRows: Array<{ name: string | null, dedicatedUsage: number | null }>,
+ *   gpuMemRows: Array<{ name: string | null, dedicatedUsage: number | null, sharedUsage: number | null }>,
  *   gpuEngRows: Array<{ name: string | null, utilPct: number | null }>,
  *   powerW: number | null,
  * }}
@@ -179,6 +179,7 @@ export function parseSysStatsOutput(stdout) {
   const gpuMemRows = (Array.isArray(raw?.gpuMem) ? raw.gpuMem : []).map((g) => ({
     name: typeof g?.Name === 'string' && g.Name ? g.Name : null,
     dedicatedUsage: num(g?.DedicatedUsage),
+    sharedUsage: num(g?.SharedUsage),
   }));
   // M4-I: the GPUEngine rows - UtilizationPercentage may be null/absent
   // (an unpopulated counter -> gpuUtilPct reports null, the honest '-').
@@ -231,6 +232,35 @@ export function instanceMatchesLuid(instanceName, luid) {
   // ("luid_0x00000000_0x0000ADFB_phys_0" - live on the A770).
   const prefix = `luid_0x${(luid.high >>> 0).toString(16).padStart(8, '0')}_0x${(luid.low >>> 0).toString(16).padStart(8, '0')}_phys_`;
   return instanceName.toLowerCase().startsWith(prefix);
+}
+
+/**
+ * Aggregate GPUAdapterMemory usage for one selected adapter. All matching
+ * phys_N rows contribute finite, non-negative values; no first-row or ordinal
+ * choice is made. SharedUsage is selected only for an explicitly integrated
+ * or mobile target whose dedicated capacity is unavailable.
+ * @param {Array<{name: string|null, dedicatedUsage: number|null, sharedUsage: number|null}>} rows
+ * @param {{high: number, low: number}|null} luid
+ * @param {{integrated?: boolean, mobile?: boolean, dedicatedCapacityBytes?: number|null}} target
+ * @returns {{bytes: number, source: 'dedicated'|'shared'}|null}
+ */
+export function gpuMemoryUsageOf(rows, luid, target = {}) {
+  if (!luid) return null;
+  const integratedOrMobile = target?.integrated === true || target?.mobile === true;
+  const hasDedicatedCapacity = Number.isFinite(target?.dedicatedCapacityBytes)
+    && Number.isInteger(target.dedicatedCapacityBytes) && target.dedicatedCapacityBytes > 0;
+  const source = integratedOrMobile && !hasDedicatedCapacity ? 'shared' : 'dedicated';
+  const field = source === 'shared' ? 'sharedUsage' : 'dedicatedUsage';
+  let total = 0;
+  let count = 0;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!instanceMatchesLuid(row?.name, luid)) continue;
+    const value = row?.[field];
+    if (!Number.isFinite(value) || value < 0) continue;
+    total += value;
+    count += 1;
+  }
+  return count > 0 ? { bytes: total, source } : null;
 }
 
 /**
@@ -468,6 +498,9 @@ export function createSysStats(deps = {}) {
   let deviceIdHex = deps.deviceIdHex ?? null;
   let deviceBdf = deps.bdf ?? null;
   let luidOverride = deps.luid ?? null;
+  let targetIntegrated = deps.integrated === true;
+  let targetMobile = deps.mobile === true;
+  let dedicatedCapacityBytes = deps.dedicatedCapacityBytes ?? deps.vramBytes ?? null;
   const msrReader = deps.msrReader ?? null;
   const onMsrDegrade = deps.onMsrDegrade ?? null;
   // M17g: the RAM detector (GlobalMemoryStatusEx - native). The DEFAULT is
@@ -505,7 +538,7 @@ export function createSysStats(deps = {}) {
   // reads over it (the fast value wins per field; the slow value shows
   // through while a fast field is null - the first GetSystemTimes sample
   // or an MSR-less machine).
-  let laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
+  let laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, gpuMemorySource: null, cpuPowerW: null, gpuUtilPct: null };
   // M17g: the shared timer has an optional startup owner so a canceled,
   // deferred start cannot stop a newer session's lane.
   let slowHandle = null;
@@ -616,16 +649,25 @@ export function createSysStats(deps = {}) {
         // GPU memory: the perf-counter instance whose name encodes the
         // device's LUID (resolved via DXGI GetDesc1 by PCI device id).
         let gpuBytes = null;
+        let gpuMemorySource = null;
         let gpuUtil = null;
         if (deviceIdHex) {
           try {
             const luid = luidOverride ?? await luidOf(deviceIdHex, deviceBdf);
-            const row = raw.gpuMemRows.find((r) => instanceMatchesLuid(r.name, luid));
-            if (row && row.dedicatedUsage !== null && row.dedicatedUsage >= 0) gpuBytes = row.dedicatedUsage;
+            const memory = gpuMemoryUsageOf(raw.gpuMemRows, luid, {
+              integrated: targetIntegrated,
+              mobile: targetMobile,
+              dedicatedCapacityBytes,
+            });
+            if (memory) {
+              gpuBytes = memory.bytes;
+              gpuMemorySource = memory.source;
+            }
             // M4-I (D1): the GPUEngine aggregation for the SAME LUID.
             gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
           } catch {
             gpuBytes = null;
+            gpuMemorySource = null;
             gpuUtil = null;
           }
         }
@@ -641,6 +683,7 @@ export function createSysStats(deps = {}) {
           cpuFreqMhz: freqMhz,
           cpuTempC: frozenDrop(tempWindow),
           gpuMemUsedBytes: gpuBytes,
+          gpuMemorySource,
           // M4-H: the PowerMeter's formatted 'Power' (watts, single
           // sample); null when the class is absent (honest '-').
           cpuPowerW: raw.powerW,
@@ -717,13 +760,22 @@ export function createSysStats(deps = {}) {
       const nextPci = typeof target?.pciDeviceId === 'string' ? target.pciDeviceId : null;
       const nextBdf = target?.bdf ?? target?.osController?.bdf ?? null;
       const nextLuid = target?.osLuid ?? target?.osController?.luid ?? null;
+      const nextIntegrated = target?.integrated === true;
+      const nextMobile = target?.mobile === true;
+      const nextDedicated = target?.vramBytes ?? target?.osController?.vramBytes ?? null;
       if (nextPci === deviceIdHex
         && nextBdf === deviceBdf
-        && JSON.stringify(nextLuid) === JSON.stringify(luidOverride)) return;
+        && JSON.stringify(nextLuid) === JSON.stringify(luidOverride)
+        && nextIntegrated === targetIntegrated
+        && nextMobile === targetMobile
+        && nextDedicated === dedicatedCapacityBytes) return;
       deviceIdHex = nextPci;
       deviceBdf = nextBdf;
       luidOverride = nextLuid;
-      laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, cpuPowerW: null, gpuUtilPct: null };
+      targetIntegrated = nextIntegrated;
+      targetMobile = nextMobile;
+      dedicatedCapacityBytes = nextDedicated;
+      laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, gpuMemorySource: null, cpuPowerW: null, gpuUtilPct: null };
     },
 
     /**
@@ -838,6 +890,7 @@ export function createMockSysStats(overrides = {}) {
       cpuTempC: frozenDrop(tempWindow),
       cpuFreqMhz: base.cpuFreqMhz,
       gpuMemUsedBytes: base.gpuMemUsedBytes,
+      gpuMemorySource: base.gpuMemorySource ?? 'dedicated',
       cpuPowerW: noPowerMeter ? null : base.cpuPowerW,
       gpuUtilPct: base.gpuUtilPct,
       memoryUsedBytes: base.memoryUsedBytes,

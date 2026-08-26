@@ -176,9 +176,62 @@ export const OUTDUPL_ACCUMULATED_FRAMES_OFF = 16;
 // SharedSystemMemory@288, LUID AdapterLuid@296 (LowPart@296, HighPart@300),
 // UINT Flags@304 - 308 bytes padded to 312 (8-alignment).
 export const DXGI_ADAPTER_DESC1_SIZE = 312;
+export const DESC1_VENDOR_ID_OFF = 256;
 export const DESC1_DEVICE_ID_OFF = 260;
+export const DESC1_DEDICATED_VIDEO_MEMORY_OFF = 272;
+export const DESC1_DEDICATED_SYSTEM_MEMORY_OFF = 280;
+export const DESC1_SHARED_SYSTEM_MEMORY_OFF = 288;
 export const DESC1_LUID_LOW_OFF = 296;
 export const DESC1_LUID_HIGH_OFF = 300;
+
+/** Convert a native uint64/SIZE_T value to an exact safe JavaScript number. */
+export function safeUint64ToNumber(value) {
+  try {
+    const integer = typeof value === 'bigint' ? value
+      : typeof value === 'number' && Number.isInteger(value) ? BigInt(value)
+        : typeof value === 'string' && /^[0-9]+$/.test(value) ? BigInt(value)
+          : null;
+    if (integer === null || integer < 0n || integer > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(integer);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBdf(value) {
+  if (typeof value === 'string') {
+    const match = value.trim().match(/^(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+    if (match) {
+      return `${Number.parseInt(match[1] ?? '0', 16).toString(16).padStart(4, '0')}:${Number.parseInt(match[2], 16).toString(16).padStart(2, '0')}:${Number.parseInt(match[3], 16).toString(16).padStart(2, '0')}.${match[4]}`;
+    }
+  }
+  if (value && typeof value === 'object') {
+    const domain = Number(value.domain ?? value.segment ?? 0);
+    const bus = Number(value.bus);
+    const device = Number(value.device);
+    const fn = Number(value.function ?? value.func ?? 0);
+    if ([domain, bus, device, fn].every(Number.isInteger)
+      && domain >= 0 && bus >= 0 && bus <= 0xff && device >= 0 && device <= 0x1f && fn >= 0 && fn <= 7) {
+      return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+    }
+  }
+  return null;
+}
+
+function normalizePciId(value) {
+  if (typeof value === 'number' && Number.isInteger(value)) return value & 0xffff;
+  if (typeof value === 'string') {
+    const text = value.trim().replace(/^0x/i, '');
+    if (/^[0-9a-f]{1,8}$/i.test(text)) return Number.parseInt(text, 16) & 0xffff;
+  }
+  return null;
+}
+
+function deviceIdOf(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().replace(/^0x/i, '');
+  return /^[0-9a-f]{1,8}$/i.test(text) ? Number.parseInt(text, 16) & 0xffff : null;
+}
 // D3DKMT adapter-address bridge (gdi32.dll). The KMT enum value is the
 // documented KMTQAITYPE_ADAPTERADDRESS member (6); all calls are optional and
 // fail closed when WDDM/GDI does not expose the bridge.
@@ -368,8 +421,9 @@ export function createDxgiFpsAdapter(deps = {}) {
   let availableReason = null;
   let factory = null;
   let outputs = []; // [{ ptr, vtbl }]
-  let adapters = []; // [{ ptr, vtbl, deviceId, bdf }]
+  let adapters = []; // [{ ptr, deviceId, vendorId, bdf, memoryInfo }]
   let luidCache = new Map(); // deviceIdHex|bdf -> { high, low } | null
+  let memoryCache = new Map(); // deviceIdHex|bdf|vendorId -> memory info | null
   let baselineAt = null; // the GFS path's own baseline (ms)
   let baselinePresent = new Map(); // output ptr -> PresentCount baseline
   let dupDevice = null; // the session D3D11 device (DuplicateOutput's pDevice)
@@ -409,12 +463,20 @@ export function createDxgiFpsAdapter(deps = {}) {
         if (hrEnum < 0) break;
         const adapter = koffi.decode(adapterBuf, 0, 'void*');
         const desc1 = koffi.alloc('uint8', DXGI_ADAPTER_DESC1_SIZE);
+        let vendorId = null;
         let deviceId = null;
         let adapterBdf = null;
+        let memoryInfo = null;
         try {
           const hrDesc = slotFn(adapter, SLOT_GET_DESC1, HR1, adapter, desc1);
           if (hrDesc >= 0) {
+            vendorId = koffi.decode(desc1, DESC1_VENDOR_ID_OFF, 'uint32');
             deviceId = koffi.decode(desc1, DESC1_DEVICE_ID_OFF, 'uint32');
+            memoryInfo = {
+              dedicatedVideoMemoryBytes: safeUint64ToNumber(koffi.decode(desc1, DESC1_DEDICATED_VIDEO_MEMORY_OFF, 'uint64')),
+              dedicatedSystemMemoryBytes: safeUint64ToNumber(koffi.decode(desc1, DESC1_DEDICATED_SYSTEM_MEMORY_OFF, 'uint64')),
+              sharedSystemMemoryBytes: safeUint64ToNumber(koffi.decode(desc1, DESC1_SHARED_SYSTEM_MEMORY_OFF, 'uint64')),
+            };
             adapterBdf = resolveAdapterBdf(
               koffi.decode(desc1, DESC1_LUID_LOW_OFF, 'uint32'),
               koffi.decode(desc1, DESC1_LUID_HIGH_OFF, 'int32'),
@@ -429,7 +491,7 @@ export function createDxgiFpsAdapter(deps = {}) {
           if (hrOut < 0) break;
           outputs.push(koffi.decode(outputBuf, 0, 'void*'));
         }
-        adapters.push({ ptr: adapter, deviceId, bdf: adapterBdf });
+        adapters.push({ ptr: adapter, vendorId, deviceId, bdf: adapterBdf, memoryInfo });
       }
       if (adapters.length === 0) {
         availableReason = 'no DXGI adapters enumerated';
@@ -657,7 +719,8 @@ export function createDxgiFpsAdapter(deps = {}) {
      */
     async adapterLuidOf(deviceIdHex, bdf = null) {
       if (!init()) return null;
-      const cacheKey = `${String(deviceIdHex ?? '')}|${String(bdf ?? '')}`;
+      const normalizedBdf = normalizeBdf(bdf);
+      const cacheKey = `${String(deviceIdHex ?? '')}|${normalizedBdf ?? String(bdf ?? '')}`;
       if (luidCache.has(cacheKey)) return luidCache.get(cacheKey);
       let found = null;
       try {
@@ -669,9 +732,9 @@ export function createDxgiFpsAdapter(deps = {}) {
         // A PCI device id alone is not a durable bridge when same-model
         // adapters are present. A BDF bridge may select a provider-enriched
         // adapter; otherwise degrade to null rather than alias adapter 0.
-        const selected = candidates.length === 1
-          ? candidates[0]
-          : candidates.find((adapter) => bdf && adapter.bdf === bdf) ?? null;
+        const selected = normalizedBdf !== null
+          ? candidates.find((adapter) => normalizeBdf(adapter.bdf) === normalizedBdf) ?? null
+          : candidates.length === 1 ? candidates[0] : null;
         if (selected) {
           const desc1 = koffi.alloc('uint8', DXGI_ADAPTER_DESC1_SIZE);
           const hrDesc = slotFn(selected.ptr, SLOT_GET_DESC1, HR1, selected.ptr, desc1);
@@ -686,6 +749,42 @@ export function createDxgiFpsAdapter(deps = {}) {
         found = null;
       }
       luidCache.set(cacheKey, found);
+      return found;
+    },
+
+    /**
+     * Resolve DXGI adapter memory by physical identity. A valid BDF is a hard
+     * constraint; without one, only a unique vendor+device match is allowed.
+     * No enumeration ordinal is ever used as an identity fallback.
+     * @param {string} deviceIdHex
+     * @param {string|object|null} bdf
+     * @param {string|number|null} vendorId
+     * @returns {{ dedicatedVideoMemoryBytes: number|null, dedicatedSystemMemoryBytes: number|null, sharedSystemMemoryBytes: number|null }|null}
+     */
+    adapterMemoryInfoOf(deviceIdHex, bdf = null, vendorId = null) {
+      if (!init()) return null;
+      const normalizedBdf = normalizeBdf(bdf);
+      const normalizedVendor = normalizePciId(vendorId);
+      const cacheKey = `${String(deviceIdHex ?? '')}|${normalizedBdf ?? String(bdf ?? '')}|${String(normalizedVendor ?? '')}`;
+      if (memoryCache.has(cacheKey)) return memoryCache.get(cacheKey);
+      let found = null;
+      try {
+        const deviceId = deviceIdOf(deviceIdHex);
+        if (deviceId === null) return null;
+        const candidates = adapters.filter((adapter) => adapter.deviceId === deviceId);
+        let selected = null;
+        if (normalizedBdf !== null) {
+          const bdfMatches = candidates.filter((adapter) => normalizeBdf(adapter.bdf) === normalizedBdf);
+          selected = bdfMatches.length === 1 ? bdfMatches[0] : null;
+        } else if (normalizedVendor !== null) {
+          const vendorMatches = candidates.filter((adapter) => normalizePciId(adapter.vendorId) === normalizedVendor);
+          selected = vendorMatches.length === 1 ? vendorMatches[0] : null;
+        }
+        if (selected?.memoryInfo) found = { ...selected.memoryInfo };
+      } catch {
+        found = null;
+      }
+      memoryCache.set(cacheKey, found);
       return found;
     },
 
@@ -765,6 +864,8 @@ export function createDxgiFpsAdapter(deps = {}) {
       } catch { /* best effort */ }
       baselineAt = null;
       baselinePresent = new Map();
+      luidCache = new Map();
+      memoryCache = new Map();
       ring = [];
     },
   };

@@ -187,6 +187,10 @@
  *   numXeCores: number,
  *   vramBytes: number|null,  // M4-B: VRAM in bytes (null when unknown) - the
  *                            // name already carries the formatted suffix
+ *   sharedMemoryBytes?: number|null, // shared capacity, never VRAM
+ *   sharedMemorySource?: string|null,
+ *   integrated?: boolean,    // IGCL graphics_adapter_properties bit 0
+ *   mobile?: boolean,        // name-derived mobile SKU fallback
  * }} DeviceInfo
  */
 
@@ -198,6 +202,8 @@
  *   gpuClockMhz?: number, memClockMhz?: number, tempC?: number,
  *   memTempC?: number, vramTempC?: number, gpuVoltageV?: number,
  *   gpuEnergyJ?: number, vramEnergyJ?: number, totalEnergyJ?: number,
+ *   powerEnergyJ?: number,  // selected raw counter for integrated/mobile power
+ *   gpuMemorySource?: 'dedicated'|'shared'|null,
  *   fanRpm?: number[], utilPct?: number,
  *   throttle: { power?: boolean, temp?: boolean, current?: boolean, voltage?: boolean, util?: boolean },
  * }} RawTelemetrySample

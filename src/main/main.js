@@ -1599,6 +1599,16 @@ async function main() {
         },
       }
     : createDxgiFpsAdapter();
+  // DXGI is the synchronous static-capacity provider for the real IGCL
+  // backend. Install it only after the FPS adapter exists; mock/headless
+  // paths keep their deterministic/no-hardware behavior.
+  if (!mock && typeof rawBackend?.setAdapterMemoryInfoOf === 'function') {
+    rawBackend.setAdapterMemoryInfoOf((device) => fpsAdapter.adapterMemoryInfoOf?.(
+      device?.pciDeviceId,
+      device?.bdf,
+      device?.pciVendorId,
+    ) ?? null);
+  }
   // M10a: the foreground-window Graphics-API detector. THE DETERMINISM
   // SEAM (plan-review M-3): the REAL koffi detector runs ONLY in the
   // non-mock path - mock/ui-verify mode leaves the null-returning DEFAULT
@@ -2680,6 +2690,7 @@ async function main() {
     // anything else the IntelMSR.bin path. The module itself re-checks the
     // CPUID vendor + family 0x17-0x1A.
     let deviceIdHex = null;
+    let initialTarget = null;
     try {
       const cached = await sysinfo?.get?.();
       // The GPU-memory match's PCI id now comes from the backend's OWN
@@ -2688,6 +2699,7 @@ async function main() {
       // name a different adapter).
       const devices = await backend.listDevices();
       const row = devices.find((d) => typeof d?.pciDeviceId === 'string' && /0x[0-9a-fA-F]{6,8}/.test(d.pciDeviceId)) ?? devices[0];
+      initialTarget = row;
       const m = typeof row?.pciDeviceId === 'string' ? row.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/) : null;
       if (m) deviceIdHex = `0x${m[1].toLowerCase()}`;
       msrReader = createMsrReader({ cpuVendor: cached?.cpu?.manufacturer ?? null });
@@ -2697,6 +2709,10 @@ async function main() {
     }
     sysStatsHolder.current = createSysStats({
       deviceIdHex,
+      bdf: initialTarget?.bdf ?? null,
+      integrated: initialTarget?.integrated === true,
+      mobile: initialTarget?.mobile === true,
+      dedicatedCapacityBytes: initialTarget?.vramBytes ?? null,
       luidOf: async (devId, bdf) => fpsAdapter.adapterLuidOf?.(devId, bdf) ?? null,
       msrReader,
       // M4L (B4): the once-per-session honest degrade note (the pawnio.eu

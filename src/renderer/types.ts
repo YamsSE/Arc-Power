@@ -195,10 +195,17 @@ export interface DeviceInfo {
   driverVersion: string;
   graphicsClockMHz: number;
   numXeCores: number;
+  /** IGCL graphics_adapter_properties bit 0. */
+  integrated?: boolean;
+  /** Name-derived mobile SKU fallback used for telemetry policy. */
+  mobile?: boolean;
   /** Stable PCI/BDF identity; session `id` is intentionally not durable. */
   deviceKey?: string;
   /** M4-B: VRAM in bytes for the display-name suffix. */
   vramBytes?: number | null;
+  /** Shared system-memory capacity; never included in VRAM/name formatting. */
+  sharedMemoryBytes?: number | null;
+  sharedMemorySource?: string | null;
   /** M4-I: memory type carried by the backend. */
   memType?: string | null;
   /** M17c: IGCL subsystem fields carried on the device payload. */
@@ -211,6 +218,8 @@ export interface DeviceInfo {
   osController?: {
     name: string;
     vramBytes: number | null;
+    sharedMemoryBytes?: number | null;
+    sharedMemorySource?: string | null;
     pnpDeviceId: string | null;
     driverVersion: string | null;
     rebarActive: boolean | null;
@@ -379,6 +388,9 @@ export interface StartupGetState {
 export interface VideoControllerInfo {
   name: string | null;
   vramBytes: number | null;
+  /** Shared system-memory capacity, when Windows exposes it. */
+  sharedMemoryBytes?: number | null;
+  sharedMemorySource?: string | null;
   pnpDeviceId: string | null;
   /** M4-I: the controller's display-driver version (works on ANY GPU -
    *  the no-Intel device card's Driver version row source; null when the
@@ -457,6 +469,8 @@ export interface TelemetrySample {
   gpuEnergyJ?: number;
   vramEnergyJ?: number;
   totalEnergyJ?: number;
+  /** Raw energy counter selected by the backend for integrated/mobile power. */
+  powerEnergyJ?: number;
   fanRpm?: number[];
   utilPct?: number;
   powerW?: number;
@@ -469,6 +483,8 @@ export interface TelemetrySample {
   cpuTempC?: number | null;
   cpuFreqMhz?: number | null;
   gpuMemUsedBytes?: number | null;
+  /** Live GPUAdapterMemory usage source for the selected adapter. */
+  gpuMemorySource?: 'dedicated' | 'shared' | null;
   /** M4-H: CPU package wattage from the PowerMeter perf counter
    *  (Win32_PerfFormattedData_PowerMeter_PowerMeter - property 'Power' in
    *  watts). The class is often ABSENT on desktops, so it honestly
