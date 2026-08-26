@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
   telemetryStart: (deviceId) => ipcRenderer.invoke('telemetry-start', deviceId),
+  telemetryLatest: (deviceId) => ipcRenderer.invoke('telemetry-latest', deviceId),
   // Basic Overlay secondary adapters; the selected main-device lane remains
   // owned by telemetryStart.
   overlayTelemetryStart: (deviceIds) => ipcRenderer.invoke('overlay-telemetry-start', deviceIds),

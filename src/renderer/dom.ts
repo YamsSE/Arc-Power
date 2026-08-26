@@ -15,11 +15,16 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   children: Array<Node | string | null | undefined> = [],
 ): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
+  // The `value` attribute on a select does not reliably establish its live
+  // selection, especially when options are appended after the attribute is
+  // set. Defer it until after children are present and assign the property.
+  let selectValue: string | undefined;
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined || value === null || value === false) continue;
     if (key === 'class') node.className = String(value);
     else if (key === 'text') node.textContent = String(value);
     else if (key === 'dataset') Object.assign(node.dataset, value as Record<string, string>);
+    else if (key === 'value' && tag === 'select' && typeof value === 'string') selectValue = value;
     else if (key.startsWith('on')) {
       // onClick -> click, oninput -> input, ... (standard DOM event names)
       node.addEventListener(key.slice(2).toLowerCase(), value as EventListener);
@@ -31,6 +36,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   for (const c of children) {
     if (c !== null && c !== undefined) node.append(c);
   }
+  if (selectValue !== undefined) (node as HTMLSelectElement).value = selectValue;
   return node;
 }
 

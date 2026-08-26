@@ -99,6 +99,7 @@ export interface ArcPowerApi {
    *  (a sentinel-keyed timer pushing sys-stats-ONLY samples). A non-negative
    *  integer starts the per-device telemetry. */
   telemetryStart(deviceId: number | null): Promise<void>;
+  telemetryLatest(deviceId: number): Promise<TelemetrySample | null>;
   /** Basic Overlay secondary-adapter lanes; an empty list hides GPU2. */
   overlayTelemetryStart(deviceIds: number[]): Promise<void>;
   /** Resize the Basic Overlay after its all-device inventory is rendered. */

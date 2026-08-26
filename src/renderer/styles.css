@@ -774,7 +774,7 @@ html, body {
 /* ------------------------------------------------------------------- cards */
 
 .card {
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 97%, var(--bg) 3%), color-mix(in srgb, var(--bg-elev) 99%, var(--bg) 1%));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), var(--bg-elev));
   border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -2097,7 +2097,7 @@ input[type="number"] {
 }
 .settings-card > .card-note { margin-left: 4px; margin-right: 4px; }
 .maintenance-card .card-note { max-width: 58ch; }
-.maintenance-row { justify-content: flex-end; margin-top: 10px; }
+.maintenance-row { justify-content: flex-start; margin-top: 10px; }
 .maintenance-action {
   padding: 7px 14px;
   border: 1px solid var(--border-strong);
@@ -2253,7 +2253,7 @@ input[type="number"] {
 
 /* M5: the Settings Overlay card. */
 .overlay-hotkey-row { margin-top: 10px; }
-.overlay-open-row { justify-content: flex-end; }
+.overlay-open-row { justify-content: flex-start; }
 .overlay-hotkey-card .settings-row {
   justify-content: flex-start;
   gap: 10px;

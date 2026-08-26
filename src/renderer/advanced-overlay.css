@@ -251,18 +251,22 @@ html, body {
 }
 
 .adv-readout-label {
+  width: 100%;
   font-size: 9.5px;
   font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-dim);
+  text-align: center;
 }
 
 .adv-readout-value {
+  width: 100%;
   font-family: var(--mono);
   font-size: 12.5px;
   font-weight: 650;
   color: var(--accent);
+  text-align: center;
 }
 
 /* The segmented Tabs control: the accent underline + the active tab uses
@@ -383,7 +387,7 @@ html, body {
    ======================================================================== */
 
 .card {
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 97%, var(--bg) 3%), color-mix(in srgb, var(--bg-elev) 99%, var(--bg) 1%));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), var(--bg-elev));
   border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
   border-radius: var(--radius);
   box-shadow: var(--shadow);

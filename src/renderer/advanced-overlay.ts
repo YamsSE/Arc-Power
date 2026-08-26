@@ -162,7 +162,9 @@ api.onTelemetrySample((sample) => {
   const live = store.get();
   const selected = live.devices.find((device) => device.id === live.deviceId);
   const sampleKey = normalizeDeviceKey(sample.deviceKey);
-  const selectedKey = normalizeDeviceKey(selected?.deviceKey) ?? normalizeDeviceKey(live.caps?.deviceKey);
+  // Capabilities come from the same main-process target as telemetry and are
+  // authoritative when inventory numbering or labels change.
+  const selectedKey = normalizeDeviceKey(live.caps?.deviceKey) ?? normalizeDeviceKey(selected?.deviceKey);
   if (!telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)) return;
   store.set({ latestSample: sample });
   renderReadout(sample);
@@ -259,6 +261,28 @@ function renderReadout(sample: TelemetrySample | null): void {
   memoryEl.textContent = memory === '-' ? '-' : `${memory} GB`;
 }
 
+// The push stream is the normal live path, but the panel can be opened after
+// the main telemetry lane's last tick. Read the main-process snapshot once so
+// the header is populated immediately, then let pushes keep it current.
+async function syncLatestTelemetry(deviceId: number, generation: number): Promise<void> {
+  try {
+    const sample = await api.telemetryLatest(deviceId);
+    if (!sample) return;
+    const live = store.get();
+    if (!panelIdentityMatches(deviceId, selectedDeviceKey(live), generation)) return;
+    const selected = live.devices.find((device) => device.id === live.deviceId);
+    const sampleKey = normalizeDeviceKey(sample.deviceKey);
+    const selectedKey = normalizeDeviceKey(live.caps?.deviceKey) ?? normalizeDeviceKey(selected?.deviceKey);
+    if (!telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)) return;
+    store.set({ latestSample: sample });
+    renderReadout(sample);
+    if (activeTab === 'fan') updateFanReadout(contentEl, { store });
+  } catch {
+    // The snapshot is a convenience for startup; the push stream remains
+    // authoritative if this optional read is unavailable.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Boot: deviceGet -> getCapabilities -> getCurrentSettings -> render
 // ---------------------------------------------------------------------------
@@ -301,6 +325,7 @@ async function boot(): Promise<void> {
     });
     deviceEl.textContent = pushed.caps.deviceName || pushedTarget.name || 'Unknown GPU';
     renderTab();
+    await syncLatestTelemetry(pushedTarget.id, panelGeneration);
     return;
   }
   // A selection that arrived while the initial enumeration was in flight
@@ -329,6 +354,7 @@ async function boot(): Promise<void> {
   store.set({ caps, state });
   deviceEl.textContent = caps?.deviceName || 'Unknown GPU';
   renderTab();
+  await syncLatestTelemetry(deviceId, bootGeneration);
 }
 
 // ---------------------------------------------------------------------------

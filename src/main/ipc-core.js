@@ -981,6 +981,15 @@ export function createIpcHandlers({
   let latestMainSelectionGeneration = -1;
   /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
+  /** The most recent fully composed sample for each active telemetry lane.
+   * The advanced overlay can open between timer ticks, so it needs a
+   * read-on-demand snapshot in addition to the push stream. */
+  const latestTelemetry = new Map();
+  const emitTelemetry = (payload) => {
+    const key = Number.isInteger(payload?.deviceId) ? payload.deviceId : NULL_DEVICE_KEY;
+    latestTelemetry.set(key, payload);
+    emit('telemetry:sample', payload);
+  };
   /** Overlay-only secondary GPU services. The main renderer keeps one
    * selected-device service; the HUD may additionally subscribe to every
    * other inventory row without changing the selected-device state flow. */
@@ -1083,7 +1092,7 @@ export function createIpcHandlers({
             vendorSample = null; // a vendor read failure skips this tick's readouts
           }
           if (generation !== telemetryGeneration) return;
-          emit('telemetry:sample', {
+          emitTelemetry({
             t: Date.now(),
             deviceId: null,
             sessionGeneration: generation,
@@ -1156,7 +1165,7 @@ export function createIpcHandlers({
           let sample = null;
           try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
           if (generation !== telemetryGeneration) return;
-          emit('telemetry:sample', {
+          emitTelemetry({
             t: Date.now(),
             deviceId,
             deviceKey: target?.deviceKey ?? null,
@@ -1207,7 +1216,7 @@ export function createIpcHandlers({
         extra = {};
       }
       if (generation !== telemetryGeneration) return;
-      emit('telemetry:sample', {
+      emitTelemetry({
         deviceId,
         deviceKey: target?.deviceKey ?? null,
         sessionGeneration: generation,
@@ -1276,7 +1285,7 @@ export function createIpcHandlers({
             let sample = null;
             try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
             if (generation !== overlayTelemetryGeneration) return;
-            emit('telemetry:sample', {
+            emitTelemetry({
               t: Date.now(),
               deviceId,
               deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
@@ -1296,7 +1305,7 @@ export function createIpcHandlers({
       const svc = new TelemetryService(backend, deviceId, { pollMs });
       svc.onSample((sample) => {
         if (generation !== overlayTelemetryGeneration) return;
-        emit('telemetry:sample', {
+        emitTelemetry({
           deviceId,
           deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
           sessionGeneration: telemetryGeneration,
@@ -1322,6 +1331,7 @@ export function createIpcHandlers({
       try { await svc.stop(); } catch { /* best effort */ }
     }
     telemetry.clear();
+    latestTelemetry.clear();
     // M17g: the slow lane is tied to the telemetry session lifecycle -
     // stopped with stopAllTelemetry (the background PowerShell cadence
     // must not outlive the last push; an in-flight query finishes on its
@@ -1935,6 +1945,10 @@ export function createIpcHandlers({
         assertValidDeviceId(deviceId);
         await startTelemetry(deviceId);
       },
+      'telemetry-latest': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        return latestTelemetry.get(deviceId) ?? null;
+      },
       'overlay-telemetry-start': async (deviceIds) => {
         if (!Array.isArray(deviceIds)) throw new Error('overlay telemetry device list must be an array');
         await startOverlayTelemetry(deviceIds);
@@ -1949,6 +1963,7 @@ export function createIpcHandlers({
           // service in the map; otherwise a rollback can be followed by a
           // stale timer appearing after this stop returns.
           telemetryGeneration += 1;
+          latestTelemetry.delete(NULL_DEVICE_KEY);
           if (svc) {
             await svc.stop();
             telemetry.delete(NULL_DEVICE_KEY);
@@ -1960,6 +1975,7 @@ export function createIpcHandlers({
         // The map can still be empty while target/provider/service startup
         // awaits. Stop must invalidate that pending start unconditionally.
         telemetryGeneration += 1;
+        latestTelemetry.delete(deviceId);
         if (svc) {
           await svc.stop();
           telemetry.delete(deviceId);
