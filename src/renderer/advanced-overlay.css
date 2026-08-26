@@ -32,7 +32,8 @@
   --radius: 10px;
   --radius-sm: 6px;
   --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
   --bg-panel: #0d1017;
   --control-bg: #0a0d13;
@@ -147,6 +148,9 @@ html, body {
   color: var(--text);
   font-family: var(--font);
   font-size: 14px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-synthesis: none;
   overflow: hidden;
   user-select: none;
 }
@@ -192,8 +196,9 @@ html, body {
 }
 
 .adv-wordmark {
+  font-family: var(--font-display);
   font-size: 14.5px;
-  font-weight: 700;
+  font-weight: 650;
   letter-spacing: 0.02em;
   pointer-events: none;
 }
@@ -385,7 +390,7 @@ html, body {
   margin-bottom: 10px;
 }
 
-.card-title { margin: 0 0 12px; font-size: 15px; font-weight: 650; }
+.card-title { margin: 0 0 12px; font-family: var(--font-display); font-size: 15px; font-weight: 600; }
 
 .card-stack { display: flex; flex-direction: column; gap: 14px; }
 
@@ -580,9 +585,10 @@ html, body {
 .oc-value {
   min-width: 92px;
   text-align: right;
-  font-family: var(--mono);
+  font-family: var(--font-display);
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .oc-meta { margin-top: 2px; display: flex; align-items: center; gap: 8px; }

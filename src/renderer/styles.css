@@ -23,7 +23,12 @@
   --radius: 10px;
   --radius-sm: 6px;
   --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Windows-first UI typography: Segoe UI Variable has cleaner large
+     counters and smoother weight interpolation than the generic system-ui
+     fallback, especially in bold headings and live metric values. The
+     remaining fallbacks keep the layout usable on older Windows versions. */
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
   /* 1.0.1 Themes: the recessed input/option surface (fan-point editor
      inputs, select dropdown options). REFERENCED by .fan-point-input +
@@ -179,6 +184,9 @@ html, body {
   font-family: var(--font);
   font-size: 14px;
   line-height: 1.45;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-synthesis: none;
   /* M2C-B B4: theme scrollbars with a native fallback (Firefox). */
   scrollbar-width: thin;
   scrollbar-color: var(--accent-strong) var(--bg-inset);
@@ -337,8 +345,9 @@ html, body {
 }
 
 .titlebar-brand-name {
+  font-family: var(--font-display);
   font-size: 11.5px;
-  font-weight: 700;
+  font-weight: 650;
   letter-spacing: 0.03em;
   line-height: 1;
   color: var(--text);
@@ -413,9 +422,10 @@ html, body {
    a BOLD weight. The bar is the ::after pseudo-element, so .sidebar-brand
    stays a block (the two spans sit inline). */
 .sidebar-brand {
+  font-family: var(--font-display);
   font-size: 17px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
+  font-weight: 700;
+  letter-spacing: 0.025em;
   padding: 0 10px;
   color: var(--text);
 }
@@ -626,7 +636,7 @@ html, body {
   padding: 12px 28px;
 }
 
-.gpu-name { font-weight: 650; font-size: 15px; }
+.gpu-name { font-family: var(--font-display); font-weight: 600; font-size: 15px; }
 .gpu-meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
 
 .gpu-status {
@@ -738,7 +748,7 @@ html, body {
 
 .page-title-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .page-title-row .device-select { min-width: 180px; }
-.page-title { margin: 0; font-size: 22px; font-weight: 700; }
+.page-title { margin: 0; font-family: var(--font-display); font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
 .page-subtitle { margin: -8px 0 0; color: var(--text-muted); max-width: 640px; }
 .page-actions {
   display: flex;
@@ -758,7 +768,7 @@ html, body {
   padding: 18px 20px;
 }
 
-.card-title { margin: 0 0 12px; font-size: 15px; font-weight: 650; }
+.card-title { margin: 0 0 12px; font-family: var(--font-display); font-size: 15px; font-weight: 600; }
 
 .card-grid {
   display: grid;
@@ -1041,8 +1051,15 @@ select {
   gap: 0;
 }
 
-.stat-value { font-size: 21px; font-weight: 700; font-family: var(--mono); line-height: 1.1; }
-.stat-unit { font-size: 10.5px; color: var(--accent); font-family: var(--mono); margin-top: 1px; }
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+}
+.stat-unit { font-size: 10.5px; color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 1px; }
 .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 
 /* M4-H (C3): the dashboard live readout is TWO labeled groups - CPU above
@@ -1147,9 +1164,10 @@ select {
 .oc-value {
   min-width: 92px;
   text-align: right;
-  font-family: var(--mono);
+  font-family: var(--font-display);
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ------------------------------------------- OC-mode toggle (M3-C-E) ---- */
