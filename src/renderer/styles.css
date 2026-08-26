@@ -896,6 +896,29 @@ select {
 }
 .device-card-head .card-title { margin: 0 0 12px; }
 
+/* M68: hardware family artwork mirrors IGS without changing the card's
+   information layout. The selected GPU icon lives in the same header row as
+   the adapter selector, so it is rebuilt with the selected device rather
+   than being a one-time boot decoration. */
+.hardware-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.hardware-card-heading > .card-title { margin: 0 0 12px; }
+.hardware-card-icon {
+  display: block;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  object-fit: contain;
+  border-radius: 7px;
+}
+.device-card-head .hardware-card-icon { margin-right: 2px; }
+
 /* ------------------------------------------------------------------ buttons */
 
 .btn {

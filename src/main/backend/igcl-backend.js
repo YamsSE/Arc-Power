@@ -295,10 +295,12 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees. HardwareModeSet is deliberate here: IGS applies a
-// selector change as a real display modeset, so the driver must be allowed to
-// transition the output instead of merely accepting an OS-side preference.
-function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = true }) {
+// read-back agrees. Ordinary mode preferences use the virtual-modeset path;
+// forcing HardwareModeSet=true makes the driver attempt a physical modeset
+// and can leave the active scaler at Identity even though the preferred mode
+// was accepted. Custom scaling remains caller-controlled because it may need
+// the physical display transition exposed by IGS.
+function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = false }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
   let lastBuf = null;
@@ -3744,10 +3746,11 @@ export class IgclBackend {
             let message;
             let activeReadBackEqual = false;
             let preferredReadBackEqual = false;
+            let got = null;
             if (getResult !== CTL_RESULT.SUCCESS) {
               message = `set succeeded but read-back failed (${describeResult(getResult)})`;
             } else {
-              const got = current.settings;
+              got = current.settings;
               activeReadBackEqual = got.enable === true
                 && got.scalingType === flag
                 && (!custom || (got.customX === custom.x && got.customY === custom.y));
@@ -3770,12 +3773,24 @@ export class IgclBackend {
                 : registryFallback?.ok === true || (!registryNeedsSync && registryScalingState?.value === registryValue);
             }
             // A registry preference alone cannot prove that the selected
-            // output scaler changed. Require the native active/preferred
-            // read-back, and require the adapter preference too whenever that
-            // persistence surface is available.
-            const nativeReadBackEqual = activeReadBackEqual;
-            const persistedReadBackEqual = custom || !registryAvailable || registryReadBackEqual;
+            // output scaler changed. For ordinary GPU methods, however, IGCL
+            // can legitimately keep the active output at Identity while the
+            // version-1 PreferredScalingType records the requested GPU
+            // method. That is the same active/preferred split used by IGS;
+            // accept it only when the native preferred field matches the
+            // exact requested flag. Registry state remains persistence
+            // support, never proof of the method itself.
+            const preferredGpuMethodReadBackEqual = !custom
+              && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
+              && current.version === 1
+              && got?.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
+              && preferredReadBackEqual;
+            const nativeReadBackEqual = activeReadBackEqual || preferredGpuMethodReadBackEqual;
+            const persistedReadBackEqual = custom !== null || !registryAvailable || registryReadBackEqual;
             readBackEqual = nativeReadBackEqual && persistedReadBackEqual;
+            if (preferredGpuMethodReadBackEqual) {
+              message = 'preferred GPU scaling method verified; the active output remains Identity for the current display timing';
+            }
             if (!readBackEqual && !message) {
               message = `scaling read-back did not prove the requested active and persisted mode (active=${activeReadBackEqual}, preferred=${preferredReadBackEqual}, registry=${registryReadBackEqual})`;
             }

@@ -23,6 +23,7 @@ import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue, ghzFreq } from '../pure/sysinfo.ts';
+import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { selectedDashboardController } from '../pure/dashboard.ts';
 import { aibOfPnpDeviceId } from '../pure/aib.ts';
 import type { TelemetrySample } from '../types.ts';
@@ -68,6 +69,18 @@ function noIntelClocksText(sample: TelemetrySample | null): string {
 
 function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
+}
+
+function hardwareIcon(path: string | null, alt: string, kind: 'cpu' | 'gpu'): HTMLElement | null {
+  if (!path) return null;
+  return el('img', {
+    class: `hardware-card-icon hardware-card-icon-${kind}`,
+    src: path,
+    alt,
+    loading: 'eager',
+    decoding: 'async',
+    dataset: { hardwareIcon: kind },
+  });
 }
 
 /** M4-H (C3)/M4M (D)/M4N (A): the CPU group of the live readout - Util
@@ -220,6 +233,9 @@ export const dashboardPage: Page = {
     const rebar = rebarState(rebarController);
     const osRebar = rebarState(rebarController);
     const sysRows = cpuCardRows(s.sysinfo);
+    const cpuName = s.sysinfo?.cpu?.name ?? '';
+    const gpuName = noIntelPresentation ? (s.osGpu?.name ?? '') : (device?.name ?? '');
+    const gpuIcon = gpuIconPath(gpuIconKeyOf(gpuName, device?.gpuVendor));
 
     clear(container);
     container.append(
@@ -237,7 +253,10 @@ export const dashboardPage: Page = {
         // static cores/threads half comes from the sysinfo payload, the
         // live half updates IN PLACE on ticks like the GPU clocks row.
         el('section', { class: 'card sysinfo-card' }, [
-          el('h2', { class: 'card-title', text: 'CPU & Memory' }),
+          el('div', { class: 'hardware-card-heading' }, [
+            el('h2', { class: 'card-title', text: 'CPU & Memory' }),
+            hardwareIcon(cpuIconPath(cpuIconKeyOf(cpuName)), `${cpuName || 'CPU'} icon`, 'cpu'),
+          ]),
           el('div', { class: 'card-body kv-grid' }, [
             el('div', { class: 'kv', 'data-label': 'CPU' }, [el('span', { text: sysRows.cpu })]),
             // M4-I (A3): the label is 'Cores / Clock' (the data-label
@@ -287,7 +306,10 @@ export const dashboardPage: Page = {
         // ReBAR pill, Compute, Clocks rows stay.
         el('section', { class: 'card device-card' }, [
           el('div', { class: 'device-card-head' }, [
-            el('h2', { class: 'card-title', text: 'GPU' }),
+            el('div', { class: 'hardware-card-heading' }, [
+              el('h2', { class: 'card-title', text: 'GPU' }),
+              hardwareIcon(gpuIcon, `${gpuName || 'GPU'} icon`, 'gpu'),
+            ]),
             buildDeviceSelect(ctx.store, (id) => void selectDevice(id)),
           ]),
           ...(noIntelPresentation
