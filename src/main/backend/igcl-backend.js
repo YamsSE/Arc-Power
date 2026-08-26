@@ -232,7 +232,8 @@ function selectGlobal3dScope(lib, adapterHandle, features) {
 
 // Most drivers accept the global VRR feature directly with an empty
 // application name. A small set requires feature 15 to select GLOBAL first;
-// ERROR_INVALID_ARGUMENT is the only result that justifies that fallback.
+// Version mismatches can be reported as either INVALID_ARGUMENT or
+// UNSUPPORTED_VERSION, depending on the driver build.
 // Permission/unsupported/IO failures are real refusals and must not trigger a
 // second write path or be reported as applied.
 function globalVrrRequest(lib, adapterHandle, features, { bSet, enumValue } = {}) {
@@ -294,8 +295,10 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees.
-function setScalingWithCompatibility(lib, handle, { flag, custom }) {
+// read-back agrees. HardwareModeSet is deliberate here: IGS applies a
+// selector change as a real display modeset, so the driver must be allowed to
+// transition the output instead of merely accepting an OS-side preference.
+function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = true }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
   let lastBuf = null;
@@ -305,19 +308,30 @@ function setScalingWithCompatibility(lib, handle, { flag, custom }) {
       scalingType: flag,
       customScalingX: custom?.x,
       customScalingY: custom?.y,
-      // A hardware modeset is required for Custom scaling. For the ordinary
-      // GPU/display flags IGS leaves this false so Windows can perform the
-      // virtual modeset without forcing a physical display flash.
-      hardwareModeSet: custom ? custom.hardwareModeSet !== false : false,
+      hardwareModeSet: custom ? custom.hardwareModeSet !== false : hardwareModeSet,
       // PreferredScalingType is an [out] field according to IGCL. It is
       // reported by GET, but must not be supplied as an input on SET.
       version,
     });
     lastBuf = gs.buf;
     lastResult = lib.ctlSetCurrentScaling(handle, gs.buf);
-    if (lastResult === CTL_RESULT.SUCCESS || lastResult !== CTL_RESULT.ERROR_INVALID_ARGUMENT) break;
+    if (lastResult === CTL_RESULT.SUCCESS
+      || (lastResult !== CTL_RESULT.ERROR_INVALID_ARGUMENT && lastResult !== CTL_RESULT.ERROR_UNSUPPORTED_VERSION)) break;
   }
   return { setResult: lastResult, request: lastBuf };
+}
+
+function getScalingWithCompatibility(lib, handle) {
+  let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
+  for (const version of [1, 0]) {
+    const { buf } = encodeScalingSettings({ version });
+    lastResult = lib.ctlGetCurrentScaling(handle, buf);
+    if (lastResult === CTL_RESULT.SUCCESS) {
+      return { getResult: lastResult, version, settings: decodeScalingSettings(buf) };
+    }
+    if (lastResult !== CTL_RESULT.ERROR_INVALID_ARGUMENT && lastResult !== CTL_RESULT.ERROR_UNSUPPORTED_VERSION) break;
+  }
+  return { getResult: lastResult, version: null, settings: null };
 }
 // The caps-bit decode yields the bindings' SCREAMING names ('IDENTITY',
 // ...) - map them to the canonical strings.
@@ -381,6 +395,31 @@ function scalingAliasPayloadError(patch) {
     }
   }
   return null;
+}
+
+// Older callers used displayScalingMethod as the writable field. Normalize
+// that compatibility shape into the same coupled raw payload used by the
+// current renderer before any control list, native call, or read-back path is
+// selected. Keeping the alias on the object lets the response mirror the
+// caller's control name without maintaining a second native implementation.
+function normalizeDisplayScalingAlias(patch) {
+  if (!patch || patch.scalingMode !== undefined || patch.displayScalingMethod === undefined || patch.displayScalingMethod === null) {
+    return patch;
+  }
+  const alias = patch.displayScalingMethod;
+  if (alias === 'centered' || alias === 'stretched' || alias === 'aspect-ratio-centered-max') {
+    return { ...patch, scalingMode: alias };
+  }
+  if (alias === 'integer' || alias === 'nearest-neighbour') {
+    return {
+      ...patch,
+      scalingMode: 'identity',
+      scalingMethod: patch.scalingMethod ?? { enabled: true, method: alias },
+    };
+  }
+  if (alias === 'maintain-display-scaling') return { ...patch, scalingMode: 'identity' };
+  if (alias === 'custom') return { ...patch, scalingMode: 'custom' };
+  return patch;
 }
 function globalVrrOptionsOf(detail) {
   if (detail?.enumSupportedTypes == null) return [];
@@ -2980,6 +3019,7 @@ export class IgclBackend {
       quantizationRange: null,
       scalingMode: null,
       preferredScalingMode: null,
+      scalingPreference: null,
       scalingDetails: null,
       scalingMethod: displayCapability(null, false, false, 'Retro scaling is not exposed by the driver interface.'),
       globalVrrMode: displayCapability(null, null, false, 'Global Variable Refresh Rate Mode is not exposed by the driver interface.'),
@@ -3148,27 +3188,29 @@ export class IgclBackend {
             .map((n) => DISPLAY_SCALING_NAME_TO_CANONICAL[n])
             .filter(Boolean);
         }
-        // Version 1 is required for the OS-persisted PreferredScalingType
-        // field. Version 0 only reports the active/native scaler state.
-        const { buf } = encodeScalingSettings({ version: 1 });
-        const curResult = lib.ctlGetCurrentScaling(handle, buf);
-        if (curResult === CTL_RESULT.SUCCESS) {
-          const sc = decodeScalingSettings(buf);
+        // Version 1 includes the OS-persisted PreferredScalingType field;
+        // older drivers may only accept the Version 0 active/native surface.
+        const current = getScalingWithCompatibility(lib, handle);
+        if (current.getResult === CTL_RESULT.SUCCESS && current.settings) {
+          const sc = current.settings;
           d.scalingMode = DISPLAY_SCALING_MODE_FROM_IGCL[sc.scalingType] ?? null;
-          d.preferredScalingMode = DISPLAY_SCALING_MODE_FROM_IGCL[sc.preferredScalingType] ?? null;
+          d.preferredScalingMode = current.version === 1
+            ? DISPLAY_SCALING_MODE_FROM_IGCL[sc.preferredScalingType] ?? null
+            : null;
           d.scalingDetails = {
             customX: sc.customX,
             customY: sc.customY,
             hardwareModeSet: sc.hardwareModeSet,
-            preferredScalingType: DISPLAY_SCALING_MODE_FROM_IGCL[sc.preferredScalingType] ?? null,
+            preferredScalingType: current.version === 1
+              ? DISPLAY_SCALING_MODE_FROM_IGCL[sc.preferredScalingType] ?? null
+              : null,
           };
-          // Some Intel driver builds acknowledge ctlSetCurrentScaling but
-          // keep returning IDENTITY from the output-handle GET. IGS persists
-          // the ordinary GPU/Display choice in NNScalingState; use that
-          // identity-resolved read only for the ambiguous identity result,
-          // never over a verified Custom/GPU flag or Retro surface.
-          if (!d.preferredScalingMode && d.scalingMode !== 'custom' && registryScalingState?.ok === true) {
-            d.preferredScalingMode = registryScalingState.value === SCALING_STATE_GPU ? 'stretched' : 'identity';
+          // Some Intel driver builds keep returning IDENTITY from the
+          // output-handle GET while IGS persists the ordinary GPU/Display
+          // choice in NNScalingState. Keep that preference as a separate
+          // view hint; it cannot identify Centered/Stretch/Aspect Ratio.
+          if (d.scalingMode === 'identity' && registryScalingState?.ok === true) {
+            d.scalingPreference = registryScalingState.value === SCALING_STATE_GPU ? 'gpu-scaling' : 'display-scaling';
             d.scalingDetails.registryScalingState = registryScalingState.value;
           }
         }
@@ -3401,13 +3443,13 @@ export class IgclBackend {
     const dev = await this._device(deviceId);
     const deviceKey = typeof request.deviceKey === 'string' ? request.deviceKey : null;
     const displayKey = typeof request.displayKey === 'string' ? request.displayKey : null;
-    const patch = request.patch && typeof request.patch === 'object' ? request.patch : {};
+    let patch = normalizeDisplayScalingAlias(request.patch && typeof request.patch === 'object' ? request.patch : {});
     const result = { ok: true, perControl: {} };
     const fail = (control, errorCode, message) => {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+    let controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((c) => patch[c] !== null && patch[c] !== undefined);
 
     // The whole-surface gate (the M8 setGraphicsSettings pattern): when NO
@@ -3450,6 +3492,26 @@ export class IgclBackend {
     }
     const handle = matches[0].handle;
     const selectedDisplay = matches[0].output;
+
+    // A legacy alias must carry the same Retro-disable companion that the
+    // current renderer sends when leaving Retro Scaling. Otherwise an alias
+    // can change the ordinary output flag while Retro remains the effective
+    // scaler. Add that companion only when Retro is actually active so a
+    // non-Retro caller does not need the adapter-level symbol.
+    const aliasIsRetroMethod = patch.displayScalingMethod === 'integer' || patch.displayScalingMethod === 'nearest-neighbour';
+    if (patch.displayScalingMethod !== undefined && patch.displayScalingMethod !== null
+      && !aliasIsRetroMethod && patch.scalingMethod === undefined
+      && selectedDisplay.scalingMethod?.value?.enabled === true) {
+      patch = {
+        ...patch,
+        scalingMethod: {
+          enabled: false,
+          method: selectedDisplay.scalingMethod.value.method ?? 'integer',
+        },
+      };
+      controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+        .filter((c) => patch[c] !== null && patch[c] !== undefined);
+    }
 
     // Compatibility callers may still send the old user-facing method alias.
     // Validate the complete coupled shape before any native or registry write;
@@ -3498,7 +3560,7 @@ export class IgclBackend {
               message: readBackEqual ? undefined : `retro scaling read-back enabled=${got?.enable ?? describeResult(getResult)} != requested false`,
               readBackEqual,
               silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
-              warning: DISPLAY_SCALING_FLASH_WARNING,
+              internal: true,
             };
           }
         }
@@ -3607,7 +3669,9 @@ export class IgclBackend {
       }
     }
 
-    if (patch.scalingMode !== null && patch.scalingMode !== undefined) {
+    const enteringRetro = patch.scalingMode === 'identity'
+      && patch.scalingMethod?.enabled === true;
+    if (patch.scalingMode !== null && patch.scalingMode !== undefined && !enteringRetro) {
       if (leavingRetro && coupledRetroResult && !coupledRetroResult.ok) {
         fail('scalingMode', coupledRetroResult.errorCode ?? 'io-failed', 'raw scaling was not changed because Retro Scaling could not be disabled first');
       } else {
@@ -3623,7 +3687,7 @@ export class IgclBackend {
             ? {
               x: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.x))),
               y: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.y))),
-              hardwareModeSet: true,
+              hardwareModeSet: patch.scalingCustom.hardwareModeSet !== false,
             } : null;
           if (flag === DISPLAY_SCALING_MODE_TO_IGCL.custom && patch.scalingCustom !== undefined && !custom) {
             fail('scalingMode', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
@@ -3633,27 +3697,39 @@ export class IgclBackend {
           // reaches the driver and the driver's ACTUAL result decides.
           // ScalingType is a FLAG value in the struct (1/2/4/8/16).
           const { setResult } = setScalingWithCompatibility(lib, handle, { flag, custom });
-          const registryFallbackAllowed = setResult === CTL_RESULT.ERROR_INVALID_ARGUMENT;
+          // NNScalingState only distinguishes the Display-vs-GPU preference;
+          // it cannot prove which exact GPU method was accepted. Use it as a
+          // fallback for Display Scaling (identity) only, never as a false
+          // success for Centered/Stretch/Aspect Ratio.
+          const registryFallbackAllowed = (setResult === CTL_RESULT.ERROR_INVALID_ARGUMENT
+            || setResult === CTL_RESULT.ERROR_UNSUPPORTED_VERSION)
+            && patch.scalingMode === 'identity';
+          let registryFallback = null;
           if (setResult !== CTL_RESULT.SUCCESS && !custom && registryFallbackAllowed && typeof this._vrrRegistry?.setScalingState === 'function') {
             // IGS persists ordinary GPU/Display selection in NNScalingState
-            // on driver builds where ctlSetCurrentScaling is a success/no-op
-            // or rejects the versioned payload. The registry adapter resolves
-            // the exact PCI/subsystem entry and verifies the binary read-back.
+            // on driver builds that reject the versioned native payload. The
+            // registry adapter resolves the exact PCI/subsystem entry and
+            // verifies the binary read-back, but this never substitutes for
+            // a successful native scaling transition.
             const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
-            const fallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
-            if (fallback?.ok === true) {
-              result.perControl.scalingMode = {
-                ok: true,
-                readBackEqual: true,
-                registryReadBackEqual: true,
-                writeTransport: 'registry',
-                warning: DISPLAY_SCALING_FLASH_WARNING,
-              };
-            } else {
-              fail('scalingMode', igclErrorCode(setResult) ?? fallback?.errorCode ?? 'io-failed', fallback?.message ?? `IGCL ${describeResult(setResult)}`);
-            }
-          } else if (setResult !== CTL_RESULT.SUCCESS) {
-            fail('scalingMode', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+            registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
+          }
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            // NNScalingState is only a persisted preference. It is useful as
+            // a compatibility write, but it is never evidence that the
+            // native output scaler changed. In particular, do not surface
+            // the physical-modeset warning after the native setter refused.
+            result.perControl.scalingMode = {
+              ok: false,
+              errorCode: igclErrorCode(setResult) ?? 'io-failed',
+              message: `IGCL ${describeResult(setResult)}${registryFallback?.ok === true ? '; registry preference persisted, but the native scaling transition was refused' : ''}`,
+              readBackEqual: false,
+              activeReadBackEqual: false,
+              preferredReadBackEqual: false,
+              registryReadBackEqual: registryFallback?.ok === true,
+              silentNoop: false,
+            };
+            result.ok = false;
           } else {
             // The probe never set-tested scaling (the physical-modeset
             // flash); the read-back gets a short settle - a scaling change
@@ -3662,8 +3738,8 @@ export class IgclBackend {
             await new Promise((r) => setTimeout(r, 400));
             // Version 1 includes PreferredScalingType, the persisted IGS
             // selection. Version 0 can only prove the active/native scaler.
-            const rb = encodeScalingSettings({ version: 1 });
-            const getResult = lib.ctlGetCurrentScaling(handle, rb.buf);
+            const current = getScalingWithCompatibility(lib, handle);
+            const getResult = current.getResult;
             let readBackEqual = false;
             let message;
             let activeReadBackEqual = false;
@@ -3671,33 +3747,35 @@ export class IgclBackend {
             if (getResult !== CTL_RESULT.SUCCESS) {
               message = `set succeeded but read-back failed (${describeResult(getResult)})`;
             } else {
-              const got = decodeScalingSettings(rb.buf);
-              activeReadBackEqual = got.scalingType === flag && (!custom || (got.customX === custom.x && got.customY === custom.y));
-              preferredReadBackEqual = !custom && got.preferredScalingType === flag;
-              message = activeReadBackEqual || preferredReadBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`;
+              const got = current.settings;
+              activeReadBackEqual = got.enable === true
+                && got.scalingType === flag
+                && (!custom || (got.customX === custom.x && got.customY === custom.y));
+              preferredReadBackEqual = current.version === 1 && !custom && got.preferredScalingType === flag;
+              message = activeReadBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`;
             }
-            let registryFallback = null;
-            const registryAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
+            const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
+            const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
+            const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
             if (registryAvailable) {
               const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
               const registryNeedsSync = registryScalingState?.ok !== true || registryScalingState.value !== registryValue;
-              if (registryNeedsSync) registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
-              registryReadBackEqual = registryFallback?.ok === true || (!registryNeedsSync && registryScalingState?.value === registryValue);
+              if (registryNeedsSync && registryFallback?.ok !== true) registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
+              const postRegistry = registryReaderAvailable
+                ? await this._vrrRegistry.getScalingState(dev).catch(() => null)
+                : null;
+              registryReadBackEqual = postRegistry?.ok === true
+                ? postRegistry.value === registryValue
+                : registryFallback?.ok === true || (!registryNeedsSync && registryScalingState?.value === registryValue);
             }
-            // A native SUCCESS can still be a silent no-op on the A770. For
-            // ordinary IGS modes, accept the active or Preferred read-back,
-            // but when the registry persistence seam is available require
-            // that persistence to agree as well. This prevents claiming an
-            // apply when a registry synchronization failed after a native
-            // success, while still accepting a driver that reports only its
-            // persisted preference.
-            const persistedReadBackEqual = custom || !registryAvailable
-              ? true
-              : preferredReadBackEqual || registryReadBackEqual;
-            readBackEqual = custom
-              ? activeReadBackEqual
-              : (activeReadBackEqual || preferredReadBackEqual || registryReadBackEqual) && persistedReadBackEqual;
+            // A registry preference alone cannot prove that the selected
+            // output scaler changed. Require the native active/preferred
+            // read-back, and require the adapter preference too whenever that
+            // persistence surface is available.
+            const nativeReadBackEqual = activeReadBackEqual;
+            const persistedReadBackEqual = custom || !registryAvailable || registryReadBackEqual;
+            readBackEqual = nativeReadBackEqual && persistedReadBackEqual;
             if (!readBackEqual && !message) {
               message = `scaling read-back did not prove the requested active and persisted mode (active=${activeReadBackEqual}, preferred=${preferredReadBackEqual}, registry=${registryReadBackEqual})`;
             }
@@ -3736,8 +3814,11 @@ export class IgclBackend {
       if ((gpuMethodAlias && patch.scalingMode !== patch.displayScalingMethod)
         || (retroMethodAlias && (patch.scalingMode === null || patch.scalingMode === undefined || !patch.scalingMethod))) {
         fail('displayScalingMethod', 'out-of-range', 'a raw GPU or Retro Scaling Method must include its matching coupled scaling payload');
-      } else if (patch.scalingMode !== null && patch.scalingMode !== undefined && result.perControl.scalingMode) {
-        result.perControl.displayScalingMethod = { ...result.perControl.scalingMode };
+      } else if (patch.scalingMode !== null && patch.scalingMode !== undefined
+        && (result.perControl.scalingMode || (enteringRetro && result.perControl.scalingMethod))) {
+        result.perControl.displayScalingMethod = {
+          ...(result.perControl.scalingMode ?? result.perControl.scalingMethod),
+        };
       } else {
       if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {
         fail('displayScalingMethod', 'unavailable-symbol', 'the scaling API is missing in the IGCL runtime');
@@ -3751,7 +3832,7 @@ export class IgclBackend {
             ? {
               x: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.x))),
               y: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.y))),
-              hardwareModeSet: true,
+              hardwareModeSet: patch.scalingCustom.hardwareModeSet !== false,
             } : null;
           if (patch.displayScalingMethod === 'custom' && !custom) {
             fail('displayScalingMethod', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
@@ -3761,10 +3842,13 @@ export class IgclBackend {
               fail('displayScalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
             } else {
               await new Promise((r) => setTimeout(r, 400));
-              const rb = encodeScalingSettings({ version: 1 });
-              const getResult = lib.ctlGetCurrentScaling(handle, rb.buf);
-              const got = getResult === CTL_RESULT.SUCCESS ? decodeScalingSettings(rb.buf) : null;
-              const readBackEqual = got !== null && got.scalingType === flag && (!custom || (got.customX === custom.x && got.customY === custom.y));
+              const current = getScalingWithCompatibility(lib, handle);
+              const getResult = current.getResult;
+              const got = current.settings;
+              const readBackEqual = got !== null
+                && got.enable === true
+                && got.scalingType === flag
+                && (!custom || (got.customX === custom.x && got.customY === custom.y));
               result.perControl.displayScalingMethod = {
                 ok: readBackEqual,
                 errorCode: readBackEqual ? undefined : 'io-failed',

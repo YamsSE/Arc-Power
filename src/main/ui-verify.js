@@ -5152,13 +5152,11 @@ export async function runDisplayVerify(win, backend) {
   const afterQuant = await js(`window.arcPower.displayGet(0)`);
   const quantValue = afterQuant.displays[0].quantizationRange;
   await js(`(() => { const s = document.querySelector('.display-select[data-display-select="scalingMode"]'); if (!s) return false; s.value = 'gpu-scaling'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: scaling change did not expose its Apply action');
-  await js(`document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply').click()`);
   if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].scalingMode !== 'identity')`, 8000))) fail('D1: scaling apply did not update the fresh driver readback');
   await js(`(() => { const s = document.querySelector('.display-select[data-display-select="scalingMode"]'); if (!s) return false; s.value = 'retro-scaling'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-  if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: retro scaling change did not expose its Apply action');
-  await js(`document.querySelector('.display-control[data-control="scalingMode"] .oc-chip-apply').click()`);
   if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].scalingMethod?.value?.enabled === true)`, 8000))) fail('D1: retro scaling apply did not update the fresh driver readback');
+  await js(`(() => { const s = document.querySelector('.display-select[data-display-select="scalingMode"]'); if (!s) return false; s.value = 'display-scaling'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  if (!(await waitFor(win, `window.arcPower.displayGet(0).then((s) => s.displays[0].scalingMethod?.value?.enabled === false)`, 8000))) fail('D1: leaving Retro scaling did not update the fresh driver readback');
   await js(`(() => { const s = document.querySelector('.display-select[data-display-select="displayScalingMethod"]'); if (!s) return false; s.value = 'custom'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   if (!(await waitFor(win, `(() => { const b = document.querySelector('.display-control[data-control="displayScalingMethod"] .oc-chip-apply'); return !!b && !b.hidden; })()`, 5000))) fail('D1: Display Scaling method change did not expose its Apply action');
   await js(`document.querySelector('.display-control[data-control="displayScalingMethod"] .oc-chip-apply').click()`);

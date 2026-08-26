@@ -222,6 +222,7 @@ let displayApplied: DisplaySettings = {};
 let displayScalingViewDraft = 'display-scaling';
 let displayScalingMethodDraft = 'maintain-display-scaling';
 let applying = false;
+let queuedDisplayApply: { ctx: PageContext; only: string } | null = null;
 let applyBtn: HTMLButtonElement | null = null;
 let displayApplyBtn: HTMLButtonElement | null = null;
 let displayResetBtn: HTMLButtonElement | null = null;
@@ -322,7 +323,9 @@ function customScalingOf(display: DisplayState['displays'][number]): NonNullable
     // selected, so do not turn an inactive 0/0 into the visible default.
     x: isCustom && Number.isFinite(details?.customX) && details!.customX > 0 ? Math.max(0, Math.min(100, details!.customX)) : 100,
     y: isCustom && Number.isFinite(details?.customY) && details!.customY > 0 ? Math.max(0, Math.min(100, details!.customY)) : 100,
-    hardwareModeSet: details?.hardwareModeSet === true,
+    // A new Custom transition is an IGS-style physical modeset. Never carry
+    // an old/disabled read-back flag into the next user-initiated apply.
+    hardwareModeSet: true,
   };
 }
 
@@ -1011,7 +1014,7 @@ function buildDisplayDropdownRow(
 
 /** IGS presents ordinary, display, and retro scaling as one three-way view.
  * Keep the raw IGCL scaling flags internal and translate the selection into
- * the driver payload only when Apply is pressed. */
+ * one serialized driver transaction as soon as the selector changes. */
 function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
   const supported = display !== null && isDisplayControlSupported(display, 'scalingMode');
@@ -1048,6 +1051,10 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       // the new IGS method list appears immediately instead of leaving the
       // Display/Retro choices from the previous mode in the DOM.
       if (viewContainer && viewContainer.isConnected) renderDisplayCards(viewContainer, ctx);
+      // Intel Graphics Software commits a mode selection immediately. Keep
+      // the per-card Apply button as a safe retry/fallback, but do not leave a
+      // normal GPU/Display/Retro selection as draft-only state.
+      setTimeout(() => requestDisplayApply(ctx, 'scalingMode'), 0);
     },
   }, IGS_SCALING_MODE_OPTIONS.map((option) => el('option', {
     value: option,
@@ -1121,6 +1128,12 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
       customX.hidden = view !== 'display-scaling' || displayScalingMethodDraft !== 'custom';
       customY.hidden = view !== 'display-scaling' || displayScalingMethodDraft !== 'custom';
       refreshDisplayChip('displayScalingMethod');
+      // Custom waits for its X/Y values and the explicit Apply button. The
+      // remaining IGS methods are immediate driver transitions and should
+      // produce the same single modeset/flash as IGS.
+      if (!(view === 'display-scaling' && displayScalingMethodDraft === 'custom')) {
+        setTimeout(() => requestDisplayApply(ctx, 'displayScalingMethod'), 0);
+      }
     },
   }, methodOptions.map((option) => el('option', { value: option, text: IGS_SCALING_METHOD_LABELS[option] ?? option, selected: option === displayScalingMethodDraft })));
   selectNodes.set('displayScalingMethod', methodSelect);
@@ -1597,7 +1610,7 @@ async function apply(ctx: PageContext, only?: string) {
     for (const [key, per] of Object.entries(out.perControl)) {
       if (per.ok) {
         (applied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
-        toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
+        if (!per.internal) toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
       } else {
         // M17d (item 0b): the shared applyFailureText preference - the
         // per-control message wins, the errorCode mapping is the fallback.
@@ -1697,6 +1710,13 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
 }
 
 async function applyDisplay(ctx: PageContext, only: string) {
+  if (applying) {
+    // A mode change rebuilds the method selector immediately. If the user
+    // chooses a method before the first IPC round-trip finishes, keep the
+    // latest complete intent instead of dropping it on the busy guard.
+    queuedDisplayApply = { ctx, only };
+    return;
+  }
   const live = ctx.store.get();
   const deviceId = live.deviceId;
   const display = selectedDisplay();
@@ -1723,6 +1743,10 @@ async function applyDisplay(ctx: PageContext, only: string) {
   }
   applying = true;
   for (const b of chipApplyNodes.values()) b.disabled = true;
+  if (only === 'scalingMode' || only === 'displayScalingMethod' || only === 'all') {
+    selectNodes.get('scalingMode')?.setAttribute('disabled', 'true');
+    selectNodes.get('displayScalingMethod')?.setAttribute('disabled', 'true');
+  }
   updateDisplayFloating();
   try {
     const deviceKey = displayState.deviceKey ?? live.devices.find((d) => d.id === deviceId)?.deviceKey ?? null;
@@ -1753,7 +1777,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
         // The scaling card's honest modeset note rides the apply result
         // (the M10b probe skipped the scaling SET by design - a scaling
         // change is a PHYSICAL MODESET = a screen flash).
-        if (per.warning) toast('warn', 'Screen flash expected', per.warning);
+        if (per.warning && !per.internal) toast('warn', 'Screen flash expected', per.warning);
       } else {
         toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
       }
@@ -1779,6 +1803,19 @@ async function applyDisplay(ctx: PageContext, only: string) {
   } finally {
     applying = false;
     for (const b of chipApplyNodes.values()) b.disabled = false;
+    selectNodes.get('scalingMode')?.removeAttribute('disabled');
+    selectNodes.get('displayScalingMethod')?.removeAttribute('disabled');
     updateDisplayFloating();
+    const queued = queuedDisplayApply;
+    queuedDisplayApply = null;
+    if (queued) setTimeout(() => requestDisplayApply(queued.ctx, queued.only), 0);
   }
+}
+
+function requestDisplayApply(ctx: PageContext, only: string): void {
+  if (applying) {
+    queuedDisplayApply = { ctx, only };
+    return;
+  }
+  void applyDisplay(ctx, only);
 }

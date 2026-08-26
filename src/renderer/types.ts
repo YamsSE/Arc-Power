@@ -149,6 +149,8 @@ export interface PerControlResult {
   /** M10b: the honest modeset-flash note the scaling apply carries (the
    *  physical-modeset warning surfaced via the apply-result toast). */
   warning?: string;
+  /** Backend-only companion write; keep it out of the user-facing toast. */
+  internal?: boolean;
 }
 
 export interface ApplyResult {
@@ -875,6 +877,9 @@ export interface DisplayState {
     /** Active/native scaler state. The IGS-style selector uses the persisted
      * preference below when the driver reports an identity active mode. */
     preferredScalingMode?: string | null;
+    /** Adapter-level GPU-vs-Display preference when the native surface cannot
+     * identify the exact GPU scaler method. */
+    scalingPreference?: 'gpu-scaling' | 'display-scaling' | null;
     scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null; registryScalingState?: number } | null;
     scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' }>;
     vrrMode?: DisplayCapability<'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom'>;

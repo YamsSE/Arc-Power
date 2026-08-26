@@ -124,9 +124,9 @@ function vrrValueKeyPath(adapterKeyPath) {
 
 function parseRegistryBinaryValue(stdout, valueName) {
   const escaped = String(valueName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = String(stdout ?? '').match(new RegExp(`^\\s*${escaped}\\s+REG_BINARY\\s+([0-9a-f]+)\\s*$`, 'im'));
+  const match = String(stdout ?? '').match(new RegExp(`^\\s*${escaped}\\s+REG_BINARY\\s+([0-9a-f](?:[0-9a-f\\s]*[0-9a-f])?)\\s*$`, 'im'));
   if (!match) return null;
-  const bytes = match[1].trim().toLowerCase();
+  const bytes = match[1].replace(/\s+/g, '').toLowerCase();
   if (bytes.length !== 8) return null;
   const value = Number.parseInt(bytes.match(/../g).reverse().join(''), 16);
   return Number.isInteger(value) ? value : null;
