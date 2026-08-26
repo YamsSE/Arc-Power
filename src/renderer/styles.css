@@ -761,8 +761,8 @@ html, body {
 /* ------------------------------------------------------------------- cards */
 
 .card {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: 18px 20px;
@@ -1974,11 +1974,9 @@ select {
 
 /* ------------------------------------------------------------ settings (M4-D) */
 
-/* M20: the settings cards are compacted so all cards fit the 820px window
-   without scrolling - the root gap 14px -> 10px, the card padding 16px 20px
-   -> 12px 16px, the title margin 8px -> 4px, the state line margin 8px ->
-   4px. Spacing-only: the .settings-checkbox[data-setting=...] selectors +
-   card titles are untouched (pinned). */
+/* M20: settings stay compact enough for the 820px window. M78 adds the
+   recessed setting-row treatment: labels remain readable on the left while
+   their controls sit in a consistent right-hand control rail. */
 .settings-root {
   display: flex;
   flex-direction: column;
@@ -1986,11 +1984,47 @@ select {
   max-width: 680px;
 }
 
-.settings-card { padding: 12px 16px; }
-.settings-card .card-title { margin-bottom: 4px; }
-.settings-row { display: flex; align-items: center; gap: 8px; }
+.settings-card {
+  padding: 0 12px 12px;
+  border-color: color-mix(in srgb, var(--border) 76%, var(--accent) 24%);
+}
+.settings-card .card-title {
+  margin: 0;
+  padding: 13px 4px 9px;
+  font-size: 14px;
+  letter-spacing: .01em;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--control-bg) 84%, var(--bg-elev));
+  transition: border-color .14s ease, background .14s ease;
+}
+.settings-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--control-bg));
+}
+.settings-row > .boot-toggle {
+  width: 100%;
+  justify-content: space-between;
+  gap: 14px;
+}
+.settings-row > .boot-toggle > span {
+  min-width: 0;
+  order: 1;
+}
+.settings-row > .boot-toggle > .settings-checkbox {
+  order: 2;
+}
+.settings-card > .card-note { margin-left: 4px; margin-right: 4px; }
 .maintenance-card .card-note { max-width: 58ch; }
-.maintenance-row { margin-top: 10px; }
+.maintenance-row { justify-content: flex-end; margin-top: 10px; }
 .maintenance-action {
   padding: 7px 14px;
   border: 1px solid var(--border-strong);
@@ -2002,40 +2036,45 @@ select {
 .maintenance-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .maintenance-action:disabled { cursor: wait; opacity: .6; }
 .settings-state { margin-top: 4px; }
-/* M17c (user request): the settings checkboxes are restyled as real
-   controls - appearance:none + the shared --control-bg surface + a border,
-   with the accent checkmark drawn via the :checked state (a border-rotated
-   pseudo-element - no font dependency). accent-color stays as the fallback
-   for engines that ignore appearance:none. Hover preserved (border-color
-   accent). */
+/* M17c/M78: settings checkboxes are compact Arc Power switches rather than
+   browser checkboxes. appearance:none keeps the surface, track and thumb
+   consistent across Windows themes; accent-color remains a fallback for
+   engines that ignore appearance:none. */
 .settings-checkbox {
   appearance: none;
   -webkit-appearance: none;
   accent-color: var(--accent-strong);
-  width: 16px;
-  height: 16px;
+  width: 34px;
+  height: 20px;
   margin: 0;
   border: 1px solid var(--border-strong);
-  border-radius: 4px;
+  border-radius: 999px;
   background: var(--control-bg);
   display: inline-grid;
   place-content: center;
   flex-shrink: 0;
   cursor: pointer;
+  transition: background .14s ease, border-color .14s ease;
 }
 .settings-checkbox:hover { border-color: var(--accent); }
 .settings-checkbox:checked {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
 }
-.settings-checkbox:checked::after {
+.settings-checkbox::after {
   content: '';
-  width: 8px;
-  height: 4px;
-  border-left: 2px solid var(--on-accent);
-  border-bottom: 2px solid var(--on-accent);
-  transform: rotate(-45deg) translate(0.5px, -1px);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transform: translateX(-6px);
+  transition: background .14s ease, transform .14s ease;
 }
+.settings-checkbox:checked::after {
+  background: var(--on-accent);
+  transform: translateX(6px);
+}
+.settings-checkbox:disabled { cursor: not-allowed; opacity: .55; }
 
 /* 1.0.1 Themes: the Settings Theme card - 3 swatches
    (button[data-theme-option="dark|midnight|light"]). The color chips are
@@ -2116,6 +2155,7 @@ select {
 
 /* M5: the Settings Overlay card. */
 .overlay-hotkey-row { margin-top: 10px; }
+.overlay-open-row { justify-content: flex-end; }
 /* M23: the Advanced card's rows need their own spacing - the unstyled
    Edge (position) row sat flush against the CONTROL+<letter> row and
    overlapped it; the small top margin separates them (the user's fix). */
@@ -2297,7 +2337,7 @@ select {
 .profile-browser-title .card-title { margin-bottom: 2px; }
 .profile-browser-toolbar { flex-wrap: wrap; }
 .profile-filter-label { color: var(--text-dim); font-size: 12px; }
-.profile-filter, .profile-setting-control, .profile-setting-number { padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: inherit; }
+.profile-filter, .profile-setting-control, .profile-setting-number { padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--control-bg); color: var(--text); font: inherit; }
 .profile-view-toggle { display: inline-flex; margin-left: auto; }
 .profile-view-toggle .active { border-color: var(--accent); color: var(--accent); }
 .profiles-mode-toggle { display: inline-flex; gap: 4px; margin-bottom: 14px; }
@@ -2353,7 +2393,8 @@ select {
 .profile-use-toggle { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; }
 .profile-settings-section { display: flex; flex-direction: column; gap: 8px; }
 .profile-section-title { margin: 0 0 2px; font-size: 14px; color: var(--text-dim); }
-.profile-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-inset); }
+.profile-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--control-bg) 84%, var(--bg-elev)); transition: border-color .14s ease, background .14s ease; }
+.profile-setting-row:hover { border-color: color-mix(in srgb, var(--accent) 58%, var(--border)); background: color-mix(in srgb, var(--accent) 6%, var(--control-bg)); }
 .profile-setting-label { display: flex; flex-direction: column; gap: 3px; }
 .profile-setting-label small { color: var(--text-dim); font-size: 11px; }
 .profile-inline-control { display: inline-flex; align-items: center; gap: 8px; }
