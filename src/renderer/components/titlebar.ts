@@ -23,7 +23,7 @@ let updateInfo: { version: string; assetUrl: string; assetName: string } | null 
 let downloadedPath: string | null = null;
 
 function setUpdateBtn(state: UpdateState): void {
-  const btn = document.getElementById('titlebar-update-btn');
+  const btn = document.getElementById('titlebar-update-btn') as HTMLButtonElement | null;
   if (!btn) return;
   const iconCheck = btn.querySelector('.icon-update-check');
   const iconDownload = btn.querySelector('.icon-update-download');
@@ -37,40 +37,48 @@ function setUpdateBtn(state: UpdateState): void {
   (iconDownload as HTMLElement).style.display = 'none';
   (iconDone as HTMLElement).style.display = 'none';
   btn.classList.remove('update-spinning', 'update-available', 'update-downloading', 'update-error');
+  btn.disabled = state === 'checking' || state === 'downloading';
 
   switch (state) {
     case 'idle':
-      btn.style.display = 'none';
+      btn.style.display = '';
+      btn.title = 'Check for updates';
+      btn.setAttribute('aria-label', 'Check for updates');
       break;
     case 'checking':
       btn.style.display = '';
       (iconCheck as HTMLElement).style.display = '';
       btn.classList.add('update-spinning');
       btn.title = 'Checking for updates...';
+      btn.setAttribute('aria-label', 'Checking for updates');
       break;
     case 'update-available':
       btn.style.display = '';
       (iconDownload as HTMLElement).style.display = '';
       btn.classList.add('update-available');
       btn.title = `Update available: v${updateInfo?.version ?? '?'} - click to download`;
+      btn.setAttribute('aria-label', `Update available: v${updateInfo?.version ?? '?'} - click to download`);
       break;
     case 'downloading':
       btn.style.display = '';
       (iconDownload as HTMLElement).style.display = '';
       btn.classList.add('update-downloading', 'update-spinning');
       btn.title = 'Downloading update...';
+      btn.setAttribute('aria-label', 'Downloading update...');
       break;
     case 'downloaded':
       btn.style.display = '';
       (iconDone as HTMLElement).style.display = '';
       btn.classList.add('update-available');
       btn.title = 'Update ready - click to install and restart';
+      btn.setAttribute('aria-label', 'Update ready - click to install and restart');
       break;
     case 'error':
       btn.style.display = '';
       (iconCheck as HTMLElement).style.display = '';
       btn.classList.add('update-error');
       btn.title = 'Update check failed - click to retry';
+      btn.setAttribute('aria-label', 'Update check failed - click to retry');
       break;
   }
 }
@@ -80,6 +88,8 @@ async function handleUpdateClick(): Promise<void> {
     case 'idle':
     case 'error':
       // Check for updates
+      updateInfo = null;
+      downloadedPath = null;
       setUpdateBtn('checking');
       try {
         const result = await api.updateCheck();
@@ -87,7 +97,8 @@ async function handleUpdateClick(): Promise<void> {
           updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '' };
           setUpdateBtn('update-available');
         } else {
-          // No update - briefly show check icon, then hide
+          // Keep the manual check action visible after a successful no-update
+          // result. Users can retry later without restarting the app.
           setUpdateBtn('idle');
         }
       } catch {
@@ -165,6 +176,8 @@ export function setTitlebarVersion(version: string): void {
  * after the titlebar version is set.
  */
 export async function startupUpdateCheck(): Promise<void> {
+  updateInfo = null;
+  downloadedPath = null;
   setUpdateBtn('checking');
   try {
     const result = await api.updateCheck();

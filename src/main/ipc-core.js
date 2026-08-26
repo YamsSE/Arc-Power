@@ -2237,12 +2237,13 @@ export function createIpcHandlers({
         return { elevated, workerApply: applyRunner?.needsWorker?.() === true };
       },
 
-      // M25: auto-update check (GitHub Releases). Returns { available,
-      // version, assetUrl, assetName } or { available: false }.
+      // M25: auto-update check (GitHub Releases). The build kind selects the
+      // matching release asset, so portable builds never download an
+      // installer (and installed builds never download a portable wrapper).
       'update:check': async (...args) => {
         assertNoPayload(args, 'update:check');
         const { checkForUpdates } = await import('./auto-update.js');
-        return checkForUpdates();
+        return checkForUpdates({ buildKind });
       },
 
       // M25: download an update asset to temp. Returns { ok, path } or
@@ -2252,15 +2253,17 @@ export function createIpcHandlers({
           throw new Error('invalid asset URL');
         }
         const { downloadUpdate } = await import('./auto-update.js');
-        const filePath = await downloadUpdate(assetUrl);
+        const filePath = await downloadUpdate(assetUrl, undefined, buildKind);
         return { ok: true, path: filePath };
       },
 
-      // M25: install a downloaded update and quit the app.
+      // M25: install a downloaded update and quit the app. The main process
+      // validates the temp path again before either launching the installer
+      // or starting the portable replacement handoff.
       'update:install': async (filePath) => {
         if (typeof filePath !== 'string') throw new Error('missing file path');
         const { installUpdate } = await import('./auto-update.js');
-        await installUpdate(filePath);
+        await installUpdate(filePath, { buildKind });
       },
 
       // FPS via DXGI GetFrameStatistics (M4-D2 - replaced PresentMon). The
