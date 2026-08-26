@@ -2410,6 +2410,12 @@ export function createIpcHandlers({
         if (!catalog?.catalog?.some((entry) => entry.exePath === safePath)) {
           throw new Error('game-settings-save: executable is not present in the game catalog');
         }
+        if (clean.tuningProfileId !== null) {
+          const profiles = await store.loadProfiles();
+          if (!profiles.some((profile) => profile.id === clean.tuningProfileId)) {
+            throw new Error('game-settings-save: tuning profile was not found');
+          }
+        }
         const saved = await gameProfiles.saveSettings({ ...payload, ...clean, exePath: safePath });
         const persisted = await store.loadSettings();
         let apply;
@@ -2752,7 +2758,7 @@ export function createIpcHandlers({
         // 'advanced-overlay:settings' to the panel window. Best effort: a
         // callback failure must never fail the save.
         const advancedOverlayChanged = {};
-        for (const key of ['advancedOverlayEnabled', 'advancedOverlayHotkeyLetter', 'advancedOverlayPosition', 'theme']) {
+        for (const key of ['advancedOverlayEnabled', 'advancedOverlayHotkeyLetter', 'advancedOverlayPosition', 'overlayStats', 'theme']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) advancedOverlayChanged[key] = next[key];
         }
         if (Object.keys(advancedOverlayChanged).length > 0) {

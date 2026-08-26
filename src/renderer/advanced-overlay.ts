@@ -77,6 +77,7 @@ import {
 } from './pure/graphics.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from './pure/gpu-memory.ts';
+import { normalizeOverlayStats } from './pure/overlay.ts';
 
 // ---------------------------------------------------------------------------
 // The panel store + boot state
@@ -113,6 +114,7 @@ const powerEl = document.getElementById('adv-readout-power') as HTMLElement;
 const memoryLabelEl = document.getElementById('adv-readout-memory-label') as HTMLElement;
 const memoryEl = document.getElementById('adv-readout-memory') as HTMLElement;
 const closeBtn = document.getElementById('adv-close') as HTMLButtonElement;
+let monitoredStats = normalizeOverlayStats(undefined);
 
 function applyAdvancedTheme(theme: string): void {
   const normalized = isValidTheme(theme) ? theme : 'dark';
@@ -128,9 +130,19 @@ function applyAdvancedTheme(theme: string): void {
 
 // The main process pushes the persisted software theme on initial load and
 // after every settings save. Basic Overlay classic/arc state is unrelated.
+function applyReadoutVisibility(): void {
+  document.querySelectorAll<HTMLElement>('.adv-readout-cell[data-stat-id]').forEach((cell) => {
+    cell.hidden = !monitoredStats.includes(cell.dataset.statId ?? '');
+  });
+}
+
 api.onAdvancedOverlaySettings((settings) => {
+  monitoredStats = normalizeOverlayStats(settings?.stats);
   applyAdvancedTheme(settings?.theme);
+  applyReadoutVisibility();
 });
+
+applyReadoutVisibility();
 
 closeBtn.addEventListener('click', () => {
   void api.advancedOverlayClose();

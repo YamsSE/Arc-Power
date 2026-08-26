@@ -173,6 +173,7 @@ const TH32CS_SNAPPROCESS = 0x00000002;
 const PROCESSENTRY32W_SIZE = 568;
 const PE32_PROCESS_ID_OFF = 8;
 const PE32_PARENT_PROCESS_ID_OFF = 32;
+const PROCESS_PATH_BUFFER_WCHARS = 520;
 
 /**
  * M17b (2d-3a): normalize the probe's module enumeration into the base
@@ -267,6 +268,7 @@ export function createForegroundApiDetector(deps = {}) {
   //   'getForegroundWindow' () -> the hwnd (opaque) | null
   //   'getWindowThreadProcessId' (hwnd) -> the pid (number) | null
   //   'openProcess' (pid) -> the process handle (opaque) | null
+  //   'getProcessImagePath' (handle) -> the executable path (string) | null
   //   'enumProcessModules' (handle) -> the module base names (string[])
   //     or the M17b { name, path } pairs | null
   //   'closeHandle' (handle) -> void
@@ -376,7 +378,32 @@ export function createForegroundApiDetector(deps = {}) {
     }
   };
 
-  return { detect, detectPid };
+  /**
+   * The foreground window's process identity. This reads the image path
+   * rather than enumerating modules so an executable can be matched against
+   * the persisted Game Profile catalog.
+   * @returns {Promise<{ pid: number, exePath: string } | null>}
+   */
+  const detectProcess = async () => {
+    try {
+      const hwnd = probe('getForegroundWindow');
+      if (!hwnd) return null;
+      const pid = probe('getWindowThreadProcessId', hwnd);
+      if (!Number.isInteger(pid) || pid <= 0) return null;
+      const handle = probe('openProcess', pid);
+      if (!handle) return null;
+      try {
+        const exePath = probe('getProcessImagePath', handle);
+        return typeof exePath === 'string' && exePath.length > 0 ? { pid, exePath } : null;
+      } finally {
+        try { probe('closeHandle', handle); } catch { /* best effort */ }
+      }
+    } catch {
+      return null;
+    }
+  };
+
+  return { detect, detectPid, detectProcess };
 }
 
 /**
@@ -398,6 +425,7 @@ function defaultProbe(load) {
       getForegroundWindow: user32.func('GetForegroundWindow', 'void*', []),
       getWindowThreadProcessId: user32.func('GetWindowThreadProcessId', 'uint32', ['void*', 'uint32*']),
       openProcess: kernel32.func('OpenProcess', 'void*', ['uint32', 'int32', 'uint32']),
+      queryFullProcessImageNameW: kernel32.func('QueryFullProcessImageNameW', 'int32', ['void*', 'uint32', 'void*', 'uint32*']),
       enumProcessModulesEx: psapi.func('EnumProcessModulesEx', 'int32', ['void*', 'void*', 'uint32', 'uint32*', 'uint32']),
       getModuleBaseNameW: psapi.func('GetModuleBaseNameW', 'uint32', ['void*', 'void*', 'void*', 'uint32']),
       // M17b (2d-3a): the full path per module (the { name, path } pairs).
@@ -423,6 +451,17 @@ function defaultProbe(load) {
       }
       case 'openProcess':
         return f.openProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, args[0]);
+      case 'getProcessImagePath': {
+        const pathBuf = koffi.alloc('uint16', PROCESS_PATH_BUFFER_WCHARS);
+        const lengthBuf = koffi.alloc('uint32', 1);
+        koffi.encode(lengthBuf, 0, 'uint32', PROCESS_PATH_BUFFER_WCHARS);
+        const ok = f.queryFullProcessImageNameW(args[0], 0, pathBuf, lengthBuf);
+        if (ok === 0) return null;
+        const length = Math.min(koffi.decode(lengthBuf, 0, 'uint32'), PROCESS_PATH_BUFFER_WCHARS - 1);
+        let exePath = '';
+        for (let i = 0; i < length; i++) exePath += String.fromCharCode(koffi.decode(pathBuf, i * 2, 'uint16'));
+        return exePath || null;
+      }
       case 'enumProcessModules': {
         // One generous call (the plan's shape). FALSE -> null (the
         // ERROR_PARTIAL_COPY 32-bit-game degrade + any other failure);

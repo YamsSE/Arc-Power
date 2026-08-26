@@ -43,6 +43,7 @@ import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeTheme, themeBackground } from './theme.js';
+import { OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT } from './store/profile-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,11 +77,15 @@ function normalizeSettings(raw = {}) {
   const hotkeyLetter = typeof raw.hotkeyLetter === 'string' && /^[A-Za-z]$/.test(raw.hotkeyLetter)
     ? raw.hotkeyLetter.toUpperCase()
     : 'P';
+  const stats = Array.isArray(raw.stats)
+    ? [...new Set(raw.stats.filter((id) => OVERLAY_STAT_IDS.includes(id)))]
+    : [...OVERLAY_STATS_DEFAULT];
   return {
     enabled: raw.enabled === true,
     position,
     hotkeyLetter,
     theme: normalizeTheme(raw.theme),
+    stats,
   };
 }
 
@@ -204,6 +209,7 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
     enabled: applied.enabled,
     hotkeyLetter: applied.hotkeyLetter,
     theme: applied.theme,
+    stats: applied.stats,
   });
 
   return {

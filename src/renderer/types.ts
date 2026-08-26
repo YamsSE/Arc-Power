@@ -581,6 +581,8 @@ export interface AdvancedOverlaySettings {
   enabled: boolean;
   hotkeyLetter: string;
   theme: Theme;
+  /** Monitored values mirrored from the Overlay Settings page. */
+  stats: string[];
 }
 
 /** M23: the advanced-overlay:get-state envelope (the Overlay view's
@@ -834,6 +836,8 @@ export interface GameCatalogEntry extends GameApplication {
 export interface GameSettingsRecord {
   exePath: string;
   enabled: boolean;
+  /** Optional OC preset applied while this executable is running. */
+  tuningProfileId: string | null;
   graphics: GameProfileGraphics;
   createdAt: string;
   updatedAt: string;

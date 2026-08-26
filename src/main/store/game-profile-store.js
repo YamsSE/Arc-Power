@@ -77,6 +77,9 @@ export function normalizeGameSettings(raw) {
     // per-game profile. This prevents a newly scanned catalog from changing
     // game behavior merely by existing.
     enabled: raw.enabled === true,
+    tuningProfileId: typeof raw.tuningProfileId === 'string' && /^\S+$/.test(raw.tuningProfileId)
+      ? raw.tuningProfileId
+      : null,
     graphics: cleanGraphics(raw.graphics),
     createdAt: cleanTime(raw.createdAt, now),
     updatedAt: cleanTime(raw.updatedAt, now),

@@ -2300,6 +2300,7 @@ async function main() {
         ? settings.advancedOverlayHotkeyLetter
         : 'P',
       theme: normalizeTheme(settings.theme),
+      stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : OVERLAY_STATS_DEFAULT,
     }, { preserveVisibility });
   };
   // The dedicated panel-close op (the 'advanced-overlay:close' channel's

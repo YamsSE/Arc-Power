@@ -383,7 +383,7 @@ html, body {
    ======================================================================== */
 
 .card {
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), var(--bg-elev));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 97%, var(--bg) 3%), color-mix(in srgb, var(--bg-elev) 99%, var(--bg) 1%));
   border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -600,10 +600,16 @@ html, body {
   color: var(--text);
   font: inherit;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: center;
 }
 .oc-value-input:hover { border-color: var(--accent); }
 .oc-value-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .16); }
+.oc-value-input::-webkit-inner-spin-button,
+.oc-value-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.oc-value-input { -moz-appearance: textfield; appearance: textfield; }
 .oc-value-unit { min-width: 19px; color: var(--text-muted); font-size: 11px; }
 .oc-card-head > .oc-value { display: none; }
 

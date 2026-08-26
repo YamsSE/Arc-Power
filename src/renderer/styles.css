@@ -372,13 +372,24 @@ html, body {
   padding-right: 4px;
 }
 
+/* The empty part of the right title-bar half remains a true drag target;
+   only the Windows control buttons opt out so they stay clickable. */
+.titlebar-drag-right {
+  -webkit-app-region: drag;
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+}
+
 .titlebar-controls {
+  -webkit-app-region: no-drag;
   display: flex;
   align-items: stretch;
   height: 100%;
 }
 
 .window-btn {
+  -webkit-app-region: no-drag;
   appearance: none;
   border: none;
   background: transparent;
@@ -763,7 +774,7 @@ html, body {
 /* ------------------------------------------------------------------- cards */
 
 .card {
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), var(--bg-elev));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 97%, var(--bg) 3%), color-mix(in srgb, var(--bg-elev) 99%, var(--bg) 1%));
   border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -890,6 +901,19 @@ html, body {
 select {
   background: var(--control-bg);
   color: var(--text);
+}
+
+/* Keep Chromium's number inputs editable without the distracting spinner
+   controls. The value remains keyboard-editable and the slider remains the
+   fast adjustment surface. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 /* M4-F: the Dashboard GPU card header row - the card title LEFT, the
@@ -1180,7 +1204,7 @@ select {
   color: var(--text);
   font: inherit;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: center;
 }
 .oc-value-input:hover { border-color: var(--accent); }
 .oc-value-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .16); }
@@ -1754,9 +1778,9 @@ select {
 .graphics-card .card-title { font-size: 13.5px; }
 .graphics-card-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(190px, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 42%);
   align-items: center;
-  gap: 16px;
+  gap: 0;
   min-height: 34px;
 }
 .graphics-card-heading .card-title { margin: 0; }
@@ -1768,7 +1792,8 @@ select {
   margin-top: 0;
   padding-left: 16px;
   border-left: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
-  justify-self: end;
+  width: 100%;
+  justify-self: stretch;
 }
 .graphics-select {
   appearance: none;
@@ -1780,6 +1805,7 @@ select {
   padding: 6px 10px;
   font-size: 13px;
   min-width: 220px;
+  width: 100%;
   cursor: pointer;
 }
 .graphics-select:focus { outline: none; border-color: var(--accent-strong); }
@@ -1839,13 +1865,14 @@ select {
 .display-control,
 .display-note-row { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--control-bg) 78%, var(--bg-elev)); }
 .display-control-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
-.display-control-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, auto); align-items: center; gap: 16px; min-height: 34px; }
+.display-control-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 42%); align-items: center; gap: 0; min-height: 34px; }
 .display-inline-control {
   min-height: 34px;
   margin-top: 0;
   padding-left: 16px;
   border-left: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
-  justify-self: end;
+  width: 100%;
+  justify-self: stretch;
 }
 .display-control > .card-note { margin: 6px 0 0; }
 .display-readonly-badge { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
@@ -1853,7 +1880,7 @@ select {
 .display-control-readonly .card-note { margin: 5px 0 0; color: var(--text-dim); }
 .display-control .graphics-control { margin-top: 0; }
 .display-custom-scaling-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.display-select { min-width: 230px; }
+.display-select { min-width: 230px; width: 100%; }
 .display-picker-row { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
 .display-picker-label { color: var(--text-muted); font-size: 12px; }
 .display-picker { flex: 1; }

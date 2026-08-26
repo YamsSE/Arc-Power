@@ -411,6 +411,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const renderGameDetail = (game: GameCatalogEntry): void => {
     const current = gameSettingFor(game.exePath);
     const graphics: GameProfileGraphics = current?.graphics ?? {};
+    const selectedTuningProfileId = current?.tuningProfileId && envelope.profiles.some((profile) => profile.id === current.tuningProfileId)
+      ? current.tuningProfileId
+      : '';
+    const tuning = el('select', { class: 'profile-setting-control game-setting-control', value: selectedTuningProfileId }, [
+      el('option', { value: '', text: 'Normal (Active Profile)' }),
+      ...envelope.profiles.map((profile) => el('option', { value: profile.id, text: profile.name })),
+    ]) as HTMLSelectElement;
     const endurance = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.enduranceGaming ?? 'off', disabled: !gameProfileCapabilities.enduranceGaming }, [
       el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }),
     ]) as HTMLSelectElement;
@@ -430,6 +437,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ]),
       el('div', { class: 'profile-app-badge' }, [artworkTile(game.artwork, game.displayName, 'profile-artwork-small'), el('span', { text: `${game.displayName}  ·  ${game.exePath}` })]),
       el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled === true, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Game profiles start disabled; enable this only when this executable should use its settings.' })]),
+      el('section', { class: 'profile-settings-section game-igs-settings' }, [
+        el('h3', { class: 'profile-section-title', text: 'Tuning Profile' }),
+        settingRow('Overclock preset', 'Applied while this game is running, then restored to the active normal profile when it closes.', tuning),
+      ]),
       ...(gameProfileCapabilities.enduranceGaming ? [el('section', { class: 'profile-settings-section game-igs-settings' }, [
         el('h3', { class: 'profile-section-title', text: 'General' }),
         settingRow('Endurance Gaming', 'Extend gameplay on battery with platform and frame rate tuning for supported games.', endurance),
@@ -440,8 +451,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         settingRow('FPS Limiter', 'Saved independently for this executable.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
-      el('p', { class: 'profile-capability-note', text: gameProfileCapabilities.enduranceGaming ? 'When Use Profile is enabled, these values are applied to this executable through the driver per-application profile and override the global values for it.' : 'When Use Profile is enabled, the available values are applied to this executable through the driver per-application profile and override the global values for it.' }),
+      el('p', { class: 'profile-capability-note', text: gameProfileCapabilities.enduranceGaming ? 'When Use Profile is enabled, the selected tuning preset is applied while the game runs and the Graphics values are applied through the driver per-application profile.' : 'When Use Profile is enabled, the selected tuning preset is applied while the game runs and the Graphics values are applied through the driver per-application profile.' }),
     ]);
+    tuning.addEventListener('change', () => save({ tuningProfileId: tuning.value || null }));
     endurance.addEventListener('change', () => save({ graphics: { enduranceGaming: endurance.value as 'off' | 'on' } }));
     frame.addEventListener('change', () => save({ graphics: { flipMode: frame.value as FlipMode } }));
     latency.addEventListener('change', () => save({ graphics: { lowLatency: latency.value as LowLatency } }));

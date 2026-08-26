@@ -11,6 +11,7 @@ import { createDxgiFpsAdapter } from './fps-dxgi.js';
 import { createSysStats } from './sys-stats.js';
 import { createMonitorLog } from './monitor-log.js';
 import { isElevated as isElevatedReal } from './elevation.js';
+import { createGameTuningController } from './game-tuning.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -131,6 +132,20 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(channel, payload);
     },
   });
+  // The foreground detector is absent in mock/ui-verify mode. In the real
+  // product it gives Game Profiles the same executable identity used by the
+  // overlay, while the controller keeps the launch/exit lifecycle in one
+  // serialized main-process loop.
+  const gameTuning = foregroundApi?.detectProcess && gameProfiles?.loadCatalog
+    ? createGameTuningController({
+        foregroundApi,
+        gameProfiles,
+        store,
+        applyProfile: (deviceId, settings) => handlers['apply-settings'](deviceId, settings, { profileApply: true }),
+        readCurrent: (deviceId) => handlers['get-current-settings'](deviceId),
+      })
+    : null;
+  gameTuning?.start();
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, async (event, ...args) => {
       if (channel === 'device-selection-push') {
@@ -173,6 +188,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     presentMonLane?.stop?.().catch(() => {}),
   ]);
   return async () => {
+    await gameTuning?.stop();
     await stopAllTelemetry();
     await stopFps();
   };
