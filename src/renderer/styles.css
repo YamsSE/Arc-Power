@@ -657,6 +657,7 @@ html, body {
 /* M3-A health levels: ok / warn / error / unknown (the old IGS-era
    warning/degraded/searching levels are gone). */
 .status-ok { background: var(--success); box-shadow: 0 0 6px rgba(52, 211, 153, 0.6); }
+.status-oc-stock { background: var(--accent); box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.55); }
 .status-warn { background: var(--warn); box-shadow: 0 0 6px rgba(251, 191, 36, 0.5); }
 .status-error { background: var(--error); box-shadow: 0 0 6px rgba(248, 113, 113, 0.6); }
 .status-unknown { background: var(--text-dim); }
@@ -671,6 +672,7 @@ html, body {
 }
 .health-row-label { font-weight: 600; color: var(--text); flex-shrink: 0; min-width: 128px; }
 .health-row-detail { color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.health-row-detail.text-oc-stock { color: var(--accent); }
 
 /* M4-A: the dashboard waiver health row is CLICKABLE while unaccepted (it
    opens the waiver dialog); the pointer affordance disappears once accepted
@@ -1161,14 +1163,31 @@ select {
   cursor: pointer;
 }
 
-.oc-value {
-  min-width: 92px;
-  text-align: right;
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.oc-value-field {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
 }
+.oc-value-input {
+  width: 82px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.oc-value-input:hover { border-color: var(--accent); }
+.oc-value-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .16); }
+.oc-value-unit { min-width: 24px; color: var(--text-muted); font-size: 12px; }
+/* The text node remains in the DOM for the existing verification contract;
+   the editable number field is the visible readout. */
+.oc-slider-row > .oc-value { display: none; }
 
 /* ------------------------------------------- OC-mode toggle (M3-C-E) ---- */
 
@@ -1733,9 +1752,24 @@ select {
 .graphics-page-note { font-size: 12px; }
 .graphics-card { padding: 10px 14px; }
 .graphics-card .card-title { font-size: 13.5px; }
+.graphics-card-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, auto);
+  align-items: center;
+  gap: 16px;
+  min-height: 34px;
+}
+.graphics-card-heading .card-title { margin: 0; }
 .graphics-card .card-note { margin-top: 6px; }
 .graphics-unsupported .card-note { color: var(--text-dim); font-style: italic; }
 .graphics-control { margin-top: 8px; }
+.graphics-inline-control {
+  min-height: 34px;
+  margin-top: 0;
+  padding-left: 16px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  justify-self: end;
+}
 .graphics-select {
   appearance: none;
   /* M17c: the shared control surface (the user request). */
@@ -1804,8 +1838,16 @@ select {
 .display-group-body.is-collapsed .display-group-body-inner { padding-top: 0; padding-bottom: 0; }
 .display-control,
 .display-note-row { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--control-bg) 78%, var(--bg-elev)); }
-.display-control-title { margin: 0; font-size: 13px; font-weight: 650; color: var(--text); }
-.display-control-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.display-control-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.display-control-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, auto); align-items: center; gap: 16px; min-height: 34px; }
+.display-inline-control {
+  min-height: 34px;
+  margin-top: 0;
+  padding-left: 16px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  justify-self: end;
+}
+.display-control > .card-note { margin: 6px 0 0; }
 .display-readonly-badge { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
 .display-readonly-value { margin-top: 6px; color: var(--text); font-size: 13px; }
 .display-control-readonly .card-note { margin: 5px 0 0; color: var(--text-dim); }
@@ -1824,6 +1866,8 @@ select {
 .display-info-label { color: var(--text-muted); font-size: 12px; }
 .display-info-value { color: var(--text); font-size: 12px; text-align: right; }
 .display-slider-line { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
+.display-slider-line .display-number-input { order: 1; }
+.display-slider-line .graphics-slider { order: 2; }
 .display-slider-line .graphics-slider { min-width: 120px; }
 .display-number-input { width: 72px; padding: 5px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); }
 .display-mode-row { display: flex; align-items: center; gap: 14px; }
@@ -1834,6 +1878,8 @@ select {
 .display-mode-advanced-note, .display-mode-description { flex-basis: 100%; }
 .display-no-displays { padding: 14px; }
 @media (max-width: 680px) {
+  .graphics-card-heading, .display-control-heading { grid-template-columns: 1fr; gap: 8px; }
+  .graphics-inline-control, .display-inline-control { width: 100%; padding-top: 8px; padding-left: 0; border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-left: 0; justify-self: stretch; }
   .display-wire-format-row, .display-mode-row { flex-direction: column; align-items: stretch; }
   .display-mode-toggle { margin-left: 0; }
 }
@@ -2076,6 +2122,31 @@ select {
 }
 .settings-checkbox:disabled { cursor: not-allowed; opacity: .55; }
 
+/* Stats are a multi-select checklist, not an on/off preference row. Keep
+   those controls as small square checkboxes while the General card uses
+   switches. */
+.overlay-stat-checkbox {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  place-content: center;
+}
+.overlay-stat-checkbox::after {
+  width: 8px;
+  height: 4px;
+  border-radius: 0;
+  background: transparent;
+  border-left: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  transform: rotate(-45deg) translate(.5px, -1px);
+}
+.overlay-stat-checkbox:checked::after {
+  background: transparent;
+  border-left-color: var(--on-accent);
+  border-bottom-color: var(--on-accent);
+  transform: rotate(-45deg) translate(.5px, -1px);
+}
+
 /* 1.0.1 Themes: the Settings Theme card - 3 swatches
    (button[data-theme-option="dark|midnight|light"]). The color chips are
    CLASS-driven (.swatch-*) - CSP style-src 'self' blocks inline style
@@ -2156,6 +2227,21 @@ select {
 /* M5: the Settings Overlay card. */
 .overlay-hotkey-row { margin-top: 10px; }
 .overlay-open-row { justify-content: flex-end; }
+.overlay-hotkey-card .settings-row {
+  justify-content: flex-start;
+  gap: 10px;
+}
+.overlay-hotkey-card .settings-row-label {
+  flex: 0 0 72px;
+}
+.overlay-hotkey-card .overlay-hotkey-fixed {
+  flex: 0 0 58px;
+  text-align: left;
+}
+.overlay-hotkey-card .settings-hotkey-input,
+.overlay-hotkey-card .settings-position-select {
+  margin-left: 0;
+}
 /* M23: the Advanced card's rows need their own spacing - the unstyled
    Edge (position) row sat flush against the CONTROL+<letter> row and
    overlapped it; the small top margin separates them (the user's fix). */
@@ -2189,15 +2275,30 @@ select {
 .settings-row-label { font-size: 13px; color: var(--text-dim); min-width: 52px; }
 /* M35: compact per-GPU overlay monitoring controls. They wrap instead of
    widening the settings card when a machine exposes several adapters. */
-.overlay-device-monitoring {
+.overlay-device-monitoring { margin-top: 0; }
+.overlay-monitor-label {
+  flex: 0 0 auto;
+  min-width: 88px;
+  color: var(--text);
+}
+.overlay-device-options {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 7px 12px;
-  margin-top: 10px;
+  gap: 8px 14px;
+  margin-left: auto;
 }
-.overlay-device-monitoring .settings-row-label { margin-right: 2px; }
-.overlay-device-toggle { font-size: 13px; }
+.overlay-device-toggle {
+  width: auto;
+  font-size: 13px;
+}
+.overlay-device-toggle .settings-checkbox {
+  order: 1;
+}
+.overlay-device-toggle span {
+  order: 2;
+}
 .settings-position-select {
   padding: 4px 8px;
   border-radius: var(--radius-sm);

@@ -428,7 +428,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }),
           el('div', { class: 'game-profile-title' }, [el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
         ]),
-      el('div', { class: 'game-profile-hero' }, [gameBannerTile(game.banner, game.artwork, game.displayName, 'game-profile-banner')]),
       el('div', { class: 'profile-app-badge' }, [artworkTile(game.artwork, game.displayName, 'profile-artwork-small'), el('span', { text: `${game.displayName}  ·  ${game.exePath}` })]),
       el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled === true, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Game profiles start disabled; enable this only when this executable should use its settings.' })]),
       ...(gameProfileCapabilities.enduranceGaming ? [el('section', { class: 'profile-settings-section game-igs-settings' }, [

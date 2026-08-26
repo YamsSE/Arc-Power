@@ -146,6 +146,7 @@ let lockMode = false;
 let waiverRetryCount = 0;
 const cards = new Map<string, HTMLElement>();
 const valueNodes = new Map<string, HTMLElement>();
+const valueInputs = new Map<string, HTMLInputElement>();
 const driverNodes = new Map<string, HTMLElement>();
 // M4-B step-5 F2: the card's meta range line - refreshCard keeps it in sync
 // with the slider range (the caption describes the CURRENT slider).
@@ -189,6 +190,13 @@ let applying = false;
 let view: 'tuning' | 'fan' = 'tuning';
 let viewContainer: HTMLElement | null = null;
 
+function editableNumber(value: number, range: RangeInfo): string {
+  const decimals = Number.isInteger(range.step)
+    ? 0
+    : Math.min(6, String(range.step).split('.')[1]?.length ?? 3);
+  return value.toFixed(decimals);
+}
+
 function resetPageState(state: DeviceState, caps: Capabilities) {
   values = {};
   applied = {};
@@ -204,6 +212,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   appliedLock = null;
   cards.clear();
   valueNodes.clear();
+  valueInputs.clear();
   driverNodes.clear();
   rangeNodes.clear();
   chipNodes.clear();
@@ -323,11 +332,18 @@ function refreshCard(key: string) {
   const valueNode = valueNodes.get(key);
   const driverNode = driverNodes.get(key);
   const rangeNode = rangeNodes.get(key);
+  const valueInput = valueInputs.get(key);
   if (input) {
     input.min = String(sliderRange.min);
     input.max = String(sliderRange.max);
     input.step = String(sliderRange.step);
     input.value = String(snapToRange(displayValue, sliderRange));
+  }
+  if (valueInput) {
+    valueInput.min = String(sliderRange.min);
+    valueInput.max = String(sliderRange.max);
+    valueInput.step = String(sliderRange.step);
+    valueInput.value = editableNumber(snapToRange(displayValue, sliderRange), sliderRange);
   }
   if (fill) fill.style.width = `${normalizedPosition(displayValue, sliderRange) * 100}%`;
   if (valueNode) valueNode.textContent = formatValue(displayValue, sliderRange.units);
@@ -740,6 +756,32 @@ export const tuningPage: Page = {
         ]);
       }
 
+      const valueInput = el('input', {
+        type: 'number',
+        class: 'oc-value-input',
+        min: String(sliderRange.min),
+        max: String(sliderRange.max),
+        step: String(sliderRange.step),
+        value: editableNumber(values[key], sliderRange),
+        'aria-label': `${CONTROL_LABELS[key] ?? key} value`,
+        onchange: (e: Event) => {
+          const raw = Number((e.target as HTMLInputElement).value);
+          if (!Number.isFinite(raw)) {
+            refreshCard(key);
+            return;
+          }
+          hiddenNegativeControls.delete(key);
+          values[key] = snapToRange(raw, sliderRange);
+          refreshCard(key);
+        },
+      }) as HTMLInputElement;
+      const valueField = el('div', { class: 'oc-value-field' }, [
+        valueInput,
+        el('span', { class: 'oc-value-unit', text: sliderRange.units === 'C' ? '°C' : sliderRange.units }),
+      ]);
+      // Keep the legacy text readout in the DOM for existing UI verification
+      // and accessibility probes; the editable field is the visible control.
+      const valueText = el('span', { class: 'oc-value', text: formatValue(values[key], sliderRange.units), 'aria-hidden': 'true' });
       const card = el('section', { class: 'card oc-card', dataset: { control: key } }, [
         el('div', { class: 'oc-card-head' }, [
           el('h2', { class: 'card-title', text: CONTROL_LABELS[key] ?? key }),
@@ -747,6 +789,7 @@ export const tuningPage: Page = {
             [el('span', { class: 'oc-driver-label', text: 'Driver: ' }), el('span', { class: 'oc-driver-value', text: driverText })]),
         ]),
         el('div', { class: 'oc-slider-row' }, [
+          valueField,
           el('div', { class: 'oc-slider' }, [
             el('div', { class: 'oc-track-fill' }),
             el('input', {
@@ -763,7 +806,7 @@ export const tuningPage: Page = {
               },
             }),
           ]),
-          el('div', { class: 'oc-value', text: formatValue(values[key], sliderRange.units) }),
+          valueText,
         ]),
         // M17e (Run B): the Offset|Lock segmented toggle replaces the M4-B
         // Offset/Clock toggle on the freq card - ONLY on gpuLock-capable
@@ -845,7 +888,8 @@ export const tuningPage: Page = {
         ]),
       ]);
 
-      valueNodes.set(key, card.querySelector<HTMLElement>('.oc-value') as HTMLElement);
+      valueNodes.set(key, valueText);
+      valueInputs.set(key, valueInput);
       driverNodes.set(key, card.querySelector<HTMLElement>('.oc-driver-value') as HTMLElement);
       rangeNodes.set(key, card.querySelector<HTMLElement>('.oc-range') as HTMLElement);
       chipNodes.set(key, card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);

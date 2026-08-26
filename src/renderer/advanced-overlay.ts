@@ -206,6 +206,13 @@ function applyDeviceSelectionPush(payload: PanelSelection, devices: DeviceInfo[]
   return true;
 }
 
+function editableNumber(value: number, range: { step: number; units: string }): string {
+  const decimals = Number.isInteger(range.step)
+    ? 0
+    : Math.min(6, String(range.step).split('.')[1]?.length ?? 3);
+  return value.toFixed(decimals);
+}
+
 api.onDeviceSelectionUpdated((payload) => {
   pendingSelection = payload;
   const serial = ++selectionPushSerial;
@@ -439,7 +446,34 @@ async function renderTuning(): Promise<void> {
   // The scalar slider cards (the Tuning page's compact pattern).
   const buildCard = (key: string): HTMLElement => {
     const range = cardSliderRange(caps, key) as NonNullable<ReturnType<typeof cardSliderRange>>;
-    const valueNode = el('span', { class: 'oc-value', text: formatValue(values[key], range.units) });
+    const valueInput = el('input', {
+      type: 'number',
+      class: 'oc-value-input',
+      min: String(range.min),
+      max: String(range.max),
+      step: String(range.step),
+      value: editableNumber(values[key], range),
+      'aria-label': `${CONTROL_LABELS[key] ?? key} value`,
+      onchange: (ev: Event) => {
+        const raw = Number((ev.target as HTMLInputElement).value);
+        if (!Number.isFinite(raw)) return;
+        hiddenNegativeControls.delete(key);
+        values[key] = snapToRange(raw, range);
+        valueInput.value = editableNumber(values[key], range);
+        valueNode.textContent = formatValue(values[key], range.units);
+        slider.value = String(values[key]);
+        fill.style.width = `${normalizedPosition(values[key], range) * 100}%`;
+        refreshChip(key);
+        updateFloating();
+      },
+    }) as HTMLInputElement;
+    const valueField = el('div', { class: 'oc-value-field' }, [
+      valueInput,
+      el('span', { class: 'oc-value-unit', text: range.units === 'C' ? '°C' : range.units }),
+    ]);
+    // Keep the established text node for the panel's verification contract;
+    // the editable input is the visible control.
+    const valueNode = el('span', { class: 'oc-value', text: formatValue(values[key], range.units), 'aria-hidden': 'true' });
     const rangeNode = el('span', { class: 'oc-range', text: `${range.min} – ${range.max} ${range.units}` });
     const fill = el('div', { class: 'oc-track-fill' });
     fill.style.width = `${normalizedPosition(values[key], range) * 100}%`;
@@ -455,6 +489,7 @@ async function renderTuning(): Promise<void> {
         hiddenNegativeControls.delete(key);
         values[key] = v;
         valueNode.textContent = formatValue(v, range.units);
+        valueInput.value = editableNumber(v, range);
         fill.style.width = `${normalizedPosition(v, range) * 100}%`;
         refreshChip(key);
         updateFloating();
@@ -488,6 +523,7 @@ async function renderTuning(): Promise<void> {
     const card = el('section', { class: 'card oc-card', dataset: { control: key } }, [
       el('div', { class: 'oc-card-head' }, [
         el('h2', { class: 'card-title', text: CONTROL_LABELS[key] ?? key }),
+        valueField,
         valueNode,
       ]),
       el('div', { class: 'oc-slider-row' }, [
@@ -635,9 +671,11 @@ async function renderTuning(): Promise<void> {
       const slider = card.querySelector<HTMLInputElement>('input[type="range"]');
       const fill = card.querySelector<HTMLElement>('.oc-track-fill');
       const valueNode = card.querySelector<HTMLElement>('.oc-value');
+      const valueInput = card.querySelector<HTMLInputElement>('.oc-value-input');
       if (slider) slider.value = String(snapToRange(values[key], range));
       if (fill) fill.style.width = `${normalizedPosition(values[key], range) * 100}%`;
       if (valueNode) valueNode.textContent = formatValue(values[key], range.units);
+      if (valueInput) valueInput.value = editableNumber(snapToRange(values[key], range), range);
     }
     // The chips + the floating button re-derive from the applied reference.
     for (const key of controls) {

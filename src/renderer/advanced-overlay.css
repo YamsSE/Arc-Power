@@ -583,14 +583,29 @@ html, body {
   cursor: pointer;
 }
 
-.oc-value {
-  min-width: 92px;
-  text-align: right;
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.oc-value-field {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex: 0 0 auto;
 }
+.oc-value-input {
+  width: 76px;
+  min-height: 26px;
+  padding: 4px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.oc-value-input:hover { border-color: var(--accent); }
+.oc-value-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .16); }
+.oc-value-unit { min-width: 19px; color: var(--text-muted); font-size: 11px; }
+.oc-card-head > .oc-value { display: none; }
 
 .oc-meta { margin-top: 2px; display: flex; align-items: center; gap: 8px; }
 

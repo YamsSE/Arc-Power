@@ -722,9 +722,11 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     })));
     selectNodes.set(key, select);
     const card = el('section', { class: 'card graphics-card', dataset: { control: key } }, [
-      el('h2', { class: 'card-title', text: CARD_TITLES[key] }),
+      el('div', { class: 'graphics-card-heading' }, [
+        el('h2', { class: 'card-title', text: CARD_TITLES[key] }),
+        el('div', { class: 'graphics-control graphics-inline-control' }, [select]),
+      ]),
       el('p', { class: 'card-note', text: CARD_NOTES[key] }),
-      el('div', { class: 'graphics-control' }, [select]),
       el('div', { class: 'graphics-card-actions' }, [
         el('span', { class: 'chip oc-chip-status', hidden: true }),
         // M9: the per-card Apply button (the chip state machine) - a
@@ -818,10 +820,12 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     const sliderRow = el('div', { class: 'graphics-fps-slider-row', hidden: !fl.enabled }, [slider, valueNode]);
     sliderRowNodes.set('frameLimit', sliderRow);
     const card = el('section', { class: 'card graphics-card', dataset: { control: 'frameLimit' } }, [
-      el('h2', { class: 'card-title', text: CARD_TITLES.frameLimit }),
+      el('div', { class: 'graphics-card-heading' }, [
+        el('h2', { class: 'card-title', text: CARD_TITLES.frameLimit }),
+        el('div', { class: 'graphics-control graphics-inline-control' }, [toggle]),
+      ]),
       el('p', { class: 'card-note', text: CARD_NOTES.frameLimit }),
       el('div', { class: 'graphics-fps-row' }, [
-        el('div', { class: 'graphics-control' }, [toggle]),
         sliderRow,
       ]),
       el('div', { class: 'graphics-card-actions' }, [
@@ -974,9 +978,11 @@ function buildDisplayDropdownRow(
   })));
   selectNodes.set(key, select);
   const row = el('div', { class: 'display-control', dataset: { control: key } }, [
-    el('h3', { class: 'display-control-title', text: title }),
+    el('div', { class: 'display-control-heading' }, [
+      el('h3', { class: 'display-control-title', text: title }),
+      el('div', { class: 'graphics-control display-inline-control' }, [select]),
+    ]),
     el('p', { class: 'card-note', text: note }),
-    el('div', { class: 'graphics-control' }, [select]),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       // M9: the per-card Apply button (the chip state machine) - a
@@ -1064,9 +1070,11 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
   })));
   selectNodes.set('scalingMode', select);
   const row = el('div', { class: 'display-control', dataset: { control: 'scalingMode' } }, [
-    el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
+    el('div', { class: 'display-control-heading' }, [
+      el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
+      el('div', { class: 'graphics-control display-inline-control' }, [select]),
+    ]),
     el('p', { class: 'card-note', text: DISPLAY_SCALING_NOTE }),
-    el('div', { class: 'graphics-control' }, [select]),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMode'); } }),
@@ -1148,9 +1156,12 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
   customX.addEventListener('change', setCustom);
   customY.addEventListener('change', setCustom);
   const row = el('div', { class: 'display-control', dataset: { control: 'displayScalingMethod' } }, [
-    el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
+    el('div', { class: 'display-control-heading' }, [
+      el('h3', { class: 'display-control-title', text: 'Scaling Method' }),
+      el('div', { class: 'graphics-control display-inline-control' }, [methodSelect]),
+    ]),
     el('p', { class: 'card-note', text: DISPLAY_SCALING_METHOD_NOTE }),
-    el('div', { class: 'graphics-control display-custom-scaling-row' }, [methodSelect, customX, customY]),
+    el('div', { class: 'graphics-control display-custom-scaling-row' }, [customX, customY]),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'displayScalingMethod'); } }),
@@ -1344,9 +1355,11 @@ function buildVariableRefreshRateRow(ctx: PageContext): HTMLElement {
   })));
   selectNodes.set('variableRefreshRate', select);
   const row = el('div', { class: 'display-control', dataset: { control: 'variableRefreshRate' } }, [
-    el('h3', { class: 'display-control-title', text: 'Variable Refresh Rate' }),
+    el('div', { class: 'display-control-heading' }, [
+      el('h3', { class: 'display-control-title', text: 'Variable Refresh Rate' }),
+      el('div', { class: 'graphics-control display-inline-control' }, [select]),
+    ]),
     el('p', { class: 'card-note', text: DISPLAY_VRR_NOTE }),
-    el('div', { class: 'graphics-control' }, [select]),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'variableRefreshRate'); } }),
@@ -1378,8 +1391,8 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
     return el('div', { class: 'display-control display-slider-row display-control-readonly', dataset: { control: key } }, [
       el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
       el('div', { class: 'display-slider-line' }, [
-        el('input', { class: 'graphics-slider', type: 'range', min: uiRange.min, max: uiRange.max, step: uiRange.step, value, disabled: true, 'aria-label': title }),
         el('input', { class: 'display-number-input', type: 'number', min: uiRange.min, max: uiRange.max, value: capability?.value === null || capability?.value === undefined ? '' : value, disabled: true, 'aria-label': title + ' value' }),
+        el('input', { class: 'graphics-slider', type: 'range', min: uiRange.min, max: uiRange.max, step: uiRange.step, value, disabled: true, 'aria-label': title }),
       ]),
       el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
     ]);
@@ -1407,7 +1420,7 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   });
   const row = el('div', { class: 'display-control display-slider-row', dataset: { control: key } }, [
     el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
-    el('div', { class: 'display-slider-line' }, [slider, numberInput]),
+    el('div', { class: 'display-slider-line' }, [numberInput, slider]),
     el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),

@@ -162,10 +162,11 @@ let lastSig: DashboardSig | null = null;
  *  (waiverAccepted: true) and the dashboard's caps-change full re-render
  *  flips the row green IN PLACE. Accepted -> no click action. */
 function healthRowEl(row: HealthRow, ctx: PageContext): HTMLElement {
+  const stockOc = row.id === 'oc' && row.detail === 'No Overclock Applied';
   const node = el('div', { class: 'health-row', 'data-row': row.id }, [
-    el('span', { class: `status-dot health-dot status-${row.level}`, title: row.detail }),
+    el('span', { class: `status-dot health-dot status-${row.level}${stockOc ? ' status-oc-stock' : ''}`, title: row.detail }),
     el('span', { class: 'health-row-label', text: row.label }),
-    el('span', { class: `health-row-detail text-${row.level}`, text: row.detail }),
+    el('span', { class: `health-row-detail text-${row.level}${stockOc ? ' text-oc-stock' : ''}`, text: row.detail }),
   ]);
   if (row.id === 'waiver' && row.level === 'error') {
     node.classList.add('health-row-clickable');

@@ -203,24 +203,26 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const deviceOptions = overlayDevices
       .filter((device) => typeof device.deviceKey === 'string' && device.deviceKey.length > 0);
     const monitoredKeys = persisted.monitoredDeviceKeys ?? deviceOptions.map((device) => device.deviceKey!);
-    const monitoringRow = el('div', { class: 'overlay-device-monitoring' }, [
-      el('span', { class: 'settings-row-label', text: 'Monitor GPUs' }),
-      ...(deviceOptions.length > 0
-        ? deviceOptions.map((device, index) => {
-          const key = device.deviceKey!;
-          const model = typeof device.name === 'string' && device.name.length > 0 ? ` - ${device.name}` : '';
-          return el('label', { class: 'boot-toggle overlay-device-toggle', title: `GPU ${index + 1}${model}` }, [
-            el('input', {
-              type: 'checkbox',
-              class: 'settings-checkbox',
-              dataset: { setting: 'overlayDeviceKeys', deviceKey: key },
-              checked: monitoredKeys.includes(key),
-              onchange: (ev: Event) => void onMonitoredDeviceToggle(key, (ev.target as HTMLInputElement).checked),
-            }),
-            el('span', { text: `GPU ${index + 1}` }),
-          ]);
-        })
-        : [el('span', { class: 'settings-hint', text: 'No GPU devices detected' })]),
+    const monitoringRow = el('div', { class: 'settings-row overlay-device-monitoring' }, [
+      el('span', { class: 'settings-row-label overlay-monitor-label', text: 'Monitor GPUs' }),
+      el('div', { class: 'overlay-device-options' }, [
+        ...(deviceOptions.length > 0
+          ? deviceOptions.map((device, index) => {
+            const key = device.deviceKey!;
+            const model = typeof device.name === 'string' && device.name.length > 0 ? ` - ${device.name}` : '';
+            return el('label', { class: 'boot-toggle overlay-device-toggle', title: `GPU ${index + 1}${model}` }, [
+              el('input', {
+                type: 'checkbox',
+                class: 'settings-checkbox',
+                dataset: { setting: 'overlayDeviceKeys', deviceKey: key },
+                checked: monitoredKeys.includes(key),
+                onchange: (ev: Event) => void onMonitoredDeviceToggle(key, (ev.target as HTMLInputElement).checked),
+              }),
+              el('span', { text: `GPU ${index + 1}` }),
+            ]);
+          })
+          : [el('span', { class: 'settings-hint', text: 'No GPU devices detected' })]),
+      ]),
     ]);
     // --- General card (M6-amd3): the enable TOGGLE - moved here from the
     // Settings page (the Settings card is button-only now). The
