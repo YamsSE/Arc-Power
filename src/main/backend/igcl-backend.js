@@ -295,11 +295,10 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees. Ordinary mode preferences use the virtual-modeset path;
-// forcing HardwareModeSet=true makes the driver attempt a physical modeset
-// and can leave the active scaler at Identity even though the preferred mode
-// was accepted. Custom scaling remains caller-controlled because it may need
-// the physical display transition exposed by IGS.
+// read-back agrees. Raw compatibility writes use the virtual-modeset path;
+// the explicit GPU-method alias requests the physical modeset/black-screen
+// transition used by IGS. Custom scaling remains caller-controlled because
+// it may need the physical display transition exposed by IGS.
 function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = false }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
@@ -3697,8 +3696,17 @@ export class IgclBackend {
           // The M10b-fix lesson: NO SupportedScaling pre-gate - the caps
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
-          // ScalingType is a FLAG value in the struct (1/2/4/8/16).
-          const { setResult } = setScalingWithCompatibility(lib, handle, { flag, custom });
+          // ScalingType is a FLAG value in the struct (1/2/4/8/16). The
+          // renderer includes the coupled GPU-method alias for IGS-style
+          // method changes; that is the signal for a physical modeset.
+          const gpuMethodRequested = patch.displayScalingMethod === 'centered'
+            || patch.displayScalingMethod === 'stretched'
+            || patch.displayScalingMethod === 'aspect-ratio-centered-max';
+          const { setResult } = setScalingWithCompatibility(lib, handle, {
+            flag,
+            custom,
+            hardwareModeSet: gpuMethodRequested,
+          });
           // NNScalingState only distinguishes the Display-vs-GPU preference;
           // it cannot prove which exact GPU method was accepted. Use it as a
           // fallback for Display Scaling (identity) only, never as a false
@@ -3852,7 +3860,11 @@ export class IgclBackend {
           if (patch.displayScalingMethod === 'custom' && !custom) {
             fail('displayScalingMethod', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
           } else {
-            const { setResult } = setScalingWithCompatibility(lib, handle, { flag, custom });
+            const { setResult } = setScalingWithCompatibility(lib, handle, {
+              flag,
+              custom,
+              hardwareModeSet: gpuMethodAlias,
+            });
             if (setResult !== CTL_RESULT.SUCCESS) {
               fail('displayScalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
             } else {

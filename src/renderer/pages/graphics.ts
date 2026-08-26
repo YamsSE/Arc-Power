@@ -1033,6 +1033,7 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       const raw = rawScalingForView(display!, displayScalingViewDraft);
       if (displayScalingViewDraft === 'gpu-scaling') {
         displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+        displayDraft.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
         delete displayDraft.scalingCustom;
         delete displayDraft.scalingMethod;
       } else if (displayScalingViewDraft === 'display-scaling') {
@@ -1652,6 +1653,10 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
       payload = { scalingMode: raw };
       if (displayScalingViewDraft === 'gpu-scaling') {
         payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+        // Keep the IGS method identity alongside the raw IGCL flag. The
+        // backend uses this explicit alias to request the physical modeset
+        // path, which makes GPU method changes visibly transition the display.
+        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
       } else if (displayScalingViewDraft === 'display-scaling') {
         payload.scalingMode = raw;
       } else {
@@ -1679,6 +1684,7 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
       payload = {};
       if (view === 'gpu-scaling') {
         payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
+        payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
       } else if (view === 'retro-scaling') {
         payload.scalingMode = rawScalingForView(display, view);
         payload.scalingMethod = {

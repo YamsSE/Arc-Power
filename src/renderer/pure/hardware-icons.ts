@@ -74,9 +74,11 @@ export function gpuIconKeyOf(name: unknown, vendor?: unknown): GpuIconKey | null
 }
 
 export function cpuIconPath(key: CpuIconKey | null): string | null {
-  return key ? `./assets/device-icons/cpu/${key}.png` : null;
+  // index.html lives in src/renderer while the shared packaged assets live in
+  // src/assets. Keep this renderer-relative for dev and the portable app.
+  return key ? `../assets/device-icons/cpu/${key}.png` : null;
 }
 
 export function gpuIconPath(key: GpuIconKey | null): string | null {
-  return key ? `./assets/device-icons/gpu/${key}.png` : null;
+  return key ? `../assets/device-icons/gpu/${key}.png` : null;
 }
