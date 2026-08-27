@@ -385,6 +385,34 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysm
 }
 
 async function main() {
+  // Register this before any startup work. The callback runs on Electron's
+  // first ready turn, so the loader can paint while the rest of this function
+  // prepares the cache, backend, profiles, tray, and renderer.
+  let startupSplash = null;
+  let startupSplashTimeout = null;
+  const dismissStartupSplash = () => {
+    if (startupSplashTimeout) {
+      clearTimeout(startupSplashTimeout);
+      startupSplashTimeout = null;
+    }
+    if (!startupSplash) return;
+    try {
+      if (!startupSplash.isDestroyed()) startupSplash.close();
+    } catch { /* best effort during shutdown */ }
+    startupSplash = null;
+  };
+  const startupSplashReady = !headless && !uiVerify && !profileBoot && !mock
+    ? app.whenReady().then(() => {
+      app.setAppUserModelId('com.rid.arcpower');
+      try {
+        startupSplash = createStartupSplash();
+        startupSplashTimeout = setTimeout(dismissStartupSplash, 30000);
+      } catch (err) {
+        console.error(`[splash] unable to create startup window: ${err.message}`);
+      }
+    })
+    : null;
+
   // M52: acquire the UI lock while Electron still has its default
   // %APPDATA%\arc-power userData identity. Switching to ArcPowerCache first
   // would let a legacy process and this process acquire different locks.
@@ -766,37 +794,8 @@ async function main() {
   }
 
   await app.whenReady();
+  if (startupSplashReady) await startupSplashReady;
   markProfileBoot('when-ready');
-
-  // Keep the Windows identity stable so the taskbar groups the packaged
-  // application under the Arc Power icon, including when it starts hidden.
-  app.setAppUserModelId('com.rid.arcpower');
-
-  // Show the loading surface only for a real product launch. Verification and
-  // profiling runs own their window lifecycle and must remain invisible to
-  // the user's desktop. The splash is dismissed by the renderer boot marker
-  // below, with a bounded fallback for a failed/slow renderer load.
-  let startupSplash = null;
-  let startupSplashTimeout = null;
-  const dismissStartupSplash = () => {
-    if (startupSplashTimeout) {
-      clearTimeout(startupSplashTimeout);
-      startupSplashTimeout = null;
-    }
-    if (!startupSplash) return;
-    try {
-      if (!startupSplash.isDestroyed()) startupSplash.close();
-    } catch { /* best effort during shutdown */ }
-    startupSplash = null;
-  };
-  if (!headless && !uiVerify && !profileBoot && !mock) {
-    try {
-      startupSplash = createStartupSplash();
-      startupSplashTimeout = setTimeout(dismissStartupSplash, 30000);
-    } catch (err) {
-      console.error(`[splash] unable to create startup window: ${err.message}`);
-    }
-  }
   app.on('will-quit', dismissStartupSplash);
 
   markProfileBoot('instance-lock');
