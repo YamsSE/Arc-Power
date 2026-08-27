@@ -239,7 +239,17 @@ const APP_USER_MODEL_ID = 'com.rid.arcpower';
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
-const APP_ICON = nativeImage.createFromPath(APP_ICON_PNG_PATH);
+// NativeImage does not consistently resolve files inside app.asar when it is
+// handed a path directly. Read the bundled PNG through Electron's ASAR-aware
+// fs layer, then give nativeImage the bytes so the live taskbar icon is never
+// an empty/default document icon.
+const APP_ICON = (() => {
+  try {
+    return nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
+  } catch {
+    return nativeImage.createEmpty();
+  }
+})();
 
 function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme) {
   const win = new BrowserWindow({
@@ -284,7 +294,9 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
   try {
     win.setAppDetails({
       appId: APP_USER_MODEL_ID,
-      appIconPath: APP_ICON_PATH,
+      // The packaged executable carries the canonical ICO as a native Windows
+      // resource. Using it here avoids passing an app.asar path to the shell.
+      appIconPath: app.isPackaged ? process.execPath : APP_ICON_PATH,
       appIconIndex: 0,
       relaunchCommand: process.execPath,
       relaunchDisplayName: 'Arc Power',

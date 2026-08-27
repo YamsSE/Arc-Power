@@ -6,11 +6,11 @@
 // user's LocalAppData\Programs directory. The installed executable re-enters
 // this module with --uninstall for the matching uninstaller UI.
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, cp, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -30,6 +30,13 @@ const execFileAsync = promisify(execFile);
 const INSTALLER_HTML = path.join(__dirname, '..', 'installer', 'installer.html');
 const INSTALLER_PRELOAD = path.join(__dirname, '..', 'installer', 'installer-preload.cjs');
 const INSTALLER_ICON = path.join(__dirname, '..', 'assets', 'icon.png');
+const INSTALLER_NATIVE_ICON = (() => {
+  try {
+    return nativeImage.createFromBuffer(readFileSync(INSTALLER_ICON));
+  } catch {
+    return nativeImage.createEmpty();
+  }
+})();
 
 function powershellPath() {
   return process.env.SystemRoot
@@ -109,6 +116,21 @@ function sendProgress(win, percent, message) {
   if (!win.isDestroyed()) win.webContents.send('installer:progress', { percent, message });
 }
 
+async function copyPackagedPayload(sourceRoot, installDir) {
+  // Electron's ASAR fs wrapper treats any path containing `.asar` as an
+  // archive. A recursive copy of the running portable directory therefore
+  // tries to inspect the destination `resources\app.asar` while it is still
+  // being created and fails with "Invalid package". Temporarily disable that
+  // virtual-filesystem behavior so app.asar is copied as an ordinary file.
+  const previousNoAsar = process.noAsar;
+  process.noAsar = true;
+  try {
+    await cp(sourceRoot, installDir, { recursive: true, force: true });
+  } finally {
+    process.noAsar = previousNoAsar;
+  }
+}
+
 async function installArcPower(win, options = {}) {
   const paths = windowsPaths();
   const plan = createInstallationPlan({
@@ -126,7 +148,7 @@ async function installArcPower(win, options = {}) {
   sendProgress(win, 8, 'Preparing your Arc Power installation');
   await mkdir(plan.installDir, { recursive: true });
   sendProgress(win, 20, 'Copying the Arc Power application');
-  await cp(sourceRoot, plan.installDir, { recursive: true, force: true });
+  await copyPackagedPayload(sourceRoot, plan.installDir);
   sendProgress(win, 68, 'Creating your Start Menu shortcut');
   await createShortcut({
     shortcutPath: plan.startMenuShortcutPath,
@@ -224,7 +246,7 @@ export async function runInstallerMode(mode = 'install') {
     maximizable: false,
     backgroundColor: '#090b12',
     title: mode === 'uninstall' ? 'Remove Arc Power' : 'Install Arc Power',
-    icon: INSTALLER_ICON,
+    icon: INSTALLER_NATIVE_ICON,
     webPreferences: {
       preload: INSTALLER_PRELOAD,
       contextIsolation: true,
@@ -244,6 +266,10 @@ export async function runInstallerMode(mode = 'install') {
   win.once('ready-to-show', showInstallerWindow);
   win.webContents.once('did-finish-load', showInstallerWindow);
   await win.loadFile(INSTALLER_HTML, { query: { mode } });
+  // Keep the custom surface at the native CSS scale. This prevents a stale
+  // page zoom from rasterizing the entire installer at a fractional size.
+  win.webContents.setZoomFactor(1);
+  win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => {});
   // Keep a deterministic fallback for environments where ready-to-show is not
   // emitted (for example, a headless/GPU-fallback portable session).
   showInstallerWindow();
