@@ -19,7 +19,7 @@
                     "make:banner":  "electron scripts/make-banner.js",
                     "build:renderer":  "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138 && esbuild src/renderer/advanced-overlay.ts --bundle --outfile=src/renderer/out/advanced-overlay.js --format=iife --target=chrome138",
                     "typecheck":  "tsc --noEmit",
-                    "dist":  "npm run build:renderer \u0026\u0026 electron-builder --win"
+                    "dist":  "npm run build:renderer \u0026\u0026 node build/build-dist.js"
                 },
     "build":  {
                   "appId":  "com.rid.arcpower",
@@ -44,29 +44,15 @@
                                      "src/main/backend/presentmon/**"
                                  ],
                   "win":  {
-                              "target":  [
-                                             "portable",
-                                             "nsis"
+                               "target":  [
+                                             "portable"
                                          ],
-                              "requestedExecutionLevel":  "requireAdministrator"
+                               "requestedExecutionLevel":  "requireAdministrator"
                           },
                   "portable":  {
                                    "artifactName":  "Arc-Power_Portable.exe",
                                    "requestExecutionLevel":  "admin"
                                },
-                  "nsis":  {
-                               "artifactName":  "Arc-Power_Installer.exe",
-                               "oneClick":  false,
-                               "perMachine":  false,
-                               "shortcutName":  "Arc Power",
-                               "createDesktopShortcut":  false,
-                               "installerHeader":  "build/installerHeader.bmp",
-                               "installerSidebar":  "build/installerSidebar.bmp",
-                               "uninstallerSidebar":  "build/installerSidebar.bmp",
-                               "installerIcon":  "build/installerIcon.ico",
-                               "uninstallerIcon":  "build/installerIcon.ico",
-                               "include":  "build/installer.nsh"
-                           },
                   "directories":  {
                                       "output":  "dist"
                                   }

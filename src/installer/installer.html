@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arc Power Setup</title>
+  <link rel="stylesheet" href="installer.css">
+</head>
+<body>
+  <main class="window-shell">
+    <header class="titlebar" data-drag-region>
+      <div class="brand-lockup">
+        <img class="brand-icon" src="../assets/ArcPowerIcon-splash.png" alt="">
+        <span>ARC POWER <small>SETUP</small></span>
+      </div>
+      <button class="window-close" id="close-button" type="button" aria-label="Close">×</button>
+    </header>
+
+    <section class="content" id="content">
+      <div class="art-column">
+        <div class="art-glow"></div>
+        <img class="hero-icon" src="../assets/ArcPowerIcon-splash.png" alt="Arc Power">
+        <div class="art-caption"><span class="pulse-dot"></span> GPU CONTROL / TELEMETRY</div>
+      </div>
+      <div class="panel">
+        <div class="eyebrow" id="eyebrow">WELCOME TO ARC POWER</div>
+        <h1 id="headline">Power up your<br><span>graphics.</span></h1>
+        <p class="lede" id="lede">A focused control panel for Intel Arc graphics. Tune, monitor and manage your GPU from one clean workspace.</p>
+
+        <div class="install-form" id="install-form">
+          <label class="field-label" for="install-directory">INSTALL LOCATION</label>
+          <div class="path-field">
+            <input id="install-directory" type="text" spellcheck="false">
+            <button id="browse-button" type="button">BROWSE</button>
+          </div>
+          <label class="check-row"><input id="desktop-shortcut" type="checkbox" checked><span class="fake-check"></span><span>Create a desktop shortcut</span></label>
+          <label class="check-row"><input id="launch-after" type="checkbox" checked><span class="fake-check"></span><span>Launch Arc Power after setup</span></label>
+        </div>
+
+        <div class="progress-area" id="progress-area" hidden>
+          <div class="progress-meta"><span id="progress-message">Preparing...</span><span id="progress-percent">0%</span></div>
+          <div class="progress-track"><div class="progress-value" id="progress-value"></div></div>
+        </div>
+
+        <div class="status-card" id="status-card" hidden>
+          <div class="status-mark" id="status-mark">✓</div>
+          <div><strong id="status-title">Arc Power is ready</strong><p id="status-detail"></p></div>
+        </div>
+        <p class="error" id="error" role="alert" hidden></p>
+
+        <div class="actions" id="actions">
+          <button class="secondary" id="cancel-button" type="button">CANCEL</button>
+          <button class="primary" id="primary-button" type="button">INSTALL ARC POWER <span>→</span></button>
+        </div>
+      </div>
+    </section>
+    <footer class="footer"><span>R.ID / ARC POWER</span><span id="version-label">SETUP</span></footer>
+  </main>
+  <script src="installer.js"></script>
+</body>
+</html>
+

@@ -44,6 +44,7 @@ import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShort
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { resolveArcPowerCachePath, shouldClearCache, filterRelaunchArgs, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
@@ -64,6 +65,8 @@ import { createOverlayWindow } from './overlay.js';
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { createStartupSplash } from './splash.js';
+import { runInstallerMode } from './installer.js';
+import { installerModeFromEnvironment } from './installer-pure.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
@@ -130,6 +133,30 @@ const bootApply = process.argv.includes('--boot-apply');
 // --ui-verify is dev tooling: it ALWAYS uses the mock backend (never touches
 // hardware), so treat it as mock for backend selection.
 const mock = process.argv.includes('--mock') || process.env.RID_BACKEND === 'mock' || uiVerify;
+// The portable launcher normally keeps the original artifact path in this
+// environment variable while Electron runs from its temporary extraction
+// directory. Some launch paths do not preserve that variable, so the packaged
+// Windows fallback reads the immediate parent executable as a second filename
+// proof. This is read-only and runs only when the environment marker is absent.
+function portableParentExecutableFile() {
+  if (!app.isPackaged || process.platform !== 'win32' || !process.ppid) return null;
+  try {
+    const output = execFileSync('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${process.ppid}").ExecutablePath`,
+    ], { encoding: 'utf8', windowsHide: true, timeout: 2000 });
+    const parent = String(output).trim();
+    return parent || null;
+  } catch {
+    return null;
+  }
+}
+
+const installerMode = installerModeFromEnvironment({
+  argv: process.argv,
+  portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE ?? null,
+  parentExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE ? null : portableParentExecutableFile(),
+});
 const applyProfileIdx = process.argv.indexOf('--apply-profile');
 const applyProfileId = applyProfileIdx >= 0 ? process.argv[applyProfileIdx + 1] : null;
 // M2C-C apply-worker mode: `--apply-worker <reqFile> <outFile>`.
@@ -410,6 +437,10 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysm
 }
 
 async function main() {
+  if (installerMode) {
+    await runInstallerMode(installerMode);
+    return;
+  }
   // Set the Windows identity before any window is created so taskbar grouping
   // resolves to the Arc Power app and not a stale/default Electron identity.
   if (!headless && !uiVerify && !profileBoot && !mock) {
