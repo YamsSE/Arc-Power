@@ -29,7 +29,38 @@
 ; every makensis warning as fatal, so the install-side functions are only
 ; DEFINED in the installer pass (the uninstaller pass would otherwise warn
 ; 6010: "function not referenced").
+; Arc Power installer theme. These MUI values apply to the stock pages that
+; remain in the assisted flow; the supplied header/sidebar BMPs carry the
+; loader's visual language into the native wizard.
+!ifndef MUI_BGCOLOR
+  !define MUI_BGCOLOR "090B12"
+!endif
+!ifndef MUI_TEXTCOLOR
+  !define MUI_TEXTCOLOR "EAF6FF"
+!endif
+!ifndef MUI_DIRECTORYPAGE_BGCOLOR
+  !define MUI_DIRECTORYPAGE_BGCOLOR "0D111B"
+!endif
+!ifndef MUI_DIRECTORYPAGE_TEXTCOLOR
+  !define MUI_DIRECTORYPAGE_TEXTCOLOR "EAF6FF"
+!endif
+!ifndef MUI_LICENSEPAGE_BGCOLOR
+  !define MUI_LICENSEPAGE_BGCOLOR "0D111B"
+!endif
+!ifndef MUI_INSTFILESPAGE_COLORS
+  !define MUI_INSTFILESPAGE_COLORS "EAF6FF 0D111B"
+!endif
+!define MUI_WELCOMEPAGE_TITLE "Welcome to Arc Power"
+!define MUI_WELCOMEPAGE_TEXT "A focused control panel for Intel Arc graphics. Tune, monitor and manage your GPU from one clean workspace.$\r$\n$\r$\nSelect Next to continue with the installation."
+
 !include "MUI2.nsh"
+
+; electron-builder calls this hook instead of adding its unbranded default
+; welcome page. Keeping MUI's page preserves its navigation/accessibility,
+; while the Arc Power artwork and palette make it part of the same design.
+!macro customWelcomePage
+  !insertmacro MUI_PAGE_WELCOME
+!macroend
 
 !ifndef BUILD_UNINSTALLER
   ; --- state vars (defaulted in customInit - the silent path never runs
@@ -64,6 +95,7 @@
     ${If} $ocClauseDialog == error
       Abort
     ${EndIf}
+    SetCtlColors $ocClauseDialog "" "${MUI_BGCOLOR}"
     ; M4L fix round: the ${NSD_CreateCheckbox} macro in the bundled
     ; nsDialogs produced a NON-functioning checkbox on the user's machine
     ; (live-verified: a real mouse click did not toggle it - the installer
@@ -74,9 +106,11 @@
     ; SPACE toggles it - the page never blocks without a way out).
     nsDialogs::CreateControl "Button" "0x50010003" "0" 0 8u 100% 16u "I understand and accept the overclocking risk"
     Pop $ocAcknowledgedCheckbox
+    SetCtlColors $ocAcknowledgedCheckbox "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
     ${NSD_SetState} $ocAcknowledgedCheckbox 0
     ${NSD_CreateLabel} 0 32u 100% 220u "Arc Power changes GPU power limits, temperatures, core/VRAM clocks, voltages and fan curves beyond the Intel-standard envelope. Overclocking or overvolting may:$\r$\n  - void your warranty;$\r$\n  - reduce the lifetime of your GPU, PSU or other components;$\r$\n  - cause instability, crashes, data loss or display corruption;$\r$\n  - overheat or damage hardware when used carelessly.$\r$\n$\r$\nYou use Arc Power at your own risk. The developer provides no warranty and accepts no liability for any damage resulting from its use.$\r$\n$\r$\nThis notice is shown once per install; the settings you apply with the tool are always your own responsibility."
     Pop $0
+    SetCtlColors $0 "B4C2D8" "${MUI_BGCOLOR}"
     nsDialogs::Show
   FunctionEnd
 
@@ -114,19 +148,23 @@
     ${If} $finishDialog == error
       Abort
     ${EndIf}
+    SetCtlColors $finishDialog "" "${MUI_BGCOLOR}"
     ${NSD_CreateLabel} 0 0 100% 40u "Arc Power is installed. Choose the finishing actions below."
     Pop $0
+    SetCtlColors $0 "B4C2D8" "${MUI_BGCOLOR}"
     ; M4L fix round: the same manual-style checkbox creation as the OC
     ; page (the bundled ${NSD_CreateCheckbox} macro's buttons did not
     ; respond to clicks on the user's machine).
     nsDialogs::CreateControl "Button" "0x50010003" "0" 0 60u 100% 16u "Create .exe on Desktop"
     Pop $0
+    SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
     ${NSD_SetState} $0 1
     ; keep a handle to the desktop-shortcut checkbox (the leave handler reads it)
     StrCpy $desktopShortcutChecked 1
     ${NSD_OnClick} $0 finishPageDesktopCheckboxChanged
     nsDialogs::CreateControl "Button" "0x50010003" "0" 0 84u 100% 16u "Launch now"
     Pop $0
+    SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
     ${NSD_SetState} $0 1
     StrCpy $launchNowChecked 1
     ${NSD_OnClick} $0 finishPageLaunchCheckboxChanged
