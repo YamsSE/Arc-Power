@@ -204,6 +204,7 @@ async function boundShutdown(proxy) {
   }
 }
 let bootWindowTheme = 'dark';
+const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'ArcPowerIcon.png');
 
 function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme) {
   const win = new BrowserWindow({
@@ -221,7 +222,7 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // nothing then. The tray toggle's hidden->show branch restores it.
     show,
     // Canonical Arc Power app icon used by the window and taskbar.
-    icon: path.join(__dirname, '..', 'assets', 'ArcPowerIcon.png'),
+    icon: APP_ICON_PATH,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
     autoHideMenuBar: true,
@@ -238,6 +239,10 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
       preload: path.join(__dirname, '..', 'preload.cjs'),
     },
   });
+  // Explicitly set the native window icon as well as the BrowserWindow option.
+  // Windows uses this native handle for the live taskbar button, while the
+  // packaged executable icon covers shortcuts and the portable file itself.
+  try { win.setIcon(nativeImage.createFromPath(APP_ICON_PATH)); } catch { /* best effort */ }
   win.webContents.on('console-message', (event) => {
     // Electron >= 30: the event object carries { level, message, ... }.
     const level = typeof event.level === 'number' ? event.level : 0;
@@ -385,6 +390,11 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysm
 }
 
 async function main() {
+  // Set the Windows identity before any window is created so taskbar grouping
+  // resolves to the Arc Power app and not a stale/default Electron identity.
+  if (!headless && !uiVerify && !profileBoot && !mock) {
+    try { app.setAppUserModelId('com.rid.arcpower'); } catch { /* best effort */ }
+  }
   // Register this before any startup work. The callback runs on Electron's
   // first ready turn, so the loader can paint while the rest of this function
   // prepares the cache, backend, profiles, tray, and renderer.
@@ -403,7 +413,6 @@ async function main() {
   };
   const startupSplashReady = !headless && !uiVerify && !profileBoot && !mock
     ? app.whenReady().then(() => {
-      app.setAppUserModelId('com.rid.arcpower');
       try {
         startupSplash = createStartupSplash();
         startupSplashTimeout = setTimeout(dismissStartupSplash, 30000);
