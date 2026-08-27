@@ -9,7 +9,7 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.0.5</b> — Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
+<p align="center"><b>1.0.5</b> - Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
 
 Arc Power provides driver-backed controls for Intel Arc graphics cards, including overclocking, fan control, live telemetry, graphics settings, profiles, and an in-game overlay. Controls are shown only when the selected GPU and driver expose them; unsupported controls remain unavailable or read-only.
 
@@ -34,8 +34,8 @@ Requirements:
 
 Download the latest release and choose either:
 
-- **Installer** — `Arc-Power_Installer.exe`; recommended for normal use and apply-at-startup.
-- **Portable** — `Arc-Power_Portable.exe`; no installation, but applies may require a UAC prompt.
+- **Installer** - `Arc-Power_Installer.exe`; recommended for normal use and apply-at-startup.
+- **Portable** - `Arc-Power_Portable.exe`; no installation, but applies may require a UAC prompt.
 
 To run from source, install Node.js 20 or newer and use:
 
@@ -78,16 +78,16 @@ Arc Power is not affiliated with or endorsed by Intel Corporation.
 
 ## Troubleshooting
 
-- **“Non supported GPU”** — Arc overclocking needs an Intel Arc GPU. Install or update the Intel graphics driver, restart Arc Power, and select the intended adapter.
-- **A control is missing or read-only** — the selected GPU or driver did not report that capability. This is intentional; do not force the setting.
-- **An apply needs permission** — approve the UAC prompt. The installed build is the best choice for elevated apply-at-startup behavior.
-- **The overlay does not appear** — enable it in **Monitoring → Overlay**, check the selected GPUs and shortcut, and try another CTRL+letter if registration failed.
-- **Startup or profile apply did not run** — make sure a profile is active, the warranty prompt has been accepted, and **Start at boot** is enabled. Use the installed build for the most reliable elevated startup apply.
-- **The interface behaves oddly after an update** — use **Settings → Maintenance → Clear cache & restart software**. For diagnostics, enable **Log to file** in Settings; daily telemetry logs are saved in your Documents folder.
+- **“Non supported GPU”** - Arc overclocking needs an Intel Arc GPU. Install or update the Intel graphics driver, restart Arc Power, and select the intended adapter.
+- **A control is missing or read-only** - the selected GPU or driver did not report that capability. This is intentional; do not force the setting.
+- **An apply needs permission** - approve the UAC prompt. The installed build is the best choice for elevated apply-at-startup behavior.
+- **The overlay does not appear** - enable it in **Monitoring → Overlay**, check the selected GPUs and shortcut, and try another CTRL+letter if registration failed.
+- **Startup or profile apply did not run** - make sure a profile is active, the warranty prompt has been accepted, and **Start at boot** is enabled. Use the installed build for the most reliable elevated startup apply.
+- **The interface behaves oddly after an update** - use **Settings → Maintenance → Clear cache & restart software**. For diagnostics, enable **Log to file** in Settings; daily telemetry logs are saved in your Documents folder.
 
 ## Links and notices
 
 - [Releases](https://github.com/YamsSE/Arc-Power/releases)
 - [Feature and safety details](docs/features.md)
-- [License — GPL-2.0](LICENSE)
+- [License - GPL-2.0](LICENSE)
 - [Third-party notices](THIRD_PARTY_NOTICES.txt)
