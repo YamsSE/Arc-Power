@@ -205,13 +205,14 @@ async function boundShutdown(proxy) {
 }
 let bootWindowTheme = 'dark';
 const APP_USER_MODEL_ID = 'com.rid.arcpower';
-// Keep the native Windows identity on the same generated ICO used by the
-// packaged executable. The renderer still uses ArcPowerIcon.png for the
-// full-size brand artwork, but taskbar and shell surfaces need a real ICO
-// resource so Windows does not fall back to a cached/legacy bitmap.
+// Keep the native Windows identity on the same generated resources used by
+// the packaged executable. Electron's live BrowserWindow icon path is loaded
+// from the optimized PNG; the ICO is retained for Windows shell/relaunch
+// metadata. The renderer still uses ArcPowerIcon.png for full-size artwork.
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
+const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
-const APP_ICON = nativeImage.createFromPath(APP_ICON_PATH);
+const APP_ICON = nativeImage.createFromPath(APP_ICON_PNG_PATH);
 
 function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme) {
   const win = new BrowserWindow({
@@ -228,7 +229,7 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // the pre-create settings read says startMinimized; ready-to-show does
     // nothing then. The tray toggle's hidden->show branch restores it.
     show,
-    // Canonical Arc Power ICO used by the window and taskbar.
+    // Canonical Arc Power PNG used by the live window and taskbar.
     icon: APP_ICON,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
