@@ -82,7 +82,7 @@
   Push $5
   ${If} $0 != 0
     SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
-    System::Call 'UXTHEME::SetWindowTheme(p$0,w" ",w" ")'
+    System::Call 'UXTHEME::SetWindowTheme(p$0,w"",w"")'
     System::Call 'user32::GetWindow(i r0, i 5) i .r1'
     ${While} $1 != 0
       Push $1
@@ -101,13 +101,18 @@
 !macroend
 
 ; The stock MUI footer is intentionally left alone on the welcome page. All
-; subsequent pages use the same dark footer as their page body, including the
-; Back/Next/Cancel buttons and the branding strip.
+; subsequent pages use the same dark outer wizard, footer, and page body,
+; including the Back/Next/Cancel buttons and the branding strip.
 !macro arcPowerThemeWizardChromeBody
   Push $0
   Push $1
   Push $2
   Push $3
+  ; The page dialog is a child of the outer wizard. Theme the outer wizard
+  ; itself first so exposed client-area pixels and the footer cannot fall back
+  ; to the system white dialog brush.
+  SetCtlColors $HWNDPARENT "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
+  System::Call 'UXTHEME::SetWindowTheme(p$HWNDPARENT,w"",w"")'
   GetDlgItem $0 $HWNDPARENT 1028
   SetCtlColors $0 "" "${MUI_BGCOLOR}"
   GetDlgItem $0 $HWNDPARENT 1256
@@ -121,7 +126,7 @@
     GetDlgItem $0 $HWNDPARENT $1
     ${If} $0 != 0
       SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
-      System::Call 'UXTHEME::SetWindowTheme(p$0,w" ",w" ")'
+      System::Call 'UXTHEME::SetWindowTheme(p$0,w"",w"")'
     ${EndIf}
     IntOp $1 $1 + 1
   ${EndWhile}
