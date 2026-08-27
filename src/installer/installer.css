@@ -40,6 +40,10 @@ button { color: inherit; cursor: pointer; }
 .art-caption { position: absolute; bottom: 23px; color: var(--muted-2); font: 500 10px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; letter-spacing: .14em; }
 .pulse-dot { display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
 .panel { display: flex; flex-direction: column; justify-content: center; padding: 40px 54px 32px; }
+body[data-state="busy"] .panel, body[data-state="complete"] .panel { padding-top: 24px; padding-bottom: 20px; }
+body[data-state="complete"] .progress-area { margin-top: 22px; }
+body[data-state="complete"] .status-card { margin-top: 18px; }
+body[data-state="complete"] .actions { margin-top: 18px; }
 .eyebrow { color: var(--cyan); font: 600 10px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; letter-spacing: .2em; }
 h1 { margin: 15px 0 14px; font-size: 38px; line-height: 1.04; letter-spacing: -.045em; font-weight: 650; }
 h1 span { color: transparent; background: linear-gradient(100deg, var(--cyan), var(--violet)); background-clip: text; }

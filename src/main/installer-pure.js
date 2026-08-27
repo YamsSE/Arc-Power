@@ -102,12 +102,17 @@ export function createUninstallCleanupScript({ pid, plan, scriptPath } = {}) {
   return [
     '$ErrorActionPreference = "SilentlyContinue"',
     `$processId = ${pid}`,
-    '$deadline = [DateTime]::UtcNow.AddSeconds(20)',
-    'while ((Get-Process -Id $processId -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 150 }',
-    ...shortcutPaths,
-    `Remove-Item -LiteralPath ${powershellLiteral(plan.cachePath)} -Recurse -Force -ErrorAction SilentlyContinue`,
-    `Remove-Item -LiteralPath ${powershellLiteral(`HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`)} -Recurse -Force -ErrorAction SilentlyContinue`,
-    `Remove-Item -LiteralPath ${powershellLiteral(plan.installDir)} -Recurse -Force -ErrorAction SilentlyContinue`,
+    '$processDeadline = [DateTime]::UtcNow.AddSeconds(20)',
+    'while ((Get-Process -Id $processId -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $processDeadline) { Start-Sleep -Milliseconds 150 }',
+    '$cleanupDeadline = [DateTime]::UtcNow.AddSeconds(30)',
+    'do {',
+    ...shortcutPaths.map((line) => `  ${line}`),
+    `  Remove-Item -LiteralPath ${powershellLiteral(plan.cachePath)} -Recurse -Force -ErrorAction SilentlyContinue`,
+    `  Remove-Item -LiteralPath ${powershellLiteral(`HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`)} -Recurse -Force -ErrorAction SilentlyContinue`,
+    `  Remove-Item -LiteralPath ${powershellLiteral(plan.installDir)} -Recurse -Force -ErrorAction SilentlyContinue`,
+    `  if (-not (Test-Path -LiteralPath ${powershellLiteral(plan.cachePath)}) -and -not (Test-Path -LiteralPath ${powershellLiteral(plan.installDir)})) { break }`,
+    '  Start-Sleep -Milliseconds 250',
+    '} while ([DateTime]::UtcNow -lt $cleanupDeadline)',
     `Remove-Item -LiteralPath ${powershellLiteral(scriptPath)} -Force -ErrorAction SilentlyContinue`,
   ].join('\n');
 }

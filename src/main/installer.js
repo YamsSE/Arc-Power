@@ -6,7 +6,7 @@
 // user's LocalAppData\Programs directory. The installed executable re-enters
 // this module with --uninstall for the matching uninstaller UI.
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
@@ -131,6 +131,31 @@ async function copyPackagedPayload(sourceRoot, installDir) {
   }
 }
 
+function launchInstalledApp(executablePath, workingDirectory) {
+  // The portable wrapper marks its extracted child process with these
+  // variables. If they are inherited by the newly installed app, its startup
+  // detector correctly (but incorrectly for this child) thinks it is still
+  // the Installer and opens another setup window.
+  const environment = { ...process.env };
+  delete environment.PORTABLE_EXECUTABLE_FILE;
+  delete environment.PORTABLE_EXECUTABLE_DIR;
+  delete environment.PORTABLE_EXECUTABLE_APP_FILENAME;
+  return new Promise((resolve, reject) => {
+    const child = spawn(executablePath, [], {
+      cwd: workingDirectory,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+      env: environment,
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
 async function installArcPower(win, options = {}) {
   const paths = windowsPaths();
   const plan = createInstallationPlan({
@@ -172,8 +197,7 @@ async function installArcPower(win, options = {}) {
   await removeUserDataTree(plan.cachePath);
   sendProgress(win, 100, 'Arc Power is ready');
   if (plan.launchAfterInstall) {
-    const openError = await shell.openPath(plan.executablePath);
-    if (openError) throw new Error(`Arc Power was installed, but could not be launched: ${openError}`);
+    await launchInstalledApp(plan.executablePath, plan.installDir);
   }
   return { ok: true, plan, launched: plan.launchAfterInstall };
 }
@@ -199,8 +223,11 @@ async function uninstallArcPower(win) {
     version: app.getVersion(),
   });
   sendProgress(win, 18, 'Preparing to remove Arc Power');
-  await removeUserDataTree(plan.cachePath);
   sendProgress(win, 52, 'Removing shortcuts and Windows registration');
+  // Defer all destructive cleanup until this UI process has exited. The
+  // running Arc Power process can still have cache files open (for example
+  // the DIPS directory), so removing the cache here makes the operation fail
+  // before the completion view can be shown.
   await scheduleUninstall(plan);
   sendProgress(win, 100, 'Arc Power has been removed');
   return { ok: true, plan };

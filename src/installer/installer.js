@@ -22,6 +22,10 @@ const cancelButton = $('cancel-button');
 let busy = false;
 let completed = false;
 
+function setView(view) {
+  document.body.dataset.state = view;
+}
+
 function setError(message) {
   error.textContent = message;
   error.hidden = !message;
@@ -42,10 +46,14 @@ function setBusy(value) {
   installDirectory.disabled = value;
   desktopShortcut.disabled = value;
   launchAfter.disabled = value;
+  $('actions').hidden = value && !completed;
 }
 
 function showComplete({ uninstall = false, launched = false } = {}) {
   completed = true;
+  setBusy(false);
+  setView('complete');
+  installForm.hidden = true;
   statusCard.hidden = false;
   statusTitle.textContent = uninstall ? 'Arc Power has been removed' : 'Arc Power is ready';
   statusDetail.textContent = uninstall
@@ -60,6 +68,8 @@ function showComplete({ uninstall = false, launched = false } = {}) {
 async function runInstall() {
   if (busy) return;
   setError('');
+  setView('busy');
+  installForm.hidden = true;
   setBusy(true);
   try {
     const result = await api.install({
@@ -70,6 +80,8 @@ async function runInstall() {
     showComplete({ launched: result.launched });
   } catch (cause) {
     setBusy(false);
+    setView('idle');
+    installForm.hidden = false;
     setError(cause?.message || 'Arc Power could not be installed.');
     setProgress(0, 'Installation needs attention');
   }
@@ -78,12 +90,14 @@ async function runInstall() {
 async function runUninstall() {
   if (busy) return;
   setError('');
+  setView('busy');
   setBusy(true);
   try {
     await api.uninstall();
     showComplete({ uninstall: true });
   } catch (cause) {
     setBusy(false);
+    setView('idle');
     setError(cause?.message || 'Arc Power could not be removed.');
     setProgress(0, 'Removal needs attention');
   }
@@ -104,6 +118,7 @@ $('close-button').addEventListener('click', () => { if (!busy) api.close(); });
 api.onProgress(({ percent, message }) => setProgress(percent, message));
 
 if (mode === 'uninstall') {
+  setView('idle');
   $('eyebrow').textContent = 'ARC POWER / UNINSTALL';
   $('headline').innerHTML = 'Clear the<br><span>runway.</span>';
   $('lede').textContent = 'This removes the Arc Power application, shortcuts and Windows registration. Your durable ArcPower profiles stay safely in place.';
@@ -111,10 +126,10 @@ if (mode === 'uninstall') {
   primaryButton.textContent = 'REMOVE ARC POWER';
   cancelButton.textContent = 'KEEP ARC POWER';
 } else {
+  setView('idle');
   api.getState().then((state) => {
     installDirectory.value = state.installDir;
     $('version-label').textContent = `VERSION ${state.version}`;
     if (!state.payloadReady) setError('The packaged application payload is unavailable. Rebuild the installer before installing.');
   }).catch((cause) => setError(cause?.message || 'Setup could not read its installation state.'));
 }
-
