@@ -50,10 +50,87 @@
 !ifndef MUI_INSTFILESPAGE_COLORS
   !define MUI_INSTFILESPAGE_COLORS "EAF6FF 0D111B"
 !endif
+; Windows 11 normally paints the non-client caption and border with the
+; user's system accent (red in the screenshots). Ask DWM for Arc Power's
+; dark-blue caption, cyan-violet border, and light text instead. Older
+; Windows versions simply return an unsupported-attribute code, which is
+; harmless because the content theme still applies.
+!ifdef BUILD_UNINSTALLER
+  !define MUI_CUSTOMFUNCTION_UNGUIINIT "un.arcPowerInstallerGuiInit"
+!else
+  !define MUI_CUSTOMFUNCTION_GUIINIT "arcPowerInstallerGuiInit"
+!endif
 !define MUI_WELCOMEPAGE_TITLE "Welcome to Arc Power"
 !define MUI_WELCOMEPAGE_TEXT "A focused control panel for Intel Arc graphics. Tune, monitor and manage your GPU from one clean workspace.$\r$\n$\r$\nSelect Next to continue with the installation."
 
 !include "MUI2.nsh"
+
+!macro arcPowerInstallerGuiInitBody
+  ; The stock branding strip is the white band below the page body. Repaint
+  ; it to the same dark surface so every native page has one continuous theme.
+  GetDlgItem $0 $HWNDPARENT 1028
+  SetCtlColors $0 "" "${MUI_BGCOLOR}"
+  GetDlgItem $0 $HWNDPARENT 1256
+  SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
+  GetDlgItem $0 $HWNDPARENT 1035
+  SetCtlColors $0 "" "${MUI_BGCOLOR}"
+  GetDlgItem $0 $HWNDPARENT 1045
+  SetCtlColors $0 "" "${MUI_BGCOLOR}"
+
+  ; DWM COLORREF values are stored as BGR (the byte order is reversed from
+  ; the usual CSS/RGB notation): #0D111B, #1E9EEB and #EAF6FF.
+  StrCpy $1 0x001B110D
+  System::Call 'dwmapi::DwmSetWindowAttribute(i $HWNDPARENT, i 35, *i r1, i 4) i'
+  StrCpy $1 0x00EB9E1E
+  System::Call 'dwmapi::DwmSetWindowAttribute(i $HWNDPARENT, i 34, *i r1, i 4) i'
+  StrCpy $1 0x00FFF6EA
+  System::Call 'dwmapi::DwmSetWindowAttribute(i $HWNDPARENT, i 36, *i r1, i 4) i'
+!macroend
+
+; The electron-builder multi-user page creates its own nsDialogs child and
+; does not apply MUI_BGCOLOR. This hook is injected immediately after that
+; page creates its controls, so the page body and its radio controls receive
+; the Arc Power palette too.
+!macro arcPowerInstallModePageShowBody
+  FindWindow $0 "#32770" "" $HWNDPARENT
+  ${If} $0 != 0
+    SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
+    StrCpy $1 1000
+    ${While} $1 <= 1020
+      GetDlgItem $2 $0 $1
+      ${If} $2 != 0
+        SetCtlColors $2 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
+      ${EndIf}
+      IntOp $1 $1 + 1
+    ${EndWhile}
+  ${EndIf}
+!macroend
+
+!ifdef BUILD_UNINSTALLER
+  Function un.arcPowerInstallerGuiInit
+    !insertmacro arcPowerInstallerGuiInitBody
+  FunctionEnd
+
+  Function un.arcPowerInstallModePageShow
+    !insertmacro arcPowerInstallModePageShowBody
+  FunctionEnd
+!else
+  Function arcPowerInstallerGuiInit
+    !insertmacro arcPowerInstallerGuiInitBody
+  FunctionEnd
+
+  Function arcPowerInstallModePageShow
+    !insertmacro arcPowerInstallModePageShowBody
+  FunctionEnd
+!endif
+
+!macro customInstallmode
+  !ifdef BUILD_UNINSTALLER
+    !define MUI_PAGE_CUSTOMFUNCTION_SHOW "un.arcPowerInstallModePageShow"
+  !else
+    !define MUI_PAGE_CUSTOMFUNCTION_SHOW "arcPowerInstallModePageShow"
+  !endif
+!macroend
 
 ; electron-builder calls this hook instead of adding its unbranded default
 ; welcome page. Keeping MUI's page preserves its navigation/accessibility,

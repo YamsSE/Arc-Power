@@ -3,113 +3,91 @@
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/nXAjasHy6e"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord"></a>
+  <a href="https://github.com/YamsSE/Arc-Power/releases">Download releases</a> ·
+  <a href="https://discord.gg/nXAjasHy6e">Join the Discord</a>
 </p>
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.0.5</b> - overclocking and tuning tool for Intel Arc GPUs, in the spirit of MSI Afterburner, AMD Adrenaline, and Intel Graphics Software - built on Intel's official Graphics Control Library (IGCL), with no reverse-engineering and no third-party daemons required.</p>
+<p align="center"><b>1.0.5</b> — Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
 
-## Features
+Arc Power provides driver-backed controls for Intel Arc graphics cards, including overclocking, fan control, live telemetry, graphics settings, profiles, and an in-game overlay. Controls are shown only when the selected GPU and driver expose them; unsupported controls remain unavailable or read-only.
 
-- **Tuning** - power limit (W), core frequency offset (MHz) or a clock lock (frequency + voltage pair), voltage offset, and temperature limit (°C), applied through Intel's documented IGCL API with a warranty-waiver gate and read-back verification on every apply. Offset and lock applies are mutually exclusive (applying one clears the other). Power-limit applies land in under a second, with an instant driver-store fallback when the sysman runtime isn't ready. Expert controls (VRAM frequency offset, VRAM voltage offset, custom VF curves) appear only on hardware that reports them.
-- **Extended range** - on Alchemist, power limits up to **375 W** and temperature limits up to **115 °C** (elevation prompt + explicit confirm required). Above 252 W the limit applies through the Level Zero sysman power pair (sustained + burst written together); values above the app-verified 375 W ceiling are refused honestly, never clamped.
-- **Fan control** - auto / curve / fixed modes with an interactive SVG curve editor and adaptive presets (Driver Curve / Quiet / Max) derived from the driver's own curve. Fixed mode is verified on Alchemist (applied via the driver's flat fan table) and read-only where the board exposes no control.
-- **Live telemetry** - clocks, temperatures, power, fan RPM, utilization, FPS / frame-time, and VRAM usage, as readouts and rolling graphs (FPS from ETW/PresentMon present timestamps, with a DXGI fallback). The dashboard also shows a CPU card (RAM type, L1-L4 caches, CPU temperature and power on Intel and AMD) and a two-group live readout with CPU wattage and GPU utilization.
-- **In-game overlay** - a click-through, always-on-top stats overlay (MSI Afterburner/RTSS-style): clocks, temps, FPS with 1% Low / 99% FPS percentiles, and a frametime polyline. Hotkey toggle, 4-corner positioning, size/scale, text colors, an optional background, an API row and a configurable polling rate (100-2000 ms).
-- **Graphics tuning** - XeSS Frame Generation override (2x/3x/4x), frame synchronization, an FPS limit (30-300), and Low Latency (Off/On/On+Boost), applied through the IGCL 3D-feature API on the dedicated Graphics page, plus a Display view (scaling mode, quantization range, display info) via the IGCL display module.
-- **Multi-GPU** - pick which Intel Arc GPU to control; the choice persists and applies to the dashboard, tuning, telemetry, waiver, and boot/tray applies.
-- **UI themes** - Dark Steel (default), Midnight, Arctic Light, Red, and Yellow, selectable in Settings and persisted.
-- **Profiles** - save, load, and apply named profiles, optionally at every startup/logon (silently, via an elevated scheduled task on the installed build).
-- **Reversible tweaks** - registry hacks (MPO disable, HAGS, and more) with one-click Enable / Disable / Revert.
-- **Graceful fallback** - on non-Intel GPUs the app boots into a "Non supported GPU" state, keeps CPU/RAM telemetry live, reads GPU clocks/temperature/utilization/power/VRAM through the vendor libraries (NVML/ADL) when present, and shows no raw error text.
+## Supported hardware
 
-Details on expert controls, the safety design, and the capability model live in [docs/features.md](docs/features.md).
+| GPU | Support |
+|---|---|
+| Arc A3 / A5 / A7 series (Alchemist) | Verified tuning and monitoring |
+| Arc B580 / B570 (Battlemage) | Verified tuning and monitoring |
+| Arc Pro B50 | Verified tweaks and telemetry; overclocking is driver-locked |
+| Arc integrated graphics | Verified tweaks and telemetry; controls depend on the driver |
 
-## Supported GPUs
+AMD and NVIDIA adapters remain visible for telemetry when their vendor libraries are available, but Arc tuning requires an Intel Arc GPU.
 
-| GPU | Family | Status |
-|---|---|---|
-| Arc A3 / A5 / A7 series | Alchemist | **Verified - Working** |
-| Arc B580 / B570 | Battlemage | **Verified - Working** |
-| Arc Pro B50 | Battlemage (pro) | **Verified - Tweaks & Telemetry only** |
-| Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
+## Install and start
 
-## Requirements
+Requirements:
 
-- Windows 10/11, x64
-- An Intel Arc GPU with the Intel graphics driver installed
-- Administrator approval - dev builds delegate applies that need it to an elevated self-worker (one UAC prompt); the installed app is always elevated, so applies and apply-at-logon need no prompts. The portable EXE runs unelevated and routes applies through the elevated self-worker when needed.
+- Windows 10 or 11, 64-bit
+- An Intel graphics driver installed for Arc features
+- Administrator approval when Windows requests it
 
-## Getting started
+Download the latest release and choose either:
 
-Releases are not published yet (roadmap below). To run from source:
+- **Installer** — `Arc-Power_Installer.exe`; recommended for normal use and apply-at-startup.
+- **Portable** — `Arc-Power_Portable.exe`; no installation, but applies may require a UAC prompt.
+
+To run from source, install Node.js 20 or newer and use:
 
 ```bash
 npm install
 npm start
 ```
 
-Build the packaged apps instead:
+To build both Windows packages locally:
 
 ```bash
 npm run dist
-# dist\Arc-Power-<version>.exe   (portable)
-# dist\Arc-Power-Setup-<version>.exe  (installer)
 ```
 
-## Usage
+The files are written to `dist\`.
 
-The app is organized into tabs:
+## Basic usage
 
-- **Dashboard** - GPU Status card (name, board partner, clocks, PCIe link, ReBAR status, OC status), CPU card (RAM type, L1-L4 caches, CPU temperature and power on Intel and AMD), and a two-group live readout with CPU wattage and GPU utilization.
-- **Tuning** - the Overclocking and Fan pages. Sliders with step snapping and min/max/step ticks, preset chips, per-control Apply, one-click reset to defaults, plus a Save-as-Profile / Override-Profile card. First OC apply shows the warranty-waiver dialog; values above the standard range ask for explicit confirmation. The fan page offers auto / curve / fixed modes with an interactive SVG curve editor (hover/drag readouts, adaptive presets); fan control is read-only on boards that report `canControl = false`.
-- **Graphics** - XeSS Frame Generation override, frame synchronization, FPS limit, and Low Latency in the 3D view, plus scaling mode, quantization range and display info in the Display view, mirrored from Intel Graphics Software.
-- **Monitoring** - telemetry readout grid and rolling graphs.
-- **Overlay Settings** - the in-game overlay: enabled stats, position, size, colors, background, hotkey, and the enable toggle.
-- **Profiles** - save and manage named profiles, toggle apply-on-startup.
-- **Tweaks** - reversible registry hacks (e.g. MPO disable).
-- **Settings** - start with Windows, start minimized, close to tray, log to file, UI theme, and version info.
+1. Select the Arc adapter you want to control when more than one GPU is present.
+2. Use **Dashboard** for hardware status and health, **Monitoring** for live graphs and telemetry, and **Tuning** for GPU and fan controls.
+3. Change a value and select **Apply**. The first overclocking apply requires accepting the warranty warning; extended values require an additional confirmation.
+4. Use **Graphics** for XeSS Frame Generation, frame synchronization, frame limits, low latency, and supported display settings.
+5. Use **Tweaks** for reversible Windows graphics options. Each option can be enabled, disabled, or reverted.
 
-## How it works
+### Profiles
 
-- **App shell** - an Electron desktop app (main process + renderer), single instance.
-- **Backend** - the app talks directly to Intel's IGCL runtime (`IntelControlLib.dll`, located in the DriverStore at launch) through [koffi](https://github.com/koffi-ai/koffi), a pure-JS FFI library - no C++ toolchain needed. OC state applies and read-backs are verified against the driver.
-- **Elevation** - dev builds and the portable EXE delegate applies that need it to an elevated self-worker (one UAC prompt); the installed EXE is always elevated, so applies run in-process with no prompts. Boot/logon applies run through an elevated scheduled task on the installed build.
-- **Extended range** - values above the driver-store runtime's client-side caps are routed to a bundled 2023-era IGCL runtime (Intel's own, BSD-3-Clause, attributed in `THIRD_PARTY_NOTICES.txt`), which the kernel-mode driver still accepts.
-- **Honesty** - a setter returning success but leaving the read-back unchanged is reported as a failure, never as "applied".
+**Profiles** can save, load, rename, and delete named tuning configurations. Load a profile to make it active, then enable **Start at boot** to apply it when Arc Power starts. The **Settings** tab also includes Start with Windows, Start minimized, Close to tray, themes, telemetry logging, and cache maintenance.
 
-## Development
+### Overlay
 
-```bash
-npm test          # node:test suite (main process, backends, pure modules)
-npm run typecheck # TypeScript check (renderer)
-npm run smoke     # headless dev-tree smoke against the real GPU
-```
+Open **Monitoring → Overlay** to enable and configure the click-through HUD. It can show clocks, temperatures, power, utilization, VRAM, FPS, 1% Low / 99% FPS, and frame time. Choose its stats, color, theme, scale, background, position, and monitored GPUs.
 
-Architecture notes and the IGCL integration write-up (struct mappings, capability matrix, findings) live in `docs/`.
+The default shortcuts are **CTRL+O** for the HUD and **CTRL+P** for the optional advanced panel. The letter for either shortcut can be changed in Overlay settings. If a shortcut is already used by another application, choose a different letter.
 
-## Roadmap
+## Safety
 
-- [x] Core overclocking and tuning (OC, fan, telemetry)
-- [x] Profiles, apply-on-startup, system tray
-- [x] Reversible tweaks (MPO disable and more)
-- [x] Installer (portable EXE + NSIS setup) and silent elevated logon applies
-- [x] 1.0.x feature batch (multi-GPU, themes, dashboard, fan presets, in-game overlay, graphics + display tuning)
-- [x] Published releases on GitHub
-- [x] Battlemage enablement (live verification on B580 / B570)
-- [x] Advanced Overlay (the AMD-Adrenaline-style interactive side panel - tuning / fan / graphics, CTRL+P)
-- [x] Arc overlay theme (the glass-harness HUD theme, switchable via Overlay Settings)
-- [x] Cross-window settings sync (advanced-overlay applies refresh the main window pages in place)
+Overclocking can damage hardware and may void warranties. Monitor temperatures, power, and stability, and use changes appropriate for your card, cooling, and power supply. Arc Power keeps controls within driver-reported or app-verified ceilings, asks for confirmation before extended ranges, and verifies applied values by reading them back from the driver. A failed read-back is reported as a failed apply.
 
-## Disclaimer
+Arc Power is not affiliated with or endorsed by Intel Corporation.
 
-Overclocking voids warranties and can damage hardware. Arc Power respects the ranges Intel reports and never overrides driver-level ceilings; use the extended range at your own risk. This project is not affiliated with or endorsed by Intel Corporation.
+## Troubleshooting
 
-## Development disclaimer
+- **“Non supported GPU”** — Arc overclocking needs an Intel Arc GPU. Install or update the Intel graphics driver, restart Arc Power, and select the intended adapter.
+- **A control is missing or read-only** — the selected GPU or driver did not report that capability. This is intentional; do not force the setting.
+- **An apply needs permission** — approve the UAC prompt. The installed build is the best choice for elevated apply-at-startup behavior.
+- **The overlay does not appear** — enable it in **Monitoring → Overlay**, check the selected GPUs and shortcut, and try another CTRL+letter if registration failed.
+- **Startup or profile apply did not run** — make sure a profile is active, the warranty prompt has been accepted, and **Start at boot** is enabled. Use the installed build for the most reliable elevated startup apply.
+- **The interface behaves oddly after an update** — use **Settings → Maintenance → Clear cache & restart software**. For diagnostics, enable **Log to file** in Settings; daily telemetry logs are saved in your Documents folder.
 
-This software is developed with the help of DeepSeek V4 Flash in a plan-based, multi-review setup (AI and manual human review) aimed at maximum compatibility and bug-freeness to offer a good end-user experience.
+## Links and notices
 
-## License
-
-[GNU General Public License v2.0](LICENSE). Third-party components and their licenses are documented in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+- [Releases](https://github.com/YamsSE/Arc-Power/releases)
+- [Feature and safety details](docs/features.md)
+- [License — GPL-2.0](LICENSE)
+- [Third-party notices](THIRD_PARTY_NOTICES.txt)
