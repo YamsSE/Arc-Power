@@ -204,7 +204,14 @@ async function boundShutdown(proxy) {
   }
 }
 let bootWindowTheme = 'dark';
-const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'ArcPowerIcon.png');
+const APP_USER_MODEL_ID = 'com.rid.arcpower';
+// Keep the native Windows identity on the same generated ICO used by the
+// packaged executable. The renderer still uses ArcPowerIcon.png for the
+// full-size brand artwork, but taskbar and shell surfaces need a real ICO
+// resource so Windows does not fall back to a cached/legacy bitmap.
+const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
+const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
+const APP_ICON = nativeImage.createFromPath(APP_ICON_PATH);
 
 function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme) {
   const win = new BrowserWindow({
@@ -221,8 +228,8 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // the pre-create settings read says startMinimized; ready-to-show does
     // nothing then. The tray toggle's hidden->show branch restores it.
     show,
-    // Canonical Arc Power app icon used by the window and taskbar.
-    icon: APP_ICON_PATH,
+    // Canonical Arc Power ICO used by the window and taskbar.
+    icon: APP_ICON,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
     autoHideMenuBar: true,
@@ -242,7 +249,19 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
   // Explicitly set the native window icon as well as the BrowserWindow option.
   // Windows uses this native handle for the live taskbar button, while the
   // packaged executable icon covers shortcuts and the portable file itself.
-  try { win.setIcon(nativeImage.createFromPath(APP_ICON_PATH)); } catch { /* best effort */ }
+  try { win.setIcon(APP_ICON); } catch { /* best effort */ }
+  // Bind the taskbar button to the same branded identity and ICO. This also
+  // gives Windows the correct relaunch metadata instead of inheriting an old
+  // Electron/default icon from a previously cached button.
+  try {
+    win.setAppDetails({
+      appId: APP_USER_MODEL_ID,
+      appIconPath: APP_ICON_PATH,
+      appIconIndex: 0,
+      relaunchCommand: process.execPath,
+      relaunchDisplayName: 'Arc Power',
+    });
+  } catch { /* best effort on platforms without taskbar details */ }
   win.webContents.on('console-message', (event) => {
     // Electron >= 30: the event object carries { level, message, ... }.
     const level = typeof event.level === 'number' ? event.level : 0;
@@ -393,7 +412,7 @@ async function main() {
   // Set the Windows identity before any window is created so taskbar grouping
   // resolves to the Arc Power app and not a stale/default Electron identity.
   if (!headless && !uiVerify && !profileBoot && !mock) {
-    try { app.setAppUserModelId('com.rid.arcpower'); } catch { /* best effort */ }
+    try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
   }
   // Register this before any startup work. The callback runs on Electron's
   // first ready turn, so the loader can paint while the rest of this function
@@ -1902,7 +1921,7 @@ async function main() {
     // M17i: the window path's ONE proxy (constructed above) - the tray
     // "Apply active profile" lands PL2 through the IGCL-free helper too.
     sysmanPowerLimits,
-    iconPath: path.join(__dirname, '..', 'assets', 'ArcPowerIcon.png'),
+    iconPath: TRAY_ICON_PATH,
     createTrayImpl: uiVerify ? createTrayProbe : createTray,
   });
   markProfileBoot('tray');

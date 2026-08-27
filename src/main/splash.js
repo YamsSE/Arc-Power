@@ -30,7 +30,7 @@ export function createStartupSplash() {
     alwaysOnTop: true,
     title: 'Arc Power',
     backgroundColor: '#090b12',
-    icon: assetPath('ArcPowerIcon.png'),
+    icon: assetPath('app-icon.ico'),
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
