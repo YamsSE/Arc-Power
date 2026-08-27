@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/YamsSE/Arc-Power/releases">Download releases</a> ·
-  <a href="https://discord.gg/nXAjasHy6e">Join the Discord</a>
+  <a href="https://github.com/YamsSE/Arc-Power/releases"><img src="https://api.iconify.design/mdi/download.svg?color=%231E9EEB" alt="Download releases" title="Download releases" width="22" height="22"></a>
+  <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Discord" title="Join the Discord" width="22" height="22"></a>
 </p>
 
 <h1 align="center">Arc Power</h1>
