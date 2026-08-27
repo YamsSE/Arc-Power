@@ -47,6 +47,9 @@
 !ifndef MUI_LICENSEPAGE_BGCOLOR
   !define MUI_LICENSEPAGE_BGCOLOR "0D111B"
 !endif
+!ifndef MUI_LICENSEPAGE_TEXTCOLOR
+  !define MUI_LICENSEPAGE_TEXTCOLOR "EAF6FF"
+!endif
 !ifndef MUI_INSTFILESPAGE_COLORS
   !define MUI_INSTFILESPAGE_COLORS "EAF6FF 0D111B"
 !endif
@@ -65,9 +68,46 @@
 
 !include "MUI2.nsh"
 
-!macro arcPowerInstallerGuiInitBody
-  ; The stock branding strip is the white band below the page body. Repaint
-  ; it to the same dark surface so every native page has one continuous theme.
+; Recoloring a dialog alone is not enough for native NSIS controls. Windows
+; paints radio buttons, checkboxes and nested child dialogs through their own
+; windows, so walk the complete child tree and remove the themed-control
+; override before applying SetCtlColors. This keeps the page independent of
+; electron-builder's generated control IDs.
+!macro arcPowerThemeControlTreeBody
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  ${If} $0 != 0
+    SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
+    System::Call 'UXTHEME::SetWindowTheme(p$0,w" ",w" ")'
+    System::Call 'user32::GetWindow(i r0, i 5) i .r1'
+    ${While} $1 != 0
+      Push $1
+      Call "${ARC_POWER_THEME_TREE}"
+      Pop $1
+      System::Call 'user32::GetWindow(i r1, i 2) i .r2'
+      StrCpy $1 $2
+    ${EndWhile}
+  ${EndIf}
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
+!macroend
+
+; The stock MUI footer is intentionally left alone on the welcome page. All
+; subsequent pages use the same dark footer as their page body, including the
+; Back/Next/Cancel buttons and the branding strip.
+!macro arcPowerThemeWizardChromeBody
+  Push $0
+  Push $1
+  Push $2
+  Push $3
   GetDlgItem $0 $HWNDPARENT 1028
   SetCtlColors $0 "" "${MUI_BGCOLOR}"
   GetDlgItem $0 $HWNDPARENT 1256
@@ -76,37 +116,93 @@
   SetCtlColors $0 "" "${MUI_BGCOLOR}"
   GetDlgItem $0 $HWNDPARENT 1045
   SetCtlColors $0 "" "${MUI_BGCOLOR}"
+  StrCpy $1 1
+  ${While} $1 <= 3
+    GetDlgItem $0 $HWNDPARENT $1
+    ${If} $0 != 0
+      SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
+      System::Call 'UXTHEME::SetWindowTheme(p$0,w" ",w" ")'
+    ${EndIf}
+    IntOp $1 $1 + 1
+  ${EndWhile}
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
 
+!macro arcPowerInstallerGuiInitBody
   ; DWM COLORREF values are stored as BGR (the byte order is reversed from
   ; the usual CSS/RGB notation): #0D111B, #1E9EEB and #EAF6FF.
+  Push $0
+  Push $1
   StrCpy $1 0x001B110D
   System::Call 'dwmapi::DwmSetWindowAttribute(i $HWNDPARENT, i 35, *i r1, i 4) i'
   StrCpy $1 0x00EB9E1E
   System::Call 'dwmapi::DwmSetWindowAttribute(i $HWNDPARENT, i 34, *i r1, i 4) i'
   StrCpy $1 0x00FFF6EA
   System::Call 'dwmapi::DwmSetWindowAttribute(i $HWNDPARENT, i 36, *i r1, i 4) i'
+  Pop $1
+  Pop $0
 !macroend
 
+!ifdef BUILD_UNINSTALLER
+  !define ARC_POWER_THEME_TREE "un.arcPowerThemeControlTree"
+  !define ARC_POWER_THEME_CHROME "un.arcPowerThemeWizardChrome"
+!else
+  !define ARC_POWER_THEME_TREE "arcPowerThemeControlTree"
+  !define ARC_POWER_THEME_CHROME "arcPowerThemeWizardChrome"
+!endif
+
 ; The electron-builder multi-user page creates its own nsDialogs child and
-; does not apply MUI_BGCOLOR. This hook is injected immediately after that
-; page creates its controls, so the page body and its radio controls receive
+; does not apply MUI_BGCOLOR. This hook runs after that page has created its
+; controls, so the entire nested dialog and the native radio buttons receive
 ; the Arc Power palette too.
 !macro arcPowerInstallModePageShowBody
   FindWindow $0 "#32770" "" $HWNDPARENT
   ${If} $0 != 0
-    SetCtlColors $0 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
-    StrCpy $1 1000
-    ${While} $1 <= 1020
-      GetDlgItem $2 $0 $1
-      ${If} $2 != 0
-        SetCtlColors $2 "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
-      ${EndIf}
-      IntOp $1 $1 + 1
-    ${EndWhile}
+    Push $0
+    Call "${ARC_POWER_THEME_TREE}"
+    Pop $0
+  ${EndIf}
+  Call "${ARC_POWER_THEME_CHROME}"
+!macroend
+
+; MUI's install-files page already has dark progress/log colors. The installer
+; also receives a page-specific tree/chrome pass below. The uninstaller uses
+; the shared MUI colors for this stock page because electron-builder's include
+; hook is expanded after MUI_UNPAGE_INSTFILES; customUninstallPage remains
+; available for the following finish-page callback.
+!macro arcPowerInstallFilesPageShowBody
+  FindWindow $0 "#32770" "" $HWNDPARENT
+  ${If} $0 != 0
+    Push $0
+    Call "${ARC_POWER_THEME_TREE}"
+    Pop $0
+  ${EndIf}
+  Call "${ARC_POWER_THEME_CHROME}"
+!macroend
+
+; Welcome pages keep the stock white button/footer strip by design; only the
+; full-window page body is walked here.
+!macro arcPowerWelcomePageShowBody
+  FindWindow $0 "#32770" "" $HWNDPARENT
+  ${If} $0 != 0
+    Push $0
+    Call "${ARC_POWER_THEME_TREE}"
+    Pop $0
   ${EndIf}
 !macroend
 
 !ifdef BUILD_UNINSTALLER
+  Function un.arcPowerThemeControlTree
+    !insertmacro arcPowerThemeControlTreeBody
+  FunctionEnd
+
+  Function un.arcPowerThemeWizardChrome
+    !insertmacro arcPowerThemeWizardChromeBody
+  FunctionEnd
+
   Function un.arcPowerInstallerGuiInit
     !insertmacro arcPowerInstallerGuiInitBody
   FunctionEnd
@@ -114,13 +210,43 @@
   Function un.arcPowerInstallModePageShow
     !insertmacro arcPowerInstallModePageShowBody
   FunctionEnd
+
+  Function un.arcPowerWelcomePageShow
+    !insertmacro arcPowerWelcomePageShowBody
+  FunctionEnd
+
+  Function un.arcPowerFinishPageShow
+    FindWindow $0 "#32770" "" $HWNDPARENT
+    ${If} $0 != 0
+      Push $0
+      Call "${ARC_POWER_THEME_TREE}"
+      Pop $0
+    ${EndIf}
+    Call "${ARC_POWER_THEME_CHROME}"
+  FunctionEnd
 !else
+  Function arcPowerThemeControlTree
+    !insertmacro arcPowerThemeControlTreeBody
+  FunctionEnd
+
+  Function arcPowerThemeWizardChrome
+    !insertmacro arcPowerThemeWizardChromeBody
+  FunctionEnd
+
   Function arcPowerInstallerGuiInit
     !insertmacro arcPowerInstallerGuiInitBody
   FunctionEnd
 
   Function arcPowerInstallModePageShow
     !insertmacro arcPowerInstallModePageShowBody
+  FunctionEnd
+
+  Function arcPowerInstallFilesPageShow
+    !insertmacro arcPowerInstallFilesPageShowBody
+  FunctionEnd
+
+  Function arcPowerWelcomePageShow
+    !insertmacro arcPowerWelcomePageShowBody
   FunctionEnd
 !endif
 
@@ -136,8 +262,18 @@
 ; welcome page. Keeping MUI's page preserves its navigation/accessibility,
 ; while the Arc Power artwork and palette make it part of the same design.
 !macro customWelcomePage
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW "arcPowerWelcomePageShow"
   !insertmacro MUI_PAGE_WELCOME
 !macroend
+
+; The uninstaller normally adds its own welcome page. Use the same body-only
+; hook so the page stays dark without changing its stock white footer.
+!ifdef BUILD_UNINSTALLER
+  !macro customUnWelcomePage
+    !define MUI_PAGE_CUSTOMFUNCTION_SHOW "un.arcPowerWelcomePageShow"
+    !insertmacro MUI_UNPAGE_WELCOME
+  !macroend
+!endif
 
 !ifndef BUILD_UNINSTALLER
   ; --- state vars (defaulted in customInit - the silent path never runs
@@ -163,6 +299,9 @@
   ; --- (a) the overclocking-risk clause page (before the install starts) ----
   !macro customPageAfterChangeDir
     Page custom ocClausePageCreate ocClausePageLeave
+    ; The next generated stock page is MUI_PAGE_INSTFILES. Attach the hook
+    ; here so its native page and footer are themed after they are created.
+    !define MUI_PAGE_CUSTOMFUNCTION_SHOW "arcPowerInstallFilesPageShow"
   !macroend
 
   Function ocClausePageCreate
@@ -188,6 +327,10 @@
     ${NSD_CreateLabel} 0 32u 100% 220u "Arc Power changes GPU power limits, temperatures, core/VRAM clocks, voltages and fan curves beyond the Intel-standard envelope. Overclocking or overvolting may:$\r$\n  - void your warranty;$\r$\n  - reduce the lifetime of your GPU, PSU or other components;$\r$\n  - cause instability, crashes, data loss or display corruption;$\r$\n  - overheat or damage hardware when used carelessly.$\r$\n$\r$\nYou use Arc Power at your own risk. The developer provides no warranty and accepts no liability for any damage resulting from its use.$\r$\n$\r$\nThis notice is shown once per install; the settings you apply with the tool are always your own responsibility."
     Pop $0
     SetCtlColors $0 "B4C2D8" "${MUI_BGCOLOR}"
+    Push $ocClauseDialog
+    Call "${ARC_POWER_THEME_TREE}"
+    Pop $0
+    Call "${ARC_POWER_THEME_CHROME}"
     nsDialogs::Show
   FunctionEnd
 
@@ -245,6 +388,10 @@
     ${NSD_SetState} $0 1
     StrCpy $launchNowChecked 1
     ${NSD_OnClick} $0 finishPageLaunchCheckboxChanged
+    Push $finishDialog
+    Call "${ARC_POWER_THEME_TREE}"
+    Pop $0
+    Call "${ARC_POWER_THEME_CHROME}"
     ; label the Next button "Finish" (this is the last page; WM_SETTEXT = 0x000C)
     GetDlgItem $0 $HWNDPARENT 1
     SendMessage $0 0x000C 0 "STR:Finish"
@@ -274,6 +421,13 @@
   FunctionEnd
 !else
   ; --- (c) the uninstaller removes the desktop .lnk --------------------------
+  ; The stock uninstaller finish page is full-window and has no page-specific
+  ; hook in electron-builder. This macro is inserted immediately before
+  ; MUI_UNPAGE_FINISH, so its custom SHOW callback is consumed by that page.
+  !macro customUninstallPage
+    !define MUI_PAGE_CUSTOMFUNCTION_SHOW "un.arcPowerFinishPageShow"
+  !macroend
+
   !macro customUnInstall
     Delete "$DESKTOP\Arc Power.lnk"
     ; M52: remove only the disposable cache, never durable ArcPower data.

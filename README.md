@@ -19,7 +19,7 @@ Arc Power provides driver-backed controls for Intel Arc graphics cards, includin
 |---|---|
 | Arc A3 / A5 / A7 series (Alchemist) | Verified tuning and monitoring |
 | Arc B580 / B570 (Battlemage) | Verified tuning and monitoring |
-| Arc Pro B50 | Verified tweaks and telemetry; overclocking is driver-locked |
+| Arc Pro Series | Verified tweaks and telemetry; overclocking is driver-locked |
 | Arc integrated graphics | Verified tweaks and telemetry; controls depend on the driver |
 
 AMD and NVIDIA adapters remain visible for telemetry when their vendor libraries are available, but Arc tuning requires an Intel Arc GPU.
