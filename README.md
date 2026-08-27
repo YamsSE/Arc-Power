@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src/assets/icon.png" alt="Arc Power" width="120">
+  <img src="src/assets/ArcPowerIcon.png" alt="Arc Power" width="120">
 </p>
 
 <p align="center">

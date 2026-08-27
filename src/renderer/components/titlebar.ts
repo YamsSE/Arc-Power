@@ -1,6 +1,6 @@
 // Arc Power - M4-D: the integrated title bar wiring (frameless
 // window). The markup lives in index.html: the brand CENTERED (assets/
-// icon.png on top, "Arc Power" below with "Power" in the website's blue
+// ArcPowerIcon.png on top, "Arc Power" below with "Power" in the website's blue
 // gradient + glow), the window controls (minimize / maximize-restore /
 // close) in the right cluster. This module wires the buttons to the
 // window-op IPC and keeps the max button's icon in sync with the pushed

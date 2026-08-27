@@ -474,7 +474,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail('M4-D: the integrated title bar logo did not render');
   }
   const logo = await js(`document.querySelector('#titlebar .titlebar-logo')?.getAttribute('src') ?? ''`);
-  if (!logo.includes('icon.png')) fail(`M4-D: the title bar logo src is '${logo}' (expected the assets/icon.png brand mark)`);
+  if (!logo.includes('ArcPowerIcon.png')) fail(`M4-D: the title bar logo src is '${logo}' (expected the canonical ArcPowerIcon.png brand mark)`);
   const brandName = await js(`document.querySelector('#titlebar .titlebar-brand-name')?.textContent ?? ''`);
   if (brandName.trim() !== 'Arc Power') fail(`M4-D: the title bar brand name is '${brandName}' (expected 'Arc Power')`);
   // The brand must be CENTERED in the title bar ("move the Arc Power
@@ -580,7 +580,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // over the back outline; the pin asserts the fill so it no longer reads
   // as two separate icons).
   const cornerIcon = await js(`document.querySelector('#titlebar .titlebar-corner-icon')?.getAttribute('src') ?? ''`);
-  if (!cornerIcon.includes('icon.png')) fail(`M4-D: the title bar corner icon is '${cornerIcon}' (expected the app icon at the top-left)`);
+  if (!cornerIcon.includes('ArcPowerIcon.png')) fail(`M4-D: the title bar corner icon is '${cornerIcon}' (expected the canonical app icon at the top-left)`);
   // M4-H (D2 - N10)/M4J (F): the restore glyph is TWO rects selected
   // EXPLICITLY (by class - the old single-rect selector would silently pass
   // any layout). The corrected WINDOWS shape: the HOLLOW back square at the
@@ -788,7 +788,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
-  if (!favicon.includes('favicon.png')) fail(`favicon link is '${favicon}'`);
+  if (!favicon.includes('ArcPowerIcon.png')) fail(`favicon link is '${favicon}'`);
   // M4-D: the pin must catch the old PCI-ID text ('PCI\VEN...'), not
   // the word 'PCI'. M4-D2 (§2): the PCIe ROW is gone (the unpopulated 1/1
   // kernel pattern made it a permanent '-') - the body must not contain the

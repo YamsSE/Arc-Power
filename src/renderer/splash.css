@@ -1,0 +1,110 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: #090b12;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #090b12;
+}
+
+body {
+  border: 1px solid #263246;
+  border-radius: 2px;
+}
+
+.splash {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  padding: 35px 40px 32px;
+  background:
+    radial-gradient(circle at 50% 28%, rgba(42, 127, 192, 0.14), transparent 37%),
+    radial-gradient(circle at 80% 70%, rgba(116, 57, 213, 0.08), transparent 34%),
+    #090b12;
+}
+
+.splash::before {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  background: linear-gradient(120deg, transparent 0 45%, rgba(76, 194, 255, 0.025) 50%, transparent 55%);
+}
+
+.splash-art-wrap {
+  display: flex;
+  width: 340px;
+  height: 208px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.splash-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 24px rgba(35, 164, 255, 0.13));
+}
+
+.splash-brand {
+  margin-top: 0;
+  color: #f2f6ff;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  text-shadow: 0 0 18px rgba(76, 194, 255, 0.16);
+}
+
+.splash-brand span {
+  color: #4cc2ff;
+}
+
+.splash-progress {
+  position: relative;
+  width: 418px;
+  height: 5px;
+  margin-top: 37px;
+  overflow: hidden;
+  border: 1px solid #29344a;
+  border-radius: 999px;
+  background: #0d111b;
+}
+
+.splash-progress-glow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -32%;
+  width: 32%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, #3ab8ff 45%, #8b5cff);
+  box-shadow: 0 0 13px rgba(76, 194, 255, 0.62);
+  animation: splash-progress 1.55s ease-in-out infinite;
+}
+
+.splash-status {
+  margin: 15px 0 0;
+  color: #8e9bb0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+@keyframes splash-progress {
+  0% { transform: translateX(0); opacity: 0.35; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { transform: translateX(415%); opacity: 0.35; }
+}

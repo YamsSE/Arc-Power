@@ -320,7 +320,7 @@ html, body {
   -webkit-app-region: drag;
 }
 
-/* The brand: the logo (assets/icon.png) on TOP, the "Arc Power" name BELOW
+/* The brand: the logo (assets/ArcPowerIcon.png) on TOP, the "Arc Power" name BELOW
    it - "Power" in the website's blue gradient + glow (website style.css
    .grad-text: linear-gradient(100deg, accent, accent-2, #7ee0ff),
    background-clip text, drop-shadow). The brand is draggable too. Vertically
