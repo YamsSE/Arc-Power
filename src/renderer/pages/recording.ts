@@ -47,32 +47,15 @@ let unsubscribeRecordingState: (() => void) | null = null;
 let playerVideo: HTMLVideoElement | null = null;
 let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
-let lastTransitionToast = { key: '', at: 0 };
 let pendingSettingsSave: Promise<void> = Promise.resolve();
+let lastSettingsSave: Promise<void> = Promise.resolve();
 
-function announceCaptureTransition(previous: RecordingEngineState, next: RecordingEngineState): void {
-  const started = !previous.running && next.running;
-  const stopped = previous.running && !next.running;
-  if (!started && !stopped) return;
-  const replay = (next.mode ?? previous.mode) === 'replay';
-  const key = `${started ? 'started' : 'stopped'}:${replay ? 'replay' : 'video'}`;
-  const now = Date.now();
-  if (lastTransitionToast.key === key && now - lastTransitionToast.at < 2000) return;
-  lastTransitionToast = { key, at: now };
-  if (started) {
-    toast('success', replay ? 'Replay buffer started' : 'Recording started', replay ? 'Recent gameplay is now being kept for clips.' : 'Video capture is now active.');
-  } else {
-    toast('success', replay ? 'Replay buffer stopped' : 'Recording stopped', replay ? 'The replay buffer is no longer active.' : 'Video capture has finished.');
-  }
-}
-
-function setStatus(next: RecordingEngineState, announce = false): void {
+function setStatus(next: RecordingEngineState): void {
   const previous = status;
   const startedAt = next.running
     ? Number.isFinite(next.startedAt) ? next.startedAt : previous.running ? previous.startedAt : Date.now()
     : null;
   status = { ...next, startedAt };
-  if (announce) announceCaptureTransition(previous, next);
 }
 
 const messageOf = recordingMessage;
@@ -132,18 +115,21 @@ function field(label: string, control: HTMLElement, note?: string): HTMLElement 
   ]);
 }
 
-function savePatch(patch: RecordingSettingsPatch): Promise<void> {
+function savePatch(patch: RecordingSettingsPatch, rerender = true): Promise<void> {
   const save = pendingSettingsSave.then(async () => {
-    try {
-      const result = await api.recordingSettingsSave(patch);
-      settings = result.settings;
-      status = { ...status, hotkeys: result.hotkeys };
-      render();
-    } catch (err) {
-      toast('error', 'Recording settings', messageOf(err));
-    }
+    const result = await api.recordingSettingsSave(patch);
+    settings = result.settings;
+    status = { ...status, hotkeys: result.hotkeys };
+    if (rerender) render();
   });
-  pendingSettingsSave = save;
+  // Keep the queue usable after a failed write, while retaining the actual
+  // latest save promise so starting a capture cannot silently use stale data.
+  pendingSettingsSave = save.catch(() => {});
+  lastSettingsSave = save;
+  void save.catch((err) => {
+    toast('error', 'Recording settings', messageOf(err));
+    if (rerender) render();
+  });
   return save;
 }
 
@@ -217,9 +203,9 @@ function renderQualitySettings(): HTMLElement {
     value: settings?.bitrateKbps ?? bitrateRange.default,
   }) as HTMLInputElement;
   bitrate.title = 'Enter any positive bitrate in Kbps';
-  bitrate.addEventListener('change', () => {
+  bitrate.addEventListener('input', () => {
     const value = Number(bitrate.value);
-    if (Number.isFinite(value) && value > 0) savePatch({ bitrateKbps: normalizeRecordingBitrate(value, settings?.bitrateKbps ?? bitrateRange.default) });
+    if (Number.isFinite(value) && value > 0) void savePatch({ bitrateKbps: normalizeRecordingBitrate(value, settings?.bitrateKbps ?? bitrateRange.default) }, false);
   });
   const encoder = select(settings?.encoderId ?? 'automatic', encoderOptions(), (value) => savePatch({ encoderId: value }));
   const resolution = select(selectedResolution, RESOLUTIONS, (value) => savePatch({ resolution: value }));
@@ -789,11 +775,10 @@ async function startRecording(): Promise<void> {
   actionBusy = true;
   render();
   try {
-    await pendingSettingsSave;
+    try { await lastSettingsSave; } catch { return; }
     const result = await api.recordingStart();
-    setStatus(result.state, true);
+    setStatus(result.state);
   } catch (err) {
-    toast('error', 'Start recording', messageOf(err));
     status = { ...status, error: messageOf(err) };
   } finally {
     actionBusy = false;
@@ -806,11 +791,10 @@ async function startReplay(): Promise<void> {
   actionBusy = true;
   render();
   try {
-    await pendingSettingsSave;
+    try { await lastSettingsSave; } catch { return; }
     const result = await api.recordingReplayStart();
-    setStatus(result.state, true);
+    setStatus(result.state);
   } catch (err) {
-    toast('error', 'Start replay buffer', messageOf(err));
     status = { ...status, error: messageOf(err) };
   } finally {
     actionBusy = false;
@@ -823,10 +807,9 @@ async function stopCapture(): Promise<void> {
   actionBusy = true;
   render();
   try {
-    setStatus(await api.recordingStop(), true);
+    setStatus(await api.recordingStop());
     await loadClips();
   } catch (err) {
-    toast('error', 'Stop capture', messageOf(err));
     status = { ...status, error: messageOf(err) };
   } finally {
     actionBusy = false;
@@ -841,10 +824,12 @@ async function saveClip(): Promise<void> {
   try {
     const replayLengthSec = settings?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC;
     await api.recordingClipSave({ headDurationMs: replayLengthSec * 1000 });
-    toast('success', 'Clip saved', `The last ${replayLengthSec} seconds were added to the clip library.`);
     await loadClips();
   } catch (err) {
-    toast('error', 'Save clip', messageOf(err));
+    // The main IPC action channel owns the global action error toast. The
+    // library refresh has its own error path, so do not duplicate the action
+    // failure here.
+    status = { ...status, error: messageOf(err) };
   } finally {
     actionBusy = false;
     render();
@@ -900,7 +885,7 @@ export const recordingPage: Page = {
     renderContainer = container;
     if (!unsubscribeRecordingState) {
       unsubscribeRecordingState = api.onRecordingStateUpdated((next) => {
-        setStatus(next, true);
+        setStatus(next);
         if (renderContainer === container) render();
       });
     }

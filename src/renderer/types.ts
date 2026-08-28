@@ -1003,6 +1003,7 @@ export interface RecordingActionResult {
   ok: boolean;
   error: string | null;
   preActionMode?: RecordingEngineState['mode'];
+  requestedMode?: RecordingEngineState['mode'];
   didStop?: boolean;
   state?: RecordingActionState | null;
 }

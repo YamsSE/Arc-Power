@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -165,6 +165,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       })
     : null;
   gameTuning?.start();
+  const recordingInvokeActions = {
+    'recording-start': { action: 'start', requestedMode: 'video' },
+    'recording-replay-start': { action: 'start', requestedMode: 'replay' },
+    'recording-stop': { action: 'stop' },
+    'recording-clip-save': { action: 'saveClip' },
+  };
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, async (event, ...args) => {
       if (channel === 'device-selection-push') {
@@ -173,7 +179,35 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
           throw new Error('device-selection-push is restricted to the main renderer');
         }
       }
-      const out = await fn(...args);
+      const recordingAction = recordingInvokeActions[channel];
+      const previousRecordingState = recordingAction?.action === 'stop' ? recordingEngine?.getState?.() : null;
+      let out;
+      try {
+        out = await fn(...args);
+      } catch (error) {
+        if (recordingAction) {
+          pushRecordingActionResult({ getWindow, result: {
+            action: recordingAction.action,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            ...(recordingAction.requestedMode ? { requestedMode: recordingAction.requestedMode } : {}),
+            ...(previousRecordingState ? { preActionMode: previousRecordingState.mode, didStop: previousRecordingState.running === true } : {}),
+            state: recordingEngine?.getState?.() ?? null,
+          } });
+        }
+        throw error;
+      }
+      // Save Clip has no engine state transition, so publish its successful
+      // result here. Start/stop success toasts are driven by the global state
+      // stream, which covers both buttons and registered hotkeys exactly once.
+      if (recordingAction?.action === 'saveClip') {
+        pushRecordingActionResult({ getWindow, result: {
+          action: 'saveClip',
+          ok: true,
+          error: null,
+          state: recordingEngine?.getState?.() ?? null,
+        } });
+      }
       // M24 (Part B): the cross-window settings sync - an apply/reset from
       // ANY renderer (the main window OR the advanced-overlay panel) pushes
       // the FRESH read-back to BOTH windows, so the other surface re-renders

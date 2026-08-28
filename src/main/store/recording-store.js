@@ -110,6 +110,11 @@ export class RecordingStore {
   }
 
   async load() {
+    // Reads must observe every earlier queued write. Without this barrier a
+    // recording start arriving at the same time as a settings save could read
+    // the previous profile and silently start with stale bitrate/resolution/
+    // encoder values.
+    await this._mutationQueue;
     const { data, needsMigration } = this._readData();
     if (needsMigration) {
       return this._enqueueMutation(() => {
