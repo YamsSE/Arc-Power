@@ -156,6 +156,12 @@ export function powershellLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+// Windows PowerShell 5.1 reads BOM-less UTF-8 scripts as ANSI. User/profile
+// paths can be non-ASCII, so generated scripts need the UTF-8 signature.
+function powershellScriptText(lines) {
+  return `\uFEFF${lines.join('\n')}`;
+}
+
 /** Build the exact command stored in Add/Remove Programs for a temp recovery script. */
 export function createUninstallRecoveryCommand({ powershellPath, scriptPath } = {}) {
   for (const [value, label] of [[powershellPath, 'PowerShell path'], [scriptPath, 'recovery script path']]) {
@@ -192,7 +198,7 @@ export function createUninstallLaunchScript({
   if (typeof attemptNonce !== 'string' || attemptNonce.length < 16) throw new TypeError('uninstall attempt nonce is required');
   if (typeof statusPath !== 'string' || statusPath.length === 0) throw new TypeError('uninstall status path is required');
   if (typeof summaryPath !== 'string' || summaryPath.length === 0) throw new TypeError('uninstall summary path is required');
-  return [
+  return powershellScriptText([
     "$ErrorActionPreference = 'Stop'",
     `$parentPid = ${pid}`,
     `$cleanupScriptPath = ${powershellLiteral(cleanupScriptPath)}`,
@@ -204,11 +210,13 @@ export function createUninstallLaunchScript({
     `$summaryPath = ${powershellLiteral(summaryPath)}`,
     `$diagnosticPath = [string]::Concat($cleanupScriptPath, '.log')`,
     // Windows PowerShell 5.1 joins an ArgumentList array into one command
-    // line and can discard quotes on individual elements. Supply one
-    // explicitly quoted command-line string so paths containing spaces stay
-    // one -File value in installed and portable builds.
-    '$arguments = \'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "\' + $cleanupScriptPath + \'"\'',
-    '$helper = Start-Process -FilePath $powershellPath -ArgumentList $arguments -WorkingDirectory $workingDirectory -WindowStyle Hidden -PassThru -ErrorAction Stop',
+    // line and can discard quotes on individual elements. Use an encoded
+    // command instead: the only command-line value that crosses the
+    // Start-Process boundary is base64, while the script path is still
+    // protected as a PowerShell single-quoted literal inside that command.
+    "$helperCommand = \"& '\" + $cleanupScriptPath.Replace(\"'\", \"''\") + \"'\"",
+    '$encodedHelperCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($helperCommand))',
+    '$helper = Start-Process -FilePath $powershellPath -ArgumentList @("-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedHelperCommand) -WorkingDirectory $workingDirectory -WindowStyle Hidden -PassThru -ErrorAction Stop',
     'if ($null -eq $helper -or [int]$helper.Id -lt 1) { throw \'cleanup helper did not start\' }',
     '$launchedAt = [DateTime]::UtcNow.ToString(\'o\')',
     '$marker = [pscustomobject]@{ parentPid = $parentPid; helperPid = [int]$helper.Id; attemptNonce = $attemptNonce; launchedAt = $launchedAt } | ConvertTo-Json -Compress',
@@ -217,7 +225,7 @@ export function createUninstallLaunchScript({
     'foreach ($statusFile in @($statusPath, $summaryPath)) { [IO.File]::WriteAllText($statusFile, $status, [Text.UTF8Encoding]::new($false)) }',
     'try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}',
     'exit 0',
-  ].join('\n');
+  ]);
 }
 
 /** Parse the launcher handshake without trusting arbitrary marker contents. */
@@ -399,7 +407,7 @@ export function createUninstallCleanupScript({
   if ((statusPath === null) !== (summaryPath === null) || (statusPath === null) !== (attemptNonce === null)) throw new TypeError('statusPath, summaryPath, and attemptNonce must be supplied together');
   if (typeof recoveryCommand !== 'string' || recoveryCommand.length === 0) throw new TypeError('recovery command is required');
   if (typeof recoveryDisplayIcon !== 'string' || recoveryDisplayIcon.length === 0) throw new TypeError('recovery display icon is required');
-  return [
+  return powershellScriptText([
     'param([switch]$Retry)',
     "$ErrorActionPreference = 'Continue'",
     `$processId = ${pid}`,
@@ -507,5 +515,5 @@ export function createUninstallCleanupScript({
     'Write-Diagnostic "cleanup verification failed; helper retained for diagnosis"',
     ...(statusPath ? ["Write-Status 'failed' 'Cleanup could not remove every Arc Power file or registration; retry removal'"] : []),
     'exit 1',
-  ].join('\n');
+  ]);
 }

@@ -11,6 +11,19 @@ export const ASCENT_ENCODER_START_ERROR_CODES = Object.freeze([-6, -8]);
 export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_v2', 'obs_qsv11_hevc', 'obs_qsv11_av1']);
 const DEFAULT_SHUTDOWN_MS = 1500;
 
+/**
+ * FFmpeg writes these two informational lines while a normal output closes.
+ * They are not actionable recording failures, so keep them out of the
+ * renderer-facing status while preserving every other stderr line.
+ */
+export function filterRecordingStderr(text) {
+  return String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/\bQavg\b/i.test(line) && !/frames left in the queue on closing/i.test(line))
+    .join('\n');
+}
+
 export function runtimeExecutablePath(runtimeRoot) {
   if (!runtimeRoot || typeof runtimeRoot !== 'string') return null;
   const root = path.resolve(runtimeRoot);
@@ -86,7 +99,7 @@ function isEncoderStartRejection(error) {
   return Number.isInteger(error?.code) && ASCENT_ENCODER_START_ERROR_CODES.includes(error.code);
 }
 
-export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, shutdownMs = DEFAULT_SHUTDOWN_MS } = {}) {
+export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
   let child = null;
   let output = '';
   let decoder = new StringDecoder('utf8');
@@ -95,13 +108,21 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let protocolFailure = null;
   let terminationStarted = false;
   let activeRecorder = null;
-  let captureInFlight = false;
+  let startingRecorder = null;
+  let replayCapture = null;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, error: null, encoders: [], lastEvent: null };
+  let state = { available: false, running: false, mode: null, startedAt: null, error: null, encoders: [], lastEvent: null };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
   let writing = false;
+  let lifecycle = Promise.resolve();
+
+  function serialize(operation) {
+    const run = lifecycle.then(operation, operation);
+    lifecycle = run.catch(() => {});
+    return run;
+  }
 
   const publish = (patch) => {
     state = { ...state, ...patch };
@@ -132,7 +153,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     protocolFailure = failure;
     output = '';
     decoder = new StringDecoder('utf8');
-    publish({ available: false, running: false, mode: null, error: `Ascent protocol error: ${failure.message}` });
+    publish({ available: false, running: false, mode: null, startedAt: null, error: `Ascent protocol error: ${failure.message}` });
     rejectPending(failure);
     rejectQueued(failure);
     terminateChild();
@@ -143,11 +164,49 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     if (event === null) return;
     const identifier = Number.isInteger(message.identifier) ? message.identifier : null;
     const stopped = event === ASCENT_EVENTS.RECORDING_STOPPED || event === ASCENT_EVENTS.REPLAY_STOPPED;
-    if (stopped && (!activeRecorder || identifier === null || identifier === activeRecorder.identifier)) activeRecorder = null;
+    const started = event === ASCENT_EVENTS.RECORDING_STARTED || event === ASCENT_EVENTS.REPLAY_STARTED;
+    if (event === ASCENT_EVENTS.READY && startingRecorder && (identifier === null || identifier === startingRecorder.identifier)) {
+      startingRecorder.ready = true;
+    }
+    const recorderForEvent = activeRecorder && (identifier === null || identifier === activeRecorder.identifier)
+      ? activeRecorder
+      : startingRecorder && (identifier === null || identifier === startingRecorder.identifier)
+        ? startingRecorder
+        : null;
+    if (started && recorderForEvent) {
+      activeRecorder = { ...recorderForEvent };
+      if (recorderForEvent.cancelRequested) {
+        recorderForEvent.startedAfterCancel = true;
+        if (!recorderForEvent.stopInFlight) {
+          void stopInternal().catch((error) => {
+            // Keep activeRecorder intact when recovery fails so the user can
+            // retry Stop. Surface the backend failure instead of creating an
+            // unhandled rejection from this event-driven recovery path.
+            publish({ error: `The recording started after cancellation and could not be stopped automatically: ${error?.message ?? String(error)}. Stop recording manually.` });
+          });
+        }
+      } else {
+        startingRecorder = null;
+      }
+    }
+    if (event === ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY && replayCapture?.bufferIdentifier === identifier) replayCapture = null;
+    if (event === ASCENT_EVENTS.REPLAY_STOPPED) replayCapture = null;
+    if (stopped && (!activeRecorder || identifier === null || identifier === activeRecorder.identifier)) {
+      const stoppedActive = activeRecorder;
+      activeRecorder = null;
+      if (identifier === null || !startingRecorder || identifier === startingRecorder.identifier) {
+        // Keep a timed-out/cancel-requested pending start until it has either
+        // produced STARTED or the child exits. A STOPPED event can race ahead
+        // of that STARTED event; dropping the identity here would make a
+        // later backend capture impossible for stop() to reach.
+        if (!startingRecorder?.cancelRequested || stoppedActive) startingRecorder = null;
+      }
+    }
+    const startedMode = recorderForEvent?.mode ?? (event === ASCENT_EVENTS.REPLAY_STARTED ? 'replay' : 'video');
     publish({
       lastEvent: { ...message, at: clock() },
-      ...(event === ASCENT_EVENTS.RECORDING_STARTED || event === ASCENT_EVENTS.REPLAY_STARTED ? { running: true } : {}),
-      ...(stopped ? { running: false, mode: null } : {}),
+      ...(started && recorderForEvent ? { running: true, mode: startedMode, startedAt: state.startedAt ?? clock(), error: null } : {}),
+      ...(stopped ? { running: false, mode: null, startedAt: null } : {}),
     });
     let waiter = identifier === null ? null : pending.get(identifier);
     let waiterIdentifier = identifier;
@@ -225,20 +284,41 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     child = spawn(runtime.executable, [], { cwd: runtime.root, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true });
     output = '';
     decoder = new StringDecoder('utf8');
+    const stderrState = { output: '', decoder: new StringDecoder('utf8'), flushed: false };
     child.stdout?.on('data', onStdout);
-    child.stderr?.on('data', (chunk) => publish({ error: chunk.toString('utf8').trim().slice(0, 512) }));
+    child.stderr?.on('data', (chunk) => {
+      const text = stderrState.output + stderrState.decoder.write(chunk);
+      const lines = text.split(/\r?\n/);
+      stderrState.output = lines.pop() ?? '';
+      const diagnostic = filterRecordingStderr(lines.join('\n')).slice(0, 512);
+      if (diagnostic) publish({ error: diagnostic });
+    });
+    const flushStderr = () => {
+      if (stderrState.flushed) return;
+      stderrState.flushed = true;
+      const trailingStderr = stderrState.output + stderrState.decoder.end();
+      stderrState.output = '';
+      const diagnostic = filterRecordingStderr(trailingStderr).slice(0, 512);
+      if (diagnostic) publish({ error: diagnostic });
+    };
+    child.stderr?.once('close', flushStderr);
     child.on('error', (error) => {
-      publish({ available: false, running: false, mode: null, error: error.message });
+      publish({ available: false, running: false, mode: null, startedAt: null, error: error.message });
       rejectPending(error);
       rejectQueued(error);
     });
+    // ChildProcess 'close' follows 'exit' and all stdio streams closing. The
+    // stderr close handler covers implementations that expose that boundary
+    // without emitting a child close event; the guard makes either path one-shot.
+    child.once('close', flushStderr);
     child.on('exit', (code, signal) => {
       const failure = protocolFailure;
       child = null;
       activeRecorder = null;
-      captureInFlight = false;
+      startingRecorder = null;
+      replayCapture = null;
       terminationStarted = false;
-      publish({ available: false, running: false, mode: null, error: failure ? `Ascent protocol error: ${failure.message}` : disposed ? null : `Ascent exited (${code ?? signal ?? 'unknown'})` });
+      publish({ available: false, running: false, mode: null, startedAt: null, error: failure ? `Ascent protocol error: ${failure.message}` : disposed ? null : `Ascent exited (${code ?? signal ?? 'unknown'})` });
       rejectPending(failure ?? new Error('Ascent process exited'));
       rejectQueued(failure ?? new Error('Ascent process exited'));
       protocolFailure = null;
@@ -252,7 +332,12 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const identifier = Number.isSafeInteger(requestedIdentifier) ? requestedIdentifier : nextIdentifier++;
     const full = buildAscentCommand(command, identifier, recorderType, fields);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(identifier); reject(new Error('Timed out waiting for Ascent')); }, timeoutMs);
+      const timer = setTimeout(() => {
+        pending.delete(identifier);
+        const timeout = new Error('Timed out waiting for Ascent');
+        timeout.code = 'ASCENT_TIMEOUT';
+        reject(timeout);
+      }, timeoutMs);
       pending.set(identifier, { resolve, reject, timer, events, acceptUnidentified });
       try {
         enqueue(full).catch((error) => { pending.delete(identifier); clearTimeout(timer); reject(error); });
@@ -264,7 +349,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     });
   }
 
-  async function probe() {
+  async function probeInternal() {
     const response = await request(ASCENT_COMMANDS.QUERY_MACHINE_INFO, ASCENT_RECORDER_TYPES.VIDEO, {}, [ASCENT_EVENTS.QUERY_MACHINE_INFO], 5000, null, { acceptUnidentified: true });
     const encoders = Array.isArray(response.vid_encs) ? response.vid_encs.map((encoder) => {
       const type = String(encoder.type ?? '');
@@ -276,9 +361,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     return { ...state, encoders };
   }
 
-  async function start(settings, mode = 'video') {
-    if (activeRecorder || state.running) throw new Error('Ascent recorder is already active');
-    await probe();
+  async function startInternal(settings, mode = 'video') {
+    if (activeRecorder || startingRecorder || state.running) throw new Error('Ascent recorder is already active or a previous start is still pending');
+    await probeInternal();
     const outputPath = settings.outputPath;
     const type = mode === 'replay' ? ASCENT_RECORDER_TYPES.REPLAY : ASCENT_RECORDER_TYPES.VIDEO;
     const selectedEncoder = demotedEncoders.has(settings.encoderId) ? 'automatic' : settings.encoderId;
@@ -286,9 +371,20 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const payload = buildAscentStartPayload({ ...settings, encoderId }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
+    startingRecorder = { identifier, type, mode, ready: false };
     try {
-      await request(payload.cmd, type, fields, [ASCENT_EVENTS.READY, ASCENT_EVENTS.RECORDING_STARTED, ASCENT_EVENTS.REPLAY_STARTED], 15000, identifier);
+      await request(payload.cmd, type, fields, [mode === 'replay' ? ASCENT_EVENTS.REPLAY_STARTED : ASCENT_EVENTS.RECORDING_STARTED], startTimeoutMs, identifier);
     } catch (error) {
+      if (startingRecorder?.identifier === identifier && error?.code === 'ASCENT_TIMEOUT' && startingRecorder.ready) {
+        // A READY event means the backend accepted the start, but the actual
+        // started event may still arrive after the request window. Keep the
+        // recorder identity so a late event becomes an active capture that
+        // stop() can control; competing starts remain blocked meanwhile.
+        startingRecorder.timedOut = true;
+        publish({ error: 'Recording start is still pending; stop to cancel it.' });
+      } else if (startingRecorder?.identifier === identifier) {
+        startingRecorder = null;
+      }
       const encoderId = payload.video_settings.video_encoder.id;
       if (isEncoderStartRejection(error) && state.encoders.some((item) => item.type === encoderId)) {
         demotedEncoders.add(encoderId);
@@ -302,46 +398,91 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       }
       throw error;
     }
-    activeRecorder = { identifier, type };
-    publish({ running: true, mode, error: null, encoders: state.encoders.map((item) => item.type === payload.video_settings.video_encoder.id ? { ...item, startTested: true, startSupported: true, status: 'started' } : item) });
+    // The started event has already made the recorder active. Keep its
+    // authoritative mode/timestamp and only add the successful encoder
+    // validation here.
+    publish({ error: null, encoders: state.encoders.map((item) => item.type === payload.video_settings.video_encoder.id ? { ...item, startTested: true, startSupported: true, status: 'started' } : item) });
     return state;
   }
 
-  async function stop() {
-    if (!child || !state.running || !activeRecorder) return state;
-    const recorder = activeRecorder;
+  async function stopInternal() {
+    if (!child) return state;
+    const recorder = activeRecorder ?? startingRecorder;
+    if (!recorder) return state;
+    if (recorder.stopInFlight) return state;
+    if (!activeRecorder && startingRecorder?.identifier === recorder.identifier) recorder.cancelRequested = true;
+    recorder.stopInFlight = true;
     const stopEvent = recorder.type === ASCENT_RECORDER_TYPES.REPLAY ? ASCENT_EVENTS.REPLAY_STOPPED : ASCENT_EVENTS.RECORDING_STOPPED;
-    await request(ASCENT_COMMANDS.STOP, recorder.type, {}, [stopEvent], 10000, recorder.identifier);
-    activeRecorder = null;
-    publish({ running: false, mode: null });
-    return state;
+    try {
+      await request(ASCENT_COMMANDS.STOP, recorder.type, {}, [stopEvent], 10000, recorder.identifier);
+      const stoppedActive = activeRecorder?.identifier === recorder.identifier;
+      if (stoppedActive) activeRecorder = null;
+      if (startingRecorder?.identifier === recorder.identifier && (stoppedActive || startingRecorder.startedAfterCancel)) startingRecorder = null;
+      publish({ running: false, mode: null, startedAt: null });
+      return state;
+    } finally {
+      recorder.stopInFlight = false;
+    }
   }
 
-  async function stopReplayClip(identifier = activeRecorder?.identifier) {
+  async function stopReplayClipInternal(identifier = activeRecorder?.identifier) {
     if (!Number.isSafeInteger(identifier)) throw new Error('Replay buffer is not active');
     return request(ASCENT_COMMANDS.STOP_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, {}, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY], 10000, identifier);
   }
 
-  async function saveReplayClip({ path: clipPath, headDuration, thumbnailFolder }) {
+  function replayCaptureAlreadyActive(error) {
+    return /already\s+(?:capturing|started|active)|capture(?:d|)\s+is\s+already\s+active/i.test(String(error?.message ?? ''));
+  }
+
+  async function recoverReplayCapture() {
+    const capture = replayCapture;
+    if (!capture) return true;
+    try {
+      await stopReplayClipInternal(capture.bufferIdentifier);
+      replayCapture = null;
+      return true;
+    } catch (error) {
+      capture.phase = 'unknown';
+      capture.recoveryError = error;
+      publish({ error: `Replay clip recovery failed: ${error.message}` });
+      return false;
+    }
+  }
+
+  async function saveReplayClipInternal({ path: clipPath, headDuration, thumbnailFolder }) {
     if (!activeRecorder || activeRecorder.type !== ASCENT_RECORDER_TYPES.REPLAY) throw new Error('Start the replay buffer before saving a clip');
-    if (captureInFlight) throw new Error('A replay clip is already being finalized');
-    captureInFlight = true;
+    if (replayCapture && !(await recoverReplayCapture())) throw new Error('A replay clip is still being finalized; stop and restart the replay buffer before trying again');
+    const bufferIdentifier = activeRecorder.identifier;
     const captureIdentifier = nextIdentifier++;
+    replayCapture = { bufferIdentifier, captureIdentifier, phase: 'starting' };
     try {
       await request(ASCENT_COMMANDS.START_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, { path: clipPath, head_duration: Math.max(0, Math.round(headDuration)), thumbnail_folder: thumbnailFolder }, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_STARTED], 10000, captureIdentifier);
       // Ascent acknowledges START_REPLAY_CAPTURE before writing the file. The
       // file is only usable after STOP_REPLAY_CAPTURE causes replay_ready.
-      return await stopReplayClip(activeRecorder.identifier);
-    } finally {
-      captureInFlight = false;
+      replayCapture.phase = 'capturing';
+      const response = await stopReplayClipInternal(bufferIdentifier);
+      replayCapture = null;
+      return response;
+    } catch (error) {
+      // Once START_REPLAY_CAPTURE was accepted, always attempt one bounded
+      // STOP_REPLAY_CAPTURE recovery. A stale backend capture is otherwise
+      // likely to reject the next Save Clip as "already capturing". If the
+      // start itself reported that race, the same recovery also clears the
+      // stale backend state before the next user attempt.
+      if (replayCapture?.bufferIdentifier === bufferIdentifier && (replayCapture.phase !== 'starting' || replayCaptureAlreadyActive(error))) {
+        await recoverReplayCapture();
+      } else {
+        replayCapture = null;
+      }
+      throw error;
     }
   }
 
-  async function shutdown() {
+  async function shutdownInternal() {
     disposed = true;
     if (!child) return state;
-    if (state.running) {
-      try { await Promise.race([stop(), new Promise((resolve) => setTimeout(resolve, shutdownMs))]); } catch { /* kill fallback below */ }
+    if (state.running || startingRecorder) {
+      try { await Promise.race([stopInternal(), new Promise((resolve) => setTimeout(resolve, shutdownMs))]); } catch { /* kill fallback below */ }
     }
     const shutdownTarget = child;
     try { await enqueue(buildAscentCommand(ASCENT_COMMANDS.SHUTDOWN, nextIdentifier++, ASCENT_RECORDER_TYPES.VIDEO)); } catch { /* kill fallback below */ }
@@ -359,13 +500,13 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
 
   return {
     getState: () => ({ ...state, available: state.available, encoders: state.encoders.map((item) => ({ ...item })) }),
-    probe,
-    startRecording: (settings) => start(settings, 'video'),
-    startReplay: (settings) => start(settings, 'replay'),
-    stop,
-    saveReplayClip,
-    stopReplayClip,
-    shutdown,
+    probe: () => serialize(probeInternal),
+    startRecording: (settings) => serialize(() => startInternal(settings, 'video')),
+    startReplay: (settings) => serialize(() => startInternal(settings, 'replay')),
+    stop: () => serialize(stopInternal),
+    saveReplayClip: (settings) => serialize(() => saveReplayClipInternal(settings)),
+    stopReplayClip: (identifier) => serialize(() => stopReplayClipInternal(identifier)),
+    shutdown: () => serialize(shutdownInternal),
     subscribe: (cb) => { listeners.add(cb); return () => listeners.delete(cb); },
   };
 }

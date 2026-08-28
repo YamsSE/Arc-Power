@@ -969,10 +969,22 @@ export interface RecordingEngineState {
   available: boolean;
   running: boolean;
   mode: 'video' | 'replay' | null;
+  startedAt: number | null;
   error: string | null;
   encoders: RecordingEncoderState[];
   hotkeys: { registered: Record<string, string>; conflicts: Record<string, string>; error: string | null };
   lastEvent?: Record<string, unknown> | null;
+}
+export type RecordingAction = 'start' | 'stop' | 'saveClip';
+/** Raw main-process engine state; the renderer-only hotkeys envelope is added by IPC state pushes. */
+export type RecordingActionState = Omit<RecordingEngineState, 'hotkeys'>;
+export interface RecordingActionResult {
+  action: RecordingAction;
+  ok: boolean;
+  error: string | null;
+  preActionMode?: RecordingEngineState['mode'];
+  didStop?: boolean;
+  state?: RecordingActionState | null;
 }
 export interface RecordingClip {
   id: string;

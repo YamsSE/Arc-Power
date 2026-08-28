@@ -84,6 +84,8 @@ export const DEVICE_STATE_UPDATED_CHANNEL = 'device:state-updated';
 export const GRAPHICS_STATE_UPDATED_CHANNEL = 'graphics:state-updated';
 /** M99: main-process Ascent state push for the Recording page. */
 export const RECORDING_STATE_CHANNEL = 'recording:state';
+/** M101: main-process result push for global recording shortcuts. */
+export const RECORDING_ACTION_CHANNEL = 'recording:action';
 /** M31: explicit panel request and main-owned atomic selection push channels. */
 export const DEVICE_SELECTION_REQUEST_CHANNEL = 'device-selection:request';
 export const DEVICE_SELECTION_UPDATED_CHANNEL = 'device-selection:updated';
@@ -92,6 +94,13 @@ export function pushRecordingState({ getWindow, state, getHotkeyState = () => ({
   const win = getWindow?.();
   if (!win || win.isDestroyed?.() || !win.webContents?.send) return false;
   win.webContents.send(RECORDING_STATE_CHANNEL, { ...state, hotkeys: getHotkeyState() });
+  return true;
+}
+
+export function pushRecordingActionResult({ getWindow, result }) {
+  const win = getWindow?.();
+  if (!win || win.isDestroyed?.() || !win.webContents?.send) return false;
+  win.webContents.send(RECORDING_ACTION_CHANNEL, result);
   return true;
 }
 
@@ -2393,12 +2402,12 @@ export function createIpcHandlers({
       },
       'recording-runtime-probe': async (...args) => {
         assertNoPayload(args, 'recording-runtime-probe');
-        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], hotkeys: getRecordingHotkeyState() };
+        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], hotkeys: getRecordingHotkeyState() };
         return { ...(await recordingEngine.probe()), hotkeys: getRecordingHotkeyState() };
       },
       'recording-status': async (...args) => {
         assertNoPayload(args, 'recording-status');
-        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [] }), hotkeys: getRecordingHotkeyState() };
+        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [] }), hotkeys: getRecordingHotkeyState() };
       },
       'recording-start': async (...args) => {
         assertNoPayload(args, 'recording-start');

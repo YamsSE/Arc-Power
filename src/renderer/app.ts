@@ -24,6 +24,8 @@ import { createDeviceSwitcher } from './device.ts';
 import { resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
+import { recordingMessage } from './pure/recording.ts';
+import type { RecordingEngineState } from './types.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -39,6 +41,75 @@ const PAGES: Record<PageId, Page> = {
 };
 
 const store = new Store();
+
+const INITIAL_RECORDING_STATUS: RecordingEngineState = {
+  available: false,
+  running: false,
+  mode: null,
+  startedAt: null,
+  error: 'Loading capture engine…',
+  encoders: [],
+  hotkeys: { registered: {}, conflicts: {}, error: null },
+};
+let globalRecordingStatus: RecordingEngineState = INITIAL_RECORDING_STATUS;
+let globalRecordingTimer: number | null = null;
+let unsubscribeGlobalRecordingState: (() => void) | null = null;
+
+function recordingElapsed(startedAt: number | null | undefined): string {
+  if (!Number.isFinite(startedAt)) return '00:00:00';
+  const elapsed = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = elapsed % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function updateGlobalRecordingWidget(): void {
+  const root = document.querySelector<HTMLElement>('.sidebar-recording-status');
+  if (!root) return;
+  const running = globalRecordingStatus.running === true;
+  const mode = globalRecordingStatus.mode;
+  const title = root.querySelector<HTMLElement>('[data-recording-status-title]');
+  const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
+  const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
+  const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
+  if (title) title.textContent = running ? mode === 'replay' ? 'Replay buffer' : 'Recording' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
+  if (detail) detail.textContent = running ? 'Arc Power capture is running' : globalRecordingStatus.available ? 'Ready when you are' : 'Capture engine unavailable';
+  if (timer) {
+    timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
+    timer.hidden = !running;
+  }
+  if (dot) dot.className = `sidebar-recording-dot${running ? ' is-live' : ''}`;
+  root.classList.toggle('is-live', running);
+  root.dataset.mode = mode ?? 'idle';
+}
+
+function setGlobalRecordingStatus(next: RecordingEngineState): void {
+  const startedAt = next.running
+    ? Number.isFinite(next.startedAt) ? next.startedAt : globalRecordingStatus.startedAt ?? Date.now()
+    : null;
+  globalRecordingStatus = { ...next, startedAt };
+  if (globalRecordingStatus.running && globalRecordingTimer === null) {
+    globalRecordingTimer = window.setInterval(updateGlobalRecordingWidget, 1000);
+  } else if (!globalRecordingStatus.running && globalRecordingTimer !== null) {
+    window.clearInterval(globalRecordingTimer);
+    globalRecordingTimer = null;
+  }
+  updateGlobalRecordingWidget();
+}
+
+function renderGlobalRecordingStatus(): HTMLElement {
+  const root = el('section', { class: 'sidebar-recording-status', 'aria-live': 'polite', 'aria-label': 'Arc Power capture status' }, [
+    el('span', { class: 'sidebar-recording-dot', 'data-recording-status-dot': '' }),
+    el('div', { class: 'sidebar-recording-copy' }, [
+      el('strong', { 'data-recording-status-title': '' }),
+      el('span', { 'data-recording-status-detail': '' }),
+    ]),
+    el('time', { class: 'sidebar-recording-timer', 'data-recording-timer': '', hidden: true }),
+  ]);
+  updateGlobalRecordingWidget();
+  return root;
+}
 
 // 1.0.1 Themes: apply a theme id to <html> + recolor the monitoring
 // canvases NOW (N9 - drawSeries reads the CSS vars at draw time; a theme
@@ -276,14 +347,9 @@ function renderSidebar() {
   const nav = document.getElementById('sidebar') as HTMLElement;
   const active = currentPage();
   clear(nav);
-  // M7b (amendment): the Settings tab MOVED to the sidebar FOOTER -
-  // the nav renders PAGE_IDS minus 'settings' (6 links); the footer holds
-  // GitHub (bottom-LEFT) + Settings (bottom-RIGHT - the GitHub-page
-  // mirror: GitHub pins its settings link at the sidebar bottom, this app
-  // mirrors it to the RIGHT side of its bottom row). The footer Settings
-  // link KEEPS the .sidebar-link class (the styling + the active state +
-  // the icon + the label) + the existing href '#/settings' - PAGE_IDS /
-  // the router / the hash routing are untouched.
+  // Settings remains in the sidebar footer. PAGE_IDS supplies the exact
+  // main-tab order: Dashboard, Tuning, Graphics, Recording, Monitoring,
+  // Profiles, Tweaks.
   const navIds = PAGE_IDS.filter((id) => id !== 'settings');
   nav.append(
     // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED
@@ -303,39 +369,34 @@ function renderSidebar() {
         el('span', { class: 'sidebar-link-label', text: NAV_LABELS[id] }),
       ]),
     )),
-    // M4-H (D1): the sidebar FOOTER - the GitHub link (icon + 'GitHub') at
-    // the bottom-left; click -> api.openExternal (a NEW validated IPC
-    // channel - ipc-core.js strict-checks https://github.com/YamsSE/Arc-Power
-    // before shell.openExternal runs). The <a> has no href - the click is
-    // the only path (a real navigation would reload the app shell).
-    // M7b (amendment): the footer is a flex ROW - the Settings tab
-    // joins it at the bottom-RIGHT (the window's bottom-right corner; the
-    // GitHub-page mirror). The Settings link keeps the .sidebar-link class
-    // + the icon + the label + the active state + href '#/settings'.
     el('div', { class: 'sidebar-footer' }, [
-      el('a', {
-        class: 'sidebar-footer-link',
-        title: 'Open the Arc Power repository',
-        onClick: (e: Event) => {
-          e.preventDefault();
-          void api.openExternal('https://github.com/YamsSE/Arc-Power').catch(() => {
-            toast('error', 'Could not open GitHub', 'The repository link could not be opened.');
-          });
-        },
-      }, [
-        el('span', { class: 'sidebar-icon-github' }),
-        el('span', { class: 'sidebar-footer-label', text: 'GitHub' }),
-      ]),
-      el('a', {
-        class: `sidebar-link sidebar-footer-settings${active === 'settings' ? ' active' : ''}`,
-        href: '#/settings',
-        title: 'Settings',
-      }, [
-        el('span', { class: 'sidebar-icon sidebar-icon-settings' }),
-        el('span', { class: 'sidebar-link-label', text: NAV_LABELS.settings }),
+      renderGlobalRecordingStatus(),
+      el('div', { class: 'sidebar-footer-links' }, [
+        el('a', {
+          class: 'sidebar-footer-link',
+          title: 'Open the Arc Power repository',
+          onClick: (e: Event) => {
+            e.preventDefault();
+            void api.openExternal('https://github.com/YamsSE/Arc-Power').catch(() => {
+              toast('error', 'Could not open GitHub', 'The repository link could not be opened.');
+            });
+          },
+        }, [
+          el('span', { class: 'sidebar-icon-github' }),
+          el('span', { class: 'sidebar-footer-label', text: 'GitHub' }),
+        ]),
+        el('a', {
+          class: `sidebar-link sidebar-footer-settings${active === 'settings' ? ' active' : ''}`,
+          href: '#/settings',
+          title: 'Settings',
+        }, [
+          el('span', { class: 'sidebar-icon sidebar-icon-settings' }),
+          el('span', { class: 'sidebar-link-label', text: NAV_LABELS.settings }),
+        ]),
       ]),
     ]),
   );
+  updateGlobalRecordingWidget();
 }
 
 async function boot() {
@@ -356,6 +417,36 @@ async function boot() {
   // M25/M52: check independently of the GPU bootstrap. A device/driver
   // probe must never prevent the user from seeing a release notification.
   void startupUpdateCheck();
+
+  // Capture status is app-global: the sidebar widget remains visible while
+  // the user moves between pages, and its timer stops as soon as capture ends.
+  if (!unsubscribeGlobalRecordingState) {
+    unsubscribeGlobalRecordingState = api.onRecordingStateUpdated((next) => setGlobalRecordingStatus(next));
+  }
+  const recordingActionUnsubscribe = api.onRecordingActionResult((result) => {
+    const replayStop = result.action === 'stop' && result.preActionMode === 'replay';
+    const titles = { start: 'Recording started', stop: replayStop ? 'Replay buffer stopped' : 'Recording stopped', saveClip: 'Clip saved' } as const;
+    const messages = {
+      start: 'Video capture is now active.',
+      stop: replayStop ? 'The replay buffer is no longer active.' : 'Video capture has finished.',
+      saveClip: 'The replay clip was added to the clip library.',
+    } as const;
+    if (!result.ok) {
+      toast('error', titles[result.action], recordingMessage(result.error ?? 'The recording action failed.'));
+      return;
+    }
+    // Stop is idempotent in the engine. A shortcut pressed while idle is a
+    // successful no-op, not a completed recording, so it must not announce a
+    // misleading success toast.
+    if (result.action === 'stop' && result.didStop !== true) return;
+    // The Recording page announces start/stop from its state transition. The
+    // global listener fills the same UX gap when a shortcut is used elsewhere;
+    // Save Clip has no running-state transition, so it always needs this path.
+    if (result.action === 'saveClip' || currentPage() !== 'recording') toast('success', titles[result.action], messages[result.action]);
+  });
+  void api.recordingStatus().then((next) => setGlobalRecordingStatus(next)).catch(() => {
+    // The widget already starts in a truthful offline/loading state.
+  });
 
   store.subscribe(() => {
     header.render();

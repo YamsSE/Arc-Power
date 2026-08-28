@@ -16,17 +16,15 @@ import type {
 // M6: the old #/overlay page (the Overlay Settings page) MOVED into the
 // Monitoring page as a sub-view in M9 - the PageId is gone; the old hash
 // redirects (pageFromHash) with the overlay view requested.
-// M8: the #/graphics page (the Graphics tab - the planned order: the tab
-// sits BELOW Tuning).
-export type PageId = 'dashboard' | 'tuning' | 'monitoring' | 'recording' | 'graphics' | 'profiles' | 'tweaks' | 'settings';
+// M8/M-recording: the sidebar order is deliberately fixed as Dashboard,
+// Tuning, Graphics, Recording, Monitoring, Profiles, Tweaks. Settings stays
+// in the footer and is not part of the main navigation list.
+export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'recording' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
 
-// M6-amd1: the Overlay tab used to sit DIRECTLY BELOW the Monitoring tab
-// (the amendment - the sidebar order); M9 removes it (the Overlay
-// Settings content lives inside the Monitoring page's Overlay view).
-// M8: the Graphics tab sits DIRECTLY BELOW Tuning (the planned order:
-// dashboard / tuning / graphics / monitoring / profiles / tweaks /
-// settings).
-export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'monitoring', 'recording', 'graphics', 'profiles', 'tweaks', 'settings'];
+// M6-amd1/M9: the former Overlay tab was removed from the sidebar; its
+// settings now live inside Monitoring's Overlay view.
+// Settings remains in the footer; keep this exact order for the sidebar.
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'recording', 'monitoring', 'profiles', 'tweaks', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',

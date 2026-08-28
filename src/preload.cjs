@@ -102,7 +102,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   gameProfileSave: (association) => ipcRenderer.invoke('game-profile-save', association),
   gameProfileDelete: (association) => ipcRenderer.invoke('game-profile-delete', association),
   trayRebuild: () => ipcRenderer.invoke('tray-rebuild'),
-  // M99: Recording/Ascent control stays main-owned. Clip playback uses an
+  // M99: Recording control stays main-owned. Clip playback uses an
   // opaque id resolved by the privileged arc-power-media protocol.
   recordingSettingsGet: () => ipcRenderer.invoke('recording-settings-get'),
   recordingSettingsSave: (patch) => ipcRenderer.invoke('recording-settings-save', patch),
@@ -154,6 +154,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     const listener = (_event, state) => cb(state);
     ipcRenderer.on('recording:state', listener);
     return () => ipcRenderer.removeListener('recording:state', listener);
+  },
+  onRecordingActionResult: (cb) => {
+    const listener = (_event, result) => cb(result);
+    ipcRenderer.on('recording:action', listener);
+    return () => ipcRenderer.removeListener('recording:action', listener);
   },
   // M16-F1: pushed POST-APPLY device read-backs ({ deviceId, state } on
   // 'device:state-updated') - the tray "Apply active profile" runs entirely

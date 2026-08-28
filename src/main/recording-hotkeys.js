@@ -39,13 +39,19 @@ export function createRecordingHotkeys({ shortcut, getSettings, onAction, reserv
   return { register, unregister, getState: () => ({ ...state, registered: { ...state.registered }, conflicts: { ...state.conflicts } }) };
 }
 
-export function createRecordingActionHandler({ getSettings, recordingEngine, fsModule = fs, pathModule = path, now = () => new Date(), log = (message) => console.log(message) } = {}) {
+export function createRecordingActionHandler({ getSettings, recordingEngine, fsModule = fs, pathModule = path, now = () => new Date(), log = (message) => console.log(message), onActionResult = async () => {} } = {}) {
   return async (action) => {
+    let error = null;
+    let preActionMode = null;
+    let didStop = false;
     try {
       // Stop must remain available even when a persisted capture location is
       // malformed, unavailable, or unwritable. It has no output-directory
       // dependency, so dispatch it before reading settings or touching fs.
       if (action === 'stop') {
+        const before = recordingEngine.getState?.() ?? null;
+        preActionMode = before?.mode ?? null;
+        didStop = before?.running === true;
         await recordingEngine.stop();
         return;
       }
@@ -60,7 +66,14 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, fsM
         await recordingEngine.saveReplayClip({ path: outputPath, headDuration: settings.replayLengthSec * 1000, thumbnailFolder: location });
       }
     } catch (err) {
-      log(`[recording] shortcut ${action} failed: ${err.message}`);
+      error = err instanceof Error ? err.message : String(err);
+      log(`[recording] shortcut ${action} failed: ${error}`);
+    } finally {
+      try {
+        await onActionResult({ action, ok: error === null, error, preActionMode, ...(action === 'stop' ? { didStop } : {}), state: recordingEngine.getState?.() ?? null });
+      } catch {
+        // Notification delivery must never affect the hotkey action itself.
+      }
     }
   };
 }

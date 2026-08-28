@@ -324,11 +324,17 @@ async function waitForUninstallLaunchHandshake({ child, markerPath, parentPid, e
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    let marker = null;
     try {
-      const marker = parseUninstallLaunchMarker(await readFile(markerPath, 'utf8'), parentPid, expectedNonce, { notBeforeMs });
-      if (marker) return marker;
+      marker = parseUninstallLaunchMarker(await readFile(markerPath, 'utf8'), parentPid, expectedNonce, { notBeforeMs });
     } catch { /* launcher is still writing the marker */ }
-    if (child.exitCode !== null && child.exitCode !== undefined && child.exitCode !== 0) {
+    if (marker) {
+      if (!isProcessAlive(marker.helperPid)) {
+        throw new Error('Arc Power uninstall helper exited before its launch handshake was confirmed');
+      }
+      return marker;
+    }
+    if (child.exitCode !== null && child.exitCode !== undefined) {
       throw new Error(`Arc Power uninstall launcher exited with code ${child.exitCode} before its helper handshake`);
     }
     await new Promise((resolve) => setTimeout(resolve, pollMs));

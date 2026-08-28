@@ -52,7 +52,7 @@ import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify, runAdvancedOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
+import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
 import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
@@ -2938,7 +2938,11 @@ async function main() {
       if (uiVerify) trayRebuilds += 1;
     },
   });
-  recordingActionHandler = createRecordingActionHandler({ getSettings: () => recordingStore.settings(), recordingEngine });
+  recordingActionHandler = createRecordingActionHandler({
+    getSettings: () => recordingStore.settings(),
+    recordingEngine,
+    onActionResult: (result) => pushRecordingActionResult({ getWindow: () => win, result }),
+  });
   await recordingHotkeys.register();
 
   // M17p: the sysStats/MSR assignment (MOVED here from its pre-window

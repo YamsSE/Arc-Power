@@ -5,6 +5,7 @@ import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
 import type { RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
+import { recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -27,17 +28,20 @@ let status: RecordingEngineState = {
   available: false,
   running: false,
   mode: null,
+  startedAt: null,
   error: 'Loading recording engine…',
   encoders: [],
   hotkeys: { registered: {}, conflicts: {}, error: null },
 };
 let clips: RecordingClip[] = [];
-let selectedClip: RecordingClip | null = null;
+let playerClip: RecordingClip | null = null;
 let activeTab: RecordingTab = 'manual';
 let renderContainer: HTMLElement | null = null;
 let loading = false;
 let actionBusy = false;
 let unsubscribeRecordingState: (() => void) | null = null;
+let pageTimer: number | null = null;
+let playerVideo: HTMLVideoElement | null = null;
 let lastTransitionToast = { key: '', at: 0 };
 
 function announceCaptureTransition(previous: RecordingEngineState, next: RecordingEngineState): void {
@@ -58,14 +62,53 @@ function announceCaptureTransition(previous: RecordingEngineState, next: Recordi
 
 function setStatus(next: RecordingEngineState, announce = false): void {
   const previous = status;
-  status = next;
+  const startedAt = next.running
+    ? Number.isFinite(next.startedAt) ? next.startedAt : previous.running ? previous.startedAt : Date.now()
+    : null;
+  status = { ...next, startedAt };
   if (announce) announceCaptureTransition(previous, next);
 }
 
-function messageOf(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const backendName = new RegExp(['a', 'scent'].join(''), 'gi');
-  return message.replace(backendName, 'recording engine');
+const messageOf = recordingMessage;
+
+function formatElapsed(startedAt: number | null | undefined): string {
+  if (!Number.isFinite(startedAt)) return '00:00:00';
+  const elapsed = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = elapsed % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function updatePageTimer(): void {
+  const timer = renderContainer?.querySelector<HTMLElement>('[data-recording-page-timer]');
+  if (!timer) return;
+  timer.textContent = status.running ? formatElapsed(status.startedAt) : '';
+  timer.hidden = !status.running;
+}
+
+function syncPageTimer(): void {
+  if (status.running && pageTimer === null) pageTimer = window.setInterval(updatePageTimer, 1000);
+  if (!status.running && pageTimer !== null) {
+    window.clearInterval(pageTimer);
+    pageTimer = null;
+  }
+  updatePageTimer();
+}
+
+function clearPageTimer(): void {
+  if (pageTimer !== null) window.clearInterval(pageTimer);
+  pageTimer = null;
+}
+
+function disposePlayerVideo(): void {
+  if (!playerVideo) return;
+  try {
+    playerVideo.pause();
+    playerVideo.removeAttribute('src');
+    playerVideo.load();
+  } catch { /* media cleanup is best effort during navigation */ }
+  playerVideo = null;
 }
 
 function recordingDeleteError(reason: RecordingClipDeleteResult['reason']): string {
@@ -134,16 +177,11 @@ function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string
 
 function encoderOptions(): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
-  const seen = new Set<string>();
-  for (const encoder of status.encoders) {
-    // The main-process bridge deliberately supports Intel QSV only. Keep
-    // software/other-vendor entries out of a selector that would otherwise
-    // offer a choice the start path rejects.
-    if (!INTEL_QSV_ENCODERS.has(encoder.type)) continue;
-    if (seen.has(encoder.type)) continue;
-    seen.add(encoder.type);
-    const unavailable = encoder.startTested && !encoder.startSupported ? ' — unavailable' : '';
-    options.push([encoder.type, `${encoderLabel(encoder)}${unavailable}`]);
+  const known = new Map(status.encoders.filter((encoder) => INTEL_QSV_ENCODERS.has(encoder.type)).map((encoder) => [encoder.type, encoder]));
+  for (const [id, label] of [['obs_qsv11_v2', 'Intel H264'], ['obs_qsv11_hevc', 'Intel HEVC'], ['obs_qsv11_av1', 'Intel AV1']] as const) {
+    const encoder = known.get(id);
+    const unavailable = !encoder || (encoder.startTested && !encoder.startSupported) || encoder.probeValid !== true ? ' — unavailable' : '';
+    options.push([id, `${encoder ? encoderLabel(encoder) : label}${unavailable}`]);
   }
   return options;
 }
@@ -175,24 +213,19 @@ function renderStatusSummary(): HTMLElement {
       el('strong', { text: stateLabel }),
       el('span', { text: detail }),
     ]),
+    el('time', { class: 'recording-status-timer', 'data-recording-page-timer': '', hidden: !status.running, text: status.running ? formatElapsed(status.startedAt) : '' }),
     el('span', { class: `recording-status-pill ${stateClass}`, text: status.running ? 'Live' : status.available ? 'Ready' : 'Offline' }),
   ]);
 }
 
 function renderCaptureActions(): HTMLElement {
-  const isReplay = activeTab === 'clips';
-  const runningThisMode = status.running && status.mode === (isReplay ? 'replay' : 'video');
-  const anotherModeRunning = status.running && !runningThisMode;
-  const primaryText = runningThisMode
-    ? isReplay ? 'Stop Replay Buffer' : 'Stop Recording'
-    : isReplay ? 'Start Replay Buffer' : 'Start Recording';
-  const primaryAction = runningThisMode ? stopCapture : isReplay ? startReplay : startRecording;
-  const primaryDisabled = !status.available || actionBusy || anotherModeRunning;
-
+  const recordingRunning = status.running && status.mode === 'video';
+  const replayRunning = status.running && status.mode === 'replay';
   return el('div', { class: 'recording-capture-actions' }, [
-    button(primaryText, () => void primaryAction(), `btn ${runningThisMode ? 'btn-recording-stop' : 'btn-primary'}`, primaryDisabled),
-    isReplay ? button('Save Clip', () => void saveClip(), 'btn btn-secondary', !status.available || status.mode !== 'replay' || actionBusy) : null,
-    anotherModeRunning ? el('span', { class: 'recording-inline-note', text: 'Stop the active capture in its tab before starting this one.' }) : null,
+    button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture() : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || replayRunning),
+    button(replayRunning ? 'Stop Replay Buffer' : 'Start Replay Buffer', () => void (replayRunning ? stopCapture() : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || recordingRunning),
+    button('Save Clip', () => void saveClip(), 'btn btn-secondary', !status.available || status.mode !== 'replay' || actionBusy),
+    status.running && !recordingRunning && !replayRunning ? el('span', { class: 'recording-inline-note', text: 'Another capture is active.' }) : null,
   ]);
 }
 
@@ -201,12 +234,12 @@ function renderCapturePanel(): HTMLElement {
   return el('section', { class: 'recording-panel recording-capture-panel' }, [
     el('div', { class: 'recording-panel-heading' }, [
       el('div', {}, [
-        el('span', { class: 'recording-eyebrow', text: activeTab === 'clips' ? 'Replay buffer' : 'Capture now' }),
-        el('h2', { class: 'recording-panel-title', text: activeTab === 'clips' ? 'Save the moment' : 'Record your session' }),
+        el('span', { class: 'recording-eyebrow', text: 'Capture controls' }),
+        el('h2', { class: 'recording-panel-title', text: 'Record or save a moment' }),
       ]),
       renderStatusSummary(),
     ]),
-    el('p', { class: 'recording-panel-note', text: activeTab === 'clips' ? `The buffer keeps the last ${replayLength} seconds. Save a clip whenever something worth keeping happens.` : 'Start a video capture with the profile below. Stop it whenever you are ready; the file will appear in your recording folder.' }),
+    el('p', { class: 'recording-panel-note', text: `Start a full recording or keep a ${replayLength}-second replay buffer. Save Clip finalizes one clip while the buffer keeps running.` }),
     renderCaptureActions(),
     status.error && status.available ? el('p', { class: 'recording-inline-error', text: messageOf(status.error) }) : null,
     status.hotkeys.error ? el('p', { class: 'recording-inline-error', text: `Shortcut registration issue: ${messageOf(status.hotkeys.error)}` }) : null,
@@ -313,6 +346,42 @@ function renderManualView(): HTMLElement {
   ]);
 }
 
+function previewVideo(clip: RecordingClip): HTMLVideoElement {
+  const preview = el('video', {
+    class: 'recording-clip-preview',
+    muted: true,
+    loop: true,
+    playsinline: true,
+    preload: 'metadata',
+  }) as HTMLVideoElement;
+  let hovered = false;
+  const playPreview = () => {
+    if (!hovered || !preview.src) return;
+    preview.muted = true;
+    void preview.play().catch(() => { /* unavailable previews stay quiet */ });
+  };
+  preview.addEventListener('canplay', playPreview);
+  preview.addEventListener('mouseenter', () => {
+    hovered = true;
+    preview.muted = true;
+    playPreview();
+  });
+  preview.addEventListener('mouseleave', () => {
+    hovered = false;
+    preview.pause();
+    try { preview.currentTime = 0; } catch { /* metadata may not have loaded */ }
+  });
+  void api.recordingClipUrl(clip.id).then((url) => {
+    if (preview.isConnected) {
+      preview.src = url;
+      playPreview();
+    }
+  }).catch(() => {
+    if (preview.isConnected) preview.dataset.previewError = 'true';
+  });
+  return preview;
+}
+
 function renderClipList(): HTMLElement {
   const query = el('input', { class: 'recording-search', type: 'search', placeholder: 'Search clips…', 'aria-label': 'Search clips' }) as HTMLInputElement;
   const list = el('div', { class: 'recording-clip-list' });
@@ -321,18 +390,33 @@ function renderClipList(): HTMLElement {
     const needle = query.value.trim().toLowerCase();
     const visible = clips.filter((clip) => !needle || clip.fileName.toLowerCase().includes(needle));
     if (visible.length === 0) {
-      list.append(el('p', { class: 'recording-empty', text: 'No clips found yet.' }));
+      list.append(el('p', { class: 'recording-empty', text: 'No clips found yet. Save a moment from Manual Recording to build this library.' }));
       return;
     }
     for (const clip of visible) {
-      list.append(el('article', { class: `recording-clip-row${selectedClip?.id === clip.id ? ' selected' : ''}` }, [
-        el('button', { class: 'recording-clip-play', type: 'button', onClick: () => selectClip(clip) }, [
-          el('span', { class: 'recording-clip-play-icon', text: '▶' }),
-          el('span', { class: 'recording-clip-details' }, [
-            el('strong', { text: clip.fileName }),
-            el('span', { text: new Date(clip.createdAt).toLocaleString() }),
-          ]),
+      const tile = el('div', {
+        class: 'recording-clip-tile',
+        role: 'button',
+        tabindex: 0,
+        'aria-label': `Open ${clip.fileName}`,
+        onClick: (event: Event) => { event.preventDefault(); openPlayer(clip); },
+      });
+      tile.addEventListener('keydown', (event) => {
+        const keyboardEvent = event as KeyboardEvent;
+        if (keyboardEvent.key !== 'Enter' && keyboardEvent.key !== ' ') return;
+        keyboardEvent.preventDefault();
+        openPlayer(clip);
+      });
+      tile.append(
+        previewVideo(clip),
+        el('span', { class: 'recording-clip-overlay' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' }), el('span', { text: 'Open player' })]),
+        el('span', { class: 'recording-clip-details' }, [
+          el('strong', { text: clip.fileName }),
+          el('span', { text: new Date(clip.createdAt).toLocaleString() }),
         ]),
+      );
+      list.append(el('article', { class: 'recording-clip-tile-wrap' }, [
+        tile,
         button('Delete', () => void deleteClip(clip), 'btn btn-danger btn-sm'),
       ]));
     }
@@ -340,16 +424,6 @@ function renderClipList(): HTMLElement {
   query.addEventListener('input', draw);
   draw();
 
-  const player = el('div', { class: 'recording-player' }, [el('p', { class: 'recording-player-placeholder', text: selectedClip ? 'Loading clip…' : 'Select a clip to play it here.' })]);
-  if (selectedClip) {
-    void api.recordingClipUrl(selectedClip.id).then((url) => {
-      clear(player);
-      player.append(el('video', { class: 'recording-video', controls: true, preload: 'metadata', src: url }) as HTMLVideoElement);
-    }).catch((err) => {
-      clear(player);
-      player.append(el('p', { class: 'text-error', text: messageOf(err) }));
-    });
-  }
   return el('section', { class: 'recording-panel recording-library-panel' }, [
     el('div', { class: 'recording-library-toolbar' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Saved clips' }), el('h2', { class: 'recording-panel-title', text: 'Clip library' })]),
@@ -358,16 +432,41 @@ function renderClipList(): HTMLElement {
       button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary'),
     ]),
     list,
-    player,
   ]);
 }
 
 function renderClipsView(): HTMLElement {
-  return el('div', { class: 'recording-content recording-clips-content' }, [renderCapturePanel(), renderReplaySettings(), renderClipList()]);
+  return el('div', { class: 'recording-content recording-clips-content' }, [renderClipList()]);
+}
+
+function renderPlayerView(): HTMLElement {
+  const player = el('div', { class: 'recording-full-player' }, [el('p', { class: 'recording-player-placeholder', text: 'Loading clip…' })]);
+  if (playerClip) {
+    const requestedId = playerClip.id;
+    void api.recordingClipUrl(requestedId).then((url) => {
+      if (!player.isConnected || playerClip?.id !== requestedId) return;
+      const video = el('video', { class: 'recording-video', controls: true, preload: 'metadata', playsinline: true, src: url }) as HTMLVideoElement;
+      playerVideo = video;
+      clear(player);
+      player.append(video);
+    }).catch((err) => {
+      if (!player.isConnected || playerClip?.id !== requestedId) return;
+      clear(player);
+      player.append(el('p', { class: 'text-error', text: messageOf(err) }));
+    });
+  }
+  return el('section', { class: 'recording-panel recording-player-view' }, [
+    el('div', { class: 'recording-player-view-heading' }, [
+      button('Back to Clips', () => closePlayer(), 'btn btn-secondary'),
+      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip player' }), el('h2', { class: 'recording-panel-title', text: playerClip?.fileName ?? 'Clip' })]),
+    ]),
+    player,
+  ]);
 }
 
 function render(): void {
   if (!renderContainer) return;
+  disposePlayerVideo();
   clear(renderContainer);
   renderContainer.append(
     el('div', { class: 'page-heading recording-heading' }, [
@@ -378,12 +477,18 @@ function render(): void {
       ]),
       renderTabs(),
     ]),
-    activeTab === 'manual' ? renderManualView() : renderClipsView(),
+    playerClip ? renderPlayerView() : activeTab === 'manual' ? renderManualView() : renderClipsView(),
   );
+  syncPageTimer();
 }
 
 function selectTab(tab: RecordingTab): void {
-  if (activeTab === tab) return;
+  const wasShowingPlayer = playerClip !== null;
+  if (wasShowingPlayer) {
+    disposePlayerVideo();
+    playerClip = null;
+  }
+  if (activeTab === tab && !wasShowingPlayer) return;
   activeTab = tab;
   render();
   if (settings && settings.mode !== modeForTab(tab)) savePatch({ mode: modeForTab(tab) });
@@ -392,10 +497,11 @@ function selectTab(tab: RecordingTab): void {
 async function loadClips(): Promise<void> {
   try {
     clips = await api.recordingClipsList();
-    if (selectedClip && !clips.some((clip) => clip.id === selectedClip?.id)) selectedClip = null;
+    if (playerClip && !clips.some((clip) => clip.id === playerClip?.id)) closePlayer();
     render();
   } catch (err) {
     toast('error', 'Clip library', messageOf(err));
+    throw err;
   }
 }
 
@@ -464,7 +570,6 @@ async function startReplay(): Promise<void> {
 
 async function stopCapture(): Promise<void> {
   if (actionBusy) return;
-  const stoppedMode = status.mode;
   actionBusy = true;
   render();
   try {
@@ -486,8 +591,8 @@ async function saveClip(): Promise<void> {
   try {
     const replayLengthSec = settings?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC;
     await api.recordingClipSave({ headDurationMs: replayLengthSec * 1000 });
-    await loadClips();
     toast('success', 'Clip saved', `The last ${replayLengthSec} seconds were added to the clip library.`);
+    await loadClips();
   } catch (err) {
     toast('error', 'Save clip', messageOf(err));
   } finally {
@@ -502,13 +607,11 @@ async function deleteClip(clip: RecordingClip): Promise<void> {
     const result = await api.recordingClipDelete(clip.id);
     if (!result.ok) {
       if (result.reason === 'not-found') {
-        if (selectedClip?.id === clip.id) selectedClip = null;
         await loadClips();
         return;
       }
       throw new Error(recordingDeleteError(result.reason));
     }
-    if (selectedClip?.id === clip.id) selectedClip = null;
     await loadClips();
     toast('success', 'Clip deleted', `${clip.fileName} was removed.`);
   } catch (err) {
@@ -528,8 +631,16 @@ async function chooseFolder(): Promise<void> {
   }
 }
 
-function selectClip(clip: RecordingClip): void {
-  selectedClip = clip;
+function openPlayer(clip: RecordingClip): void {
+  disposePlayerVideo();
+  playerClip = clip;
+  activeTab = 'clips';
+  render();
+}
+
+function closePlayer(): void {
+  disposePlayerVideo();
+  playerClip = null;
   render();
 }
 
@@ -548,7 +659,9 @@ export const recordingPage: Page = {
   leave(): void {
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
+    clearPageTimer();
+    disposePlayerVideo();
     renderContainer = null;
-    selectedClip = null;
+    playerClip = null;
   },
 };
