@@ -2430,9 +2430,11 @@ export function createIpcHandlers({
         const settings = await recordingStore.settings();
         const location = recordingAbsolutePath(settings.location, 'location');
         fs.mkdirSync(location, { recursive: true });
-        const outputPath = path.join(location, `ArcPower-Replay-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`);
-        const state = await recordingEngine.startReplay({ ...settings, outputPath });
-        return { state, outputPath: path.basename(outputPath) };
+        // Replay mode keeps only the rolling buffer. It must not receive a
+        // normal file-output path, otherwise stopping the buffer can create a
+        // full-session recording alongside the intended clips.
+        const state = await recordingEngine.startReplay({ ...settings });
+        return { state, outputPath: null };
       },
       'recording-clip-save': async (payload = {}) => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('recording-clip-save: payload must be an object');

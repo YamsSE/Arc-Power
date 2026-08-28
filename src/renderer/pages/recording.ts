@@ -5,7 +5,8 @@ import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
 import type { RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
-import { recordingMessage } from '../pure/recording.ts';
+import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
+import { clampRecordingBitrate, recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -40,7 +41,6 @@ let renderContainer: HTMLElement | null = null;
 let loading = false;
 let actionBusy = false;
 let unsubscribeRecordingState: (() => void) | null = null;
-let pageTimer: number | null = null;
 let playerVideo: HTMLVideoElement | null = null;
 let lastTransitionToast = { key: '', at: 0 };
 
@@ -71,36 +71,6 @@ function setStatus(next: RecordingEngineState, announce = false): void {
 
 const messageOf = recordingMessage;
 
-function formatElapsed(startedAt: number | null | undefined): string {
-  if (!Number.isFinite(startedAt)) return '00:00:00';
-  const elapsed = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
-  const hours = Math.floor(elapsed / 3600);
-  const minutes = Math.floor((elapsed % 3600) / 60);
-  const seconds = elapsed % 60;
-  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
-}
-
-function updatePageTimer(): void {
-  const timer = renderContainer?.querySelector<HTMLElement>('[data-recording-page-timer]');
-  if (!timer) return;
-  timer.textContent = status.running ? formatElapsed(status.startedAt) : '';
-  timer.hidden = !status.running;
-}
-
-function syncPageTimer(): void {
-  if (status.running && pageTimer === null) pageTimer = window.setInterval(updatePageTimer, 1000);
-  if (!status.running && pageTimer !== null) {
-    window.clearInterval(pageTimer);
-    pageTimer = null;
-  }
-  updatePageTimer();
-}
-
-function clearPageTimer(): void {
-  if (pageTimer !== null) window.clearInterval(pageTimer);
-  pageTimer = null;
-}
-
 function disposePlayerVideo(): void {
   if (!playerVideo) return;
   try {
@@ -113,7 +83,7 @@ function disposePlayerVideo(): void {
 
 function recordingDeleteError(reason: RecordingClipDeleteResult['reason']): string {
   switch (reason) {
-    case 'unsupported-platform': return 'Clip deletion is unavailable on Windows until a race-safe delete operation is available.';
+    case 'unsupported-platform': return 'The clip could not be deleted safely.';
     case 'unsafe-path': return 'The clip path failed safety checks.';
     case 'delete-failed': return 'The clip could not be deleted.';
     case 'unavailable': return 'Clip deletion is unavailable.';
@@ -198,26 +168,6 @@ function renderTabs(): HTMLElement {
   })));
 }
 
-function renderStatusSummary(): HTMLElement {
-  const currentMode = status.mode;
-  const runningLabel = currentMode === 'replay' ? 'Replay buffer active' : 'Recording active';
-  const stateLabel = status.running ? runningLabel : status.available ? 'Ready to capture' : 'Engine unavailable';
-  const stateClass = status.running ? 'recording-live' : status.available ? 'recording-ready' : 'recording-missing';
-  const detail = status.running
-    ? currentMode === 'replay' ? 'The replay buffer is keeping the configured recent gameplay.' : 'A video file is being written to your recording folder.'
-    : status.available ? 'Capture is ready when you are.' : messageOf(status.error ?? 'The recording engine is not available.');
-
-  return el('div', { class: 'recording-status-summary' }, [
-    el('span', { class: `recording-status-dot ${stateClass}` }),
-    el('div', { class: 'recording-status-copy' }, [
-      el('strong', { text: stateLabel }),
-      el('span', { text: detail }),
-    ]),
-    el('time', { class: 'recording-status-timer', 'data-recording-page-timer': '', hidden: !status.running, text: status.running ? formatElapsed(status.startedAt) : '' }),
-    el('span', { class: `recording-status-pill ${stateClass}`, text: status.running ? 'Live' : status.available ? 'Ready' : 'Offline' }),
-  ]);
-}
-
 function renderCaptureActions(): HTMLElement {
   const recordingRunning = status.running && status.mode === 'video';
   const replayRunning = status.running && status.mode === 'replay';
@@ -237,7 +187,6 @@ function renderCapturePanel(): HTMLElement {
         el('span', { class: 'recording-eyebrow', text: 'Capture controls' }),
         el('h2', { class: 'recording-panel-title', text: 'Record or save a moment' }),
       ]),
-      renderStatusSummary(),
     ]),
     el('p', { class: 'recording-panel-note', text: `Start a full recording or keep a ${replayLength}-second replay buffer. Save Clip finalizes one clip while the buffer keeps running.` }),
     renderCaptureActions(),
@@ -248,18 +197,23 @@ function renderCapturePanel(): HTMLElement {
 
 function renderQualitySettings(): HTMLElement {
   const fps = select(String(settings?.fps ?? 60), [['30', '30 FPS'], ['60', '60 FPS'], ['120', '120 FPS']], (value) => savePatch({ fps: Number(value) as 30 | 60 | 120 }));
-  const resolution = select(settings?.resolution ?? '1080p', RESOLUTIONS, (value) => savePatch({ resolution: value }));
+  const selectedResolution = settings?.resolution ?? '1080p';
+  const bitrateRange = recordingBitrateRange(selectedResolution);
   const bitrate = el('input', {
     class: 'recording-number',
     type: 'number',
-    min: 100,
-    max: 200000,
-    step: 100,
-    value: settings?.bitrateKbps ?? 8000,
+    min: bitrateRange.min,
+    max: bitrateRange.max,
+    step: bitrateRange.step,
+    value: clampRecordingBitrate(settings?.bitrateKbps ?? bitrateRange.default, selectedResolution),
   }) as HTMLInputElement;
-  bitrate.addEventListener('change', () => savePatch({ bitrateKbps: Number(bitrate.value) }));
+  bitrate.title = bitrateRange.label;
+  bitrate.addEventListener('change', () => savePatch({ bitrateKbps: clampRecordingBitrate(Number(bitrate.value), selectedResolution) }));
   const encoder = select(settings?.encoderId ?? 'automatic', encoderOptions(), (value) => savePatch({ encoderId: value }));
-  const hasIntelEncoder = status.encoders.some((item) => INTEL_QSV_ENCODERS.has(item.type));
+  const resolution = select(selectedResolution, RESOLUTIONS, (value) => savePatch({
+    resolution: value,
+    bitrateKbps: clampRecordingBitrate(settings?.bitrateKbps ?? recordingBitrateRange(value).default, value),
+  }));
   return el('section', { class: 'recording-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Video profile' }), el('h2', { class: 'recording-panel-title', text: 'Quality' })]),
@@ -267,8 +221,8 @@ function renderQualitySettings(): HTMLElement {
     ]),
     el('div', { class: 'recording-settings-grid' }, [
       field('Frame rate', fps),
-      field('Resolution', resolution),
-      field('Encoder', encoder, hasIntelEncoder ? 'Intel H264, HEVC and AV1 choices stay visible here.' : 'Intel encoder choices will appear when the engine reports them.'),
+      field('Resolution', resolution, `Bitrate guide: ${bitrateRange.label}`),
+      field('Encoder', encoder),
       field('Bitrate (Kbps)', bitrate),
     ]),
   ]);
@@ -335,7 +289,6 @@ function renderStorage(): HTMLElement {
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Files' }), el('h2', { class: 'recording-panel-title', text: 'Save location' })]),
     ]),
     field('Recording folder', el('div', { class: 'recording-input-row' }, [location, button('Browse', () => void chooseFolder(), 'btn btn-secondary')])),
-    el('p', { class: 'recording-panel-note recording-storage-note', text: 'The recording engine ships with Arc Power and is checked automatically when this page opens.' }),
   ]);
 }
 
@@ -415,10 +368,18 @@ function renderClipList(): HTMLElement {
           el('span', { text: new Date(clip.createdAt).toLocaleString() }),
         ]),
       );
-      list.append(el('article', { class: 'recording-clip-tile-wrap' }, [
-        tile,
-        button('Delete', () => void deleteClip(clip), 'btn btn-danger btn-sm'),
-      ]));
+      const deleteButton = el('button', {
+        class: 'recording-clip-delete',
+        type: 'button',
+        title: `Delete ${clip.fileName}`,
+        'aria-label': `Delete ${clip.fileName}`,
+        onClick: (event: Event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void deleteClip(clip);
+        },
+      }, [el('span', { class: 'recording-trash-icon', 'aria-hidden': 'true' })]) as HTMLButtonElement;
+      list.append(el('article', { class: 'recording-clip-tile-wrap' }, [tile, deleteButton]));
     }
   };
   query.addEventListener('input', draw);
@@ -473,13 +434,11 @@ function render(): void {
       el('div', {}, [
         el('span', { class: 'recording-eyebrow', text: 'Arc Power Capture' }),
         el('h1', { text: 'Recording' }),
-        el('p', { text: 'Capture gameplay, keep the moments that matter, and stay in control of your files.' }),
       ]),
       renderTabs(),
     ]),
     playerClip ? renderPlayerView() : activeTab === 'manual' ? renderManualView() : renderClipsView(),
   );
-  syncPageTimer();
 }
 
 function selectTab(tab: RecordingTab): void {
@@ -511,7 +470,7 @@ async function load(): Promise<void> {
   try {
     const [loadedSettings, loadedStatus, loadedClips] = await Promise.all([
       api.recordingSettingsGet(),
-      api.recordingRuntimeProbe(),
+      api.recordingStatus(),
       api.recordingClipsList(),
     ]);
     settings = loadedSettings;
@@ -602,7 +561,7 @@ async function saveClip(): Promise<void> {
 }
 
 async function deleteClip(clip: RecordingClip): Promise<void> {
-  if (!window.confirm(`Delete ${clip.fileName}?`)) return;
+  if (!(await showRecordingClipDeleteConfirm(clip.fileName))) return;
   try {
     const result = await api.recordingClipDelete(clip.id);
     if (!result.ok) {
@@ -654,12 +613,15 @@ export const recordingPage: Page = {
         if (renderContainer === container) render();
       });
     }
+    // Do not make first paint wait for settings, clip scanning, or an engine
+    // probe. Startup owns the runtime probe; this page refreshes its cached
+    // state asynchronously after the shell and controls are visible.
+    render();
     void load();
   },
   leave(): void {
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
-    clearPageTimer();
     disposePlayerVideo();
     renderContainer = null;
     playerClip = null;

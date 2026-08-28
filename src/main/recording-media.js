@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { randomUUID } from 'node:crypto';
 import { isPathWithinRoot, safeVideoExtension } from './recording-pure.js';
 
 const OPAQUE_CLIP_ID = /^[A-Za-z0-9_-]{8,128}$/;
@@ -176,17 +177,113 @@ export function revalidateSafeRecordingFile(filePath, handle, fsImpl = fs) {
   } catch { return false; }
 }
 
+function sameQuarantineParentChain(originalChain, quarantineChain) {
+  if (!originalChain || !quarantineChain || originalChain.length !== quarantineChain.length) return false;
+  // The leaf path intentionally changes during the quarantine rename. Every
+  // ancestor must still be the exact same non-reparse object, however.
+  return originalChain.slice(1).every((item, index) => {
+    const other = quarantineChain[index + 1];
+    return item.path === other?.path
+      && item.canonical === other?.canonical
+      && sameFileIdentity(item.stat, other.stat);
+  });
+}
+
+function sameOriginalParentChain(filePath, originalChain, fsImpl) {
+  const parentChain = pathChain(path.dirname(filePath), fsImpl);
+  return Boolean(parentChain && samePathChain(originalChain?.slice(1), parentChain.chain));
+}
+
+function quarantineMatchesHandle(quarantinePath, handle, fsImpl) {
+  const quarantineChain = pathChain(quarantinePath, fsImpl);
+  try {
+    const opened = fsImpl.fstatSync(handle.fd);
+    const quarantined = quarantineChain?.chain?.[0];
+    return Boolean(
+      quarantineChain
+      && sameQuarantineParentChain(handle.chain, quarantineChain.chain)
+      && regularFileStat(quarantined?.stat)
+      && sameFileIdentity(opened, quarantined.stat),
+    );
+  } catch { return false; }
+}
+
+/**
+ * Undo a Windows quarantine rename only when the original parent chain is
+ * still the chain that authorized the delete and the quarantined leaf still
+ * belongs to the opened handle. If either proof fails, leave the quarantine
+ * in place as the recoverable copy rather than moving it through an unsafe
+ * pathname.
+ */
+function restoreQuarantinedRecording(filePath, quarantinePath, handle, fsImpl) {
+  try {
+    try {
+      fsImpl.lstatSync(filePath);
+      return false;
+    } catch (err) {
+      if (err?.code !== 'ENOENT') return false;
+    }
+    if (!sameOriginalParentChain(filePath, handle.chain, fsImpl)
+      || !quarantineMatchesHandle(quarantinePath, handle, fsImpl)) return false;
+    fsImpl.renameSync(quarantinePath, filePath);
+    const restoredChain = pathChain(filePath, fsImpl);
+    const restored = restoredChain?.chain?.[0];
+    const opened = fsImpl.fstatSync(handle.fd);
+    return Boolean(
+      restoredChain
+      && samePathChain(handle.chain, restoredChain.chain)
+      && regularFileStat(restored?.stat)
+      && sameFileIdentity(opened, restored.stat),
+    );
+  } catch { return false; }
+}
+
+function quarantinePathFor(filePath, fsImpl) {
+  const parent = path.dirname(filePath);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const candidate = path.join(parent, `.arc-power-delete-${process.pid}-${randomUUID()}.tmp`);
+    try { fsImpl.lstatSync(candidate); } catch (err) {
+      if (err?.code === 'ENOENT') return candidate;
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
  * Delete only after the same full ancestor chain and leaf identity have been
- * revalidated. Windows path-based unlink is deliberately disabled: Node does
- * not expose a bound, no-follow delete relative to the authorized directory
- * handles, so an ancestor can still be swapped after revalidation. The caller
- * must pass the handle returned by openSafeRecordingFile; deleting an
- * un-opened path is intentionally not supported by this privileged seam.
+ * revalidated. On Windows, claim the file with an atomic same-directory
+ * rename, validate the quarantined handle and unchanged parent chain, then
+ * unlink the private quarantine name. This avoids a pathname delete against
+ * a potentially swapped leaf while preserving the existing reparse-point and
+ * containment checks. The caller must pass the handle returned by
+ * openSafeRecordingFile; deleting an un-opened path is not supported.
  */
 export function unlinkSafeRecordingFile(filePath, handle, fsImpl = fs) {
   if (!revalidateSafeRecordingFile(filePath, handle, fsImpl)) return { ok: false, reason: 'unsafe-path' };
-  if (isWindowsPlatform(fsImpl)) return { ok: false, reason: 'unsupported-platform' };
+  if (isWindowsPlatform(fsImpl)) {
+    const quarantinePath = quarantinePathFor(filePath, fsImpl);
+    if (!quarantinePath) return { ok: false, reason: 'delete-failed' };
+    try {
+      fsImpl.renameSync(filePath, quarantinePath);
+    } catch (err) {
+      return { ok: false, reason: err?.code === 'ENOENT' ? 'not-found' : 'delete-failed' };
+    }
+    if (!quarantineMatchesHandle(quarantinePath, handle, fsImpl)) {
+      restoreQuarantinedRecording(filePath, quarantinePath, handle, fsImpl);
+      return { ok: false, reason: 'unsafe-path' };
+    }
+    try {
+      fsImpl.unlinkSync(quarantinePath);
+      fsImpl.lstatSync(quarantinePath);
+      restoreQuarantinedRecording(filePath, quarantinePath, handle, fsImpl);
+      return { ok: false, reason: 'unsafe-path' };
+    } catch (err) {
+      if (err?.code === 'ENOENT') return { ok: true, reason: null };
+      restoreQuarantinedRecording(filePath, quarantinePath, handle, fsImpl);
+      return { ok: false, reason: 'delete-failed' };
+    }
+  }
   try {
     fsImpl.unlinkSync(filePath);
     try {

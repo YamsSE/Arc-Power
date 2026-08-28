@@ -1396,6 +1396,15 @@ async function main() {
       });
     },
   });
+  // Start the bundled capture runtime before the renderer boots. This is
+  // intentionally fire-and-forget: the renderer can paint immediately while
+  // the global capture widget receives a truthful ready/unavailable update.
+  // The engine owns the child and reuses it for later probes/actions.
+  if (!mock && !uiVerify) {
+    void recordingEngine.probe().catch((error) => {
+      console.log(`[recording] startup probe unavailable: ${error?.message ?? String(error)}`);
+    });
+  }
   const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
     ? path.join(os.tmpdir(), 'arcpower-mock-games')
     : null;

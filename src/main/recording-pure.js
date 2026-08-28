@@ -20,6 +20,18 @@ export const RECORDING_RESOLUTIONS = [
   { id: '1440p', width: 2560, height: 1440, label: '1440p' },
   { id: '4k', width: 3840, height: 2160, label: '4K' },
 ];
+// Video-only bitrate guidance in Kbps. 4K intentionally has an open-ended
+// practical upper range, represented by a generous UI/storage ceiling while
+// retaining the requested 15,000-25,000+ guidance.
+export const RECORDING_BITRATE_RANGES = Object.freeze({
+  default: Object.freeze({ min: 4000, max: 8000, step: 100, default: 8000, label: '4,000–8,000 Kbps' }),
+  '480p': Object.freeze({ min: 1500, max: 2500, step: 100, default: 2000, label: '1,500–2,500 Kbps' }),
+  '720p': Object.freeze({ min: 2500, max: 5000, step: 100, default: 3500, label: '2,500–5,000 Kbps' }),
+  '900p': Object.freeze({ min: 3500, max: 7000, step: 100, default: 5000, label: '3,500–7,000 Kbps' }),
+  '1080p': Object.freeze({ min: 4000, max: 8000, step: 100, default: 6000, label: '4,000–8,000 Kbps' }),
+  '1440p': Object.freeze({ min: 8000, max: 12000, step: 100, default: 10000, label: '8,000–12,000 Kbps' }),
+  '4k': Object.freeze({ min: 15000, max: 50000, step: 500, default: 20000, label: '15,000–25,000+ Kbps' }),
+});
 export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   location: '',
   runtimePath: '',
@@ -33,6 +45,17 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
 });
 export const SAFE_VIDEO_EXTENSIONS = Object.freeze(['.mp4', '.mkv', '.mov', '.webm', '.m4v']);
 export const ASCENT_MAX_MESSAGE_BYTES = 8096;
+
+export function recordingBitrateRange(resolution = DEFAULT_RECORDING_SETTINGS.resolution) {
+  return RECORDING_BITRATE_RANGES[resolution] ?? RECORDING_BITRATE_RANGES.default;
+}
+
+export function clampRecordingBitrate(value, resolution = DEFAULT_RECORDING_SETTINGS.resolution) {
+  const range = recordingBitrateRange(resolution);
+  const numeric = Number.isFinite(value) ? Math.round(value) : range.default;
+  const clamped = Math.min(range.max, Math.max(range.min, numeric));
+  return Math.round(clamped / range.step) * range.step;
+}
 
 function boundedString(value, fallback = '', max = 1024) {
   return typeof value === 'string' && value.length <= max ? value : fallback;
@@ -82,7 +105,7 @@ export function normalizeRecordingSettings(raw = {}) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const resolution = RECORDING_RESOLUTIONS.some((item) => item.id === source.resolution)
     ? source.resolution : DEFAULT_RECORDING_SETTINGS.resolution;
-  const bitrate = Number.isFinite(source.bitrateKbps) ? Math.round(source.bitrateKbps) : DEFAULT_RECORDING_SETTINGS.bitrateKbps;
+  const bitrate = clampRecordingBitrate(source.bitrateKbps, resolution);
   const replayLength = Number.isFinite(source.replayLengthSec) ? Math.round(source.replayLengthSec) : DEFAULT_RECORDING_SETTINGS.replayLengthSec;
   const hotkeys = source.hotkeys && typeof source.hotkeys === 'object' ? source.hotkeys : {};
   return {
@@ -94,7 +117,7 @@ export function normalizeRecordingSettings(raw = {}) {
     fps: RECORDING_FPS.includes(source.fps) ? source.fps : DEFAULT_RECORDING_SETTINGS.fps,
     resolution,
     encoderId: boundedString(source.encoderId, DEFAULT_RECORDING_SETTINGS.encoderId, 128),
-    bitrateKbps: Math.min(200000, Math.max(100, bitrate)),
+    bitrateKbps: bitrate,
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
     hotkeys: {
       start: normalizeHotkey(hotkeys.start, DEFAULT_RECORDING_SETTINGS.hotkeys.start),

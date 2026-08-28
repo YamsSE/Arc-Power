@@ -8,7 +8,7 @@ export const ASCENT_COMMANDS = Object.freeze({ SHUTDOWN: 1, QUERY_MACHINE_INFO: 
 export const ASCENT_RECORDER_TYPES = Object.freeze({ VIDEO: 1, REPLAY: 2, STREAMING: 3 });
 export const ASCENT_EVENTS = Object.freeze({ QUERY_MACHINE_INFO: 1, ERR: 2, READY: 3, RECORDING_STARTED: 4, RECORDING_STOPPING: 5, RECORDING_STOPPED: 6, VIDEO_FILE_SPLIT: 8, REPLAY_STARTED: 9, REPLAY_STOPPING: 10, REPLAY_STOPPED: 11, REPLAY_ARMED: 12, REPLAY_CAPTURE_VIDEO_STARTED: 13, REPLAY_CAPTURE_VIDEO_READY: 14, REPLAY_ERROR: 15 });
 export const ASCENT_ENCODER_START_ERROR_CODES = Object.freeze([-6, -8]);
-export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_v2', 'obs_qsv11_hevc', 'obs_qsv11_av1']);
+export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2']);
 const DEFAULT_SHUTDOWN_MS = 1500;
 
 /**
@@ -57,7 +57,7 @@ function unsupportedEncoderError(requested, encoders) {
   const available = (Array.isArray(encoders) ? encoders : []).filter(isUsableEncoder).map((encoder) => encoder.type);
   const suffix = available.length ? ` Usable encoders: ${available.join(', ')}.` : ' The runtime did not report a usable Intel QSV encoder.';
   const error = new Error(requested === 'automatic'
-    ? `No usable Intel QSV encoder is available from the bundled ascent-obs runtime. Select a valid H264, HEVC, or AV1 encoder.${suffix}`
+    ? `Intel AV1 is not available from the bundled ascent-obs runtime. Select Intel H264 or Intel HEVC explicitly if you want to use another codec.${suffix}`
     : `Encoder '${requested}' is not valid or start-supported by the bundled ascent-obs runtime. Select a valid H264, HEVC, or AV1 encoder.${suffix}`);
   error.code = 'UNSUPPORTED_ENCODER';
   return error;
@@ -66,8 +66,9 @@ function unsupportedEncoderError(requested, encoders) {
 export function resolveRecordingEncoder(requested, encoders) {
   const usable = (Array.isArray(encoders) ? encoders : []).filter(isUsableEncoder);
   if (requested === 'automatic') {
-    const selected = ASCENT_QSV_ENCODER_PREFERENCE.find((id) => usable.some((encoder) => encoder.type === id));
-    if (selected) return selected;
+    // Automatic is intentionally AV1-only for Intel Arc. Falling back to a
+    // different codec would silently change the user's configured output.
+    if (usable.some((encoder) => encoder.type === 'obs_qsv11_av1')) return 'obs_qsv11_av1';
     throw unsupportedEncoderError(requested, encoders);
   }
   if (!ASCENT_QSV_ENCODER_PREFERENCE.includes(requested) || !usable.some((encoder) => encoder.type === requested)) {
@@ -90,7 +91,12 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       video_encoder: { id: encoderId, preset: 'automatic', rate_control: 'CBR', bitrate: settings.bitrateKbps },
     },
     audio_settings: { sample_rate: 48000, mono: false, input: {}, output: {} },
-    file_output: { filename: outputPath, format: 'mp4', max_file_size_bytes: 0, enbale_on_demand_spilt_video: false, include_full_video: true },
+    // Replay output is a rolling buffer. It must not inherit a normal
+    // recording filename, otherwise stopping the buffer can finalize a full
+    // recording session. Save Clip supplies its own path below.
+    ...(recorderType === ASCENT_RECORDER_TYPES.VIDEO ? {
+      file_output: { filename: outputPath, format: 'mp4', max_file_size_bytes: 0, enbale_on_demand_spilt_video: false, include_full_video: true },
+    } : {}),
     ...(recorderType === ASCENT_RECORDER_TYPES.REPLAY ? { replay: { max_time_sec: settings.replayLengthSec } } : {}),
   });
 }
@@ -449,6 +455,17 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
+  async function waitForReplayFile(filePath, timeoutMs = 1500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() <= deadline) {
+      try {
+        if (fs.statSync(filePath).isFile()) return true;
+      } catch { /* the runtime may publish the file just after its response */ }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
+  }
+
   async function saveReplayClipInternal({ path: clipPath, headDuration, thumbnailFolder }) {
     if (!activeRecorder || activeRecorder.type !== ASCENT_RECORDER_TYPES.REPLAY) throw new Error('Start the replay buffer before saving a clip');
     if (replayCapture && !(await recoverReplayCapture())) throw new Error('A replay clip is still being finalized; stop and restart the replay buffer before trying again');
@@ -464,6 +481,18 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       replayCapture = null;
       return response;
     } catch (error) {
+      // Some runtime builds finalize the file and then emit a second
+      // "not capturing" response while the replay output is closing. A
+      // completed file is authoritative: do not issue another STOP, which
+      // would only create another misleading error and could disturb the
+      // still-running replay buffer.
+      if (replayCapture?.bufferIdentifier === bufferIdentifier
+        && replayCapture.phase === 'capturing'
+        && await waitForReplayFile(clipPath)) {
+        replayCapture = null;
+        publish({ error: null });
+        return { event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath };
+      }
       // Once START_REPLAY_CAPTURE was accepted, always attempt one bounded
       // STOP_REPLAY_CAPTURE recovery. A stale backend capture is otherwise
       // likely to reject the next Save Clip as "already capturing". If the

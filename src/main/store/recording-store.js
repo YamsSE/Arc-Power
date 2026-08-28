@@ -93,7 +93,16 @@ export class RecordingStore {
 
   _readData() {
     const raw = this._read();
-    return { raw, data: this._dataFromRaw(raw) };
+    const data = this._dataFromRaw(raw);
+    const rawSettings = raw?.settings && typeof raw.settings === 'object' ? raw.settings : raw;
+    const modeNeedsMigration = rawSettings && typeof rawSettings === 'object'
+      && Object.prototype.hasOwnProperty.call(rawSettings, 'mode')
+      && rawSettings.mode !== data.settings.mode;
+    return {
+      raw,
+      data,
+      needsMigration: !raw || raw.schemaVersion !== RECORDING_SCHEMA_VERSION || modeNeedsMigration,
+    };
   }
 
   loadSync() {
@@ -101,11 +110,11 @@ export class RecordingStore {
   }
 
   async load() {
-    const { raw, data } = this._readData();
-    if (!raw || raw.schemaVersion !== RECORDING_SCHEMA_VERSION) {
+    const { data, needsMigration } = this._readData();
+    if (needsMigration) {
       return this._enqueueMutation(() => {
         const latest = this._readData();
-        if (!latest.raw || latest.raw.schemaVersion !== RECORDING_SCHEMA_VERSION) this._write(latest.data);
+        if (latest.needsMigration) this._write(latest.data);
         return latest.data;
       });
     }

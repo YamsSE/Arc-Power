@@ -64,10 +64,11 @@ function recordingElapsed(startedAt: number | null | undefined): string {
   return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
-function updateGlobalRecordingWidget(): void {
-  const root = document.querySelector<HTMLElement>('.sidebar-recording-status');
+function updateGlobalRecordingWidget(target?: HTMLElement): void {
+  const root = target ?? document.querySelector<HTMLElement>('.sidebar-recording-status');
   if (!root) return;
   const running = globalRecordingStatus.running === true;
+  const state = running ? 'live' : globalRecordingStatus.available ? 'ready' : 'offline';
   const mode = globalRecordingStatus.mode;
   const title = root.querySelector<HTMLElement>('[data-recording-status-title]');
   const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
@@ -79,8 +80,11 @@ function updateGlobalRecordingWidget(): void {
     timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
     timer.hidden = !running;
   }
-  if (dot) dot.className = `sidebar-recording-dot${running ? ' is-live' : ''}`;
-  root.classList.toggle('is-live', running);
+  if (dot) dot.className = `sidebar-recording-dot is-${state}`;
+  root.classList.toggle('is-live', state === 'live');
+  root.classList.toggle('is-ready', state === 'ready');
+  root.classList.toggle('is-offline', state === 'offline');
+  root.dataset.state = state;
   root.dataset.mode = mode ?? 'idle';
 }
 
@@ -107,7 +111,7 @@ function renderGlobalRecordingStatus(): HTMLElement {
     ]),
     el('time', { class: 'sidebar-recording-timer', 'data-recording-timer': '', hidden: true }),
   ]);
-  updateGlobalRecordingWidget();
+  updateGlobalRecordingWidget(root);
   return root;
 }
 
