@@ -268,6 +268,16 @@ export function parseUninstallStatus(value, expectedNonce = null) {
   }
 }
 
+/** Treat a non-terminal cleanup attempt as active until its helper is proven gone. */
+export function isUninstallAttemptActive(status, isProcessAlive = () => false) {
+  if (!status || typeof status !== 'object') return false;
+  const pending = status.state === 'launched' || status.state === 'running';
+  const helperPid = Number.isInteger(status.helperPid) && status.helperPid > 0 ? status.helperPid : null;
+  if (pending && helperPid === null) return true;
+  if (helperPid === null || typeof isProcessAlive !== 'function') return false;
+  try { return Boolean(isProcessAlive(helperPid)); } catch { return false; }
+}
+
 /** Match only this installer's temp artifacts, including artifacts from older PIDs. */
 export function isUninstallAttemptArtifactName(name, parentPid = null) {
   if (typeof name !== 'string') return false;

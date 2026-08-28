@@ -55,9 +55,7 @@ async function acceptUpdate() {
 
 async function skipUpdateForNow() {
   if (latestState !== 'available' || !window.arcPowerSplash?.skipUpdate) return;
-  if (actions) actions.hidden = true;
-  if (status) status.textContent = 'Starting Arc Power...';
-  document.body.dataset.updateState = 'skipped';
+  render({ state: 'skipped', message: 'Starting Arc Power...', loadingMessage: 'Loading Arc Power...' });
   try { await window.arcPowerSplash.skipUpdate(); } catch { /* boot continues */ }
 }
 

@@ -27,6 +27,7 @@ import {
   parseUpdateArguments,
   parseUninstallLaunchMarker,
   parseUninstallStatus,
+  isUninstallAttemptActive,
   isUninstallAttemptArtifactName,
   powershellLiteral,
   resolveDefaultInstallDir,
@@ -345,6 +346,16 @@ async function removeStaleUninstallArtifacts(tempDir) {
   await Promise.all(staleNames.map((name) => rm(path.join(tempDir, name), { force: true }).catch(() => {})));
 }
 
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function writeUninstallStatusFiles({ statusPath, summaryPath, parentPid, attemptNonce, state, message, diagnosticPath }) {
   const status = JSON.stringify({
     parentPid,
@@ -371,6 +382,10 @@ async function readLastUninstallStatus(tempDir) {
 
 async function scheduleUninstall(plan) {
   const tempDir = app.getPath('temp');
+  const previousStatus = await readLastUninstallStatus(tempDir);
+  if (isUninstallAttemptActive(previousStatus, isProcessAlive)) {
+    throw new Error('Another Arc Power removal is still in progress; wait for it to finish before retrying.');
+  }
   await removeStaleUninstallArtifacts(tempDir);
   const attemptNonce = randomUUID();
   const attemptStartedAt = Date.now();
@@ -441,15 +456,18 @@ async function scheduleUninstall(plan) {
         .catch(reject);
     });
   } catch (cause) {
-    await writeUninstallStatusFiles({
-      statusPath,
-      summaryPath,
-      parentPid: process.pid,
-      attemptNonce,
-      state: 'failed',
-      message: `Could not start the uninstall helper; retry removal${cause instanceof Error ? `: ${cause.message}` : ''}`,
-      diagnosticPath,
-    }).catch(() => {});
+    const statusAfterFailure = await readLastUninstallStatus(tempDir);
+    if (!isUninstallAttemptActive(statusAfterFailure, isProcessAlive)) {
+      await writeUninstallStatusFiles({
+        statusPath,
+        summaryPath,
+        parentPid: process.pid,
+        attemptNonce,
+        state: 'failed',
+        message: `Could not start the uninstall helper; retry removal${cause instanceof Error ? `: ${cause.message}` : ''}`,
+        diagnosticPath,
+      }).catch(() => {});
+    }
     throw cause;
   }
 }
