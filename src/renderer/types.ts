@@ -941,10 +941,10 @@ export interface DisplayApplyResponse {
 // represented as three facts: enumeration is not hardware validation, and
 // AV1 may only become supported after a real start succeeds.
 export type RecordingMode = 'manual' | 'clips';
-export type RecordingTab = 'manual' | 'clips';
+export type RecordingTab = 'manual' | 'clips' | 'audio';
 export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
 export interface RecordingHotkeys { start: string; stop: string; saveClip: string; }
-export type RecordingAudioSourceMode = 'game' | 'system' | 'custom';
+export type RecordingAudioSourceMode = 'system' | 'custom';
 export interface RecordingMicrophoneSettings { enabled: boolean; deviceId: string; volume: number; mono: boolean; }
 export interface RecordingSystemAudioSettings { enabled: boolean; deviceId: string; volume: number; }
 export interface RecordingAudioSettings {

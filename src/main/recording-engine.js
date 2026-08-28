@@ -87,14 +87,7 @@ export function buildRecordingAudioSettings(settings = {}) {
   const system = audio.system;
   const inputDeviceId = audioDeviceId(microphone.deviceId);
   const outputDeviceId = audioDeviceId(system.deviceId);
-  const gameProcessName = typeof settings.captureProcessName === 'string' && settings.captureProcessName.trim()
-    ? settings.captureProcessName.trim()
-    : '';
-  const processNames = audio.sourceMode === 'game' && gameProcessName ? [gameProcessName] : audio.customProcesses;
-  const processCaptureEnabled = audio.sourceMode === 'custom' || (audio.sourceMode === 'game' && Boolean(gameProcessName));
-  // When a global hotkey is pressed over a game, process capture provides
-  // game-only audio. A button click inside Arc Power has no game foreground
-  // process, so retaining the output device is the useful safe fallback.
+  const processCaptureEnabled = audio.sourceMode === 'custom';
   const outputEnabled = system.enabled && !processCaptureEnabled;
   const inputSource = {
     // The bundled runtime uses a numeric type only when device_id is
@@ -127,7 +120,7 @@ export function buildRecordingAudioSettings(settings = {}) {
     extra_options: {
       source_mode: audio.sourceMode,
       audio_sources: [inputSource, outputSource],
-      audio_capture_process2: processNames.map((processName) => ({
+      audio_capture_process2: audio.customProcesses.map((processName) => ({
         process_name: processName,
         enable: processCaptureEnabled,
         volume: system.volume,

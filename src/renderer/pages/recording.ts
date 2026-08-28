@@ -11,6 +11,7 @@ import { normalizeRecordingBitrate, recordingBitrateRange, recordingMessage } fr
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
   ['clips', 'Clips', 'Keep a replay buffer and save the last moments.'],
+  ['audio', 'Audio', 'Configure microphone and sound capture.'],
 ];
 const RESOLUTIONS: Array<[RecordingResolution, string]> = [
   ['default', 'Default'],
@@ -99,8 +100,8 @@ function tabForMode(mode: RecordingMode | string | undefined): RecordingTab {
   return mode === 'clips' || mode === 'clips-only' ? 'clips' : 'manual';
 }
 
-function modeForTab(tab: RecordingTab): RecordingMode {
-  return tab === 'clips' ? 'clips' : 'manual';
+function modeForTab(tab: RecordingTab): RecordingMode | null {
+  return tab === 'audio' ? null : tab === 'clips' ? 'clips' : 'manual';
 }
 
 function button(text: string, onClick: () => void, className = 'btn btn-secondary', disabled = false): HTMLButtonElement {
@@ -161,7 +162,7 @@ function encoderOptions(): Array<[string, string]> {
 }
 
 function renderTabs(): HTMLElement {
-  return el('nav', { class: 'recording-tabs', 'aria-label': 'Recording modes' }, TABS.map(([tab, label, note]) => el('button', {
+  return el('nav', { class: 'recording-tabs', 'aria-label': 'Recording sections' }, TABS.map(([tab, label, note]) => el('button', {
     class: `recording-tab${activeTab === tab ? ' active' : ''}`,
     type: 'button',
     role: 'tab',
@@ -285,11 +286,20 @@ async function refreshRecordingProcesses(): Promise<void> {
   }
 }
 
+function recordingProcessOptions(selected: string): Array<[string, string]> {
+  const options: Array<[string, string]> = [['', 'Do not capture a process']];
+  for (const name of recordingProcesses) {
+    if (!options.some(([id]) => id === name)) options.push([name, name]);
+  }
+  if (selected && !options.some(([id]) => id === selected)) options.push([selected, `${selected} (saved)`]);
+  return options;
+}
+
 function renderAudioSettings(): HTMLElement {
   const audio = settings?.audio ?? {
     microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
     system: { enabled: true, deviceId: '', volume: 1 },
-    sourceMode: 'game' as const,
+    sourceMode: 'system' as const,
     customProcesses: [],
   };
   const microphoneEnabled = el('input', { type: 'checkbox', checked: audio.microphone.enabled, 'aria-label': 'Enable microphone' }) as HTMLInputElement;
@@ -297,23 +307,24 @@ function renderAudioSettings(): HTMLElement {
   const microphoneDevice = select(audio.microphone.deviceId, deviceOptions(status.audioInputs, audio.microphone.deviceId), (value) => savePatch({ audio: { microphone: { deviceId: value } } }));
   const microphoneMono = el('input', { type: 'checkbox', checked: audio.microphone.mono, 'aria-label': 'Mono microphone' }) as HTMLInputElement;
   microphoneMono.addEventListener('change', () => savePatch({ audio: { microphone: { mono: microphoneMono.checked } } }));
-  const systemEnabled = el('input', { type: 'checkbox', checked: audio.system.enabled, 'aria-label': 'Enable system audio' }) as HTMLInputElement;
+  const sourceMode = select(audio.sourceMode, [['system', 'Full PC'], ['custom', 'Up to 3 processes']], (value) => savePatch({ audio: { sourceMode: value } }));
+  const systemEnabled = el('input', { type: 'checkbox', checked: audio.system.enabled, disabled: audio.sourceMode === 'custom', 'aria-label': 'Enable full PC audio' }) as HTMLInputElement;
   systemEnabled.addEventListener('change', () => savePatch({ audio: { system: { enabled: systemEnabled.checked } } }));
   const systemDevice = select(audio.system.deviceId, deviceOptions(status.audioOutputs, audio.system.deviceId), (value) => savePatch({ audio: { system: { deviceId: value } } }));
-  const sourceMode = select(audio.sourceMode, [['game', 'Game audio'], ['system', 'Full system audio'], ['custom', 'Custom process capture']], (value) => savePatch({ audio: { sourceMode: value } }));
-  const processInputs = [0, 1, 2].map((index) => {
-    const input = el('input', { class: 'recording-input', type: 'text', maxlength: 256, value: audio.customProcesses[index] ?? '', placeholder: `Process ${index + 1} (for example game.exe)`, list: 'recording-process-options' }) as HTMLInputElement;
-    input.addEventListener('change', () => {
-      const next = [0, 1, 2].map((item) => item === index ? input.value.trim() : audio.customProcesses[item] ?? '').filter(Boolean);
-      savePatch({ audio: { customProcesses: next } });
+  const processSelects = [0, 1, 2].map((index) => {
+    const selected = audio.customProcesses[index] ?? '';
+    const processSelect = select(selected, recordingProcessOptions(selected), (value) => {
+      const next = audio.customProcesses.slice(0, 3);
+      next[index] = value;
+      savePatch({ audio: { customProcesses: next.filter(Boolean) } });
     });
-    return input;
+    processSelect.classList.add('recording-process-select');
+    processSelect.disabled = audio.sourceMode !== 'custom';
+    return processSelect;
   });
-  const processList = el('datalist', { id: 'recording-process-options' }, recordingProcesses.map((name) => el('option', { value: name })));
   return el('section', { class: 'recording-panel recording-audio-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Audio capture' }), el('h2', { class: 'recording-panel-title', text: 'Microphone and sound source' })]),
-      button(recordingProcessesBusy ? 'Refreshing…' : 'Refresh process list', () => void refreshRecordingProcesses(), 'btn btn-secondary', recordingProcessesBusy),
     ]),
     el('div', { class: 'recording-audio-sections' }, [
       el('div', { class: 'recording-audio-section' }, [
@@ -325,14 +336,15 @@ function renderAudioSettings(): HTMLElement {
       ]),
       el('div', { class: 'recording-audio-section' }, [
         el('h3', { text: 'Sound source' }),
-        field('Source mode', sourceMode, 'Choose game audio, full system audio, or selected processes.'),
-        el('label', { class: 'recording-check-row' }, [systemEnabled, el('span', { text: 'Include system/output audio' })]),
+        field('Capture source', sourceMode, 'Choose full PC audio or up to three individual processes.'),
+        el('label', { class: 'recording-check-row' }, [systemEnabled, el('span', { text: 'Include full PC audio' })]),
         field('Output device', systemDevice),
         field('Output volume', volumeControl(audio.system.volume, 'System audio volume', (value) => savePatch({ audio: { system: { volume: value } } }))),
         el('div', { class: 'recording-process-fields' }, [
-          el('span', { class: 'recording-field-label', text: 'Custom processes (up to 3)' }),
-          ...processInputs,
-          processList,
+          el('span', { class: 'recording-field-label', text: 'Processes (up to 3)' }),
+          ...processSelects,
+          button(recordingProcessesBusy ? 'Refreshing…' : 'Refresh process list', () => void refreshRecordingProcesses(), 'btn btn-secondary recording-process-refresh', recordingProcessesBusy),
+          el('span', { class: 'recording-field-note', text: recordingProcesses.length ? `${recordingProcesses.length} running processes available.` : 'Refresh to load running processes.' }),
         ]),
       ]),
     ]),
@@ -387,11 +399,35 @@ function renderStorage(): HTMLElement {
 function renderManualView(): HTMLElement {
   return el('div', { class: 'recording-content recording-manual-content' }, [
     renderCapturePanel(),
-    el('div', { class: 'recording-panel-column' }, [renderQualitySettings(), renderAudioSettings(), renderReplaySettings(), renderHotkeys(), renderStorage()]),
+    el('div', { class: 'recording-panel-column' }, [renderQualitySettings(), renderReplaySettings(), renderHotkeys(), renderStorage()]),
   ]);
 }
 
-function previewVideo(clip: RecordingClip): HTMLVideoElement {
+function renderAudioView(): HTMLElement {
+  return el('div', { class: 'recording-content recording-audio-content' }, [renderAudioSettings()]);
+}
+
+function formatTime(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : 0;
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const remainder = safe % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+    : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+function playerIconButton(label: string, icon: string, onClick: () => void, className = ''): HTMLButtonElement {
+  return el('button', {
+    class: `recording-player-icon-button${className ? ` ${className}` : ''}`,
+    type: 'button',
+    title: label,
+    'aria-label': label,
+    onClick: (event: Event) => { event.preventDefault(); onClick(); },
+  }, [el('span', { class: `recording-player-icon recording-player-icon-${icon}`, 'aria-hidden': 'true' })]) as HTMLButtonElement;
+}
+
+function previewVideo(clip: RecordingClip, onDuration: (seconds: number) => void): HTMLVideoElement {
   const preview = el('video', {
     class: 'recording-clip-preview',
     muted: true,
@@ -406,6 +442,7 @@ function previewVideo(clip: RecordingClip): HTMLVideoElement {
     void preview.play().catch(() => { /* unavailable previews stay quiet */ });
   };
   preview.addEventListener('canplay', playPreview);
+  preview.addEventListener('loadedmetadata', () => onDuration(preview.duration));
   preview.addEventListener('mouseenter', () => {
     hovered = true;
     preview.muted = true;
@@ -430,15 +467,18 @@ function previewVideo(clip: RecordingClip): HTMLVideoElement {
 function renderClipList(): HTMLElement {
   const query = el('input', { class: 'recording-search', type: 'search', placeholder: 'Search clips…', 'aria-label': 'Search clips' }) as HTMLInputElement;
   const list = el('div', { class: 'recording-clip-list' });
+  const count = el('span', { class: 'recording-library-count', text: `${clips.length} clips` });
   const draw = () => {
     clear(list);
     const needle = query.value.trim().toLowerCase();
     const visible = clips.filter((clip) => !needle || clip.fileName.toLowerCase().includes(needle));
+    count.textContent = `${visible.length} ${visible.length === 1 ? 'clip' : 'clips'}`;
     if (visible.length === 0) {
       list.append(el('p', { class: 'recording-empty', text: 'No clips found yet. Save a moment from Manual Recording to build this library.' }));
       return;
     }
     for (const clip of visible) {
+      const duration = el('span', { class: 'recording-clip-duration', text: '—' });
       const tile = el('div', {
         class: 'recording-clip-tile',
         role: 'button',
@@ -453,11 +493,14 @@ function renderClipList(): HTMLElement {
         openPlayer(clip);
       });
       tile.append(
-        previewVideo(clip),
-        el('span', { class: 'recording-clip-overlay' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' }), el('span', { text: 'Open player' })]),
+        el('div', { class: 'recording-clip-media' }, [
+          previewVideo(clip, (seconds) => { duration.textContent = formatTime(seconds); }),
+          duration,
+          el('span', { class: 'recording-clip-hover-action' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' }), el('span', { text: 'Open player' })]),
+        ]),
         el('span', { class: 'recording-clip-details' }, [
           el('strong', { text: clip.fileName }),
-          el('span', { text: new Date(clip.createdAt).toLocaleString() }),
+          el('span', { text: `Arc Power · ${new Date(clip.createdAt).toLocaleString()}` }),
         ]),
       );
       const deleteButton = el('button', {
@@ -471,7 +514,7 @@ function renderClipList(): HTMLElement {
           void deleteClip(clip);
         },
       }, [el('span', { class: 'recording-trash-icon', 'aria-hidden': 'true' })]) as HTMLButtonElement;
-      list.append(el('article', { class: 'recording-clip-tile-wrap' }, [tile, deleteButton]));
+      list.append(el('article', { class: 'recording-clip-card' }, [tile, deleteButton]));
     }
   };
   query.addEventListener('input', draw);
@@ -479,10 +522,15 @@ function renderClipList(): HTMLElement {
 
   return el('section', { class: 'recording-panel recording-library-panel' }, [
     el('div', { class: 'recording-library-toolbar' }, [
-      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Saved clips' }), el('h2', { class: 'recording-panel-title', text: 'Clip library' })]),
-      query,
-      button('Refresh', () => void loadClips(), 'btn btn-secondary'),
-      button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary'),
+      el('div', { class: 'recording-library-heading' }, [
+        el('span', { class: 'recording-eyebrow', text: 'Saved clips' }),
+        el('div', { class: 'recording-library-title-row' }, [el('h2', { class: 'recording-panel-title', text: 'Clip library' }), count]),
+      ]),
+      el('div', { class: 'recording-library-actions' }, [
+        query,
+        button('Refresh', () => void loadClips(), 'btn btn-secondary'),
+        button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary'),
+      ]),
     ]),
     list,
   ]);
@@ -493,51 +541,111 @@ function renderClipsView(): HTMLElement {
 }
 
 function renderPlayerView(): HTMLElement {
-  const player = el('div', { class: 'recording-full-player' }, [el('p', { class: 'recording-player-placeholder', text: 'Loading clip…' })]);
+  const player = el('div', { class: 'recording-player-stage' }, [el('p', { class: 'recording-player-placeholder', text: 'Loading clip…' })]);
+  const timelinePanel = el('section', { class: 'recording-player-timeline-panel' }, [
+    el('div', { class: 'recording-player-timeline-heading' }, [
+      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip timeline' }), el('strong', { text: 'Review your moment' })]),
+      el('span', { class: 'recording-player-time recording-player-duration-label', text: '0:00' }),
+    ]),
+    el('p', { class: 'recording-player-placeholder', text: 'Loading timeline…' }),
+  ]);
   if (playerClip) {
     const requestedId = playerClip.id;
     void api.recordingClipUrl(requestedId).then((url) => {
       if (!player.isConnected || playerClip?.id !== requestedId) return;
       const video = el('video', { class: 'recording-video', preload: 'metadata', playsinline: true, src: url }) as HTMLVideoElement;
-      const playButton = button('Play', () => {
+      const playButton = playerIconButton('Play', 'play', () => {
         if (video.paused) void video.play().catch(() => {});
         else video.pause();
-      }, 'btn btn-secondary recording-player-play');
+      }, 'recording-player-play');
       const seek = el('input', { class: 'recording-player-seek', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Seek clip' }) as HTMLInputElement;
       const elapsed = el('span', { class: 'recording-player-time', text: '0:00' });
       const duration = el('span', { class: 'recording-player-time', text: '0:00' });
-      const formatTime = (seconds: number): string => {
-        const safe = Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : 0;
-        return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+      const timelineElapsed = el('span', { class: 'recording-player-time', text: '0:00' });
+      const timelineDuration = el('span', { class: 'recording-player-time', text: '0:00' });
+      const timelineMiddle = el('span', { text: '0:00' });
+      const timelineEnd = el('span', { text: '0:00' });
+      const durationLabel = timelinePanel.querySelector('.recording-player-duration-label') as HTMLElement;
+      const updatePlayButton = () => {
+        playButton.title = video.paused ? 'Play' : 'Pause';
+        playButton.setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
+        const icon = playButton.querySelector('.recording-player-icon');
+        if (icon) icon.className = `recording-player-icon recording-player-icon-${video.paused ? 'play' : 'pause'}`;
       };
-      const updatePlayButton = () => { playButton.textContent = video.paused ? 'Play' : 'Pause'; };
       const updateTimeline = () => {
         elapsed.textContent = formatTime(video.currentTime);
         duration.textContent = formatTime(video.duration);
+        timelineElapsed.textContent = formatTime(video.currentTime);
+        timelineDuration.textContent = formatTime(video.duration);
+        timelineMiddle.textContent = formatTime(video.duration / 2);
+        timelineEnd.textContent = formatTime(video.duration);
+        durationLabel.textContent = formatTime(video.duration);
         seek.value = video.duration > 0 ? String(Math.round((video.currentTime / video.duration) * 1000)) : '0';
       };
       video.addEventListener('play', updatePlayButton);
       video.addEventListener('pause', updatePlayButton);
       video.addEventListener('loadedmetadata', updateTimeline);
       video.addEventListener('timeupdate', updateTimeline);
+      video.addEventListener('ended', updatePlayButton);
+      video.addEventListener('click', () => {
+        if (video.paused) void video.play().catch(() => {});
+        else video.pause();
+      });
+      video.addEventListener('keydown', (event) => {
+        const keyboardEvent = event as KeyboardEvent;
+        if (keyboardEvent.key !== ' ' && keyboardEvent.key.toLowerCase() !== 'k') return;
+        keyboardEvent.preventDefault();
+        if (video.paused) void video.play().catch(() => {});
+        else video.pause();
+      });
       seek.addEventListener('input', () => {
         if (video.duration > 0) video.currentTime = (Number(seek.value) / 1000) * video.duration;
       });
-      const muteButton = button('Mute', () => {
+      let muteButton: HTMLButtonElement;
+      const updateMuteButton = () => {
+        if (!muteButton) return;
+        const muted = video.muted || video.volume === 0;
+        muteButton.title = muted ? 'Unmute' : 'Mute';
+        muteButton.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+        const icon = muteButton.querySelector('.recording-player-icon');
+        if (icon) icon.className = `recording-player-icon recording-player-icon-${muted ? 'muted' : 'volume'}`;
+      };
+      muteButton = playerIconButton('Mute', 'volume', () => {
         video.muted = !video.muted;
-        muteButton.textContent = video.muted ? 'Unmute' : 'Mute';
-      }, 'btn btn-secondary recording-player-mute');
+        updateMuteButton();
+      }, 'recording-player-mute');
       const volume = el('input', { class: 'recording-player-volume', type: 'range', min: 0, max: 1, step: 0.01, value: 1, 'aria-label': 'Clip volume' }) as HTMLInputElement;
-      volume.addEventListener('input', () => { video.volume = Number(volume.value); video.muted = video.volume === 0; muteButton.textContent = video.muted ? 'Unmute' : 'Mute'; });
-      const fullscreen = button('Fullscreen', () => {
+      volume.addEventListener('input', () => { video.volume = Number(volume.value); video.muted = video.volume === 0; updateMuteButton(); });
+      video.addEventListener('volumechange', updateMuteButton);
+      const fullscreen = playerIconButton('Fullscreen', 'fullscreen', () => {
         void (video.requestFullscreen?.() ?? (player as HTMLElement & { requestFullscreen?: () => Promise<void> }).requestFullscreen?.());
-      }, 'btn btn-secondary recording-player-fullscreen');
+      }, 'recording-player-fullscreen');
       clear(player);
       player.append(
         video,
-        el('div', { class: 'recording-player-timeline' }, [elapsed, seek, duration]),
-        el('div', { class: 'recording-player-controls' }, [playButton, muteButton, volume, fullscreen]),
+        el('div', { class: 'recording-player-overlay' }, [
+          el('div', { class: 'recording-player-controls' }, [
+            playButton,
+            el('div', { class: 'recording-player-time-pair' }, [elapsed, el('span', { text: '/' }), duration]),
+            el('span', { class: 'recording-player-controls-spacer' }),
+            muteButton,
+            volume,
+            fullscreen,
+          ]),
+          el('span', { class: 'recording-player-brand' }, [el('span', { class: 'recording-player-brand-mark', 'aria-hidden': 'true' }), el('span', { text: 'Arc Power' })]),
+        ]),
       );
+      clear(timelinePanel);
+      timelinePanel.append(
+        el('div', { class: 'recording-player-timeline-heading' }, [
+          el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip timeline' }), el('strong', { text: 'Review your moment' })]),
+          durationLabel,
+        ]),
+        el('div', { class: 'recording-player-timeline-row' }, [timelineElapsed, seek, timelineDuration]),
+        el('div', { class: 'recording-player-timeline-ruler' }, [el('span', { text: '0:00' }), timelineMiddle, timelineEnd]),
+      );
+      updatePlayButton();
+      updateMuteButton();
       playerVideo = video;
     }).catch((err) => {
       if (!player.isConnected || playerClip?.id !== requestedId) return;
@@ -545,12 +653,21 @@ function renderPlayerView(): HTMLElement {
       player.append(el('p', { class: 'text-error', text: messageOf(err) }));
     });
   }
-  return el('section', { class: 'recording-panel recording-player-view' }, [
-    el('div', { class: 'recording-player-view-heading' }, [
-      button('Back to Clips', () => closePlayer(), 'btn btn-secondary'),
-      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip player' }), el('h2', { class: 'recording-panel-title', text: playerClip?.fileName ?? 'Clip' })]),
+  const back = el('button', {
+    class: 'recording-player-back',
+    type: 'button',
+    'aria-label': 'Back to clips',
+    title: 'Back to clips',
+    onClick: () => closePlayer(),
+  }, [el('span', { class: 'recording-player-back-icon', 'aria-hidden': 'true' }), el('span', { text: 'Back to Clips' })]);
+  return el('section', { class: 'recording-player-view' }, [
+    el('header', { class: 'recording-player-view-heading' }, [
+      back,
+      el('div', { class: 'recording-player-heading-copy' }, [el('span', { class: 'recording-eyebrow', text: 'Clip player' }), el('h2', { class: 'recording-panel-title', text: playerClip?.fileName ?? 'Clip' }), el('span', { class: 'recording-player-meta', text: playerClip ? `Saved ${new Date(playerClip.createdAt).toLocaleString()}` : '' })]),
+      button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary recording-player-folder'),
     ]),
     player,
+    timelinePanel,
   ]);
 }
 
@@ -566,7 +683,7 @@ function render(): void {
       ]),
       renderTabs(),
     ]),
-    playerClip ? renderPlayerView() : activeTab === 'manual' ? renderManualView() : renderClipsView(),
+    playerClip ? renderPlayerView() : activeTab === 'manual' ? renderManualView() : activeTab === 'clips' ? renderClipsView() : renderAudioView(),
   );
 }
 
@@ -579,7 +696,8 @@ function selectTab(tab: RecordingTab): void {
   if (activeTab === tab && !wasShowingPlayer) return;
   activeTab = tab;
   render();
-  if (settings && settings.mode !== modeForTab(tab)) savePatch({ mode: modeForTab(tab) });
+  const mode = modeForTab(tab);
+  if (settings && mode && settings.mode !== mode) savePatch({ mode });
 }
 
 async function loadClips(): Promise<void> {
@@ -606,7 +724,7 @@ async function load(): Promise<void> {
     status = loadedStatus;
     clips = loadedClips;
     activeTab = tabForMode(settings.mode);
-    const canonicalMode = modeForTab(activeTab);
+    const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
       // Older settings remain usable: map every full-session variant to the
       // manual tab, and persist only the two current renderer choices.

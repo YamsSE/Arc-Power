@@ -4,7 +4,7 @@ import path from 'node:path';
 export const RECORDING_SCHEMA_VERSION = 1;
 export const RECORDING_MODES = ['manual', 'clips'];
 export const RECORDING_RUNTIME_DIRECTORY = 'recording-runtime';
-export const RECORDING_AUDIO_SOURCE_MODES = Object.freeze(['game', 'system', 'custom']);
+export const RECORDING_AUDIO_SOURCE_MODES = Object.freeze(['system', 'custom']);
 export const RECORDING_CLIP_NAME_PHRASES = Object.freeze([
   'Great Play', 'Nice Shot', 'Outplay', 'Genius Play', 'Beautiful Moment', 'Arc Moment', 'Crazy Clip',
 ]);
@@ -48,7 +48,7 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   audio: {
     microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
     system: { enabled: true, deviceId: '', volume: 1 },
-    sourceMode: 'game',
+    sourceMode: 'system',
     customProcesses: [],
   },
   hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8' },
@@ -110,7 +110,7 @@ export function normalizeRecordingAudioSettings(raw = {}) {
       deviceId: normalizeAudioDeviceId(system.deviceId),
       volume: normalizeAudioVolume(system.volume),
     },
-    sourceMode: RECORDING_AUDIO_SOURCE_MODES.includes(source.sourceMode) ? source.sourceMode : 'game',
+    sourceMode: RECORDING_AUDIO_SOURCE_MODES.includes(source.sourceMode) ? source.sourceMode : 'system',
     customProcesses: [...new Set(processNames.map(normalizeProcessName).filter(Boolean))].slice(0, 3),
   };
 }

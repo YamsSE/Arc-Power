@@ -117,18 +117,6 @@ function recordingPatch(patch) {
   return out;
 }
 
-function foregroundRecordingProcessName(foregroundApi) {
-  if (typeof foregroundApi?.detectProcess !== 'function') return null;
-  return Promise.resolve().then(() => foregroundApi.detectProcess()).then((processInfo) => {
-    const exePath = typeof processInfo?.exePath === 'string' ? processInfo.exePath : '';
-    const processName = path.win32.basename(exePath).trim();
-    if (!processName || !/\.exe$/i.test(processName)) return null;
-    const ownProcessName = path.win32.basename(process.execPath).toLowerCase();
-    const blocked = new Set([ownProcessName, 'electron.exe', 'ascent-obs.exe', 'arc power uninstaller.exe']);
-    return blocked.has(processName.toLowerCase()) ? null : processName;
-  }).catch(() => null);
-}
-
 // M24 (Part B): the pushed post-apply read-back channel vocabulary (ipc-core
 // owns the channel names; ipc.js's handler-loop wrap + tray-apply.js both
 // send on them - tray-apply re-exports DEVICE_STATE_UPDATED_CHANNEL
@@ -2474,8 +2462,7 @@ export function createIpcHandlers({
         const location = recordingAbsolutePath(settings.location, 'location');
         fs.mkdirSync(location, { recursive: true });
         const outputPath = collisionSafeRecordingPath(location, 'recording', { exists: (candidate) => fs.existsSync(candidate) });
-        const captureProcessName = settings.audio?.sourceMode === 'game' ? await foregroundRecordingProcessName(foregroundApi) : null;
-        const state = await recordingEngine.startRecording({ ...settings, outputPath, ...(captureProcessName ? { captureProcessName } : {}) });
+        const state = await recordingEngine.startRecording({ ...settings, outputPath });
         return { state, outputPath: path.basename(outputPath) };
       },
       'recording-stop': async (...args) => {
@@ -2492,8 +2479,7 @@ export function createIpcHandlers({
         // Replay mode keeps only the rolling buffer. It must not receive a
         // normal file-output path, otherwise stopping the buffer can create a
         // full-session recording alongside the intended clips.
-        const captureProcessName = settings.audio?.sourceMode === 'game' ? await foregroundRecordingProcessName(foregroundApi) : null;
-        const state = await recordingEngine.startReplay({ ...settings, ...(captureProcessName ? { captureProcessName } : {}) });
+        const state = await recordingEngine.startReplay({ ...settings });
         return { state, outputPath: null };
       },
       'recording-clip-save': async (payload = {}) => {
