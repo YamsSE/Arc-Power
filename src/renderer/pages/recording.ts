@@ -48,6 +48,7 @@ let playerVideo: HTMLVideoElement | null = null;
 let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
 let lastTransitionToast = { key: '', at: 0 };
+let pendingSettingsSave: Promise<void> = Promise.resolve();
 
 function announceCaptureTransition(previous: RecordingEngineState, next: RecordingEngineState): void {
   const started = !previous.running && next.running;
@@ -131,14 +132,19 @@ function field(label: string, control: HTMLElement, note?: string): HTMLElement 
   ]);
 }
 
-function savePatch(patch: RecordingSettingsPatch): void {
-  void api.recordingSettingsSave(patch)
-    .then((result) => {
+function savePatch(patch: RecordingSettingsPatch): Promise<void> {
+  const save = pendingSettingsSave.then(async () => {
+    try {
+      const result = await api.recordingSettingsSave(patch);
       settings = result.settings;
       status = { ...status, hotkeys: result.hotkeys };
       render();
-    })
-    .catch((err) => toast('error', 'Recording settings', messageOf(err)));
+    } catch (err) {
+      toast('error', 'Recording settings', messageOf(err));
+    }
+  });
+  pendingSettingsSave = save;
+  return save;
 }
 
 function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string {
@@ -229,6 +235,9 @@ function renderQualitySettings(): HTMLElement {
       field('Bitrate (Kbps)', bitrate),
       field('Bitrate Recommendation', el('span', { class: 'recording-field-note', text: bitrateRange.label })),
     ]),
+    el('p', { class: 'recording-panel-note recording-quality-note', text: status.running
+      ? 'The active capture keeps its original profile. Changes apply to the next capture.'
+      : 'Changes apply to the next recording or replay buffer.' }),
   ]);
 }
 
@@ -780,6 +789,7 @@ async function startRecording(): Promise<void> {
   actionBusy = true;
   render();
   try {
+    await pendingSettingsSave;
     const result = await api.recordingStart();
     setStatus(result.state, true);
   } catch (err) {
@@ -796,6 +806,7 @@ async function startReplay(): Promise<void> {
   actionBusy = true;
   render();
   try {
+    await pendingSettingsSave;
     const result = await api.recordingReplayStart();
     setStatus(result.state, true);
   } catch (err) {
