@@ -124,7 +124,17 @@ export class RecordingStore {
   async saveSettings(patch) {
     return this._enqueueMutation(() => {
       const { data: current } = this._readData();
-      const settings = normalizeRecordingSettings({ ...current.settings, ...(patch ?? {}), hotkeys: { ...current.settings.hotkeys, ...(patch?.hotkeys ?? {}) } });
+      const settings = normalizeRecordingSettings({
+        ...current.settings,
+        ...(patch ?? {}),
+        audio: {
+          ...current.settings.audio,
+          ...(patch?.audio ?? {}),
+          microphone: { ...current.settings.audio?.microphone, ...(patch?.audio?.microphone ?? {}) },
+          system: { ...current.settings.audio?.system, ...(patch?.audio?.system ?? {}) },
+        },
+        hotkeys: { ...current.settings.hotkeys, ...(patch?.hotkeys ?? {}) },
+      });
       this._write({ ...current, schemaVersion: RECORDING_SCHEMA_VERSION, settings });
       return settings;
     });

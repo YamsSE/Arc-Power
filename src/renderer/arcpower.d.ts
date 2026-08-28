@@ -38,6 +38,7 @@ import type {
   RecordingActionResult,
   RecordingSettingsSaveResult,
   RecordingSettings,
+  RecordingSettingsPatch,
   ResetResponse,
   Settings,
   StartupGetState,
@@ -191,7 +192,7 @@ export interface ArcPowerApi {
   gameProfileDelete(association: { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;
   trayRebuild(): Promise<{ ok: boolean }>;
   recordingSettingsGet(): Promise<RecordingSettings>;
-  recordingSettingsSave(patch: Partial<Omit<RecordingSettings, 'hotkeys'>> & { hotkeys?: Partial<RecordingSettings['hotkeys']> }): Promise<RecordingSettingsSaveResult>;
+  recordingSettingsSave(patch: RecordingSettingsPatch): Promise<RecordingSettingsSaveResult>;
   recordingRuntimeProbe(): Promise<RecordingEngineState>;
   recordingStatus(): Promise<RecordingEngineState>;
   recordingStart(): Promise<{ state: RecordingEngineState; outputPath: string }>;
@@ -199,6 +200,7 @@ export interface ArcPowerApi {
   recordingReplayStart(): Promise<{ state: RecordingEngineState; outputPath: null }>;
   recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string }>;
   recordingClipsList(): Promise<RecordingClip[]>;
+  recordingProcessesList(): Promise<string[]>;
   recordingChooseFolder(): Promise<{ canceled: boolean; settings: RecordingSettings }>;
   recordingOpenFolder(): Promise<{ ok: boolean }>;
   recordingClipUrl(id: string): Promise<string>;

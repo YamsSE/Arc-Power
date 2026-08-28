@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { normalizeRecordingAccelerator, recordingAbsolutePath } from './recording-pure.js';
+import { collisionSafeRecordingPath, normalizeRecordingAccelerator, recordingAbsolutePath } from './recording-pure.js';
 
 export { normalizeRecordingAccelerator };
 
@@ -59,10 +59,10 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, fsM
       const location = recordingAbsolutePath(settings.location, 'location');
       fsModule.mkdirSync(location, { recursive: true });
       if (action === 'start') {
-        const outputPath = pathModule.join(location, `ArcPower-${now().toISOString().replace(/[:.]/g, '-')}.mp4`);
+        const outputPath = collisionSafeRecordingPath(location, 'recording', { exists: (candidate) => fsModule.existsSync?.(candidate) === true });
         await recordingEngine.startRecording({ ...settings, outputPath });
       } else if (action === 'saveClip') {
-        const outputPath = pathModule.join(location, `ArcPower-Clip-${now().toISOString().replace(/[:.]/g, '-')}.mp4`);
+        const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fsModule.existsSync?.(candidate) === true });
         await recordingEngine.saveReplayClip({ path: outputPath, headDuration: settings.replayLengthSec * 1000, thumbnailFolder: location });
       }
     } catch (err) {

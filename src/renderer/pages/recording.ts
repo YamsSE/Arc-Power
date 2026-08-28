@@ -3,10 +3,10 @@
 import { el, clear } from '../dom.ts';
 import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
-import type { RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingTab } from '../types.ts';
+import type { RecordingAudioDevice, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
-import { clampRecordingBitrate, recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
+import { normalizeRecordingBitrate, recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -32,6 +32,8 @@ let status: RecordingEngineState = {
   startedAt: null,
   error: 'Loading recording engine…',
   encoders: [],
+  audioInputs: [],
+  audioOutputs: [],
   hotkeys: { registered: {}, conflicts: {}, error: null },
 };
 let clips: RecordingClip[] = [];
@@ -42,6 +44,8 @@ let loading = false;
 let actionBusy = false;
 let unsubscribeRecordingState: (() => void) | null = null;
 let playerVideo: HTMLVideoElement | null = null;
+let recordingProcesses: string[] = [];
+let recordingProcessesBusy = false;
 let lastTransitionToast = { key: '', at: 0 };
 
 function announceCaptureTransition(previous: RecordingEngineState, next: RecordingEngineState): void {
@@ -126,7 +130,7 @@ function field(label: string, control: HTMLElement, note?: string): HTMLElement 
   ]);
 }
 
-function savePatch(patch: Partial<Omit<RecordingSettings, 'hotkeys'>> & { hotkeys?: Partial<RecordingSettings['hotkeys']> }): void {
+function savePatch(patch: RecordingSettingsPatch): void {
   void api.recordingSettingsSave(patch)
     .then((result) => {
       settings = result.settings;
@@ -202,18 +206,16 @@ function renderQualitySettings(): HTMLElement {
   const bitrate = el('input', {
     class: 'recording-number',
     type: 'number',
-    min: bitrateRange.min,
-    max: bitrateRange.max,
-    step: bitrateRange.step,
-    value: clampRecordingBitrate(settings?.bitrateKbps ?? bitrateRange.default, selectedResolution),
+    step: 'any',
+    value: settings?.bitrateKbps ?? bitrateRange.default,
   }) as HTMLInputElement;
-  bitrate.title = bitrateRange.label;
-  bitrate.addEventListener('change', () => savePatch({ bitrateKbps: clampRecordingBitrate(Number(bitrate.value), selectedResolution) }));
+  bitrate.title = 'Enter any positive bitrate in Kbps';
+  bitrate.addEventListener('change', () => {
+    const value = Number(bitrate.value);
+    if (Number.isFinite(value) && value > 0) savePatch({ bitrateKbps: normalizeRecordingBitrate(value, settings?.bitrateKbps ?? bitrateRange.default) });
+  });
   const encoder = select(settings?.encoderId ?? 'automatic', encoderOptions(), (value) => savePatch({ encoderId: value }));
-  const resolution = select(selectedResolution, RESOLUTIONS, (value) => savePatch({
-    resolution: value,
-    bitrateKbps: clampRecordingBitrate(settings?.bitrateKbps ?? recordingBitrateRange(value).default, value),
-  }));
+  const resolution = select(selectedResolution, RESOLUTIONS, (value) => savePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Video profile' }), el('h2', { class: 'recording-panel-title', text: 'Quality' })]),
@@ -221,9 +223,10 @@ function renderQualitySettings(): HTMLElement {
     ]),
     el('div', { class: 'recording-settings-grid' }, [
       field('Frame rate', fps),
-      field('Resolution', resolution, `Bitrate guide: ${bitrateRange.label}`),
+      field('Resolution', resolution),
       field('Encoder', encoder),
       field('Bitrate (Kbps)', bitrate),
+      field('Bitrate Recommendation', el('span', { class: 'recording-field-note', text: bitrateRange.label })),
     ]),
   ]);
 }
@@ -244,6 +247,95 @@ function renderReplaySettings(): HTMLElement {
       el('span', { class: 'recording-panel-badge', text: '5–3600 seconds' }),
     ]),
     field('Seconds to keep available', replay, 'Save Clip exports this much recent gameplay from the replay buffer.'),
+  ]);
+}
+
+function deviceOptions(devices: RecordingAudioDevice[], selected: string): Array<[string, string]> {
+  const options: Array<[string, string]> = [['', 'Default device']];
+  for (const device of devices) {
+    if (device.deviceId && !options.some(([id]) => id === device.deviceId)) options.push([device.deviceId, device.name || device.deviceId]);
+  }
+  if (selected && !options.some(([id]) => id === selected)) options.push([selected, `${selected} (saved)`]);
+  return options;
+}
+
+function volumeControl(value: number, label: string, onChange: (value: number) => void): HTMLElement {
+  const input = el('input', { class: 'recording-volume', type: 'range', min: 0, max: 100, step: 1, value: Math.round(value * 100), 'aria-label': label }) as HTMLInputElement;
+  const valueLabel = el('span', { class: 'recording-volume-value', text: `${Math.round(value * 100)}%` });
+  input.addEventListener('input', () => {
+    const next = Math.min(100, Math.max(0, Number(input.value)));
+    valueLabel.textContent = `${Math.round(next)}%`;
+    onChange(next / 100);
+  });
+  return el('div', { class: 'recording-volume-control' }, [input, valueLabel]);
+}
+
+async function refreshRecordingProcesses(): Promise<void> {
+  if (recordingProcessesBusy) return;
+  recordingProcessesBusy = true;
+  render();
+  try {
+    recordingProcesses = await api.recordingProcessesList();
+    render();
+  } catch (err) {
+    toast('error', 'Process list', messageOf(err));
+  } finally {
+    recordingProcessesBusy = false;
+    render();
+  }
+}
+
+function renderAudioSettings(): HTMLElement {
+  const audio = settings?.audio ?? {
+    microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
+    system: { enabled: true, deviceId: '', volume: 1 },
+    sourceMode: 'game' as const,
+    customProcesses: [],
+  };
+  const microphoneEnabled = el('input', { type: 'checkbox', checked: audio.microphone.enabled, 'aria-label': 'Enable microphone' }) as HTMLInputElement;
+  microphoneEnabled.addEventListener('change', () => savePatch({ audio: { microphone: { enabled: microphoneEnabled.checked } } }));
+  const microphoneDevice = select(audio.microphone.deviceId, deviceOptions(status.audioInputs, audio.microphone.deviceId), (value) => savePatch({ audio: { microphone: { deviceId: value } } }));
+  const microphoneMono = el('input', { type: 'checkbox', checked: audio.microphone.mono, 'aria-label': 'Mono microphone' }) as HTMLInputElement;
+  microphoneMono.addEventListener('change', () => savePatch({ audio: { microphone: { mono: microphoneMono.checked } } }));
+  const systemEnabled = el('input', { type: 'checkbox', checked: audio.system.enabled, 'aria-label': 'Enable system audio' }) as HTMLInputElement;
+  systemEnabled.addEventListener('change', () => savePatch({ audio: { system: { enabled: systemEnabled.checked } } }));
+  const systemDevice = select(audio.system.deviceId, deviceOptions(status.audioOutputs, audio.system.deviceId), (value) => savePatch({ audio: { system: { deviceId: value } } }));
+  const sourceMode = select(audio.sourceMode, [['game', 'Game audio'], ['system', 'Full system audio'], ['custom', 'Custom process capture']], (value) => savePatch({ audio: { sourceMode: value } }));
+  const processInputs = [0, 1, 2].map((index) => {
+    const input = el('input', { class: 'recording-input', type: 'text', maxlength: 256, value: audio.customProcesses[index] ?? '', placeholder: `Process ${index + 1} (for example game.exe)`, list: 'recording-process-options' }) as HTMLInputElement;
+    input.addEventListener('change', () => {
+      const next = [0, 1, 2].map((item) => item === index ? input.value.trim() : audio.customProcesses[item] ?? '').filter(Boolean);
+      savePatch({ audio: { customProcesses: next } });
+    });
+    return input;
+  });
+  const processList = el('datalist', { id: 'recording-process-options' }, recordingProcesses.map((name) => el('option', { value: name })));
+  return el('section', { class: 'recording-panel recording-audio-panel' }, [
+    el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
+      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Audio capture' }), el('h2', { class: 'recording-panel-title', text: 'Microphone and sound source' })]),
+      button(recordingProcessesBusy ? 'Refreshing…' : 'Refresh process list', () => void refreshRecordingProcesses(), 'btn btn-secondary', recordingProcessesBusy),
+    ]),
+    el('div', { class: 'recording-audio-sections' }, [
+      el('div', { class: 'recording-audio-section' }, [
+        el('h3', { text: 'Microphone' }),
+        el('label', { class: 'recording-check-row' }, [microphoneEnabled, el('span', { text: 'Include microphone' })]),
+        field('Device', microphoneDevice),
+        field('Volume', volumeControl(audio.microphone.volume, 'Microphone volume', (value) => savePatch({ audio: { microphone: { volume: value } } }))),
+        el('label', { class: 'recording-check-row' }, [microphoneMono, el('span', { text: 'Force mono' })]),
+      ]),
+      el('div', { class: 'recording-audio-section' }, [
+        el('h3', { text: 'Sound source' }),
+        field('Source mode', sourceMode, 'Choose game audio, full system audio, or selected processes.'),
+        el('label', { class: 'recording-check-row' }, [systemEnabled, el('span', { text: 'Include system/output audio' })]),
+        field('Output device', systemDevice),
+        field('Output volume', volumeControl(audio.system.volume, 'System audio volume', (value) => savePatch({ audio: { system: { volume: value } } }))),
+        el('div', { class: 'recording-process-fields' }, [
+          el('span', { class: 'recording-field-label', text: 'Custom processes (up to 3)' }),
+          ...processInputs,
+          processList,
+        ]),
+      ]),
+    ]),
   ]);
 }
 
@@ -295,7 +387,7 @@ function renderStorage(): HTMLElement {
 function renderManualView(): HTMLElement {
   return el('div', { class: 'recording-content recording-manual-content' }, [
     renderCapturePanel(),
-    el('div', { class: 'recording-panel-column' }, [renderQualitySettings(), renderReplaySettings(), renderHotkeys(), renderStorage()]),
+    el('div', { class: 'recording-panel-column' }, [renderQualitySettings(), renderAudioSettings(), renderReplaySettings(), renderHotkeys(), renderStorage()]),
   ]);
 }
 
@@ -406,10 +498,47 @@ function renderPlayerView(): HTMLElement {
     const requestedId = playerClip.id;
     void api.recordingClipUrl(requestedId).then((url) => {
       if (!player.isConnected || playerClip?.id !== requestedId) return;
-      const video = el('video', { class: 'recording-video', controls: true, preload: 'metadata', playsinline: true, src: url }) as HTMLVideoElement;
-      playerVideo = video;
+      const video = el('video', { class: 'recording-video', preload: 'metadata', playsinline: true, src: url }) as HTMLVideoElement;
+      const playButton = button('Play', () => {
+        if (video.paused) void video.play().catch(() => {});
+        else video.pause();
+      }, 'btn btn-secondary recording-player-play');
+      const seek = el('input', { class: 'recording-player-seek', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Seek clip' }) as HTMLInputElement;
+      const elapsed = el('span', { class: 'recording-player-time', text: '0:00' });
+      const duration = el('span', { class: 'recording-player-time', text: '0:00' });
+      const formatTime = (seconds: number): string => {
+        const safe = Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : 0;
+        return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+      };
+      const updatePlayButton = () => { playButton.textContent = video.paused ? 'Play' : 'Pause'; };
+      const updateTimeline = () => {
+        elapsed.textContent = formatTime(video.currentTime);
+        duration.textContent = formatTime(video.duration);
+        seek.value = video.duration > 0 ? String(Math.round((video.currentTime / video.duration) * 1000)) : '0';
+      };
+      video.addEventListener('play', updatePlayButton);
+      video.addEventListener('pause', updatePlayButton);
+      video.addEventListener('loadedmetadata', updateTimeline);
+      video.addEventListener('timeupdate', updateTimeline);
+      seek.addEventListener('input', () => {
+        if (video.duration > 0) video.currentTime = (Number(seek.value) / 1000) * video.duration;
+      });
+      const muteButton = button('Mute', () => {
+        video.muted = !video.muted;
+        muteButton.textContent = video.muted ? 'Unmute' : 'Mute';
+      }, 'btn btn-secondary recording-player-mute');
+      const volume = el('input', { class: 'recording-player-volume', type: 'range', min: 0, max: 1, step: 0.01, value: 1, 'aria-label': 'Clip volume' }) as HTMLInputElement;
+      volume.addEventListener('input', () => { video.volume = Number(volume.value); video.muted = video.volume === 0; muteButton.textContent = video.muted ? 'Unmute' : 'Mute'; });
+      const fullscreen = button('Fullscreen', () => {
+        void (video.requestFullscreen?.() ?? (player as HTMLElement & { requestFullscreen?: () => Promise<void> }).requestFullscreen?.());
+      }, 'btn btn-secondary recording-player-fullscreen');
       clear(player);
-      player.append(video);
+      player.append(
+        video,
+        el('div', { class: 'recording-player-timeline' }, [elapsed, seek, duration]),
+        el('div', { class: 'recording-player-controls' }, [playButton, muteButton, volume, fullscreen]),
+      );
+      playerVideo = video;
     }).catch((err) => {
       if (!player.isConnected || playerClip?.id !== requestedId) return;
       clear(player);

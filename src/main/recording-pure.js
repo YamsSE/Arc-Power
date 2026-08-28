@@ -4,6 +4,10 @@ import path from 'node:path';
 export const RECORDING_SCHEMA_VERSION = 1;
 export const RECORDING_MODES = ['manual', 'clips'];
 export const RECORDING_RUNTIME_DIRECTORY = 'recording-runtime';
+export const RECORDING_AUDIO_SOURCE_MODES = Object.freeze(['game', 'system', 'custom']);
+export const RECORDING_CLIP_NAME_PHRASES = Object.freeze([
+  'Great Play', 'Nice Shot', 'Outplay', 'Genius Play', 'Beautiful Moment', 'Arc Moment', 'Crazy Clip',
+]);
 const LEGACY_RECORDING_MODES = Object.freeze({
   'manual-only': 'manual',
   'full-matches': 'manual',
@@ -41,6 +45,12 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   encoderId: 'automatic',
   bitrateKbps: 8000,
   replayLengthSec: 30,
+  audio: {
+    microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
+    system: { enabled: true, deviceId: '', volume: 1 },
+    sourceMode: 'game',
+    customProcesses: [],
+  },
   hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8' },
 });
 export const SAFE_VIDEO_EXTENSIONS = Object.freeze(['.mp4', '.mkv', '.mov', '.webm', '.m4v']);
@@ -55,6 +65,82 @@ export function clampRecordingBitrate(value, resolution = DEFAULT_RECORDING_SETT
   const numeric = Number.isFinite(value) ? Math.round(value) : range.default;
   const clamped = Math.min(range.max, Math.max(range.min, numeric));
   return Math.round(clamped / range.step) * range.step;
+}
+
+// Bitrate guidance is informational only. Persist a valid positive value
+// exactly as entered; the selected resolution must never rewrite it.
+export function normalizeRecordingBitrate(value, fallback = DEFAULT_RECORDING_SETTINGS.bitrateKbps) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function normalizeAudioVolume(value, fallback = 1) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
+}
+
+function normalizeAudioDeviceId(value) {
+  return typeof value === 'string' && value.length <= 512 ? value.trim() : '';
+}
+
+function normalizeProcessName(value) {
+  if (typeof value !== 'string') return null;
+  const name = value.trim();
+  return name && name.length <= 256 && !/[\\/\0\r\n]/.test(name) ? name : null;
+}
+
+export function normalizeRecordingAudioSettings(raw = {}) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const microphone = {
+    ...DEFAULT_RECORDING_SETTINGS.audio.microphone,
+    ...(source.microphone && typeof source.microphone === 'object' ? source.microphone : {}),
+  };
+  const system = {
+    ...DEFAULT_RECORDING_SETTINGS.audio.system,
+    ...(source.system && typeof source.system === 'object' ? source.system : {}),
+  };
+  const processNames = Array.isArray(source.customProcesses) ? source.customProcesses : [];
+  return {
+    microphone: {
+      enabled: microphone.enabled === true,
+      deviceId: normalizeAudioDeviceId(microphone.deviceId),
+      volume: normalizeAudioVolume(microphone.volume),
+      mono: microphone.mono === true,
+    },
+    system: {
+      enabled: system.enabled !== false,
+      deviceId: normalizeAudioDeviceId(system.deviceId),
+      volume: normalizeAudioVolume(system.volume),
+    },
+    sourceMode: RECORDING_AUDIO_SOURCE_MODES.includes(source.sourceMode) ? source.sourceMode : 'game',
+    customProcesses: [...new Set(processNames.map(normalizeProcessName).filter(Boolean))].slice(0, 3),
+  };
+}
+
+export function validateRecordingProcessNames(value) {
+  if (!Array.isArray(value) || value.length > 3) throw new Error('At most three custom process names are allowed');
+  const names = value.map(normalizeProcessName);
+  if (names.some((name) => !name)) throw new Error('Custom process names must be non-empty names without paths');
+  return [...new Set(names)];
+}
+
+export function recordingFileName(kind = 'recording', random = Math.random) {
+  const sample = () => {
+    const value = Number(random());
+    return Number.isFinite(value) ? Math.min(0.999999999, Math.max(0, value)) : Math.random();
+  };
+  const number = String(100 + Math.floor(sample() * 900));
+  if (kind === 'clip') return `${RECORDING_CLIP_NAME_PHRASES[Math.floor(sample() * RECORDING_CLIP_NAME_PHRASES.length)]} ${number}.mp4`;
+  if (kind === 'recording') return `Arc Recording ${number}.mp4`;
+  throw new Error('Unknown recording filename kind');
+}
+
+export function collisionSafeRecordingPath(root, kind, { exists = () => false, random = Math.random, maxAttempts = 900 } = {}) {
+  const base = path.resolve(root);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const fileName = recordingFileName(kind, random);
+    const candidate = path.join(base, fileName);
+    if (!exists(candidate)) return candidate;
+  }
+  throw new Error('Could not allocate a unique recording filename');
 }
 
 function boundedString(value, fallback = '', max = 1024) {
@@ -105,7 +191,7 @@ export function normalizeRecordingSettings(raw = {}) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const resolution = RECORDING_RESOLUTIONS.some((item) => item.id === source.resolution)
     ? source.resolution : DEFAULT_RECORDING_SETTINGS.resolution;
-  const bitrate = clampRecordingBitrate(source.bitrateKbps, resolution);
+  const bitrate = normalizeRecordingBitrate(source.bitrateKbps);
   const replayLength = Number.isFinite(source.replayLengthSec) ? Math.round(source.replayLengthSec) : DEFAULT_RECORDING_SETTINGS.replayLengthSec;
   const hotkeys = source.hotkeys && typeof source.hotkeys === 'object' ? source.hotkeys : {};
   return {
@@ -119,6 +205,7 @@ export function normalizeRecordingSettings(raw = {}) {
     encoderId: boundedString(source.encoderId, DEFAULT_RECORDING_SETTINGS.encoderId, 128),
     bitrateKbps: bitrate,
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
+    audio: normalizeRecordingAudioSettings({ ...DEFAULT_RECORDING_SETTINGS.audio, ...(source.audio ?? {}) }),
     hotkeys: {
       start: normalizeHotkey(hotkeys.start, DEFAULT_RECORDING_SETTINGS.hotkeys.start),
       stop: normalizeHotkey(hotkeys.stop, DEFAULT_RECORDING_SETTINGS.hotkeys.stop),

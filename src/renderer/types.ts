@@ -944,6 +944,22 @@ export type RecordingMode = 'manual' | 'clips';
 export type RecordingTab = 'manual' | 'clips';
 export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
 export interface RecordingHotkeys { start: string; stop: string; saveClip: string; }
+export type RecordingAudioSourceMode = 'game' | 'system' | 'custom';
+export interface RecordingMicrophoneSettings { enabled: boolean; deviceId: string; volume: number; mono: boolean; }
+export interface RecordingSystemAudioSettings { enabled: boolean; deviceId: string; volume: number; }
+export interface RecordingAudioSettings {
+  microphone: RecordingMicrophoneSettings;
+  system: RecordingSystemAudioSettings;
+  sourceMode: RecordingAudioSourceMode;
+  customProcesses: string[];
+}
+export type RecordingSettingsPatch = Partial<Omit<RecordingSettings, 'hotkeys' | 'audio'>> & {
+  hotkeys?: Partial<RecordingHotkeys>;
+  audio?: Partial<Omit<RecordingAudioSettings, 'microphone' | 'system'>> & {
+    microphone?: Partial<RecordingMicrophoneSettings>;
+    system?: Partial<RecordingSystemAudioSettings>;
+  };
+};
 export interface RecordingSettings {
   location: string;
   runtimePath: string;
@@ -953,8 +969,10 @@ export interface RecordingSettings {
   encoderId: string;
   bitrateKbps: number;
   replayLengthSec: number;
+  audio: RecordingAudioSettings;
   hotkeys: RecordingHotkeys;
 }
+export interface RecordingAudioDevice { id: string; deviceId: string; name: string; }
 export interface RecordingEncoderState {
   type: string;
   description: string;
@@ -972,6 +990,8 @@ export interface RecordingEngineState {
   startedAt: number | null;
   error: string | null;
   encoders: RecordingEncoderState[];
+  audioInputs: RecordingAudioDevice[];
+  audioOutputs: RecordingAudioDevice[];
   hotkeys: { registered: Record<string, string>; conflicts: Record<string, string>; error: string | null };
   lastEvent?: Record<string, unknown> | null;
 }

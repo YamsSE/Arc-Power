@@ -49,6 +49,8 @@ const INITIAL_RECORDING_STATUS: RecordingEngineState = {
   startedAt: null,
   error: 'Loading capture engine…',
   encoders: [],
+  audioInputs: [],
+  audioOutputs: [],
   hotkeys: { registered: {}, conflicts: {}, error: null },
 };
 let globalRecordingStatus: RecordingEngineState = INITIAL_RECORDING_STATUS;

@@ -22,6 +22,10 @@ export function clampRecordingBitrate(value: number, resolution: string): number
   return Math.round(clamped / range.step) * range.step;
 }
 
+export function normalizeRecordingBitrate(value: number, fallback = 8000): number {
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export function recordingMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/ascent(?:-obs)?/gi, 'recording engine');

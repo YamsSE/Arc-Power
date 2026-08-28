@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn as spawnProcess } from 'node:child_process';
-import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, RECORDING_RESOLUTIONS, resolveRecordingRuntimeCandidates } from './recording-pure.js';
+import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, RECORDING_RESOLUTIONS, resolveRecordingRuntimeCandidates, normalizeRecordingAudioSettings } from './recording-pure.js';
 
 export const ASCENT_COMMANDS = Object.freeze({ SHUTDOWN: 1, QUERY_MACHINE_INFO: 2, START: 3, STOP: 4, START_REPLAY_CAPTURE: 8, STOP_REPLAY_CAPTURE: 9, SPLIT_VIDEO: 12 });
 export const ASCENT_RECORDER_TYPES = Object.freeze({ VIDEO: 1, REPLAY: 2, STREAMING: 3 });
@@ -77,6 +77,81 @@ export function resolveRecordingEncoder(requested, encoders) {
   return requested;
 }
 
+function audioDeviceId(deviceId) {
+  return typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : 'default';
+}
+
+export function buildRecordingAudioSettings(settings = {}) {
+  const audio = normalizeRecordingAudioSettings(settings.audio);
+  const microphone = audio.microphone;
+  const system = audio.system;
+  const inputDeviceId = audioDeviceId(microphone.deviceId);
+  const outputDeviceId = audioDeviceId(system.deviceId);
+  const gameProcessName = typeof settings.captureProcessName === 'string' && settings.captureProcessName.trim()
+    ? settings.captureProcessName.trim()
+    : '';
+  const processNames = audio.sourceMode === 'game' && gameProcessName ? [gameProcessName] : audio.customProcesses;
+  const processCaptureEnabled = audio.sourceMode === 'custom' || (audio.sourceMode === 'game' && Boolean(gameProcessName));
+  // When a global hotkey is pressed over a game, process capture provides
+  // game-only audio. A button click inside Arc Power has no game foreground
+  // process, so retaining the output device is the useful safe fallback.
+  const outputEnabled = system.enabled && !processCaptureEnabled;
+  const inputSource = {
+    // The bundled runtime uses a numeric type only when device_id is
+    // "default"; string labels here would make the default microphone look
+    // like an output source. Explicit device ids are classified by WASAPI.
+    type: 1,
+    device_id: inputDeviceId,
+    name: microphone.deviceId || 'Default microphone',
+    enable: microphone.enabled,
+    volume: microphone.volume,
+    mono: microphone.mono,
+    use_device_timing: false,
+    tracks: 5,
+  };
+  const outputSource = {
+    type: 0,
+    device_id: outputDeviceId,
+    name: system.deviceId || 'Default output',
+    enable: outputEnabled,
+    volume: system.volume,
+    mono: false,
+    use_device_timing: true,
+    tracks: 3,
+  };
+  return {
+    sample_rate: 48000,
+    mono: false,
+    input: { type: 'wasapi_input_capture', device_id: inputDeviceId, enable: microphone.enabled, volume: microphone.volume, mono: microphone.mono },
+    output: { type: 'wasapi_output_capture', device_id: outputDeviceId, enable: outputEnabled, volume: system.volume, mono: false },
+    extra_options: {
+      source_mode: audio.sourceMode,
+      audio_sources: [inputSource, outputSource],
+      audio_capture_process2: processNames.map((processName) => ({
+        process_name: processName,
+        enable: processCaptureEnabled,
+        volume: system.volume,
+        mono: false,
+        tracks: 3,
+      })),
+    },
+  };
+}
+
+function normalizeAudioDevices(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    const object = item && typeof item === 'object' ? item : {};
+    const entry = Object.entries(object);
+    const protocolPair = entry.length === 1 && !('device_id' in object) && !('deviceId' in object) && !('id' in object) && !('name' in object)
+      ? entry[0]
+      : null;
+    const deviceId = String(object.device_id ?? object.id ?? object.deviceId ?? protocolPair?.[1] ?? (typeof item === 'string' ? item : '')).slice(0, 512);
+    const name = String(object.name ?? object.description ?? protocolPair?.[0] ?? deviceId ?? `Audio device ${index + 1}`).slice(0, 512);
+    return { id: deviceId || `audio-${index}`, deviceId, name };
+  }).filter((item) => item.deviceId || item.name);
+}
+
 export function buildAscentStartPayload(settings, outputPath, recorderType = ASCENT_RECORDER_TYPES.VIDEO, identifier = 0) {
   const resolution = resolutionOf(settings.resolution);
   const encoderId = settings.encoderId;
@@ -90,7 +165,7 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       output_height: resolution.height || 1080,
       video_encoder: { id: encoderId, preset: 'automatic', rate_control: 'CBR', bitrate: settings.bitrateKbps },
     },
-    audio_settings: { sample_rate: 48000, mono: false, input: {}, output: {} },
+    audio_settings: buildRecordingAudioSettings(settings),
     // Replay output is a rolling buffer. It must not inherit a normal
     // recording filename, otherwise stopping the buffer can finalize a full
     // recording session. Save Clip supplies its own path below.
@@ -117,7 +192,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let startingRecorder = null;
   let replayCapture = null;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, startedAt: null, error: null, encoders: [], lastEvent: null };
+  let state = { available: false, running: false, mode: null, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], lastEvent: null };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
@@ -363,8 +438,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       const valid = encoder.valid === true;
       return { ...encoder, type, enumerated: true, probeValid: valid && !demoted, startTested: demoted, startSupported: valid && !demoted, code: demoted ? -8 : null, status: demoted ? 'start rejected' : valid ? '' : 'invalid' };
     }) : [];
-    publish({ encoders });
-    return { ...state, encoders };
+    const audioInputs = normalizeAudioDevices(response.adio_in_devs ?? response.audio_in_devs);
+    const audioOutputs = normalizeAudioDevices(response.adio_out_devs ?? response.audio_out_devs);
+    publish({ encoders, audioInputs, audioOutputs });
+    return { ...state, encoders, audioInputs, audioOutputs };
   }
 
   async function startInternal(settings, mode = 'video') {
@@ -528,7 +605,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   return {
-    getState: () => ({ ...state, available: state.available, encoders: state.encoders.map((item) => ({ ...item })) }),
+    getState: () => ({ ...state, available: state.available, encoders: state.encoders.map((item) => ({ ...item })), audioInputs: state.audioInputs.map((item) => ({ ...item })), audioOutputs: state.audioOutputs.map((item) => ({ ...item })) }),
     probe: () => serialize(probeInternal),
     startRecording: (settings) => serialize(() => startInternal(settings, 'video')),
     startReplay: (settings) => serialize(() => startInternal(settings, 'replay')),

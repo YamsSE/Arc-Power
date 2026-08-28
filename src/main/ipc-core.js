@@ -25,6 +25,8 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
@@ -47,7 +49,7 @@ import { physicalTargetOf } from './gpu-inventory.js';
 import { GameProfileStore, canonicalExePath, normalizeAssociation, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
-import { normalizeRecordingSettings, recordingAbsolutePath, RECORDING_FPS, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension } from './recording-pure.js';
+import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_FPS, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
 import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
 
 const require = createRequire(import.meta.url);
@@ -56,8 +58,37 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
-const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'replayLengthSec', 'hotkeys']);
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'replayLengthSec', 'hotkeys', 'audio']);
 export { recordingAbsolutePath };
+
+const execFileAsync = promisify(execFile);
+
+function parseCsvLine(line) {
+  const fields = [];
+  let field = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && line[index + 1] === '"' && quoted) { field += '"'; index += 1; }
+    else if (character === '"') quoted = !quoted;
+    else if (character === ',' && !quoted) { fields.push(field); field = ''; }
+    else field += character;
+  }
+  fields.push(field);
+  return fields;
+}
+
+export function parseRecordingProcessList(output) {
+  const names = String(output ?? '').split(/\r?\n/).map((line) => parseCsvLine(line.trim())[0]?.trim()).filter((name) => name && !/^INFO:/i.test(name));
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+export async function listWindowsRecordingProcesses({ execFileImpl = execFileAsync, platform = process.platform } = {}) {
+  if (platform !== 'win32') return [];
+  const result = await execFileImpl('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  return parseRecordingProcessList(result?.stdout ?? result);
+}
+
 function recordingPatch(patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('recording-settings-save: patch must be an object');
   for (const key of Object.keys(patch)) if (!RECORDING_PATCH_KEYS.has(key)) throw new Error(`recording-settings-save: unknown field '${key}'`);
@@ -68,8 +99,34 @@ function recordingPatch(patch) {
   if (patch.fps !== undefined && !RECORDING_FPS.includes(patch.fps)) throw new Error('recording-settings-save: invalid FPS');
   if (patch.resolution !== undefined && !RECORDING_RESOLUTIONS.some((item) => item.id === patch.resolution)) throw new Error('recording-settings-save: invalid resolution');
   if (patch.encoderId !== undefined && (typeof patch.encoderId !== 'string' || patch.encoderId.length > 128)) throw new Error('recording-settings-save: invalid encoder id');
+  if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
   if (patch.hotkeys !== undefined && (!patch.hotkeys || typeof patch.hotkeys !== 'object' || Array.isArray(patch.hotkeys))) throw new Error('recording-settings-save: hotkeys must be an object');
+  if (patch.audio !== undefined) {
+    if (!patch.audio || typeof patch.audio !== 'object' || Array.isArray(patch.audio)) throw new Error('recording-settings-save: audio must be an object');
+    const audio = patch.audio;
+    if (audio.sourceMode !== undefined && !RECORDING_AUDIO_SOURCE_MODES.includes(audio.sourceMode)) throw new Error('recording-settings-save: invalid audio source mode');
+    if (audio.customProcesses !== undefined) validateRecordingProcessNames(audio.customProcesses);
+    for (const [section, fields] of [['microphone', ['enabled', 'mono']], ['system', ['enabled']]]) {
+      if (audio[section] === undefined) continue;
+      if (!audio[section] || typeof audio[section] !== 'object' || Array.isArray(audio[section])) throw new Error(`recording-settings-save: ${section} must be an object`);
+      for (const field of fields) if (audio[section][field] !== undefined && typeof audio[section][field] !== 'boolean') throw new Error(`recording-settings-save: ${section}.${field} must be boolean`);
+      if (audio[section].deviceId !== undefined && (typeof audio[section].deviceId !== 'string' || audio[section].deviceId.length > 512)) throw new Error(`recording-settings-save: ${section}.deviceId is invalid`);
+      if (audio[section].volume !== undefined && (typeof audio[section].volume !== 'number' || !Number.isFinite(audio[section].volume) || audio[section].volume < 0 || audio[section].volume > 1)) throw new Error(`recording-settings-save: ${section}.volume is invalid`);
+    }
+  }
   return out;
+}
+
+function foregroundRecordingProcessName(foregroundApi) {
+  if (typeof foregroundApi?.detectProcess !== 'function') return null;
+  return Promise.resolve().then(() => foregroundApi.detectProcess()).then((processInfo) => {
+    const exePath = typeof processInfo?.exePath === 'string' ? processInfo.exePath : '';
+    const processName = path.win32.basename(exePath).trim();
+    if (!processName || !/\.exe$/i.test(processName)) return null;
+    const ownProcessName = path.win32.basename(process.execPath).toLowerCase();
+    const blocked = new Set([ownProcessName, 'electron.exe', 'ascent-obs.exe', 'arc power uninstaller.exe']);
+    return blocked.has(processName.toLowerCase()) ? null : processName;
+  }).catch(() => null);
 }
 
 // M24 (Part B): the pushed post-apply read-back channel vocabulary (ipc-core
@@ -958,6 +1015,7 @@ export function createIpcHandlers({
   openRecordingFolder = async () => {},
   refreshRecordingHotkeys = async () => null,
   getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }),
+  recordingProcessList = null,
 }) {
   // D2: the real app injects its sidecar store, while tests can provide an
   // in-memory adapter. The fallback is isolated to the ProfileStore data
@@ -2402,12 +2460,12 @@ export function createIpcHandlers({
       },
       'recording-runtime-probe': async (...args) => {
         assertNoPayload(args, 'recording-runtime-probe');
-        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], hotkeys: getRecordingHotkeyState() };
+        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], hotkeys: getRecordingHotkeyState() };
         return { ...(await recordingEngine.probe()), hotkeys: getRecordingHotkeyState() };
       },
       'recording-status': async (...args) => {
         assertNoPayload(args, 'recording-status');
-        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [] }), hotkeys: getRecordingHotkeyState() };
+        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), hotkeys: getRecordingHotkeyState() };
       },
       'recording-start': async (...args) => {
         assertNoPayload(args, 'recording-start');
@@ -2415,8 +2473,9 @@ export function createIpcHandlers({
         const settings = await recordingStore.settings();
         const location = recordingAbsolutePath(settings.location, 'location');
         fs.mkdirSync(location, { recursive: true });
-        const outputPath = path.join(location, `ArcPower-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`);
-        const state = await recordingEngine.startRecording({ ...settings, outputPath });
+        const outputPath = collisionSafeRecordingPath(location, 'recording', { exists: (candidate) => fs.existsSync(candidate) });
+        const captureProcessName = settings.audio?.sourceMode === 'game' ? await foregroundRecordingProcessName(foregroundApi) : null;
+        const state = await recordingEngine.startRecording({ ...settings, outputPath, ...(captureProcessName ? { captureProcessName } : {}) });
         return { state, outputPath: path.basename(outputPath) };
       },
       'recording-stop': async (...args) => {
@@ -2433,7 +2492,8 @@ export function createIpcHandlers({
         // Replay mode keeps only the rolling buffer. It must not receive a
         // normal file-output path, otherwise stopping the buffer can create a
         // full-session recording alongside the intended clips.
-        const state = await recordingEngine.startReplay({ ...settings });
+        const captureProcessName = settings.audio?.sourceMode === 'game' ? await foregroundRecordingProcessName(foregroundApi) : null;
+        const state = await recordingEngine.startReplay({ ...settings, ...(captureProcessName ? { captureProcessName } : {}) });
         return { state, outputPath: null };
       },
       'recording-clip-save': async (payload = {}) => {
@@ -2443,7 +2503,7 @@ export function createIpcHandlers({
         const location = recordingAbsolutePath(settings.location, 'location');
         const headDurationMs = Number.isFinite(payload.headDurationMs) ? Math.min(3600000, Math.max(0, Math.round(payload.headDurationMs))) : settings.replayLengthSec * 1000;
         fs.mkdirSync(location, { recursive: true });
-        const outputPath = path.join(location, `ArcPower-Clip-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`);
+        const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fs.existsSync(candidate) });
         const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });
         return { response, outputPath: path.basename(outputPath) };
       },
@@ -2451,6 +2511,10 @@ export function createIpcHandlers({
         assertNoPayload(args, 'recording-clips-list');
         if (!recordingStore) return [];
         return recordingStore.scanClips ? recordingStore.scanClips() : recordingStore.listClips();
+      },
+      'recording-processes-list': async (...args) => {
+        assertNoPayload(args, 'recording-processes-list');
+        return recordingProcessList ? recordingProcessList() : listWindowsRecordingProcesses();
       },
       'recording-choose-folder': async (...args) => {
         assertNoPayload(args, 'recording-choose-folder');
