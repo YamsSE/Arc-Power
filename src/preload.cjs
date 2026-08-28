@@ -186,7 +186,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   // never closed by the panel).
   advancedOverlayClose: () => ipcRenderer.invoke('advanced-overlay:close'),
   // M25: auto-update IPC (GitHub Releases check/download/install).
-  updateCheck: () => ipcRenderer.invoke('update:check'),
+  updateCheck: (intent = 'startup') => ipcRenderer.invoke('update:check', { intent }),
   updateDownload: (assetUrl) => ipcRenderer.invoke('update:download', assetUrl),
   updateInstall: (filePath) => ipcRenderer.invoke('update:install', filePath),
 });

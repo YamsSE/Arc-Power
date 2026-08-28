@@ -718,7 +718,9 @@ export async function resolveBootDeviceId(backend, store) {
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
  *   appLifecycle?: { clearCacheAndRestart: () => Promise<{ ok: boolean, restarting: boolean }> },
- *   buildKind?: 'installed' | 'portable' | 'dev',  // M4-E: app:build-info
+ *   buildKind?: 'installed' | 'portable' | 'dev' | 'unknown',  // M4-E: app:build-info
+ *   portableWrapperPath?: string | null,  // M98: validated portable wrapper target shared by classification and replacement
+ *   startupUpdateCheck?: (options: { buildKind: string, intent: 'startup' | 'manual' }) => Promise<object>,
  *   bootApplyOutcome?: () => ({ ok: boolean, detail: string, at: number } | null),  // M4N: the window-path boot apply's outcome record (main.js injects it; null when no boot apply ran this session)
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
  *   applyRunner?: object|null,   // elevation-aware apply runner (elevated-apply)
@@ -850,6 +852,8 @@ export function createIpcHandlers({
   // M4-E: the distribution kind for the app:build-info channel ('dev' in
   // tests; main.js injects 'installed' | 'portable' | 'dev').
   buildKind = 'dev',
+  portableWrapperPath = null,
+  startupUpdateCheck = null,
   // M4N (A.1): the window-path boot apply's outcome record (main.js
   // injects the session record; null when no boot apply ran this session -
   // the DEFAULT is null, tests never have a boot apply).
@@ -2257,7 +2261,15 @@ export function createIpcHandlers({
       // matching release asset, so portable builds never download an
       // installer (and installed builds never download a portable wrapper).
       'update:check': async (...args) => {
-        assertNoPayload(args, 'update:check');
+        if (args.length > 1 || (args.length === 1 && (typeof args[0] !== 'object' || args[0] === null || Array.isArray(args[0])))) {
+          throw new Error('update:check intent must be startup or manual');
+        }
+        const intent = args[0]?.intent ?? 'startup';
+        if (intent !== 'startup' && intent !== 'manual') throw new Error('update:check intent must be startup or manual');
+        if (buildKind !== 'installed' && buildKind !== 'portable') return { available: false };
+        if (typeof startupUpdateCheck === 'function') {
+          return startupUpdateCheck({ buildKind, intent });
+        }
         const { checkForUpdates } = await import('./auto-update.js');
         return checkForUpdates({ buildKind });
       },
@@ -2279,7 +2291,7 @@ export function createIpcHandlers({
       'update:install': async (filePath) => {
         if (typeof filePath !== 'string') throw new Error('missing file path');
         const { installUpdate } = await import('./auto-update.js');
-        await installUpdate(filePath, { buildKind });
+        await installUpdate(filePath, { buildKind, portableWrapperPath });
       },
 
       // FPS via DXGI GetFrameStatistics (M4-D2 - replaced PresentMon). The

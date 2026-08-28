@@ -43,6 +43,8 @@ import { createGameTuningController } from './game-tuning.js';
  *   applyRunner?: object | null,
  *   isElevated?: () => boolean,
  *   buildKind?: 'installed' | 'portable' | 'dev',  // M4-E: app:build-info
+ *   portableWrapperPath?: string | null,  // M98: validated portable wrapper target shared by classification and replacement
+ *   startupUpdateCheck?: (options: { buildKind: string, intent: 'startup' | 'manual' }) => Promise<object>,
  *   bootApplyOutcome?: () => ({ ok: boolean, detail: string, at: number } | null),  // M4N: the window-path boot apply's outcome record (main.js; null when no boot apply ran)
  *   mock?: { listFeaturesets: () => Promise<unknown>, setFeatureset: (id: string) => Promise<unknown>, runBootApply?: () => Promise<unknown>, bootApplyLog?: () => Promise<unknown> } | null,
  *   getOverlayWindow?: () => import('electron').BrowserWindow | null,  // M5: the overlay window (null when absent - the emit null-guards it)
@@ -60,7 +62,7 @@ import { createGameTuningController } from './game-tuning.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -81,6 +83,8 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     rebuildTray,
     appVersion: app.getVersion(),
     buildKind,
+    portableWrapperPath,
+    startupUpdateCheck,
     bootApplyOutcome,
     oldIgcl,
     applyRunner,

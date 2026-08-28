@@ -10,7 +10,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { mkdir, cp, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -21,8 +21,10 @@ import {
   createInstallationPlan,
   createUninstallCleanupScript,
   installerModeFromEnvironment,
+  parseUpdateArguments,
   powershellLiteral,
   resolveDefaultInstallDir,
+  validateInstalledUpdateTarget,
 } from './installer-pure.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -113,7 +115,50 @@ function payloadRoot() {
 }
 
 function sendProgress(win, percent, message) {
-  if (!win.isDestroyed()) win.webContents.send('installer:progress', { percent, message });
+  if (win && !win.isDestroyed()) win.webContents.send('installer:progress', { percent, message });
+}
+
+async function readInstalledUpdateRegistration() {
+  const key = `HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`;
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$entry = Get-ItemProperty -LiteralPath ${powershellLiteral(key)} -ErrorAction Stop`,
+    '[pscustomobject]@{',
+    '  DisplayName = [string]$entry.DisplayName',
+    '  InstallLocation = [string]$entry.InstallLocation',
+    '  DisplayIcon = [string]$entry.DisplayIcon',
+    '  UninstallString = [string]$entry.UninstallString',
+    '} | ConvertTo-Json -Compress',
+  ].join('\n');
+  const { stdout } = await execFileAsync(powershellPath(), [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-EncodedCommand', encodedPowerShell(script),
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  const output = String(stdout ?? '').trim();
+  if (!output) throw new Error('Arc Power update registration is missing');
+  try {
+    return JSON.parse(output);
+  } catch {
+    throw new Error('Arc Power update registration returned invalid structured data');
+  }
+}
+
+function isSafeUpdateDestination(installDir) {
+  let current = path.resolve(installDir);
+  while (true) {
+    try {
+      // Junctions and symbolic links are reported as symbolic links by
+      // lstatSync on Windows. Reject every existing component so an attacker
+      // cannot redirect the registered destination through a parent reparse
+      // point between validation and copy.
+      if (lstatSync(current).isSymbolicLink()) return false;
+    } catch {
+      return false;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return true;
+    current = parent;
+  }
 }
 
 async function copyPackagedPayload(sourceRoot, installDir) {
@@ -170,6 +215,10 @@ async function installArcPower(win, options = {}) {
     throw new Error('The installer payload and install location cannot be the same directory');
   }
 
+  if (options.updateParentPid !== undefined && options.updateParentPid !== null) {
+    await waitForProcessExit(options.updateParentPid);
+  }
+
   sendProgress(win, 8, 'Preparing your Arc Power installation');
   await mkdir(plan.installDir, { recursive: true });
   sendProgress(win, 20, 'Copying the Arc Power application');
@@ -202,15 +251,82 @@ async function installArcPower(win, options = {}) {
   return { ok: true, plan, launched: plan.launchAfterInstall };
 }
 
+export function waitForProcessExit(pid, {
+  timeoutMs = 60_000,
+  pollMs = 250,
+  isAlive = (value) => {
+    try { process.kill(value, 0); return true; } catch { return false; }
+  },
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  if (!Number.isInteger(pid) || pid < 1) throw new TypeError('parent PID must be a positive integer');
+  return (async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (isAlive(pid)) {
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for process ${pid} to exit`);
+      await sleep(pollMs);
+    }
+  })();
+}
+
+async function runInstalledUpdate({ parentPid, installDir }) {
+  const diagnosticPath = path.join(app.getPath('temp'), `arc-power-update-${process.pid}.log`);
+  try {
+    const paths = windowsPaths();
+    const registration = await readInstalledUpdateRegistration();
+    const validatedTarget = validateInstalledUpdateTarget({
+      installDir,
+      registration,
+      executableExists: existsSync(path.join(path.resolve(installDir), INSTALLED_EXECUTABLE_NAME)),
+      destinationIsSafe: isSafeUpdateDestination(installDir),
+    });
+    const currentPlan = createInstallationPlan({
+      ...paths,
+      installDir: validatedTarget.installDir,
+      createDesktopShortcut: false,
+      launchAfterInstall: false,
+      version: app.getVersion(),
+    });
+    const result = await installArcPower(null, {
+      installDir: validatedTarget.installDir,
+      createDesktopShortcut: existsSync(currentPlan.desktopShortcutPath),
+      launchAfterInstall: false,
+      updateParentPid: parentPid,
+    });
+    await launchInstalledApp(result.plan.executablePath, result.plan.installDir);
+    app.quit();
+    return { ok: true, kind: 'installed', installDir: result.plan.installDir };
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    try { await writeFile(diagnosticPath, `${new Date().toISOString()} ${message}\n`, { encoding: 'utf8', mode: 0o600 }); } catch { /* best effort */ }
+    throw new Error(`Installed update failed: ${message}. Diagnostics: ${diagnosticPath}`);
+  }
+}
+
 async function scheduleUninstall(plan) {
   const scriptPath = path.join(app.getPath('temp'), `arc-power-uninstall-${process.pid}.ps1`);
   await writeFile(scriptPath, createUninstallCleanupScript({ pid: process.pid, plan, scriptPath }), { encoding: 'utf8', mode: 0o600 });
-  const child = spawn(powershellPath(), [
-    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', scriptPath,
-  ], { detached: true, stdio: 'ignore', windowsHide: true });
-  if (!child.pid) throw new Error('Could not start the Arc Power uninstall helper');
-  child.unref();
+  await new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(powershellPath(), [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', scriptPath,
+      ], { detached: true, stdio: 'ignore', windowsHide: true });
+    } catch (cause) {
+      reject(cause);
+      return;
+    }
+    child.once('error', reject);
+    child.once('spawn', () => {
+      if (!child.pid) {
+        reject(new Error('Could not start the Arc Power uninstall helper'));
+        return;
+      }
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 async function uninstallArcPower(win) {
@@ -229,11 +345,12 @@ async function uninstallArcPower(win) {
   // the DIPS directory), so removing the cache here makes the operation fail
   // before the completion view can be shown.
   await scheduleUninstall(plan);
-  sendProgress(win, 100, 'Arc Power has been removed');
-  return { ok: true, plan };
+  sendProgress(win, 96, 'Removal is in progress; closing setup');
+  return { ok: true, scheduled: true, plan };
 }
 
 function registerInstallerIpc(win, mode) {
+  let closeRequested = false;
   const handlers = {
     'installer:state': async () => {
       const paths = windowsPaths();
@@ -253,7 +370,13 @@ function registerInstallerIpc(win, mode) {
     },
     'installer:install': async (_event, options) => installArcPower(win, options),
     'installer:uninstall': async () => uninstallArcPower(win),
-    'installer:close': async () => { app.quit(); return { ok: true }; },
+    'installer:close': async () => {
+      if (!closeRequested) {
+        closeRequested = true;
+        app.quit();
+      }
+      return { ok: true };
+    },
   };
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, handler);
 }
@@ -261,6 +384,16 @@ function registerInstallerIpc(win, mode) {
 export async function runInstallerMode(mode = 'install') {
   await app.whenReady();
   app.setAppUserModelId?.('com.rid.arcpower');
+  if (mode === 'update') {
+    try {
+      return await runInstalledUpdate(parseUpdateArguments(process.argv));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      try { dialog.showErrorBox('Arc Power update failed', message); } catch { /* best effort */ }
+      app.exit(1);
+      return { ok: false, error: message };
+    }
+  }
   const win = new BrowserWindow({
     width: 860,
     height: 570,

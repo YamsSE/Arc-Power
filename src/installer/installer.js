@@ -21,6 +21,15 @@ const cancelButton = $('cancel-button');
 
 let busy = false;
 let completed = false;
+let closeRequested = false;
+
+function closeInstaller() {
+  if (closeRequested) return;
+  closeRequested = true;
+  Promise.resolve()
+    .then(() => api.close())
+    .catch(() => { closeRequested = false; });
+}
 
 function setView(view) {
   document.body.dataset.state = view;
@@ -55,14 +64,19 @@ function showComplete({ uninstall = false, launched = false } = {}) {
   setView('complete');
   installForm.hidden = true;
   statusCard.hidden = false;
-  statusTitle.textContent = uninstall ? 'Arc Power has been removed' : 'Arc Power is ready';
+  statusTitle.textContent = uninstall ? 'Arc Power removal is in progress' : 'Arc Power is ready';
   statusDetail.textContent = uninstall
-    ? 'Your profiles were kept. The disposable cache and application files are gone.'
+    ? 'Your profiles are kept. This window is closing while the application files and Windows registration are cleaned up.'
     : (launched ? 'The Arc Power control panel is opening now.' : 'You can launch Arc Power from the Start Menu any time.');
   primaryButton.textContent = uninstall ? 'CLOSE' : 'CLOSE SETUP';
   cancelButton.hidden = true;
   progressArea.hidden = false;
-  setProgress(100, uninstall ? 'Removal complete' : 'Installation complete');
+  setProgress(uninstall ? 96 : 100, uninstall ? 'Removal in progress — closing' : 'Installation complete');
+  if (uninstall) {
+    const closeAfterPaint = () => setTimeout(closeInstaller, 120);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(closeAfterPaint);
+    else setTimeout(closeAfterPaint, 0);
+  }
 }
 
 async function runInstall() {
@@ -108,13 +122,13 @@ browseButton.addEventListener('click', async () => {
   const chosen = await api.chooseDirectory();
   if (chosen) installDirectory.value = chosen;
 });
-cancelButton.addEventListener('click', () => { if (!busy) api.close(); });
+cancelButton.addEventListener('click', () => { if (!busy) closeInstaller(); });
 primaryButton.addEventListener('click', () => {
-  if (completed) api.close();
+  if (completed) closeInstaller();
   else if (mode === 'uninstall') runUninstall();
   else runInstall();
 });
-$('close-button').addEventListener('click', () => { if (!busy) api.close(); });
+$('close-button').addEventListener('click', () => { if (!busy) closeInstaller(); });
 api.onProgress(({ percent, message }) => setProgress(percent, message));
 
 if (mode === 'uninstall') {

@@ -246,7 +246,7 @@ export interface ArcPowerApi {
    *  dedicated channel; the main window is never closed by the panel). */
   advancedOverlayClose(): Promise<void>;
   /** M25: check GitHub Releases for a newer version. */
-  updateCheck(): Promise<{ available: boolean; version?: string; assetUrl?: string; assetName?: string }>;
+  updateCheck(intent?: 'startup' | 'manual'): Promise<{ available: boolean; version?: string; assetUrl?: string; assetName?: string }>;
   /** M25: download a release asset to temp. */
   updateDownload(assetUrl: string): Promise<{ ok: boolean; path: string }>;
   /** M25: install a downloaded update and quit the app. */

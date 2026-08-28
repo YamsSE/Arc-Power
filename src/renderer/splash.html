@@ -13,9 +13,17 @@
     </div>
     <div class="splash-brand">Arc <span>Power</span></div>
     <div class="splash-progress" role="progressbar" aria-label="Loading Arc Power">
-      <div class="splash-progress-glow"></div>
+      <div class="splash-progress-value"></div>
     </div>
-    <p class="splash-status">Starting Arc Power...</p>
+    <p class="splash-status" aria-live="polite">Starting Arc Power...</p>
+    <section class="splash-update-actions" aria-live="polite" hidden>
+      <p class="splash-update-title">A new version of Arc Power is ready</p>
+      <div class="splash-update-buttons">
+        <button class="splash-update-primary" id="splash-update-now" type="button">UPDATE NOW</button>
+        <button class="splash-update-secondary" id="splash-skip-update" type="button">SKIP FOR NOW</button>
+      </div>
+    </section>
   </main>
+  <script src="./splash.js"></script>
 </body>
 </html>

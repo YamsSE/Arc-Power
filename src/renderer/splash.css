@@ -95,12 +95,82 @@ body {
   animation: splash-progress 1.55s ease-in-out infinite;
 }
 
+.splash-progress-value {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3ab8ff 0%, #8b5cff 100%);
+  box-shadow: 0 0 13px rgba(76, 194, 255, 0.62);
+  transition: width 180ms ease-out;
+}
+
+.splash-progress-indeterminate {
+  width: 32%;
+  animation: splash-progress 1.55s ease-in-out infinite;
+}
+
 .splash-status {
   margin: 15px 0 0;
   color: #8e9bb0;
   font-size: 12px;
   font-weight: 500;
 }
+
+.splash-update-actions {
+  width: 418px;
+  margin-top: 20px;
+  padding: 14px 16px 15px;
+  border: 1px solid rgba(76, 194, 255, 0.32);
+  border-radius: 6px;
+  background: rgba(14, 24, 38, 0.88);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.2);
+}
+
+.splash-update-title {
+  margin: 0 0 12px;
+  color: #eaf3ff;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.splash-update-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.splash-update-buttons button {
+  min-width: 142px;
+  padding: 9px 13px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #f5f8ff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.splash-update-buttons button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.splash-update-primary {
+  background: linear-gradient(100deg, #269edb, #6758dc);
+}
+
+.splash-update-secondary {
+  border-color: #34445b !important;
+  background: #111a27;
+}
+
+body[data-update-state="available"] .splash-progress-value { background: linear-gradient(90deg, #4cc2ff, #9f79ff); }
+body[data-update-state="current"] .splash-progress-value { background: linear-gradient(90deg, #4cc2ff, #5ed6a0); }
+body[data-update-state="error"] .splash-progress-value { background: linear-gradient(90deg, #9aa7ba, #68758b); }
 
 @keyframes splash-progress {
   0% { transform: translateX(0); opacity: 0.35; }

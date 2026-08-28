@@ -92,7 +92,7 @@ async function handleUpdateClick(): Promise<void> {
       downloadedPath = null;
       setUpdateBtn('checking');
       try {
-        const result = await api.updateCheck();
+        const result = await api.updateCheck('manual');
         if (result.available && result.version && result.assetUrl) {
           updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '' };
           setUpdateBtn('update-available');
@@ -180,7 +180,7 @@ export async function startupUpdateCheck(): Promise<void> {
   downloadedPath = null;
   setUpdateBtn('checking');
   try {
-    const result = await api.updateCheck();
+    const result = await api.updateCheck('startup');
     if (result.available && result.version && result.assetUrl) {
       updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '' };
       setUpdateBtn('update-available');

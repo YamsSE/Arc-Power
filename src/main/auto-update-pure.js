@@ -25,7 +25,9 @@ export function parseReleaseTag(tag) {
 }
 
 export function expectedAssetName(buildKind) {
-  return buildKind === 'portable' ? ASSET_NAMES.portable : ASSET_NAMES.installed;
+  if (buildKind === 'portable') return ASSET_NAMES.portable;
+  if (buildKind === 'installed') return ASSET_NAMES.installed;
+  return null;
 }
 
 /** Return a normalized URL only for the Arc Power GitHub release path. */
@@ -46,6 +48,7 @@ export function validateReleaseAssetUrl(value, expectedName = null) {
 
 export function selectReleaseAsset(release, buildKind) {
   const expectedName = expectedAssetName(buildKind);
+  if (!expectedName) return null;
   const asset = (Array.isArray(release?.assets) ? release.assets : []).find((candidate) => (
     typeof candidate?.name === 'string'
       && candidate.name.toLowerCase() === expectedName.toLowerCase()
@@ -61,11 +64,13 @@ export function selectReleaseAsset(release, buildKind) {
 /** Validate that an update file is the expected asset inside our temp folder. */
 export function validateDownloadedUpdatePath(filePath, { buildKind, tempDir }) {
   if (typeof filePath !== 'string' || typeof tempDir !== 'string') return null;
+  const expectedName = expectedAssetName(buildKind);
+  if (!expectedName) return null;
   const candidate = resolve(filePath);
   const root = resolve(tempDir);
   const child = relative(root, candidate);
   if (!child || child.startsWith('..') || isAbsolute(child)) return null;
-  if (basename(candidate).toLowerCase() !== expectedAssetName(buildKind).toLowerCase()) return null;
+  if (basename(candidate).toLowerCase() !== expectedName.toLowerCase()) return null;
   if (extname(candidate).toLowerCase() !== '.exe') return null;
   return candidate;
 }
@@ -79,6 +84,17 @@ export function validatePortableTargetPath(targetPath, downloadedPath) {
   return target;
 }
 
+/** Resolve the same validated wrapper target used for portable classification. */
+export function resolvePortableUpdateTarget({ portableWrapperPath = null, downloadedPath } = {}) {
+  return validatePortableTargetPath(portableWrapperPath, downloadedPath);
+}
+
+export function installedUpdateArguments({ parentPid, installDir } = {}) {
+  if (!Number.isInteger(parentPid) || parentPid < 1) throw new TypeError('parent PID must be a positive integer');
+  if (typeof installDir !== 'string' || !isAbsolute(installDir)) throw new TypeError('install directory must be absolute');
+  return ['--update', '--update-parent-pid', String(parentPid), '--update-install-dir', resolve(installDir)];
+}
+
 /**
  * PowerShell handoff used by portable builds. It waits for this app to exit,
  * stages the downloaded executable beside the target (so the initial copy can
@@ -90,10 +106,14 @@ export function createPortableHandoffScript() {
   return `param(
   [Parameter(Mandatory = $true)][int]$ParentPid,
   [Parameter(Mandatory = $true)][string]$DownloadedPath,
-  [Parameter(Mandatory = $true)][string]$TargetPath
+  [Parameter(Mandatory = $true)][string]$TargetPath,
+  [Parameter(Mandatory = $true)][string]$DiagnosticPath
 )
 
 $ErrorActionPreference = 'Stop'
+function Write-Diagnostic([string]$message) {
+  try { Add-Content -LiteralPath $DiagnosticPath -Value ("{0:u} {1}" -f [DateTime]::UtcNow, $message) -Encoding UTF8 } catch {}
+}
 while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
   Start-Sleep -Milliseconds 250
 }
@@ -119,17 +139,25 @@ for ($attempt = 0; $attempt -lt 20 -and -not $moved; $attempt++) {
     }
     $moved = (Test-Path -LiteralPath $TargetPath -PathType Leaf) -and ((Get-Item -LiteralPath $TargetPath).Length -eq $sourceLength)
   } catch {
+    Write-Diagnostic ("replacement attempt {0} failed: {1}" -f $attempt, $_.Exception.Message)
     Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 250
   }
 }
 
 if (-not $moved) {
+  Write-Diagnostic 'portable update replacement failed; the original executable was not relaunched'
   Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
   exit 1
 }
 Remove-Item -LiteralPath $DownloadedPath -Force -ErrorAction SilentlyContinue
-Start-Process -FilePath $TargetPath
+try {
+  $relaunch = Start-Process -FilePath $TargetPath -PassThru -ErrorAction Stop
+  if (-not $relaunch -or $relaunch.HasExited) { throw 'portable update relaunch did not start' }
+} catch {
+  Write-Diagnostic ("portable update relaunch failed: {0}" -f $_.Exception.Message)
+  exit 1
+}
 Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 `;
 }

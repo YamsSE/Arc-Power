@@ -40,7 +40,7 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -64,9 +64,12 @@ import { createOverlayWindow } from './overlay.js';
 // interactivity (NO setIgnoreMouseEvents).
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
-import { createStartupSplash } from './splash.js';
+import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
 import { installerModeFromEnvironment } from './installer-pure.js';
+import { checkForUpdates } from './auto-update.js';
+import { createStartupUpdateCoordinator, shouldBlockStartupSplashClose } from './startup-update.js';
+import { createStartupUpdateHandoff } from './startup-update-handoff.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
@@ -83,7 +86,7 @@ import { applyProfile, runApplyOnStartup, applyProfileBoot, resolveApplyDeviceId
 import { runBootApplyMode } from './boot-apply-mode.js';
 import { shouldUseInstanceLock, acquireInstanceLock, focusExistingWindow } from './single-instance.js';
 import { createBootSetup, taskActionMatches } from './setup-boot.js';
-import { deriveBuildKind } from './build-kind.js';
+import { deriveBuildKind, resolvePortableWrapperPath } from './build-kind.js';
 import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, TRAY_LABEL_APPLY_PROFILE, trayBalloonForOutcome } from './tray.js';
 import { trayApplyActiveProfile } from './tray-apply.js';
 import { isElevated as isElevatedReal } from './elevation.js';
@@ -152,10 +155,32 @@ function portableParentExecutableFile() {
   }
 }
 
+function installedRegistryMatchesExecutable() {
+  if (!app.isPackaged || process.platform !== 'win32') return false;
+  try {
+    const output = execFileSync('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-Command', "try { $entry = Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Arc Power' -ErrorAction Stop; if ($entry.InstallLocation) { [Console]::Write([string]$entry.InstallLocation) } } catch {}",
+    ], { encoding: 'utf8', windowsHide: true, timeout: 2000 });
+    const registeredInstallDir = String(output).trim();
+    if (!registeredInstallDir || !path.isAbsolute(registeredInstallDir)) return false;
+    return path.resolve(registeredInstallDir).toLowerCase() === path.dirname(process.execPath).toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+const parentExecutableFile = process.env.PORTABLE_EXECUTABLE_FILE ? null : portableParentExecutableFile();
+const portableWrapperPath = resolvePortableWrapperPath({
+  portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE ?? null,
+  portableExecutableDir: process.env.PORTABLE_EXECUTABLE_DIR ?? null,
+  parentExecutableFile,
+});
+
 const installerMode = installerModeFromEnvironment({
   argv: process.argv,
   portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE ?? null,
-  parentExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE ? null : portableParentExecutableFile(),
+  parentExecutableFile,
 });
 const applyProfileIdx = process.argv.indexOf('--apply-profile');
 const applyProfileId = applyProfileIdx >= 0 ? process.argv[applyProfileIdx + 1] : null;
@@ -453,6 +478,7 @@ async function main() {
     await runInstallerMode(installerMode);
     return;
   }
+  const installedBuild = app.isPackaged && !portableWrapperPath && installedRegistryMatchesExecutable();
   // Set the Windows identity before any window is created so taskbar grouping
   // resolves to the Arc Power app and not a stale/default Electron identity.
   if (!headless && !uiVerify && !profileBoot && !mock) {
@@ -463,6 +489,8 @@ async function main() {
   // prepares the cache, backend, profiles, tray, and renderer.
   let startupSplash = null;
   let startupSplashTimeout = null;
+  const startupUpdate = createStartupUpdateCoordinator({ check: checkForUpdates });
+  const startupBuildKind = deriveBuildKind({ mock, installedBuild, isPackaged: app.isPackaged, portableWrapperPath });
   const dismissStartupSplash = () => {
     if (startupSplashTimeout) {
       clearTimeout(startupSplashTimeout);
@@ -474,14 +502,56 @@ async function main() {
     } catch { /* best effort during shutdown */ }
     startupSplash = null;
   };
-  const startupSplashReady = !headless && !uiVerify && !profileBoot && !mock
-    ? app.whenReady().then(() => {
+  const startupSplashReady = app.isPackaged
+    && (startupBuildKind === 'installed' || startupBuildKind === 'portable')
+    && !headless && !uiVerify && !profileBoot && !mock && !bootApply
+    && !workerReqFile && !sysmanHelperReqFile && sysmanHelperPipeIdx < 0
+    && !applyProfileId
+    ? app.whenReady().then(async () => {
+      // Start independently of splash creation: a failed BrowserWindow must
+      // not remove the titlebar's startup update check.
+      const startupUpdatePromise = startupUpdate.start({ buildKind: startupBuildKind });
+      void startupUpdatePromise.catch((err) => console.log(`[update] startup check failed: ${err.message}`));
+      ipcMain.handle('splash:update-choice', async (_event, action) => {
+        if (action !== 'skip') throw new Error('startup update choice must be skip');
+        return startupUpdate.choose('skip');
+      });
+      const startupUpdateHandoff = createStartupUpdateHandoff({
+        coordinator: startupUpdate,
+        buildKind: startupBuildKind,
+        portableWrapperPath,
+        downloadUpdate: async (...args) => (await import('./auto-update.js')).downloadUpdate(...args),
+        installUpdate: async (...args) => (await import('./auto-update.js')).installUpdate(...args),
+        completeUpdate: (handoff) => startupUpdate.completeUpdate(handoff),
+      });
+      ipcMain.handle('splash:update-now', async () => startupUpdateHandoff.updateNow());
       try {
-        startupSplash = createStartupSplash();
-        startupSplashTimeout = setTimeout(dismissStartupSplash, 30000);
+        startupSplash = createStartupSplash({
+          onFatalLoad: () => {
+            const failure = startupUpdate.fatalSplashFailure();
+            if (failure.action === 'abort') app.quit();
+          },
+        });
+        attachStartupUpdateStatus(startupSplash, startupUpdate);
+        startupSplash.on('close', (event) => {
+          // Alt+F4 or a window-manager close must not strand the main process
+          // while an update is downloading or recovering from a failed
+          // handoff. The user can still choose Skip once the retryable
+          // available state is painted; a successful handoff is allowed to
+          // close because completeUpdate() has resolved the restart decision.
+          if (shouldBlockStartupSplashClose({
+            updatePending: startupUpdate.updatePending(),
+            restartResolved: startupUpdate.restartResolved(),
+            handoffStarted: startupUpdate.handoffStarted(),
+            fatalSplashFailure: startupUpdate.fatalSplashFailed(),
+          })) event.preventDefault();
+        });
+        startupSplash.once('closed', () => startupUpdate.continueWithoutPrompt());
       } catch (err) {
         console.error(`[splash] unable to create startup window: ${err.message}`);
+        startupUpdate.continueWithoutPrompt();
       }
+      return startupUpdate.decision();
     })
     : null;
 
@@ -866,7 +936,10 @@ async function main() {
   }
 
   await app.whenReady();
-  if (startupSplashReady) await startupSplashReady;
+  if (startupSplashReady) {
+    const startupDecision = await startupSplashReady;
+    if (startupDecision?.action === 'restart') return;
+  }
   markProfileBoot('when-ready');
   app.on('will-quit', dismissStartupSplash);
 
@@ -1864,7 +1937,6 @@ async function main() {
   // in-app boot apply ALWAYS runs on the window path (the old gate-green
   // skip is REMOVED: the logon task still owns LOGON applies, and a logon
   // double-apply with the Run-launched app is idempotent).
-  const installedBuild = app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR;
   let bootGate = null; // { green: boolean } | null - null = not applicable/unknown
   let bootGateCheck = null; // the in-flight check promise (informational since M4M)
   if (installedBuild && !mock) {
@@ -2745,7 +2817,9 @@ async function main() {
     // 'portable' (the mock applies in-process like the portable build); the
     // packaged PORTABLE build (PORTABLE_EXECUTABLE_DIR set) reports
     // 'portable' too - never 'dev' (deriveBuildKind pin).
-    buildKind: deriveBuildKind({ mock, installedBuild, isPackaged: app.isPackaged }),
+    buildKind: startupBuildKind,
+    portableWrapperPath,
+    startupUpdateCheck: ({ buildKind, intent }) => startupUpdate.check({ buildKind, intent }),
     // M4N (A.1): the window-path boot apply's outcome record (the renderer
     // boot fetch reads it; M16: the dashboard OC row no longer displays it -
     // the row derives its stock-state verdict from the driver read-back -
