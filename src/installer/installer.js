@@ -141,9 +141,18 @@ if (mode === 'uninstall') {
   cancelButton.textContent = 'KEEP ARC POWER';
 } else {
   setView('idle');
-  api.getState().then((state) => {
-    installDirectory.value = state.installDir;
-    $('version-label').textContent = `VERSION ${state.version}`;
-    if (!state.payloadReady) setError('The packaged application payload is unavailable. Rebuild the installer before installing.');
-  }).catch((cause) => setError(cause?.message || 'Setup could not read its installation state.'));
 }
+
+api.getState().then((state) => {
+  if (mode === 'uninstall') {
+    const previous = state.lastUninstallStatus;
+    if (previous && previous.state !== 'complete') {
+      const diagnostic = previous.diagnosticPath ? ` Diagnostics: ${previous.diagnosticPath}` : '';
+      setError(`The previous removal attempt did not finish. Click REMOVE ARC POWER to retry. ${previous.message}${diagnostic}`);
+    }
+    return;
+  }
+  installDirectory.value = state.installDir;
+  $('version-label').textContent = `VERSION ${state.version}`;
+  if (!state.payloadReady) setError('The packaged application payload is unavailable. Rebuild the installer before installing.');
+}).catch((cause) => setError(cause?.message || 'Setup could not read its installation state.'));

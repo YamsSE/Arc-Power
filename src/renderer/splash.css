@@ -117,6 +117,13 @@ body {
   font-weight: 500;
 }
 
+.splash-loading-status {
+  margin: 5px 0 0;
+  color: #d8e4f5;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .splash-update-actions {
   width: 418px;
   margin-top: 20px;

@@ -156,6 +156,128 @@ export function powershellLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+/** Build the exact command stored in Add/Remove Programs for a temp recovery script. */
+export function createUninstallRecoveryCommand({ powershellPath, scriptPath } = {}) {
+  for (const [value, label] of [[powershellPath, 'PowerShell path'], [scriptPath, 'recovery script path']]) {
+    if (typeof value !== 'string' || value.length === 0 || !path.isAbsolute(value)) {
+      throw new TypeError(`${label} must be a non-empty absolute path`);
+    }
+    if (/[\x00\r\n"]/.test(value)) throw new TypeError(`${label} contains an unsafe command character`);
+  }
+  const quote = (value) => `"${value}"`;
+  return `${quote(powershellPath)} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${quote(scriptPath)} -Retry`;
+}
+
+/**
+ * The first PowerShell process is only a launcher. It starts the real cleanup
+ * helper as a separate hidden process and writes a structured marker after
+ * Start-Process has returned a child PID. The installer UI must not close on
+ * a bare child `spawn` event because that can race Electron's own shutdown.
+ */
+export function createUninstallLaunchScript({
+  pid,
+  cleanupScriptPath,
+  markerPath,
+  powershellPath,
+  workingDirectory,
+  attemptNonce,
+  statusPath,
+  summaryPath,
+}) {
+  if (!Number.isInteger(pid) || pid < 1) throw new TypeError('pid must be a positive integer');
+  if (typeof cleanupScriptPath !== 'string' || cleanupScriptPath.length === 0) throw new TypeError('cleanup script path is required');
+  if (typeof markerPath !== 'string' || markerPath.length === 0) throw new TypeError('launch marker path is required');
+  if (typeof powershellPath !== 'string' || powershellPath.length === 0) throw new TypeError('PowerShell path is required');
+  if (typeof workingDirectory !== 'string' || workingDirectory.length === 0) throw new TypeError('external working directory is required');
+  if (typeof attemptNonce !== 'string' || attemptNonce.length < 16) throw new TypeError('uninstall attempt nonce is required');
+  if (typeof statusPath !== 'string' || statusPath.length === 0) throw new TypeError('uninstall status path is required');
+  if (typeof summaryPath !== 'string' || summaryPath.length === 0) throw new TypeError('uninstall summary path is required');
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$parentPid = ${pid}`,
+    `$cleanupScriptPath = ${powershellLiteral(cleanupScriptPath)}`,
+    `$markerPath = ${powershellLiteral(markerPath)}`,
+    `$powershellPath = ${powershellLiteral(powershellPath)}`,
+    `$workingDirectory = ${powershellLiteral(workingDirectory)}`,
+    `$attemptNonce = ${powershellLiteral(attemptNonce)}`,
+    `$statusPath = ${powershellLiteral(statusPath)}`,
+    `$summaryPath = ${powershellLiteral(summaryPath)}`,
+    `$diagnosticPath = [string]::Concat($cleanupScriptPath, '.log')`,
+    '$arguments = @(',
+    "  '-NoLogo',",
+    "  '-NoProfile',",
+    "  '-NonInteractive',",
+    "  '-ExecutionPolicy',",
+    "  'Bypass',",
+    "  '-File',",
+    '  $cleanupScriptPath',
+    ')',
+    '$helper = Start-Process -FilePath $powershellPath -ArgumentList $arguments -WorkingDirectory $workingDirectory -WindowStyle Hidden -PassThru -ErrorAction Stop',
+    'if ($null -eq $helper -or [int]$helper.Id -lt 1) { throw \'cleanup helper did not start\' }',
+    '$launchedAt = [DateTime]::UtcNow.ToString(\'o\')',
+    '$marker = [pscustomobject]@{ parentPid = $parentPid; helperPid = [int]$helper.Id; attemptNonce = $attemptNonce; launchedAt = $launchedAt } | ConvertTo-Json -Compress',
+    '[IO.File]::WriteAllText($markerPath, $marker, [Text.UTF8Encoding]::new($false))',
+    '$status = [pscustomobject]@{ parentPid = $parentPid; helperPid = [int]$helper.Id; attemptNonce = $attemptNonce; state = \'launched\'; message = \'Cleanup helper launched; waiting for setup to close\'; updatedAt = $launchedAt; diagnosticPath = $diagnosticPath } | ConvertTo-Json -Compress',
+    'foreach ($statusFile in @($statusPath, $summaryPath)) { [IO.File]::WriteAllText($statusFile, $status, [Text.UTF8Encoding]::new($false)) }',
+    'try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch {}',
+    'exit 0',
+  ].join('\n');
+}
+
+/** Parse the launcher handshake without trusting arbitrary marker contents. */
+export function parseUninstallLaunchMarker(value, expectedParentPid, expectedNonce, { notBeforeMs = null } = {}) {
+  if (typeof value !== 'string' || !Number.isInteger(expectedParentPid) || expectedParentPid < 1) return null;
+  if (typeof expectedNonce !== 'string' || expectedNonce.length < 16) return null;
+  try {
+    const marker = JSON.parse(value);
+    if (!marker || typeof marker !== 'object') return null;
+    if (marker.parentPid !== expectedParentPid || !Number.isInteger(marker.helperPid) || marker.helperPid < 1) return null;
+    if (marker.attemptNonce !== expectedNonce) return null;
+    if (typeof marker.launchedAt !== 'string' || Number.isNaN(Date.parse(marker.launchedAt))) return null;
+    const launchedAtMs = Date.parse(marker.launchedAt);
+    if (notBeforeMs !== null && (!Number.isFinite(notBeforeMs) || launchedAtMs < notBeforeMs)) return null;
+    return Object.freeze({ parentPid: marker.parentPid, helperPid: marker.helperPid, attemptNonce: marker.attemptNonce, launchedAt: marker.launchedAt });
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a durable cleanup status without accepting a different attempt. */
+export function parseUninstallStatus(value, expectedNonce = null) {
+  if (typeof value !== 'string') return null;
+  try {
+    const status = JSON.parse(value);
+    if (!status || typeof status !== 'object') return null;
+    if (!Number.isInteger(status.parentPid) || status.parentPid < 1) return null;
+    if (typeof status.attemptNonce !== 'string' || status.attemptNonce.length < 16) return null;
+    if (expectedNonce !== null && status.attemptNonce !== expectedNonce) return null;
+    if (!['launched', 'running', 'complete', 'failed'].includes(status.state)) return null;
+    if (typeof status.updatedAt !== 'string' || Number.isNaN(Date.parse(status.updatedAt))) return null;
+    if (typeof status.message !== 'string' || status.message.length === 0) return null;
+    return Object.freeze({
+      parentPid: status.parentPid,
+      helperPid: Number.isInteger(status.helperPid) && status.helperPid > 0 ? status.helperPid : null,
+      attemptNonce: status.attemptNonce,
+      state: status.state,
+      message: status.message,
+      updatedAt: status.updatedAt,
+      diagnosticPath: typeof status.diagnosticPath === 'string' ? status.diagnosticPath : null,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Match only this installer's temp artifacts, including artifacts from older PIDs. */
+export function isUninstallAttemptArtifactName(name, parentPid = null) {
+  if (typeof name !== 'string') return false;
+  if (name === 'arc-power-uninstall-last.json') return true;
+  const match = /^arc-power-uninstall-(\d+)(?:-[0-9a-f-]{16,})?\.ps1(?:\.(?:launch\.ps1|started\.json|status\.json|log))?$/i.exec(name);
+  if (!match) return false;
+  if (parentPid === null) return true;
+  return Number.isInteger(parentPid) && parentPid > 0 && match[1] === String(parentPid);
+}
+
 export function installerModeFromEnvironment({ argv = [], portableExecutableFile = null, parentExecutableFile = null } = {}) {
   if (!Array.isArray(argv)) throw new TypeError('argv must be an array');
   if (argv.includes('--uninstall')) return 'uninstall';
@@ -240,7 +362,17 @@ export function classifyScheduledTaskProbe({ found = false, errorCategory = null
 }
 
 /** Generate the detached cleanup script used after the installed EXE exits. */
-export function createUninstallCleanupScript({ pid, plan, scriptPath } = {}) {
+export function createUninstallCleanupScript({
+  pid,
+  plan,
+  scriptPath,
+  markerPath = null,
+  statusPath = null,
+  summaryPath = null,
+  attemptNonce = null,
+  recoveryCommand,
+  recoveryDisplayIcon,
+} = {}) {
   if (!Number.isInteger(pid) || pid < 1) throw new TypeError('pid must be a positive integer');
   if (!plan || typeof plan !== 'object') throw new TypeError('plan is required');
   if (typeof scriptPath !== 'string' || scriptPath.length === 0) throw new TypeError('scriptPath is required');
@@ -254,18 +386,36 @@ export function createUninstallCleanupScript({ pid, plan, scriptPath } = {}) {
   const taskLiterals = plan.cleanupTaskNames.map((value) => powershellLiteral(value)).join(', ');
   const runValueLiterals = plan.cleanupRunValueNames.map((value) => powershellLiteral(value)).join(', ');
   const cleanupPathLiterals = cleanupPaths.map((value) => powershellLiteral(value)).join(', ');
+  if (markerPath !== null && (typeof markerPath !== 'string' || markerPath.length === 0)) throw new TypeError('launch marker path must be a non-empty string or null');
+  if (statusPath !== null && (typeof statusPath !== 'string' || statusPath.length === 0)) throw new TypeError('status path must be a non-empty string or null');
+  if (summaryPath !== null && (typeof summaryPath !== 'string' || summaryPath.length === 0)) throw new TypeError('summary path must be a non-empty string or null');
+  if (attemptNonce !== null && (typeof attemptNonce !== 'string' || attemptNonce.length < 16)) throw new TypeError('uninstall attempt nonce must be at least 16 characters or null');
+  if ((statusPath === null) !== (summaryPath === null) || (statusPath === null) !== (attemptNonce === null)) throw new TypeError('statusPath, summaryPath, and attemptNonce must be supplied together');
+  if (typeof recoveryCommand !== 'string' || recoveryCommand.length === 0) throw new TypeError('recovery command is required');
+  if (typeof recoveryDisplayIcon !== 'string' || recoveryDisplayIcon.length === 0) throw new TypeError('recovery display icon is required');
   return [
+    'param([switch]$Retry)',
     "$ErrorActionPreference = 'Continue'",
     `$processId = ${pid}`,
     `$installDir = ${powershellLiteral(plan.installDir)}`,
     `$scriptPath = ${powershellLiteral(scriptPath)}`,
+    ...(markerPath ? [`$markerPath = ${powershellLiteral(markerPath)}`] : []),
     `$diagnosticPath = ${powershellLiteral(`${scriptPath}.log`)}`,
+    ...(statusPath ? [`$statusPath = ${powershellLiteral(statusPath)}`, `$summaryPath = ${powershellLiteral(summaryPath)}`, `$attemptNonce = ${powershellLiteral(attemptNonce)}`] : []),
     `$runKey = ${powershellLiteral(plan.runKeyPowerShell)}`,
+    `$uninstallKey = ${powershellLiteral(`HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`)}`,
+    `$recoveryCommand = ${powershellLiteral(recoveryCommand)}`,
+    `$recoveryDisplayIcon = ${powershellLiteral(recoveryDisplayIcon)}`,
     `$taskNames = @(${taskLiterals})`,
     `$runValueNames = @(${runValueLiterals})`,
     `$cleanupPaths = @(${cleanupPathLiterals})`,
     '$processQueryFailed = $false',
     'function Write-Diagnostic([string]$message) { try { Add-Content -LiteralPath $diagnosticPath -Value ("{0:u} {1}" -f [DateTime]::UtcNow, $message) -Encoding UTF8 } catch {} }',
+    'try { Set-Location -LiteralPath (Split-Path -Parent $scriptPath) -ErrorAction Stop } catch { Write-Diagnostic ("could not switch recovery helper out of install tree: {0}" -f $_.Exception.Message); exit 1 }',
+    ...(statusPath ? [
+      'function Write-Status([string]$state, [string]$message) { try { $status = [pscustomobject]@{ parentPid = $processId; attemptNonce = $attemptNonce; state = $state; message = $message; updatedAt = [DateTime]::UtcNow.ToString(\'o\'); diagnosticPath = $diagnosticPath } | ConvertTo-Json -Compress; foreach ($statusFile in @($statusPath, $summaryPath)) { [IO.File]::WriteAllText($statusFile, $status, [Text.UTF8Encoding]::new($false)) } } catch {} }',
+      "Write-Status 'running' 'Cleanup helper is waiting for setup to close'",
+    ] : []),
     'function Test-OwnedPath([string]$candidate) {',
     '  if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }',
     '  try {',
@@ -305,26 +455,43 @@ export function createUninstallCleanupScript({ pid, plan, scriptPath } = {}) {
     '    Write-Diagnostic ("could not verify scheduled task {0}: category {1}; {2}" -f $name, $category, $_.Exception.Message); return $false',
     '  }',
     '}',
-    'function Test-UninstallRegistryAbsent {',
-    `  try { return -not (Test-Path -LiteralPath ${powershellLiteral(`HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`)} -ErrorAction Stop) } catch { Write-Diagnostic ("could not verify uninstall registry key: {0}" -f $_.Exception.Message); return $false }`,
+    'function Set-RecoveryRegistration {',
+    '  try {',
+    '    New-Item -Path $uninstallKey -Force -ErrorAction Stop | Out-Null',
+    '    New-ItemProperty -Path $uninstallKey -Name \'DisplayName\' -PropertyType String -Value \'Arc Power\' -Force -ErrorAction Stop | Out-Null',
+    '    New-ItemProperty -Path $uninstallKey -Name \'UninstallString\' -PropertyType String -Value $recoveryCommand -Force -ErrorAction Stop | Out-Null',
+    '    New-ItemProperty -Path $uninstallKey -Name \'QuietUninstallString\' -PropertyType String -Value $recoveryCommand -Force -ErrorAction Stop | Out-Null',
+    '    New-ItemProperty -Path $uninstallKey -Name \'DisplayIcon\' -PropertyType String -Value $recoveryDisplayIcon -Force -ErrorAction Stop | Out-Null',
+    '    return $true',
+    '  } catch { Write-Diagnostic ("could not preserve recovery registration: {0}" -f $_.Exception.Message); return $false }',
     '}',
-    '$processDeadline = [DateTime]::UtcNow.AddSeconds(30)',
-    'while ((Get-Process -Id $processId -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $processDeadline) { Start-Sleep -Milliseconds 150 }',
-    'if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { Write-Diagnostic "uninstaller process did not exit before the deadline"; exit 1 }',
+    'function Test-UninstallRegistryAbsent {',
+    '  try { return -not (Test-Path -LiteralPath $uninstallKey -ErrorAction Stop) } catch { Write-Diagnostic ("could not verify uninstall registry key: {0}" -f $_.Exception.Message); return $false }',
+    '}',
+    'if (-not $Retry) {',
+    '  $processDeadline = [DateTime]::UtcNow.AddSeconds(30)',
+    '  while ((Get-Process -Id $processId -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $processDeadline) { Start-Sleep -Milliseconds 150 }',
+    ...(statusPath ? ['  if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { Write-Diagnostic "uninstaller process did not exit before the deadline"; Write-Status \'failed\' \'The setup process did not close; retry removal\'; exit 1 }'] : ['  if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { Write-Diagnostic "uninstaller process did not exit before the deadline"; exit 1 }']),
+    '}',
     '$cleanupDeadline = [DateTime]::UtcNow.AddSeconds(45)',
     'do {',
+    '  if (-not (Set-RecoveryRegistration)) { Start-Sleep -Milliseconds 300; continue }',
     '  Stop-OwnedProcesses',
     '  foreach ($taskName in $taskNames) { try { & schtasks.exe /delete /tn $taskName /f *> $null; if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) { Write-Diagnostic ("could not remove scheduled task {0}: exit {1}" -f $taskName, $LASTEXITCODE) } } catch { Write-Diagnostic ("could not remove scheduled task {0}: {1}" -f $taskName, $_.Exception.Message) } }',
     '  foreach ($runValueName in $runValueNames) { try { Remove-ItemProperty -LiteralPath $runKey -Name $runValueName -Force -ErrorAction Stop } catch { if (-not (Test-RunValueAbsent $runValueName)) { Write-Diagnostic ("could not remove Run value {0}: {1}" -f $runValueName, $_.Exception.Message) } } }',
-    `  Remove-Item -LiteralPath ${powershellLiteral(`HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`)} -Recurse -Force -ErrorAction SilentlyContinue`,
     '  foreach ($cleanupPath in $cleanupPaths) { Remove-OwnedPath $cleanupPath }',
     '  $pathsAbsent = @($cleanupPaths | ForEach-Object { Test-PathAbsent $_ })',
     '  $runValuesAbsent = @($runValueNames | ForEach-Object { Test-RunValueAbsent $_ })',
     '  $tasksAbsent = @($taskNames | ForEach-Object { Test-TaskAbsent $_ })',
-    '  $registryAbsent = Test-UninstallRegistryAbsent',
     '  $remainingOwnedProcesses = @(Get-OwnedProcesses).Count',
+    '  if (($pathsAbsent -notcontains $false) -and ($runValuesAbsent -notcontains $false) -and ($tasksAbsent -notcontains $false) -and $remainingOwnedProcesses -eq 0 -and -not $script:processQueryFailed) {',
+    '    try { Remove-Item -LiteralPath $uninstallKey -Recurse -Force -ErrorAction Stop } catch { Write-Diagnostic ("could not remove completed uninstall registration: {0}" -f $_.Exception.Message) }',
+    '  }',
+    '  $registryAbsent = Test-UninstallRegistryAbsent',
     '  if (($pathsAbsent -notcontains $false) -and ($runValuesAbsent -notcontains $false) -and ($tasksAbsent -notcontains $false) -and $registryAbsent -and $remainingOwnedProcesses -eq 0 -and -not $script:processQueryFailed) {',
+    ...(statusPath ? ["    Write-Status 'complete' 'Arc Power cleanup completed'"] : []),
     '    try { Remove-Item -LiteralPath $diagnosticPath -Force -ErrorAction SilentlyContinue } catch {}',
+    ...(markerPath ? ['    try { Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue } catch {}'] : []),
     '    try { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction Stop } catch { Write-Diagnostic ("cleanup succeeded but helper self-delete failed: {0}" -f $_.Exception.Message) }',
     '    exit 0',
     '  }',
@@ -332,6 +499,7 @@ export function createUninstallCleanupScript({ pid, plan, scriptPath } = {}) {
     '  Start-Sleep -Milliseconds 300',
     '} while ([DateTime]::UtcNow -lt $cleanupDeadline)',
     'Write-Diagnostic "cleanup verification failed; helper retained for diagnosis"',
+    ...(statusPath ? ["Write-Status 'failed' 'Cleanup could not remove every Arc Power file or registration; retry removal'"] : []),
     'exit 1',
   ].join('\n');
 }

@@ -9,9 +9,10 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
-import { mkdir, cp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, cp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { removeUserDataTree } from './cache-lifecycle.js';
@@ -19,9 +20,14 @@ import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
   createInstallationPlan,
+  createUninstallLaunchScript,
   createUninstallCleanupScript,
+  createUninstallRecoveryCommand,
   installerModeFromEnvironment,
   parseUpdateArguments,
+  parseUninstallLaunchMarker,
+  parseUninstallStatus,
+  isUninstallAttemptArtifactName,
   powershellLiteral,
   resolveDefaultInstallDir,
   validateInstalledUpdateTarget,
@@ -72,17 +78,17 @@ async function createShortcut({ shortcutPath, targetPath, workingDirectory }) {
   await runPowerShell(script);
 }
 
-async function writeUninstallRegistration(plan, version) {
+async function writeUninstallRegistration(plan, version, { uninstallCommand = null, displayIcon = null } = {}) {
   const key = `HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`;
-  const uninstallCommand = `\"${plan.executablePath}\" --uninstall`;
+  const command = uninstallCommand || `\"${plan.executablePath}\" --uninstall`;
   const stringValues = {
     DisplayName: PRODUCT_NAME,
     DisplayVersion: version,
     Publisher: 'R.ID',
     InstallLocation: plan.installDir,
-    UninstallString: uninstallCommand,
-    QuietUninstallString: uninstallCommand,
-    DisplayIcon: `${plan.executablePath},0`,
+    UninstallString: command,
+    QuietUninstallString: command,
+    DisplayIcon: displayIcon || `${plan.executablePath},0`,
   };
   const lines = [
     "$ErrorActionPreference = 'Stop'",
@@ -303,30 +309,149 @@ async function runInstalledUpdate({ parentPid, installDir }) {
   }
 }
 
-async function scheduleUninstall(plan) {
-  const scriptPath = path.join(app.getPath('temp'), `arc-power-uninstall-${process.pid}.ps1`);
-  await writeFile(scriptPath, createUninstallCleanupScript({ pid: process.pid, plan, scriptPath }), { encoding: 'utf8', mode: 0o600 });
+async function waitForUninstallLaunchHandshake({ child, markerPath, parentPid, expectedNonce, notBeforeMs, timeoutMs = 8_000, pollMs = 40 }) {
   await new Promise((resolve, reject) => {
-    let child;
+    let settled = false;
+    const finish = (cause = null) => {
+      if (settled) return;
+      settled = true;
+      if (cause) reject(cause); else resolve();
+    };
+    child.once('error', (cause) => finish(cause));
+    child.once('spawn', () => finish());
+  });
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      child = spawn(powershellPath(), [
-        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', scriptPath,
-      ], { detached: true, stdio: 'ignore', windowsHide: true });
-    } catch (cause) {
-      reject(cause);
-      return;
+      const marker = parseUninstallLaunchMarker(await readFile(markerPath, 'utf8'), parentPid, expectedNonce, { notBeforeMs });
+      if (marker) return marker;
+    } catch { /* launcher is still writing the marker */ }
+    if (child.exitCode !== null && child.exitCode !== undefined && child.exitCode !== 0) {
+      throw new Error(`Arc Power uninstall launcher exited with code ${child.exitCode} before its helper handshake`);
     }
-    child.once('error', reject);
-    child.once('spawn', () => {
-      if (!child.pid) {
-        reject(new Error('Could not start the Arc Power uninstall helper'));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  throw new Error('Arc Power uninstall helper did not complete its launch handshake');
+}
+
+async function removeStaleUninstallArtifacts(tempDir) {
+  let entries = [];
+  try { entries = await readdir(tempDir, { withFileTypes: true }); } catch { return; }
+  const staleNames = entries
+    .filter((entry) => (entry.isFile() || entry.isSymbolicLink())
+      && isUninstallAttemptArtifactName(entry.name))
+    .map((entry) => entry.name);
+  await Promise.all(staleNames.map((name) => rm(path.join(tempDir, name), { force: true }).catch(() => {})));
+}
+
+async function writeUninstallStatusFiles({ statusPath, summaryPath, parentPid, attemptNonce, state, message, diagnosticPath }) {
+  const status = JSON.stringify({
+    parentPid,
+    helperPid: null,
+    attemptNonce,
+    state,
+    message,
+    updatedAt: new Date().toISOString(),
+    diagnosticPath,
+  });
+  await Promise.all([
+    writeFile(statusPath, status, { encoding: 'utf8', mode: 0o600 }),
+    writeFile(summaryPath, status, { encoding: 'utf8', mode: 0o600 }),
+  ]);
+}
+
+async function readLastUninstallStatus(tempDir) {
+  try {
+    return parseUninstallStatus(await readFile(path.join(tempDir, 'arc-power-uninstall-last.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function scheduleUninstall(plan) {
+  const tempDir = app.getPath('temp');
+  await removeStaleUninstallArtifacts(tempDir);
+  const attemptNonce = randomUUID();
+  const attemptStartedAt = Date.now();
+  const scriptPath = path.join(tempDir, `arc-power-uninstall-${process.pid}-${attemptNonce}.ps1`);
+  const launchScriptPath = `${scriptPath}.launch.ps1`;
+  const markerPath = `${scriptPath}.started.json`;
+  const statusPath = `${scriptPath}.status.json`;
+  const summaryPath = path.join(tempDir, 'arc-power-uninstall-last.json');
+  const diagnosticPath = `${scriptPath}.log`;
+  const powershell = powershellPath();
+  const recoveryCommand = createUninstallRecoveryCommand({ powershellPath: powershell, scriptPath });
+  await writeFile(scriptPath, createUninstallCleanupScript({
+    pid: process.pid,
+    plan,
+    scriptPath,
+    markerPath,
+    statusPath,
+    summaryPath,
+    attemptNonce,
+    recoveryCommand,
+    recoveryDisplayIcon: `${powershell},0`,
+  }), { encoding: 'utf8', mode: 0o600 });
+  // Preserve a usable Add/Remove Programs entry before the installed EXE is
+  // allowed to exit. The temp script is independent of the install tree and
+  // remains registered until the helper proves cleanup succeeded.
+  await writeUninstallRegistration(plan, app.getVersion(), {
+    uninstallCommand: recoveryCommand,
+    displayIcon: `${powershell},0`,
+  });
+  await writeFile(launchScriptPath, createUninstallLaunchScript({
+    pid: process.pid,
+    cleanupScriptPath: scriptPath,
+    markerPath,
+    powershellPath: powershell,
+    workingDirectory: tempDir,
+    attemptNonce,
+    statusPath,
+    summaryPath,
+  }), { encoding: 'utf8', mode: 0o600 });
+  try {
+    await new Promise((resolve, reject) => {
+      let child;
+      try {
+        child = spawn(powershell, [
+          '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+          '-File', launchScriptPath,
+        ], { cwd: tempDir, detached: true, stdio: 'ignore', windowsHide: true });
+      } catch (cause) {
+        reject(cause);
         return;
       }
-      child.unref();
-      resolve();
+      void waitForUninstallLaunchHandshake({
+        child,
+        markerPath,
+        parentPid: process.pid,
+        expectedNonce: attemptNonce,
+        notBeforeMs: attemptStartedAt,
+      })
+        .then((marker) => {
+          if (!child.pid) throw new Error('Could not start the Arc Power uninstall launcher');
+          child.unref();
+          // The launcher removes itself after writing the marker. Removing a
+          // leftover here is safe only after the real helper is independently
+          // running, and keeps retries from inheriting stale launch scripts.
+          void rm(launchScriptPath, { force: true }).catch(() => {});
+          resolve(marker);
+        })
+        .catch(reject);
     });
-  });
+  } catch (cause) {
+    await writeUninstallStatusFiles({
+      statusPath,
+      summaryPath,
+      parentPid: process.pid,
+      attemptNonce,
+      state: 'failed',
+      message: `Could not start the uninstall helper; retry removal${cause instanceof Error ? `: ${cause.message}` : ''}`,
+      diagnosticPath,
+    }).catch(() => {});
+    throw cause;
+  }
 }
 
 async function uninstallArcPower(win) {
@@ -344,9 +469,9 @@ async function uninstallArcPower(win) {
   // running Arc Power process can still have cache files open (for example
   // the DIPS directory), so removing the cache here makes the operation fail
   // before the completion view can be shown.
-  await scheduleUninstall(plan);
+  const handoff = await scheduleUninstall(plan);
   sendProgress(win, 96, 'Removal is in progress; closing setup');
-  return { ok: true, scheduled: true, plan };
+  return { ok: true, scheduled: true, launchConfirmed: true, helperPid: handoff.helperPid, plan };
 }
 
 function registerInstallerIpc(win, mode) {
@@ -362,6 +487,7 @@ function registerInstallerIpc(win, mode) {
         appData: paths.appData,
         profilePath: path.join(paths.appData, 'ArcPower'),
         payloadReady: mode === 'uninstall' || (() => { try { payloadRoot(); return true; } catch { return false; } })(),
+        lastUninstallStatus: mode === 'uninstall' ? await readLastUninstallStatus(app.getPath('temp')) : null,
       };
     },
     'installer:choose-directory': async () => {
@@ -373,7 +499,11 @@ function registerInstallerIpc(win, mode) {
     'installer:close': async () => {
       if (!closeRequested) {
         closeRequested = true;
-        app.quit();
+        // The detached cleanup helper has already acknowledged its own
+        // independent launch. Exit the short-lived installer process fully so
+        // the helper can observe this PID disappear and remove the install
+        // tree without competing with a still-running Electron parent.
+        app.exit(0);
       }
       return { ok: true };
     },

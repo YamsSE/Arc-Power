@@ -35,7 +35,12 @@ function statusForResult(result) {
       message: `Update available: v${result.version}`,
     };
   }
-  return { state: 'current', percent: 100, message: 'Arc Power is up to date' };
+  return {
+    state: 'current',
+    percent: 100,
+    message: 'Arc Power is up to date',
+    loadingMessage: 'Loading Arc Power...',
+  };
 }
 
 /**

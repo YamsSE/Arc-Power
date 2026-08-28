@@ -1,18 +1,25 @@
 const status = document.querySelector('.splash-status');
 const progress = document.querySelector('.splash-progress');
 const progressValue = document.querySelector('.splash-progress-value');
+const loadingStatus = document.getElementById('splash-loading-status');
 const actions = document.querySelector('.splash-update-actions');
 const updateNow = document.getElementById('splash-update-now');
 const skipUpdate = document.getElementById('splash-skip-update');
 let latestState = 'checking';
 
 function render(payload = {}) {
-  const { state, message, percent, version, error } = payload;
+  const { state, message, loadingMessage, percent, version, error } = payload;
   latestState = typeof state === 'string' ? state : 'checking';
   if (typeof message === 'string' && status) status.textContent = message;
+  if (loadingStatus) {
+    const showLoading = latestState === 'checking' || latestState === 'current' || latestState === 'error' || latestState === 'skipped';
+    loadingStatus.hidden = !showLoading;
+    if (typeof loadingMessage === 'string') loadingStatus.textContent = loadingMessage;
+    else if (showLoading) loadingStatus.textContent = 'Loading Arc Power...';
+  }
   document.body.dataset.updateState = latestState;
   if (progress) {
-    progress.setAttribute('aria-label', typeof message === 'string' ? message : 'Loading Arc Power');
+    progress.setAttribute('aria-label', typeof loadingMessage === 'string' ? loadingMessage : 'Loading Arc Power');
     if (Number.isFinite(percent)) progress.setAttribute('aria-valuenow', String(Math.max(0, Math.min(100, percent))));
     else progress.removeAttribute('aria-valuenow');
   }
