@@ -634,12 +634,24 @@ function renderPlayerView(): HTMLElement {
       volume.addEventListener('input', () => { video.volume = Number(volume.value); video.muted = video.volume === 0; updateMuteButton(); });
       video.addEventListener('volumechange', updateMuteButton);
       const fullscreen = playerIconButton('Fullscreen', 'fullscreen', () => {
-        void (video.requestFullscreen?.() ?? (player as HTMLElement & { requestFullscreen?: () => Promise<void> }).requestFullscreen?.());
+        const fullscreenTarget = player as HTMLElement & { requestFullscreen?: () => Promise<void> };
+        if (document.fullscreenElement === player) void document.exitFullscreen?.();
+        else void fullscreenTarget.requestFullscreen?.();
       }, 'recording-player-fullscreen');
-      const playerBrand = el('span', { class: 'recording-player-brand' }, [
+      const playerBrand = el('a', {
+        class: 'recording-player-brand',
+        href: 'https://github.com/YamsSE/Arc-Power',
+        title: 'Open Arc Power on GitHub',
+        onClick: (event: Event) => {
+          event.preventDefault();
+          void api.openExternal('https://github.com/YamsSE/Arc-Power').catch(() => {
+            toast('error', 'Could not open GitHub', 'The repository link could not be opened.');
+          });
+        },
+      }, [
         el('img', { class: 'recording-player-brand-logo', src: '../assets/ArcPowerIcon.png', alt: 'Arc Power logo' }),
         el('span', { text: 'Arc Power' }),
-      ]);
+      ]) as HTMLAnchorElement;
       clear(player);
       player.append(
         video,
@@ -647,12 +659,12 @@ function renderPlayerView(): HTMLElement {
           el('div', { class: 'recording-player-progress' }, [inlineSeek]),
           el('div', { class: 'recording-player-controls' }, [
             playButton,
-            el('div', { class: 'recording-player-time-pair' }, [elapsed, el('span', { text: '/' }), duration]),
-            el('span', { class: 'recording-player-controls-spacer' }),
             muteButton,
             volume,
-            fullscreen,
+            el('div', { class: 'recording-player-time-pair' }, [elapsed, el('span', { text: '/' }), duration]),
+            el('span', { class: 'recording-player-controls-spacer' }),
             playerBrand,
+            fullscreen,
           ]),
         ]),
       );

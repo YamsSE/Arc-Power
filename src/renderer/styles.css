@@ -2798,6 +2798,9 @@ input[type="number"] {
 .recording-player-back:hover, .recording-player-back:focus-visible { border-color: var(--accent); color: var(--text); outline: none; }
 .recording-player-back-icon { width: 13px; height: 13px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m14.7 5.3-1.4-1.4L5.2 12l8.1 8.1 1.4-1.4L9.4 13H20v-2H9.4l5.3-5.7Z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m14.7 5.3-1.4-1.4L5.2 12l8.1 8.1 1.4-1.4L9.4 13H20v-2H9.4l5.3-5.7Z'/%3E%3C/svg%3E") center / contain no-repeat; }
 .recording-player-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: min(62vh, 620px); overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: #030509; }
+.recording-player-stage:fullscreen { width: 100vw; height: 100vh; min-height: 0; border: 0; border-radius: 0; }
+.recording-player-stage:fullscreen::backdrop { background: #030509; }
+.recording-player-stage:fullscreen .recording-video { max-height: none; }
 .recording-player-placeholder { margin: 0; color: var(--text-dim); font-size: 12px; }
 .recording-video { display: block; width: 100%; height: 100%; max-height: min(68vh, 700px); aspect-ratio: 16 / 9; object-fit: contain; background: #000; outline: none; }
 .recording-player-overlay { position: absolute; right: 0; bottom: 0; left: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-end; gap: 8px; padding: 52px 15px 14px; background: linear-gradient(transparent, rgba(2, 4, 9, .92)); pointer-events: none; }
@@ -2815,7 +2818,8 @@ input[type="number"] {
 .recording-player-time { min-width: 34px; color: var(--text-dim); font: 11px var(--mono); text-align: center; }
 .recording-player-controls-spacer { flex: 1; }
 .recording-player-volume { width: 88px; height: 3px; accent-color: var(--accent); pointer-events: auto; }
-.recording-player-brand { display: inline-flex; align-items: center; gap: 6px; margin-left: 3px; color: rgba(255,255,255,.84); font: 650 11px var(--font); letter-spacing: .02em; pointer-events: none; }
+.recording-player-brand { display: inline-flex; align-items: center; gap: 6px; margin-left: 3px; color: rgba(255,255,255,.84); font: 650 11px var(--font); letter-spacing: .02em; pointer-events: auto; text-decoration: none; }
+.recording-player-brand:hover, .recording-player-brand:focus-visible { color: #fff; outline: none; }
 .recording-player-brand-logo { width: 18px; height: 18px; object-fit: contain; border-radius: 4px; }
 .recording-player-timeline-panel { padding: 13px 15px 12px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--bg-elev) 92%, var(--bg)); }
 .recording-player-timeline-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
