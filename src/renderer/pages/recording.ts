@@ -427,10 +427,11 @@ function playerIconButton(label: string, icon: string, onClick: () => void, clas
   }, [el('span', { class: `recording-player-icon recording-player-icon-${icon}`, 'aria-hidden': 'true' })]) as HTMLButtonElement;
 }
 
-function previewVideo(clip: RecordingClip, onDuration: (seconds: number) => void): HTMLVideoElement {
+function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration: (seconds: number) => void): HTMLVideoElement {
   const preview = el('video', {
     class: 'recording-clip-preview',
     muted: true,
+    defaultMuted: true,
     loop: true,
     playsinline: true,
     preload: 'metadata',
@@ -439,16 +440,18 @@ function previewVideo(clip: RecordingClip, onDuration: (seconds: number) => void
   const playPreview = () => {
     if (!hovered || !preview.src) return;
     preview.muted = true;
+    preview.volume = 0;
     void preview.play().catch(() => { /* unavailable previews stay quiet */ });
   };
   preview.addEventListener('canplay', playPreview);
   preview.addEventListener('loadedmetadata', () => onDuration(preview.duration));
-  preview.addEventListener('mouseenter', () => {
+  hoverTarget.addEventListener('mouseenter', () => {
     hovered = true;
     preview.muted = true;
+    preview.volume = 0;
     playPreview();
   });
-  preview.addEventListener('mouseleave', () => {
+  hoverTarget.addEventListener('mouseleave', () => {
     hovered = false;
     preview.pause();
     try { preview.currentTime = 0; } catch { /* metadata may not have loaded */ }
@@ -479,6 +482,7 @@ function renderClipList(): HTMLElement {
     }
     for (const clip of visible) {
       const duration = el('span', { class: 'recording-clip-duration', text: '—' });
+      const media = el('div', { class: 'recording-clip-media' });
       const tile = el('div', {
         class: 'recording-clip-tile',
         role: 'button',
@@ -492,12 +496,13 @@ function renderClipList(): HTMLElement {
         keyboardEvent.preventDefault();
         openPlayer(clip);
       });
+      media.append(
+        previewVideo(clip, media, (seconds) => { duration.textContent = formatTime(seconds); }),
+        duration,
+        el('span', { class: 'recording-clip-hover-action' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' }), el('span', { text: 'Open player' })]),
+      );
       tile.append(
-        el('div', { class: 'recording-clip-media' }, [
-          previewVideo(clip, (seconds) => { duration.textContent = formatTime(seconds); }),
-          duration,
-          el('span', { class: 'recording-clip-hover-action' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' }), el('span', { text: 'Open player' })]),
-        ]),
+        media,
         el('span', { class: 'recording-clip-details' }, [
           el('strong', { text: clip.fileName }),
           el('span', { text: `Arc Power · ${new Date(clip.createdAt).toLocaleString()}` }),
@@ -558,7 +563,8 @@ function renderPlayerView(): HTMLElement {
         if (video.paused) void video.play().catch(() => {});
         else video.pause();
       }, 'recording-player-play');
-      const seek = el('input', { class: 'recording-player-seek', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Seek clip' }) as HTMLInputElement;
+      const inlineSeek = el('input', { class: 'recording-player-seek recording-player-seek-inline', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Seek clip' }) as HTMLInputElement;
+      const timelineSeek = el('input', { class: 'recording-player-seek recording-player-seek-secondary', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Seek clip on timeline' }) as HTMLInputElement;
       const elapsed = el('span', { class: 'recording-player-time', text: '0:00' });
       const duration = el('span', { class: 'recording-player-time', text: '0:00' });
       const timelineElapsed = el('span', { class: 'recording-player-time', text: '0:00' });
@@ -580,7 +586,12 @@ function renderPlayerView(): HTMLElement {
         timelineMiddle.textContent = formatTime(video.duration / 2);
         timelineEnd.textContent = formatTime(video.duration);
         durationLabel.textContent = formatTime(video.duration);
-        seek.value = video.duration > 0 ? String(Math.round((video.currentTime / video.duration) * 1000)) : '0';
+        const progress = video.duration > 0 ? Math.min(100, Math.max(0, (video.currentTime / video.duration) * 100)) : 0;
+        const value = String(Math.round(progress * 10));
+        for (const control of [inlineSeek, timelineSeek]) {
+          control.value = value;
+          control.style.setProperty('--progress', `${progress}%`);
+        }
       };
       video.addEventListener('play', updatePlayButton);
       video.addEventListener('pause', updatePlayButton);
@@ -598,9 +609,14 @@ function renderPlayerView(): HTMLElement {
         if (video.paused) void video.play().catch(() => {});
         else video.pause();
       });
-      seek.addEventListener('input', () => {
-        if (video.duration > 0) video.currentTime = (Number(seek.value) / 1000) * video.duration;
-      });
+      const seekTo = (control: HTMLInputElement) => {
+        if (video.duration > 0) {
+          video.currentTime = (Number(control.value) / 1000) * video.duration;
+          updateTimeline();
+        }
+      };
+      inlineSeek.addEventListener('input', () => seekTo(inlineSeek));
+      timelineSeek.addEventListener('input', () => seekTo(timelineSeek));
       let muteButton: HTMLButtonElement;
       const updateMuteButton = () => {
         if (!muteButton) return;
@@ -620,10 +636,15 @@ function renderPlayerView(): HTMLElement {
       const fullscreen = playerIconButton('Fullscreen', 'fullscreen', () => {
         void (video.requestFullscreen?.() ?? (player as HTMLElement & { requestFullscreen?: () => Promise<void> }).requestFullscreen?.());
       }, 'recording-player-fullscreen');
+      const playerBrand = el('span', { class: 'recording-player-brand' }, [
+        el('img', { class: 'recording-player-brand-logo', src: '../assets/ArcPowerIcon.png', alt: 'Arc Power logo' }),
+        el('span', { text: 'Arc Power' }),
+      ]);
       clear(player);
       player.append(
         video,
         el('div', { class: 'recording-player-overlay' }, [
+          el('div', { class: 'recording-player-progress' }, [inlineSeek]),
           el('div', { class: 'recording-player-controls' }, [
             playButton,
             el('div', { class: 'recording-player-time-pair' }, [elapsed, el('span', { text: '/' }), duration]),
@@ -631,8 +652,8 @@ function renderPlayerView(): HTMLElement {
             muteButton,
             volume,
             fullscreen,
+            playerBrand,
           ]),
-          el('span', { class: 'recording-player-brand' }, [el('span', { class: 'recording-player-brand-mark', 'aria-hidden': 'true' }), el('span', { text: 'Arc Power' })]),
         ]),
       );
       clear(timelinePanel);
@@ -641,7 +662,7 @@ function renderPlayerView(): HTMLElement {
           el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip timeline' }), el('strong', { text: 'Review your moment' })]),
           durationLabel,
         ]),
-        el('div', { class: 'recording-player-timeline-row' }, [timelineElapsed, seek, timelineDuration]),
+        el('div', { class: 'recording-player-timeline-row' }, [timelineElapsed, timelineSeek, timelineDuration]),
         el('div', { class: 'recording-player-timeline-ruler' }, [el('span', { text: '0:00' }), timelineMiddle, timelineEnd]),
       );
       updatePlayButton();

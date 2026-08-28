@@ -83,10 +83,17 @@ export function parseRecordingProcessList(output) {
   return [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
+/** Parse the newline-delimited live-main-window process names from PowerShell. */
+export function parseRecordingWindowProcessList(output) {
+  const names = String(output ?? '').split(/\r?\n/).map((line) => line.trim()).filter((name) => name && !/^INFO:/i.test(name));
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
 export async function listWindowsRecordingProcesses({ execFileImpl = execFileAsync, platform = process.platform } = {}) {
   if (platform !== 'win32') return [];
-  const result = await execFileImpl('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true, maxBuffer: 1024 * 1024 });
-  return parseRecordingProcessList(result?.stdout ?? result);
+  const script = '$ErrorActionPreference = "SilentlyContinue"; Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and -not [string]::IsNullOrWhiteSpace($_.MainWindowTitle) } | ForEach-Object { "$($_.ProcessName).exe" }';
+  const result = await execFileImpl('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  return parseRecordingWindowProcessList(result?.stdout ?? result);
 }
 
 function recordingPatch(patch) {
