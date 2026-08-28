@@ -432,7 +432,17 @@ async function scheduleUninstall(plan) {
         child = spawn(powershell, [
           '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
           '-File', launchScriptPath,
-        ], { cwd: tempDir, detached: true, stdio: 'ignore', windowsHide: true });
+        ], {
+          cwd: tempDir,
+          // Keep the short launcher attached until it has written the
+          // handshake marker. A detached PowerShell child can exit cleanly
+          // on Windows without executing the script when started from an
+          // Electron parent, which leaves the UI with a false handshake
+          // timeout. The launcher itself starts the real cleanup helper with
+          // Start-Process, so only that helper needs to be independent.
+          stdio: 'ignore',
+          windowsHide: true,
+        });
       } catch (cause) {
         reject(cause);
         return;

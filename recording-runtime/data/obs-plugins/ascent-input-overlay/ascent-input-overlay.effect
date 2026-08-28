@@ -1,0 +1,65 @@
+// Rounded rectangle with anti-aliased edges, drawn via signed-distance field.
+// Caller passes the size of the sprite in pixels and the corner radius (also
+// in pixels). Setting `radius` to half of min(size.x, size.y) yields a
+// capsule / pill shape — used for the mouse silhouette.
+
+uniform float4x4 ViewProj;
+
+uniform float4 color;
+uniform float2 size;
+uniform float  radius;
+uniform float  outline_thickness;  // 0 = filled, >0 = stroke band of this width
+uniform float  taper;              // 0 = uniform width; e.g. 0.18 = 18% narrower at bottom
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float4 PSRoundedRect(VertData v_in) : TARGET
+{
+	// uv is in [0,1]; convert to centered pixel coordinates.
+	float2 p = (v_in.uv - 0.5) * size;
+
+	// Optional vertical taper: shape narrows linearly from bottom (uv.y=1)
+	// to top (uv.y=0) by `taper` of its half-width. For a real mouse
+	// the front (where fingers are) is narrower and the back (palm rest)
+	// is wider — this gives a teardrop-pointing-up silhouette.
+	float top_factor   = 1.0 - saturate(v_in.uv.y);     // 1 at top, 0 at bottom
+	float taper_factor = 1.0 - taper * top_factor;
+	float half_w = size.x * 0.5 * taper_factor;
+	float half_h = size.y * 0.5;
+
+	// Standard 2D rounded-rect SDF, but with the dynamic half-width.
+	float2 q = float2(abs(p.x) - (half_w - radius), abs(p.y) - (half_h - radius));
+	float  d = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
+
+	float alpha;
+	if (outline_thickness > 0.0) {
+		// Stroke mode: keep pixels whose distance to the edge is within
+		// half the thickness, centered on the shape boundary just inside.
+		float stroke_d = abs(d + outline_thickness * 0.5) - outline_thickness * 0.5;
+		alpha = saturate(0.5 - stroke_d);
+	} else {
+		// Fill mode: 1px anti-aliased edge.
+		alpha = saturate(0.5 - d);
+	}
+	return float4(color.rgb, color.a * alpha);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSRoundedRect(v_in);
+	}
+}

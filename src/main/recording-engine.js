@@ -44,8 +44,8 @@ function unsupportedEncoderError(requested, encoders) {
   const available = (Array.isArray(encoders) ? encoders : []).filter(isUsableEncoder).map((encoder) => encoder.type);
   const suffix = available.length ? ` Usable encoders: ${available.join(', ')}.` : ' The runtime did not report a usable Intel QSV encoder.';
   const error = new Error(requested === 'automatic'
-    ? `No usable Intel QSV encoder is available from the Ascent runtime. Run Check Runtime and select a valid H264, HEVC, or AV1 encoder.${suffix}`
-    : `Encoder '${requested}' is not valid or start-supported by the current Ascent runtime. Run Check Runtime and select a valid H264, HEVC, or AV1 encoder.${suffix}`);
+    ? `No usable Intel QSV encoder is available from the bundled ascent-obs runtime. Select a valid H264, HEVC, or AV1 encoder.${suffix}`
+    : `Encoder '${requested}' is not valid or start-supported by the bundled ascent-obs runtime. Select a valid H264, HEVC, or AV1 encoder.${suffix}`);
   error.code = 'UNSUPPORTED_ENCODER';
   return error;
 }
@@ -149,10 +149,21 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       ...(event === ASCENT_EVENTS.RECORDING_STARTED || event === ASCENT_EVENTS.REPLAY_STARTED ? { running: true } : {}),
       ...(stopped ? { running: false, mode: null } : {}),
     });
-    const waiter = identifier === null ? null : pending.get(identifier);
+    let waiter = identifier === null ? null : pending.get(identifier);
+    let waiterIdentifier = identifier;
+    // The bundled runtime's machine-info response is a transport-level
+    // response and intentionally omits an identifier. Only a request that
+    // explicitly opted into this behavior may consume it.
+    if (!waiter && identifier === null) {
+      const match = [...pending.entries()].find(([, item]) => item.acceptUnidentified && item.events.includes(event));
+      if (match) {
+        waiterIdentifier = match[0];
+        waiter = match[1];
+      }
+    }
     if (!waiter) return;
     if (event === ASCENT_EVENTS.ERR || event === ASCENT_EVENTS.REPLAY_ERROR) {
-      pending.delete(identifier);
+      pending.delete(waiterIdentifier);
       clearTimeout(waiter.timer);
       const commandError = new Error(message.desc || `Ascent command failed (${message.code ?? 'unknown'})`);
       if (Number.isInteger(message.code)) commandError.code = message.code;
@@ -161,7 +172,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       return;
     }
     if (waiter.events.includes(event)) {
-      pending.delete(identifier);
+      pending.delete(waiterIdentifier);
       clearTimeout(waiter.timer);
       waiter.resolve(message);
     }
@@ -206,8 +217,8 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     if (disposed) throw new Error('Ascent engine is shut down');
     const runtime = runtimeResolver();
     if (!runtime) {
-      publish({ available: false, error: 'Ascent runtime is not provisioned' });
-      throw new Error('Ascent runtime is not provisioned');
+      publish({ available: false, error: 'Bundled ascent-obs runtime is unavailable' });
+      throw new Error('Bundled ascent-obs runtime is unavailable');
     }
     terminationStarted = false;
     protocolFailure = null;
@@ -236,13 +247,13 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     return child;
   }
 
-  function request(command, recorderType, fields, events, timeoutMs = 5000, requestedIdentifier = null) {
+  function request(command, recorderType, fields, events, timeoutMs = 5000, requestedIdentifier = null, { acceptUnidentified = false } = {}) {
     ensureChild();
     const identifier = Number.isSafeInteger(requestedIdentifier) ? requestedIdentifier : nextIdentifier++;
     const full = buildAscentCommand(command, identifier, recorderType, fields);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(identifier); reject(new Error('Timed out waiting for Ascent')); }, timeoutMs);
-      pending.set(identifier, { resolve, reject, timer, events });
+      pending.set(identifier, { resolve, reject, timer, events, acceptUnidentified });
       try {
         enqueue(full).catch((error) => { pending.delete(identifier); clearTimeout(timer); reject(error); });
       } catch (error) {
@@ -254,7 +265,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   async function probe() {
-    const response = await request(ASCENT_COMMANDS.QUERY_MACHINE_INFO, ASCENT_RECORDER_TYPES.VIDEO, {}, [ASCENT_EVENTS.QUERY_MACHINE_INFO]);
+    const response = await request(ASCENT_COMMANDS.QUERY_MACHINE_INFO, ASCENT_RECORDER_TYPES.VIDEO, {}, [ASCENT_EVENTS.QUERY_MACHINE_INFO], 5000, null, { acceptUnidentified: true });
     const encoders = Array.isArray(response.vid_encs) ? response.vid_encs.map((encoder) => {
       const type = String(encoder.type ?? '');
       const demoted = demotedEncoders.has(type);

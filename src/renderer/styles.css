@@ -2660,22 +2660,42 @@ input[type="number"] {
 .modal-input:focus { outline: none; border-color: var(--accent); }
 .modal-body { margin-bottom: 16px; }
 
-/* M99 Recording --------------------------------------------------------- */
+/* Arc Power recording --------------------------------------------------- */
 .recording-heading { align-items: flex-start; }
-.recording-heading h1 { margin-bottom: 4px; }
-.recording-heading p { margin: 0; color: var(--text-muted); font-size: 13px; }
-.recording-view-tabs { display: flex; gap: 8px; align-items: center; }
-.recording-stack { display: flex; flex-direction: column; gap: 14px; }
-.recording-card { padding: 18px; }
-.recording-status-card { border-color: var(--border-strong); }
-.recording-status-heading { display: flex; align-items: flex-start; gap: 12px; }
-.recording-status-heading .card-title { margin-bottom: 2px; }
-.recording-status-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--accent); background: var(--accent-soft); font-size: 16px; }
-.recording-status-pill { margin-left: auto; border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.recording-heading h1 { margin: 3px 0 4px; }
+.recording-heading p { margin: 0; color: var(--text-muted); font-size: 13px; max-width: 58ch; }
+.recording-eyebrow { display: block; color: var(--accent); font-size: 10px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+.recording-tabs { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--control-bg); }
+.recording-tab { min-width: 136px; padding: 8px 13px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font: 650 12px var(--font); cursor: pointer; }
+.recording-tab:hover { color: var(--text); background: var(--bg-inset); }
+.recording-tab.active { background: var(--accent-strong); color: var(--on-accent); box-shadow: 0 2px 8px rgba(var(--accent-rgb), .2); }
+.recording-content { display: flex; flex-direction: column; gap: 12px; }
+.recording-manual-content { gap: 14px; }
+.recording-panel-column { display: flex; flex-direction: column; gap: 12px; }
+.recording-panel { padding: 15px 17px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 92%, var(--bg)); }
+.recording-capture-panel { border-color: var(--border-strong); background: linear-gradient(110deg, color-mix(in srgb, var(--accent-soft) 55%, var(--bg-elev)), var(--bg-elev) 48%); }
+.recording-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.recording-panel-heading-compact { align-items: center; }
+.recording-panel-title { margin: 3px 0 0; font: 650 15px var(--font-display); }
+.recording-panel-note { margin: 7px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.recording-panel-badge { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
+.recording-status-summary { display: flex; align-items: center; gap: 8px; min-width: 250px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--control-bg) 75%, transparent); }
+.recording-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--text-dim); }
+.recording-status-dot.recording-live { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.recording-status-dot.recording-ready { background: var(--success); }
+.recording-status-dot.recording-missing { background: var(--warn); }
+.recording-status-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.recording-status-copy strong { font-size: 12px; }
+.recording-status-copy span { color: var(--text-dim); font-size: 11px; }
+.recording-status-pill { margin-left: auto; padding: 3px 7px; border-radius: 999px; font-size: 10px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
 .recording-ready { color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
 .recording-live { color: var(--accent); background: var(--accent-soft); }
 .recording-missing { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.recording-actions { display: flex; gap: 8px; margin-top: 15px; flex-wrap: wrap; }
+.recording-capture-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.btn-recording-stop { background: color-mix(in srgb, var(--danger) 86%, #6b1020); border-color: var(--danger); color: #fff; font-weight: 650; }
+.btn-recording-stop:hover:not(:disabled) { background: var(--danger); border-color: var(--danger); }
+.recording-inline-note, .recording-inline-error { color: var(--text-dim); font-size: 11px; }
+.recording-inline-error { color: var(--warn); margin: 9px 0 0; }
 .recording-input-row { display: flex; gap: 8px; }
 .recording-input, .recording-select, .recording-number, .recording-hotkey, .recording-search { min-height: 34px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: inherit; padding: 7px 9px; }
 .recording-input, .recording-search { width: 100%; }
@@ -2683,28 +2703,32 @@ input[type="number"] {
 .recording-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .recording-field-label { color: var(--text-muted); font-size: 12px; }
 .recording-field-note { color: var(--text-dim); font-size: 11px; line-height: 1.35; }
-.recording-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
-.recording-mode-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.recording-mode-card { min-height: 94px; padding: 13px; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-inset); color: var(--text); cursor: pointer; }
-.recording-mode-card span { color: var(--text-muted); font-size: 11px; line-height: 1.35; }
-.recording-mode-card:hover, .recording-mode-card.selected { border-color: var(--accent); background: var(--accent-soft); }
-.recording-hotkey-row { display: grid; grid-template-columns: minmax(140px, 1fr) 150px minmax(170px, 1fr); gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.recording-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 13px; }
+.recording-number { width: 100%; }
+.recording-hotkey-row { display: grid; grid-template-columns: minmax(160px, 1fr) 150px 120px; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--border); font-size: 12px; }
 .recording-hotkey-row:first-of-type { border-top: 0; }
 .recording-hotkey { width: 150px; font-family: var(--mono); }
-.recording-library { display: flex; flex-direction: column; gap: 14px; }
-.recording-library-toolbar { display: flex; gap: 8px; }
-.recording-search { max-width: 320px; margin-right: auto; }
-.recording-clip-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.recording-clip-card { min-height: 170px; padding: 0; display: flex; flex-direction: column; align-items: stretch; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg-elev); color: var(--text); }
-.recording-clip-card:hover, .recording-clip-card.selected { border-color: var(--accent); }
-.recording-clip-card-main { flex: 1; min-width: 0; padding: 0; display: flex; flex-direction: column; align-items: stretch; text-align: left; border: 0; background: transparent; color: inherit; cursor: pointer; }
-.recording-clip-placeholder { flex: 1; min-height: 115px; display: grid; place-items: center; color: var(--accent); background: linear-gradient(135deg, var(--bg-inset), var(--bg-panel)); font-size: 26px; }
-.recording-clip-card strong, .recording-clip-meta { padding: 0 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recording-clip-card strong { padding-top: 9px; font-size: 13px; }
-.recording-clip-meta { padding-bottom: 10px; padding-top: 3px; color: var(--text-dim); font-size: 11px; }
-.recording-clip-card-actions { display: flex; justify-content: flex-end; padding: 8px 10px; border-top: 1px solid var(--border); }
-.recording-player { min-height: 190px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: #000; }
+.recording-hotkey-copy { display: flex; flex-direction: column; gap: 2px; }
+.recording-hotkey-copy span, .recording-hotkey-registered { color: var(--text-dim); font-size: 11px; }
+.recording-hotkey-warning { font-size: 11px; }
+.recording-storage-panel { display: grid; grid-template-columns: minmax(170px, .6fr) minmax(260px, 1fr); gap: 12px 16px; }
+.recording-storage-panel .recording-panel-heading { grid-column: 1 / -1; }
+.recording-storage-note { grid-column: 1 / -1; margin: 0; }
+.recording-library-panel { display: flex; flex-direction: column; gap: 12px; }
+.recording-library-toolbar { display: flex; align-items: center; gap: 8px; }
+.recording-library-toolbar > div { margin-right: auto; }
+.recording-search { width: min(260px, 32vw); }
+.recording-clip-list { display: flex; flex-direction: column; gap: 6px; }
+.recording-clip-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--control-bg); }
+.recording-clip-row:hover, .recording-clip-row.selected { border-color: var(--accent); background: var(--accent-soft); }
+.recording-clip-play { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.recording-clip-play-icon { display: grid; place-items: center; width: 26px; height: 26px; flex: 0 0 26px; border-radius: 50%; background: var(--accent-strong); color: var(--on-accent); font-size: 11px; }
+.recording-clip-details { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.recording-clip-details strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.recording-clip-details span { color: var(--text-dim); font-size: 11px; }
+.recording-player { min-height: 220px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; background: #000; }
+.recording-player-placeholder { color: var(--text-dim); font-size: 12px; }
 .recording-video { width: 100%; max-height: 560px; display: block; }
-.recording-empty { grid-column: 1 / -1; padding: 30px; text-align: center; }
-@media (max-width: 1050px) { .recording-mode-grid, .recording-clip-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .recording-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 700px) { .recording-heading, .recording-library-toolbar { flex-direction: column; } .recording-view-tabs, .recording-search { max-width: none; width: 100%; } .recording-form-grid, .recording-mode-grid, .recording-clip-grid { grid-template-columns: 1fr; } .recording-hotkey-row { grid-template-columns: 1fr; } }
+.recording-empty { margin: 0; padding: 16px; color: var(--text-dim); text-align: center; font-size: 12px; }
+@media (max-width: 1050px) { .recording-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .recording-heading, .recording-library-toolbar { flex-direction: column; align-items: stretch; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-status-summary { min-width: 0; width: 100%; } .recording-panel-heading { flex-direction: column; } .recording-hotkey-row { grid-template-columns: 1fr 150px; } .recording-hotkey-warning, .recording-hotkey-registered { grid-column: 1 / -1; } .recording-library-toolbar > div { margin-right: 0; } .recording-search { width: 100%; } }

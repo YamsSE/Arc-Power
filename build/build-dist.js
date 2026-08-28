@@ -29,6 +29,7 @@ function writeBuildConfig(artifactName) {
     icon: path.join(root, baseBuild.icon),
     files: baseBuild.files,
     asarUnpack: baseBuild.asarUnpack,
+    extraResources: baseBuild.extraResources,
     win: {
       ...baseBuild.win,
       target: ['portable'],

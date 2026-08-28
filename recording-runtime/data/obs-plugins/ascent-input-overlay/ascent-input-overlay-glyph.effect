@@ -1,0 +1,43 @@
+// Samples an alpha glyph atlas (single-channel R8 texture, value = coverage)
+// with a tint color. Used to render anti-aliased label text from a font
+// atlas baked at module load.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float4 color;
+uniform float4 src_rect; // (u0, v0, du, dv) within the atlas
+
+sampler_state atlas_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData o;
+	o.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	// Quad UV [0,1] mapped onto the atlas sub-rectangle for this glyph.
+	o.uv = v_in.uv * src_rect.zw + src_rect.xy;
+	return o;
+}
+
+float4 PSDefault(VertData v_in) : TARGET
+{
+	float a = image.Sample(atlas_sampler, v_in.uv).r;
+	return float4(color.rgb, color.a * a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSDefault(v_in);
+	}
+}

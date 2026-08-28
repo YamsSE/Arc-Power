@@ -2393,12 +2393,12 @@ export function createIpcHandlers({
       },
       'recording-runtime-probe': async (...args) => {
         assertNoPayload(args, 'recording-runtime-probe');
-        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, error: 'Ascent runtime is not provisioned', encoders: [], hotkeys: getRecordingHotkeyState() };
+        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], hotkeys: getRecordingHotkeyState() };
         return { ...(await recordingEngine.probe()), hotkeys: getRecordingHotkeyState() };
       },
       'recording-status': async (...args) => {
         assertNoPayload(args, 'recording-status');
-        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, error: 'Ascent runtime is not provisioned', encoders: [] }), hotkeys: getRecordingHotkeyState() };
+        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [] }), hotkeys: getRecordingHotkeyState() };
       },
       'recording-start': async (...args) => {
         assertNoPayload(args, 'recording-start');

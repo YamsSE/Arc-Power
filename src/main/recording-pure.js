@@ -2,7 +2,14 @@
 import path from 'node:path';
 
 export const RECORDING_SCHEMA_VERSION = 1;
-export const RECORDING_MODES = ['full-matches', 'clips-only', 'always-on', 'manual-only'];
+export const RECORDING_MODES = ['manual', 'clips'];
+export const RECORDING_RUNTIME_DIRECTORY = 'recording-runtime';
+const LEGACY_RECORDING_MODES = Object.freeze({
+  'manual-only': 'manual',
+  'full-matches': 'manual',
+  'clips-only': 'clips',
+  'always-on': 'manual',
+});
 export const RECORDING_FPS = [30, 60, 120];
 export const RECORDING_RESOLUTIONS = [
   { id: 'default', width: 0, height: 0, label: 'Default' },
@@ -16,7 +23,7 @@ export const RECORDING_RESOLUTIONS = [
 export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   location: '',
   runtimePath: '',
-  mode: 'manual-only',
+  mode: 'manual',
   fps: 60,
   resolution: '1080p',
   encoderId: 'automatic',
@@ -81,7 +88,9 @@ export function normalizeRecordingSettings(raw = {}) {
   return {
     location: boundedString(source.location, DEFAULT_RECORDING_SETTINGS.location, 4096),
     runtimePath: boundedString(source.runtimePath, DEFAULT_RECORDING_SETTINGS.runtimePath, 4096),
-    mode: RECORDING_MODES.includes(source.mode) ? source.mode : DEFAULT_RECORDING_SETTINGS.mode,
+    mode: RECORDING_MODES.includes(source.mode)
+      ? source.mode
+      : (LEGACY_RECORDING_MODES[source.mode] ?? DEFAULT_RECORDING_SETTINGS.mode),
     fps: RECORDING_FPS.includes(source.fps) ? source.fps : DEFAULT_RECORDING_SETTINGS.fps,
     resolution,
     encoderId: boundedString(source.encoderId, DEFAULT_RECORDING_SETTINGS.encoderId, 128),
@@ -185,13 +194,12 @@ export function isPathWithinRoot(rootPath, candidatePath, { allowRoot = false } 
 export function resolveRecordingRuntimeCandidates({ configuredPath, portableWrapperPath, resourcesPath, devPath, buildKind } = {}) {
   const candidates = [];
   if (configuredPath) candidates.push(path.resolve(configuredPath));
-  const portable = Boolean(portableWrapperPath) || buildKind === 'portable';
-  if (portable) {
-    if (portableWrapperPath) candidates.push(path.join(path.dirname(path.resolve(portableWrapperPath)), 'recording-engine'));
-  } else if (resourcesPath) {
-    candidates.push(path.join(path.resolve(resourcesPath), 'recording-engine'));
-  } else if (devPath) {
-    candidates.push(path.join(path.resolve(devPath), 'recording-engine'));
-  }
+  // Packaged builds carry the native runtime as an Electron extraResource,
+  // which is available beside app.asar for both installed and portable runs.
+  if (resourcesPath) candidates.push(path.join(path.resolve(resourcesPath), RECORDING_RUNTIME_DIRECTORY));
+  // Keep the sibling lookup for a portable wrapper launched from a checkout
+  // or for older builds that staged the runtime beside the wrapper.
+  if (portableWrapperPath) candidates.push(path.join(path.dirname(path.resolve(portableWrapperPath)), RECORDING_RUNTIME_DIRECTORY));
+  if (devPath) candidates.push(path.join(path.resolve(devPath), RECORDING_RUNTIME_DIRECTORY));
   return [...new Set(candidates)];
 }

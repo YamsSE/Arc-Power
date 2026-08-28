@@ -937,10 +937,11 @@ export interface DisplayApplyResponse {
   displayState: DisplayState | null;
 }
 
-// M99 - Recording / Ascent OBS. Encoder support is deliberately represented
-// as three facts: enumeration is not hardware validation, and AV1 may only
-// become supported after a real start succeeds.
-export type RecordingMode = 'full-matches' | 'clips-only' | 'always-on' | 'manual-only';
+// Recording settings and renderer tabs. Encoder support is deliberately
+// represented as three facts: enumeration is not hardware validation, and
+// AV1 may only become supported after a real start succeeds.
+export type RecordingMode = 'manual' | 'clips';
+export type RecordingTab = 'manual' | 'clips';
 export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
 export interface RecordingHotkeys { start: string; stop: string; saveClip: string; }
 export interface RecordingSettings {

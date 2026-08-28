@@ -203,15 +203,11 @@ export function createUninstallLaunchScript({
     `$statusPath = ${powershellLiteral(statusPath)}`,
     `$summaryPath = ${powershellLiteral(summaryPath)}`,
     `$diagnosticPath = [string]::Concat($cleanupScriptPath, '.log')`,
-    '$arguments = @(',
-    "  '-NoLogo',",
-    "  '-NoProfile',",
-    "  '-NonInteractive',",
-    "  '-ExecutionPolicy',",
-    "  'Bypass',",
-    "  '-File',",
-    '  $cleanupScriptPath',
-    ')',
+    // Windows PowerShell 5.1 joins an ArgumentList array into one command
+    // line and can discard quotes on individual elements. Supply one
+    // explicitly quoted command-line string so paths containing spaces stay
+    // one -File value in installed and portable builds.
+    '$arguments = \'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "\' + $cleanupScriptPath + \'"\'',
     '$helper = Start-Process -FilePath $powershellPath -ArgumentList $arguments -WorkingDirectory $workingDirectory -WindowStyle Hidden -PassThru -ErrorAction Stop',
     'if ($null -eq $helper -or [int]$helper.Id -lt 1) { throw \'cleanup helper did not start\' }',
     '$launchedAt = [DateTime]::UtcNow.ToString(\'o\')',

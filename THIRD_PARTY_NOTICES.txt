@@ -3,6 +3,19 @@
 Arc Power bundles third-party components. Their licenses are reproduced
 below.
 
+## Included recording runtime (ascent-obs / OBS fork)
+
+- Component: `recording-runtime/`, including the native
+  `bin/64bit/ascent-obs.exe` executable and its OBS, FFmpeg, and encoder
+  support files.
+- Payload version: `1.0.2` (from `recording-runtime/version.txt`).
+- Upstream source: https://github.com/judehek/ascent-obs
+- The runtime is shipped beside the Electron application rather than inside
+  `app.asar` so its native executable and plugins can be started directly.
+  The upstream source and component notices remain the authoritative license
+  records for this payload; no separate redistribution license is inferred by
+  this notice.
+
 ## Intel Graphics Control Library (IGCL) - IntelControlLib.dll v1.0.100
 
 - Component: `src/main/backend/igcl2023/IntelControlLib.dll`

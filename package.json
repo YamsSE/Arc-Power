@@ -43,6 +43,15 @@
                                      "src/main/backend/PawnIO_setup.exe",
                                      "src/main/backend/presentmon/**"
                                  ],
+                  "extraResources":  [
+                                        {
+                                          "from":  "recording-runtime",
+                                          "to":  "recording-runtime",
+                                          "filter":  [
+                                                        "**/*"
+                                                    ]
+                                        }
+                                    ],
                   "win":  {
                                "target":  [
                                              "portable"
