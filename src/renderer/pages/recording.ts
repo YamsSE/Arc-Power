@@ -49,6 +49,8 @@ let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
 let pendingSettingsSave: Promise<void> = Promise.resolve();
 let lastSettingsSave: Promise<void> = Promise.resolve();
+let bitrateInput: HTMLInputElement | null = null;
+let bitrateDraft: number | null = null;
 
 function setStatus(next: RecordingEngineState): void {
   const previous = status;
@@ -119,6 +121,7 @@ function savePatch(patch: RecordingSettingsPatch, rerender = true): Promise<void
   const save = pendingSettingsSave.then(async () => {
     const result = await api.recordingSettingsSave(patch);
     settings = result.settings;
+    if (patch.bitrateKbps !== undefined && result.settings.bitrateKbps === patch.bitrateKbps) bitrateDraft = null;
     status = { ...status, hotkeys: result.hotkeys };
     if (rerender) render();
   });
@@ -131,6 +134,26 @@ function savePatch(patch: RecordingSettingsPatch, rerender = true): Promise<void
     if (rerender) render();
   });
   return save;
+}
+
+function readBitrateInput(input: HTMLInputElement | null): number | null {
+  if (!input) return null;
+  const value = Number(input.value);
+  return Number.isFinite(value) && value > 0 ? normalizeRecordingBitrate(value, settings?.bitrateKbps ?? 8000) : null;
+}
+
+function commitBitrateInput(): Promise<void> {
+  const value = readBitrateInput(bitrateInput);
+  if (value === null) {
+    bitrateDraft = null;
+    return Promise.resolve();
+  }
+  bitrateDraft = value;
+  if (settings?.bitrateKbps === value) {
+    bitrateDraft = null;
+    return Promise.resolve();
+  }
+  return savePatch({ bitrateKbps: value }, false);
 }
 
 function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string {
@@ -200,13 +223,15 @@ function renderQualitySettings(): HTMLElement {
     class: 'recording-number',
     type: 'number',
     step: 'any',
-    value: settings?.bitrateKbps ?? bitrateRange.default,
+    value: bitrateDraft ?? settings?.bitrateKbps ?? bitrateRange.default,
   }) as HTMLInputElement;
+  bitrateInput = bitrate;
   bitrate.title = 'Enter any positive bitrate in Kbps';
   bitrate.addEventListener('input', () => {
-    const value = Number(bitrate.value);
-    if (Number.isFinite(value) && value > 0) void savePatch({ bitrateKbps: normalizeRecordingBitrate(value, settings?.bitrateKbps ?? bitrateRange.default) }, false);
+    const value = readBitrateInput(bitrate);
+    bitrateDraft = value;
   });
+  bitrate.addEventListener('change', () => { void commitBitrateInput(); });
   const encoder = select(settings?.encoderId ?? 'automatic', encoderOptions(), (value) => savePatch({ encoderId: value }));
   const resolution = select(selectedResolution, RESOLUTIONS, (value) => savePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
@@ -702,6 +727,7 @@ function renderPlayerView(): HTMLElement {
 function render(): void {
   if (!renderContainer) return;
   disposePlayerVideo();
+  bitrateInput = null;
   clear(renderContainer);
   renderContainer.append(
     el('div', { class: 'page-heading recording-heading' }, [
@@ -716,6 +742,7 @@ function render(): void {
 }
 
 function selectTab(tab: RecordingTab): void {
+  const qualitySave = commitBitrateInput();
   const wasShowingPlayer = playerClip !== null;
   if (wasShowingPlayer) {
     disposePlayerVideo();
@@ -724,6 +751,7 @@ function selectTab(tab: RecordingTab): void {
   if (activeTab === tab && !wasShowingPlayer) return;
   activeTab = tab;
   render();
+  void qualitySave;
   const mode = modeForTab(tab);
   if (settings && mode && settings.mode !== mode) savePatch({ mode });
 }
@@ -773,8 +801,10 @@ async function load(): Promise<void> {
 async function startRecording(): Promise<void> {
   if (actionBusy) return;
   actionBusy = true;
+  const qualitySave = commitBitrateInput();
   render();
   try {
+    try { await qualitySave; } catch { return; }
     try { await lastSettingsSave; } catch { return; }
     const result = await api.recordingStart();
     setStatus(result.state);
@@ -789,8 +819,10 @@ async function startRecording(): Promise<void> {
 async function startReplay(): Promise<void> {
   if (actionBusy) return;
   actionBusy = true;
+  const qualitySave = commitBitrateInput();
   render();
   try {
+    try { await qualitySave; } catch { return; }
     try { await lastSettingsSave; } catch { return; }
     const result = await api.recordingReplayStart();
     setStatus(result.state);
@@ -896,9 +928,14 @@ export const recordingPage: Page = {
     void load();
   },
   leave(): void {
+    // Commit an edited bitrate before the page is discarded. This keeps a
+    // value entered immediately before navigation from being lost with the
+    // DOM node that held it.
+    void commitBitrateInput();
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
     disposePlayerVideo();
+    bitrateInput = null;
     renderContainer = null;
     playerClip = null;
   },
