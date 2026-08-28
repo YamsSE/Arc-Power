@@ -24,6 +24,7 @@
 
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import fs from 'node:fs';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
@@ -46,12 +47,30 @@ import { physicalTargetOf } from './gpu-inventory.js';
 import { GameProfileStore, canonicalExePath, normalizeAssociation, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
+import { normalizeRecordingSettings, recordingAbsolutePath, RECORDING_FPS, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension } from './recording-pure.js';
+import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
 // product path injects app.getVersion() from ipc.js - this is the default
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
+
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'replayLengthSec', 'hotkeys']);
+export { recordingAbsolutePath };
+function recordingPatch(patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('recording-settings-save: patch must be an object');
+  for (const key of Object.keys(patch)) if (!RECORDING_PATCH_KEYS.has(key)) throw new Error(`recording-settings-save: unknown field '${key}'`);
+  const out = { ...patch };
+  if (patch.location !== undefined) out.location = recordingAbsolutePath(patch.location, 'location');
+  if (patch.runtimePath !== undefined && patch.runtimePath !== '') out.runtimePath = recordingAbsolutePath(patch.runtimePath, 'runtimePath');
+  if (patch.mode !== undefined && !RECORDING_MODES.includes(patch.mode)) throw new Error('recording-settings-save: invalid mode');
+  if (patch.fps !== undefined && !RECORDING_FPS.includes(patch.fps)) throw new Error('recording-settings-save: invalid FPS');
+  if (patch.resolution !== undefined && !RECORDING_RESOLUTIONS.some((item) => item.id === patch.resolution)) throw new Error('recording-settings-save: invalid resolution');
+  if (patch.encoderId !== undefined && (typeof patch.encoderId !== 'string' || patch.encoderId.length > 128)) throw new Error('recording-settings-save: invalid encoder id');
+  if (patch.hotkeys !== undefined && (!patch.hotkeys || typeof patch.hotkeys !== 'object' || Array.isArray(patch.hotkeys))) throw new Error('recording-settings-save: hotkeys must be an object');
+  return out;
+}
 
 // M24 (Part B): the pushed post-apply read-back channel vocabulary (ipc-core
 // owns the channel names; ipc.js's handler-loop wrap + tray-apply.js both
@@ -63,9 +82,18 @@ export const DEVICE_STATE_UPDATED_CHANNEL = 'device:state-updated';
 /** M24 (Part B): the pushed post-apply GRAPHICS read-back channel (main ->
  *  renderer; { deviceId, graphicsState } - the ipc.js graphics:apply wrap). */
 export const GRAPHICS_STATE_UPDATED_CHANNEL = 'graphics:state-updated';
+/** M99: main-process Ascent state push for the Recording page. */
+export const RECORDING_STATE_CHANNEL = 'recording:state';
 /** M31: explicit panel request and main-owned atomic selection push channels. */
 export const DEVICE_SELECTION_REQUEST_CHANNEL = 'device-selection:request';
 export const DEVICE_SELECTION_UPDATED_CHANNEL = 'device-selection:updated';
+
+export function pushRecordingState({ getWindow, state, getHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }) }) {
+  const win = getWindow?.();
+  if (!win || win.isDestroyed?.() || !win.webContents?.send) return false;
+  win.webContents.send(RECORDING_STATE_CHANNEL, { ...state, hotkeys: getHotkeyState() });
+  return true;
+}
 
 const SCALAR_CONTROLS = new Set([
   'powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC',
@@ -915,6 +943,12 @@ export function createIpcHandlers({
   gameScan = createGameScanAdapter(),
   chooseGameExecutable = async () => null,
   gameArtwork = async () => null,
+  recordingStore = null,
+  recordingEngine = null,
+  chooseRecordingDirectory = async () => null,
+  openRecordingFolder = async () => {},
+  refreshRecordingHotkeys = async () => null,
+  getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }),
 }) {
   // D2: the real app injects its sidecar store, while tests can provide an
   // in-memory adapter. The fallback is isolated to the ProfileStore data
@@ -2341,6 +2375,120 @@ export function createIpcHandlers({
           throw new Error('monitor-log-append: sample must be a plain object');
         }
         return monitorLog.append(sample);
+      },
+
+      // M99: Recording remains a narrow main-owned surface. Renderer input
+      // is only a normalized settings patch or an opaque clip id; paths and
+      // child-process arguments are resolved here.
+      'recording-settings-get': async (...args) => {
+        assertNoPayload(args, 'recording-settings-get');
+        return recordingStore?.settings?.() ?? normalizeRecordingSettings({});
+      },
+      'recording-settings-save': async (patch) => {
+        const nextPatch = recordingPatch(patch);
+        if (nextPatch.location) fs.mkdirSync(nextPatch.location, { recursive: true });
+        const settings = recordingStore?.saveSettings ? await recordingStore.saveSettings(nextPatch) : normalizeRecordingSettings(nextPatch);
+        const hotkeys = await refreshRecordingHotkeys() ?? getRecordingHotkeyState();
+        return { settings, hotkeys };
+      },
+      'recording-runtime-probe': async (...args) => {
+        assertNoPayload(args, 'recording-runtime-probe');
+        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, error: 'Ascent runtime is not provisioned', encoders: [], hotkeys: getRecordingHotkeyState() };
+        return { ...(await recordingEngine.probe()), hotkeys: getRecordingHotkeyState() };
+      },
+      'recording-status': async (...args) => {
+        assertNoPayload(args, 'recording-status');
+        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, error: 'Ascent runtime is not provisioned', encoders: [] }), hotkeys: getRecordingHotkeyState() };
+      },
+      'recording-start': async (...args) => {
+        assertNoPayload(args, 'recording-start');
+        if (!recordingEngine?.startRecording || !recordingStore) throw new Error('Recording engine is not available');
+        const settings = await recordingStore.settings();
+        const location = recordingAbsolutePath(settings.location, 'location');
+        fs.mkdirSync(location, { recursive: true });
+        const outputPath = path.join(location, `ArcPower-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`);
+        const state = await recordingEngine.startRecording({ ...settings, outputPath });
+        return { state, outputPath: path.basename(outputPath) };
+      },
+      'recording-stop': async (...args) => {
+        assertNoPayload(args, 'recording-stop');
+        if (!recordingEngine?.stop) throw new Error('Recording engine is not available');
+        return recordingEngine.stop();
+      },
+      'recording-replay-start': async (...args) => {
+        assertNoPayload(args, 'recording-replay-start');
+        if (!recordingEngine?.startReplay || !recordingStore) throw new Error('Recording engine is not available');
+        const settings = await recordingStore.settings();
+        const location = recordingAbsolutePath(settings.location, 'location');
+        fs.mkdirSync(location, { recursive: true });
+        const outputPath = path.join(location, `ArcPower-Replay-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`);
+        const state = await recordingEngine.startReplay({ ...settings, outputPath });
+        return { state, outputPath: path.basename(outputPath) };
+      },
+      'recording-clip-save': async (payload = {}) => {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('recording-clip-save: payload must be an object');
+        if (!recordingEngine?.saveReplayClip || !recordingStore) throw new Error('Recording engine is not available');
+        const settings = await recordingStore.settings();
+        const location = recordingAbsolutePath(settings.location, 'location');
+        const headDurationMs = Number.isFinite(payload.headDurationMs) ? Math.min(3600000, Math.max(0, Math.round(payload.headDurationMs))) : settings.replayLengthSec * 1000;
+        fs.mkdirSync(location, { recursive: true });
+        const outputPath = path.join(location, `ArcPower-Clip-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`);
+        const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });
+        return { response, outputPath: path.basename(outputPath) };
+      },
+      'recording-clips-list': async (...args) => {
+        assertNoPayload(args, 'recording-clips-list');
+        if (!recordingStore) return [];
+        return recordingStore.scanClips ? recordingStore.scanClips() : recordingStore.listClips();
+      },
+      'recording-choose-folder': async (...args) => {
+        assertNoPayload(args, 'recording-choose-folder');
+        const selected = await chooseRecordingDirectory();
+        if (!selected) return { canceled: true, settings: await recordingStore.settings() };
+        const location = recordingAbsolutePath(selected, 'location');
+        fs.mkdirSync(location, { recursive: true });
+        const settings = await recordingStore.saveSettings({ location });
+        return { canceled: false, settings };
+      },
+      'recording-open-folder': async (...args) => {
+        assertNoPayload(args, 'recording-open-folder');
+        const settings = await recordingStore.settings();
+        const location = recordingAbsolutePath(settings.location, 'location');
+        fs.mkdirSync(location, { recursive: true });
+        await openRecordingFolder(location);
+        return { ok: true };
+      },
+      'recording-clip-url': async (id) => {
+        if (!isOpaqueClipId(id)) throw new Error('recording-clip-url: invalid clip id');
+        if (!recordingStore || !(await recordingStore.clipById(id))) throw new Error('recording-clip-url: clip not found');
+        const url = mediaClipUrl(id);
+        if (!url) throw new Error('recording-clip-url: invalid clip id');
+        return url;
+      },
+      'recording-clip-delete': async (id) => {
+        if (!isOpaqueClipId(id)) throw new Error('recording-clip-delete: invalid clip id');
+        if (!recordingStore) return { ok: false, id, removed: false, reason: 'unavailable' };
+        const clip = await recordingStore.clipById(id);
+        if (!clip) return { ok: false, id, removed: false, reason: 'not-found' };
+        const settings = await recordingStore.settings();
+        const location = recordingAbsolutePath(settings.location, 'location');
+        const filePath = resolveSafeRecordingPath(location, clip.relativePath, fs, { allowMissing: true });
+        if (!filePath) return { ok: false, id, removed: false, reason: 'unsafe-path' };
+        const handle = openSafeRecordingFile(filePath, fs);
+        if (!handle) {
+          try { fs.lstatSync(filePath); return { ok: false, id, removed: false, reason: 'unsafe-path' }; }
+          catch (err) { return err?.code === 'ENOENT' ? { ok: false, id, removed: false, reason: 'not-found' } : { ok: false, id, removed: false, reason: 'delete-failed' }; }
+        }
+        try {
+          const deletion = unlinkSafeRecordingFile(filePath, handle, fs);
+          if (!deletion.ok) return { ok: false, id, removed: false, reason: deletion.reason };
+        } finally {
+          closeSafeRecordingFile(handle, fs);
+        }
+        const deleted = await recordingStore.deleteClip(id);
+        return deleted
+          ? { ok: true, id, removed: true, reason: null }
+          : { ok: false, id, removed: false, reason: 'not-found' };
       },
 
       // Profiles (M2b-B). Every channel returns the full envelope

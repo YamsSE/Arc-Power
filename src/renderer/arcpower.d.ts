@@ -32,6 +32,11 @@ import type {
   PowerLimitsRead,
   RegistryCatalogResponse,
   RegistryApplyResponse,
+  RecordingClip,
+  RecordingClipDeleteResult,
+  RecordingEngineState,
+  RecordingSettingsSaveResult,
+  RecordingSettings,
   ResetResponse,
   Settings,
   StartupGetState,
@@ -184,6 +189,20 @@ export interface ArcPowerApi {
   gameProfileSave(association: Partial<GameAssociation> & { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;
   gameProfileDelete(association: { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;
   trayRebuild(): Promise<{ ok: boolean }>;
+  recordingSettingsGet(): Promise<RecordingSettings>;
+  recordingSettingsSave(patch: Partial<Omit<RecordingSettings, 'hotkeys'>> & { hotkeys?: Partial<RecordingSettings['hotkeys']> }): Promise<RecordingSettingsSaveResult>;
+  recordingRuntimeProbe(): Promise<RecordingEngineState>;
+  recordingStatus(): Promise<RecordingEngineState>;
+  recordingStart(): Promise<{ state: RecordingEngineState; outputPath: string }>;
+  recordingStop(): Promise<RecordingEngineState>;
+  recordingReplayStart(): Promise<{ state: RecordingEngineState; outputPath: string }>;
+  recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string }>;
+  recordingClipsList(): Promise<RecordingClip[]>;
+  recordingChooseFolder(): Promise<{ canceled: boolean; settings: RecordingSettings }>;
+  recordingOpenFolder(): Promise<{ ok: boolean }>;
+  recordingClipUrl(id: string): Promise<string>;
+  recordingClipDelete(id: string): Promise<RecordingClipDeleteResult>;
+  onRecordingStateUpdated(cb: (state: RecordingEngineState) => void): () => void;
   /** M2D (mock mode only): the featureset list + current selection for the
    *  header dropdown. The channel is absent in real mode (invoke rejects). */
   mockListFeaturesets(): Promise<MockFeaturesetsResponse>;

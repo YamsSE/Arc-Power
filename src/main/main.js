@@ -40,7 +40,7 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain, protocol } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -55,6 +55,10 @@ import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue } from './ipc-core.js';
 import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
+import { RecordingStore } from './store/recording-store.js';
+import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
+import { createRecordingHotkeys, createRecordingActionHandler } from './recording-hotkeys.js';
+import { createRecordingMediaResponse, mediaRequestPath, resolveSafeRecordingPath } from './recording-media.js';
 import { createGameScanAdapter, findGamePosterArtwork } from './game-scan.js';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
@@ -118,6 +122,12 @@ import { createSysmanPowerLimits, createMockSysmanPowerLimits } from './sysman/p
 import { markProfileBoot, bootProfilingEnabled, profileElapsedMs } from './profile-boot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// M99: the renderer never receives file:// URLs. This privileged scheme is
+// registered before ready so Electron treats it as a secure media origin.
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'arc-power-media',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+}]);
 
 // M17d (Run E): the harness gate - ARC_POWER_PROFILE_BOOT=1 OR
 // --profile-boot. When on, the boot stages log elapsed-from-launch lines and
@@ -936,6 +946,22 @@ async function main() {
   }
 
   await app.whenReady();
+  // M99: narrowly scoped range-capable media serving. The renderer supplies
+  // only an opaque clip id; main resolves and revalidates the metadata and
+  // path on every request, including symlink/junction containment.
+  protocol.handle('arc-power-media', async (request) => {
+    const id = mediaRequestPath(request.url);
+    if (!id) return new Response('Not found', { status: 404 });
+    try {
+      const clip = await recordingStore.clipById(id);
+      const settings = await recordingStore.settings();
+      const filePath = clip ? resolveSafeRecordingPath(settings.location, clip.relativePath) : null;
+      if (!filePath) return new Response('Not found', { status: 404 });
+      return createRecordingMediaResponse(filePath, request);
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+  });
   if (startupSplashReady) {
     const startupDecision = await startupSplashReady;
     if (startupDecision?.action === 'restart') return;
@@ -1347,6 +1373,29 @@ async function main() {
     ocModeDefault: mock ? (process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced') : 'stock',
   });
   const gameProfiles = new GameProfileStore({ dir: store.dir });
+  // M99: recording state is isolated from settings.json so future recording
+  // migrations cannot alter the GPU/profile schema. The default capture
+  // directory is created only when the user starts recording or chooses it.
+  const recordingStore = new RecordingStore({
+    dir: store.dir,
+    defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
+  });
+  const recordingEngine = createAscentEngine({
+    onEncoderDemoted: (encoderId) => recordingStore.demoteEncoder(encoderId),
+    runtimeResolver: () => {
+      let configuredPath = null;
+      try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* unavailable store -> candidate paths only */ }
+      return resolveAscentRuntime({
+        configuredPath,
+        // PORTABLE_EXECUTABLE_FILE points to the stable outer artifact. The
+        // resolver intentionally derives the runtime beside that file, not
+        // beside Electron's temporary extraction directory.
+        portableWrapperPath,
+        resourcesPath: app.isPackaged ? process.resourcesPath : null,
+        devPath: app.isPackaged ? null : path.join(__dirname, '..', '..'),
+      });
+    },
+  });
   const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
     ? path.join(os.tmpdir(), 'arcpower-mock-games')
     : null;
@@ -1830,9 +1879,17 @@ async function main() {
   // swallowed by the window close interception (the close event fires
   // during a quit too; the flag lets it through).
   let isQuitting = false;
-  app.on('before-quit', () => {
+  let quitTeardownStarted = false;
+  app.on('before-quit', (event) => {
     isQuitting = true;
-    void teardown?.().catch(() => {});
+    // M99: Electron otherwise proceeds while the async Ascent SHUTDOWN is
+    // still queued. Hold the first quit event, await the bounded teardown,
+    // then re-enter app.quit once so the child has a chance to finalize.
+    if (!quitTeardownStarted && teardown) {
+      event.preventDefault();
+      quitTeardownStarted = true;
+      void teardown().catch(() => {}).finally(() => app.quit());
+    }
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
     // M4L (N2): release the PawnIO device handle (msr-reader close hygiene).
@@ -2564,6 +2621,17 @@ async function main() {
     advancedOverlayHandle?.destroy();
     unregisterAdvancedOverlayHotkey();
   });
+  // M99: the Recording shortcuts are owned by main and are reconciled after
+  // every settings save. They never compete silently with the two existing
+  // Control+letter overlay shortcuts.
+  let recordingActionHandler = async () => {};
+  const recordingHotkeys = createRecordingHotkeys({
+    shortcut: uiVerify ? { register: () => false, unregister: () => {} } : globalShortcut,
+    getSettings: () => recordingStore.settings(),
+    reserved: () => [overlayHotkeyAccelerator, advancedOverlayHotkeyAccelerator],
+    onAction: (action) => recordingActionHandler(action),
+  });
+  app.on('will-quit', () => recordingHotkeys.unregister());
   // M4J (G): the OLD post-window start-minimized block (minimize-to-taskbar
   // after ready-to-show) is REMOVED - the window is created show:false when
   // the pre-create settings read says startMinimized (see createWindow
@@ -2851,6 +2919,18 @@ async function main() {
         };
       } catch { return { banner, artwork: null }; }
     },
+    recordingStore,
+    recordingEngine,
+    chooseRecordingDirectory: async () => {
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Choose recording location',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    },
+    openRecordingFolder: async (directory) => { await shell.openPath(directory); },
+    refreshRecordingHotkeys: () => recordingHotkeys.register(),
+    getRecordingHotkeyState: () => recordingHotkeys.getState(),
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach
@@ -2858,6 +2938,8 @@ async function main() {
       if (uiVerify) trayRebuilds += 1;
     },
   });
+  recordingActionHandler = createRecordingActionHandler({ getSettings: () => recordingStore.settings(), recordingEngine });
+  await recordingHotkeys.register();
 
   // M17p: the sysStats/MSR assignment (MOVED here from its pre-window
   // position - the fast-boot reorder: boot-apply gate -> createWindow ->

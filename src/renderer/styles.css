@@ -498,6 +498,7 @@ html, body {
 /* M8: the Graphics tab icon - a display/graphics-chip glyph (the GPU's
    frame-sync + override surface the tab controls). */
 .sidebar-icon-graphics { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M18 9V7c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-2h4V9h-4zm-6 7H4v-2h8v2zm0-4H4v-2h8v2zm0-4H4V7h8v2zm6 4h-4v-2h4v2zm0-4h-4V7h4v2z'/%3E%3C/svg%3E"); }
+.sidebar-icon-recording { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm6 3v8l7-4-7-4z'/%3E%3C/svg%3E"); }
 
 .sidebar-link:hover { background: var(--bg-inset); color: var(--text); }
 .sidebar-link.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
@@ -2658,3 +2659,52 @@ input[type="number"] {
 }
 .modal-input:focus { outline: none; border-color: var(--accent); }
 .modal-body { margin-bottom: 16px; }
+
+/* M99 Recording --------------------------------------------------------- */
+.recording-heading { align-items: flex-start; }
+.recording-heading h1 { margin-bottom: 4px; }
+.recording-heading p { margin: 0; color: var(--text-muted); font-size: 13px; }
+.recording-view-tabs { display: flex; gap: 8px; align-items: center; }
+.recording-stack { display: flex; flex-direction: column; gap: 14px; }
+.recording-card { padding: 18px; }
+.recording-status-card { border-color: var(--border-strong); }
+.recording-status-heading { display: flex; align-items: flex-start; gap: 12px; }
+.recording-status-heading .card-title { margin-bottom: 2px; }
+.recording-status-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--accent); background: var(--accent-soft); font-size: 16px; }
+.recording-status-pill { margin-left: auto; border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.recording-ready { color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
+.recording-live { color: var(--accent); background: var(--accent-soft); }
+.recording-missing { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.recording-actions { display: flex; gap: 8px; margin-top: 15px; flex-wrap: wrap; }
+.recording-input-row { display: flex; gap: 8px; }
+.recording-input, .recording-select, .recording-number, .recording-hotkey, .recording-search { min-height: 34px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: inherit; padding: 7px 9px; }
+.recording-input, .recording-search { width: 100%; }
+.recording-input-row .recording-input { flex: 1; }
+.recording-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.recording-field-label { color: var(--text-muted); font-size: 12px; }
+.recording-field-note { color: var(--text-dim); font-size: 11px; line-height: 1.35; }
+.recording-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.recording-mode-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.recording-mode-card { min-height: 94px; padding: 13px; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-inset); color: var(--text); cursor: pointer; }
+.recording-mode-card span { color: var(--text-muted); font-size: 11px; line-height: 1.35; }
+.recording-mode-card:hover, .recording-mode-card.selected { border-color: var(--accent); background: var(--accent-soft); }
+.recording-hotkey-row { display: grid; grid-template-columns: minmax(140px, 1fr) 150px minmax(170px, 1fr); gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.recording-hotkey-row:first-of-type { border-top: 0; }
+.recording-hotkey { width: 150px; font-family: var(--mono); }
+.recording-library { display: flex; flex-direction: column; gap: 14px; }
+.recording-library-toolbar { display: flex; gap: 8px; }
+.recording-search { max-width: 320px; margin-right: auto; }
+.recording-clip-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.recording-clip-card { min-height: 170px; padding: 0; display: flex; flex-direction: column; align-items: stretch; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg-elev); color: var(--text); }
+.recording-clip-card:hover, .recording-clip-card.selected { border-color: var(--accent); }
+.recording-clip-card-main { flex: 1; min-width: 0; padding: 0; display: flex; flex-direction: column; align-items: stretch; text-align: left; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.recording-clip-placeholder { flex: 1; min-height: 115px; display: grid; place-items: center; color: var(--accent); background: linear-gradient(135deg, var(--bg-inset), var(--bg-panel)); font-size: 26px; }
+.recording-clip-card strong, .recording-clip-meta { padding: 0 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recording-clip-card strong { padding-top: 9px; font-size: 13px; }
+.recording-clip-meta { padding-bottom: 10px; padding-top: 3px; color: var(--text-dim); font-size: 11px; }
+.recording-clip-card-actions { display: flex; justify-content: flex-end; padding: 8px 10px; border-top: 1px solid var(--border); }
+.recording-player { min-height: 190px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: #000; }
+.recording-video { width: 100%; max-height: 560px; display: block; }
+.recording-empty { grid-column: 1 / -1; padding: 30px; text-align: center; }
+@media (max-width: 1050px) { .recording-mode-grid, .recording-clip-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .recording-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .recording-heading, .recording-library-toolbar { flex-direction: column; } .recording-view-tabs, .recording-search { max-width: none; width: 100%; } .recording-form-grid, .recording-mode-grid, .recording-clip-grid { grid-template-columns: 1fr; } .recording-hotkey-row { grid-template-columns: 1fr; } }

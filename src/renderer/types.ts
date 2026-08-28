@@ -936,3 +936,58 @@ export interface DisplayApplyResponse {
   perControl: Record<string, PerControlResult>;
   displayState: DisplayState | null;
 }
+
+// M99 - Recording / Ascent OBS. Encoder support is deliberately represented
+// as three facts: enumeration is not hardware validation, and AV1 may only
+// become supported after a real start succeeds.
+export type RecordingMode = 'full-matches' | 'clips-only' | 'always-on' | 'manual-only';
+export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
+export interface RecordingHotkeys { start: string; stop: string; saveClip: string; }
+export interface RecordingSettings {
+  location: string;
+  runtimePath: string;
+  mode: RecordingMode;
+  fps: 30 | 60 | 120;
+  resolution: RecordingResolution;
+  encoderId: string;
+  bitrateKbps: number;
+  replayLengthSec: number;
+  hotkeys: RecordingHotkeys;
+}
+export interface RecordingEncoderState {
+  type: string;
+  description: string;
+  enumerated: boolean;
+  probeValid: boolean;
+  startTested: boolean;
+  startSupported: boolean;
+  code: number | null;
+  status: string;
+}
+export interface RecordingEngineState {
+  available: boolean;
+  running: boolean;
+  mode: 'video' | 'replay' | null;
+  error: string | null;
+  encoders: RecordingEncoderState[];
+  hotkeys: { registered: Record<string, string>; conflicts: Record<string, string>; error: string | null };
+  lastEvent?: Record<string, unknown> | null;
+}
+export interface RecordingClip {
+  id: string;
+  fileName: string;
+  relativePath: string;
+  createdAt: string;
+  modifiedAt?: string;
+  byteLength?: number;
+}
+export interface RecordingClipDeleteResult {
+  ok: boolean;
+  id: string;
+  removed: boolean;
+  reason: 'unavailable' | 'not-found' | 'unsafe-path' | 'delete-failed' | 'unsupported-platform' | null;
+}
+export interface RecordingSettingsSaveResult {
+  settings: RecordingSettings;
+  hotkeys: RecordingEngineState['hotkeys'];
+}

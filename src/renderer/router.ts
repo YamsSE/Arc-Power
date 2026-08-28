@@ -18,7 +18,7 @@ import type {
 // redirects (pageFromHash) with the overlay view requested.
 // M8: the #/graphics page (the Graphics tab - the planned order: the tab
 // sits BELOW Tuning).
-export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
+export type PageId = 'dashboard' | 'tuning' | 'monitoring' | 'recording' | 'graphics' | 'profiles' | 'tweaks' | 'settings';
 
 // M6-amd1: the Overlay tab used to sit DIRECTLY BELOW the Monitoring tab
 // (the amendment - the sidebar order); M9 removes it (the Overlay
@@ -26,7 +26,7 @@ export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'monitoring' | 'profi
 // M8: the Graphics tab sits DIRECTLY BELOW Tuning (the planned order:
 // dashboard / tuning / graphics / monitoring / profiles / tweaks /
 // settings).
-export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'monitoring', 'profiles', 'tweaks', 'settings'];
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'monitoring', 'recording', 'graphics', 'profiles', 'tweaks', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
@@ -36,6 +36,7 @@ export const NAV_LABELS: Record<PageId, string> = {
   // M8: the Graphics tab (the IGS-mirror 3D-feature settings page).
   graphics: 'Graphics',
   monitoring: 'Monitoring',
+  recording: 'Recording',
   profiles: 'Profiles',
   tweaks: 'Tweaks',
   // M4-D: the Settings tab (Start with Windows / Start minimized / About).

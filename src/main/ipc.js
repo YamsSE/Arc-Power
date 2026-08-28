@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -59,10 +59,16 @@ import { createGameTuningController } from './game-tuning.js';
  *   gameScan?: { scan: () => Promise<{ apps: object[], error?: string }> },  // D2: read-only running-process scanner
  *   chooseGameExecutable?: () => Promise<string|null|{ canceled?: boolean, filePaths?: string[] }>,
  *   gameArtwork?: (exePath: string) => Promise<string|null|{ artwork?: string|null, banner?: string|null }>,
+ *   recordingStore?: import('./store/recording-store.js').RecordingStore,
+ *   recordingEngine?: { getState: () => object, probe: () => Promise<object>, startRecording: (settings: object) => Promise<object>, startReplay: (settings: object) => Promise<object>, stop: () => Promise<object>, saveReplayClip: (request: object) => Promise<object>, shutdown: () => Promise<object>, subscribe?: (cb: (state: object) => void) => () => void },
+ *   chooseRecordingDirectory?: () => Promise<string|null>,
+ *   openRecordingFolder?: (directory: string) => Promise<unknown>,
+ *   refreshRecordingHotkeys?: () => Promise<unknown>,
+ *   getRecordingHotkeyState?: () => object,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingEngine = null, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }) }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -100,6 +106,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     gameScan: gameScan ?? undefined,
     chooseGameExecutable,
     gameArtwork,
+    recordingStore,
+    recordingEngine,
+    chooseRecordingDirectory,
+    openRecordingFolder,
+    refreshRecordingHotkeys,
+    getRecordingHotkeyState,
     emit: (channel, payload) => {
       // Push-style selection request goes only to the main renderer. The
       // panel never receives its own request and cannot recurse through the
@@ -135,6 +147,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       const advancedOverlayWin = getAdvancedOverlayWindow();
       if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(channel, payload);
     },
+  });
+  const unsubscribeRecordingState = recordingEngine?.subscribe?.((state) => {
+    pushRecordingState({ getWindow, state, getHotkeyState: getRecordingHotkeyState });
   });
   // The foreground detector is absent in mock/ui-verify mode. In the real
   // product it gives Game Profiles the same executable identity used by the
@@ -192,8 +207,10 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     presentMonLane?.stop?.().catch(() => {}),
   ]);
   return async () => {
+    unsubscribeRecordingState?.();
     await gameTuning?.stop();
     await stopAllTelemetry();
     await stopFps();
+    await recordingEngine?.shutdown?.();
   };
 }

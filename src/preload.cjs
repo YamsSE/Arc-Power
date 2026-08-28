@@ -102,6 +102,21 @@ contextBridge.exposeInMainWorld('arcPower', {
   gameProfileSave: (association) => ipcRenderer.invoke('game-profile-save', association),
   gameProfileDelete: (association) => ipcRenderer.invoke('game-profile-delete', association),
   trayRebuild: () => ipcRenderer.invoke('tray-rebuild'),
+  // M99: Recording/Ascent control stays main-owned. Clip playback uses an
+  // opaque id resolved by the privileged arc-power-media protocol.
+  recordingSettingsGet: () => ipcRenderer.invoke('recording-settings-get'),
+  recordingSettingsSave: (patch) => ipcRenderer.invoke('recording-settings-save', patch),
+  recordingRuntimeProbe: () => ipcRenderer.invoke('recording-runtime-probe'),
+  recordingStatus: () => ipcRenderer.invoke('recording-status'),
+  recordingStart: () => ipcRenderer.invoke('recording-start'),
+  recordingStop: () => ipcRenderer.invoke('recording-stop'),
+  recordingReplayStart: () => ipcRenderer.invoke('recording-replay-start'),
+  recordingClipSave: (payload) => ipcRenderer.invoke('recording-clip-save', payload),
+  recordingClipsList: () => ipcRenderer.invoke('recording-clips-list'),
+  recordingChooseFolder: () => ipcRenderer.invoke('recording-choose-folder'),
+  recordingOpenFolder: () => ipcRenderer.invoke('recording-open-folder'),
+  recordingClipUrl: (id) => ipcRenderer.invoke('recording-clip-url', id),
+  recordingClipDelete: (id) => ipcRenderer.invoke('recording-clip-delete', id),
   // M2D: mock-only featureset control. The channels exist ONLY in mock mode
   // (real mode rejects with "No handler registered" - the renderer never
   // calls them there: the dropdown renders only when health.backend === 'mock').
@@ -134,6 +149,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     const listener = (_event, state) => cb(state);
     ipcRenderer.on('window:maximized-changed', listener);
     return () => ipcRenderer.removeListener('window:maximized-changed', listener);
+  },
+  onRecordingStateUpdated: (cb) => {
+    const listener = (_event, state) => cb(state);
+    ipcRenderer.on('recording:state', listener);
+    return () => ipcRenderer.removeListener('recording:state', listener);
   },
   // M16-F1: pushed POST-APPLY device read-backs ({ deviceId, state } on
   // 'device:state-updated') - the tray "Apply active profile" runs entirely

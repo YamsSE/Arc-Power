@@ -15,6 +15,7 @@ import { dashboardPage } from './pages/dashboard.ts';
 import { tuningPage } from './pages/tuning.ts';
 import { graphicsPage } from './pages/graphics.ts';
 import { monitoringPage, redrawMonitoringGraphs } from './pages/monitoring.ts';
+import { recordingPage } from './pages/recording.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
@@ -31,6 +32,7 @@ const PAGES: Record<PageId, Page> = {
   // sidebar). An unregistered id falls back to the dashboard (S3).
   graphics: graphicsPage,
   monitoring: monitoringPage,
+  recording: recordingPage,
   profiles: profilesPage,
   tweaks: tweaksPage,
   settings: settingsPage,
