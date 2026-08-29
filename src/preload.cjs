@@ -161,6 +161,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('recording:action', listener);
     return () => ipcRenderer.removeListener('recording:action', listener);
   },
+  onRecordingNotification: (cb) => {
+    const listener = (_event, notification) => cb(notification);
+    ipcRenderer.on('recording:notification', listener);
+    return () => ipcRenderer.removeListener('recording:notification', listener);
+  },
   // M16-F1: pushed POST-APPLY device read-backs ({ deviceId, state } on
   // 'device:state-updated') - the tray "Apply active profile" runs entirely
   // in main, so main pushes the fresh read-back; the renderer refreshes its

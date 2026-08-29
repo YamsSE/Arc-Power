@@ -36,6 +36,7 @@ import type {
   RecordingClipDeleteResult,
   RecordingEngineState,
   RecordingActionResult,
+  RecordingNotification,
   RecordingSettingsSaveResult,
   RecordingSettings,
   RecordingSettingsPatch,
@@ -201,12 +202,13 @@ export interface ArcPowerApi {
   recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string }>;
   recordingClipsList(): Promise<RecordingClip[]>;
   recordingProcessesList(): Promise<string[]>;
-  recordingChooseFolder(): Promise<{ canceled: boolean; settings: RecordingSettings }>;
+  recordingChooseFolder(): Promise<{ canceled: boolean; location?: string; settings: RecordingSettings }>;
   recordingOpenFolder(): Promise<{ ok: boolean }>;
   recordingClipUrl(id: string): Promise<string>;
   recordingClipDelete(id: string): Promise<RecordingClipDeleteResult>;
   onRecordingStateUpdated(cb: (state: RecordingEngineState) => void): () => void;
   onRecordingActionResult(cb: (result: RecordingActionResult) => void): () => void;
+  onRecordingNotification(cb: (notification: RecordingNotification) => void): () => void;
   /** M2D (mock mode only): the featureset list + current selection for the
    *  header dropdown. The channel is absent in real mode (invoke rejects). */
   mockListFeaturesets(): Promise<MockFeaturesetsResponse>;

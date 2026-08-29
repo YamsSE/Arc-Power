@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'">
+  <title>Arc Power notification</title>
+  <link rel="stylesheet" href="./recording-toast.css">
+</head>
+<body>
+  <div id="recording-toast" class="recording-toast" role="status" aria-live="polite" hidden>
+    <span class="recording-toast-mark" aria-hidden="true"></span>
+    <div class="recording-toast-copy">
+      <strong id="recording-toast-title"></strong>
+      <span id="recording-toast-message"></span>
+    </div>
+  </div>
+  <script src="./out/recording-toast.js"></script>
+</body>
+</html>

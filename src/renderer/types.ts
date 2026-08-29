@@ -1007,6 +1007,12 @@ export interface RecordingActionResult {
   didStop?: boolean;
   state?: RecordingActionState | null;
 }
+export interface RecordingNotification {
+  variant: 'success' | 'error' | 'info';
+  title: string;
+  message: string;
+  durationMs?: number;
+}
 export interface RecordingClip {
   id: string;
   fileName: string;

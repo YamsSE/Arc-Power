@@ -2515,8 +2515,10 @@ export function createIpcHandlers({
         if (!selected) return { canceled: true, settings: await recordingStore.settings() };
         const location = recordingAbsolutePath(selected, 'location');
         fs.mkdirSync(location, { recursive: true });
-        const settings = await recordingStore.saveSettings({ location });
-        return { canceled: false, settings };
+        // Folder browsing only stages the path in the renderer. Recording
+        // settings use the same explicit Apply contract as Graphics/Tuning;
+        // do not persist this selection before the user confirms it.
+        return { canceled: false, location, settings: await recordingStore.settings() };
       },
       'recording-open-folder': async (...args) => {
         assertNoPayload(args, 'recording-open-folder');

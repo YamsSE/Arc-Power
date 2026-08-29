@@ -6,7 +6,7 @@ import type { Page, PageContext } from '../router.ts';
 import type { RecordingAudioDevice, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
-import { normalizeRecordingBitrate, recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
+import { recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -47,10 +47,10 @@ let unsubscribeRecordingState: (() => void) | null = null;
 let playerVideo: HTMLVideoElement | null = null;
 let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
-let pendingSettingsSave: Promise<void> = Promise.resolve();
-let lastSettingsSave: Promise<void> = Promise.resolve();
-let bitrateInput: HTMLInputElement | null = null;
-let bitrateDraft: number | null = null;
+let draftSettings: RecordingSettings | null = null;
+let settingsDirty = false;
+let applyingSettings = false;
+let applySettingsButton: HTMLButtonElement | null = null;
 
 function setStatus(next: RecordingEngineState): void {
   const previous = status;
@@ -117,43 +117,91 @@ function field(label: string, control: HTMLElement, note?: string): HTMLElement 
   ]);
 }
 
-function savePatch(patch: RecordingSettingsPatch, rerender = true): Promise<void> {
-  const save = pendingSettingsSave.then(async () => {
-    const result = await api.recordingSettingsSave(patch);
+function cloneRecordingSettings(value: RecordingSettings): RecordingSettings {
+  return {
+    ...value,
+    audio: {
+      ...value.audio,
+      microphone: { ...value.audio.microphone },
+      system: { ...value.audio.system },
+      customProcesses: [...value.audio.customProcesses],
+    },
+    hotkeys: { ...value.hotkeys },
+  };
+}
+
+function mergeRecordingSettings(base: RecordingSettings, patch: RecordingSettingsPatch): RecordingSettings {
+  const audioPatch = patch.audio;
+  return {
+    ...base,
+    ...patch,
+    audio: {
+      ...base.audio,
+      ...(audioPatch ?? {}),
+      microphone: { ...base.audio.microphone, ...(audioPatch?.microphone ?? {}) },
+      system: { ...base.audio.system, ...(audioPatch?.system ?? {}) },
+      customProcesses: audioPatch?.customProcesses ? [...audioPatch.customProcesses] : [...base.audio.customProcesses],
+    },
+    hotkeys: { ...base.hotkeys, ...(patch.hotkeys ?? {}) },
+  } as RecordingSettings;
+}
+
+function settingsForRender(): RecordingSettings | null {
+  return draftSettings ?? settings;
+}
+
+function updateRecordingApplyButton(): void {
+  if (!applySettingsButton) return;
+  applySettingsButton.hidden = !settingsDirty && !applyingSettings;
+  applySettingsButton.disabled = applyingSettings || !settingsDirty;
+  applySettingsButton.textContent = applyingSettings ? 'Applying…' : 'Apply settings';
+}
+
+function stagePatch(patch: RecordingSettingsPatch, rerender = true): void {
+  if (!settings) return;
+  draftSettings = mergeRecordingSettings(draftSettings ?? settings, patch);
+  settingsDirty = JSON.stringify(draftSettings) !== JSON.stringify(settings);
+  updateRecordingApplyButton();
+  if (rerender) render();
+}
+
+function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettingsPatch {
+  return {
+    location: value.location,
+    runtimePath: value.runtimePath,
+    mode: value.mode,
+    fps: value.fps,
+    resolution: value.resolution,
+    encoderId: value.encoderId,
+    bitrateKbps: value.bitrateKbps,
+    replayLengthSec: value.replayLengthSec,
+    audio: {
+      microphone: { ...value.audio.microphone },
+      system: { ...value.audio.system },
+      sourceMode: value.audio.sourceMode,
+      customProcesses: [...value.audio.customProcesses],
+    },
+    hotkeys: { ...value.hotkeys },
+  };
+}
+
+async function applyRecordingSettings(): Promise<void> {
+  if (applyingSettings || !settingsDirty || !draftSettings) return;
+  applyingSettings = true;
+  updateRecordingApplyButton();
+  try {
+    const result = await api.recordingSettingsSave(recordingSettingsPatchFrom(draftSettings));
     settings = result.settings;
-    if (patch.bitrateKbps !== undefined && result.settings.bitrateKbps === patch.bitrateKbps) bitrateDraft = null;
+    draftSettings = cloneRecordingSettings(result.settings);
+    settingsDirty = false;
     status = { ...status, hotkeys: result.hotkeys };
-    if (rerender) render();
-  });
-  // Keep the queue usable after a failed write, while retaining the actual
-  // latest save promise so starting a capture cannot silently use stale data.
-  pendingSettingsSave = save.catch(() => {});
-  lastSettingsSave = save;
-  void save.catch((err) => {
+    toast('success', 'Recording settings', 'Your recording profile was applied.');
+  } catch (err) {
     toast('error', 'Recording settings', messageOf(err));
-    if (rerender) render();
-  });
-  return save;
-}
-
-function readBitrateInput(input: HTMLInputElement | null): number | null {
-  if (!input) return null;
-  const value = Number(input.value);
-  return Number.isFinite(value) && value > 0 ? normalizeRecordingBitrate(value, settings?.bitrateKbps ?? 8000) : null;
-}
-
-function commitBitrateInput(): Promise<void> {
-  const value = readBitrateInput(bitrateInput);
-  if (value === null) {
-    bitrateDraft = null;
-    return Promise.resolve();
+  } finally {
+    applyingSettings = false;
+    render();
   }
-  bitrateDraft = value;
-  if (settings?.bitrateKbps === value) {
-    bitrateDraft = null;
-    return Promise.resolve();
-  }
-  return savePatch({ bitrateKbps: value }, false);
 }
 
 function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string {
@@ -191,16 +239,19 @@ function renderTabs(): HTMLElement {
 function renderCaptureActions(): HTMLElement {
   const recordingRunning = status.running && status.mode === 'video';
   const replayRunning = status.running && status.mode === 'replay';
+  const captureNeedsApply = settingsDirty || applyingSettings;
   return el('div', { class: 'recording-capture-actions' }, [
-    button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture() : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || replayRunning),
-    button(replayRunning ? 'Stop Replay Buffer' : 'Start Replay Buffer', () => void (replayRunning ? stopCapture() : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || recordingRunning),
+    button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture() : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || replayRunning || (!recordingRunning && captureNeedsApply)),
+    button(replayRunning ? 'Stop Replay Buffer' : 'Start Replay Buffer', () => void (replayRunning ? stopCapture() : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || recordingRunning || (!replayRunning && captureNeedsApply)),
     button('Save Clip', () => void saveClip(), 'btn btn-secondary', !status.available || status.mode !== 'replay' || actionBusy),
+    settingsDirty ? el('span', { class: 'recording-inline-note recording-unsaved-note', text: 'Apply your changes before starting a capture.' }) : null,
     status.running && !recordingRunning && !replayRunning ? el('span', { class: 'recording-inline-note', text: 'Another capture is active.' }) : null,
   ]);
 }
 
 function renderCapturePanel(): HTMLElement {
-  const replayLength = settings?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC;
+  const working = settingsForRender();
+  const replayLength = working?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC;
   return el('section', { class: 'recording-panel recording-capture-panel' }, [
     el('div', { class: 'recording-panel-heading' }, [
       el('div', {}, [
@@ -216,24 +267,23 @@ function renderCapturePanel(): HTMLElement {
 }
 
 function renderQualitySettings(): HTMLElement {
-  const fps = select(String(settings?.fps ?? 60), [['30', '30 FPS'], ['60', '60 FPS'], ['120', '120 FPS']], (value) => savePatch({ fps: Number(value) as 30 | 60 | 120 }));
-  const selectedResolution = settings?.resolution ?? '1080p';
+  const working = settingsForRender();
+  const fps = select(String(working?.fps ?? 60), [['30', '30 FPS'], ['60', '60 FPS'], ['120', '120 FPS']], (value) => stagePatch({ fps: Number(value) as 30 | 60 | 120 }));
+  const selectedResolution = working?.resolution ?? '1080p';
   const bitrateRange = recordingBitrateRange(selectedResolution);
   const bitrate = el('input', {
     class: 'recording-number',
     type: 'number',
     step: 'any',
-    value: bitrateDraft ?? settings?.bitrateKbps ?? bitrateRange.default,
+    value: working?.bitrateKbps ?? bitrateRange.default,
   }) as HTMLInputElement;
-  bitrateInput = bitrate;
   bitrate.title = 'Enter any positive bitrate in Kbps';
   bitrate.addEventListener('input', () => {
-    const value = readBitrateInput(bitrate);
-    bitrateDraft = value;
+    const value = Number(bitrate.value);
+    if (Number.isFinite(value) && value > 0) stagePatch({ bitrateKbps: value }, false);
   });
-  bitrate.addEventListener('change', () => { void commitBitrateInput(); });
-  const encoder = select(settings?.encoderId ?? 'automatic', encoderOptions(), (value) => savePatch({ encoderId: value }));
-  const resolution = select(selectedResolution, RESOLUTIONS, (value) => savePatch({ resolution: value }));
+  const encoder = select(working?.encoderId ?? 'automatic', encoderOptions(), (value) => stagePatch({ encoderId: value }));
+  const resolution = select(selectedResolution, RESOLUTIONS, (value) => stagePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Video profile' }), el('h2', { class: 'recording-panel-title', text: 'Quality' })]),
@@ -247,21 +297,22 @@ function renderQualitySettings(): HTMLElement {
       field('Bitrate Recommendation', el('span', { class: 'recording-field-note', text: bitrateRange.label })),
     ]),
     el('p', { class: 'recording-panel-note recording-quality-note', text: status.running
-      ? 'The active capture keeps its original profile. Changes apply to the next capture.'
-      : 'Changes apply to the next recording or replay buffer.' }),
+      ? 'The active capture keeps its applied profile. Apply changes for the next capture.'
+      : 'Edit the profile, then press Apply settings before starting a capture.' }),
   ]);
 }
 
 function renderReplaySettings(): HTMLElement {
+  const working = settingsForRender();
   const replay = el('input', {
     class: 'recording-number',
     type: 'number',
     min: 5,
     max: 3600,
     step: 5,
-    value: settings?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC,
+    value: working?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC,
   }) as HTMLInputElement;
-  replay.addEventListener('change', () => savePatch({ replayLengthSec: Number(replay.value) }));
+  replay.addEventListener('change', () => stagePatch({ replayLengthSec: Number(replay.value) }));
   return el('section', { class: 'recording-panel recording-replay-settings' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip window' }), el('h2', { class: 'recording-panel-title', text: 'Replay length' })]),
@@ -316,27 +367,27 @@ function recordingProcessOptions(selected: string): Array<[string, string]> {
 }
 
 function renderAudioSettings(): HTMLElement {
-  const audio = settings?.audio ?? {
+  const audio = settingsForRender()?.audio ?? {
     microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
     system: { enabled: true, deviceId: '', volume: 1 },
     sourceMode: 'system' as const,
     customProcesses: [],
   };
   const microphoneEnabled = el('input', { type: 'checkbox', checked: audio.microphone.enabled, 'aria-label': 'Enable microphone' }) as HTMLInputElement;
-  microphoneEnabled.addEventListener('change', () => savePatch({ audio: { microphone: { enabled: microphoneEnabled.checked } } }));
-  const microphoneDevice = select(audio.microphone.deviceId, deviceOptions(status.audioInputs, audio.microphone.deviceId), (value) => savePatch({ audio: { microphone: { deviceId: value } } }));
+  microphoneEnabled.addEventListener('change', () => stagePatch({ audio: { microphone: { enabled: microphoneEnabled.checked } } }));
+  const microphoneDevice = select(audio.microphone.deviceId, deviceOptions(status.audioInputs, audio.microphone.deviceId), (value) => stagePatch({ audio: { microphone: { deviceId: value } } }));
   const microphoneMono = el('input', { type: 'checkbox', checked: audio.microphone.mono, 'aria-label': 'Mono microphone' }) as HTMLInputElement;
-  microphoneMono.addEventListener('change', () => savePatch({ audio: { microphone: { mono: microphoneMono.checked } } }));
-  const sourceMode = select(audio.sourceMode, [['system', 'Full PC'], ['custom', 'Up to 3 processes']], (value) => savePatch({ audio: { sourceMode: value } }));
+  microphoneMono.addEventListener('change', () => stagePatch({ audio: { microphone: { mono: microphoneMono.checked } } }));
+  const sourceMode = select(audio.sourceMode, [['system', 'Full PC'], ['custom', 'Up to 3 processes']], (value) => stagePatch({ audio: { sourceMode: value } }));
   const systemEnabled = el('input', { type: 'checkbox', checked: audio.system.enabled, disabled: audio.sourceMode === 'custom', 'aria-label': 'Enable full PC audio' }) as HTMLInputElement;
-  systemEnabled.addEventListener('change', () => savePatch({ audio: { system: { enabled: systemEnabled.checked } } }));
-  const systemDevice = select(audio.system.deviceId, deviceOptions(status.audioOutputs, audio.system.deviceId), (value) => savePatch({ audio: { system: { deviceId: value } } }));
+  systemEnabled.addEventListener('change', () => stagePatch({ audio: { system: { enabled: systemEnabled.checked } } }));
+  const systemDevice = select(audio.system.deviceId, deviceOptions(status.audioOutputs, audio.system.deviceId), (value) => stagePatch({ audio: { system: { deviceId: value } } }));
   const processSelects = [0, 1, 2].map((index) => {
     const selected = audio.customProcesses[index] ?? '';
     const processSelect = select(selected, recordingProcessOptions(selected), (value) => {
       const next = audio.customProcesses.slice(0, 3);
       next[index] = value;
-      savePatch({ audio: { customProcesses: next.filter(Boolean) } });
+      stagePatch({ audio: { customProcesses: next.filter(Boolean) } });
     });
     processSelect.classList.add('recording-process-select');
     processSelect.disabled = audio.sourceMode !== 'custom';
@@ -351,7 +402,7 @@ function renderAudioSettings(): HTMLElement {
         el('h3', { text: 'Microphone' }),
         el('label', { class: 'recording-check-row' }, [microphoneEnabled, el('span', { text: 'Include microphone' })]),
         field('Device', microphoneDevice),
-        field('Volume', volumeControl(audio.microphone.volume, 'Microphone volume', (value) => savePatch({ audio: { microphone: { volume: value } } }))),
+        field('Volume', volumeControl(audio.microphone.volume, 'Microphone volume', (value) => stagePatch({ audio: { microphone: { volume: value } } }, false))),
         el('label', { class: 'recording-check-row' }, [microphoneMono, el('span', { text: 'Force mono' })]),
       ]),
       el('div', { class: 'recording-audio-section' }, [
@@ -359,7 +410,7 @@ function renderAudioSettings(): HTMLElement {
         field('Capture source', sourceMode, 'Choose full PC audio or up to three individual processes.'),
         el('label', { class: 'recording-check-row' }, [systemEnabled, el('span', { text: 'Include full PC audio' })]),
         field('Output device', systemDevice),
-        field('Output volume', volumeControl(audio.system.volume, 'System audio volume', (value) => savePatch({ audio: { system: { volume: value } } }))),
+        field('Output volume', volumeControl(audio.system.volume, 'System audio volume', (value) => stagePatch({ audio: { system: { volume: value } } }, false))),
         el('div', { class: 'recording-process-fields' }, [
           el('span', { class: 'recording-field-label', text: 'Processes (up to 3)' }),
           ...processSelects,
@@ -372,15 +423,16 @@ function renderAudioSettings(): HTMLElement {
 }
 
 function renderHotkeys(): HTMLElement {
+  const working = settingsForRender();
   const make = (key: 'start' | 'stop' | 'saveClip', label: string, description: string): HTMLElement => {
     const input = el('input', {
       class: 'recording-hotkey',
       type: 'text',
-      value: settings?.hotkeys[key] ?? '',
+      value: working?.hotkeys[key] ?? '',
       maxlength: 32,
       'aria-label': label,
     }) as HTMLInputElement;
-    input.addEventListener('change', () => savePatch({ hotkeys: { [key]: input.value } as Partial<RecordingSettings['hotkeys']> }));
+    input.addEventListener('change', () => stagePatch({ hotkeys: { [key]: input.value } as Partial<RecordingSettings['hotkeys']> }));
     const conflict = status.hotkeys.conflicts[key];
     return el('div', { class: 'recording-hotkey-row' }, [
       el('div', { class: 'recording-hotkey-copy' }, [el('strong', { text: label }), el('span', { text: description })]),
@@ -401,13 +453,14 @@ function renderHotkeys(): HTMLElement {
 }
 
 function renderStorage(): HTMLElement {
+  const working = settingsForRender();
   const location = el('input', {
     class: 'recording-input',
     type: 'text',
-    value: settings?.location ?? '',
+    value: working?.location ?? '',
     placeholder: 'Choose a capture folder',
   }) as HTMLInputElement;
-  location.addEventListener('change', () => savePatch({ location: location.value }));
+  location.addEventListener('change', () => stagePatch({ location: location.value }));
   return el('section', { class: 'recording-panel recording-storage-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Files' }), el('h2', { class: 'recording-panel-title', text: 'Save location' })]),
@@ -727,13 +780,22 @@ function renderPlayerView(): HTMLElement {
 function render(): void {
   if (!renderContainer) return;
   disposePlayerVideo();
-  bitrateInput = null;
+  applySettingsButton = null;
   clear(renderContainer);
   renderContainer.append(
     el('div', { class: 'page-heading recording-heading' }, [
       el('div', {}, [
         el('span', { class: 'recording-eyebrow', text: 'Arc Power Capture' }),
         el('h1', { text: 'Recording' }),
+      ]),
+      el('div', { class: 'recording-heading-actions' }, [
+        el('span', { class: 'recording-settings-dirty', text: 'Unsaved changes', hidden: !settingsDirty }),
+        (() => {
+          const apply = button('Apply settings', () => void applyRecordingSettings(), 'btn btn-primary recording-apply-button', applyingSettings || !settingsDirty);
+          apply.hidden = !settingsDirty && !applyingSettings;
+          applySettingsButton = apply;
+          return apply;
+        })(),
       ]),
       renderTabs(),
     ]),
@@ -742,18 +804,16 @@ function render(): void {
 }
 
 function selectTab(tab: RecordingTab): void {
-  const qualitySave = commitBitrateInput();
   const wasShowingPlayer = playerClip !== null;
   if (wasShowingPlayer) {
     disposePlayerVideo();
     playerClip = null;
   }
   if (activeTab === tab && !wasShowingPlayer) return;
+  const mode = modeForTab(tab);
+  if (settings && mode && settingsForRender()?.mode !== mode) stagePatch({ mode }, false);
   activeTab = tab;
   render();
-  void qualitySave;
-  const mode = modeForTab(tab);
-  if (settings && mode && settings.mode !== mode) savePatch({ mode });
 }
 
 async function loadClips(): Promise<void> {
@@ -777,6 +837,8 @@ async function load(): Promise<void> {
       api.recordingClipsList(),
     ]);
     settings = loadedSettings;
+    draftSettings = cloneRecordingSettings(loadedSettings);
+    settingsDirty = false;
     status = loadedStatus;
     clips = loadedClips;
     activeTab = tabForMode(settings.mode);
@@ -786,6 +848,7 @@ async function load(): Promise<void> {
       // manual tab, and persist only the two current renderer choices.
       void api.recordingSettingsSave({ mode: canonicalMode }).then((result) => {
         settings = result.settings;
+        draftSettings = cloneRecordingSettings(result.settings);
         status = { ...status, hotkeys: result.hotkeys };
         render();
       }).catch((err) => toast('error', 'Recording settings', messageOf(err)));
@@ -799,13 +862,13 @@ async function load(): Promise<void> {
 }
 
 async function startRecording(): Promise<void> {
-  if (actionBusy) return;
+  if (actionBusy || settingsDirty || applyingSettings) {
+    if (settingsDirty) toast('info', 'Apply settings first', 'Apply your recording changes before starting a capture.');
+    return;
+  }
   actionBusy = true;
-  const qualitySave = commitBitrateInput();
   render();
   try {
-    try { await qualitySave; } catch { return; }
-    try { await lastSettingsSave; } catch { return; }
     const result = await api.recordingStart();
     setStatus(result.state);
   } catch (err) {
@@ -817,13 +880,13 @@ async function startRecording(): Promise<void> {
 }
 
 async function startReplay(): Promise<void> {
-  if (actionBusy) return;
+  if (actionBusy || settingsDirty || applyingSettings) {
+    if (settingsDirty) toast('info', 'Apply settings first', 'Apply your recording changes before starting the replay buffer.');
+    return;
+  }
   actionBusy = true;
-  const qualitySave = commitBitrateInput();
   render();
   try {
-    try { await qualitySave; } catch { return; }
-    try { await lastSettingsSave; } catch { return; }
     const result = await api.recordingReplayStart();
     setStatus(result.state);
   } catch (err) {
@@ -889,10 +952,7 @@ async function deleteClip(clip: RecordingClip): Promise<void> {
 async function chooseFolder(): Promise<void> {
   try {
     const result = await api.recordingChooseFolder();
-    if (!result.canceled) {
-      settings = result.settings;
-      render();
-    }
+    if (!result.canceled && result.location) stagePatch({ location: result.location });
   } catch (err) {
     toast('error', 'Recording folder', messageOf(err));
   }
@@ -928,14 +988,13 @@ export const recordingPage: Page = {
     void load();
   },
   leave(): void {
-    // Commit an edited bitrate before the page is discarded. This keeps a
-    // value entered immediately before navigation from being lost with the
-    // DOM node that held it.
-    void commitBitrateInput();
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
     disposePlayerVideo();
-    bitrateInput = null;
+    applySettingsButton = null;
+    draftSettings = null;
+    settingsDirty = false;
+    applyingSettings = false;
     renderContainer = null;
     playerClip = null;
   },

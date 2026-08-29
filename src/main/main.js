@@ -62,6 +62,7 @@ import { createRecordingMediaResponse, mediaRequestPath, resolveSafeRecordingPat
 import { createGameScanAdapter, findGamePosterArtwork } from './game-scan.js';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
+import { createRecordingToastWindow } from './recording-toast.js';
 // M23 (Part B): the ADVANCED overlay module (the AMD-Adrenaline-style
 // interactive side panel - CONTROL + <letter>, stock P). The HUD's
 // overlay.js stays untouched - this panel has its own lifecycle + its own
@@ -2297,6 +2298,8 @@ async function main() {
   win.on('closed', () => {
     overlayHandle?.destroy();
     unregisterOverlayHotkey();
+    recordingToastHandle?.destroy();
+    recordingToastHandle = null;
     // M23 (Part B): the ADVANCED overlay rides the SAME lifecycle rule - the
     // main window's close destroys the panel + unregisters its hotkey (the
     // panel NEVER keeps the app alive by itself). The handle is NULLED (not
@@ -2319,6 +2322,7 @@ async function main() {
   // overlay while the master overlayEnabled is OFF - the gate lives in
   // overlay.js toggle().
   let overlayHandle = null;
+  let recordingToastHandle = null;
   let overlayHotkeyAccelerator = null;
   // The hotkey seam (M6): product path - a REAL globalShortcut registration
   // ('Control+<letter>' - CTRL fixed, only the letter is user-changeable),
@@ -2473,9 +2477,22 @@ async function main() {
     } catch { /* default O */ }
     registerOverlayHotkey(bootLetter);
   }
+
+  // Recording notifications are a separate, non-interactive desktop layer.
+  // They are deliberately independent from the telemetry HUD: disabling or
+  // hiding the HUD must never hide a recording/clip result notification.
+  // The handle is not created in ui-verify so verification runs stay silent.
+  if (!uiVerify) {
+    recordingToastHandle = createRecordingToastWindow({
+      getAnchorWindow: () => win,
+    });
+  }
+
   app.on('will-quit', () => {
     overlayHandle?.destroy();
     unregisterOverlayHotkey();
+    recordingToastHandle?.destroy();
+    recordingToastHandle = null;
   });
 
   // --- M23 (Part B): the ADVANCED overlay (the AMD-Adrenaline-style        ---
@@ -2824,6 +2841,50 @@ async function main() {
   const openExternal = uiVerify
     ? async () => { openExternalCount += 1; }
     : async (url) => { await shell.openExternal(url); };
+  const showRecordingActionToast = (result) => {
+    if (!result || typeof result !== 'object') return;
+    const action = result.action;
+    const replay = result.requestedMode === 'replay' || result.preActionMode === 'replay';
+    if (!result.ok) {
+      const title = action === 'saveClip'
+        ? 'Save clip failed'
+        : action === 'start'
+          ? replay ? 'Replay buffer failed' : 'Recording failed'
+          : 'Recording action failed';
+      recordingToastHandle?.show({
+        variant: 'error',
+        title,
+        message: String(result.error ?? 'The recording action failed.'),
+      });
+      return;
+    }
+    // Start/stop success is announced from the engine state transition so
+    // button clicks and global hotkeys share one notification path. Clip
+    // saving has no running-state transition, so it is announced here.
+    if (action === 'saveClip') {
+      recordingToastHandle?.show({
+        variant: 'success',
+        title: 'Clip saved',
+        message: 'The replay clip was added to the clip library.',
+      });
+    }
+  };
+  const showRecordingStateToast = (state, previous) => {
+    if (!state || !previous) return;
+    const started = previous.running !== true && state.running === true;
+    const stopped = previous.running === true && state.running !== true;
+    if (!started && !stopped) return;
+    const replay = (state.mode ?? previous.mode) === 'replay';
+    recordingToastHandle?.show({
+      variant: 'success',
+      title: started
+        ? replay ? 'Replay buffer started' : 'Recording started'
+        : replay ? 'Replay buffer stopped' : 'Recording stopped',
+      message: started
+        ? replay ? 'Recent gameplay is now being kept for clips.' : 'Video capture is now active.'
+        : replay ? 'The replay buffer is no longer active.' : 'Video capture has finished.',
+    });
+  };
   teardown = registerIpc({
     backend,
     store,
@@ -2940,6 +3001,8 @@ async function main() {
     openRecordingFolder: async (directory) => { await shell.openPath(directory); },
     refreshRecordingHotkeys: () => recordingHotkeys.register(),
     getRecordingHotkeyState: () => recordingHotkeys.getState(),
+    onRecordingActionResult: showRecordingActionToast,
+    onRecordingState: showRecordingStateToast,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach
@@ -2950,7 +3013,10 @@ async function main() {
   recordingActionHandler = createRecordingActionHandler({
     getSettings: () => recordingStore.settings(),
     recordingEngine,
-    onActionResult: (result) => pushRecordingActionResult({ getWindow: () => win, result }),
+    onActionResult: (result) => {
+      pushRecordingActionResult({ getWindow: () => win, result });
+      showRecordingActionToast(result);
+    },
   });
   await recordingHotkeys.register();
 

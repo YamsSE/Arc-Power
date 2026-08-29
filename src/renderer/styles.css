@@ -2707,9 +2707,12 @@ input[type="number"] {
 .modal-body { margin-bottom: 16px; }
 
 /* Arc Power recording --------------------------------------------------- */
-.recording-heading { align-items: flex-start; }
+.recording-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .recording-heading h1 { margin: 3px 0 4px; }
 .recording-heading p { margin: 0; color: var(--text-muted); font-size: 13px; max-width: 58ch; }
+.recording-heading-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.recording-apply-button { min-width: 122px; }
+.recording-settings-dirty { color: var(--warn); font-size: 11px; white-space: nowrap; }
 .recording-eyebrow { display: block; color: var(--accent); font-size: 10px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
 .recording-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 560px); gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--control-bg); }
 .recording-tab { min-width: 0; padding: 8px 13px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font: 650 12px var(--font); cursor: pointer; }
@@ -2732,6 +2735,7 @@ input[type="number"] {
 .btn-recording-stop { background: color-mix(in srgb, var(--danger) 86%, #6b1020); border-color: var(--danger); color: #fff; font-weight: 650; }
 .btn-recording-stop:hover:not(:disabled) { background: var(--danger); border-color: var(--danger); }
 .recording-inline-note, .recording-inline-error { color: var(--text-dim); font-size: 11px; }
+.recording-unsaved-note { color: var(--warn); }
 .recording-inline-error { color: var(--warn); margin: 9px 0 0; }
 .recording-input-row { display: flex; gap: 8px; }
 .recording-input, .recording-select, .recording-number, .recording-hotkey, .recording-search { min-height: 34px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: inherit; padding: 7px 9px; }
