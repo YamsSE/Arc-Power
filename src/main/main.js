@@ -1397,15 +1397,6 @@ async function main() {
       });
     },
   });
-  // Start the bundled capture runtime before the renderer boots. This is
-  // intentionally fire-and-forget: the renderer can paint immediately while
-  // the global capture widget receives a truthful ready/unavailable update.
-  // The engine owns the child and reuses it for later probes/actions.
-  if (!mock && !uiVerify) {
-    void recordingEngine.probe().catch((error) => {
-      console.log(`[recording] startup probe unavailable: ${error?.message ?? String(error)}`);
-    });
-  }
   const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
     ? path.join(os.tmpdir(), 'arcpower-mock-games')
     : null;
@@ -3019,6 +3010,17 @@ async function main() {
     },
   });
   await recordingHotkeys.register();
+
+  // Start the bundled capture runtime after IPC subscribes to engine state.
+  // This remains fire-and-forget so the renderer paints immediately, while
+  // the probe result is pushed to the renderer and global capture widget
+  // instead of being lost before their subscriptions exist.
+  // The engine owns the child and reuses it for later probes/actions.
+  if (!mock && !uiVerify) {
+    void recordingEngine.probe().catch((error) => {
+      console.log(`[recording] startup probe unavailable: ${error?.message ?? String(error)}`);
+    });
+  }
 
   // M17p: the sysStats/MSR assignment (MOVED here from its pre-window
   // position - the fast-boot reorder: boot-apply gate -> createWindow ->

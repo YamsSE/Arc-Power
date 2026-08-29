@@ -216,12 +216,28 @@ function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string
 function encoderOptions(): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
   const known = new Map(status.encoders.filter((encoder) => INTEL_QSV_ENCODERS.has(encoder.type)).map((encoder) => [encoder.type, encoder]));
+  const checking = status.encoders.length === 0
+    && (!status.error || /^Loading recording engine/i.test(status.error));
   for (const [id, label] of [['obs_qsv11_v2', 'Intel H264'], ['obs_qsv11_hevc', 'Intel HEVC'], ['obs_qsv11_av1', 'Intel AV1']] as const) {
     const encoder = known.get(id);
-    const unavailable = !encoder || (encoder.startTested && !encoder.startSupported) || encoder.probeValid !== true ? ' — unavailable' : '';
+    const unavailable = !encoder
+      ? checking ? ' — checking…' : ' — unavailable'
+      : (encoder.startTested && !encoder.startSupported) || encoder.probeValid !== true ? ' — unavailable' : '';
     options.push([id, `${encoder ? encoderLabel(encoder) : label}${unavailable}`]);
   }
   return options;
+}
+
+function renderRecordingHeadingActions(): HTMLElement {
+  return el('div', { class: 'recording-heading-actions' }, [
+    el('span', { class: 'recording-settings-dirty', text: 'Unsaved changes', hidden: !settingsDirty }),
+    (() => {
+      const apply = button('Apply settings', () => void applyRecordingSettings(), 'btn btn-primary recording-apply-button', applyingSettings || !settingsDirty);
+      apply.hidden = !settingsDirty && !applyingSettings;
+      applySettingsButton = apply;
+      return apply;
+    })(),
+  ]);
 }
 
 function renderTabs(): HTMLElement {
@@ -788,15 +804,7 @@ function render(): void {
         el('span', { class: 'recording-eyebrow', text: 'Arc Power Capture' }),
         el('h1', { text: 'Recording' }),
       ]),
-      el('div', { class: 'recording-heading-actions' }, [
-        el('span', { class: 'recording-settings-dirty', text: 'Unsaved changes', hidden: !settingsDirty }),
-        (() => {
-          const apply = button('Apply settings', () => void applyRecordingSettings(), 'btn btn-primary recording-apply-button', applyingSettings || !settingsDirty);
-          apply.hidden = !settingsDirty && !applyingSettings;
-          applySettingsButton = apply;
-          return apply;
-        })(),
-      ]),
+      activeTab === 'manual' ? renderRecordingHeadingActions() : null,
       renderTabs(),
     ]),
     playerClip ? renderPlayerView() : activeTab === 'manual' ? renderManualView() : activeTab === 'clips' ? renderClipsView() : renderAudioView(),
