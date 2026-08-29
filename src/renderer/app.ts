@@ -103,11 +103,14 @@ function setGlobalRecordingStatus(next: RecordingEngineState): void {
     const replay = (next.mode ?? previous.mode) === 'replay';
     const key = `${started ? 'started' : 'stopped'}:${replay ? 'replay' : 'video'}`;
     const now = Date.now();
-    if (lastGlobalRecordingToast.key !== key || now - lastGlobalRecordingToast.at >= 2000) {
+    // Replay notifications are owned by the desktop-wide overlay. Keeping
+    // them out of the Arc Power page prevents a duplicate toast when the
+    // replay buffer is controlled by a hotkey or while another app is open.
+    if (!replay && (lastGlobalRecordingToast.key !== key || now - lastGlobalRecordingToast.at >= 2000)) {
       lastGlobalRecordingToast = { key, at: now };
-      toast('success', started ? replay ? 'Replay buffer started' : 'Recording started' : replay ? 'Replay buffer stopped' : 'Recording stopped', started
-        ? replay ? 'Recent gameplay is now being kept for clips.' : 'Video capture is now active.'
-        : replay ? 'The replay buffer is no longer active.' : 'Video capture has finished.');
+      toast('success', started ? 'Recording started' : 'Recording stopped', started
+        ? 'Video capture is now active.'
+        : 'Video capture has finished.');
     }
   }
   if (globalRecordingStatus.running && globalRecordingTimer === null) {
@@ -449,7 +452,9 @@ async function boot() {
     const replayStart = result.action === 'start' && (result.requestedMode === 'replay' || result.state?.mode === 'replay');
     const titles = { start: replayStart ? 'Replay buffer started' : 'Recording started', stop: replayStop ? 'Replay buffer stopped' : 'Recording stopped', saveClip: 'Clip saved' } as const;
     if (!result.ok) {
-      toast('error', titles[result.action], recordingMessage(result.error ?? 'The recording action failed.'));
+      // Replay actions are already surfaced by the desktop-wide notification
+      // window. Do not also render an in-app copy for those actions.
+      if (!replayStart && !replayStop && result.action !== 'saveClip') toast('error', titles[result.action], recordingMessage(result.error ?? 'The recording action failed.'));
       return;
     }
     // Stop is idempotent in the engine. A shortcut pressed while idle is a
@@ -459,7 +464,8 @@ async function boot() {
     // Start/stop success is announced by the app-wide state subscription so
     // it is emitted exactly once for both buttons and global hotkeys. Save
     // Clip has no running-state transition, so it always uses this path.
-    if (result.action === 'saveClip') toast('success', titles[result.action], 'The replay clip was added to the clip library.');
+    // Save Clip is a replay action and is announced only by the global
+    // desktop-wide notification window.
   });
   void api.recordingStatus().then((next) => setGlobalRecordingStatus(next)).catch(() => {
     // The widget already starts in a truthful offline/loading state.

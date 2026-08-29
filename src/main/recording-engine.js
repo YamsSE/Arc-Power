@@ -184,11 +184,18 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let activeRecorder = null;
   let startingRecorder = null;
   let replayCapture = null;
+  // Ascent keeps the OBS output object alive after STOP. A later START in
+  // that same child can therefore retain the previous encoder/bitrate even
+  // though the new JSON payload is correct. Recreate the child before the
+  // next capture so every applied profile reaches a fresh OBS output.
+  let freshChildRequired = false;
   const demotedEncoders = new Set();
   let state = { available: false, running: false, mode: null, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], lastEvent: null };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
+  const retiredChildren = new WeakSet();
+  let closingChild = null;
   let writing = false;
   let lifecycle = Promise.resolve();
 
@@ -348,6 +355,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   function ensureChild() {
     if (child && !child.killed) return child;
     if (disposed) throw new Error('Ascent engine is shut down');
+    // A child may have emitted exit while its stdio is still closing. Retire
+    // it before replacing the process so late events cannot affect the new
+    // runtime, while still allowing its own stderr-close flush to complete
+    // when no replacement has started yet.
+    if (closingChild) {
+      retiredChildren.add(closingChild);
+      closingChild = null;
+    }
+    if (child) retiredChildren.add(child);
     const runtime = runtimeResolver();
     if (!runtime) {
       publish({ available: false, error: 'Bundled ascent-obs runtime is unavailable' });
@@ -355,12 +371,16 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
     terminationStarted = false;
     protocolFailure = null;
-    child = spawn(runtime.executable, [], { cwd: runtime.root, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true });
+    const spawnedChild = spawn(runtime.executable, [], { cwd: runtime.root, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true });
+    child = spawnedChild;
     output = '';
     decoder = new StringDecoder('utf8');
     const stderrState = { output: '', decoder: new StringDecoder('utf8'), flushed: false };
-    child.stdout?.on('data', onStdout);
-    child.stderr?.on('data', (chunk) => {
+    spawnedChild.stdout?.on('data', (chunk) => {
+      if (!retiredChildren.has(spawnedChild)) onStdout(chunk);
+    });
+    spawnedChild.stderr?.on('data', (chunk) => {
+      if (retiredChildren.has(spawnedChild)) return;
       const text = stderrState.output + stderrState.decoder.write(chunk);
       const lines = text.split(/\r?\n/);
       stderrState.output = lines.pop() ?? '';
@@ -373,10 +393,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       const trailingStderr = stderrState.output + stderrState.decoder.end();
       stderrState.output = '';
       const diagnostic = filterRecordingStderr(trailingStderr).slice(0, 512);
-      if (diagnostic) publish({ error: diagnostic });
+      if (diagnostic && !retiredChildren.has(spawnedChild)) publish({ error: diagnostic });
+      if (closingChild === spawnedChild) closingChild = null;
     };
-    child.stderr?.once('close', flushStderr);
-    child.on('error', (error) => {
+    spawnedChild.stderr?.once('close', flushStderr);
+    spawnedChild.on('error', (error) => {
+      // A timed-out shutdown can report its error after the replacement
+      // child has already started. Never let the old process overwrite the
+      // state or pending commands belonging to the replacement.
+      if (retiredChildren.has(spawnedChild)) return;
       publish({ available: false, running: false, mode: null, startedAt: null, error: error.message });
       rejectPending(error);
       rejectQueued(error);
@@ -384,9 +409,11 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // ChildProcess 'close' follows 'exit' and all stdio streams closing. The
     // stderr close handler covers implementations that expose that boundary
     // without emitting a child close event; the guard makes either path one-shot.
-    child.once('close', flushStderr);
-    child.on('exit', (code, signal) => {
+    spawnedChild.once('close', flushStderr);
+    spawnedChild.on('exit', (code, signal) => {
+      if (retiredChildren.has(spawnedChild) || child !== spawnedChild) return;
       const failure = protocolFailure;
+      closingChild = spawnedChild;
       child = null;
       activeRecorder = null;
       startingRecorder = null;
@@ -399,6 +426,31 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     });
     publish({ available: true, error: null });
     return child;
+  }
+
+  async function closeChildGracefully() {
+    const target = child;
+    if (!target) return;
+    retiredChildren.add(target);
+    try { await enqueue(buildAscentCommand(ASCENT_COMMANDS.SHUTDOWN, nextIdentifier++, ASCENT_RECORDER_TYPES.VIDEO)); } catch { /* kill fallback below */ }
+    await new Promise((resolve) => {
+      if (target.exitCode !== null || target.killed) return resolve();
+      const timer = setTimeout(() => {
+        try { target.kill(); } catch { /* best effort */ }
+        resolve();
+      }, shutdownMs);
+      target.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+    if (child === target) child = null;
+    terminationStarted = false;
+    rejectPending(new Error('Ascent process restarted'));
+    rejectQueued(new Error('Ascent process restarted'));
+  }
+
+  async function prepareFreshChild() {
+    if (!freshChildRequired) return;
+    freshChildRequired = false;
+    await closeChildGracefully();
   }
 
   function request(command, recorderType, fields, events, timeoutMs = 5000, requestedIdentifier = null, { acceptUnidentified = false } = {}) {
@@ -439,11 +491,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
 
   async function startInternal(settings, mode = 'video') {
     if (activeRecorder || startingRecorder || state.running) throw new Error('Ascent recorder is already active or a previous start is still pending');
+    await prepareFreshChild();
     await probeInternal();
     const outputPath = settings.outputPath;
     const type = mode === 'replay' ? ASCENT_RECORDER_TYPES.REPLAY : ASCENT_RECORDER_TYPES.VIDEO;
-    const selectedEncoder = demotedEncoders.has(settings.encoderId) ? 'automatic' : settings.encoderId;
-    const encoderId = resolveRecordingEncoder(selectedEncoder, state.encoders);
+    // Never replace an explicit user selection with Automatic after a failed
+    // start. That made a rejected H264/HEVC start appear to succeed while the
+    // runtime silently recorded AV1 instead. The selection must either be
+    // honored or fail with the actual encoder availability message.
+    const encoderId = resolveRecordingEncoder(settings.encoderId, state.encoders);
     const payload = buildAscentStartPayload({ ...settings, encoderId }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
@@ -486,14 +542,19 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const recorder = activeRecorder ?? startingRecorder;
     if (!recorder) return state;
     if (recorder.stopInFlight) return state;
+    const wasActive = activeRecorder?.identifier === recorder.identifier;
     if (!activeRecorder && startingRecorder?.identifier === recorder.identifier) recorder.cancelRequested = true;
     recorder.stopInFlight = true;
     const stopEvent = recorder.type === ASCENT_RECORDER_TYPES.REPLAY ? ASCENT_EVENTS.REPLAY_STOPPED : ASCENT_EVENTS.RECORDING_STOPPED;
     try {
       await request(ASCENT_COMMANDS.STOP, recorder.type, {}, [stopEvent], 10000, recorder.identifier);
-      const stoppedActive = activeRecorder?.identifier === recorder.identifier;
+      // handleMessage clears activeRecorder as soon as STOPPED arrives, so
+      // retain the pre-request identity when deciding whether the next start
+      // needs a fresh OBS child.
+      const stoppedActive = wasActive;
       if (stoppedActive) activeRecorder = null;
       if (startingRecorder?.identifier === recorder.identifier && (stoppedActive || startingRecorder.startedAfterCancel)) startingRecorder = null;
+      if (stoppedActive) freshChildRequired = true;
       publish({ running: false, mode: null, startedAt: null });
       return state;
     } finally {
@@ -583,14 +644,8 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     if (state.running || startingRecorder) {
       try { await Promise.race([stopInternal(), new Promise((resolve) => setTimeout(resolve, shutdownMs))]); } catch { /* kill fallback below */ }
     }
-    const shutdownTarget = child;
-    try { await enqueue(buildAscentCommand(ASCENT_COMMANDS.SHUTDOWN, nextIdentifier++, ASCENT_RECORDER_TYPES.VIDEO)); } catch { /* kill fallback below */ }
-    await new Promise((resolve) => {
-      if (!shutdownTarget || shutdownTarget.exitCode !== null) return resolve();
-      const timer = setTimeout(() => { try { shutdownTarget.kill(); } catch {} resolve(); }, shutdownMs);
-      shutdownTarget.once('exit', () => { clearTimeout(timer); resolve(); });
-    });
-    child = null;
+    await closeChildGracefully();
+    freshChildRequired = false;
     activeRecorder = null;
     rejectPending(new Error('Ascent engine shut down'));
     rejectQueued(new Error('Ascent engine shut down'));

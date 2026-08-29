@@ -39,7 +39,7 @@ export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}
       const display = anchorBounds ? screen.getDisplayMatching(anchorBounds) : screen.getPrimaryDisplay();
       return {
         x: display.bounds.x + display.bounds.width - TOAST_WIDTH - TOAST_MARGIN,
-        y: display.bounds.y + TOAST_MARGIN,
+        y: display.bounds.y + display.bounds.height - TOAST_HEIGHT - TOAST_MARGIN,
         width: TOAST_WIDTH,
         height: TOAST_HEIGHT,
       };
@@ -47,7 +47,7 @@ export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}
       const display = screen.getPrimaryDisplay();
       return {
         x: display.bounds.x + display.bounds.width - TOAST_WIDTH - TOAST_MARGIN,
-        y: display.bounds.y + TOAST_MARGIN,
+        y: display.bounds.y + display.bounds.height - TOAST_HEIGHT - TOAST_MARGIN,
         width: TOAST_WIDTH,
         height: TOAST_HEIGHT,
       };
