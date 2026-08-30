@@ -24,7 +24,6 @@ import { createDeviceSwitcher } from './device.ts';
 import { resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
-import { recordingMessage } from './pure/recording.ts';
 import type { RecordingEngineState } from './types.ts';
 
 const PAGES: Record<PageId, Page> = {
@@ -56,7 +55,6 @@ const INITIAL_RECORDING_STATUS: RecordingEngineState = {
 let globalRecordingStatus: RecordingEngineState = INITIAL_RECORDING_STATUS;
 let globalRecordingTimer: number | null = null;
 let unsubscribeGlobalRecordingState: (() => void) | null = null;
-let lastGlobalRecordingToast = { key: '', at: 0 };
 
 function recordingElapsed(startedAt: number | null | undefined): string {
   if (!Number.isFinite(startedAt)) return '00:00:00';
@@ -92,27 +90,10 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
 }
 
 function setGlobalRecordingStatus(next: RecordingEngineState): void {
-  const previous = globalRecordingStatus;
   const startedAt = next.running
     ? Number.isFinite(next.startedAt) ? next.startedAt : globalRecordingStatus.startedAt ?? Date.now()
     : null;
   globalRecordingStatus = { ...next, startedAt };
-  const started = !previous.running && next.running;
-  const stopped = previous.running && !next.running;
-  if (started || stopped) {
-    const replay = (next.mode ?? previous.mode) === 'replay';
-    const key = `${started ? 'started' : 'stopped'}:${replay ? 'replay' : 'video'}`;
-    const now = Date.now();
-    // Replay notifications are owned by the desktop-wide overlay. Keeping
-    // them out of the Arc Power page prevents a duplicate toast when the
-    // replay buffer is controlled by a hotkey or while another app is open.
-    if (!replay && (lastGlobalRecordingToast.key !== key || now - lastGlobalRecordingToast.at >= 2000)) {
-      lastGlobalRecordingToast = { key, at: now };
-      toast('success', started ? 'Recording started' : 'Recording stopped', started
-        ? 'Video capture is now active.'
-        : 'Video capture has finished.');
-    }
-  }
   if (globalRecordingStatus.running && globalRecordingTimer === null) {
     globalRecordingTimer = window.setInterval(updateGlobalRecordingWidget, 1000);
   } else if (!globalRecordingStatus.running && globalRecordingTimer !== null) {
@@ -447,26 +428,6 @@ async function boot() {
   if (!unsubscribeGlobalRecordingState) {
     unsubscribeGlobalRecordingState = api.onRecordingStateUpdated((next) => setGlobalRecordingStatus(next));
   }
-  const recordingActionUnsubscribe = api.onRecordingActionResult((result) => {
-    const replayStop = result.action === 'stop' && result.preActionMode === 'replay';
-    const replayStart = result.action === 'start' && (result.requestedMode === 'replay' || result.state?.mode === 'replay');
-    const titles = { start: replayStart ? 'Replay buffer started' : 'Recording started', stop: replayStop ? 'Replay buffer stopped' : 'Recording stopped', saveClip: 'Clip saved' } as const;
-    if (!result.ok) {
-      // Replay actions are already surfaced by the desktop-wide notification
-      // window. Do not also render an in-app copy for those actions.
-      if (!replayStart && !replayStop && result.action !== 'saveClip') toast('error', titles[result.action], recordingMessage(result.error ?? 'The recording action failed.'));
-      return;
-    }
-    // Stop is idempotent in the engine. A shortcut pressed while idle is a
-    // successful no-op, not a completed recording, so it must not announce a
-    // misleading success toast.
-    if (result.action === 'stop' && result.didStop !== true) return;
-    // Start/stop success is announced by the app-wide state subscription so
-    // it is emitted exactly once for both buttons and global hotkeys. Save
-    // Clip has no running-state transition, so it always uses this path.
-    // Save Clip is a replay action and is announced only by the global
-    // desktop-wide notification window.
-  });
   void api.recordingStatus().then((next) => setGlobalRecordingStatus(next)).catch(() => {
     // The widget already starts in a truthful offline/loading state.
   });

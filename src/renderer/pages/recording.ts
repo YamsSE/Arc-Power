@@ -54,10 +54,15 @@ let applySettingsButton: HTMLButtonElement | null = null;
 
 function setStatus(next: RecordingEngineState): void {
   const previous = status;
-  const startedAt = next.running
-    ? Number.isFinite(next.startedAt) ? next.startedAt : previous.running ? previous.startedAt : Date.now()
+  // Engine action responses contain capture state only; the IPC status
+  // response additionally carries hotkey state. Keep that auxiliary state
+  // when a start/stop response updates the page, otherwise rendering the
+  // shortcut section after Stop can crash on status.hotkeys.error.
+  const incoming = next && typeof next === 'object' ? next : previous;
+  const startedAt = incoming.running
+    ? Number.isFinite(incoming.startedAt) ? incoming.startedAt : previous.running ? previous.startedAt : Date.now()
     : null;
-  status = { ...next, startedAt };
+  status = { ...previous, ...incoming, hotkeys: incoming.hotkeys ?? previous.hotkeys, startedAt };
 }
 
 const messageOf = recordingMessage;
