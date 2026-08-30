@@ -51,6 +51,7 @@ let draftSettings: RecordingSettings | null = null;
 let settingsDirty = false;
 let applyingSettings = false;
 let applySettingsButton: HTMLButtonElement | null = null;
+let recordingStateRevision = 0;
 
 function setStatus(next: RecordingEngineState): void {
   const previous = status;
@@ -63,6 +64,7 @@ function setStatus(next: RecordingEngineState): void {
     ? Number.isFinite(incoming.startedAt) ? incoming.startedAt : previous.running ? previous.startedAt : Date.now()
     : null;
   status = { ...previous, ...incoming, hotkeys: incoming.hotkeys ?? previous.hotkeys, startedAt };
+  recordingStateRevision += 1;
 }
 
 const messageOf = recordingMessage;
@@ -843,6 +845,7 @@ async function loadClips(): Promise<void> {
 async function load(): Promise<void> {
   if (loading) return;
   loading = true;
+  const loadStateRevision = recordingStateRevision;
   try {
     const [loadedSettings, loadedStatus, loadedClips] = await Promise.all([
       api.recordingSettingsGet(),
@@ -852,7 +855,11 @@ async function load(): Promise<void> {
     settings = loadedSettings;
     draftSettings = cloneRecordingSettings(loadedSettings);
     settingsDirty = false;
-    status = loadedStatus;
+    // The startup probe and the page load run concurrently. If the probe
+    // pushed a newer encoder list while the clip/settings reads were still
+    // pending, never restore the older status snapshot returned by the
+    // initial recordingStatus request.
+    if (recordingStateRevision === loadStateRevision) setStatus(loadedStatus);
     clips = loadedClips;
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
