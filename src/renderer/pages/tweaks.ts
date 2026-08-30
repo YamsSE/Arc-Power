@@ -40,6 +40,13 @@ const STATE_LEVEL: Record<RegistryState, string> = {
 const ACTION_LABEL = { enable: 'Enable', disable: 'Disable', revert: 'Revert' } as const;
 type ApplyAction = keyof typeof ACTION_LABEL;
 
+const TWEAK_META: Record<string, { category: string; risk: string }> = {
+  mpo: { category: 'Display', risk: 'Test carefully' },
+  hags: { category: 'Scheduling', risk: 'Restart required' },
+  'game-dvr': { category: 'Recording', risk: 'System-wide' },
+  'fullscreen-optimizations': { category: 'Compatibility', risk: 'Read-only' },
+};
+
 /** One elevated apply is in flight - all apply buttons disable until it returns. */
 let applyInFlight = false;
 
@@ -168,6 +175,7 @@ function tweakCard(entry: RegistryEntry, state: RegistryEntryState | undefined, 
   const level = state ? STATE_LEVEL[state.state] : 'unknown';
   const label = state ? STATE_LABEL[state.state] : 'Unknown';
   const detail = state?.detail ?? 'State not read yet';
+  const meta = TWEAK_META[entry.id] ?? { category: 'System', risk: entry.apply?.applyable ? 'Reversible' : 'Read-only' };
   const content = el('div', { class: 'tweak-collapse-body is-collapsed', 'aria-hidden': 'true' }, [
     el('div', { class: 'tweak-collapse-inner' }, [
       el('div', { class: 'card-body' }, [
@@ -191,6 +199,10 @@ function tweakCard(entry: RegistryEntry, state: RegistryEntryState | undefined, 
   const title = el('button', { class: 'card-title tweak-title', type: 'button', 'aria-expanded': 'false' }, [
       el('span', { class: `status-dot status-${level}`, title: `${label} - ${detail}` }),
       el('span', { text: entry.name }),
+      el('span', { class: 'tweak-meta-badges' }, [
+        el('span', { class: 'tweak-meta-badge', text: meta.category }),
+        el('span', { class: 'tweak-meta-badge tweak-meta-risk', text: meta.risk }),
+      ]),
       el('span', { class: 'tweak-chevron', text: '▸', 'aria-hidden': 'true' }),
   ]);
   title.addEventListener('click', () => {
@@ -216,6 +228,8 @@ export const tweaksPage: Page = {
     const states = catalog?.states ?? [];
 
     clear(container);
+    const activeCount = states.filter((state) => state.state === 'enabled').length;
+    const unknownCount = states.filter((state) => state.state === 'unknown').length;
     container.append(
       el('h1', { class: 'page-title', text: 'Tweaks' }),
       el('p', {
@@ -228,6 +242,11 @@ export const tweaksPage: Page = {
           text: 'Refresh state',
           onClick: () => { void refreshCatalog(ctx); },
         }),
+      ]),
+      el('div', { class: 'tab-summary-strip tweaks-summary-strip' }, [
+        el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Catalog' }), el('strong', { text: `${entries.length} tweaks` })]),
+        el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Active' }), el('strong', { class: activeCount ? 'text-ok' : undefined, text: String(activeCount) })]),
+        el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Needs review' }), el('strong', { class: unknownCount ? 'text-warn' : undefined, text: String(unknownCount) })]),
       ]),
       catalog === null
         ? el('p', { class: 'text-unknown', text: 'Loading registry state…' })

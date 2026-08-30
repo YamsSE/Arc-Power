@@ -519,6 +519,12 @@ export const graphicsPage: Page = {
         }),
       ]),
     ]);
+    const selectedDevice = s.devices.find((device) => device.id === s.deviceId);
+    const graphicsSummary = el('div', { class: 'tab-summary-strip graphics-summary-strip' }, [
+      el('div', { class: 'tab-summary-item' }, [el('span', { text: 'GPU' }), el('strong', { text: selectedDevice?.name ?? 'Selected device' })]),
+      el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Scope' }), el('strong', { text: graphicsView === 'display' ? 'Display' : 'Driver' })]),
+      el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Apply' }), el('strong', { text: 'On demand' })]),
+    ]);
     container.append(
       title,
       el('p', {
@@ -528,6 +534,7 @@ export const graphicsPage: Page = {
           : 'Driver-level graphics settings (the same state the Intel Graphics Software app manages). Changes apply on demand - nothing is applied until you press Apply.',
       }),
       el('div', { class: 'graphics-view-toolbar' }, [viewToggle, displayPickerHost]),
+      graphicsSummary,
       viewContainer,
     );
     viewContainer.append(el('p', { class: 'page-subtitle', text: 'Loading graphics capabilities…' }));
@@ -562,6 +569,8 @@ export const graphicsPage: Page = {
       viewToggle.querySelectorAll<HTMLButtonElement>('.graphics-view-btn').forEach((b) => {
         b.classList.toggle('active', b.dataset.view === graphicsView);
       });
+      const scopeSummary = graphicsSummary.querySelector<HTMLElement>('.tab-summary-item:nth-child(2) strong');
+      if (scopeSummary) scopeSummary.textContent = graphicsView === 'display' ? 'Display' : 'Driver';
     };
     renderGraphicsView();
   },

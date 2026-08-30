@@ -199,6 +199,11 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
         preset: 'quality',
         target_usage: 'quality',
         rate_control: 'CBR',
+        // Older bundled Ascent builds read this legacy flag when selecting
+        // their rate-control path. Keep it alongside the explicit modern
+        // value so every included runtime stays on quality CBR instead of
+        // silently falling back to its default quality mode.
+        cbr: true,
         bitrate: settings.bitrateKbps,
         max_bitrate: settings.bitrateKbps,
         profile: encoderProfileOf(encoderId),

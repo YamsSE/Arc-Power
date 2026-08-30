@@ -818,6 +818,30 @@ html, body {
 }
 .page-actions-note { color: var(--text-muted); font-size: 12.5px; }
 
+.dashboard-glance { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; padding: 0; overflow: hidden; }
+.dashboard-glance-item { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 13px 15px; background: color-mix(in srgb, var(--bg-inset) 52%, var(--bg-elev)); }
+.dashboard-glance-label { color: var(--text-dim); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.dashboard-glance-value { overflow: hidden; color: var(--text); font: 650 13px var(--font); text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-quick-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: -6px; }
+.dashboard-quick-label { margin-right: 3px; color: var(--text-dim); font-size: 11px; }
+.dashboard-quick-action { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text-muted); font-size: 11px; text-decoration: none; transition: border-color .14s ease, color .14s ease, background .14s ease; }
+.dashboard-quick-action:hover, .dashboard-quick-action:focus-visible { border-color: var(--accent); background: var(--accent-soft); color: var(--text); outline: none; }
+
+.tab-summary-strip { display: flex; flex-wrap: wrap; gap: 1px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--border); box-shadow: var(--shadow); }
+.tab-summary-item { display: flex; flex-direction: column; gap: 4px; min-width: 130px; flex: 1 1 150px; padding: 11px 13px; background: color-mix(in srgb, var(--bg-inset) 56%, var(--bg-elev)); }
+.tab-summary-item > span { color: var(--text-dim); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.tab-summary-item > strong { overflow: hidden; color: var(--text); font: 650 12px var(--font); text-overflow: ellipsis; white-space: nowrap; }
+.monitoring-summary-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; min-height: 30px; margin-top: -5px; color: var(--text-dim); font-size: 11px; }
+.monitoring-summary-live { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); }
+.monitoring-summary-note { color: var(--text-dim); }
+.tweak-meta-badges { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding-left: 8px; }
+.tweak-meta-badge { padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-dim); font: 550 10px var(--font); white-space: nowrap; }
+.tweak-meta-risk { border-color: color-mix(in srgb, var(--warn) 32%, var(--border)); color: var(--text-muted); }
+.settings-toolbar { display: flex; align-items: center; gap: 10px; margin: -4px 0 2px; }
+.settings-search { width: min(360px, 100%); min-height: 34px; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); }
+.settings-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .15); }
+.settings-search-count { color: var(--text-dim); font-size: 11px; }
+
 /* ------------------------------------------------------------------- cards */
 
 .card {
@@ -2755,6 +2779,10 @@ input[type="number"] {
 .recording-quality-meta-item { display: inline-flex; align-items: baseline; gap: 7px; color: var(--text-dim); font-size: 11px; }
 .recording-quality-meta-item strong { color: var(--text-muted); font-weight: 650; }
 .recording-audio-content { gap: 0; }
+.recording-audio-summary { display: flex; flex-wrap: wrap; gap: 1px; margin-top: 13px; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--border); }
+.recording-audio-summary-item { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 140px; flex: 1 1 170px; padding: 9px 11px; background: color-mix(in srgb, var(--control-bg) 74%, var(--bg-elev)); }
+.recording-audio-summary-item span { color: var(--text-dim); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+.recording-audio-summary-item strong { color: var(--text); font: 650 12px var(--font); white-space: nowrap; }
 .recording-audio-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 13px; }
 .recording-audio-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--control-bg) 70%, transparent); }
 .recording-audio-section h3 { margin: 0; font: 650 13px var(--font-display); }
@@ -2792,7 +2820,8 @@ input[type="number"] {
 .recording-library-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .recording-library-title-row { display: flex; align-items: baseline; gap: 9px; }
 .recording-library-count { color: var(--text-dim); font-size: 11px; }
-.recording-library-actions { display: flex; align-items: center; gap: 8px; }
+.recording-library-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.recording-library-filter { min-width: 122px; }
 .recording-search { width: min(260px, 32vw); }
 .recording-clip-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 24px 18px; }
 .recording-clip-card { position: relative; min-width: 0; }
@@ -2813,6 +2842,10 @@ input[type="number"] {
 .recording-clip-details { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 8px 1px 0; }
 .recording-clip-details strong { overflow-wrap: anywhere; font-size: 13px; line-height: 1.25; }
 .recording-clip-details span { color: var(--text-dim); font-size: 11px; }
+.recording-clip-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.recording-clip-kind { display: inline-flex; align-items: center; width: fit-content; padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted) !important; font-size: 9px !important; letter-spacing: .06em; text-transform: uppercase; }
+.recording-clip-kind-clip { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); color: var(--accent) !important; }
+.recording-clip-kind-recording { border-color: color-mix(in srgb, var(--success) 42%, var(--border)); color: var(--success) !important; }
 .recording-player-view { display: flex; flex-direction: column; gap: 12px; }
 .recording-player-view-heading { display: flex; align-items: center; gap: 12px; }
 .recording-player-heading-copy { display: flex; flex-direction: column; min-width: 0; flex: 1; }

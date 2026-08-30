@@ -415,6 +415,11 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
   m.fpsNote = fpsNote;
 
+  const monitoringSummary = el('div', { class: 'monitoring-summary-strip' }, [
+    el('div', { class: 'monitoring-summary-live' }, [el('span', { class: 'status-dot status-ok' }), el('strong', { text: 'Live telemetry' })]),
+    el('span', { class: 'monitoring-summary-note', text: '60-second rolling window · hover a graph for detail' }),
+  ]);
+
   // M4M (B): the readout card renders TWO labeled groups (CPU above GPU -
   // the dashboard pattern), each with its own grid (mon-readout-cpu /
   // mon-readout-gpu; both keep the compact .mon-readout styling). The
@@ -549,7 +554,7 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     return el('div', { class: 'card seg-card' }, [head, body]);
   }));
 
-  container.append(readout, graphs);
+  container.append(monitoringSummary, readout, graphs);
 }
 
 function redrawAll(): void {

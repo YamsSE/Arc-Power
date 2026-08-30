@@ -24,6 +24,8 @@ const RESOLUTIONS: Array<[RecordingResolution, string]> = [
 ];
 const DEFAULT_REPLAY_LENGTH_SEC = 30;
 const INTEL_QSV_ENCODERS = new Set(['obs_qsv11_v2', 'obs_qsv11_hevc', 'obs_qsv11_av1']);
+type ClipLibraryFilter = 'all' | 'clips' | 'recordings';
+type ClipLibrarySort = 'newest' | 'oldest';
 
 let settings: RecordingSettings | null = null;
 let status: RecordingEngineState = {
@@ -53,6 +55,12 @@ let settingsDirty = false;
 let applyingSettings = false;
 let applySettingsButton: HTMLButtonElement | null = null;
 let recordingStateRevision = 0;
+let clipLibraryFilter: ClipLibraryFilter = 'all';
+let clipLibrarySort: ClipLibrarySort = 'newest';
+
+function recordingClipKind(clip: RecordingClip): 'recording' | 'clip' {
+  return /^Arc Recording \d+\.mp4$/i.test(clip.fileName) ? 'recording' : 'clip';
+}
 
 function setStatus(next: RecordingEngineState): void {
   const previous = status;
@@ -472,9 +480,16 @@ function renderAudioSettings(): HTMLElement {
     processSelect.disabled = audio.sourceMode !== 'custom';
     return processSelect;
   });
+  const processCount = audio.customProcesses.filter(Boolean).length;
+  const sourceLabel = audio.sourceMode === 'custom' ? `${processCount}/3 processes` : 'Full PC';
   return el('section', { class: 'recording-panel recording-audio-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Audio capture' }), el('h2', { class: 'recording-panel-title', text: 'Microphone and sound source' })]),
+    ]),
+    el('div', { class: 'recording-audio-summary' }, [
+      el('div', { class: 'recording-audio-summary-item' }, [el('span', { text: 'Microphone' }), el('strong', { class: audio.microphone.enabled ? 'text-ok' : undefined, text: audio.microphone.enabled ? 'On' : 'Off' })]),
+      el('div', { class: 'recording-audio-summary-item' }, [el('span', { text: 'Source' }), el('strong', { text: sourceLabel })]),
+      el('div', { class: 'recording-audio-summary-item' }, [el('span', { text: 'Profile' }), el('strong', { class: settingsDirty ? 'text-warn' : 'text-ok', text: settingsDirty ? 'Unsaved' : 'Applied' })]),
     ]),
     el('div', { class: 'recording-audio-sections' }, [
       el('div', { class: 'recording-audio-section' }, [
@@ -486,7 +501,7 @@ function renderAudioSettings(): HTMLElement {
       ]),
       el('div', { class: 'recording-audio-section' }, [
         el('h3', { text: 'Sound source' }),
-        field('Capture source', sourceMode, 'Choose full PC audio or up to three individual processes.'),
+        field('Capture source', sourceMode, 'Full PC or up to 3 processes.'),
         el('label', { class: 'recording-check-row' }, [systemEnabled, el('span', { text: 'Include full PC audio' })]),
         field('Output device', systemDevice),
         field('Output volume', volumeControl(audio.system.volume, 'System audio volume', (value) => stagePatch({ audio: { system: { volume: value } } }, false))),
@@ -664,17 +679,31 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
 function renderClipList(): HTMLElement {
   const query = el('input', { class: 'recording-search', type: 'search', placeholder: 'Search clips…', 'aria-label': 'Search clips' }) as HTMLInputElement;
   const list = el('div', { class: 'recording-clip-list' });
-  const count = el('span', { class: 'recording-library-count', text: `${clips.length} clips` });
+  const filter = select(clipLibraryFilter, [['all', 'All captures'], ['clips', 'Clips'], ['recordings', 'Recordings']], (value) => { clipLibraryFilter = value; draw(); });
+  filter.classList.add('recording-library-filter');
+  filter.setAttribute('aria-label', 'Filter captures');
+  const sort = select(clipLibrarySort, [['newest', 'Newest first'], ['oldest', 'Oldest first']], (value) => { clipLibrarySort = value; draw(); });
+  sort.classList.add('recording-library-filter');
+  sort.setAttribute('aria-label', 'Sort captures');
+  const count = el('span', { class: 'recording-library-count', text: `${clips.length} captures` });
   const draw = () => {
     clear(list);
     const needle = query.value.trim().toLowerCase();
-    const visible = clips.filter((clip) => !needle || clip.fileName.toLowerCase().includes(needle));
-    count.textContent = `${visible.length} ${visible.length === 1 ? 'clip' : 'clips'}`;
+    const visible = clips
+      .filter((clip) => clipLibraryFilter === 'all' || recordingClipKind(clip) === (clipLibraryFilter === 'recordings' ? 'recording' : 'clip'))
+      .filter((clip) => !needle || clip.fileName.toLowerCase().includes(needle))
+      .sort((left, right) => {
+        const leftTime = Date.parse(left.modifiedAt ?? left.createdAt) || 0;
+        const rightTime = Date.parse(right.modifiedAt ?? right.createdAt) || 0;
+        return clipLibrarySort === 'newest' ? rightTime - leftTime : leftTime - rightTime;
+      });
+    count.textContent = `${visible.length} ${visible.length === 1 ? 'capture' : 'captures'}`;
     if (visible.length === 0) {
-      list.append(el('p', { class: 'recording-empty', text: 'No clips found yet. Save a moment from Manual Recording to build this library.' }));
+      list.append(el('p', { class: 'recording-empty', text: clips.length ? 'No captures match this view.' : 'No captures found yet.' }));
       return;
     }
     for (const clip of visible) {
+      const kind = recordingClipKind(clip);
       const duration = el('span', { class: 'recording-clip-duration', text: '—' });
       const media = el('div', { class: 'recording-clip-media' });
       const tile = el('div', {
@@ -699,7 +728,10 @@ function renderClipList(): HTMLElement {
         media,
         el('span', { class: 'recording-clip-details' }, [
           el('strong', { text: clip.fileName }),
-          el('span', { text: `Arc Power · ${new Date(clip.createdAt).toLocaleString()}` }),
+          el('span', { class: 'recording-clip-meta' }, [
+            el('span', { class: `recording-clip-kind recording-clip-kind-${kind}`, text: kind === 'recording' ? 'Recording' : 'Clip' }),
+            el('span', { text: `Arc Capture · ${new Date(clip.modifiedAt ?? clip.createdAt).toLocaleString()}` }),
+          ]),
         ]),
       );
       const deleteButton = el('button', {
@@ -727,6 +759,8 @@ function renderClipList(): HTMLElement {
       ]),
       el('div', { class: 'recording-library-actions' }, [
         query,
+        filter,
+        sort,
         button('Refresh', () => void loadClips(), 'btn btn-secondary'),
         button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary'),
       ]),

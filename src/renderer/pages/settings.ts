@@ -311,8 +311,31 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
     ]);
 
+    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, logCard, overlayCard, maintenanceCard, themeCard, aboutCard];
+    const search = el('input', {
+      class: 'settings-search',
+      type: 'search',
+      placeholder: 'Search settings…',
+      'aria-label': 'Search settings',
+    }) as HTMLInputElement;
+    const resultCount = el('span', { class: 'settings-search-count', text: `${settingCards.length} sections` });
+    const filterSettings = (): void => {
+      const needle = search.value.trim().toLowerCase();
+      let visible = 0;
+      for (const card of settingCards) {
+        const matches = !needle || (card.textContent ?? '').toLowerCase().includes(needle);
+        card.hidden = !matches;
+        if (matches) visible += 1;
+      }
+      resultCount.textContent = `${visible} ${visible === 1 ? 'section' : 'sections'}`;
+    };
+    search.addEventListener('input', filterSettings);
     clear(root);
-    root.append(startWithCard, startMinimizedCard, closeToTrayCard, logCard, overlayCard, maintenanceCard, themeCard, aboutCard);
+    root.append(
+      el('div', { class: 'settings-toolbar' }, [search, resultCount]),
+      ...settingCards,
+    );
+    filterSettings();
   };
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {

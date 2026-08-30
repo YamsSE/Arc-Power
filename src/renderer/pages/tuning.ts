@@ -1225,6 +1225,12 @@ export const tuningPage: Page = {
     };
     syncModeRowForView();
 
+    const tuningSummary = el('div', { class: 'tab-summary-strip' }, [
+      el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Mode' }), el('strong', { text: s.ocMode === 'advanced' ? 'Advanced' : 'Stock' })]),
+      el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Controls' }), el('strong', { text: `${controls.length} available` })]),
+      el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Apply' }), el('strong', { text: 'On demand' })]),
+    ]);
+
     // M4-D2 (§8): the view switch re-renders ONLY the sub-view container -
     // the OC slider state (values/applied - module-level) survives the
     // round trip and the fan editor's own module state survives too.
@@ -1501,6 +1507,7 @@ export const tuningPage: Page = {
       // dialog gate (ensureWaiver above). The pill row renders for every
       // device: the Fan Curve view must stay reachable on no-OC devices.
       modeRow,
+      tuningSummary,
       viewContainer,
     );
     renderView();

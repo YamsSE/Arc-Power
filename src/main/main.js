@@ -276,9 +276,10 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
 // Keep the native Windows identity on the same generated resources used by
-// the packaged executable. Electron's live BrowserWindow icon path is loaded
-// from the optimized PNG; the ICO is retained for Windows shell/relaunch
-// metadata. The renderer still uses ArcPowerIcon.png for full-size artwork.
+// the packaged executable. Prefer the external ICO for the live window too:
+// Windows uses that native handle for the taskbar button, while the PNG is a
+// fallback for development builds and platforms that cannot decode the ICO.
+// The renderer still uses ArcPowerIcon.png for full-size artwork.
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
@@ -286,17 +287,38 @@ const PACKAGED_APP_ICON_PATH = path.join(process.resourcesPath, 'app-icon.ico');
 const WINDOWS_APP_ICON_PATH = app.isPackaged && fs.existsSync(PACKAGED_APP_ICON_PATH)
   ? PACKAGED_APP_ICON_PATH
   : APP_ICON_PATH;
-// NativeImage does not consistently resolve files inside app.asar when it is
-// handed a path directly. Read the bundled PNG through Electron's ASAR-aware
-// fs layer, then give nativeImage the bytes so the live taskbar icon is never
-// an empty/default document icon.
 const APP_ICON = (() => {
-  try {
-    return nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
-  } catch {
-    return nativeImage.createEmpty();
+  for (const iconPath of [WINDOWS_APP_ICON_PATH, APP_ICON_PATH]) {
+    try {
+      const icon = nativeImage.createFromPath(iconPath);
+      if (!icon.isEmpty()) return icon;
+    } catch { /* try the next source */ }
   }
+  try {
+    const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
+    if (!icon.isEmpty()) return icon;
+  } catch { /* the empty icon is handled by the platform */ }
+  return nativeImage.createEmpty();
 })();
+
+function applyWindowIdentity(win) {
+  if (!APP_ICON.isEmpty()) {
+    try { win.setIcon(APP_ICON); } catch { /* best effort */ }
+  }
+  if (process.platform !== 'win32') return;
+  try {
+    win.setAppDetails({
+      appId: APP_USER_MODEL_ID,
+      // setAppDetails requires a real filesystem path. The packaged ICO is
+      // shipped as an extra resource so Windows does not resolve an icon
+      // from inside app.asar or inherit the default Electron icon.
+      appIconPath: WINDOWS_APP_ICON_PATH,
+      appIconIndex: 0,
+      relaunchCommand: process.execPath,
+      relaunchDisplayName: 'Arc Power',
+    });
+  } catch { /* best effort on platforms without taskbar details */ }
+}
 
 function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme) {
   const win = new BrowserWindow({
@@ -313,7 +335,7 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // the pre-create settings read says startMinimized; ready-to-show does
     // nothing then. The tray toggle's hidden->show branch restores it.
     show,
-    // Canonical Arc Power PNG used by the live window and taskbar.
+    // Canonical Arc Power icon used by the live window and taskbar.
     icon: APP_ICON,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
@@ -331,25 +353,13 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
       preload: path.join(__dirname, '..', 'preload.cjs'),
     },
   });
-  // Explicitly set the native window icon as well as the BrowserWindow option.
-  // Windows uses this native handle for the live taskbar button, while the
-  // packaged executable icon covers shortcuts and the portable file itself.
-  try { win.setIcon(APP_ICON); } catch { /* best effort */ }
-  // Bind the taskbar button to the same branded identity and ICO. This also
-  // gives Windows the correct relaunch metadata instead of inheriting an old
-  // Electron/default icon from a previously cached button.
-  try {
-    win.setAppDetails({
-      appId: APP_USER_MODEL_ID,
-      // setAppDetails requires a real filesystem path. The packaged ICO is
-      // shipped as an extra resource so Windows does not have to resolve an
-      // icon from inside app.asar (or inherit the default Electron icon).
-      appIconPath: WINDOWS_APP_ICON_PATH,
-      appIconIndex: 0,
-      relaunchCommand: process.execPath,
-      relaunchDisplayName: 'Arc Power',
-    });
-  } catch { /* best effort on platforms without taskbar details */ }
+  // Apply the icon after the native window handle exists, then reapply it at
+  // both native lifecycle points. This closes the timing gap where Windows
+  // can create the taskbar button with Electron's generic document icon
+  // before the renderer has finished loading.
+  applyWindowIdentity(win);
+  win.webContents.once('did-finish-load', () => applyWindowIdentity(win));
+  win.once('ready-to-show', () => applyWindowIdentity(win));
   win.webContents.on('console-message', (event) => {
     // Electron >= 30: the event object carries { level, message, ... }.
     const level = typeof event.level === 'number' ? event.level : 0;
