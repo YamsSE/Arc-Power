@@ -40,7 +40,7 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain, protocol, screen } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -1383,6 +1383,17 @@ async function main() {
   });
   const recordingEngine = createAscentEngine({
     onEncoderDemoted: (encoderId) => recordingStore.demoteEncoder(encoderId),
+    // The monitor source in the bundled runtime captures the primary
+    // display. Its native dimensions must remain the OBS base canvas; the
+    // user's selected recording resolution is an independent output scale.
+    getCaptureDimensions: () => {
+      const display = screen.getPrimaryDisplay();
+      const scaleFactor = Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1;
+      return {
+        captureWidth: Math.max(2, Math.round(display.size.width * scaleFactor)),
+        captureHeight: Math.max(2, Math.round(display.size.height * scaleFactor)),
+      };
+    },
     runtimeResolver: () => {
       let configuredPath = null;
       try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* unavailable store -> candidate paths only */ }

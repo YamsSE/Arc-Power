@@ -49,6 +49,20 @@ export function buildAscentCommand(command, identifier, recorderType = ASCENT_RE
 
 function resolutionOf(id) { return RECORDING_RESOLUTIONS.find((item) => item.id === id) ?? RECORDING_RESOLUTIONS.find((item) => item.id === '1080p'); }
 
+function positiveDimension(value) {
+  const dimension = Number(value);
+  return Number.isFinite(dimension) && dimension > 0 ? Math.max(2, Math.round(dimension)) : null;
+}
+
+function captureDimensionsOf(settings = {}) {
+  const width = positiveDimension(settings.captureWidth ?? settings.baseWidth);
+  const height = positiveDimension(settings.captureHeight ?? settings.baseHeight);
+  return {
+    width: width ?? 1920,
+    height: height ?? 1080,
+  };
+}
+
 function isUsableEncoder(encoder) {
   return encoder?.enumerated === true && encoder.probeValid === true && encoder.startSupported === true;
 }
@@ -147,16 +161,34 @@ function normalizeAudioDevices(value) {
 
 export function buildAscentStartPayload(settings, outputPath, recorderType = ASCENT_RECORDER_TYPES.VIDEO, identifier = 0) {
   const resolution = resolutionOf(settings.resolution);
+  const capture = captureDimensionsOf(settings);
+  const outputWidth = resolution.width || capture.width;
+  const outputHeight = resolution.height || capture.height;
   const encoderId = settings.encoderId;
   return buildAscentCommand(ASCENT_COMMANDS.START, identifier, recorderType, {
     sources: { monitor: { enable: true, force: false, cursor: false, monitor_handle: 0 } },
     video_settings: {
       fps: settings.fps,
-      base_width: resolution.width || 1920,
-      base_height: resolution.height || 1080,
-      output_width: resolution.width || 1920,
-      output_height: resolution.height || 1080,
-      video_encoder: { id: encoderId, preset: 'automatic', rate_control: 'CBR', bitrate: settings.bitrateKbps },
+      // The base canvas is the monitor's native capture size. Keeping it
+      // independent from the requested output prevents a 1080p desktop from
+      // being enlarged to 4K before the encoder scales it back down in the
+      // player's 1080p viewport.
+      base_width: capture.width,
+      base_height: capture.height,
+      output_width: outputWidth,
+      output_height: outputHeight,
+      video_encoder: {
+        id: encoderId,
+        preset: 'automatic',
+        target_usage: 'TU1',
+        rate_control: 'CBR',
+        bitrate: settings.bitrateKbps,
+        profile: 'main',
+        keyint_sec: 2,
+        latency: 'normal',
+        bframes: 3,
+        enhancements: true,
+      },
     },
     audio_settings: buildRecordingAudioSettings(settings),
     // Replay output is a rolling buffer. It must not inherit a normal
@@ -173,7 +205,7 @@ function isEncoderStartRejection(error) {
   return Number.isInteger(error?.code) && ASCENT_ENCODER_START_ERROR_CODES.includes(error.code);
 }
 
-export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
+export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
   let child = null;
   let output = '';
   let decoder = new StringDecoder('utf8');
@@ -500,7 +532,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // runtime silently recorded AV1 instead. The selection must either be
     // honored or fail with the actual encoder availability message.
     const encoderId = resolveRecordingEncoder(settings.encoderId, state.encoders);
-    const payload = buildAscentStartPayload({ ...settings, encoderId }, outputPath, type);
+    let captureDimensions = null;
+    try { captureDimensions = getCaptureDimensions?.(); } catch { /* display enumeration is best effort */ }
+    const payload = buildAscentStartPayload({ ...settings, encoderId, ...captureDimensions }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
     startingRecorder = { identifier, type, mode, ready: false };
