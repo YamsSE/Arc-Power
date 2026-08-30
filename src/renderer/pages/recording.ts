@@ -6,7 +6,7 @@ import type { Page, PageContext } from '../router.ts';
 import type { RecordingAudioDevice, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
-import { recordingBitrateRange, recordingBitrateWarning, recordingMessage } from '../pure/recording.ts';
+import { recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -294,7 +294,6 @@ function renderQualitySettings(): HTMLElement {
   const fps = select(String(working?.fps ?? 60), [['30', '30 FPS'], ['60', '60 FPS'], ['120', '120 FPS']], (value) => stagePatch({ fps: Number(value) as 30 | 60 | 120 }));
   const selectedResolution = working?.resolution ?? '1080p';
   const bitrateRange = recordingBitrateRange(selectedResolution);
-  const bitrateWarning = recordingBitrateWarning(selectedResolution, Number(working?.bitrateKbps ?? bitrateRange.default));
   const bitrate = el('input', {
     class: 'recording-number',
     type: 'number',
@@ -318,11 +317,7 @@ function renderQualitySettings(): HTMLElement {
       field('Resolution', resolution),
       field('Encoder', encoder),
       field('Bitrate (Kbps)', bitrate),
-      field('Bitrate Recommendation', el('span', {
-        class: `recording-field-note${bitrateWarning ? ' recording-field-warning' : ''}`,
-        text: bitrateWarning ?? bitrateRange.label,
-        role: bitrateWarning ? 'alert' : undefined,
-      })),
+      field('Bitrate Recommendation', el('span', { class: 'recording-field-note', text: bitrateRange.label })),
     ]),
     el('p', { class: 'recording-panel-note recording-quality-note', text: status.running
       ? 'The active capture keeps its applied profile. Apply changes for the next capture.'
