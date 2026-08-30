@@ -184,6 +184,14 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       base_height: capture.height,
       output_width: outputWidth,
       output_height: outputHeight,
+      // Make the OBS color pipeline explicit instead of depending on the
+      // runtime's empty-extra-settings defaults. NV12 + Rec.709 + partial
+      // range is the normal SDR hardware-capture path and keeps the encoded
+      // file's color metadata aligned with the pixels sent to the encoder.
+      extra_options: {
+        color_format: 'NV12',
+        color_space: 'Rec709',
+      },
       video_encoder: {
         id: encoderId,
         // Ascent-OBS maps the QSV name "quality" to TU1, which is the
