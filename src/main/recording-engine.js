@@ -63,6 +63,13 @@ function captureDimensionsOf(settings = {}) {
   };
 }
 
+function encoderProfileOf(encoderId) {
+  // obs-qsv11 uses the normal OBS profile names. H.264 supports High while
+  // HEVC and AV1 use Main. Keeping this codec-specific prevents H.264 from
+  // silently falling back to a less efficient Main profile.
+  return encoderId === 'obs_qsv11_v2' ? 'high' : 'main';
+}
+
 function isUsableEncoder(encoder) {
   return encoder?.enumerated === true && encoder.probeValid === true && encoder.startSupported === true;
 }
@@ -179,11 +186,16 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       output_height: outputHeight,
       video_encoder: {
         id: encoderId,
-        preset: 'automatic',
-        target_usage: 'TU1',
+        // Ascent-OBS maps the QSV name "quality" to TU1, which is the
+        // Intel Media SDK best-quality target usage. Sending the semantic
+        // value keeps the setting explicit and avoids relying on a numeric
+        // default while retaining the user-controlled CBR bitrate.
+        preset: 'quality',
+        target_usage: 'quality',
         rate_control: 'CBR',
         bitrate: settings.bitrateKbps,
-        profile: 'main',
+        max_bitrate: settings.bitrateKbps,
+        profile: encoderProfileOf(encoderId),
         keyint_sec: 2,
         latency: 'normal',
         bframes: 3,

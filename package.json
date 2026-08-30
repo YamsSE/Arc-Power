@@ -50,6 +50,10 @@
                                           "filter":  [
                                                         "**/*"
                                                     ]
+                                        },
+                                        {
+                                          "from":  "src/assets/app-icon.ico",
+                                          "to":  "app-icon.ico"
                                         }
                                     ],
                   "win":  {
