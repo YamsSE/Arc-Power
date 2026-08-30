@@ -15,6 +15,17 @@ export function recordingBitrateRange(resolution: string) {
   return RECORDING_BITRATE_RANGES[resolution as keyof typeof RECORDING_BITRATE_RANGES] ?? RECORDING_BITRATE_RANGES.default;
 }
 
+// Bitrate is intentionally never clamped or rewritten. This message only
+// explains when a chosen value is below the resolution's practical minimum,
+// which is the situation that makes a higher-resolution file look softer
+// despite using the same nominal encoder settings.
+export function recordingBitrateWarning(resolution: string, bitrate: number): string | null {
+  const range = recordingBitrateRange(resolution);
+  if (!Number.isFinite(bitrate) || bitrate <= 0 || bitrate >= range.min) return null;
+  const label = resolution === '4k' ? '4K' : resolution;
+  return `Below the ${label} recommendation (${range.label}). Your bitrate will be used exactly, but this resolution needs more data for clean detail.`;
+}
+
 export function clampRecordingBitrate(value: number, resolution: string): number {
   const range = recordingBitrateRange(resolution);
   const numeric = Number.isFinite(value) ? Math.round(value) : range.default;

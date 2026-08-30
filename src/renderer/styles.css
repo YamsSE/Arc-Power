@@ -2744,6 +2744,7 @@ input[type="number"] {
 .recording-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .recording-field-label { color: var(--text-muted); font-size: 12px; }
 .recording-field-note { color: var(--text-dim); font-size: 11px; line-height: 1.35; }
+.recording-field-warning { color: var(--warn); }
 .recording-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 13px; }
 .recording-number { width: 100%; }
 .recording-audio-content { gap: 0; }

@@ -12,6 +12,8 @@ const dist = path.join(root, 'dist');
 const installer = path.join(dist, 'Arc-Power_Installer.exe');
 const portable = path.join(dist, 'Arc-Power_Portable.exe');
 const builderCli = path.join(root, 'node_modules', 'electron-builder', 'cli.js');
+const rceditCli = path.join(root, 'node_modules', 'electron-winstaller', 'vendor', 'rcedit.exe');
+const iconPath = path.join(root, 'build', 'icon.ico');
 const tempConfig = path.join(dist, 'build-dist-config.json');
 const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 const baseBuild = packageJson.build;
@@ -73,6 +75,21 @@ function buildPortableArtifact(artifactName) {
   }
   const artifactPath = path.join(dist, artifactName);
   if (!existsSync(artifactPath)) throw new Error(`electron-builder did not produce ${artifactPath}`);
+  // Patch only the unpacked application executable. The outer portable
+  // launcher contains an integrity-protected self-extracting payload; editing
+  // that wrapper after electron-builder creates it causes an NSIS integrity
+  // error on launch. electron-builder receives the same icon config while it
+  // creates the wrapper, so the shell icon is branded without post-editing it.
+  for (const target of [path.join(dist, 'win-unpacked', 'Arc Power.exe')]) {
+    if (!existsSync(target)) throw new Error(`missing packaged executable for icon patch: ${target}`);
+    const result = spawnSync(rceditCli, [target, '--set-icon', iconPath], {
+      cwd: root,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`rcedit failed for ${target} with exit code ${result.status}`);
+  }
 }
 
 buildPortableArtifact(path.basename(installer));

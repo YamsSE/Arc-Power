@@ -176,10 +176,8 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
     sources: { monitor: { enable: true, force: false, cursor: false, monitor_handle: 0 } },
     video_settings: {
       fps: settings.fps,
-      // The base canvas is the monitor's native capture size. Keeping it
-      // independent from the requested output prevents a 1080p desktop from
-      // being enlarged to 4K before the encoder scales it back down in the
-      // player's 1080p viewport.
+      // The base canvas is the monitor's native capture size. The requested
+      // output remains independent so 4K always produces a 4K file.
       base_width: capture.width,
       base_height: capture.height,
       output_width: outputWidth,

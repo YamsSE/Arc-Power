@@ -268,6 +268,13 @@ async function boundShutdown(proxy) {
 }
 let bootWindowTheme = 'dark';
 const APP_USER_MODEL_ID = 'com.rid.arcpower';
+// Set the Windows identity while this module is loading, before Electron can
+// create the startup splash or the main window. Keeping this at the earliest
+// possible point prevents the shell from briefly assigning the default
+// Electron/document taskbar identity to the first Arc Power window.
+if (process.platform === 'win32') {
+  try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
+}
 // Keep the native Windows identity on the same generated resources used by
 // the packaged executable. Electron's live BrowserWindow icon path is loaded
 // from the optimized PNG; the ICO is retained for Windows shell/relaunch
