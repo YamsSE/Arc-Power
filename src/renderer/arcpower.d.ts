@@ -40,6 +40,7 @@ import type {
   RecordingSettingsSaveResult,
   RecordingSettings,
   RecordingSettingsPatch,
+  RecordingStorageInfo,
   ResetResponse,
   Settings,
   StartupGetState,
@@ -201,6 +202,7 @@ export interface ArcPowerApi {
   recordingReplayStart(): Promise<{ state: RecordingEngineState; outputPath: null }>;
   recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string }>;
   recordingClipsList(): Promise<RecordingClip[]>;
+  recordingStorageInfo(): Promise<RecordingStorageInfo>;
   recordingProcessesList(): Promise<string[]>;
   recordingChooseFolder(): Promise<{ canceled: boolean; location?: string; settings: RecordingSettings }>;
   recordingOpenFolder(): Promise<{ ok: boolean }>;

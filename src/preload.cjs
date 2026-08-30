@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   recordingReplayStart: () => ipcRenderer.invoke('recording-replay-start'),
   recordingClipSave: (payload) => ipcRenderer.invoke('recording-clip-save', payload),
   recordingClipsList: () => ipcRenderer.invoke('recording-clips-list'),
+  recordingStorageInfo: () => ipcRenderer.invoke('recording-storage-info'),
   recordingProcessesList: () => ipcRenderer.invoke('recording-processes-list'),
   recordingChooseFolder: () => ipcRenderer.invoke('recording-choose-folder'),
   recordingOpenFolder: () => ipcRenderer.invoke('recording-open-folder'),

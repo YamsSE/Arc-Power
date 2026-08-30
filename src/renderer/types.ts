@@ -1021,6 +1021,11 @@ export interface RecordingClip {
   modifiedAt?: string;
   byteLength?: number;
 }
+export interface RecordingStorageInfo {
+  location: string;
+  freeBytes: number | null;
+  totalBytes: number | null;
+}
 export interface RecordingClipDeleteResult {
   ok: boolean;
   id: string;

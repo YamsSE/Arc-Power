@@ -3,7 +3,7 @@
 import { el, clear } from '../dom.ts';
 import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
-import type { RecordingAudioDevice, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingTab } from '../types.ts';
+import type { RecordingAudioDevice, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
 import { recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
@@ -48,6 +48,7 @@ let playerVideo: HTMLVideoElement | null = null;
 let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
 let draftSettings: RecordingSettings | null = null;
+let storageInfo: RecordingStorageInfo | null = null;
 let settingsDirty = false;
 let applyingSettings = false;
 let applySettingsButton: HTMLButtonElement | null = null;
@@ -157,6 +158,47 @@ function settingsForRender(): RecordingSettings | null {
   return draftSettings ?? settings;
 }
 
+function formatBytes(bytes: number | null): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return 'Unavailable';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  const decimals = unit === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(decimals)} ${units[unit]}`;
+}
+
+function compactPath(value: string): string {
+  if (!value) return 'Choose a folder';
+  if (value.length <= 54) return value;
+  return `${value.slice(0, 24)}…${value.slice(-27)}`;
+}
+
+function selectedEncoderLabel(id: string): string {
+  if (id === 'automatic') return 'Automatic';
+  const encoder = status.encoders.find((candidate) => candidate.type === id);
+  if (encoder) return encoderLabel(encoder);
+  return ({ obs_qsv11_v2: 'Intel H264', obs_qsv11_hevc: 'Intel HEVC', obs_qsv11_av1: 'Intel AV1' } as Record<string, string>)[id] ?? id;
+}
+
+function captureProfileLabel(value: RecordingSettings): string {
+  const resolution = RESOLUTIONS.find(([id]) => id === value.resolution)?.[1] ?? value.resolution;
+  const bitrate = Math.round(value.bitrateKbps).toLocaleString();
+  return `${resolution} · ${value.fps} FPS · ${selectedEncoderLabel(value.encoderId)} · ${bitrate} Kbps`;
+}
+
+function estimatedVideoSizePerMinute(bitrateKbps: number): string {
+  return formatBytes((bitrateKbps * 1000 / 8) * 60);
+}
+
+function sameRecordingPath(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) return false;
+  return left.trim().replaceAll('/', '\\').toLowerCase() === right.trim().replaceAll('/', '\\').toLowerCase();
+}
+
 function updateRecordingApplyButton(): void {
   if (!applySettingsButton) return;
   applySettingsButton.hidden = !settingsDirty && !applyingSettings;
@@ -202,7 +244,9 @@ async function applyRecordingSettings(): Promise<void> {
     draftSettings = cloneRecordingSettings(result.settings);
     settingsDirty = false;
     status = { ...status, hotkeys: result.hotkeys };
+    storageInfo = null;
     toast('success', 'Recording settings', 'Your recording profile was applied.');
+    void refreshRecordingStorage();
   } catch (err) {
     toast('error', 'Recording settings', messageOf(err));
   } finally {
@@ -236,7 +280,9 @@ function encoderOptions(): Array<[string, string]> {
 }
 
 function renderRecordingHeadingActions(): HTMLElement {
+  const stateLabel = !settings ? 'Loading…' : settingsDirty ? 'Unsaved' : 'Applied';
   return el('div', { class: 'recording-heading-actions' }, [
+    el('span', { class: `recording-settings-state${settingsDirty ? ' is-unsaved' : ''}`, text: stateLabel }),
     el('span', { class: 'recording-settings-dirty', text: 'Unsaved changes', hidden: !settingsDirty }),
     (() => {
       const apply = button('Apply settings', () => void applyRecordingSettings(), 'btn btn-primary recording-apply-button', applyingSettings || !settingsDirty);
@@ -267,7 +313,7 @@ function renderCaptureActions(): HTMLElement {
     button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture() : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || replayRunning || (!recordingRunning && captureNeedsApply)),
     button(replayRunning ? 'Stop Replay Buffer' : 'Start Replay Buffer', () => void (replayRunning ? stopCapture() : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || recordingRunning || (!replayRunning && captureNeedsApply)),
     button('Save Clip', () => void saveClip(), 'btn btn-secondary', !status.available || status.mode !== 'replay' || actionBusy),
-    settingsDirty ? el('span', { class: 'recording-inline-note recording-unsaved-note', text: 'Apply your changes before starting a capture.' }) : null,
+    settingsDirty ? el('span', { class: 'recording-inline-note recording-unsaved-note', text: 'Apply changes before capture.' }) : null,
     status.running && !recordingRunning && !replayRunning ? el('span', { class: 'recording-inline-note', text: 'Another capture is active.' }) : null,
   ]);
 }
@@ -282,7 +328,14 @@ function renderCapturePanel(): HTMLElement {
         el('h2', { class: 'recording-panel-title', text: 'Record or save a moment' }),
       ]),
     ]),
-    el('p', { class: 'recording-panel-note', text: `Start a full recording or keep a ${replayLength}-second replay buffer. Save Clip finalizes one clip while the buffer keeps running.` }),
+    el('p', { class: 'recording-panel-note', text: `Full recording or ${replayLength}-second replay buffer.` }),
+    working ? el('div', { class: 'recording-profile-strip' }, [
+      el('div', { class: 'recording-profile-copy' }, [
+        el('span', { class: 'recording-field-label', text: 'Capture profile' }),
+        el('strong', { text: captureProfileLabel(working) }),
+      ]),
+      el('span', { class: `recording-settings-state${settingsDirty ? ' is-unsaved' : ''}`, text: settingsDirty ? 'Unsaved' : 'Applied' }),
+    ]) : null,
     renderCaptureActions(),
     status.error && status.available ? el('p', { class: 'recording-inline-error', text: messageOf(status.error) }) : null,
     status.hotkeys.error ? el('p', { class: 'recording-inline-error', text: `Shortcut registration issue: ${messageOf(status.hotkeys.error)}` }) : null,
@@ -317,11 +370,14 @@ function renderQualitySettings(): HTMLElement {
       field('Resolution', resolution),
       field('Encoder', encoder),
       field('Bitrate (Kbps)', bitrate),
-      field('Bitrate Recommendation', el('span', { class: 'recording-field-note', text: bitrateRange.label })),
+    ]),
+    el('div', { class: 'recording-quality-meta' }, [
+      el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Bitrate Recommendation' }), el('strong', { text: bitrateRange.label })]),
+      el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Estimated video size' }), el('strong', { text: `≈ ${estimatedVideoSizePerMinute(Number(working?.bitrateKbps ?? bitrateRange.default))} / min` })]),
     ]),
     el('p', { class: 'recording-panel-note recording-quality-note', text: status.running
-      ? 'The active capture keeps its applied profile. Apply changes for the next capture.'
-      : 'Edit the profile, then press Apply settings before starting a capture.' }),
+      ? 'Active capture uses the applied profile.'
+      : 'Apply changes before capture.' }),
   ]);
 }
 
@@ -341,7 +397,7 @@ function renderReplaySettings(): HTMLElement {
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip window' }), el('h2', { class: 'recording-panel-title', text: 'Replay length' })]),
       el('span', { class: 'recording-panel-badge', text: '5–3600 seconds' }),
     ]),
-    field('Seconds to keep available', replay, 'Save Clip exports this much recent gameplay from the replay buffer.'),
+    field('Seconds to keep available', replay, 'Saved when you press Save Clip.'),
   ]);
 }
 
@@ -468,10 +524,35 @@ function renderHotkeys(): HTMLElement {
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Shortcuts' }), el('h2', { class: 'recording-panel-title', text: 'Hotkeys' })]),
       el('span', { class: 'recording-panel-badge', text: 'Global' }),
     ]),
-    el('p', { class: 'recording-panel-note', text: 'Use these shortcuts from a game or any other window.' }),
+    el('p', { class: 'recording-panel-note', text: 'Works from any window.' }),
     make('start', 'Start recording', 'Begin a full video capture.'),
     make('stop', 'Stop capture', 'Finish the active video or replay buffer.'),
     make('saveClip', 'Save clip', 'Export the configured replay window.'),
+  ]);
+}
+
+function quickSetupItem(label: string, value: string): HTMLElement {
+  return el('div', { class: 'recording-quickstart-item' }, [
+    el('span', { text: label }),
+    el('strong', { text: value }),
+  ]);
+}
+
+function renderFirstCaptureSetup(): HTMLElement | null {
+  const working = settingsForRender();
+  if (!working || clips.length > 0) return null;
+  const audio = working.audio.sourceMode === 'custom' ? 'Up to 3 processes' : 'Full PC audio';
+  return el('details', { class: 'recording-quickstart' }, [
+    el('summary', { class: 'recording-quickstart-summary' }, [
+      el('span', { class: 'recording-quickstart-title', text: 'First capture' }),
+      el('span', { class: 'recording-field-note', text: 'Quick setup' }),
+    ]),
+    el('div', { class: 'recording-quickstart-grid' }, [
+      quickSetupItem('Save to', compactPath(working.location)),
+      quickSetupItem('Video', `${captureProfileLabel(working)}`),
+      quickSetupItem('Audio', audio),
+      quickSetupItem('Hotkeys', `${working.hotkeys.start} / ${working.hotkeys.stop} / ${working.hotkeys.saveClip}`),
+    ]),
   ]);
 }
 
@@ -484,16 +565,33 @@ function renderStorage(): HTMLElement {
     placeholder: 'Choose a capture folder',
   }) as HTMLInputElement;
   location.addEventListener('change', () => stagePatch({ location: location.value }));
+  const locationValue = working?.location ?? '';
+  const pendingLocation = settingsDirty && !sameRecordingPath(locationValue, storageInfo?.location);
+  const spaceText = !locationValue
+    ? 'Choose a folder'
+    : pendingLocation
+      ? 'Apply to check this drive'
+      : !storageInfo
+        ? 'Checking space…'
+        : storageInfo.freeBytes === null
+          ? 'Space unavailable'
+          : `${formatBytes(storageInfo.freeBytes)} free${storageInfo.totalBytes === null ? '' : ` of ${formatBytes(storageInfo.totalBytes)}`}`;
   return el('section', { class: 'recording-panel recording-storage-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Files' }), el('h2', { class: 'recording-panel-title', text: 'Save location' })]),
+      el('span', { class: 'recording-panel-badge', text: 'Recordings and clips' }),
     ]),
-    field('Recording folder', el('div', { class: 'recording-input-row' }, [location, button('Browse', () => void chooseFolder(), 'btn btn-secondary')])),
+    field('Recording folder', el('div', { class: 'recording-input-row' }, [location, button('Browse', () => void chooseFolder(), 'btn btn-secondary'), button('Open folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Recording folder', messageOf(err))), 'btn btn-secondary', !locationValue)])),
+    el('div', { class: 'recording-storage-summary' }, [
+      el('span', { class: 'recording-field-label', text: 'Available space' }),
+      el('strong', { text: spaceText }),
+    ]),
   ]);
 }
 
 function renderManualView(): HTMLElement {
   return el('div', { class: 'recording-content recording-manual-content' }, [
+    renderFirstCaptureSetup(),
     renderCapturePanel(),
     el('div', { class: 'recording-panel-column' }, [renderQualitySettings(), renderReplaySettings(), renderHotkeys(), renderStorage()]),
   ]);
@@ -808,7 +906,7 @@ function render(): void {
   renderContainer.append(
     el('div', { class: 'page-heading recording-heading' }, [
       el('div', {}, [
-        el('span', { class: 'recording-eyebrow', text: 'Arc Power Capture' }),
+        el('span', { class: 'recording-eyebrow', text: 'Arc Capture' }),
         el('h1', { text: 'Recording' }),
       ]),
       activeTab === 'manual' ? renderRecordingHeadingActions() : null,
@@ -842,15 +940,25 @@ async function loadClips(): Promise<void> {
   }
 }
 
+async function refreshRecordingStorage(): Promise<void> {
+  try {
+    storageInfo = await api.recordingStorageInfo();
+  } catch {
+    storageInfo = null;
+  }
+  if (renderContainer) render();
+}
+
 async function load(): Promise<void> {
   if (loading) return;
   loading = true;
   const loadStateRevision = recordingStateRevision;
   try {
-    const [loadedSettings, loadedStatus, loadedClips] = await Promise.all([
+    const [loadedSettings, loadedStatus, loadedClips, loadedStorage] = await Promise.all([
       api.recordingSettingsGet(),
       api.recordingStatus(),
       api.recordingClipsList(),
+      api.recordingStorageInfo().catch(() => null),
     ]);
     settings = loadedSettings;
     draftSettings = cloneRecordingSettings(loadedSettings);
@@ -861,6 +969,7 @@ async function load(): Promise<void> {
     // initial recordingStatus request.
     if (recordingStateRevision === loadStateRevision) setStatus(loadedStatus);
     clips = loadedClips;
+    storageInfo = loadedStorage;
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
@@ -972,7 +1081,10 @@ async function deleteClip(clip: RecordingClip): Promise<void> {
 async function chooseFolder(): Promise<void> {
   try {
     const result = await api.recordingChooseFolder();
-    if (!result.canceled && result.location) stagePatch({ location: result.location });
+    if (!result.canceled && result.location) {
+      storageInfo = null;
+      stagePatch({ location: result.location });
+    }
   } catch (err) {
     toast('error', 'Recording folder', messageOf(err));
   }
@@ -1015,6 +1127,7 @@ export const recordingPage: Page = {
     draftSettings = null;
     settingsDirty = false;
     applyingSettings = false;
+    storageInfo = null;
     renderContainer = null;
     playerClip = null;
   },

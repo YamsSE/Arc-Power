@@ -76,7 +76,7 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
   const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
   if (title) title.textContent = running ? mode === 'replay' ? 'Replay buffer' : 'Recording' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
-  if (detail) detail.textContent = running ? 'Arc Power capture is running' : globalRecordingStatus.available ? 'Ready when you are' : 'Capture engine unavailable';
+  if (detail) detail.textContent = running ? 'Arc Capture is running' : globalRecordingStatus.available ? 'Ready when you are' : 'Capture engine unavailable';
   if (timer) {
     timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
     timer.hidden = !running;
@@ -104,7 +104,7 @@ function setGlobalRecordingStatus(next: RecordingEngineState): void {
 }
 
 function renderGlobalRecordingStatus(): HTMLElement {
-  const root = el('section', { class: 'sidebar-recording-status', 'aria-live': 'polite', 'aria-label': 'Arc Power capture status' }, [
+  const root = el('section', { class: 'sidebar-recording-status', 'aria-live': 'polite', 'aria-label': 'Arc Capture status' }, [
     el('span', { class: 'sidebar-recording-dot', 'data-recording-status-dot': '' }),
     el('div', { class: 'sidebar-recording-copy' }, [
       el('strong', { 'data-recording-status-title': '' }),

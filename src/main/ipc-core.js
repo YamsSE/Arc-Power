@@ -89,6 +89,27 @@ export function parseRecordingWindowProcessList(output) {
   return [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
+function recordingStorageSnapshot(location) {
+  let candidate = path.resolve(location);
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    try {
+      const stats = fs.statfsSync(candidate);
+      const blockSize = Number(stats.bsize);
+      const freeBlocks = Number(stats.bavail);
+      const totalBlocks = Number(stats.blocks);
+      const toBytes = (blocks) => Number.isFinite(blocks) && Number.isFinite(blockSize) && blockSize > 0
+        ? Math.max(0, Math.round(blocks * blockSize))
+        : null;
+      return { freeBytes: toBytes(freeBlocks), totalBytes: toBytes(totalBlocks) };
+    } catch {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+  }
+  return { freeBytes: null, totalBytes: null };
+}
+
 export async function listWindowsRecordingProcesses({ execFileImpl = execFileAsync, platform = process.platform } = {}) {
   if (platform !== 'win32') return [];
   const script = '$ErrorActionPreference = "SilentlyContinue"; Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and -not [string]::IsNullOrWhiteSpace($_.MainWindowTitle) } | ForEach-Object { "$($_.ProcessName).exe" }';
@@ -2504,6 +2525,13 @@ export function createIpcHandlers({
         assertNoPayload(args, 'recording-clips-list');
         if (!recordingStore) return [];
         return recordingStore.scanClips ? recordingStore.scanClips() : recordingStore.listClips();
+      },
+      'recording-storage-info': async (...args) => {
+        assertNoPayload(args, 'recording-storage-info');
+        if (!recordingStore) return { location: '', freeBytes: null, totalBytes: null };
+        const settings = await recordingStore.settings();
+        const location = recordingAbsolutePath(settings.location, 'location');
+        return { location, ...recordingStorageSnapshot(location) };
       },
       'recording-processes-list': async (...args) => {
         assertNoPayload(args, 'recording-processes-list');
