@@ -2821,7 +2821,11 @@ input[type="number"] {
 .recording-clip-media { position: relative; aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: #05070c; }
 .recording-clip-tile:hover .recording-clip-media, .recording-clip-tile:focus-visible .recording-clip-media { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); outline: none; }
 .recording-clip-preview-host { position: absolute; inset: 0; }
-.recording-clip-thumbnail { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; background: radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--accent) 17%, transparent), transparent 38%), linear-gradient(135deg, #0b1220, #05070c 72%); }
+.recording-clip-thumbnail { position: absolute; inset: 0; overflow: hidden; background: radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--accent) 17%, transparent), transparent 38%), linear-gradient(135deg, #0b1220, #05070c 72%); }
+.recording-clip-thumbnail-image { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .16s ease; }
+.recording-clip-thumbnail-has-image .recording-clip-thumbnail-image { opacity: 1; }
+.recording-clip-thumbnail-fallback { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; transition: opacity .16s ease; }
+.recording-clip-thumbnail-has-image .recording-clip-thumbnail-fallback { opacity: 0; }
 .recording-clip-thumbnail-mark { display: grid; place-items: center; width: 48px; height: 48px; border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border)); border-radius: 14px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev)); color: var(--accent); box-shadow: 0 7px 24px rgba(0, 0, 0, .24); }
 .recording-clip-thumbnail-mark .recording-clip-play-icon { width: 25px; height: 25px; flex-basis: 25px; border: 0; background: transparent; color: var(--accent); font-size: 11px; }
 .recording-clip-thumbnail-label { color: var(--text-dim); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }

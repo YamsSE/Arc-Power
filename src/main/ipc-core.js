@@ -50,7 +50,7 @@ import { GameProfileStore, canonicalExePath, normalizeAssociation, normalizeGame
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
 import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_FPS, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
-import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
+import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, mediaThumbnailUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -2524,7 +2524,11 @@ export function createIpcHandlers({
       'recording-clips-list': async (...args) => {
         assertNoPayload(args, 'recording-clips-list');
         if (!recordingStore) return [];
-        return recordingStore.scanClips ? recordingStore.scanClips() : recordingStore.listClips();
+        const clips = recordingStore.scanClips ? await recordingStore.scanClips() : await recordingStore.listClips();
+        return clips.map((clip) => {
+          const thumbnailUrl = mediaThumbnailUrl(clip?.id);
+          return thumbnailUrl ? { ...clip, thumbnailUrl } : clip;
+        });
       },
       'recording-storage-info': async (...args) => {
         assertNoPayload(args, 'recording-storage-info');

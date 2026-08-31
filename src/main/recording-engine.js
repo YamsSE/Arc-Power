@@ -102,6 +102,10 @@ function audioDeviceId(deviceId) {
   return typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : 'default';
 }
 
+function audioVolumePercent(value) {
+  return Math.round(Math.min(1, Math.max(0, Number(value) || 0)) * 100);
+}
+
 export function buildRecordingAudioSettings(settings = {}) {
   const audio = normalizeRecordingAudioSettings(settings.audio);
   const microphone = audio.microphone;
@@ -110,15 +114,21 @@ export function buildRecordingAudioSettings(settings = {}) {
   const outputDeviceId = audioDeviceId(system.deviceId);
   const processCaptureEnabled = audio.sourceMode === 'custom';
   const outputEnabled = system.enabled && !processCaptureEnabled;
+  // Ascent-OBS's WASAPI controls consume integer percentage volume values
+  // (0-100), while Arc Power stores the UI value as a normalized 0-1 number.
+  // Passing 1 for the UI default of 1.0 made every source effectively 1%
+  // volume, which presented as "no audio" in the resulting recording.
+  const inputVolume = audioVolumePercent(microphone.volume);
+  const outputVolume = audioVolumePercent(system.volume);
   const inputSource = {
     // The bundled runtime uses a numeric type only when device_id is
     // "default"; string labels here would make the default microphone look
     // like an output source. Explicit device ids are classified by WASAPI.
     type: 1,
     device_id: inputDeviceId,
-    name: microphone.deviceId || 'Default microphone',
+    name: 'input_mic',
     enable: microphone.enabled,
-    volume: microphone.volume,
+    volume: inputVolume,
     mono: microphone.mono,
     use_device_timing: false,
     tracks: 5,
@@ -126,9 +136,9 @@ export function buildRecordingAudioSettings(settings = {}) {
   const outputSource = {
     type: 0,
     device_id: outputDeviceId,
-    name: system.deviceId || 'Default output',
+    name: 'output_game',
     enable: outputEnabled,
-    volume: system.volume,
+    volume: outputVolume,
     mono: false,
     use_device_timing: true,
     tracks: 3,
@@ -136,15 +146,16 @@ export function buildRecordingAudioSettings(settings = {}) {
   return {
     sample_rate: 48000,
     mono: false,
-    input: { type: 'wasapi_input_capture', device_id: inputDeviceId, enable: microphone.enabled, volume: microphone.volume, mono: microphone.mono },
-    output: { type: 'wasapi_output_capture', device_id: outputDeviceId, enable: outputEnabled, volume: system.volume, mono: false },
+    input: { type: 'wasapi_input_capture', device_id: inputDeviceId, enable: microphone.enabled, volume: inputVolume, mono: microphone.mono },
+    output: { type: 'wasapi_output_capture', device_id: outputDeviceId, enable: outputEnabled, volume: outputVolume, mono: false },
     extra_options: {
+      sample_rate: 48000,
       source_mode: audio.sourceMode,
       audio_sources: [inputSource, outputSource],
       audio_capture_process2: audio.customProcesses.map((processName) => ({
         process_name: processName,
         enable: processCaptureEnabled,
-        volume: system.volume,
+        volume: outputVolume,
         mono: false,
         tracks: 3,
       })),

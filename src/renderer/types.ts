@@ -1020,6 +1020,7 @@ export interface RecordingClip {
   createdAt: string;
   modifiedAt?: string;
   byteLength?: number;
+  thumbnailUrl?: string;
 }
 export interface RecordingStorageInfo {
   location: string;

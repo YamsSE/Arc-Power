@@ -58,7 +58,8 @@ import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
 import { createRecordingHotkeys, createRecordingActionHandler } from './recording-hotkeys.js';
-import { createRecordingMediaResponse, mediaRequestPath, resolveSafeRecordingPath } from './recording-media.js';
+import { createRecordingMediaResponse, mediaRequestPath, mediaThumbnailRequestPath, resolveSafeRecordingPath } from './recording-media.js';
+import { createRecordingThumbnailService } from './recording-thumbnails.js';
 import { createGameScanAdapter, findGamePosterArtwork } from './game-scan.js';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
@@ -969,17 +970,30 @@ async function main() {
   }
 
   await app.whenReady();
+  let recordingThumbnailService = null;
   // M99: narrowly scoped range-capable media serving. The renderer supplies
   // only an opaque clip id; main resolves and revalidates the metadata and
   // path on every request, including symlink/junction containment.
   protocol.handle('arc-power-media', async (request) => {
-    const id = mediaRequestPath(request.url);
+    const thumbnailId = mediaThumbnailRequestPath(request.url);
+    const id = mediaRequestPath(request.url) ?? thumbnailId;
     if (!id) return new Response('Not found', { status: 404 });
     try {
       const clip = await recordingStore.clipById(id);
       const settings = await recordingStore.settings();
       const filePath = clip ? resolveSafeRecordingPath(settings.location, clip.relativePath) : null;
       if (!filePath) return new Response('Not found', { status: 404 });
+      if (thumbnailId) {
+        const image = await recordingThumbnailService?.getThumbnail({ id, filePath });
+        if (!image) return new Response('Not found', { status: 404 });
+        const headers = {
+          'Cache-Control': 'private, max-age=3600',
+          'Content-Length': String(image.byteLength),
+          'Content-Type': 'image/jpeg',
+        };
+        if (String(request.method ?? 'GET').toUpperCase() === 'HEAD') return new Response(null, { status: 200, headers });
+        return new Response(image, { status: 200, headers });
+      }
       return createRecordingMediaResponse(filePath, request);
     } catch {
       return new Response('Not found', { status: 404 });
@@ -1402,6 +1416,21 @@ async function main() {
   const recordingStore = new RecordingStore({
     dir: store.dir,
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
+  });
+  recordingThumbnailService = createRecordingThumbnailService({
+    cacheDir: path.join(app.getPath('userData'), 'recording-thumbnails'),
+    resolveFfmpegPath: () => {
+      let configuredPath = null;
+      try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* candidate paths still work */ }
+      const runtime = resolveAscentRuntime({
+        configuredPath,
+        portableWrapperPath,
+        resourcesPath: app.isPackaged ? process.resourcesPath : null,
+        devPath: app.isPackaged ? null : path.join(__dirname, '..', '..'),
+      });
+      const executable = runtime?.root ? path.join(runtime.root, 'bin', '64bit', 'ffmpeg.exe') : null;
+      try { return executable && fs.statSync(executable).isFile() ? executable : null; } catch { return null; }
+    },
   });
   const recordingEngine = createAscentEngine({
     onEncoderDemoted: (encoderId) => recordingStore.demoteEncoder(encoderId),

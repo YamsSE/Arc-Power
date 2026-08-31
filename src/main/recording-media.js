@@ -306,6 +306,11 @@ export function mediaClipUrl(id) {
   return `arc-power-media://clip/${encodeURIComponent(id)}`;
 }
 
+export function mediaThumbnailUrl(id) {
+  if (!isOpaqueClipId(id)) return null;
+  return `arc-power-media://thumbnail/${encodeURIComponent(id)}`;
+}
+
 export function isOpaqueClipId(id) {
   return typeof id === 'string' && OPAQUE_CLIP_ID.test(id);
 }
@@ -314,6 +319,15 @@ export function mediaRequestPath(url) {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'arc-power-media:' || parsed.hostname !== 'clip') return null;
+    const id = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+    return isOpaqueClipId(id) ? id : null;
+  } catch { return null; }
+}
+
+export function mediaThumbnailRequestPath(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'arc-power-media:' || parsed.hostname !== 'thumbnail') return null;
     const id = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
     return isOpaqueClipId(id) ? id : null;
   } catch { return null; }

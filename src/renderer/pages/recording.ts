@@ -638,10 +638,28 @@ function playerIconButton(label: string, icon: string, onClick: () => void, clas
 
 function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration: (seconds: number) => void): HTMLElement {
   const host = el('div', { class: 'recording-clip-preview-host' });
-  const thumbnail = el('div', { class: 'recording-clip-thumbnail', 'aria-hidden': 'true' }, [
+  const thumbnail = el('div', { class: 'recording-clip-thumbnail', 'aria-hidden': 'true' });
+  const thumbnailFallback = el('div', { class: 'recording-clip-thumbnail-fallback' }, [
     el('span', { class: 'recording-clip-thumbnail-mark' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' })]),
     el('span', { class: 'recording-clip-thumbnail-label', text: 'Preview' }),
   ]);
+  thumbnail.append(thumbnailFallback);
+  if (clip.thumbnailUrl) {
+    const thumbnailImage = el('img', {
+      class: 'recording-clip-thumbnail-image',
+      src: clip.thumbnailUrl,
+      alt: '',
+      loading: 'lazy',
+      decoding: 'async',
+    }) as HTMLImageElement;
+    thumbnailImage.addEventListener('load', () => {
+      thumbnail.classList.add('recording-clip-thumbnail-has-image');
+    });
+    thumbnailImage.addEventListener('error', () => {
+      thumbnailImage.remove();
+    });
+    thumbnail.prepend(thumbnailImage);
+  }
   host.append(thumbnail);
 
   let preview: HTMLVideoElement | null = null;
@@ -674,13 +692,16 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       loop: true,
       playsinline: true,
       preload: 'metadata',
+      ...(clip.thumbnailUrl ? { poster: clip.thumbnailUrl } : {}),
     }) as HTMLVideoElement;
-    preview.addEventListener('canplay', playPreview);
+    preview.addEventListener('canplay', () => {
+      thumbnail.hidden = true;
+      playPreview();
+    });
     preview.addEventListener('loadedmetadata', () => {
       if (preview) onDuration(preview.duration);
     });
     host.append(preview);
-    thumbnail.hidden = true;
     void api.recordingClipUrl(clip.id).then((url) => {
       if (!preview?.isConnected) return;
       preview.src = url;
