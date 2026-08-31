@@ -34,6 +34,17 @@ export function ramFreqText(speedMhz: number | null | undefined): string | null 
 }
 
 /**
+ * Keep the dashboard memory label compact without changing the raw sysinfo
+ * payload. Micron's WMI label is commonly reported as "Micron Technology".
+ */
+export function memoryManufacturerDisplayName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const manufacturer = value.trim();
+  if (!manufacturer) return null;
+  return /^micron technology$/i.test(manufacturer) ? 'Micron' : manufacturer;
+}
+
+/**
  * M4N (B.1): the CPU core frequency in GHz with one decimal ('4.3' from
  * 4300 MHz) - the shared value helper of the dashboard + monitoring Core
  * Frequency tiles. Honest '-' for null/non-finite/<= 0 (a zero or negative
@@ -206,7 +217,7 @@ export function cpuCardRows(sysinfo: SysInfo | null): CpuCardRows {
   const coreClockParts = [coresPart, threadsPart].filter(Boolean) as string[];
   const type = ramMemoryType(ram?.memoryType);
   const memParts = [
-    typeof ram?.manufacturer === 'string' && ram.manufacturer.length > 0 ? ram.manufacturer : null,
+    memoryManufacturerDisplayName(ram?.manufacturer),
     formatBytes(ram?.totalBytes),
     type,
   ].filter(Boolean) as string[];
