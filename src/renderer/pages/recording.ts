@@ -636,44 +636,75 @@ function playerIconButton(label: string, icon: string, onClick: () => void, clas
   }, [el('span', { class: `recording-player-icon recording-player-icon-${icon}`, 'aria-hidden': 'true' })]) as HTMLButtonElement;
 }
 
-function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration: (seconds: number) => void): HTMLVideoElement {
-  const preview = el('video', {
-    class: 'recording-clip-preview',
-    muted: true,
-    defaultMuted: true,
-    loop: true,
-    playsinline: true,
-    preload: 'metadata',
-  }) as HTMLVideoElement;
+function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration: (seconds: number) => void): HTMLElement {
+  const host = el('div', { class: 'recording-clip-preview-host' });
+  const thumbnail = el('div', { class: 'recording-clip-thumbnail', 'aria-hidden': 'true' }, [
+    el('span', { class: 'recording-clip-thumbnail-mark' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' })]),
+    el('span', { class: 'recording-clip-thumbnail-label', text: 'Preview' }),
+  ]);
+  host.append(thumbnail);
+
+  let preview: HTMLVideoElement | null = null;
   let hovered = false;
+  let hoverTimer: number | null = null;
+  let loadStarted = false;
   const playPreview = () => {
-    if (!hovered || !preview.src) return;
+    if (!hovered || !preview?.src) return;
     preview.muted = true;
     preview.volume = 0;
     void preview.play().catch(() => { /* unavailable previews stay quiet */ });
   };
-  preview.addEventListener('canplay', playPreview);
-  preview.addEventListener('loadedmetadata', () => onDuration(preview.duration));
+  const stopPreview = () => {
+    if (!preview) return;
+    preview.pause();
+    try { preview.currentTime = 0; } catch { /* metadata may not have loaded */ }
+  };
+  const clearHoverTimer = () => {
+    if (hoverTimer === null) return;
+    window.clearTimeout(hoverTimer);
+    hoverTimer = null;
+  };
+  const loadPreview = () => {
+    if (!hovered || loadStarted || !host.isConnected) return;
+    loadStarted = true;
+    preview = el('video', {
+      class: 'recording-clip-preview',
+      muted: true,
+      defaultMuted: true,
+      loop: true,
+      playsinline: true,
+      preload: 'metadata',
+    }) as HTMLVideoElement;
+    preview.addEventListener('canplay', playPreview);
+    preview.addEventListener('loadedmetadata', () => {
+      if (preview) onDuration(preview.duration);
+    });
+    host.append(preview);
+    thumbnail.hidden = true;
+    void api.recordingClipUrl(clip.id).then((url) => {
+      if (!preview?.isConnected) return;
+      preview.src = url;
+      preview.load();
+      playPreview();
+    }).catch(() => {
+      if (preview?.isConnected) preview.dataset.previewError = 'true';
+    });
+  };
   hoverTarget.addEventListener('mouseenter', () => {
     hovered = true;
-    preview.muted = true;
-    preview.volume = 0;
-    playPreview();
+    clearHoverTimer();
+    hoverTimer = window.setTimeout(() => {
+      hoverTimer = null;
+      loadPreview();
+      playPreview();
+    }, 500);
   });
   hoverTarget.addEventListener('mouseleave', () => {
     hovered = false;
-    preview.pause();
-    try { preview.currentTime = 0; } catch { /* metadata may not have loaded */ }
+    clearHoverTimer();
+    stopPreview();
   });
-  void api.recordingClipUrl(clip.id).then((url) => {
-    if (preview.isConnected) {
-      preview.src = url;
-      playPreview();
-    }
-  }).catch(() => {
-    if (preview.isConnected) preview.dataset.previewError = 'true';
-  });
-  return preview;
+  return host;
 }
 
 function renderClipList(): HTMLElement {
