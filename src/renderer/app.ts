@@ -94,6 +94,7 @@ function setGlobalRecordingStatus(next: RecordingEngineState): void {
     ? Number.isFinite(next.startedAt) ? next.startedAt : globalRecordingStatus.startedAt ?? Date.now()
     : null;
   globalRecordingStatus = { ...next, startedAt };
+  store.set({ recordingStatus: globalRecordingStatus });
   if (globalRecordingStatus.running && globalRecordingTimer === null) {
     globalRecordingTimer = window.setInterval(updateGlobalRecordingWidget, 1000);
   } else if (!globalRecordingStatus.running && globalRecordingTimer !== null) {

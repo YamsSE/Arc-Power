@@ -8,6 +8,7 @@ import type {
   HealthReport,
   LastApply,
   RegistryCatalogResponse,
+  RecordingEngineState,
   SysInfo,
   TelemetrySample,
   VendorDeviceInfo,
@@ -175,6 +176,8 @@ export interface AppState {
    *  dashboard VRAM/Compute rows' source: the NVML total + core count;
    *  null while the boot fetch hasn't landed / on Intel machines). */
   vendorInfo: VendorDeviceInfo | null;
+  /** App-global Arc Capture state, shared with the sidebar and Dashboard. */
+  recordingStatus: RecordingEngineState | null;
 }
 
 const INITIAL: AppState = {
@@ -199,6 +202,7 @@ const INITIAL: AppState = {
   noIntel: false,
   osGpu: null,
   vendorInfo: null,
+  recordingStatus: null,
 };
 
 export class Store {

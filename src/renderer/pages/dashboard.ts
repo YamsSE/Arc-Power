@@ -6,23 +6,23 @@
 // the ONLY persistent waiver display (M4-A correction), Arc Power
 // working), the CPU & Memory card (M4-D2 - M4-H: DDR5 memory type + the
 // blue .kv-static-freq GHz speed span + the M4J Mainboard row), and a
-// compact live readout (M4-H: TWO labeled groups - CPU above GPU, both
-// refreshing in place on ticks).
+// compact System Snapshot (the Performance Pulse above owns live telemetry;
+// this card keeps the bottom of the page useful for context and actions).
 //
 // The page re-renders fully only when a status slot changes (boot probe,
-// boot errors); telemetry ticks refresh the readout grids in place - no
+// boot errors); telemetry ticks refresh the live cards in place - no
 // per-tick DOM churn (the decision lives in pure/status.ts::
 // dashboardNeedsFullRender, unit-tested).
 
 import { el, clear, svgEl } from '../dom.ts';
-import type { Page, PageContext } from '../router.ts';
-import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
-import type { DashboardSig, HealthRow } from '../pure/status.ts';
+import type { AppState, Page, PageContext } from '../router.ts';
+import { healthRows, overallHealthLevel, dashboardNeedsFullRender } from '../pure/status.ts';
+import type { DashboardSig, HealthLevel, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
-import { shaderUnits } from '../pure/driver.ts';
-import { cpuCardRows, rebarState, vramRowValue, ghzFreq } from '../pure/sysinfo.ts';
+import { decodeDriverVersion, formatDriverDate, shaderUnits } from '../pure/driver.ts';
+import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { selectedDashboardController } from '../pure/dashboard.ts';
@@ -37,14 +37,6 @@ function liveFreqText(sample: TelemetrySample | null): string {
   const mhz = sample?.cpuFreqMhz;
   if (typeof mhz !== 'number' || !Number.isFinite(mhz)) return ' / @ - GHz';
   return ` / @ ${(mhz / 1000).toFixed(1)} GHz`;
-}
-
-function statTileNode(t: { label: string; value: string; unit: string }): HTMLElement {
-  return el('div', { class: 'stat-tile' }, [
-    el('div', { class: 'stat-value', text: t.value }),
-    el('div', { class: 'stat-unit', text: t.unit }),
-    el('div', { class: 'stat-label', text: t.label }),
-  ]);
 }
 
 /** M17c: the Board partner row value - '<AIB vendor> (<model>)' from the
@@ -90,7 +82,9 @@ const pulsePathNodes = new Map<DashboardPulseId, SVGPathElement>();
 let sessionRuntimeNode: HTMLElement | null = null;
 let sessionPeakNode: HTMLElement | null = null;
 let sessionAverageNode: HTMLElement | null = null;
-let sessionSamplesNode: HTMLElement | null = null;
+type DashboardSnapshotId = 'gpu' | 'driver' | 'tuning' | 'rebar' | 'vram' | 'capture';
+const snapshotValueNodes = new Map<DashboardSnapshotId, HTMLElement>();
+let snapshotHealthNode: HTMLElement | null = null;
 
 function resetDashboardHistory(deviceId: number | null): void {
   if (dashboardHistoryDeviceId === deviceId) return;
@@ -164,7 +158,6 @@ function updateSessionStats(): void {
   if (sessionAverageNode) sessionAverageNode.textContent = utils.length
     ? `${Math.round(utils.reduce((sum, value) => sum + value, 0) / utils.length)} %`
     : '-';
-  if (sessionSamplesNode) sessionSamplesNode.textContent = String(dashboardHistory.length);
 }
 
 function updateDashboardPulse(ctx: PageContext): void {
@@ -188,7 +181,6 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
   sessionRuntimeNode = null;
   sessionPeakNode = null;
   sessionAverageNode = null;
-  sessionSamplesNode = null;
 
   const selectedDevice = state.devices.find((device) => device.id === state.deviceId);
   const pulseCards = DASHBOARD_PULSE.map((metric) => {
@@ -225,13 +217,11 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
   sessionRuntimeNode = el('strong', { text: formatSessionAge() });
   sessionPeakNode = el('strong', { text: '-' });
   sessionAverageNode = el('strong', { text: '-' });
-  sessionSamplesNode = el('strong', { text: '0' });
   const sessionStats = el('div', { class: 'dashboard-session-stats' }, [
     el('span', { class: 'dashboard-session-title', text: 'Since launch' }),
     el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Session' }), sessionRuntimeNode]),
     el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Peak temp' }), sessionPeakNode]),
     el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Average GPU' }), sessionAverageNode]),
-    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Samples' }), sessionSamplesNode]),
   ]);
   updateSessionStats();
 
@@ -277,37 +267,6 @@ function hardwareIcon(path: string | null, alt: string, kind: 'cpu' | 'gpu'): HT
  *  ghzFreq helper, the mock's 4300 MHz reads '4.3'), Temperature and the
  *  Power tile (M4N: renamed from Wattage; cpuPowerW from the PowerMeter
  *  counter - the class is often absent on desktops -> honest '-'). */
-function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
-  return [
-    { label: 'Util', value: statValue(sample?.cpuUtilPct), unit: '%' },
-    { label: 'Core Frequency', value: ghzFreq(sample?.cpuFreqMhz), unit: 'GHz' },
-    { label: 'Temperature', value: statValue(sample?.cpuTempC), unit: '°C' },
-    { label: 'Power', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
-  ];
-}
-
-/** M4-H (C3)/M4M (D)/M4N (A): the GPU group of the live readout - Util FIRST,
- *  then the classic five tiles. M4-I (D4): the Util tile reads
- *  `gpuUtilPct ?? utilPct` - on no-Intel the OS GPUEngine counter is the
- *  only source; on Intel the IGCL activity counter wins when the OS
- *  counter is unpopulated. M4N: the Power tile is renamed from 'Power
- *  draw' (the monitoring label match). */
-function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
-  return [
-    { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
-    { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
-    { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
-    // M16: the GPU voltage + the VRAM temperature tiles (the Monitor-tab
-    // readout mirrors the overlay's new fields; the telemetry already
-    // carries both - gpuVoltageV in volts with 3 decimals, vramTempC °C).
-    { label: 'Voltage', value: statValue(sample?.gpuVoltageV, 3), unit: 'V' },
-    { label: 'VramTemp', value: statValue(sample?.vramTempC), unit: '°C' },
-    { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
-    { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
-    { label: 'Fan speed', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
-  ];
-}
-
 /** The store slots that decide whether the dashboard must fully re-render. */
 function currentSig(ctx: PageContext): DashboardSig {
   const s = ctx.store.get();
@@ -376,31 +335,122 @@ function healthCard(ctx: PageContext): HTMLElement {
   const s = ctx.store.get();
   const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
   const osOnly = device?.synthetic === true && device.backendKind === 'os';
-  const rows = healthRows({
+  const rows = dashboardHealthRows(ctx, device, osOnly);
+
+  return el('section', { class: 'card health-card' }, [
+    el('h2', { class: 'card-title', text: 'GPU Status' }),
+    el('div', { class: 'card-body' }, rows.map((row) => healthRowEl(row, ctx))),
+  ]);
+}
+
+function dashboardHealthRows(ctx: PageContext, device: AppState['devices'][number] | null, osOnly: boolean): HealthRow[] {
+  const s = ctx.store.get();
+  return healthRows({
     health: s.health,
     device,
     sample: s.latestSample,
     bootError: s.bootError,
     driverDate: s.driverDate,
     waiverAccepted: s.caps?.waiverAccepted ?? null,
-    // M17 (B50-class): OC-locked devices carry no waiver - the row must
-    // read the neutral text, never the clickable Not Accepted error.
     overclockingSupported: s.caps?.overclockingSupported ?? null,
-    // M16: the stock-state source (the OC status row).
     state: s.state,
     caps: s.caps,
-    // 1.0.1 no-Intel round: the rows swap to the honest no-Intel texts on
-    // the no-device path ('No Intel Driver Found' / the OS GPU name).
-    // M30: a selected synthetic OS-only row is also non-Intel for health
-    // purposes, even when an Intel row remains in the machine inventory.
     hasIntelGpu: !osOnly && s.noIntel !== true,
     osGpuName: s.osGpu?.name ?? null,
   });
+}
 
-  return el('section', { class: 'card health-card' }, [
-    el('h2', { class: 'card-title', text: 'GPU Status' }),
-    el('div', { class: 'card-body' }, rows.map((row) => healthRowEl(row, ctx))),
+function snapshotCaptureState(status: AppState['recordingStatus']): { value: string; note: string } {
+  if (!status) return { value: 'Starting', note: 'Arc Capture is initializing' };
+  if (status.running) {
+    return status.mode === 'replay'
+      ? { value: 'Replay buffer', note: 'Capturing the rolling clip window' }
+      : { value: 'Recording', note: 'Arc Capture is active' };
+  }
+  if (status.available) return { value: 'Ready', note: 'Ready when you are' };
+  return { value: 'Unavailable', note: 'Capture engine is unavailable' };
+}
+
+function dashboardSnapshotState(ctx: PageContext): { health: HealthLevel; healthLabel: string; values: Record<DashboardSnapshotId, { value: string; note: string }> } {
+  const s = ctx.store.get();
+  const device = s.devices.find((entry) => entry.id === s.deviceId) ?? null;
+  const osOnly = device?.synthetic === true && device.backendKind === 'os';
+  const noIntelPresentation = s.noIntel || osOnly;
+  const controller = selectedDashboardController(device?.osController, s.osGpu, s.deviceId !== null);
+  const rebar = rebarState(controller ? { ...controller, rebarActive: controller.rebarActive ?? null } : null);
+  const rows = dashboardHealthRows(ctx, device, osOnly);
+  const driverRow = rows.find((row) => row.id === 'driver');
+  const ocRow = rows.find((row) => row.id === 'oc');
+  const rawDriver = noIntelPresentation ? controller?.driverVersion : device?.driverVersion;
+  const decodedDriver = decodeDriverVersion(rawDriver);
+  const driverDate = formatDriverDate(s.driverDate);
+  const driver = decodedDriver ? `${decodedDriver}${driverDate ? ` · ${driverDate}` : ''}` : driverRow?.detail ?? '-';
+  const vramBytes = noIntelPresentation ? (s.vendorInfo?.vramBytes ?? s.osGpu?.vramBytes) : device?.vramBytes;
+  const tuning = ocRow?.level === 'ok'
+    ? ocRow.detail === 'No Overclock Applied' ? 'Stock' : 'Custom'
+    : ocRow?.detail ?? 'Unknown';
+  const health = overallHealthLevel(rows);
+  const healthLabel = health === 'ok' ? 'Healthy' : health === 'warn' ? 'Check status' : health === 'error' ? 'Needs attention' : 'Waiting';
+  return {
+    health,
+    healthLabel,
+    values: {
+      gpu: { value: noIntelPresentation ? (s.osGpu?.name ?? 'No GPU selected') : (device?.name ?? 'No GPU selected'), note: 'Active adapter' },
+      driver: { value: driver, note: 'Display driver' },
+      tuning: { value: tuning, note: 'Current driver state' },
+      rebar: { value: rebar.label, note: 'PCIe memory access' },
+      vram: { value: vramBytes ? `${formatGpuMemoryGb(vramBytes)} GB` : '-', note: 'Dedicated capacity' },
+      capture: snapshotCaptureState(s.recordingStatus),
+    },
+  };
+}
+
+function dashboardSnapshot(ctx: PageContext): HTMLElement {
+  snapshotValueNodes.clear();
+  snapshotHealthNode = null;
+  const state = dashboardSnapshotState(ctx);
+  snapshotHealthNode = el('span', { class: `chip dashboard-snapshot-health status-${state.health}`, text: state.healthLabel });
+  const labels: Array<{ id: DashboardSnapshotId; label: string }> = [
+    { id: 'gpu', label: 'GPU' },
+    { id: 'driver', label: 'Driver' },
+    { id: 'tuning', label: 'Tuning' },
+    { id: 'rebar', label: 'ReBAR' },
+    { id: 'vram', label: 'VRAM' },
+    { id: 'capture', label: 'Arc Capture' },
+  ];
+  const items = labels.map(({ id, label }) => {
+    const item = state.values[id];
+    const valueNode = el('strong', { class: 'dashboard-snapshot-value', text: item.value, dataset: { snapshotValue: id } });
+    snapshotValueNodes.set(id, valueNode);
+    return el('div', { class: 'dashboard-snapshot-item' }, [
+      el('span', { class: 'dashboard-snapshot-label', text: label }),
+      valueNode,
+      el('span', { class: 'dashboard-snapshot-note', text: item.note }),
+    ]);
+  });
+  return el('section', { class: 'card dashboard-snapshot-card' }, [
+    el('div', { class: 'dashboard-snapshot-heading' }, [
+      el('div', {}, [
+        el('span', { class: 'dashboard-eyebrow', text: 'System status' }),
+        el('h2', { class: 'card-title', text: 'System snapshot' }),
+      ]),
+      snapshotHealthNode,
+    ]),
+    el('div', { class: 'dashboard-snapshot-grid' }, items),
+    el('div', { class: 'dashboard-snapshot-actions' }, [
+      dashboardAction('Open Arc Capture', '#/recording'),
+      dashboardAction('Open Monitoring', '#/monitoring'),
+    ]),
   ]);
+}
+
+function updateDashboardSnapshot(ctx: PageContext): void {
+  const state = dashboardSnapshotState(ctx);
+  for (const [id, node] of snapshotValueNodes) node.textContent = state.values[id].value;
+  if (snapshotHealthNode) {
+    snapshotHealthNode.className = `chip dashboard-snapshot-health status-${state.health}`;
+    snapshotHealthNode.textContent = state.healthLabel;
+  }
 }
 
 export const dashboardPage: Page = {
@@ -611,43 +661,21 @@ export const dashboardPage: Page = {
         healthCard(ctx),
       ]),
 
-      // --- live readout (compact, M2b-B) ---
-      // M4-H (C3): TWO labeled groups - CPU ABOVE GPU - each with its own
-      // grid. Both refresh IN PLACE on ticks (the onUpdate pattern).
-      el('section', { class: 'card readout-card' }, [
-        el('h2', { class: 'card-title', text: 'Live readout' }),
-        el('div', { class: 'readout-group' }, [
-          el('div', { class: 'readout-group-label', text: 'CPU' }),
-          el('div', { class: 'readout-grid', id: 'dash-readout-cpu' }, cpuStatTiles(s.latestSample).map(statTileNode)),
-        ]),
-        el('div', { class: 'readout-group' }, [
-          el('div', { class: 'readout-group-label', text: 'GPU' }),
-          el('div', { class: 'readout-grid', id: 'dash-readout-gpu' }, gpuStatTiles(s.latestSample).map(statTileNode)),
-        ]),
-      ]),
+      // Performance Pulse above owns live telemetry; this card keeps the
+      // bottom of the dashboard useful for system context and actions.
+      dashboardSnapshot(ctx),
     );
   },
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
     // Full re-render only when a status slot changed (boot probe, boot
-    // errors) - NOT on telemetry ticks. A tick (or any other non-status
-    // change) refreshes only the live readout grids in place (M3-C-I: the
-    // clocks health row is gone, so no in-place health-row refresh).
+    // errors) - NOT on telemetry ticks. A tick refreshes the live cards and
+    // snapshot values in place; the clocks health row is gone.
     const sig = currentSig(ctx);
     if (dashboardNeedsFullRender(lastSig, sig)) {
       lastSig = sig;
       dashboardPage.render(container, ctx);
       return;
-    }
-    // M4-H (C3): both group grids refresh in place (the tile lookups are
-    // scoped to the group containers - both groups carry Temperature/Util-
-    // like labels, N8).
-    for (const [id, tiles] of [['dash-readout-cpu', cpuStatTiles(ctx.store.get().latestSample)], ['dash-readout-gpu', gpuStatTiles(ctx.store.get().latestSample)]] as Array<[string, Array<{ label: string; value: string; unit: string }>]>) {
-      const grid = container.querySelector<HTMLElement>(`#${id}`);
-      if (grid) {
-        clear(grid);
-        grid.append(...tiles.map(statTileNode));
-      }
     }
     // M2C-B B8 (M4-D update): the device-card COMBINED clocks row
     // tracks the latest sample in place (the card itself only re-renders
@@ -677,5 +705,6 @@ export const dashboardPage: Page = {
     const liveFreq = container.querySelector<HTMLElement>('.sysinfo-card .kv-live-freq');
     if (liveFreq) liveFreq.textContent = liveFreqText(ctx.store.get().latestSample);
     updateDashboardPulse(ctx);
+    updateDashboardSnapshot(ctx);
   },
 };
