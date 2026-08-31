@@ -152,6 +152,11 @@ const driverNodes = new Map<string, HTMLElement>();
 // with the slider range (the caption describes the CURRENT slider).
 const rangeNodes = new Map<string, HTMLElement>();
 const chipNodes = new Map<string, HTMLElement>();
+// Compact staged-diff and per-control result readouts. They stay inside each
+// card so a long tuning session does not require guessing which control was
+// actually applied.
+const diffNodes = new Map<string, HTMLElement>();
+const resultNodes = new Map<string, HTMLElement>();
 // M9: the per-card Apply button (the chip state machine) - visible ONLY
 // while that card is dirty; clicking it applies THAT card only.
 const chipApplyNodes = new Map<string, HTMLButtonElement>();
@@ -182,6 +187,7 @@ let sysmanLimitsNode: HTMLElement | null = null;
 // sentence).
 const pl2SetByDevice = new Map<number, { landed: boolean; valueW: number; ceilingW?: number; requestedW?: number }>();
 let applyBtn: HTMLButtonElement | null = null;
+let pendingSummaryNode: HTMLElement | null = null;
 let applying = false;
 // M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
 // 'fan' = the fan curve editor. Module-level (persists across re-renders -
@@ -216,12 +222,39 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   driverNodes.clear();
   rangeNodes.clear();
   chipNodes.clear();
+  diffNodes.clear();
+  resultNodes.clear();
   chipApplyNodes.clear();
   lockCurrentNode = null;
   lockApplyBtn = null;
   sysmanLimitsNode = null;
   applyBtn = null;
+  pendingSummaryNode = null;
   viewContainer = null;
+}
+
+function isPendingControl(key: string): boolean {
+  const rawDriverValue = currentState?.[key as keyof DeviceState];
+  const driverValue = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
+    && typeof rawDriverValue === 'number' && rawDriverValue < 0 && !(key in applied) ? 0 : rawDriverValue;
+  return chipState(key, values, applied, driverValue, true) === 'dirty';
+}
+
+function refreshPendingSummary(): void {
+  if (!pendingSummaryNode) return;
+  const count = Object.keys(values).filter(isPendingControl).length;
+  pendingSummaryNode.textContent = count > 0
+    ? `${count} pending ${count === 1 ? 'change' : 'changes'}`
+    : 'No pending changes';
+  pendingSummaryNode.className = `tuning-pending-summary${count > 0 ? ' has-pending' : ''}`;
+}
+
+function setCardResult(key: string, ok: boolean, text: string): void {
+  const node = resultNodes.get(key);
+  if (!node) return;
+  node.hidden = false;
+  node.className = `tuning-card-result ${ok ? 'result-ok' : 'result-error'}`;
+  node.textContent = text;
 }
 
 /** M9: the shared chip state machine (pure/chip.ts) drives the per-card
@@ -333,6 +366,8 @@ function refreshCard(key: string) {
   const driverNode = driverNodes.get(key);
   const rangeNode = rangeNodes.get(key);
   const valueInput = valueInputs.get(key);
+  const rawDriver = currentState?.[key as keyof DeviceState];
+  const driverText = formatDriverValue(typeof rawDriver === 'number' ? rawDriver : null, sliderRange);
   if (input) {
     input.min = String(sliderRange.min);
     input.max = String(sliderRange.max);
@@ -353,14 +388,22 @@ function refreshCard(key: string) {
   // The "Driver:" readout always reflects the FRESH state - never built once
   // at render (the stale part that forced the leave-and-return dance).
   if (driverNode) {
-    const raw = currentState?.[key as keyof DeviceState];
-    driverNode.textContent = formatDriverValue(typeof raw === 'number' ? raw : null, sliderRange);
+    driverNode.textContent = driverText;
+  }
+  const diffNode = diffNodes.get(key);
+  if (diffNode) {
+    const pending = isPendingControl(key);
+    diffNode.textContent = pending
+      ? `${driverText} → ${formatValue(displayValue, sliderRange.units)}`
+      : 'In sync';
+    diffNode.className = `tuning-diff${pending ? ' is-pending' : ''}`;
   }
   refreshChip(key);
   updateFloating();
 }
 
 function updateFloating() {
+  refreshPendingSummary();
   if (!applyBtn) return;
   if (applying) return;
   // M17e (round-2 N5)/M22: the floating apply is FORCE-HIDDEN in Lock mode -
@@ -458,7 +501,9 @@ export const tuningPage: Page = {
         updateFloating();
       },
     });
+    pendingSummaryNode = el('span', { class: 'tuning-pending-summary', text: 'No pending changes', 'aria-live': 'polite' });
     const generalActions = el('div', { class: 'graphics-general-actions tuning-general-actions' }, [
+      pendingSummaryNode,
       ...(applyBtn ? [applyBtn as Node] : []),
       resetAllBtn,
     ]);
@@ -785,8 +830,11 @@ export const tuningPage: Page = {
       const card = el('section', { class: 'card oc-card', dataset: { control: key } }, [
         el('div', { class: 'oc-card-head' }, [
           el('h2', { class: 'card-title', text: CONTROL_LABELS[key] ?? key }),
-          el('span', { class: 'oc-driver', title: offGrid ? 'Off-grid value reported by the driver (snap applies on move)' : undefined },
-            [el('span', { class: 'oc-driver-label', text: 'Driver: ' }), el('span', { class: 'oc-driver-value', text: driverText })]),
+          el('div', { class: 'oc-card-head-meta' }, [
+            el('span', { class: 'oc-driver', title: offGrid ? 'Off-grid value reported by the driver (snap applies on move)' : undefined },
+              [el('span', { class: 'oc-driver-label', text: 'Driver: ' }), el('span', { class: 'oc-driver-value', text: driverText })]),
+            el('span', { class: 'tuning-diff', text: 'In sync' }),
+          ]),
         ]),
         el('div', { class: 'oc-slider-row' }, [
           valueField,
@@ -859,6 +907,7 @@ export const tuningPage: Page = {
         // M17d standalone card is folded in; visible ONLY in Lock mode).
         ...(lockEditorEl ? [lockEditorEl] : []),
         el('div', { class: 'oc-card-actions' }, [
+          el('span', { class: 'tuning-card-result', hidden: true }),
           el('span', { class: 'chip oc-chip-status', hidden: true }),
           // M9: the per-card Apply button (the chip state machine) - a
           // small-chip button visible ONLY while this card is dirty; it
@@ -892,6 +941,8 @@ export const tuningPage: Page = {
       valueInputs.set(key, valueInput);
       driverNodes.set(key, card.querySelector<HTMLElement>('.oc-driver-value') as HTMLElement);
       rangeNodes.set(key, card.querySelector<HTMLElement>('.oc-range') as HTMLElement);
+      diffNodes.set(key, card.querySelector<HTMLElement>('.tuning-diff') as HTMLElement);
+      resultNodes.set(key, card.querySelector<HTMLElement>('.tuning-card-result') as HTMLElement);
       chipNodes.set(key, card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
       chipApplyNodes.set(key, card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
       cards.set(key, card);
@@ -1391,6 +1442,7 @@ export const tuningPage: Page = {
             // message wins, the errorCode mapping is the driver-shaped
             // fallback - never the 'clamps' lie for a gate refusal).
             toast('error', `${CONTROL_LABELS[key] ?? key} failed`, applyFailureText(per, key));
+            setCardResult(key, false, 'Not applied');
           } else {
             // B5(a): a control that applied becomes the APPLIED reference -
             // its chip clears and the button hides even while the driver
@@ -1406,6 +1458,7 @@ export const tuningPage: Page = {
             if (!isNoopApply(key, settings, before as DeviceState)) {
               toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof wanted === 'number' && range ? formatValue(wanted, range.units) : '');
             }
+            setCardResult(key, true, isNoopApply(key, settings, before as DeviceState) ? 'No change' : 'Applied');
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }
         }
@@ -1471,6 +1524,7 @@ export const tuningPage: Page = {
         // message (Apply requires administrator approval).
         const msg = err instanceof Error ? err.message : String(err);
         ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
+        if (only !== undefined) setCardResult(only, false, 'Not applied');
         if (msg.includes('administrator approval') || msg.includes('Administrator approval')) {
           toast('error', 'Apply requires administrator approval', msg);
         } else {

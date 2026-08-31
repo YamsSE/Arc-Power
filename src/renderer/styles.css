@@ -823,6 +823,28 @@ html, body {
 .dashboard-quick-action { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text-muted); font-size: 11px; text-decoration: none; transition: border-color .14s ease, color .14s ease, background .14s ease; }
 .dashboard-quick-action:hover, .dashboard-quick-action:focus-visible { border-color: var(--accent); background: var(--accent-soft); color: var(--text); outline: none; }
 
+/* Compact Dashboard cockpit: live trends use small SVG traces instead of
+   large progress bars, so the page stays information-dense without turning
+   telemetry into a second monitoring screen. */
+.dashboard-pulse-card { padding: 14px 16px; }
+.dashboard-pulse-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.dashboard-eyebrow { display: block; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 2px; }
+.dashboard-pulse-heading .card-title { margin: 0; }
+.dashboard-pulse-device { max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 11px; padding-top: 13px; }
+.dashboard-pulse-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 7px; }
+.dashboard-pulse-metric { min-width: 0; padding: 8px 10px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-inset) 78%, var(--accent) 2%); }
+.dashboard-pulse-metric-head, .dashboard-pulse-value-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dashboard-pulse-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10.5px; }
+.dashboard-pulse-unit { color: var(--text-dim); font-size: 10px; font-family: var(--mono); }
+.dashboard-pulse-value-row { justify-content: flex-start; margin-top: 3px; }
+.dashboard-pulse-value { font-family: var(--font-display); font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.dashboard-pulse-live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px rgba(52, 211, 153, .1); }
+.dashboard-sparkline { display: block; width: 100%; height: 25px; margin-top: 4px; overflow: visible; opacity: .9; }
+.dashboard-session-stats { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 10.5px; }
+.dashboard-session-title { color: var(--text-muted); font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.dashboard-session-stat { display: inline-flex; align-items: baseline; gap: 5px; }
+.dashboard-session-stat strong { color: var(--text); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+
 .monitoring-summary-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; min-height: 30px; margin-top: -5px; color: var(--text-dim); font-size: 11px; }
 .monitoring-summary-live { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); }
 .monitoring-summary-note { color: var(--text-dim); }
@@ -1796,6 +1818,7 @@ input[type="number"] {
 .oc-card { padding: 10px 14px; }
 .oc-card-head { margin-bottom: 4px; }
 .oc-card .card-title { font-size: 13.5px; }
+.oc-card-head-meta { display: flex; align-items: baseline; justify-content: flex-end; gap: 12px; min-width: 0; }
 .oc-slider-row { gap: 12px; min-height: 26px; }
 .oc-meta { margin-top: 2px; display: flex; align-items: baseline; gap: 12px; }
 /* M17f: the power-limit card's sysman PL1/PL2 read-out line (the Level
@@ -1807,6 +1830,14 @@ input[type="number"] {
 .oc-driver { font-size: 12px; }
 .oc-range { font-size: 11.5px; }
 .oc-chip-status { font-size: 11px; padding: 2px 9px; }
+.tuning-general-actions { position: sticky; top: -1px; z-index: 4; padding: 4px 0; background: var(--bg-panel); }
+.tuning-pending-summary { margin-right: auto; color: var(--text-dim); font: 600 11px var(--mono); }
+.tuning-pending-summary.has-pending { color: var(--accent); }
+.tuning-diff { color: var(--text-dim); font: 500 10.5px var(--mono); white-space: nowrap; }
+.tuning-diff.is-pending { color: var(--accent); }
+.tuning-card-result { margin-right: auto; color: var(--text-dim); font: 600 10.5px var(--mono); }
+.tuning-card-result.result-ok { color: var(--success); }
+.tuning-card-result.result-error { color: var(--error); }
 
 /* M9: the [hidden] fix - .chip sets an explicit display (inline-flex),
    which OVERRODE the UA stylesheet's [hidden] { display: none } and
@@ -2899,3 +2930,5 @@ input[type="number"] {
 @media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-hotkey-row { grid-template-columns: 1fr 150px; } .recording-hotkey-warning, .recording-hotkey-registered { grid-column: 1 / -1; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } }
 .recording-delete-modal { width: min(460px, calc(100vw - 32px)); }
 .recording-delete-file { overflow-wrap: anywhere; word-break: break-word; }
+@media (max-width: 900px) { .dashboard-pulse-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); } }
+@media (max-width: 560px) { .dashboard-pulse-grid { grid-template-columns: 1fr 1fr; } .dashboard-pulse-device { max-width: 42%; } .tuning-diff { display: none; } }

@@ -14,7 +14,7 @@
 // per-tick DOM churn (the decision lives in pure/status.ts::
 // dashboardNeedsFullRender, unit-tested).
 
-import { el, clear } from '../dom.ts';
+import { el, clear, svgEl } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
@@ -70,6 +70,182 @@ function noIntelClocksText(sample: TelemetrySample | null): string {
 
 function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
+}
+
+type DashboardPulseId = 'gpu-util' | 'temperature' | 'power' | 'vram';
+
+const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string; color: string }> = [
+  { id: 'gpu-util', label: 'GPU utilization', unit: '%', color: '#43c7ff' },
+  { id: 'temperature', label: 'GPU temperature', unit: '°C', color: '#f2b15b' },
+  { id: 'power', label: 'GPU power', unit: 'W', color: '#b995ff' },
+  { id: 'vram', label: 'VRAM in use', unit: 'GB', color: '#55d6a5' },
+];
+
+const DASHBOARD_HISTORY_LIMIT = 60;
+let dashboardHistory: TelemetrySample[] = [];
+let dashboardHistoryDeviceId: number | null | undefined;
+let dashboardSessionStartedAt = Date.now();
+const pulseValueNodes = new Map<DashboardPulseId, HTMLElement>();
+const pulsePathNodes = new Map<DashboardPulseId, SVGPathElement>();
+let sessionRuntimeNode: HTMLElement | null = null;
+let sessionPeakNode: HTMLElement | null = null;
+let sessionAverageNode: HTMLElement | null = null;
+let sessionSamplesNode: HTMLElement | null = null;
+
+function resetDashboardHistory(deviceId: number | null): void {
+  if (dashboardHistoryDeviceId === deviceId) return;
+  dashboardHistoryDeviceId = deviceId;
+  dashboardHistory = [];
+  dashboardSessionStartedAt = Date.now();
+}
+
+function rememberDashboardSample(sample: TelemetrySample | null, deviceId: number | null): void {
+  if (!sample) return;
+  if (sample.deviceId !== undefined && sample.deviceId !== null && sample.deviceId !== deviceId) return;
+  const last = dashboardHistory[dashboardHistory.length - 1];
+  if (last && last.t === sample.t && last.deviceId === sample.deviceId) return;
+  dashboardHistory = [...dashboardHistory, sample].slice(-DASHBOARD_HISTORY_LIMIT);
+}
+
+function pulseSampleValue(id: DashboardPulseId, sample: TelemetrySample): number | undefined {
+  if (id === 'gpu-util') return sample.gpuUtilPct ?? sample.utilPct;
+  if (id === 'temperature') return sample.tempC;
+  if (id === 'power') return sample.powerW;
+  return typeof sample.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)
+    ? sample.gpuMemUsedBytes / 1e9
+    : undefined;
+}
+
+function pulseDisplayValue(id: DashboardPulseId, sample: TelemetrySample | null): string {
+  const value = sample ? pulseSampleValue(id, sample) : undefined;
+  return id === 'power' ? statValue(value, 1) : id === 'vram' ? (value === undefined ? '-' : value.toFixed(1)) : statValue(value);
+}
+
+function pulseHistoryValues(id: DashboardPulseId): number[] {
+  return dashboardHistory
+    .map((sample) => pulseSampleValue(id, sample))
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+}
+
+function updatePulsePath(id: DashboardPulseId): void {
+  const path = pulsePathNodes.get(id);
+  if (!path) return;
+  const values = pulseHistoryValues(id);
+  if (values.length < 2) {
+    path.setAttribute('d', 'M 0 16 L 120 16');
+    return;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(0.001, max - min);
+  const points = values.map((value, index) => {
+    const x = (index / (values.length - 1)) * 120;
+    const y = 28 - ((value - min) / span) * 22;
+    return `${x.toFixed(1)} ${y.toFixed(1)}`;
+  });
+  path.setAttribute('d', `M ${points.join(' L ')}`);
+}
+
+function formatSessionAge(): string {
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - dashboardSessionStartedAt) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}h ${String(minutes).padStart(2, '0')}m`
+    : `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+function updateSessionStats(): void {
+  const temps = pulseHistoryValues('temperature');
+  const utils = pulseHistoryValues('gpu-util');
+  if (sessionRuntimeNode) sessionRuntimeNode.textContent = formatSessionAge();
+  if (sessionPeakNode) sessionPeakNode.textContent = temps.length ? `${Math.round(Math.max(...temps))} °C` : '-';
+  if (sessionAverageNode) sessionAverageNode.textContent = utils.length
+    ? `${Math.round(utils.reduce((sum, value) => sum + value, 0) / utils.length)} %`
+    : '-';
+  if (sessionSamplesNode) sessionSamplesNode.textContent = String(dashboardHistory.length);
+}
+
+function updateDashboardPulse(ctx: PageContext): void {
+  const state = ctx.store.get();
+  resetDashboardHistory(state.deviceId);
+  rememberDashboardSample(state.latestSample, state.deviceId);
+  for (const metric of DASHBOARD_PULSE) {
+    const valueNode = pulseValueNodes.get(metric.id);
+    if (valueNode) valueNode.textContent = pulseDisplayValue(metric.id, state.latestSample);
+    updatePulsePath(metric.id);
+  }
+  updateSessionStats();
+}
+
+function dashboardPulse(ctx: PageContext): HTMLElement {
+  const state = ctx.store.get();
+  resetDashboardHistory(state.deviceId);
+  rememberDashboardSample(state.latestSample, state.deviceId);
+  pulseValueNodes.clear();
+  pulsePathNodes.clear();
+  sessionRuntimeNode = null;
+  sessionPeakNode = null;
+  sessionAverageNode = null;
+  sessionSamplesNode = null;
+
+  const selectedDevice = state.devices.find((device) => device.id === state.deviceId);
+  const pulseCards = DASHBOARD_PULSE.map((metric) => {
+    const path = svgEl('path', {
+      d: 'M 0 16 L 120 16',
+      fill: 'none',
+      stroke: metric.color,
+      'stroke-width': 2,
+      'stroke-linecap': 'round',
+      'stroke-linejoin': 'round',
+    }) as SVGPathElement;
+    const svg = svgEl('svg', {
+      class: 'dashboard-sparkline',
+      viewBox: '0 0 120 32',
+      role: 'img',
+      'aria-label': `${metric.label} history`,
+    });
+    svg.append(path);
+    const valueNode = el('strong', { class: 'dashboard-pulse-value', text: pulseDisplayValue(metric.id, state.latestSample) });
+    pulseValueNodes.set(metric.id, valueNode);
+    pulsePathNodes.set(metric.id, path);
+    const card = el('div', { class: 'dashboard-pulse-metric', dataset: { pulseMetric: metric.id } }, [
+      el('div', { class: 'dashboard-pulse-metric-head' }, [
+        el('span', { class: 'dashboard-pulse-label', text: metric.label }),
+        el('span', { class: 'dashboard-pulse-unit', text: metric.unit }),
+      ]),
+      el('div', { class: 'dashboard-pulse-value-row' }, [valueNode, el('span', { class: 'dashboard-pulse-live-dot', title: 'Live telemetry' })]),
+      svg,
+    ]);
+    updatePulsePath(metric.id);
+    return card;
+  });
+
+  sessionRuntimeNode = el('strong', { text: formatSessionAge() });
+  sessionPeakNode = el('strong', { text: '-' });
+  sessionAverageNode = el('strong', { text: '-' });
+  sessionSamplesNode = el('strong', { text: '0' });
+  const sessionStats = el('div', { class: 'dashboard-session-stats' }, [
+    el('span', { class: 'dashboard-session-title', text: 'Since launch' }),
+    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Session' }), sessionRuntimeNode]),
+    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Peak temp' }), sessionPeakNode]),
+    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Average GPU' }), sessionAverageNode]),
+    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Samples' }), sessionSamplesNode]),
+  ]);
+  updateSessionStats();
+
+  return el('section', { class: 'card dashboard-pulse-card' }, [
+    el('div', { class: 'dashboard-pulse-heading' }, [
+      el('div', {}, [
+        el('span', { class: 'dashboard-eyebrow', text: 'Live telemetry' }),
+        el('h2', { class: 'card-title', text: 'Performance pulse' }),
+      ]),
+      el('span', { class: `dashboard-pulse-device${selectedDevice ? '' : ' text-unknown' }`, text: selectedDevice?.name ?? 'No GPU selected' }),
+    ]),
+    el('div', { class: 'dashboard-pulse-grid' }, pulseCards),
+    sessionStats,
+  ]);
 }
 
 function dashboardAction(label: string, hash: string): HTMLElement {
@@ -264,7 +440,10 @@ export const dashboardPage: Page = {
         dashboardAction('Open Recording', '#/recording'),
         dashboardAction('Manage Profiles', '#/profiles'),
         dashboardAction('Tune GPU', '#/tuning'),
+        dashboardAction('Open Monitoring', '#/monitoring'),
       ]),
+
+      dashboardPulse(ctx),
 
       el('div', { class: 'card-grid' }, [
         // --- M4-D: the CPU & memory card - BEFORE the GPU card. ---
@@ -497,5 +676,6 @@ export const dashboardPage: Page = {
     // pattern as the GPU clocks row.
     const liveFreq = container.querySelector<HTMLElement>('.sysinfo-card .kv-live-freq');
     if (liveFreq) liveFreq.textContent = liveFreqText(ctx.store.get().latestSample);
+    updateDashboardPulse(ctx);
   },
 };
