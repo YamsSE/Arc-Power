@@ -228,8 +228,6 @@ export const tweaksPage: Page = {
     const states = catalog?.states ?? [];
 
     clear(container);
-    const activeCount = states.filter((state) => state.state === 'enabled').length;
-    const unknownCount = states.filter((state) => state.state === 'unknown').length;
     container.append(
       el('h1', { class: 'page-title', text: 'Tweaks' }),
       el('p', {
@@ -242,11 +240,6 @@ export const tweaksPage: Page = {
           text: 'Refresh state',
           onClick: () => { void refreshCatalog(ctx); },
         }),
-      ]),
-      el('div', { class: 'tab-summary-strip tweaks-summary-strip' }, [
-        el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Catalog' }), el('strong', { text: `${entries.length} tweaks` })]),
-        el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Active' }), el('strong', { class: activeCount ? 'text-ok' : undefined, text: String(activeCount) })]),
-        el('div', { class: 'tab-summary-item' }, [el('span', { text: 'Needs review' }), el('strong', { class: unknownCount ? 'text-warn' : undefined, text: String(unknownCount) })]),
       ]),
       catalog === null
         ? el('p', { class: 'text-unknown', text: 'Loading registry state…' })

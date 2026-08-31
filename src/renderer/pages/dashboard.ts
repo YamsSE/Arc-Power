@@ -72,13 +72,6 @@ function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
 }
 
-function dashboardGlanceItem(label: string, value: string, state?: 'ok' | 'warn' | 'error' | 'unknown'): HTMLElement {
-  return el('div', { class: 'dashboard-glance-item' }, [
-    el('span', { class: 'dashboard-glance-label', text: label }),
-    el('strong', { class: state ? `dashboard-glance-value text-${state}` : 'dashboard-glance-value', text: value }),
-  ]);
-}
-
 function dashboardAction(label: string, hash: string): HTMLElement {
   return el('a', { class: 'dashboard-quick-action', href: hash, text: label });
 }
@@ -265,13 +258,6 @@ export const dashboardPage: Page = {
     clear(container);
     container.append(
       el('h1', { class: 'page-title', text: 'Dashboard' }),
-
-      el('section', { class: 'dashboard-glance card' }, [
-        dashboardGlanceItem('Selected GPU', gpuName || 'Detecting…'),
-        dashboardGlanceItem('Driver', s.health?.driverVersion ?? osController?.driverVersion ?? 'Checking…', s.health?.error ? 'warn' : s.health ? 'ok' : 'unknown'),
-        dashboardGlanceItem('Tuning mode', s.ocMode === 'advanced' ? 'Advanced' : 'Stock'),
-        dashboardGlanceItem('Resizable BAR', rebar.label, rebar.level),
-      ]),
 
       el('div', { class: 'dashboard-quick-actions' }, [
         el('span', { class: 'dashboard-quick-label', text: 'Quick actions' }),

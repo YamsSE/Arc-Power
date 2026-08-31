@@ -818,10 +818,6 @@ html, body {
 }
 .page-actions-note { color: var(--text-muted); font-size: 12.5px; }
 
-.dashboard-glance { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; padding: 0; overflow: hidden; }
-.dashboard-glance-item { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 13px 15px; background: color-mix(in srgb, var(--bg-inset) 52%, var(--bg-elev)); }
-.dashboard-glance-label { color: var(--text-dim); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-.dashboard-glance-value { overflow: hidden; color: var(--text); font: 650 13px var(--font); text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-quick-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: -6px; }
 .dashboard-quick-label { margin-right: 3px; color: var(--text-dim); font-size: 11px; }
 .dashboard-quick-action { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text-muted); font-size: 11px; text-decoration: none; transition: border-color .14s ease, color .14s ease, background .14s ease; }
