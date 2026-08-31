@@ -25,7 +25,6 @@ function writeBuildConfig(artifactName) {
   // its default "include the project" file set. That accidentally packages
   // the repository and can produce multi-gigabyte app.asar files. Keep the
   // complete application file contract in both generated configurations.
-  const isPortableArtifact = artifactName === path.basename(portable);
   writeFileSync(tempConfig, JSON.stringify({
     appId: baseBuild.appId,
     productName: baseBuild.productName,
@@ -36,15 +35,14 @@ function writeBuildConfig(artifactName) {
     win: {
       ...baseBuild.win,
       target: ['portable'],
-      // The installer wrapper may elevate; the actual portable application
-      // must remain user-level so HKCU Run can launch it at logon without a
-      // UAC prompt. GPU writes use the existing elevated worker.
-      requestedExecutionLevel: isPortableArtifact ? 'asInvoker' : 'requireAdministrator',
+      // Both distributed artifacts require administrator approval at launch;
+      // this keeps hardware-control and bundled-runtime paths consistent.
+      requestedExecutionLevel: 'requireAdministrator',
     },
     portable: {
       ...baseBuild.portable,
       artifactName,
-      requestExecutionLevel: isPortableArtifact ? 'user' : 'admin',
+      requestExecutionLevel: 'admin',
     },
     directories: {
       ...baseBuild.directories,

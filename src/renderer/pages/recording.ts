@@ -132,6 +132,17 @@ function select<T extends string>(value: T, options: Array<[T, string]>, onChang
   return control;
 }
 
+type SelectOptionGroup<T extends string> = [string, Array<[T, string]>];
+
+function groupedSelect<T extends string>(value: T, groups: SelectOptionGroup<T>[], onChange: (value: T) => void): HTMLSelectElement {
+  const control = el('select', {
+    class: 'recording-select',
+    value,
+  }, groups.map(([label, options]) => el('optgroup', { label }, options.map(([id, text]) => el('option', { value: id, text }))))) as HTMLSelectElement;
+  control.addEventListener('change', () => onChange(control.value as T));
+  return control;
+}
+
 function field(label: string, control: HTMLElement, note?: string): HTMLElement {
   return el('label', { class: 'recording-field' }, [
     el('span', { class: 'recording-field-label', text: label }),
@@ -400,20 +411,34 @@ function selectedCaptureSource(target: RecordingCaptureTarget): { width: number;
   return display ? { width: display.width, height: display.height, label: display.label } : null;
 }
 
-function captureTargetOptions(selected: RecordingCaptureTarget): Array<[string, string]> {
-  const options: Array<[string, string]> = [];
-  for (const display of recordingTargets.displays) {
-    options.push([`display:${display.id}`, `${display.primary ? 'Primary display' : display.label}${display.hdr ? ' · HDR' : ''}`]);
-  }
-  if (!options.length) options.push(['display:primary', 'Primary display']);
-  for (const window of recordingTargets.windows) {
-    options.push([`window:${window.handle}`, `Program: ${window.title} · ${window.processName || 'Window'}`]);
-  }
+function captureTargetOptionGroups(selected: RecordingCaptureTarget): Array<SelectOptionGroup<string>> {
+  const displays: Array<[string, string]> = recordingTargets.displays
+    .slice()
+    .sort((a, b) => Number(b.primary) - Number(a.primary) || a.label.localeCompare(b.label))
+    .map((display) => [
+      `display:${display.id}`,
+      `${display.primary ? 'Primary display' : display.label}${display.hdr ? ' · HDR' : ''}`,
+    ]);
+  if (!displays.length) displays.push(['display:primary', 'Primary display']);
+
+  const programs: Array<[string, string]> = recordingTargets.windows
+    .slice()
+    .sort((a, b) => a.title.localeCompare(b.title) || a.processName.localeCompare(b.processName))
+    .map((window) => [
+      `window:${window.handle}`,
+      `${window.title || 'Untitled window'} · ${window.processName || 'Window'}`,
+    ]);
+
   const selectedKey = captureTargetKey(selected);
-  if (!options.some(([key]) => key === selectedKey)) {
-    options.push([selectedKey, selected.type === 'window' ? `${selected.windowTitle || 'Selected window'} (saved)` : `${selected.displayId} (saved)`]);
+  const selectedGroup = selected.type === 'window' ? programs : displays;
+  if (!selectedGroup.some(([key]) => key === selectedKey)) {
+    selectedGroup.push([selectedKey, selected.type === 'window'
+      ? `${selected.windowTitle || 'Selected window'} (saved)`
+      : `${selected.displayId} (saved)`]);
   }
-  return options;
+  const groups: Array<SelectOptionGroup<string>> = [['Displays', displays]];
+  if (programs.length) groups.push(['Programs', programs]);
+  return groups;
 }
 
 async function refreshRecordingCaptureTargets(force = false): Promise<void> {
@@ -434,7 +459,7 @@ async function refreshRecordingCaptureTargets(force = false): Promise<void> {
 function renderCaptureTargetSettings(): HTMLElement {
   const working = settingsForRender();
   const target = working?.captureTarget ?? { type: 'display' as const, displayId: 'primary', windowHandle: 0, processName: '', windowTitle: '' };
-  const targetSelect = select(captureTargetKey(target), captureTargetOptions(target), (value) => {
+  const targetSelect = groupedSelect(captureTargetKey(target), captureTargetOptionGroups(target), (value) => {
     const next = captureTargetFromKey(value);
     if (next) stagePatch({ captureTarget: next });
   });

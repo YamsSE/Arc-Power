@@ -1385,8 +1385,8 @@ export const tuningPage: Page = {
       // is the honesty (stock refuses, advanced already warned at enable).
       // M2C-C: a non-elevated product app delegates the apply to the
       // elevated self-worker (one UAC prompt) - explain BEFORE the prompt.
-      // M4-D2: the packaged EXE is asInvoker now - the workerApply toast
-      // applies (the worker still spawns elevated when the user approves).
+      // M4-D2: the distributed EXE requests administrator access; retain the
+      // worker path for development and legacy non-elevated sessions.
       if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
         toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
       }

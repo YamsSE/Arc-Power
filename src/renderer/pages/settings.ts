@@ -159,15 +159,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       applyOnBoot
         ? el('p', { class: 'card-note boot-hint', text: 'Apply active profile at boot is enabled - Arc Power starts at logon to apply it.' })
         : null,
-      // M4-E (plan §3): the installed-build line - the INSTALLED app's
-      // logon applies run ELEVATED through the first-run-installed
-      // ArcPowerBootApply task; the portable app applies when it can
-      // (unelevated, honest balloon on refusal). Short + honest, keyed on
-      // app:build-info.
+      // M4-E (plan §3): distributed builds request administrator access at
+      // launch, so their logon applies use the same elevated session.
       s.buildKind === 'installed' || s.buildKind === 'portable'
-        ? el('p', { class: 'card-note boot-hint', text: s.buildKind === 'installed'
-            ? 'The installed app applies at logon elevated (installed at first run) - the portable app applies when it can.'
-            : 'The portable app applies at logon when it can.' })
+        ? el('p', { class: 'card-note boot-hint', text: 'Arc Power applies the active profile at logon with administrator access.' })
         : null,
       startWithMismatch
         ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree - the toggle reflects the registration.' })

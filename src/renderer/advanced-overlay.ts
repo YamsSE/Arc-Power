@@ -115,6 +115,13 @@ const memoryLabelEl = document.getElementById('adv-readout-memory-label') as HTM
 const memoryEl = document.getElementById('adv-readout-memory') as HTMLElement;
 const closeBtn = document.getElementById('adv-close') as HTMLButtonElement;
 let monitoredStats = normalizeOverlayStats(undefined);
+let telemetryRetryTimer: number | null = null;
+
+function stopTelemetryRetry(): void {
+  if (telemetryRetryTimer === null) return;
+  window.clearInterval(telemetryRetryTimer);
+  telemetryRetryTimer = null;
+}
 
 function applyAdvancedTheme(theme: string): void {
   const normalized = isValidTheme(theme) ? theme : 'dark';
@@ -158,19 +165,29 @@ clockEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minut
 // The telemetry push - the THIRD consumer of the sample stream (ipc.js
 // forwards to the panel window). Refreshes the readout strip + the
 // fan editor's RPM marker in place.
-api.onTelemetrySample((sample) => {
+function acceptTelemetrySample(sample: TelemetrySample | null, deviceId: number, generation: number): boolean {
+  if (!sample) return false;
   const live = store.get();
+  if (!panelIdentityMatches(deviceId, selectedDeviceKey(live), generation)) return false;
   const selected = live.devices.find((device) => device.id === live.deviceId);
   const sampleKey = normalizeDeviceKey(sample.deviceKey);
   // Capabilities come from the same main-process target as telemetry and are
   // authoritative when inventory numbering or labels change.
   const selectedKey = normalizeDeviceKey(live.caps?.deviceKey) ?? normalizeDeviceKey(selected?.deviceKey);
-  if (!telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)) return;
+  if (!telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)) return false;
   store.set({ latestSample: sample });
   renderReadout(sample);
   if (activeTab === 'fan') {
     updateFanReadout(contentEl, { store });
   }
+  stopTelemetryRetry();
+  return true;
+}
+
+api.onTelemetrySample((sample) => {
+  const live = store.get();
+  if (typeof live.deviceId !== 'number') return;
+  acceptTelemetrySample(sample, live.deviceId, panelGeneration);
 });
 
 // The post-apply device read-back push (the tray/profile apply path).
@@ -216,6 +233,8 @@ function applyDeviceSelectionPush(payload: PanelSelection, devices: DeviceInfo[]
   graphicsApplied = {};
   graphicsApplying = false;
   graphicsApplyBtn = null;
+  stopTelemetryRetry();
+  renderReadout(null);
   renderTab();
   return true;
 }
@@ -267,20 +286,24 @@ function renderReadout(sample: TelemetrySample | null): void {
 async function syncLatestTelemetry(deviceId: number, generation: number): Promise<void> {
   try {
     const sample = await api.telemetryLatest(deviceId);
-    if (!sample) return;
-    const live = store.get();
-    if (!panelIdentityMatches(deviceId, selectedDeviceKey(live), generation)) return;
-    const selected = live.devices.find((device) => device.id === live.deviceId);
-    const sampleKey = normalizeDeviceKey(sample.deviceKey);
-    const selectedKey = normalizeDeviceKey(live.caps?.deviceKey) ?? normalizeDeviceKey(selected?.deviceKey);
-    if (!telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)) return;
-    store.set({ latestSample: sample });
-    renderReadout(sample);
-    if (activeTab === 'fan') updateFanReadout(contentEl, { store });
+    acceptTelemetrySample(sample, deviceId, generation);
   } catch {
     // The snapshot is a convenience for startup; the push stream remains
     // authoritative if this optional read is unavailable.
   }
+}
+
+function scheduleTelemetryRetry(deviceId: number, generation: number): void {
+  stopTelemetryRetry();
+  let attempts = 0;
+  telemetryRetryTimer = window.setInterval(() => {
+    attempts += 1;
+    if (attempts > 20 || !panelIdentityMatches(deviceId, selectedDeviceKey(store.get()), generation)) {
+      stopTelemetryRetry();
+      return;
+    }
+    void syncLatestTelemetry(deviceId, generation);
+  }, 500);
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +349,7 @@ async function boot(): Promise<void> {
     deviceEl.textContent = pushed.caps.deviceName || pushedTarget.name || 'Unknown GPU';
     renderTab();
     await syncLatestTelemetry(pushedTarget.id, panelGeneration);
+    if (!store.get().latestSample) scheduleTelemetryRetry(pushedTarget.id, panelGeneration);
     return;
   }
   // A selection that arrived while the initial enumeration was in flight
@@ -336,6 +360,8 @@ async function boot(): Promise<void> {
 
   if (deviceId === null) {
     deviceEl.textContent = 'No GPU available.';
+    stopTelemetryRetry();
+    renderReadout(null);
     renderTab();
     return;
   }
@@ -355,6 +381,7 @@ async function boot(): Promise<void> {
   deviceEl.textContent = caps?.deviceName || 'Unknown GPU';
   renderTab();
   await syncLatestTelemetry(deviceId, bootGeneration);
+  if (!store.get().latestSample) scheduleTelemetryRetry(deviceId, bootGeneration);
 }
 
 // ---------------------------------------------------------------------------

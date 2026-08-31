@@ -2,8 +2,9 @@
 // task (onlogon, /rl highest, FIXED action `<installed exe> --boot-apply`).
 //
 // Why a scheduled task at all: OC/fan writes persist ONLY from an elevated
-// process. The installed app is asInvoker, so logon applies must run through
-// an ELEVATED task. The task is created ONCE by the elevated first-run setup
+// process. The distributed app is elevated at launch, so logon applies run
+// through the same administrator-capable startup path. The task is created
+// ONCE by the elevated first-run setup
 // (one UAC at the first launch after install - the user is present) and is
 // NEVER changed afterwards (unelevated schtasks /change on a /rl highest
 // task is denied, /create is denied - the M4-E ground-truth probe). The

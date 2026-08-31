@@ -2579,10 +2579,9 @@ async function main() {
   });
 
   // --- M23 (Part B): the ADVANCED overlay (the AMD-Adrenaline-style        ---
-  // interactive side panel - CONTROL + <letter>, stock P). Created
-  // UNCONDITIONALLY on the product window path (HIDDEN when
-  // advancedOverlayEnabled is false - apply() shows it when the user enables
-  // it through the Overlay view; a lazy create would break the enable path).
+  // interactive side panel - CONTROL + <letter>, stock P). Created lazily
+  // only when enabled (or when the overlay verification variant requests it)
+  // so a disabled feature does not keep a hidden Chromium renderer alive.
   // NEVER in headless/boot-apply/apply-profile (they return earlier);
   // ui-verify creates it only under RID_MOCK_ADV_OVERLAY=1 (the variant's
   // real-window pins). M7b (fix-5 semantics): the hotkey/shortcut NEVER
@@ -2633,21 +2632,6 @@ async function main() {
     }
     advancedOverlayHandle?.setHotkeyRegistered(false);
   };
-  // The advanced-overlay settings reaction (the onOverlaySettings pattern):
-  // re-apply the geometry/visibility from the FRESH store + re-register the
-  // hotkey on a letter change. 'advanced-overlay:settings' is NOT an
-  // ipc-core push - the advanced-overlay module sends it DIRECTLY to the
-  // panel window (webContents.send).
-  const onAdvancedOverlaySettings = async (patch) => {
-    if (!advancedOverlayHandle) return;
-    const masterChanged = patch
-      && typeof patch === 'object'
-      && Object.prototype.hasOwnProperty.call(patch, 'advancedOverlayEnabled');
-    applyAdvancedOverlaySettings({ preserveVisibility: !masterChanged });
-    if (patch && typeof patch.advancedOverlayHotkeyLetter === 'string') {
-      registerAdvancedOverlayHotkey(patch.advancedOverlayHotkeyLetter);
-    }
-  };
   const applyAdvancedOverlaySettings = ({ preserveVisibility = false } = {}) => {
     if (!advancedOverlayHandle) return;
     let settings = {};
@@ -2669,13 +2653,9 @@ async function main() {
       stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : OVERLAY_STATS_DEFAULT,
     }, { preserveVisibility });
   };
-  // The dedicated panel-close op (the 'advanced-overlay:close' channel's
-  // handler): a SESSION hide - the panel's own close button never closes the
-  // main window and never touches the persisted master.
-  const advancedOverlayClose = async () => {
-    if (advancedOverlayHandle) await advancedOverlayHandle.closePanel();
-  };
-  if (uiVerify ? process.env.RID_MOCK_ADV_OVERLAY === '1' : true) {
+
+  const createAdvancedOverlay = () => {
+    if (advancedOverlayHandle) return advancedOverlayHandle;
     advancedOverlayHandle = createAdvancedOverlayWindow({
       // The CURRENT persisted settings - the sync cache (like the HUD).
       getOverlaySettings: () => {
@@ -2685,14 +2665,11 @@ async function main() {
           return {};
         }
       },
-      // The panel's custom close is a SESSION hide performed inside the
-      // module (step-4 S1: closePanel hides the window directly - the
-      // earlier injected-op design left the X a dead no-op); the
-      // 'advanced-overlay:close' channel routes here.
     });
     // M23: the harness must not flash the advanced panel on the user's screen.
     stealthVerifyWindow(advancedOverlayHandle.getWindow?.() ?? null);
     applyAdvancedOverlaySettings();
+
     // Boot the hotkey with the persisted letter (default 'P').
     let bootLetter = 'P';
     try {
@@ -2705,13 +2682,8 @@ async function main() {
     // persisted HUD letter 'P' + the new advanced default 'P' would
     // register TWO same-app Control+P accelerators back to back - same-app
     // register REPLACES and returns true, so one hotkey dies silently with
-    // hotkeyRegistered still true on both cards (the honest note could not
-    // detect it). At BOOT only: when the persisted letters collide, SKIP the
-    // advanced registration and surface hotkeyRegistered:false - the
-    // Advanced card then shows the honest "could not be registered" note
-    // (accurate: the HUD holds the key) and the user picks a letter. The
-    // persisted state is NEVER silently changed. The renderer's symmetric
-    // envelope rejection keeps any FUTURE same-letter save from landing.
+    // hotkeyRegistered still true on both cards. At BOOT and on a later
+    // re-enable, skip the advanced registration and surface the honest state.
     let hudBootLetter = 'O';
     try {
       const s = store.loadSettingsSync() ?? {};
@@ -2725,10 +2697,63 @@ async function main() {
     } else {
       registerAdvancedOverlayHotkey(bootLetter);
     }
+    return advancedOverlayHandle;
+  };
+
+  // The advanced-overlay settings reaction (the onOverlaySettings pattern):
+  // create/destroy the renderer with the master switch, re-apply geometry
+  // from the FRESH store, and re-register the hotkey on a letter change.
+  // 'advanced-overlay:settings' is NOT an ipc-core push - the advanced-overlay
+  // module sends it DIRECTLY to the panel window (webContents.send).
+  const onAdvancedOverlaySettings = async (patch) => {
+    const masterChanged = patch
+      && typeof patch === 'object'
+      && Object.prototype.hasOwnProperty.call(patch, 'advancedOverlayEnabled');
+    const enabled = masterChanged
+      ? patch.advancedOverlayEnabled === true
+      : (() => {
+          try { return store.loadSettingsSync()?.advancedOverlayEnabled === true; } catch { return false; }
+        })();
+    if (enabled && !advancedOverlayHandle) createAdvancedOverlay();
+    if (!advancedOverlayHandle) return;
+    applyAdvancedOverlaySettings({ preserveVisibility: !masterChanged });
+    if (patch && typeof patch.advancedOverlayHotkeyLetter === 'string') {
+      registerAdvancedOverlayHotkey(patch.advancedOverlayHotkeyLetter);
+    } else if (masterChanged && enabled) {
+      let letter = 'P';
+      try {
+        const s = store.loadSettingsSync() ?? {};
+        if (typeof s.advancedOverlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.advancedOverlayHotkeyLetter)) {
+          letter = s.advancedOverlayHotkeyLetter;
+        }
+      } catch { /* default P */ }
+      registerAdvancedOverlayHotkey(letter);
+    }
+    if (masterChanged && !enabled) {
+      unregisterAdvancedOverlayHotkey();
+      // Keep an already-used panel cached while the user toggles the master
+      // switch; the panel module owns the hide and the next enable can show it
+      // immediately. The important memory saving is avoiding this renderer
+      // entirely on startup when the feature has never been enabled.
+    }
+  };
+  // The dedicated panel-close op (the 'advanced-overlay:close' channel's
+  // handler): a SESSION hide - the panel's own close button never closes the
+  // main window and never touches the persisted master.
+  const advancedOverlayClose = async () => {
+    if (advancedOverlayHandle) await advancedOverlayHandle.closePanel();
+  };
+  let advancedSettingsAtBoot = {};
+  try { advancedSettingsAtBoot = store.loadSettingsSync() ?? {}; } catch { /* defaults */ }
+  if (uiVerify
+    ? process.env.RID_MOCK_ADV_OVERLAY === '1'
+    : advancedSettingsAtBoot.advancedOverlayEnabled === true) {
+    createAdvancedOverlay();
   }
   app.on('will-quit', () => {
-    advancedOverlayHandle?.destroy();
     unregisterAdvancedOverlayHotkey();
+    advancedOverlayHandle?.destroy();
+    advancedOverlayHandle = null;
   });
   // M99: the Recording shortcuts are owned by main and are reconciled after
   // every settings save. They never compete silently with the two existing
@@ -3002,17 +3027,17 @@ async function main() {
           resize: async (deviceCount) => { await overlayHandle.resize(deviceCount); },
         }
       : undefined,
-    // M23 (Part B): the injected ADVANCED-overlay ops - the REAL panel
-    // handle in both the product path and the RID_MOCK_ADV_OVERLAY=1
-    // ui-verify variant (the variant's panel window is real, like the main
-    // window - the toggle really flips it). When no panel exists (other
-    // ui-verify variants) the DEFAULT no-window ops keep the channels honest.
-    advancedOverlayOps: advancedOverlayHandle
-      ? {
-          getState: async () => advancedOverlayHandle.getState(),
-          toggle: async () => { await advancedOverlayHandle.toggle(); },
-        }
-      : undefined,
+    // M23 (Part B): the injected ADVANCED-overlay ops - dynamically
+    // dereference the lazy panel handle so enabling the feature after boot
+    // can create its renderer without rebuilding the IPC surface. When no
+    // panel exists (disabled product or another ui-verify variant), the
+    // default no-window handlers keep the channels honest.
+    advancedOverlayOps: {
+      getState: async () => advancedOverlayHandle
+        ? advancedOverlayHandle.getState()
+        : { exists: false, visible: false, bounds: null, position: 'right', enabled: false, hotkeyRegistered: false },
+      toggle: async () => { if (advancedOverlayHandle) await advancedOverlayHandle.toggle(); },
+    },
     // M23 (Part B): the panel's custom close op (the dedicated
     // 'advanced-overlay-close' channel - never the main window's close).
     advancedOverlayClose,

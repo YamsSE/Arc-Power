@@ -793,9 +793,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // the >375 W ceiling (M21: the sysman-primary ceiling) + the runtime-capability refusals still surface
     // as per-control error toasts below, never a dead-end confirm).
     // M2C-C: a non-elevated product app delegates to the elevated worker -
-    // explain before the UAC prompt. M4-D2: the packaged EXE is asInvoker
-    // now - the workerApply toast applies (the worker still spawns elevated
-    // when the user approves).
+    // explain before the UAC prompt. M4-D2: distributed EXEs request
+    // administrator access; retain the workerApply path for development and
+    // legacy non-elevated sessions.
     if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }

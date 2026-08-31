@@ -33,11 +33,10 @@
 //     destroys it regardless) - the destroy-unregister pair lives with the
 //     main window.
 //
-// The window is created UNCONDITIONALLY on the product window path (HIDDEN
-// when advancedOverlayEnabled is false - apply() shows it when the user
-// enables it through the Overlay view; a lazy create would break the enable
-// path). NEVER in headless/boot-apply/apply-profile modes; ui-verify creates
-// it only under RID_MOCK_ADV_OVERLAY=1.
+// The window is created lazily on the product window path, only when
+// advancedOverlayEnabled is true. A disabled feature therefore does not keep a
+// hidden Chromium renderer alive. NEVER in headless/boot-apply/apply-profile
+// modes; ui-verify creates it only under RID_MOCK_ADV_OVERLAY=1.
 
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';

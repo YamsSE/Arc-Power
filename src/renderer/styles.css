@@ -2805,6 +2805,7 @@ input[type="number"] {
 .recording-inline-error { color: var(--warn); margin: 9px 0 0; }
 .recording-input-row { display: flex; gap: 8px; }
 .recording-input, .recording-select, .recording-number, .recording-hotkey, .recording-search { min-height: 34px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: inherit; padding: 7px 9px; }
+.recording-select optgroup { color: var(--text-muted); font-weight: 700; }
 .recording-input, .recording-search { width: 100%; }
 .recording-input-row .recording-input { flex: 1; }
 .recording-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
