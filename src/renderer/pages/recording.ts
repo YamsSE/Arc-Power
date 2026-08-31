@@ -23,6 +23,9 @@ const RESOLUTIONS: Array<[RecordingResolution, string]> = [
   ['4k', '4K'],
 ];
 const DEFAULT_REPLAY_LENGTH_SEC = 30;
+const RECORDING_FPS_PRESETS = new Set([30, 60, 120]);
+const RECORDING_FPS_MIN = 1;
+const RECORDING_FPS_MAX = 360;
 const INTEL_QSV_ENCODERS = new Set(['obs_qsv11_v2', 'obs_qsv11_hevc', 'obs_qsv11_av1']);
 type ClipLibraryFilter = 'all' | 'clips' | 'recordings';
 type ClipLibrarySort = 'newest' | 'oldest';
@@ -57,6 +60,7 @@ let storageInfo: RecordingStorageInfo | null = null;
 let settingsDirty = false;
 let applyingSettings = false;
 let applySettingsButton: HTMLButtonElement | null = null;
+let fpsCustomEditing = false;
 let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
@@ -388,7 +392,7 @@ function captureAspectLabel(width: number, height: number): string {
 function selectedCaptureSource(target: RecordingCaptureTarget): { width: number; height: number; label: string } | null {
   if (target.type === 'window') {
     const window = recordingTargets.windows.find((item) => item.handle === target.windowHandle);
-    return window ? { width: window.width, height: window.height, label: 'Window' } : null;
+    return window ? { width: window.width, height: window.height, label: 'Program window' } : null;
   }
   const display = target.displayId === 'primary'
     ? (recordingTargets.displays.find((item) => item.primary) ?? recordingTargets.displays[0])
@@ -403,7 +407,7 @@ function captureTargetOptions(selected: RecordingCaptureTarget): Array<[string, 
   }
   if (!options.length) options.push(['display:primary', 'Primary display']);
   for (const window of recordingTargets.windows) {
-    options.push([`window:${window.handle}`, `${window.title} · ${window.processName || 'Window'}`]);
+    options.push([`window:${window.handle}`, `Program: ${window.title} · ${window.processName || 'Window'}`]);
   }
   const selectedKey = captureTargetKey(selected);
   if (!options.some(([key]) => key === selectedKey)) {
@@ -412,12 +416,12 @@ function captureTargetOptions(selected: RecordingCaptureTarget): Array<[string, 
   return options;
 }
 
-async function refreshRecordingCaptureTargets(): Promise<void> {
+async function refreshRecordingCaptureTargets(force = false): Promise<void> {
   if (recordingTargetsBusy) return;
   recordingTargetsBusy = true;
   render();
   try {
-    recordingTargets = await api.recordingCaptureTargets();
+    recordingTargets = await api.recordingCaptureTargets(force);
     render();
   } catch (err) {
     toast('error', 'Capture targets', messageOf(err));
@@ -440,17 +444,51 @@ function renderCaptureTargetSettings(): HTMLElement {
   const source = selectedCaptureSource(target);
   const sourceNote = source
     ? `${source.width}×${source.height} · ${captureAspectLabel(source.width, source.height)} detected`
-    : 'Choose a display or live window.';
+    : 'Choose a display or live program window.';
   return el('div', { class: 'recording-capture-target-row' }, [
     field('Capture target', targetSelect, sourceNote),
-    field('Color handling', colorMode, 'Auto follows the selected display.'),
-    button(recordingTargetsBusy ? 'Refreshing…' : 'Refresh targets', () => void refreshRecordingCaptureTargets(), 'btn btn-secondary recording-target-refresh', recordingTargetsBusy),
+    field('Color handling', colorMode, 'Auto follows the selected source.'),
+    button(recordingTargetsBusy ? 'Refreshing…' : 'Refresh targets', () => void refreshRecordingCaptureTargets(true), 'btn btn-secondary recording-target-refresh', recordingTargetsBusy),
   ]);
 }
 
 function renderQualitySettings(): HTMLElement {
   const working = settingsForRender();
-  const fps = select(String(working?.fps ?? 60), [['30', '30 FPS'], ['60', '60 FPS'], ['120', '120 FPS']], (value) => stagePatch({ fps: Number(value) as 30 | 60 | 120 }));
+  const currentFps = Number.isFinite(Number(working?.fps)) ? Math.round(Number(working?.fps)) : 60;
+  const fpsIsPreset = !fpsCustomEditing && RECORDING_FPS_PRESETS.has(currentFps);
+  const fpsSelect = select(fpsIsPreset ? String(currentFps) : 'custom', [
+    ['30', '30 FPS'],
+    ['60', '60 FPS'],
+    ['120', '120 FPS'],
+    ['custom', 'Custom'],
+  ], (value) => {
+    if (value === 'custom') {
+      fpsCustomEditing = true;
+      stagePatch({ fps: currentFps }, true);
+      return;
+    }
+    fpsCustomEditing = false;
+    stagePatch({ fps: Number(value) });
+  });
+  fpsSelect.setAttribute('aria-label', 'Frame rate');
+  const customFps = el('input', {
+    class: 'recording-number recording-fps-custom',
+    type: 'number',
+    min: RECORDING_FPS_MIN,
+    max: RECORDING_FPS_MAX,
+    step: 1,
+    value: currentFps,
+    hidden: fpsIsPreset,
+  }) as HTMLInputElement;
+  customFps.title = `Enter a custom frame rate from ${RECORDING_FPS_MIN} to ${RECORDING_FPS_MAX} FPS`;
+  customFps.addEventListener('change', () => {
+    const value = Number(customFps.value);
+    if (!Number.isFinite(value)) return;
+    const next = Math.min(RECORDING_FPS_MAX, Math.max(RECORDING_FPS_MIN, Math.round(value)));
+    customFps.value = String(next);
+    stagePatch({ fps: next }, false);
+  });
+  const fps = el('div', { class: 'recording-fps-control' }, [fpsSelect, customFps]);
   const selectedResolution = working?.resolution ?? '1080p';
   const bitrateRange = recordingBitrateRange(selectedResolution);
   const bitrate = el('input', {
@@ -1147,6 +1185,7 @@ async function load(): Promise<void> {
     ]);
     settings = loadedSettings;
     draftSettings = cloneRecordingSettings(loadedSettings);
+    fpsCustomEditing = false;
     settingsDirty = false;
     // The startup probe and the page load run concurrently. If the probe
     // pushed a newer encoder list while the clip/settings reads were still
@@ -1314,6 +1353,7 @@ export const recordingPage: Page = {
     draftSettings = null;
     settingsDirty = false;
     applyingSettings = false;
+    fpsCustomEditing = false;
     storageInfo = null;
     recordingTargets = { displays: [], windows: [] };
     recordingTargetsBusy = false;

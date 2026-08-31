@@ -1007,7 +1007,7 @@ export interface RecordingSettings {
   location: string;
   runtimePath: string;
   mode: RecordingMode;
-  fps: 30 | 60 | 120;
+  fps: number;
   resolution: RecordingResolution;
   encoderId: string;
   bitrateKbps: number;

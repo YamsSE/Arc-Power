@@ -17,6 +17,8 @@ const LEGACY_RECORDING_MODES = Object.freeze({
   'always-on': 'manual',
 });
 export const RECORDING_FPS = [30, 60, 120];
+export const RECORDING_FPS_MIN = 1;
+export const RECORDING_FPS_MAX = 360;
 export const RECORDING_RESOLUTIONS = [
   { id: 'default', width: 0, height: 0, label: 'Default' },
   { id: '480p', width: 854, height: 480, label: '480p' },
@@ -105,6 +107,22 @@ export function clampRecordingBitrate(value, resolution = DEFAULT_RECORDING_SETT
 // exactly as entered; the selected resolution must never rewrite it.
 export function normalizeRecordingBitrate(value, fallback = DEFAULT_RECORDING_SETTINGS.bitrateKbps) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/**
+ * Keep the preset list useful in the UI, but accept any practical integer
+ * frame rate when the user chooses Custom. The bounds protect the bundled
+ * encoder/runtime from invalid capture requests without rewriting a valid
+ * custom value to a recommended preset.
+ */
+export function normalizeRecordingFps(value, fallback = DEFAULT_RECORDING_SETTINGS.fps) {
+  const numeric = (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) ? Number(value) : NaN;
+  const fallbackNumeric = (typeof fallback === 'number' || (typeof fallback === 'string' && fallback.trim() !== '')) ? Number(fallback) : NaN;
+  const safeFallback = Number.isFinite(fallbackNumeric)
+    ? Math.min(RECORDING_FPS_MAX, Math.max(RECORDING_FPS_MIN, Math.round(fallbackNumeric)))
+    : DEFAULT_RECORDING_SETTINGS.fps;
+  if (!Number.isFinite(numeric)) return safeFallback;
+  return Math.min(RECORDING_FPS_MAX, Math.max(RECORDING_FPS_MIN, Math.round(numeric)));
 }
 
 function normalizeAudioVolume(value, fallback = 1) {
@@ -250,7 +268,7 @@ export function normalizeRecordingSettings(raw = {}) {
     mode: RECORDING_MODES.includes(source.mode)
       ? source.mode
       : (LEGACY_RECORDING_MODES[source.mode] ?? DEFAULT_RECORDING_SETTINGS.mode),
-    fps: RECORDING_FPS.includes(source.fps) ? source.fps : DEFAULT_RECORDING_SETTINGS.fps,
+    fps: normalizeRecordingFps(source.fps),
     resolution,
     encoderId: boundedString(source.encoderId, DEFAULT_RECORDING_SETTINGS.encoderId, 128),
     bitrateKbps: bitrate,

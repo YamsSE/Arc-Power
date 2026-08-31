@@ -205,7 +205,7 @@ export interface ArcPowerApi {
   recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string }>;
   recordingClipsList(): Promise<RecordingClip[]>;
   recordingStorageInfo(): Promise<RecordingStorageInfo>;
-  recordingCaptureTargets(): Promise<RecordingCaptureTargets>;
+  recordingCaptureTargets(refresh?: boolean): Promise<RecordingCaptureTargets>;
   recordingProcessesList(): Promise<string[]>;
   recordingChooseFolder(): Promise<{ canceled: boolean; location?: string; settings: RecordingSettings }>;
   recordingOpenFolder(): Promise<{ ok: boolean }>;

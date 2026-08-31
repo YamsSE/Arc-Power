@@ -79,14 +79,17 @@ import {
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
-// V2 -> V1 is an ABI compatibility fallback only. Runtime/device failures
-// must remain visible to the caller instead of being hidden by a second API
-// attempt that may report a misleading result.
+// V2 -> V1 is primarily an ABI compatibility fallback. Some Battlemage
+// driver builds expose the V2 symbol but answer NOT_AVAILABLE for the newer
+// surface while the legacy structure still works. Treat that one result as
+// an API-surface absence, not as a dead device; genuine device/KMD failures
+// remain visible to the caller.
 const POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS = new Set([
   CTL_RESULT.ERROR_UNSUPPORTED_FEATURE,
   CTL_RESULT.ERROR_UNSUPPORTED_VERSION,
   CTL_RESULT.ERROR_UNSUPPORTED_SIZE,
   CTL_RESULT.ERROR_NOT_IMPLEMENTED,
+  CTL_RESULT.ERROR_NOT_AVAILABLE,
 ]);
 
 function isPowerTelemetryV2CompatibilityError(result) {

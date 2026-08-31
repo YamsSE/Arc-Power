@@ -284,6 +284,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let closingChild = null;
   let writing = false;
   let lifecycle = Promise.resolve();
+  let machineInfoReady = false;
 
   function recorderForMode(mode, { starting = false } = {}) {
     return (starting ? startingRecorders : activeRecorders).get(mode) ?? null;
@@ -354,6 +355,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     decoder = new StringDecoder('utf8');
     activeRecorders.clear();
     startingRecorders.clear();
+    machineInfoReady = false;
     publish({ available: false, ...captureStatePatch(), error: `Ascent protocol error: ${failure.message}` });
     rejectPending(failure);
     rejectQueued(failure);
@@ -496,6 +498,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
     terminationStarted = false;
     protocolFailure = null;
+    machineInfoReady = false;
     const spawnedChild = spawn(runtime.executable, [], { cwd: runtime.root, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true });
     child = spawnedChild;
     output = '';
@@ -570,6 +573,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     });
     if (child === target) child = null;
     terminationStarted = false;
+    machineInfoReady = false;
     rejectPending(new Error('Ascent process restarted'));
     rejectQueued(new Error('Ascent process restarted'));
   }
@@ -617,13 +621,18 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const audioInputs = normalizeAudioDevices(response.adio_in_devs ?? response.audio_in_devs);
     const audioOutputs = normalizeAudioDevices(response.adio_out_devs ?? response.audio_out_devs);
     publish({ encoders, audioInputs, audioOutputs });
+    machineInfoReady = true;
     return { ...state, encoders, audioInputs, audioOutputs };
   }
 
   async function startInternal(settings, mode = 'video') {
     if (activeRecorders.has(mode) || startingRecorders.has(mode)) throw new Error(`${mode === 'replay' ? 'Replay buffer' : 'Recording'} is already active or a previous start is still pending`);
     await prepareFreshChild();
-    await probeInternal();
+    // The startup probe already validates the bundled runtime and publishes
+    // its encoder/audio inventory. Re-querying machine info before every
+    // capture added an avoidable round trip to every button/hotkey action.
+    // Query again only after a child restart or a failed initial probe.
+    if (!machineInfoReady) await probeInternal();
     const outputPath = settings.outputPath;
     const type = mode === 'replay' ? ASCENT_RECORDER_TYPES.REPLAY : ASCENT_RECORDER_TYPES.VIDEO;
     // Never replace an explicit user selection with Automatic after a failed

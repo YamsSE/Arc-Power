@@ -63,7 +63,7 @@ import { createGameTuningController } from './game-tuning.js';
  *   recordingEngine?: { getState: () => object, probe: () => Promise<object>, startRecording: (settings: object) => Promise<object>, startReplay: (settings: object) => Promise<object>, stop: () => Promise<object>, saveReplayClip: (request: object) => Promise<object>, shutdown: () => Promise<object>, subscribe?: (cb: (state: object) => void) => () => void },
  *   chooseRecordingDirectory?: () => Promise<string|null>,
  *   openRecordingFolder?: (directory: string) => Promise<unknown>,
- *   recordingCaptureTargets?: () => Promise<{ displays: object[], windows: object[] }>,
+ *   recordingCaptureTargets?: (refresh?: boolean) => Promise<{ displays: object[], windows: object[] }>,
  *   refreshRecordingHotkeys?: () => Promise<unknown>,
  *   getRecordingHotkeyState?: () => object,
  *   onRecordingActionResult?: (result: object) => void,

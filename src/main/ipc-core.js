@@ -49,7 +49,7 @@ import { physicalTargetOf } from './gpu-inventory.js';
 import { GameProfileStore, canonicalExePath, normalizeAssociation, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
-import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_CAPTURE_COLOR_MODES, RECORDING_CAPTURE_TARGET_TYPES, RECORDING_FPS, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
+import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_CAPTURE_COLOR_MODES, RECORDING_CAPTURE_TARGET_TYPES, RECORDING_FPS_MAX, RECORDING_FPS_MIN, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
 import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, mediaThumbnailUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
 
 const require = createRequire(import.meta.url);
@@ -124,7 +124,7 @@ function recordingPatch(patch) {
   if (patch.location !== undefined) out.location = recordingAbsolutePath(patch.location, 'location');
   if (patch.runtimePath !== undefined && patch.runtimePath !== '') out.runtimePath = recordingAbsolutePath(patch.runtimePath, 'runtimePath');
   if (patch.mode !== undefined && !RECORDING_MODES.includes(patch.mode)) throw new Error('recording-settings-save: invalid mode');
-  if (patch.fps !== undefined && !RECORDING_FPS.includes(patch.fps)) throw new Error('recording-settings-save: invalid FPS');
+  if (patch.fps !== undefined && (!Number.isSafeInteger(patch.fps) || patch.fps < RECORDING_FPS_MIN || patch.fps > RECORDING_FPS_MAX)) throw new Error('recording-settings-save: invalid FPS');
   if (patch.resolution !== undefined && !RECORDING_RESOLUTIONS.some((item) => item.id === patch.resolution)) throw new Error('recording-settings-save: invalid resolution');
   if (patch.encoderId !== undefined && (typeof patch.encoderId !== 'string' || patch.encoderId.length > 128)) throw new Error('recording-settings-save: invalid encoder id');
   if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
@@ -1318,6 +1318,7 @@ export function createIpcHandlers({
       return;
     }
     const svc = new TelemetryService(backend, deviceId, { pollMs });
+    let lastTelemetryError = null;
     // M4-D2: the pushed sample carries the system stats (CPU util/freq/
     // temp + GPU memory) - the injected sysStats adapter. M17g: the push
     // handler samples the FAST lane per tick (ms-fast native reads:
@@ -1356,7 +1357,31 @@ export function createIpcHandlers({
         ...sample,
       });
     });
-    svc.onPollError(() => { /* stale readouts recover on the next tick */ });
+    // B390/Battlemage driver builds can report the Intel power-telemetry
+    // surface as unavailable even though the OS performance counters remain
+    // usable. Keep the selected device alive and publish those honest OS
+    // fields instead of suppressing the entire Monitoring stream until the
+    // next successful IGCL read. IGCL fields (temperature/clock/power) are
+    // never fabricated by this fallback and remain '-' when unsupported.
+    svc.onPollError((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (detail !== lastTelemetryError) {
+        lastTelemetryError = detail;
+        console.warn(`[telemetry] Intel device ${deviceId} poll degraded: ${detail}`);
+      }
+      void (async () => {
+        let extra = {};
+        try { extra = await sysStats.sampleFast(); } catch { /* honest empty OS fields */ }
+        if (generation !== telemetryGeneration) return;
+        emitTelemetry({
+          t: Date.now(),
+          deviceId,
+          deviceKey: target?.deviceKey ?? null,
+          sessionGeneration: generation,
+          ...extra,
+        });
+      })();
+    });
     await svc.start();
     if (generation !== telemetryGeneration) {
 
@@ -2549,8 +2574,8 @@ export function createIpcHandlers({
         return { location, ...recordingStorageSnapshot(location) };
       },
       'recording-capture-targets': async (...args) => {
-        assertNoPayload(args, 'recording-capture-targets');
-        return recordingCaptureTargets ? recordingCaptureTargets() : { displays: [], windows: [] };
+        if (args.length > 1 || (args.length === 1 && typeof args[0] !== 'boolean')) throw new Error('recording-capture-targets: refresh must be boolean');
+        return recordingCaptureTargets ? recordingCaptureTargets(args[0] === true) : { displays: [], windows: [] };
       },
       'recording-processes-list': async (...args) => {
         assertNoPayload(args, 'recording-processes-list');

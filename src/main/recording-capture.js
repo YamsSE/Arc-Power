@@ -80,7 +80,10 @@ public static class ArcPowerCaptureNative {
 
   public static CaptureTargets GetTargets() {
     var result = new CaptureTargets();
-    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (monitor, hdc, rect, data) => {
+    // The callback's RECT argument is passed by reference by Win32. Keep the
+    // ref marker on the lambda as well; PowerShell's Add-Type compiler rejects
+    // the otherwise implicit callback parameter on current .NET runtimes.
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr monitor, IntPtr hdc, ref RECT rect, IntPtr data) => {
       var info = new MONITORINFOEX();
       info.cbSize = Marshal.SizeOf(typeof(MONITORINFOEX));
       if (!GetMonitorInfo(monitor, ref info)) return true;

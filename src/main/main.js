@@ -1420,16 +1420,25 @@ async function main() {
     dir: store.dir,
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
   });
-  const readRecordingCaptureTargets = async () => {
-    const nativeTargets = await listRecordingCaptureTargets();
-    return mergeRecordingDisplayMetadata(nativeTargets, screen.getAllDisplays());
+  let recordingCaptureTargetsCache = null;
+  let recordingCaptureTargetsPromise = null;
+  const readRecordingCaptureTargets = (refresh = false) => {
+    if (!refresh && recordingCaptureTargetsCache) return Promise.resolve(recordingCaptureTargetsCache);
+    if (recordingCaptureTargetsPromise) return recordingCaptureTargetsPromise;
+    recordingCaptureTargetsPromise = listRecordingCaptureTargets()
+      .then((nativeTargets) => {
+        recordingCaptureTargetsCache = mergeRecordingDisplayMetadata(nativeTargets, screen.getAllDisplays());
+        return recordingCaptureTargetsCache;
+      })
+      .finally(() => { recordingCaptureTargetsPromise = null; });
+    return recordingCaptureTargetsPromise;
   };
-  const captureScreenshot = async ({ target, outputPath }) => {
-    let targets = { displays: [], windows: [] };
-    try { targets = await readRecordingCaptureTargets(); } catch { /* screenshot helper reports unavailable sources */ }
-    const selected = recordingCaptureSelection(target, targets, screen.getPrimaryDisplay());
-    return captureRecordingScreenshot({ desktopCapturer, target: selected.captureTarget, outputPath });
-  };
+  // Screenshot capture can use Electron's source ids directly. Do not run the
+  // PowerShell display/window enumeration first: that query is useful for the
+  // recording engine's native HMONITOR geometry, but it adds several seconds
+  // to a hotkey that should feel immediate. The screenshot helper matches the
+  // persisted window handle or display id and reports a stale source honestly.
+  const captureScreenshot = async ({ target, outputPath }) => captureRecordingScreenshot({ desktopCapturer, target, outputPath });
   const resolveRecordingFfmpegPath = () => {
     let configuredPath = null;
     try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* candidate paths still work */ }
@@ -1452,8 +1461,17 @@ async function main() {
     // starts. Electron's display.id is not an HMONITOR, so the helper keeps
     // the persisted stable name separate from the runtime handle.
     getCaptureDimensions: async (settings) => {
-      let targets = { displays: [], windows: [] };
-      try { targets = await readRecordingCaptureTargets(); } catch { /* use the primary-display fallback below */ }
+      const target = settings?.captureTarget;
+      // A primary-display start should never be held up by the optional
+      // PowerShell inventory. The inventory is warmed at boot and refreshed
+      // by the UI; only a selected secondary display/window needs to wait for
+      // it when no cached native geometry exists yet.
+      let targets = recordingCaptureTargetsCache ?? { displays: [], windows: [] };
+      const needsNativeGeometry = target?.type === 'window'
+        || (target?.type === 'display' && target.displayId && target.displayId !== 'primary');
+      if (needsNativeGeometry && !recordingCaptureTargetsCache) {
+        try { targets = await readRecordingCaptureTargets(); } catch { /* use the primary-display fallback below */ }
+      }
       return recordingCaptureSelection(settings?.captureTarget, targets, screen.getPrimaryDisplay());
     },
     trimReplayClip: ({ path: clipPath, durationMs }) => trimRecordingClipToDuration(clipPath, durationMs, { ffmpegPath: resolveRecordingFfmpegPath() }),
@@ -3074,7 +3092,7 @@ async function main() {
       return result.canceled ? null : (result.filePaths[0] ?? null);
     },
     openRecordingFolder: async (directory) => { await shell.openPath(directory); },
-    recordingCaptureTargets: () => readRecordingCaptureTargets(),
+    recordingCaptureTargets: (refresh = false) => readRecordingCaptureTargets(refresh === true),
     refreshRecordingHotkeys: () => recordingHotkeys.register(),
     getRecordingHotkeyState: () => recordingHotkeys.getState(),
     onRecordingActionResult: showRecordingActionToast,
@@ -3107,6 +3125,12 @@ async function main() {
       console.log(`[recording] startup probe unavailable: ${error?.message ?? String(error)}`);
     });
   }
+  // Warm the optional native display/window geometry in parallel with the
+  // engine probe. Capture actions can then start without launching
+  // PowerShell on their critical path.
+  if (!mock && !uiVerify) void readRecordingCaptureTargets().catch((error) => {
+    console.log(`[recording] capture target inventory unavailable: ${error?.message ?? String(error)}`);
+  });
 
   // M17p: the sysStats/MSR assignment (MOVED here from its pre-window
   // position - the fast-boot reorder: boot-apply gate -> createWindow ->
