@@ -10,6 +10,7 @@ export const ASCENT_EVENTS = Object.freeze({ QUERY_MACHINE_INFO: 1, ERR: 2, READ
 export const ASCENT_ENCODER_START_ERROR_CODES = Object.freeze([-6, -8]);
 export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2']);
 const DEFAULT_SHUTDOWN_MS = 1500;
+const DEFAULT_PROBE_MS = 15000;
 
 /**
  * FFmpeg writes these two informational lines while a normal output closes.
@@ -191,9 +192,12 @@ function normalizeAudioDevices(value) {
     const protocolPair = entry.length === 1 && !('device_id' in object) && !('deviceId' in object) && !('id' in object) && !('name' in object)
       ? entry[0]
       : null;
-    const deviceId = String(object.device_id ?? object.id ?? object.deviceId ?? protocolPair?.[1] ?? (typeof item === 'string' ? item : '')).slice(0, 512);
-    const name = String(object.name ?? object.description ?? protocolPair?.[0] ?? deviceId ?? `Audio device ${index + 1}`).slice(0, 512);
-    return { id: deviceId || `audio-${index}`, deviceId, name };
+    const rawDeviceId = String(object.device_id ?? object.id ?? object.deviceId ?? protocolPair?.[1] ?? (typeof item === 'string' ? item : '')).slice(0, 512);
+    const deviceId = rawDeviceId.toLowerCase() === 'default' ? '' : rawDeviceId;
+    const name = deviceId
+      ? String(object.name ?? object.description ?? protocolPair?.[0] ?? `Audio device ${index + 1}`).slice(0, 512)
+      : 'Default device';
+    return { id: deviceId || `audio-default-${index}`, deviceId, name };
   }).filter((item) => item.deviceId || item.name);
 }
 
@@ -276,7 +280,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // next capture so every applied profile reaches a fresh OBS output.
   let freshChildRequired = false;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], lastEvent: null };
+  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
@@ -554,7 +558,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       rejectQueued(failure ?? new Error('Ascent process exited'));
       protocolFailure = null;
     });
-    publish({ available: true, error: null });
+    publish({ available: true, error: null, probeComplete: false });
     return child;
   }
 
@@ -611,18 +615,38 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   async function probeInternal() {
-    const response = await request(ASCENT_COMMANDS.QUERY_MACHINE_INFO, ASCENT_RECORDER_TYPES.VIDEO, {}, [ASCENT_EVENTS.QUERY_MACHINE_INFO], 5000, null, { acceptUnidentified: true });
-    const encoders = Array.isArray(response.vid_encs) ? response.vid_encs.map((encoder) => {
-      const type = String(encoder.type ?? '');
-      const demoted = demotedEncoders.has(type);
-      const valid = encoder.valid === true;
-      return { ...encoder, type, enumerated: true, probeValid: valid && !demoted, startTested: demoted, startSupported: valid && !demoted, code: demoted ? -8 : null, status: demoted ? 'start rejected' : valid ? '' : 'invalid' };
-    }) : [];
-    const audioInputs = normalizeAudioDevices(response.adio_in_devs ?? response.audio_in_devs);
-    const audioOutputs = normalizeAudioDevices(response.adio_out_devs ?? response.audio_out_devs);
-    publish({ encoders, audioInputs, audioOutputs });
-    machineInfoReady = true;
-    return { ...state, encoders, audioInputs, audioOutputs };
+    try {
+      // The first ascent-obs machine-info query can take several seconds while
+      // Windows initializes QSV/WASAPI. Keep the renderer responsive, but do
+      // not turn a slow cold start into a permanently pending UI state.
+      const response = await request(ASCENT_COMMANDS.QUERY_MACHINE_INFO, ASCENT_RECORDER_TYPES.VIDEO, {}, [ASCENT_EVENTS.QUERY_MACHINE_INFO], DEFAULT_PROBE_MS, null, { acceptUnidentified: true });
+      const encoders = Array.isArray(response.vid_encs) ? response.vid_encs.map((encoder) => {
+        const type = String(encoder.type ?? '');
+        const demoted = demotedEncoders.has(type);
+        const valid = encoder.valid === true;
+        return { ...encoder, type, enumerated: true, probeValid: valid && !demoted, startTested: demoted, startSupported: valid && !demoted, code: demoted ? -8 : null, status: demoted ? 'start rejected' : valid ? '' : 'invalid' };
+      }) : [];
+      const audioInputs = normalizeAudioDevices(response.adio_in_devs ?? response.audio_in_devs);
+      const audioOutputs = normalizeAudioDevices(response.adio_out_devs ?? response.audio_out_devs);
+      publish({ encoders, audioInputs, audioOutputs, probeComplete: true, error: null });
+      machineInfoReady = true;
+      return { ...state, encoders, audioInputs, audioOutputs };
+    } catch (error) {
+      machineInfoReady = false;
+      const detail = error instanceof Error ? error.message : String(error);
+      const failure = /^Ascent protocol error:/i.test(String(state.error ?? ''))
+        ? state.error
+        : `Recording runtime check failed: ${detail}`;
+      publish({
+        available: false,
+        encoders: [],
+        audioInputs: [],
+        audioOutputs: [],
+        probeComplete: false,
+        error: failure,
+      });
+      throw error;
+    }
   }
 
   async function startInternal(settings, mode = 'video') {

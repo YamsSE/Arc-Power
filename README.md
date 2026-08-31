@@ -9,7 +9,7 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.0.5</b> - Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
+<p align="center"><b>1.0.6</b> - Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
 
 Arc Power provides driver-backed controls for Intel Arc graphics cards, including overclocking, fan control, live telemetry, graphics settings, profiles, and an in-game overlay. Controls are shown only when the selected GPU and driver expose them; unsupported controls remain unavailable or read-only.
 

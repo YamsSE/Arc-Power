@@ -216,7 +216,7 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
     pulsePathNodes.set(metric.id, path);
     const card = el('div', { class: 'dashboard-pulse-metric', dataset: { pulseMetric: metric.id } }, [
       el('div', { class: 'dashboard-pulse-metric-head' }, [
-        el('span', { class: 'dashboard-pulse-label' }, [el('span', { text: metric.label }), el('span', { class: 'dashboard-pulse-live-dot', title: 'Live telemetry' })]),
+        el('span', { class: 'dashboard-pulse-label', text: metric.label }),
         el('span', { class: 'dashboard-pulse-inline-value' }, [valueNode, el('span', { class: 'dashboard-pulse-unit', text: metric.unit })]),
       ]),
       svg,
@@ -550,14 +550,6 @@ export const dashboardPage: Page = {
     clear(container);
     container.append(
       el('h1', { class: 'page-title', text: 'Dashboard' }),
-
-      el('div', { class: 'dashboard-quick-actions' }, [
-        el('span', { class: 'dashboard-quick-label', text: 'Quick actions' }),
-        dashboardAction('Open Recording', '#/recording'),
-        dashboardAction('Manage Profiles', '#/profiles'),
-        dashboardAction('Tune GPU', '#/tuning'),
-        dashboardAction('Open Monitoring', '#/monitoring'),
-      ]),
 
       dashboardPulse(ctx),
 

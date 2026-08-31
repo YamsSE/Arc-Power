@@ -40,6 +40,7 @@ let status: RecordingEngineState = {
   encoders: [],
   audioInputs: [],
   audioOutputs: [],
+  probeComplete: false,
   activeModes: { video: false, replay: false },
   hotkeys: { registered: {}, conflicts: {}, error: null },
 };
@@ -297,7 +298,7 @@ function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string
 function encoderOptions(): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
   const known = new Map(status.encoders.filter((encoder) => INTEL_QSV_ENCODERS.has(encoder.type)).map((encoder) => [encoder.type, encoder]));
-  const checking = status.encoders.length === 0
+  const checking = status.probeComplete !== true && status.encoders.length === 0
     && (!status.error || /^Loading recording engine/i.test(status.error));
   for (const [id, label] of [['obs_qsv11_v2', 'Intel H264'], ['obs_qsv11_hevc', 'Intel HEVC'], ['obs_qsv11_av1', 'Intel AV1']] as const) {
     const encoder = known.get(id);
@@ -431,7 +432,14 @@ function captureTargetOptionGroups(selected: RecordingCaptureTarget): Array<Sele
 
   const selectedKey = captureTargetKey(selected);
   const selectedGroup = selected.type === 'window' ? programs : displays;
-  if (!selectedGroup.some(([key]) => key === selectedKey)) {
+  const selectedDisplayIsAvailable = selected.type === 'display'
+    && (selected.displayId === 'primary'
+      ? recordingTargets.displays.length > 0
+      : recordingTargets.displays.some((display) => display.id === selected.displayId));
+  const selectedIsAvailable = selected.type === 'window'
+    ? selectedGroup.some(([key]) => key === selectedKey)
+    : selectedDisplayIsAvailable;
+  if (!selectedIsAvailable) {
     selectedGroup.push([selectedKey, selected.type === 'window'
       ? `${selected.windowTitle || 'Selected window'} (saved)`
       : `${selected.displayId} (saved)`]);
@@ -439,6 +447,12 @@ function captureTargetOptionGroups(selected: RecordingCaptureTarget): Array<Sele
   const groups: Array<SelectOptionGroup<string>> = [['Displays', displays]];
   if (programs.length) groups.push(['Programs', programs]);
   return groups;
+}
+
+function captureTargetControlKey(target: RecordingCaptureTarget): string {
+  if (target.type !== 'display' || target.displayId !== 'primary') return captureTargetKey(target);
+  const primary = recordingTargets.displays.find((display) => display.primary) ?? recordingTargets.displays[0];
+  return primary ? `display:${primary.id}` : 'display:primary';
 }
 
 async function refreshRecordingCaptureTargets(force = false): Promise<void> {
@@ -459,7 +473,7 @@ async function refreshRecordingCaptureTargets(force = false): Promise<void> {
 function renderCaptureTargetSettings(): HTMLElement {
   const working = settingsForRender();
   const target = working?.captureTarget ?? { type: 'display' as const, displayId: 'primary', windowHandle: 0, processName: '', windowTitle: '' };
-  const targetSelect = groupedSelect(captureTargetKey(target), captureTargetOptionGroups(target), (value) => {
+  const targetSelect = groupedSelect(captureTargetControlKey(target), captureTargetOptionGroups(target), (value) => {
     const next = captureTargetFromKey(value);
     if (next) stagePatch({ captureTarget: next });
   });
@@ -575,7 +589,7 @@ function deviceOptions(devices: RecordingAudioDevice[], selected: string): Array
   for (const device of devices) {
     if (device.deviceId && !options.some(([id]) => id === device.deviceId)) options.push([device.deviceId, device.name || device.deviceId]);
   }
-  if (selected && !options.some(([id]) => id === selected)) options.push([selected, `${selected} (saved)`]);
+  if (selected && !options.some(([id]) => id === selected)) options.push([selected, 'Saved device (unavailable)']);
   return options;
 }
 

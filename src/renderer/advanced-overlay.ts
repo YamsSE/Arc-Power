@@ -174,7 +174,15 @@ function acceptTelemetrySample(sample: TelemetrySample | null, deviceId: number,
   // Capabilities come from the same main-process target as telemetry and are
   // authoritative when inventory numbering or labels change.
   const selectedKey = normalizeDeviceKey(live.caps?.deviceKey) ?? normalizeDeviceKey(selected?.deviceKey);
-  if (!telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)) return false;
+  // Prefer durable identity when both sides provide it. Some OS-only or
+  // older inventory rows have no durable key even though their session-local
+  // numeric id is authoritative; reject only a real id/key mismatch so the
+  // panel does not stay blank on those machines while the main dashboard is
+  // already receiving the same sample.
+  const identityMatches = sampleKey !== null && selectedKey !== null
+    ? telemetryMatchesSelection(sample.deviceId, sampleKey, live.deviceId, selectedKey)
+    : sample.deviceId === undefined || sample.deviceId === live.deviceId;
+  if (!identityMatches) return false;
   store.set({ latestSample: sample });
   renderReadout(sample);
   if (activeTab === 'fan') {

@@ -60,7 +60,7 @@ for (const artifact of [
   tempConfig,
   path.join(dist, 'Arc-Power_Installer.exe.blockmap'),
   path.join(dist, 'latest.yml'),
-  path.join(dist, 'arc-power-1.0.5-x64.nsis.7z'),
+  path.join(dist, 'arc-power-1.0.6-x64.nsis.7z'),
 ]) rmSync(artifact, { force: true });
 function buildPortableArtifact(artifactName) {
   writeBuildConfig(artifactName);

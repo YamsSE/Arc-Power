@@ -1039,6 +1039,8 @@ export interface RecordingEngineState {
   encoders: RecordingEncoderState[];
   audioInputs: RecordingAudioDevice[];
   audioOutputs: RecordingAudioDevice[];
+  /** True after the bundled recording runtime has answered its inventory probe. */
+  probeComplete?: boolean;
   hotkeys: { registered: Record<string, string>; conflicts: Record<string, string>; error: string | null };
   lastEvent?: Record<string, unknown> | null;
 }
