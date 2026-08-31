@@ -40,7 +40,7 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain, protocol, screen } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain, protocol, screen, desktopCapturer } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -57,6 +57,9 @@ import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAUL
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
+import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
+import { trimRecordingClipToDuration } from './recording-clip.js';
+import { captureRecordingScreenshot } from './recording-screenshot.js';
 import { createRecordingHotkeys, createRecordingActionHandler } from './recording-hotkeys.js';
 import { createRecordingMediaResponse, mediaRequestPath, mediaThumbnailRequestPath, resolveSafeRecordingPath } from './recording-media.js';
 import { createRecordingThumbnailService } from './recording-thumbnails.js';
@@ -1417,34 +1420,43 @@ async function main() {
     dir: store.dir,
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
   });
+  const readRecordingCaptureTargets = async () => {
+    const nativeTargets = await listRecordingCaptureTargets();
+    return mergeRecordingDisplayMetadata(nativeTargets, screen.getAllDisplays());
+  };
+  const captureScreenshot = async ({ target, outputPath }) => {
+    let targets = { displays: [], windows: [] };
+    try { targets = await readRecordingCaptureTargets(); } catch { /* screenshot helper reports unavailable sources */ }
+    const selected = recordingCaptureSelection(target, targets, screen.getPrimaryDisplay());
+    return captureRecordingScreenshot({ desktopCapturer, target: selected.captureTarget, outputPath });
+  };
+  const resolveRecordingFfmpegPath = () => {
+    let configuredPath = null;
+    try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* candidate paths still work */ }
+    const runtime = resolveAscentRuntime({
+      configuredPath,
+      portableWrapperPath,
+      resourcesPath: app.isPackaged ? process.resourcesPath : null,
+      devPath: app.isPackaged ? null : path.join(__dirname, '..', '..'),
+    });
+    const executable = runtime?.root ? path.join(runtime.root, 'bin', '64bit', 'ffmpeg.exe') : null;
+    try { return executable && fs.statSync(executable).isFile() ? executable : null; } catch { return null; }
+  };
   recordingThumbnailService = createRecordingThumbnailService({
     cacheDir: path.join(app.getPath('userData'), 'recording-thumbnails'),
-    resolveFfmpegPath: () => {
-      let configuredPath = null;
-      try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* candidate paths still work */ }
-      const runtime = resolveAscentRuntime({
-        configuredPath,
-        portableWrapperPath,
-        resourcesPath: app.isPackaged ? process.resourcesPath : null,
-        devPath: app.isPackaged ? null : path.join(__dirname, '..', '..'),
-      });
-      const executable = runtime?.root ? path.join(runtime.root, 'bin', '64bit', 'ffmpeg.exe') : null;
-      try { return executable && fs.statSync(executable).isFile() ? executable : null; } catch { return null; }
-    },
+    resolveFfmpegPath: resolveRecordingFfmpegPath,
   });
   const recordingEngine = createAscentEngine({
     onEncoderDemoted: (encoderId) => recordingStore.demoteEncoder(encoderId),
-    // The monitor source in the bundled runtime captures the primary
-    // display. Its native dimensions must remain the OBS base canvas; the
-    // user's selected recording resolution is an independent output scale.
-    getCaptureDimensions: () => {
-      const display = screen.getPrimaryDisplay();
-      const scaleFactor = Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1;
-      return {
-        captureWidth: Math.max(2, Math.round(display.size.width * scaleFactor)),
-        captureHeight: Math.max(2, Math.round(display.size.height * scaleFactor)),
-      };
+    // Resolve the selected native display/window at the moment capture
+    // starts. Electron's display.id is not an HMONITOR, so the helper keeps
+    // the persisted stable name separate from the runtime handle.
+    getCaptureDimensions: async (settings) => {
+      let targets = { displays: [], windows: [] };
+      try { targets = await readRecordingCaptureTargets(); } catch { /* use the primary-display fallback below */ }
+      return recordingCaptureSelection(settings?.captureTarget, targets, screen.getPrimaryDisplay());
     },
+    trimReplayClip: ({ path: clipPath, durationMs }) => trimRecordingClipToDuration(clipPath, durationMs, { ffmpegPath: resolveRecordingFfmpegPath() }),
     runtimeResolver: () => {
       let configuredPath = null;
       try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* unavailable store -> candidate paths only */ }
@@ -2901,6 +2913,8 @@ async function main() {
     if (!result.ok) {
       const title = action === 'saveClip'
         ? 'Save clip failed'
+        : action === 'screenshot'
+          ? 'Screenshot failed'
         : action === 'start'
           ? replay ? 'Replay buffer failed' : 'Recording failed'
           : 'Recording action failed';
@@ -2920,23 +2934,31 @@ async function main() {
         title: 'Clip saved',
         message: 'The replay clip was added to the clip library.',
       });
+    } else if (action === 'screenshot') {
+      recordingToastHandle?.show({
+        variant: 'success',
+        title: 'Screenshot saved',
+        message: result.outputPath ? `${result.outputPath} was saved to your capture folder.` : 'The screenshot was saved to your capture folder.',
+      });
     }
   };
   const showRecordingStateToast = (state, previous) => {
     if (!state || !previous) return;
-    const started = previous.running !== true && state.running === true;
-    const stopped = previous.running === true && state.running !== true;
-    if (!started && !stopped) return;
-    const replay = (state.mode ?? previous.mode) === 'replay';
-    recordingToastHandle?.show({
-      variant: 'success',
-      title: started
-        ? replay ? 'Replay buffer started' : 'Recording started'
-        : replay ? 'Replay buffer stopped' : 'Recording stopped',
-      message: started
-        ? replay ? 'Recent gameplay is now being kept for clips.' : 'Video capture is now active.'
-        : replay ? 'The replay buffer is no longer active.' : 'Video capture has finished.',
-    });
+    const previousModes = previous.activeModes ?? { video: previous.mode === 'video' && previous.running === true, replay: previous.mode === 'replay' && previous.running === true };
+    const stateModes = state.activeModes ?? { video: state.mode === 'video' && state.running === true, replay: state.mode === 'replay' && state.running === true };
+    for (const mode of ['video', 'replay']) {
+      const wasActive = previousModes[mode] === true;
+      const isActive = stateModes[mode] === true;
+      if (wasActive === isActive) continue;
+      const replay = mode === 'replay';
+      recordingToastHandle?.show({
+        variant: 'success',
+        title: isActive ? replay ? 'Replay buffer started' : 'Recording started' : replay ? 'Replay buffer stopped' : 'Recording stopped',
+        message: isActive
+          ? replay ? 'Recent gameplay is now being kept for clips.' : 'Video capture is now active.'
+          : replay ? 'The replay buffer is no longer active.' : 'Video capture has finished.',
+      });
+    }
   };
   teardown = registerIpc({
     backend,
@@ -3052,6 +3074,7 @@ async function main() {
       return result.canceled ? null : (result.filePaths[0] ?? null);
     },
     openRecordingFolder: async (directory) => { await shell.openPath(directory); },
+    recordingCaptureTargets: () => readRecordingCaptureTargets(),
     refreshRecordingHotkeys: () => recordingHotkeys.register(),
     getRecordingHotkeyState: () => recordingHotkeys.getState(),
     onRecordingActionResult: showRecordingActionToast,
@@ -3066,6 +3089,7 @@ async function main() {
   recordingActionHandler = createRecordingActionHandler({
     getSettings: () => recordingStore.settings(),
     recordingEngine,
+    captureScreenshot,
     onActionResult: (result) => {
       pushRecordingActionResult({ getWindow: () => win, result });
       showRecordingActionToast(result);

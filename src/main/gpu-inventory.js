@@ -744,8 +744,8 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
     async setGraphicsSettings(id, settings) { const d = await route(id); return d.synthetic ? unsupportedResult(settings) : backend.setGraphicsSettings((await writeTarget(id)).backendId, settings); },
     async getGameProfileCapabilities(id) {
       const d = await route(id);
-      if (d.synthetic) return { enduranceGaming: false, reason: 'The selected adapter is read-only.' };
-      return backend.getGameProfileCapabilities?.(d.backendId) ?? { enduranceGaming: false, reason: 'Game Profile driver capabilities are unavailable.' };
+      if (d.synthetic) return { enduranceGaming: false, xeFg: false, xeFgOptions: [], reason: 'The selected adapter is read-only.', xeFgReason: 'The selected adapter is read-only.' };
+      return backend.getGameProfileCapabilities?.(d.backendId) ?? { enduranceGaming: false, xeFg: false, xeFgOptions: [], reason: 'Game Profile driver capabilities are unavailable.', xeFgReason: 'Game Profile driver capabilities are unavailable.' };
     },
     async setGameProfileSettings(id, exePath, settings, enabled = true) {
       const d = await writeTarget(id);

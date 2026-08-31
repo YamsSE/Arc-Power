@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn as spawnProcess } from 'node:child_process';
-import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, RECORDING_RESOLUTIONS, resolveRecordingRuntimeCandidates, normalizeRecordingAudioSettings } from './recording-pure.js';
+import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, recordingOutputDimensions, resolveRecordingRuntimeCandidates, normalizeRecordingAudioSettings } from './recording-pure.js';
 
 export const ASCENT_COMMANDS = Object.freeze({ SHUTDOWN: 1, QUERY_MACHINE_INFO: 2, START: 3, STOP: 4, START_REPLAY_CAPTURE: 8, STOP_REPLAY_CAPTURE: 9, SPLIT_VIDEO: 12 });
 export const ASCENT_RECORDER_TYPES = Object.freeze({ VIDEO: 1, REPLAY: 2, STREAMING: 3 });
@@ -47,8 +47,6 @@ export function buildAscentCommand(command, identifier, recorderType = ASCENT_RE
   return { ...fields, cmd: command, identifier, recorder_type: recorderType };
 }
 
-function resolutionOf(id) { return RECORDING_RESOLUTIONS.find((item) => item.id === id) ?? RECORDING_RESOLUTIONS.find((item) => item.id === '1080p'); }
-
 function positiveDimension(value) {
   const dimension = Number(value);
   return Number.isFinite(dimension) && dimension > 0 ? Math.max(2, Math.round(dimension)) : null;
@@ -61,6 +59,28 @@ function captureDimensionsOf(settings = {}) {
     width: width ?? 1920,
     height: height ?? 1080,
   };
+}
+
+function captureSourceOf(settings = {}) {
+  const source = settings.captureSource && typeof settings.captureSource === 'object' ? settings.captureSource : {};
+  if (source.type === 'window' && Number.isSafeInteger(source.windowHandle) && source.windowHandle > 0) {
+    return {
+      monitor: { enable: false, force: false, cursor: false, monitor_handle: 0 },
+      window: { enable: true, force: true, cursor: false, window_handle: source.windowHandle },
+    };
+  }
+  const monitorHandle = Number.isSafeInteger(source.monitorHandle) && source.monitorHandle >= 0 && source.monitorHandle <= 0xffffffff
+    ? source.monitorHandle
+    : 0;
+  return { monitor: { enable: true, force: false, cursor: false, monitor_handle: monitorHandle } };
+}
+
+function colorSettingsOf(settings = {}) {
+  const mode = settings.captureColorMode;
+  const hdr = mode === 'hdr' || (mode !== 'sdr' && settings.captureHdr === true);
+  return hdr
+    ? { color_format: 'P010', color_space: 'Rec2100PQ' }
+    : { color_format: 'NV12', color_space: 'Rec709' };
 }
 
 function encoderProfileOf(encoderId) {
@@ -178,13 +198,13 @@ function normalizeAudioDevices(value) {
 }
 
 export function buildAscentStartPayload(settings, outputPath, recorderType = ASCENT_RECORDER_TYPES.VIDEO, identifier = 0) {
-  const resolution = resolutionOf(settings.resolution);
   const capture = captureDimensionsOf(settings);
-  const outputWidth = resolution.width || capture.width;
-  const outputHeight = resolution.height || capture.height;
+  const output = recordingOutputDimensions(settings.resolution, capture.width, capture.height);
+  const outputWidth = output.width;
+  const outputHeight = output.height;
   const encoderId = settings.encoderId;
   return buildAscentCommand(ASCENT_COMMANDS.START, identifier, recorderType, {
-    sources: { monitor: { enable: true, force: false, cursor: false, monitor_handle: 0 } },
+    sources: captureSourceOf(settings),
     video_settings: {
       fps: settings.fps,
       // The base canvas is the monitor's native capture size. The requested
@@ -197,10 +217,7 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       // runtime's empty-extra-settings defaults. NV12 + Rec.709 + partial
       // range is the normal SDR hardware-capture path and keeps the encoded
       // file's color metadata aligned with the pixels sent to the encoder.
-      extra_options: {
-        color_format: 'NV12',
-        color_space: 'Rec709',
-      },
+      extra_options: colorSettingsOf(settings),
       video_encoder: {
         id: encoderId,
         // Ascent-OBS maps the QSV name "quality" to TU1, which is the
@@ -239,7 +256,7 @@ function isEncoderStartRejection(error) {
   return Number.isInteger(error?.code) && ASCENT_ENCODER_START_ERROR_CODES.includes(error.code);
 }
 
-export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
+export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, trimReplayClip = null, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
   let child = null;
   let output = '';
   let decoder = new StringDecoder('utf8');
@@ -247,8 +264,11 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let disposed = false;
   let protocolFailure = null;
   let terminationStarted = false;
-  let activeRecorder = null;
-  let startingRecorder = null;
+  // Video recording and the replay buffer are separate Ascent recorder
+  // instances. Keep their identities independently so one STOP cannot
+  // accidentally tear down the other capture.
+  const activeRecorders = new Map();
+  const startingRecorders = new Map();
   let replayCapture = null;
   // Ascent keeps the OBS output object alive after STOP. A later START in
   // that same child can therefore retain the previous encoder/bitrate even
@@ -256,7 +276,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // next capture so every applied profile reaches a fresh OBS output.
   let freshChildRequired = false;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], lastEvent: null };
+  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], lastEvent: null };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
@@ -264,6 +284,38 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let closingChild = null;
   let writing = false;
   let lifecycle = Promise.resolve();
+
+  function recorderForMode(mode, { starting = false } = {}) {
+    return (starting ? startingRecorders : activeRecorders).get(mode) ?? null;
+  }
+
+  function findRecorderForEvent(mode, identifier, { preferStarting = false } = {}) {
+    const starting = recorderForMode(mode, { starting: true });
+    const active = recorderForMode(mode);
+    if (preferStarting && starting && (identifier === null || starting.identifier === identifier)) return starting;
+    if (active && (identifier === null || active.identifier === identifier)) return active;
+    if (starting && (identifier === null || starting.identifier === identifier)) return starting;
+    return null;
+  }
+
+  function captureStatePatch() {
+    const active = [...activeRecorders.values()];
+    const activeModes = {
+      video: activeRecorders.has('video'),
+      replay: activeRecorders.has('replay'),
+    };
+    const startedAt = active.length
+      ? Math.min(...active.map((recorder) => Number.isFinite(recorder.startedAt) ? recorder.startedAt : clock()))
+      : null;
+    return {
+      running: active.length > 0,
+      // Keep the historical single mode field for consumers that only show
+      // one label. activeModes is authoritative when both are running.
+      mode: activeModes.video ? 'video' : activeModes.replay ? 'replay' : null,
+      activeModes,
+      startedAt,
+    };
+  }
 
   function serialize(operation) {
     const run = lifecycle.then(operation, operation);
@@ -300,7 +352,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     protocolFailure = failure;
     output = '';
     decoder = new StringDecoder('utf8');
-    publish({ available: false, running: false, mode: null, startedAt: null, error: `Ascent protocol error: ${failure.message}` });
+    activeRecorders.clear();
+    startingRecorders.clear();
+    publish({ available: false, ...captureStatePatch(), error: `Ascent protocol error: ${failure.message}` });
     rejectPending(failure);
     rejectQueued(failure);
     terminateChild();
@@ -312,48 +366,53 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const identifier = Number.isInteger(message.identifier) ? message.identifier : null;
     const stopped = event === ASCENT_EVENTS.RECORDING_STOPPED || event === ASCENT_EVENTS.REPLAY_STOPPED;
     const started = event === ASCENT_EVENTS.RECORDING_STARTED || event === ASCENT_EVENTS.REPLAY_STARTED;
-    if (event === ASCENT_EVENTS.READY && startingRecorder && (identifier === null || identifier === startingRecorder.identifier)) {
-      startingRecorder.ready = true;
+    const eventMode = event === ASCENT_EVENTS.REPLAY_STARTED || event === ASCENT_EVENTS.REPLAY_STOPPED ? 'replay' : 'video';
+    if (event === ASCENT_EVENTS.READY) {
+      for (const recorder of startingRecorders.values()) {
+        if (identifier === null || identifier === recorder.identifier) recorder.ready = true;
+      }
     }
-    const recorderForEvent = activeRecorder && (identifier === null || identifier === activeRecorder.identifier)
-      ? activeRecorder
-      : startingRecorder && (identifier === null || identifier === startingRecorder.identifier)
-        ? startingRecorder
+    const recorderForEvent = started
+      ? findRecorderForEvent(eventMode, identifier, { preferStarting: true })
+      : stopped
+        ? findRecorderForEvent(eventMode, identifier)
         : null;
     if (started && recorderForEvent) {
-      activeRecorder = { ...recorderForEvent };
+      const active = { ...recorderForEvent, startedAt: recorderForEvent.startedAt ?? clock() };
+      activeRecorders.set(recorderForEvent.mode, active);
       if (recorderForEvent.cancelRequested) {
         recorderForEvent.startedAfterCancel = true;
         if (!recorderForEvent.stopInFlight) {
-          void stopInternal().catch((error) => {
-            // Keep activeRecorder intact when recovery fails so the user can
+          void stopInternal(recorderForEvent.mode).catch((error) => {
+            // Keep the active recorder intact when recovery fails so the user can
             // retry Stop. Surface the backend failure instead of creating an
             // unhandled rejection from this event-driven recovery path.
             publish({ error: `The recording started after cancellation and could not be stopped automatically: ${error?.message ?? String(error)}. Stop recording manually.` });
           });
         }
       } else {
-        startingRecorder = null;
+        startingRecorders.delete(recorderForEvent.mode);
       }
     }
     if (event === ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY && replayCapture?.bufferIdentifier === identifier) replayCapture = null;
     if (event === ASCENT_EVENTS.REPLAY_STOPPED) replayCapture = null;
-    if (stopped && (!activeRecorder || identifier === null || identifier === activeRecorder.identifier)) {
-      const stoppedActive = activeRecorder;
-      activeRecorder = null;
-      if (identifier === null || !startingRecorder || identifier === startingRecorder.identifier) {
+    if (stopped && recorderForEvent) {
+      const stoppedActive = activeRecorders.get(recorderForEvent.mode);
+      if (identifier === null || stoppedActive?.identifier === identifier) activeRecorders.delete(recorderForEvent.mode);
+      const starting = startingRecorders.get(recorderForEvent.mode);
+      if (identifier === null || !starting || identifier === starting.identifier) {
         // Keep a timed-out/cancel-requested pending start until it has either
         // produced STARTED or the child exits. A STOPPED event can race ahead
         // of that STARTED event; dropping the identity here would make a
         // later backend capture impossible for stop() to reach.
-        if (!startingRecorder?.cancelRequested || stoppedActive) startingRecorder = null;
+        if (!starting?.cancelRequested || stoppedActive) startingRecorders.delete(recorderForEvent.mode);
       }
     }
     const startedMode = recorderForEvent?.mode ?? (event === ASCENT_EVENTS.REPLAY_STARTED ? 'replay' : 'video');
     publish({
       lastEvent: { ...message, at: clock() },
-      ...(started && recorderForEvent ? { running: true, mode: startedMode, startedAt: state.startedAt ?? clock(), error: null } : {}),
-      ...(stopped ? { running: false, mode: null, startedAt: null } : {}),
+      ...(started && recorderForEvent ? { ...captureStatePatch(), error: null } : {}),
+      ...(stopped ? captureStatePatch() : {}),
     });
     let waiter = identifier === null ? null : pending.get(identifier);
     let waiterIdentifier = identifier;
@@ -468,7 +527,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // child has already started. Never let the old process overwrite the
       // state or pending commands belonging to the replacement.
       if (retiredChildren.has(spawnedChild)) return;
-      publish({ available: false, running: false, mode: null, startedAt: null, error: error.message });
+      activeRecorders.clear();
+      startingRecorders.clear();
+      publish({ available: false, ...captureStatePatch(), error: error.message });
       rejectPending(error);
       rejectQueued(error);
     });
@@ -481,11 +542,11 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       const failure = protocolFailure;
       closingChild = spawnedChild;
       child = null;
-      activeRecorder = null;
-      startingRecorder = null;
+      activeRecorders.clear();
+      startingRecorders.clear();
       replayCapture = null;
       terminationStarted = false;
-      publish({ available: false, running: false, mode: null, startedAt: null, error: failure ? `Ascent protocol error: ${failure.message}` : disposed ? null : `Ascent exited (${code ?? signal ?? 'unknown'})` });
+      publish({ available: false, ...captureStatePatch(), error: failure ? `Ascent protocol error: ${failure.message}` : disposed ? null : `Ascent exited (${code ?? signal ?? 'unknown'})` });
       rejectPending(failure ?? new Error('Ascent process exited'));
       rejectQueued(failure ?? new Error('Ascent process exited'));
       protocolFailure = null;
@@ -515,6 +576,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
 
   async function prepareFreshChild() {
     if (!freshChildRequired) return;
+    // A running recorder must keep the shared Ascent child alive. If the
+    // other capture is still active, defer the fresh-child restart until the
+    // last recorder has stopped.
+    if (activeRecorders.size > 0 || startingRecorders.size > 0) return;
     freshChildRequired = false;
     await closeChildGracefully();
   }
@@ -556,7 +621,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   async function startInternal(settings, mode = 'video') {
-    if (activeRecorder || startingRecorder || state.running) throw new Error('Ascent recorder is already active or a previous start is still pending');
+    if (activeRecorders.has(mode) || startingRecorders.has(mode)) throw new Error(`${mode === 'replay' ? 'Replay buffer' : 'Recording'} is already active or a previous start is still pending`);
     await prepareFreshChild();
     await probeInternal();
     const outputPath = settings.outputPath;
@@ -567,14 +632,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // honored or fail with the actual encoder availability message.
     const encoderId = resolveRecordingEncoder(settings.encoderId, state.encoders);
     let captureDimensions = null;
-    try { captureDimensions = getCaptureDimensions?.(); } catch { /* display enumeration is best effort */ }
+    try { captureDimensions = await getCaptureDimensions?.(settings); } catch { /* display enumeration is best effort */ }
     const payload = buildAscentStartPayload({ ...settings, encoderId, ...captureDimensions }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
-    startingRecorder = { identifier, type, mode, ready: false };
+    startingRecorders.set(mode, { identifier, type, mode, ready: false });
     try {
       await request(payload.cmd, type, fields, [mode === 'replay' ? ASCENT_EVENTS.REPLAY_STARTED : ASCENT_EVENTS.RECORDING_STARTED], startTimeoutMs, identifier);
     } catch (error) {
+      const startingRecorder = startingRecorders.get(mode);
       if (startingRecorder?.identifier === identifier && error?.code === 'ASCENT_TIMEOUT' && startingRecorder.ready) {
         // A READY event means the backend accepted the start, but the actual
         // started event may still arrive after the request window. Keep the
@@ -583,7 +649,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         startingRecorder.timedOut = true;
         publish({ error: 'Recording start is still pending; stop to cancel it.' });
       } else if (startingRecorder?.identifier === identifier) {
-        startingRecorder = null;
+        startingRecorders.delete(mode);
       }
       const encoderId = payload.video_settings.video_encoder.id;
       if (isEncoderStartRejection(error) && state.encoders.some((item) => item.type === encoderId)) {
@@ -605,13 +671,14 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     return state;
   }
 
-  async function stopInternal() {
+  async function stopInternal(requestedMode = null) {
     if (!child) return state;
-    const recorder = activeRecorder ?? startingRecorder;
+    const modes = requestedMode === 'video' || requestedMode === 'replay' ? [requestedMode] : ['video', 'replay'];
+    const recorder = modes.map((mode) => activeRecorders.get(mode) ?? startingRecorders.get(mode)).find(Boolean);
     if (!recorder) return state;
     if (recorder.stopInFlight) return state;
-    const wasActive = activeRecorder?.identifier === recorder.identifier;
-    if (!activeRecorder && startingRecorder?.identifier === recorder.identifier) recorder.cancelRequested = true;
+    const wasActive = activeRecorders.get(recorder.mode)?.identifier === recorder.identifier;
+    if (!wasActive && startingRecorders.get(recorder.mode)?.identifier === recorder.identifier) recorder.cancelRequested = true;
     recorder.stopInFlight = true;
     const stopEvent = recorder.type === ASCENT_RECORDER_TYPES.REPLAY ? ASCENT_EVENTS.REPLAY_STOPPED : ASCENT_EVENTS.RECORDING_STOPPED;
     try {
@@ -620,17 +687,18 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // retain the pre-request identity when deciding whether the next start
       // needs a fresh OBS child.
       const stoppedActive = wasActive;
-      if (stoppedActive) activeRecorder = null;
-      if (startingRecorder?.identifier === recorder.identifier && (stoppedActive || startingRecorder.startedAfterCancel)) startingRecorder = null;
+      if (stoppedActive) activeRecorders.delete(recorder.mode);
+      const starting = startingRecorders.get(recorder.mode);
+      if (starting?.identifier === recorder.identifier && (stoppedActive || starting.startedAfterCancel)) startingRecorders.delete(recorder.mode);
       if (stoppedActive) freshChildRequired = true;
-      publish({ running: false, mode: null, startedAt: null });
+      publish(captureStatePatch());
       return state;
     } finally {
       recorder.stopInFlight = false;
     }
   }
 
-  async function stopReplayClipInternal(identifier = activeRecorder?.identifier) {
+  async function stopReplayClipInternal(identifier = activeRecorders.get('replay')?.identifier) {
     if (!Number.isSafeInteger(identifier)) throw new Error('Replay buffer is not active');
     return request(ASCENT_COMMANDS.STOP_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, {}, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY], 10000, identifier);
   }
@@ -666,9 +734,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   async function saveReplayClipInternal({ path: clipPath, headDuration, thumbnailFolder }) {
-    if (!activeRecorder || activeRecorder.type !== ASCENT_RECORDER_TYPES.REPLAY) throw new Error('Start the replay buffer before saving a clip');
+    const activeReplay = activeRecorders.get('replay');
+    if (!activeReplay || activeReplay.type !== ASCENT_RECORDER_TYPES.REPLAY) throw new Error('Start the replay buffer before saving a clip');
     if (replayCapture && !(await recoverReplayCapture())) throw new Error('A replay clip is still being finalized; stop and restart the replay buffer before trying again');
-    const bufferIdentifier = activeRecorder.identifier;
+    const bufferIdentifier = activeReplay.identifier;
     const captureIdentifier = nextIdentifier++;
     replayCapture = { bufferIdentifier, captureIdentifier, phase: 'starting' };
     try {
@@ -678,6 +747,13 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       replayCapture.phase = 'capturing';
       const response = await stopReplayClipInternal(bufferIdentifier);
       replayCapture = null;
+      // The native replay output can include the previous keyframe/PTS lead-in
+      // even when the requested head duration is shorter. Bound the completed
+      // file to the requested tail after the runtime has released it.
+      if (typeof trimReplayClip === 'function') {
+        await waitForReplayFile(clipPath);
+        try { await trimReplayClip({ path: clipPath, durationMs: headDuration }); } catch { /* preserve the runtime output if trimming is unavailable */ }
+      }
       return response;
     } catch (error) {
       // Some runtime builds finalize the file and then emit a second
@@ -709,12 +785,13 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   async function shutdownInternal() {
     disposed = true;
     if (!child) return state;
-    if (state.running || startingRecorder) {
+    if (state.running || startingRecorders.size > 0) {
       try { await Promise.race([stopInternal(), new Promise((resolve) => setTimeout(resolve, shutdownMs))]); } catch { /* kill fallback below */ }
     }
     await closeChildGracefully();
     freshChildRequired = false;
-    activeRecorder = null;
+    activeRecorders.clear();
+    startingRecorders.clear();
     rejectPending(new Error('Ascent engine shut down'));
     rejectQueued(new Error('Ascent engine shut down'));
     return state;
@@ -725,7 +802,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     probe: () => serialize(probeInternal),
     startRecording: (settings) => serialize(() => startInternal(settings, 'video')),
     startReplay: (settings) => serialize(() => startInternal(settings, 'replay')),
-    stop: () => serialize(stopInternal),
+    stop: (mode = null) => serialize(() => stopInternal(mode)),
     saveReplayClip: (settings) => serialize(() => saveReplayClipInternal(settings)),
     stopReplayClip: (identifier) => serialize(() => stopReplayClipInternal(identifier)),
     shutdown: () => serialize(shutdownInternal),

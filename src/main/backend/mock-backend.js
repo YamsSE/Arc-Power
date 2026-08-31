@@ -1049,11 +1049,15 @@ export class MockBackend {
     const integratedOrMobile = isIntegratedStyleDevice(entry.device)
       || /\b(?:Mobile|(?:A|B)\d{3,4}M)\b/i.test(name);
     const supported = integratedOrMobile && this._enduranceGamingSupported;
+    const xeFg = id === 0 && !this._graphicsUnsupported && !this._noIntel && GRAPHICS_FIXTURE.supported.frameGen === true;
     return {
       enduranceGaming: supported,
+      xeFg,
+      xeFgOptions: xeFg ? [...GRAPHICS_FIXTURE.supportedOptions.frameGen] : [],
       reason: supported ? null : (integratedOrMobile
         ? 'The mock driver does not expose Endurance Gaming for this fixture.'
         : 'Endurance Gaming is available only on integrated or mobile GPUs.'),
+      xeFgReason: xeFg ? null : 'XeFG is unavailable for this graphics adapter.',
     };
   }
 
@@ -1070,10 +1074,14 @@ export class MockBackend {
     }
     const controls = ['enduranceGaming', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
       .filter((key) => settings[key] !== null && settings[key] !== undefined);
-    const enduranceCaps = await this.getGameProfileCapabilities(id);
-    if (settings.enduranceGaming !== undefined && settings.enduranceGaming !== null && !enduranceCaps.enduranceGaming) {
+    const profileCaps = await this.getGameProfileCapabilities(id);
+    if (settings.enduranceGaming !== undefined && settings.enduranceGaming !== null && !profileCaps.enduranceGaming) {
       result.ok = false;
-      result.perControl.enduranceGaming = { ok: false, errorCode: 'unsupported', message: enduranceCaps.reason };
+      result.perControl.enduranceGaming = { ok: false, errorCode: 'unsupported', message: profileCaps.reason };
+    }
+    if (settings.frameGenOverride !== undefined && settings.frameGenOverride !== null && !profileCaps.xeFg) {
+      result.ok = false;
+      result.perControl.frameGenOverride = { ok: false, errorCode: 'unsupported', message: profileCaps.xeFgReason };
     }
     const previous = this._gameGraphics.get(mapKey) ?? {};
     const next = { ...previous };

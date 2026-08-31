@@ -12,6 +12,7 @@ import type {
   DeviceState,
   GameApplication,
   GameAssociation,
+  GameProfileCapabilities,
   GameProfilesEnvelope,
   DisplayApplyResponse,
   DisplaySettings,
@@ -34,6 +35,7 @@ import type {
   RegistryApplyResponse,
   RecordingClip,
   RecordingClipDeleteResult,
+  RecordingCaptureTargets,
   RecordingEngineState,
   RecordingActionResult,
   RecordingNotification,
@@ -185,7 +187,7 @@ export interface ArcPowerApi {
   gamesScan(): Promise<{ apps: GameApplication[]; error?: string; sidecarError?: string }>;
   gameCatalogList(): Promise<GameCatalogEnvelope>;
   gameCatalogAdd(): Promise<GameCatalogEnvelope & { canceled: boolean }>;
-  gameProfileCapabilities(deviceId: number): Promise<{ enduranceGaming: boolean; reason?: string | null }>;
+  gameProfileCapabilities(deviceId: number): Promise<GameProfileCapabilities>;
   gameCatalogSync(apps: GameApplication[]): Promise<{ catalog: GameCatalogEntry[] }>;
   gameSettingsSave(settings: Partial<GameSettingsRecord> & { exePath: string }): Promise<{ settings: GameSettingsRecord; apply?: { ok: boolean; skipped?: boolean; errorCode?: string; message?: string; perControl?: Record<string, unknown> } }>;
   gameSettingsDelete(settings: { exePath: string }): Promise<GameCatalogEnvelope>;
@@ -198,11 +200,12 @@ export interface ArcPowerApi {
   recordingRuntimeProbe(): Promise<RecordingEngineState>;
   recordingStatus(): Promise<RecordingEngineState>;
   recordingStart(): Promise<{ state: RecordingEngineState; outputPath: string }>;
-  recordingStop(): Promise<RecordingEngineState>;
+  recordingStop(mode?: 'video' | 'replay' | null): Promise<RecordingEngineState>;
   recordingReplayStart(): Promise<{ state: RecordingEngineState; outputPath: null }>;
   recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string }>;
   recordingClipsList(): Promise<RecordingClip[]>;
   recordingStorageInfo(): Promise<RecordingStorageInfo>;
+  recordingCaptureTargets(): Promise<RecordingCaptureTargets>;
   recordingProcessesList(): Promise<string[]>;
   recordingChooseFolder(): Promise<{ canceled: boolean; location?: string; settings: RecordingSettings }>;
   recordingOpenFolder(): Promise<{ ok: boolean }>;

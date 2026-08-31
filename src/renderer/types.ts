@@ -833,6 +833,16 @@ export interface GameCatalogEntry extends GameApplication {
   updatedAt: string;
 }
 
+/** Driver-verified features that can be saved against one executable. */
+export interface GameProfileCapabilities {
+  enduranceGaming: boolean;
+  /** XeFG is the per-game frame-generation multiplier exposed by IGCL. */
+  xeFg: boolean;
+  xeFgOptions: FrameGenOverride[];
+  reason?: string | null;
+  xeFgReason?: string | null;
+}
+
 export interface GameSettingsRecord {
   exePath: string;
   enabled: boolean;
@@ -943,8 +953,41 @@ export interface DisplayApplyResponse {
 export type RecordingMode = 'manual' | 'clips';
 export type RecordingTab = 'manual' | 'clips' | 'audio';
 export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
-export interface RecordingHotkeys { start: string; stop: string; saveClip: string; }
+export interface RecordingHotkeys { start: string; stop: string; saveClip: string; screenshot: string; }
 export type RecordingAudioSourceMode = 'system' | 'custom';
+export type RecordingCaptureTargetType = 'display' | 'window';
+export type RecordingCaptureColorMode = 'auto' | 'sdr' | 'hdr';
+export interface RecordingCaptureTarget {
+  type: RecordingCaptureTargetType;
+  displayId: string;
+  windowHandle: number;
+  processName: string;
+  windowTitle: string;
+}
+export interface RecordingCaptureDisplay {
+  id: string;
+  label: string;
+  handle: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
+  hdr?: boolean;
+}
+export interface RecordingCaptureWindow {
+  handle: number;
+  title: string;
+  processName: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+export interface RecordingCaptureTargets {
+  displays: RecordingCaptureDisplay[];
+  windows: RecordingCaptureWindow[];
+}
 export interface RecordingMicrophoneSettings { enabled: boolean; deviceId: string; volume: number; mono: boolean; }
 export interface RecordingSystemAudioSettings { enabled: boolean; deviceId: string; volume: number; }
 export interface RecordingAudioSettings {
@@ -968,6 +1011,8 @@ export interface RecordingSettings {
   resolution: RecordingResolution;
   encoderId: string;
   bitrateKbps: number;
+  captureTarget: RecordingCaptureTarget;
+  captureColorMode: RecordingCaptureColorMode;
   replayLengthSec: number;
   audio: RecordingAudioSettings;
   hotkeys: RecordingHotkeys;
@@ -987,6 +1032,8 @@ export interface RecordingEngineState {
   available: boolean;
   running: boolean;
   mode: 'video' | 'replay' | null;
+  /** Both capture modes may be active at the same time. */
+  activeModes?: { video: boolean; replay: boolean };
   startedAt: number | null;
   error: string | null;
   encoders: RecordingEncoderState[];
@@ -995,13 +1042,14 @@ export interface RecordingEngineState {
   hotkeys: { registered: Record<string, string>; conflicts: Record<string, string>; error: string | null };
   lastEvent?: Record<string, unknown> | null;
 }
-export type RecordingAction = 'start' | 'stop' | 'saveClip';
+export type RecordingAction = 'start' | 'stop' | 'saveClip' | 'screenshot';
 /** Raw main-process engine state; the renderer-only hotkeys envelope is added by IPC state pushes. */
 export type RecordingActionState = Omit<RecordingEngineState, 'hotkeys'>;
 export interface RecordingActionResult {
   action: RecordingAction;
   ok: boolean;
   error: string | null;
+  outputPath?: string;
   preActionMode?: RecordingEngineState['mode'];
   requestedMode?: RecordingEngineState['mode'];
   didStop?: boolean;

@@ -3,7 +3,7 @@
 import { el, clear } from '../dom.ts';
 import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
-import type { RecordingAudioDevice, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
+import type { RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
 import { recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
@@ -14,7 +14,7 @@ const TABS: Array<[RecordingTab, string, string]> = [
   ['audio', 'Audio', 'Configure microphone and sound capture.'],
 ];
 const RESOLUTIONS: Array<[RecordingResolution, string]> = [
-  ['default', 'Default'],
+  ['default', 'Auto (source)'],
   ['480p', '480p'],
   ['720p', '720p'],
   ['900p', '900p'],
@@ -37,6 +37,7 @@ let status: RecordingEngineState = {
   encoders: [],
   audioInputs: [],
   audioOutputs: [],
+  activeModes: { video: false, replay: false },
   hotkeys: { registered: {}, conflicts: {}, error: null },
 };
 let clips: RecordingClip[] = [];
@@ -49,6 +50,8 @@ let unsubscribeRecordingState: (() => void) | null = null;
 let playerVideo: HTMLVideoElement | null = null;
 let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
+let recordingTargets: RecordingCaptureTargets = { displays: [], windows: [] };
+let recordingTargetsBusy = false;
 let draftSettings: RecordingSettings | null = null;
 let storageInfo: RecordingStorageInfo | null = null;
 let settingsDirty = false;
@@ -143,6 +146,7 @@ function cloneRecordingSettings(value: RecordingSettings): RecordingSettings {
       customProcesses: [...value.audio.customProcesses],
     },
     hotkeys: { ...value.hotkeys },
+    captureTarget: { ...value.captureTarget },
   };
 }
 
@@ -159,6 +163,7 @@ function mergeRecordingSettings(base: RecordingSettings, patch: RecordingSetting
       customProcesses: audioPatch?.customProcesses ? [...audioPatch.customProcesses] : [...base.audio.customProcesses],
     },
     hotkeys: { ...base.hotkeys, ...(patch.hotkeys ?? {}) },
+    captureTarget: { ...base.captureTarget, ...(patch.captureTarget ?? {}) },
   } as RecordingSettings;
 }
 
@@ -231,6 +236,8 @@ function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettings
     resolution: value.resolution,
     encoderId: value.encoderId,
     bitrateKbps: value.bitrateKbps,
+    captureTarget: { ...value.captureTarget },
+    captureColorMode: value.captureColorMode,
     replayLengthSec: value.replayLengthSec,
     audio: {
       microphone: { ...value.audio.microphone },
@@ -314,15 +321,15 @@ function renderTabs(): HTMLElement {
 }
 
 function renderCaptureActions(): HTMLElement {
-  const recordingRunning = status.running && status.mode === 'video';
-  const replayRunning = status.running && status.mode === 'replay';
+  const recordingRunning = status.activeModes?.video === true || (!status.activeModes && status.running && status.mode === 'video');
+  const replayRunning = status.activeModes?.replay === true || (!status.activeModes && status.running && status.mode === 'replay');
   const captureNeedsApply = settingsDirty || applyingSettings;
   return el('div', { class: 'recording-capture-actions' }, [
-    button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture() : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || replayRunning || (!recordingRunning && captureNeedsApply)),
-    button(replayRunning ? 'Stop Replay Buffer' : 'Start Replay Buffer', () => void (replayRunning ? stopCapture() : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || recordingRunning || (!replayRunning && captureNeedsApply)),
-    button('Save Clip', () => void saveClip(), 'btn btn-secondary', !status.available || status.mode !== 'replay' || actionBusy),
+    button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture('video') : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || (!recordingRunning && captureNeedsApply)),
+    button(replayRunning ? 'Stop Replay Buffer' : 'Start Replay Buffer', () => void (replayRunning ? stopCapture('replay') : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || (!replayRunning && captureNeedsApply)),
+    button('Save Clip', () => void saveClip(), 'btn btn-secondary', !status.available || !replayRunning || actionBusy),
     settingsDirty ? el('span', { class: 'recording-inline-note recording-unsaved-note', text: 'Apply changes before capture.' }) : null,
-    status.running && !recordingRunning && !replayRunning ? el('span', { class: 'recording-inline-note', text: 'Another capture is active.' }) : null,
+    recordingRunning && replayRunning ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Recording and replay buffer are both active.' }) : null,
   ]);
 }
 
@@ -345,8 +352,99 @@ function renderCapturePanel(): HTMLElement {
       el('span', { class: `recording-settings-state${settingsDirty ? ' is-unsaved' : ''}`, text: settingsDirty ? 'Unsaved' : 'Applied' }),
     ]) : null,
     renderCaptureActions(),
+    renderCaptureTargetSettings(),
     status.error && status.available ? el('p', { class: 'recording-inline-error', text: messageOf(status.error) }) : null,
     status.hotkeys.error ? el('p', { class: 'recording-inline-error', text: `Shortcut registration issue: ${messageOf(status.hotkeys.error)}` }) : null,
+  ]);
+}
+
+function captureTargetKey(target: RecordingCaptureTarget): string {
+  return target.type === 'window' ? `window:${target.windowHandle}` : `display:${target.displayId}`;
+}
+
+function captureTargetFromKey(key: string): RecordingCaptureTarget | null {
+  if (key.startsWith('window:')) {
+    const windowHandle = Number(key.slice('window:'.length));
+    const window = recordingTargets.windows.find((item) => item.handle === windowHandle);
+    if (!windowHandle || !window) return null;
+    return { type: 'window', displayId: 'primary', windowHandle, processName: window.processName, windowTitle: window.title };
+  }
+  if (key.startsWith('display:')) {
+    const displayId = key.slice('display:'.length);
+    if (!displayId) return null;
+    return { type: 'display', displayId, windowHandle: 0, processName: '', windowTitle: '' };
+  }
+  return null;
+}
+
+function captureAspectLabel(width: number, height: number): string {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return '';
+  const ratio = width / height;
+  const known = [[16, 9], [21, 9], [4, 3], [5, 4], [32, 9]] as const;
+  const match = known.find(([w, h]) => Math.abs(ratio - (w / h)) < 0.06);
+  return match ? `${match[0]}:${match[1]}` : `${ratio.toFixed(2)}:1`;
+}
+
+function selectedCaptureSource(target: RecordingCaptureTarget): { width: number; height: number; label: string } | null {
+  if (target.type === 'window') {
+    const window = recordingTargets.windows.find((item) => item.handle === target.windowHandle);
+    return window ? { width: window.width, height: window.height, label: 'Window' } : null;
+  }
+  const display = target.displayId === 'primary'
+    ? (recordingTargets.displays.find((item) => item.primary) ?? recordingTargets.displays[0])
+    : recordingTargets.displays.find((item) => item.id === target.displayId);
+  return display ? { width: display.width, height: display.height, label: display.label } : null;
+}
+
+function captureTargetOptions(selected: RecordingCaptureTarget): Array<[string, string]> {
+  const options: Array<[string, string]> = [];
+  for (const display of recordingTargets.displays) {
+    options.push([`display:${display.id}`, `${display.primary ? 'Primary display' : display.label}${display.hdr ? ' · HDR' : ''}`]);
+  }
+  if (!options.length) options.push(['display:primary', 'Primary display']);
+  for (const window of recordingTargets.windows) {
+    options.push([`window:${window.handle}`, `${window.title} · ${window.processName || 'Window'}`]);
+  }
+  const selectedKey = captureTargetKey(selected);
+  if (!options.some(([key]) => key === selectedKey)) {
+    options.push([selectedKey, selected.type === 'window' ? `${selected.windowTitle || 'Selected window'} (saved)` : `${selected.displayId} (saved)`]);
+  }
+  return options;
+}
+
+async function refreshRecordingCaptureTargets(): Promise<void> {
+  if (recordingTargetsBusy) return;
+  recordingTargetsBusy = true;
+  render();
+  try {
+    recordingTargets = await api.recordingCaptureTargets();
+    render();
+  } catch (err) {
+    toast('error', 'Capture targets', messageOf(err));
+  } finally {
+    recordingTargetsBusy = false;
+    render();
+  }
+}
+
+function renderCaptureTargetSettings(): HTMLElement {
+  const working = settingsForRender();
+  const target = working?.captureTarget ?? { type: 'display' as const, displayId: 'primary', windowHandle: 0, processName: '', windowTitle: '' };
+  const targetSelect = select(captureTargetKey(target), captureTargetOptions(target), (value) => {
+    const next = captureTargetFromKey(value);
+    if (next) stagePatch({ captureTarget: next });
+  });
+  targetSelect.setAttribute('aria-label', 'Capture target');
+  const colorMode = select(working?.captureColorMode ?? 'auto', [['auto', 'Auto'], ['sdr', 'SDR'], ['hdr', 'HDR']], (value) => stagePatch({ captureColorMode: value }));
+  colorMode.setAttribute('aria-label', 'Capture color mode');
+  const source = selectedCaptureSource(target);
+  const sourceNote = source
+    ? `${source.width}×${source.height} · ${captureAspectLabel(source.width, source.height)} detected`
+    : 'Choose a display or live window.';
+  return el('div', { class: 'recording-capture-target-row' }, [
+    field('Capture target', targetSelect, sourceNote),
+    field('Color handling', colorMode, 'Auto follows the selected display.'),
+    button(recordingTargetsBusy ? 'Refreshing…' : 'Refresh targets', () => void refreshRecordingCaptureTargets(), 'btn btn-secondary recording-target-refresh', recordingTargetsBusy),
   ]);
 }
 
@@ -518,7 +616,7 @@ function renderAudioSettings(): HTMLElement {
 
 function renderHotkeys(): HTMLElement {
   const working = settingsForRender();
-  const make = (key: 'start' | 'stop' | 'saveClip', label: string, description: string): HTMLElement => {
+  const make = (key: 'start' | 'stop' | 'saveClip' | 'screenshot', label: string, description: string): HTMLElement => {
     const input = el('input', {
       class: 'recording-hotkey',
       type: 'text',
@@ -543,6 +641,7 @@ function renderHotkeys(): HTMLElement {
     make('start', 'Start recording', 'Begin a full video capture.'),
     make('stop', 'Stop capture', 'Finish the active video or replay buffer.'),
     make('saveClip', 'Save clip', 'Export the configured replay window.'),
+    make('screenshot', 'Screenshot', 'Save the selected display or window as a PNG.'),
   ]);
 }
 
@@ -566,7 +665,7 @@ function renderFirstCaptureSetup(): HTMLElement | null {
       quickSetupItem('Save to', compactPath(working.location)),
       quickSetupItem('Video', `${captureProfileLabel(working)}`),
       quickSetupItem('Audio', audio),
-      quickSetupItem('Hotkeys', `${working.hotkeys.start} / ${working.hotkeys.stop} / ${working.hotkeys.saveClip}`),
+      quickSetupItem('Hotkeys', `${working.hotkeys.start} / ${working.hotkeys.stop} / ${working.hotkeys.saveClip} / ${working.hotkeys.screenshot}`),
     ]),
   ]);
 }
@@ -1112,12 +1211,12 @@ async function startReplay(): Promise<void> {
   }
 }
 
-async function stopCapture(): Promise<void> {
+async function stopCapture(mode: 'video' | 'replay' | null = null): Promise<void> {
   if (actionBusy) return;
   actionBusy = true;
   render();
   try {
-    setStatus(await api.recordingStop());
+    setStatus(await api.recordingStop(mode));
     await loadClips();
   } catch (err) {
     status = { ...status, error: messageOf(err) };
@@ -1128,7 +1227,8 @@ async function stopCapture(): Promise<void> {
 }
 
 async function saveClip(): Promise<void> {
-  if (actionBusy || status.mode !== 'replay') return;
+  const replayRunning = status.activeModes?.replay === true || (!status.activeModes && status.running && status.mode === 'replay');
+  if (actionBusy || !replayRunning) return;
   actionBusy = true;
   render();
   try {
@@ -1204,6 +1304,7 @@ export const recordingPage: Page = {
     // state asynchronously after the shell and controls are visible.
     render();
     void load();
+    void refreshRecordingCaptureTargets();
   },
   leave(): void {
     unsubscribeRecordingState?.();
@@ -1214,6 +1315,8 @@ export const recordingPage: Page = {
     settingsDirty = false;
     applyingSettings = false;
     storageInfo = null;
+    recordingTargets = { displays: [], windows: [] };
+    recordingTargetsBusy = false;
     renderContainer = null;
     playerClip = null;
   },

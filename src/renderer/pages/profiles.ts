@@ -27,7 +27,7 @@ import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
-import type { Capabilities, DeviceState, FlipMode, GameCatalogEntry, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
+import type { Capabilities, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 const MAX_GAME_BANNER_DATA_LENGTH = 12_000_000;
@@ -317,7 +317,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let gameCatalogLoaded = gameCatalogSession.loaded;
   let gameCatalogLoading = Boolean(gameCatalogSession.loading || gameCatalogSession.scanLoading);
   let gameCatalogError: string | null = null;
-  let gameProfileCapabilities: { enduranceGaming: boolean; reason?: string | null } = { enduranceGaming: false };
+  let gameProfileCapabilities: GameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
   let startupWarning: string | null = null;
@@ -421,6 +421,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const endurance = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.enduranceGaming ?? 'off', disabled: !gameProfileCapabilities.enduranceGaming }, [
       el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }),
     ]) as HTMLSelectElement;
+    const xeFgOptions = gameProfileCapabilities.xeFgOptions.length > 0 ? gameProfileCapabilities.xeFgOptions : ['app-choice'];
+    const xeFgLabels: Record<string, string> = {
+      'app-choice': 'Application Default',
+      '2x': '2x Frame Generation',
+      '3x': '3x Frame Generation',
+      '4x': '4x Frame Generation',
+    };
+    const xeFg = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.frameGenOverride ?? 'app-choice' },
+      xeFgOptions.map((option) => el('option', { value: option, text: xeFgLabels[option] ?? option }))) as HTMLSelectElement;
     const frame = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.flipMode ?? 'application-default' }, [
       el('option', { value: 'application-default', text: 'Application Choice' }), el('option', { value: 'vsync-on', text: 'VSync On' }), el('option', { value: 'vsync-off', text: 'VSync Off' }), el('option', { value: 'smooth-sync', text: 'Smooth Sync' }), el('option', { value: 'speed-frame', text: 'Speed / Frame' }),
     ]) as HTMLSelectElement;
@@ -447,6 +456,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ])] : []),
       el('section', { class: 'profile-settings-section game-igs-settings' }, [
         el('h3', { class: 'profile-section-title', text: 'Frame Delivery' }),
+        ...(gameProfileCapabilities.xeFg ? [settingRow('XeFG multiplier', 'Per-game frame-generation multiplier.', xeFg)] : []),
         settingRow('Frame Synchronization', 'Sets the method used for vertically syncing the rendered image to the display.', frame),
         settingRow('FPS Limiter', 'Saved independently for this executable.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
@@ -455,6 +465,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
     tuning.addEventListener('change', () => save({ tuningProfileId: tuning.value || null }));
     endurance.addEventListener('change', () => save({ graphics: { enduranceGaming: endurance.value as 'off' | 'on' } }));
+    xeFg.addEventListener('change', () => { if (gameProfileCapabilities.xeFg) save({ graphics: { frameGenOverride: xeFg.value as FrameGenOverride } }); });
     frame.addEventListener('change', () => save({ graphics: { flipMode: frame.value as FlipMode } }));
     latency.addEventListener('change', () => save({ graphics: { lowLatency: latency.value as LowLatency } }));
     fps.addEventListener('change', () => save({ graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));

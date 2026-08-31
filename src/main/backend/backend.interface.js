@@ -278,7 +278,7 @@
  *   // NO OC waiver applies to 3D features.
  *   getGraphicsSettings(deviceId: number): Promise<GraphicsState>,
  *   setGraphicsSettings(deviceId: number, s: GraphicsSettings, applicationName?: string): Promise<ApplyResult>,
- *   getGameProfileCapabilities(deviceId: number): Promise<{ enduranceGaming: boolean, reason?: string|null }>,
+ *   getGameProfileCapabilities(deviceId: number): Promise<{ enduranceGaming: boolean, xeFg: boolean, xeFgOptions: string[], reason?: string|null, xeFgReason?: string|null }>,
  *   setGameProfileSettings(deviceId: number, executablePath: string, s: GraphicsSettings, enabled?: boolean): Promise<ApplyResult>,
  *   // M10b (the Graphics "Display" view): the display-output surface
  *   // (ctlEnumerateDisplayOutputs + ctlGetDisplayProperties + the wire-

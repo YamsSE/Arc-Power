@@ -138,6 +138,10 @@ export class RecordingStore {
           microphone: { ...current.settings.audio?.microphone, ...(patch?.audio?.microphone ?? {}) },
           system: { ...current.settings.audio?.system, ...(patch?.audio?.system ?? {}) },
         },
+        captureTarget: {
+          ...current.settings.captureTarget,
+          ...(patch?.captureTarget ?? {}),
+        },
         hotkeys: { ...current.settings.hotkeys, ...(patch?.hotkeys ?? {}) },
       });
       this._write({ ...current, schemaVersion: RECORDING_SCHEMA_VERSION, settings });

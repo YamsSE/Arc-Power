@@ -5,6 +5,8 @@ export const RECORDING_SCHEMA_VERSION = 1;
 export const RECORDING_MODES = ['manual', 'clips'];
 export const RECORDING_RUNTIME_DIRECTORY = 'recording-runtime';
 export const RECORDING_AUDIO_SOURCE_MODES = Object.freeze(['system', 'custom']);
+export const RECORDING_CAPTURE_TARGET_TYPES = Object.freeze(['display', 'window']);
+export const RECORDING_CAPTURE_COLOR_MODES = Object.freeze(['auto', 'sdr', 'hdr']);
 export const RECORDING_CLIP_NAME_PHRASES = Object.freeze([
   'Great Play', 'Nice Shot', 'Outplay', 'Genius Play', 'Beautiful Moment', 'Arc Moment', 'Crazy Clip',
 ]);
@@ -44,6 +46,14 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   resolution: '1080p',
   encoderId: 'automatic',
   bitrateKbps: 8000,
+  captureTarget: {
+    type: 'display',
+    displayId: 'primary',
+    windowHandle: 0,
+    processName: '',
+    windowTitle: '',
+  },
+  captureColorMode: 'auto',
   replayLengthSec: 30,
   audio: {
     microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
@@ -51,13 +61,37 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
     sourceMode: 'system',
     customProcesses: [],
   },
-  hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8' },
+  hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8', screenshot: 'F7' },
 });
 export const SAFE_VIDEO_EXTENSIONS = Object.freeze(['.mp4', '.mkv', '.mov', '.webm', '.m4v']);
 export const ASCENT_MAX_MESSAGE_BYTES = 8096;
 
 export function recordingBitrateRange(resolution = DEFAULT_RECORDING_SETTINGS.resolution) {
   return RECORDING_BITRATE_RANGES[resolution] ?? RECORDING_BITRATE_RANGES.default;
+}
+
+function evenDimension(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 1) return fallback;
+  const rounded = Math.max(2, Math.round(numeric));
+  return rounded % 2 === 0 ? rounded : rounded + 1;
+}
+
+/**
+ * Resolution presets are named by their vertical output size. The horizontal
+ * size follows the selected display/window so a 1440p ultrawide source stays
+ * ultrawide instead of being squeezed into a 16:9 canvas.
+ */
+export function recordingOutputDimensions(resolution = 'default', captureWidth = 1920, captureHeight = 1080) {
+  const sourceWidth = evenDimension(captureWidth, 1920);
+  const sourceHeight = evenDimension(captureHeight, 1080);
+  const preset = RECORDING_RESOLUTIONS.find((item) => item.id === resolution);
+  if (!preset || preset.height <= 0) return { width: sourceWidth, height: sourceHeight };
+  const outputHeight = evenDimension(preset.height, sourceHeight);
+  return {
+    width: evenDimension(outputHeight * (sourceWidth / sourceHeight), sourceWidth),
+    height: outputHeight,
+  };
 }
 
 export function clampRecordingBitrate(value, resolution = DEFAULT_RECORDING_SETTINGS.resolution) {
@@ -85,6 +119,22 @@ function normalizeProcessName(value) {
   if (typeof value !== 'string') return null;
   const name = value.trim();
   return name && name.length <= 256 && !/[\\/\0\r\n]/.test(name) ? name : null;
+}
+
+export function normalizeRecordingCaptureTarget(raw = {}) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const type = RECORDING_CAPTURE_TARGET_TYPES.includes(source.type) ? source.type : 'display';
+  const displayId = typeof source.displayId === 'string' && source.displayId.trim().length <= 128
+    ? source.displayId.trim() || 'primary'
+    : 'primary';
+  const windowHandle = Number.isSafeInteger(source.windowHandle) && source.windowHandle >= 0 && source.windowHandle <= 0xffffffff
+    ? source.windowHandle
+    : 0;
+  const processName = normalizeProcessName(source.processName) ?? '';
+  const windowTitle = typeof source.windowTitle === 'string' && source.windowTitle.length <= 512
+    ? source.windowTitle.trim()
+    : '';
+  return { type, displayId, windowHandle, processName, windowTitle };
 }
 
 export function normalizeRecordingAudioSettings(raw = {}) {
@@ -204,12 +254,17 @@ export function normalizeRecordingSettings(raw = {}) {
     resolution,
     encoderId: boundedString(source.encoderId, DEFAULT_RECORDING_SETTINGS.encoderId, 128),
     bitrateKbps: bitrate,
+    captureTarget: normalizeRecordingCaptureTarget(source.captureTarget),
+    captureColorMode: RECORDING_CAPTURE_COLOR_MODES.includes(source.captureColorMode)
+      ? source.captureColorMode
+      : DEFAULT_RECORDING_SETTINGS.captureColorMode,
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
     audio: normalizeRecordingAudioSettings({ ...DEFAULT_RECORDING_SETTINGS.audio, ...(source.audio ?? {}) }),
     hotkeys: {
       start: normalizeHotkey(hotkeys.start, DEFAULT_RECORDING_SETTINGS.hotkeys.start),
       stop: normalizeHotkey(hotkeys.stop, DEFAULT_RECORDING_SETTINGS.hotkeys.stop),
       saveClip: normalizeHotkey(hotkeys.saveClip, DEFAULT_RECORDING_SETTINGS.hotkeys.saveClip),
+      screenshot: normalizeHotkey(hotkeys.screenshot, DEFAULT_RECORDING_SETTINGS.hotkeys.screenshot),
     },
   };
 }

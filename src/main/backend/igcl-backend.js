@@ -2577,12 +2577,22 @@ export class IgclBackend {
       const dev = await this._device(deviceId);
       const features = await this._graphicsCapsOf(deviceId, dev.handle);
       const detail = features?.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
+      const frameGenDetail = features?.get(CTL_3D_FEATURE.FRAME_GENERATION);
       const platform = endurancePlatformSupported(dev, this._laptopInfoOf ? this._laptopInfoOf() : null);
       const supported = platform
         && [CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32].includes(detail?.valueType)
         && detail.perAppSupport === true;
+      // XeFG is a per-executable control only when the driver reports the
+      // frame-generation feature with the enum ABI and explicitly marks it
+      // as per-app capable. The option is deliberately hidden otherwise;
+      // device-level support alone must not make a game-profile control look
+      // writable.
+      const xeFg = frameGenDetail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM
+        && frameGenDetail.perAppSupport === true;
       return {
         enduranceGaming: supported,
+        xeFg,
+        xeFgOptions: xeFg ? [...GRAPHICS_FRAME_GEN_OPTIONS] : [],
         reason: supported ? null : (!platform
           ? 'Endurance Gaming is available only on integrated or mobile GPUs.'
           : !detail
@@ -2590,9 +2600,20 @@ export class IgclBackend {
             : detail.perAppSupport !== true
               ? 'The driver does not expose Endurance Gaming as a per-game control.'
               : 'Endurance Gaming is not available on this driver surface.'),
+        xeFgReason: xeFg ? null : (!frameGenDetail
+          ? 'The driver does not expose XeFG for this adapter.'
+          : frameGenDetail.perAppSupport !== true
+            ? 'The driver does not expose XeFG as a per-game control.'
+            : 'XeFG is not available on this driver surface.'),
       };
     } catch {
-      return { enduranceGaming: false, reason: 'Endurance Gaming could not be read from this driver.' };
+      return {
+        enduranceGaming: false,
+        xeFg: false,
+        xeFgOptions: [],
+        reason: 'Endurance Gaming could not be read from this driver.',
+        xeFgReason: 'XeFG could not be read from this driver.',
+      };
     }
   }
 

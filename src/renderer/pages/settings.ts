@@ -348,7 +348,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // the other toggle owns after a mid-session change). A failed
       // re-query degrades to "owned" - never remove the shared value
       // directly on unknown state (main's profiles-settings-save
-      // re-derives the value from the persisted intent anyway).
+      // re-derives the value from the persisted intent anyway). Disabling
+      // the global launcher also clears the dependent profile boot intent;
+      // otherwise profiles-settings-save would immediately recreate the Run
+      // value and the switch would appear to turn itself back on.
       let ownedByBoot = true;
       try {
         const fresh = await api.startupGet();
@@ -358,7 +361,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         await api.startupSet(checked);
       }
       // Persist the intent so the next boot's honest-state line matches.
-      await api.profilesSettingsSave({ startWithWindows: checked });
+      await api.profilesSettingsSave({
+        startWithWindows: checked,
+        ...(checked ? {} : { ocOnBoot: false }),
+      });
       persisted.startWithWindows = checked;
       toast(checked ? 'success' : 'info', checked ? 'Start with Windows enabled' : 'Start with Windows disabled', '');
     } catch (err) {

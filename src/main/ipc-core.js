@@ -49,7 +49,7 @@ import { physicalTargetOf } from './gpu-inventory.js';
 import { GameProfileStore, canonicalExePath, normalizeAssociation, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
-import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_FPS, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
+import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_CAPTURE_COLOR_MODES, RECORDING_CAPTURE_TARGET_TYPES, RECORDING_FPS, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
 import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, mediaThumbnailUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
 
 const require = createRequire(import.meta.url);
@@ -58,7 +58,7 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
-const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'replayLengthSec', 'hotkeys', 'audio']);
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'replayLengthSec', 'hotkeys', 'audio']);
 export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
@@ -128,6 +128,16 @@ function recordingPatch(patch) {
   if (patch.resolution !== undefined && !RECORDING_RESOLUTIONS.some((item) => item.id === patch.resolution)) throw new Error('recording-settings-save: invalid resolution');
   if (patch.encoderId !== undefined && (typeof patch.encoderId !== 'string' || patch.encoderId.length > 128)) throw new Error('recording-settings-save: invalid encoder id');
   if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
+  if (patch.captureColorMode !== undefined && !RECORDING_CAPTURE_COLOR_MODES.includes(patch.captureColorMode)) throw new Error('recording-settings-save: invalid capture color mode');
+  if (patch.captureTarget !== undefined) {
+    const target = patch.captureTarget;
+    if (!target || typeof target !== 'object' || Array.isArray(target)) throw new Error('recording-settings-save: capture target must be an object');
+    if (target.type !== undefined && !RECORDING_CAPTURE_TARGET_TYPES.includes(target.type)) throw new Error('recording-settings-save: invalid capture target type');
+    if (target.displayId !== undefined && (typeof target.displayId !== 'string' || target.displayId.length > 128)) throw new Error('recording-settings-save: invalid display id');
+    if (target.windowHandle !== undefined && (!Number.isSafeInteger(target.windowHandle) || target.windowHandle < 0 || target.windowHandle > 0xffffffff)) throw new Error('recording-settings-save: invalid window handle');
+    if (target.processName !== undefined && (typeof target.processName !== 'string' || target.processName.length > 256)) throw new Error('recording-settings-save: invalid process name');
+    if (target.windowTitle !== undefined && (typeof target.windowTitle !== 'string' || target.windowTitle.length > 512)) throw new Error('recording-settings-save: invalid window title');
+  }
   if (patch.hotkeys !== undefined && (!patch.hotkeys || typeof patch.hotkeys !== 'object' || Array.isArray(patch.hotkeys))) throw new Error('recording-settings-save: hotkeys must be an object');
   if (patch.audio !== undefined) {
     if (!patch.audio || typeof patch.audio !== 'object' || Array.isArray(patch.audio)) throw new Error('recording-settings-save: audio must be an object');
@@ -1032,6 +1042,7 @@ export function createIpcHandlers({
   refreshRecordingHotkeys = async () => null,
   getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }),
   recordingProcessList = null,
+  recordingCaptureTargets = null,
 }) {
   // D2: the real app injects its sidecar store, while tests can provide an
   // in-memory adapter. The fallback is isolated to the ProfileStore data
@@ -2494,9 +2505,9 @@ export function createIpcHandlers({
         return { state, outputPath: path.basename(outputPath) };
       },
       'recording-stop': async (...args) => {
-        assertNoPayload(args, 'recording-stop');
+        if (args.length > 1 || (args.length === 1 && args[0] !== undefined && args[0] !== null && args[0] !== 'video' && args[0] !== 'replay')) throw new Error('recording-stop: mode must be video or replay');
         if (!recordingEngine?.stop) throw new Error('Recording engine is not available');
-        return recordingEngine.stop();
+        return recordingEngine.stop(args[0] ?? null);
       },
       'recording-replay-start': async (...args) => {
         assertNoPayload(args, 'recording-replay-start');
@@ -2536,6 +2547,10 @@ export function createIpcHandlers({
         const settings = await recordingStore.settings();
         const location = recordingAbsolutePath(settings.location, 'location');
         return { location, ...recordingStorageSnapshot(location) };
+      },
+      'recording-capture-targets': async (...args) => {
+        assertNoPayload(args, 'recording-capture-targets');
+        return recordingCaptureTargets ? recordingCaptureTargets() : { displays: [], windows: [] };
       },
       'recording-processes-list': async (...args) => {
         assertNoPayload(args, 'recording-processes-list');
@@ -2663,7 +2678,7 @@ export function createIpcHandlers({
       'game-profile-capabilities': async (deviceId) => {
         assertValidDeviceId(deviceId);
         if (typeof backend.getGameProfileCapabilities !== 'function') {
-          return { enduranceGaming: false, reason: 'Game Profile driver capabilities are unavailable.' };
+          return { enduranceGaming: false, xeFg: false, xeFgOptions: [], reason: 'Game Profile driver capabilities are unavailable.', xeFgReason: 'Game Profile driver capabilities are unavailable.' };
         }
         return backend.getGameProfileCapabilities(deviceId);
       },

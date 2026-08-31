@@ -16,18 +16,19 @@
 
 import { el, clear, svgEl } from '../dom.ts';
 import type { AppState, Page, PageContext } from '../router.ts';
-import { healthRows, overallHealthLevel, dashboardNeedsFullRender } from '../pure/status.ts';
-import type { DashboardSig, HealthLevel, HealthRow } from '../pure/status.ts';
+import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
+import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
-import { decodeDriverVersion, formatDriverDate, shaderUnits } from '../pure/driver.ts';
+import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { selectedDashboardController } from '../pure/dashboard.ts';
 import { aibOfPnpDeviceId } from '../pure/aib.ts';
-import type { TelemetrySample } from '../types.ts';
+import { api } from '../ipc.ts';
+import type { ProfilesEnvelope, RecordingClip, RecordingStorageInfo, TelemetrySample } from '../types.ts';
 
 /** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half - the current
  *  CPU frequency from the telemetry tick, ALWAYS in GHz with 1 decimal
@@ -82,9 +83,20 @@ const pulsePathNodes = new Map<DashboardPulseId, SVGPathElement>();
 let sessionRuntimeNode: HTMLElement | null = null;
 let sessionPeakNode: HTMLElement | null = null;
 let sessionAverageNode: HTMLElement | null = null;
-type DashboardSnapshotId = 'gpu' | 'driver' | 'tuning' | 'rebar' | 'vram' | 'capture';
-const snapshotValueNodes = new Map<DashboardSnapshotId, HTMLElement>();
-let snapshotHealthNode: HTMLElement | null = null;
+type DashboardControlId = 'profile' | 'apply' | 'capture' | 'last' | 'storage' | 'attention';
+type DashboardControlDatum = { value: string; note: string; level?: 'ok' | 'warn' | 'error' | 'unknown' };
+const controlValueNodes = new Map<DashboardControlId, HTMLElement>();
+const controlNoteNodes = new Map<DashboardControlId, HTMLElement>();
+let controlHealthNode: HTMLElement | null = null;
+let controlCenterContext: PageContext | null = null;
+let controlCenterLoadPromise: Promise<void> | null = null;
+let controlCenterRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let controlCenterGeneration = 0;
+let controlCenterRemote: {
+  profiles: ProfilesEnvelope | null;
+  clips: RecordingClip[] | null;
+  storage: RecordingStorageInfo | null;
+} = { profiles: null, clips: null, storage: null };
 
 function resetDashboardHistory(deviceId: number | null): void {
   if (dashboardHistoryDeviceId === deviceId) return;
@@ -204,10 +216,9 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
     pulsePathNodes.set(metric.id, path);
     const card = el('div', { class: 'dashboard-pulse-metric', dataset: { pulseMetric: metric.id } }, [
       el('div', { class: 'dashboard-pulse-metric-head' }, [
-        el('span', { class: 'dashboard-pulse-label', text: metric.label }),
-        el('span', { class: 'dashboard-pulse-unit', text: metric.unit }),
+        el('span', { class: 'dashboard-pulse-label' }, [el('span', { text: metric.label }), el('span', { class: 'dashboard-pulse-live-dot', title: 'Live telemetry' })]),
+        el('span', { class: 'dashboard-pulse-inline-value' }, [valueNode, el('span', { class: 'dashboard-pulse-unit', text: metric.unit })]),
       ]),
-      el('div', { class: 'dashboard-pulse-value-row' }, [valueNode, el('span', { class: 'dashboard-pulse-live-dot', title: 'Live telemetry' })]),
       svg,
     ]);
     updatePulsePath(metric.id);
@@ -363,6 +374,9 @@ function dashboardHealthRows(ctx: PageContext, device: AppState['devices'][numbe
 function snapshotCaptureState(status: AppState['recordingStatus']): { value: string; note: string } {
   if (!status) return { value: 'Starting', note: 'Arc Capture is initializing' };
   if (status.running) {
+    if (status.activeModes?.video === true && status.activeModes?.replay === true) {
+      return { value: 'Recording + replay', note: 'Both capture modes are active' };
+    }
     return status.mode === 'replay'
       ? { value: 'Replay buffer', note: 'Capturing the rolling clip window' }
       : { value: 'Recording', note: 'Arc Capture is active' };
@@ -371,86 +385,138 @@ function snapshotCaptureState(status: AppState['recordingStatus']): { value: str
   return { value: 'Unavailable', note: 'Capture engine is unavailable' };
 }
 
-function dashboardSnapshotState(ctx: PageContext): { health: HealthLevel; healthLabel: string; values: Record<DashboardSnapshotId, { value: string; note: string }> } {
+function compactDashboardText(value: string | null | undefined, fallback: string): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return fallback;
+  return text.length > 74 ? `${text.slice(0, 71)}…` : text;
+}
+
+function dashboardStorageText(bytes: number | null | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return 'Unavailable';
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB free`;
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB free`;
+  return `${Math.round(bytes / 1e3)} KB free`;
+}
+
+function newestRecordingClip(clips: RecordingClip[] | null): RecordingClip | null {
+  if (!Array.isArray(clips) || clips.length === 0) return null;
+  return [...clips].sort((a, b) => {
+    const aTime = Date.parse(a.modifiedAt ?? a.createdAt);
+    const bTime = Date.parse(b.modifiedAt ?? b.createdAt);
+    return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+  })[0] ?? null;
+}
+
+function dashboardControlCenterState(ctx: PageContext): { health: 'ok' | 'warn' | 'error' | 'unknown'; healthLabel: string; values: Record<DashboardControlId, DashboardControlDatum> } {
   const s = ctx.store.get();
   const device = s.devices.find((entry) => entry.id === s.deviceId) ?? null;
   const osOnly = device?.synthetic === true && device.backendKind === 'os';
-  const noIntelPresentation = s.noIntel || osOnly;
-  const controller = selectedDashboardController(device?.osController, s.osGpu, s.deviceId !== null);
-  const rebar = rebarState(controller ? { ...controller, rebarActive: controller.rebarActive ?? null } : null);
   const rows = dashboardHealthRows(ctx, device, osOnly);
-  const driverRow = rows.find((row) => row.id === 'driver');
-  const ocRow = rows.find((row) => row.id === 'oc');
-  const rawDriver = noIntelPresentation ? controller?.driverVersion : device?.driverVersion;
-  const decodedDriver = decodeDriverVersion(rawDriver);
-  const driverDate = formatDriverDate(s.driverDate);
-  const driver = decodedDriver ? `${decodedDriver}${driverDate ? ` · ${driverDate}` : ''}` : driverRow?.detail ?? '-';
-  const vramBytes = noIntelPresentation ? (s.vendorInfo?.vramBytes ?? s.osGpu?.vramBytes) : device?.vramBytes;
-  const tuning = ocRow?.level === 'ok'
-    ? ocRow.detail === 'No Overclock Applied' ? 'Stock' : 'Custom'
-    : ocRow?.detail ?? 'Unknown';
-  const health = overallHealthLevel(rows);
-  const healthLabel = health === 'ok' ? 'Healthy' : health === 'warn' ? 'Check status' : health === 'error' ? 'Needs attention' : 'Waiting';
+  const issue = rows.find((row) => row.level === 'error') ?? rows.find((row) => row.level === 'warn');
+  const health = issue?.level ?? (rows.length > 0 ? 'ok' : 'unknown');
+  const healthLabel = health === 'ok' ? 'All clear' : health === 'warn' ? 'Check status' : health === 'error' ? 'Needs attention' : 'Waiting';
+  const activeProfileId = controlCenterRemote.profiles?.settings.activeProfileId ?? null;
+  const activeProfile = controlCenterRemote.profiles?.profiles.find((profile) => profile.id === activeProfileId) ?? null;
+  const apply = s.lastApply;
+  const capture = snapshotCaptureState(s.recordingStatus);
+  const latestClip = newestRecordingClip(controlCenterRemote.clips);
+  const storage = controlCenterRemote.storage;
   return {
     health,
     healthLabel,
     values: {
-      gpu: { value: noIntelPresentation ? (s.osGpu?.name ?? 'No GPU selected') : (device?.name ?? 'No GPU selected'), note: 'Active adapter' },
-      driver: { value: driver, note: 'Display driver' },
-      tuning: { value: tuning, note: 'Current driver state' },
-      rebar: { value: rebar.label, note: 'PCIe memory access' },
-      vram: { value: vramBytes ? `${formatGpuMemoryGb(vramBytes)} GB` : '-', note: 'Dedicated capacity' },
-      capture: snapshotCaptureState(s.recordingStatus),
+      profile: {
+        value: activeProfile?.name ?? (controlCenterRemote.profiles ? 'No active profile' : 'Loading…'),
+        note: activeProfile ? (controlCenterRemote.profiles?.settings.ocOnBoot ? 'Starts with Windows' : 'Manual apply') : 'Profiles are optional',
+      },
+      apply: apply
+        ? { value: apply.ok ? 'Applied' : 'Failed', note: compactDashboardText(apply.detail, 'Latest tuning result'), level: apply.ok ? 'ok' : 'error' }
+        : { value: 'No apply yet', note: 'Tuning results appear here' },
+      capture: { ...capture, level: s.recordingStatus?.running ? 'ok' : s.recordingStatus?.available ? 'ok' : 'unknown' },
+      last: latestClip
+        ? { value: compactDashboardText(latestClip.fileName, 'Latest capture'), note: 'Latest saved clip or recording' }
+        : { value: controlCenterRemote.clips ? 'No captures yet' : 'Loading…', note: 'Saved clips and recordings' },
+      storage: storage
+        ? { value: dashboardStorageText(storage.freeBytes), note: compactDashboardText(storage.location, 'Recording folder') }
+        : { value: 'Loading…', note: 'Recording folder space' },
+      attention: issue
+        ? { value: issue.level === 'error' ? 'Needs attention' : `Check ${issue.label}`, note: compactDashboardText(issue.detail, 'Review this status'), level: issue.level }
+        : { value: health === 'unknown' ? 'Waiting' : 'All clear', note: health === 'unknown' ? 'Status is still loading' : 'No action needed', level: health },
     },
   };
 }
 
-function dashboardSnapshot(ctx: PageContext): HTMLElement {
-  snapshotValueNodes.clear();
-  snapshotHealthNode = null;
-  const state = dashboardSnapshotState(ctx);
-  snapshotHealthNode = el('span', { class: `chip dashboard-snapshot-health status-${state.health}`, text: state.healthLabel });
-  const labels: Array<{ id: DashboardSnapshotId; label: string }> = [
-    { id: 'gpu', label: 'GPU' },
-    { id: 'driver', label: 'Driver' },
-    { id: 'tuning', label: 'Tuning' },
-    { id: 'rebar', label: 'ReBAR' },
-    { id: 'vram', label: 'VRAM' },
+function dashboardControlCenter(ctx: PageContext): HTMLElement {
+  controlCenterContext = ctx;
+  controlValueNodes.clear();
+  controlNoteNodes.clear();
+  controlHealthNode = null;
+  const state = dashboardControlCenterState(ctx);
+  controlHealthNode = el('span', { class: `chip dashboard-control-health status-${state.health}`, text: state.healthLabel });
+  const labels: Array<{ id: DashboardControlId; label: string }> = [
+    { id: 'profile', label: 'Active profile' },
+    { id: 'apply', label: 'Last apply' },
     { id: 'capture', label: 'Arc Capture' },
+    { id: 'last', label: 'Last capture' },
+    { id: 'storage', label: 'Storage' },
+    { id: 'attention', label: 'Attention' },
   ];
   const items = labels.map(({ id, label }) => {
     const item = state.values[id];
-    const valueNode = el('strong', { class: 'dashboard-snapshot-value', text: item.value, dataset: { snapshotValue: id } });
-    snapshotValueNodes.set(id, valueNode);
-    return el('div', { class: 'dashboard-snapshot-item' }, [
-      el('span', { class: 'dashboard-snapshot-label', text: label }),
+    const valueNode = el('strong', { class: 'dashboard-control-value', text: item.value, dataset: { controlValue: id } });
+    const noteNode = el('span', { class: 'dashboard-control-note', text: item.note, dataset: { controlNote: id } });
+    controlValueNodes.set(id, valueNode);
+    controlNoteNodes.set(id, noteNode);
+    return el('div', { class: `dashboard-control-item${item.level ? ` status-${item.level}` : ''}` }, [
+      el('span', { class: 'dashboard-control-label', text: label }),
       valueNode,
-      el('span', { class: 'dashboard-snapshot-note', text: item.note }),
+      noteNode,
     ]);
   });
-  return el('section', { class: 'card dashboard-snapshot-card' }, [
-    el('div', { class: 'dashboard-snapshot-heading' }, [
+  return el('section', { class: 'card dashboard-control-card' }, [
+    el('div', { class: 'dashboard-control-heading' }, [
       el('div', {}, [
-        el('span', { class: 'dashboard-eyebrow', text: 'System status' }),
-        el('h2', { class: 'card-title', text: 'System snapshot' }),
+        el('span', { class: 'dashboard-eyebrow', text: 'Activity & actions' }),
+        el('h2', { class: 'card-title', text: 'Control center' }),
       ]),
-      snapshotHealthNode,
+      controlHealthNode,
     ]),
-    el('div', { class: 'dashboard-snapshot-grid' }, items),
-    el('div', { class: 'dashboard-snapshot-actions' }, [
-      dashboardAction('Open Arc Capture', '#/recording'),
-      dashboardAction('Open Monitoring', '#/monitoring'),
+    el('div', { class: 'dashboard-control-grid' }, items),
+    el('div', { class: 'dashboard-control-actions' }, [
+      dashboardAction('Open Recording', '#/recording'),
+      dashboardAction('Open Profiles', '#/profiles'),
+      dashboardAction('Open Tuning', '#/tuning'),
     ]),
   ]);
 }
 
-function updateDashboardSnapshot(ctx: PageContext): void {
-  const state = dashboardSnapshotState(ctx);
-  for (const [id, node] of snapshotValueNodes) node.textContent = state.values[id].value;
-  if (snapshotHealthNode) {
-    snapshotHealthNode.className = `chip dashboard-snapshot-health status-${state.health}`;
-    snapshotHealthNode.textContent = state.healthLabel;
+function updateDashboardControlCenter(ctx: PageContext): void {
+  const state = dashboardControlCenterState(ctx);
+  for (const [id, node] of controlValueNodes) node.textContent = state.values[id].value;
+  for (const [id, node] of controlNoteNodes) node.textContent = state.values[id].note;
+  if (controlHealthNode) {
+    controlHealthNode.className = `chip dashboard-control-health status-${state.health}`;
+    controlHealthNode.textContent = state.healthLabel;
   }
+}
+
+async function loadDashboardControlCenter(ctx: PageContext, force = false): Promise<void> {
+  controlCenterContext = ctx;
+  if (controlCenterLoadPromise && !force) return controlCenterLoadPromise;
+  const generation = ++controlCenterGeneration;
+  const request = Promise.all([
+    api.profilesList().catch(() => null),
+    api.recordingClipsList().catch(() => null),
+    api.recordingStorageInfo().catch(() => null),
+  ]).then(([profiles, clips, storage]) => {
+    if (generation !== controlCenterGeneration) return;
+    controlCenterRemote = { profiles, clips, storage };
+    if (controlCenterContext) updateDashboardControlCenter(controlCenterContext);
+  }).finally(() => {
+    if (generation === controlCenterGeneration) controlCenterLoadPromise = null;
+  });
+  controlCenterLoadPromise = request;
+  return request;
 }
 
 export const dashboardPage: Page = {
@@ -661,16 +727,21 @@ export const dashboardPage: Page = {
         healthCard(ctx),
       ]),
 
-      // Performance Pulse above owns live telemetry; this card keeps the
-      // bottom of the dashboard useful for system context and actions.
-      dashboardSnapshot(ctx),
+      // Performance Pulse above owns live telemetry; the Control Center
+      // keeps the bottom of the dashboard focused on actions and recent work.
+      dashboardControlCenter(ctx),
     );
+    void loadDashboardControlCenter(ctx);
+    if (controlCenterRefreshTimer) clearInterval(controlCenterRefreshTimer);
+    controlCenterRefreshTimer = setInterval(() => {
+      if (controlCenterContext === ctx) void loadDashboardControlCenter(ctx, true);
+    }, 15000);
   },
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
     // Full re-render only when a status slot changed (boot probe, boot
     // errors) - NOT on telemetry ticks. A tick refreshes the live cards and
-    // snapshot values in place; the clocks health row is gone.
+    // Control Center values in place; the clocks health row is gone.
     const sig = currentSig(ctx);
     if (dashboardNeedsFullRender(lastSig, sig)) {
       lastSig = sig;
@@ -705,6 +776,21 @@ export const dashboardPage: Page = {
     const liveFreq = container.querySelector<HTMLElement>('.sysinfo-card .kv-live-freq');
     if (liveFreq) liveFreq.textContent = liveFreqText(ctx.store.get().latestSample);
     updateDashboardPulse(ctx);
-    updateDashboardSnapshot(ctx);
+    updateDashboardControlCenter(ctx);
+  },
+
+  leave() {
+    if (controlCenterRefreshTimer) clearInterval(controlCenterRefreshTimer);
+    controlCenterRefreshTimer = null;
+    controlCenterContext = null;
+    controlCenterGeneration += 1;
+    controlCenterLoadPromise = null;
+    controlCenterValueNodesReset();
   },
 };
+
+function controlCenterValueNodesReset(): void {
+  controlValueNodes.clear();
+  controlNoteNodes.clear();
+  controlHealthNode = null;
+}
