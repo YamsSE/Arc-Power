@@ -280,10 +280,9 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
 // Keep the native Windows identity on the same generated resources used by
-// the packaged executable. Prefer the external ICO for the live window too:
-// Windows uses that native handle for the taskbar button, while the PNG is a
-// fallback for development builds and platforms that cannot decode the ICO.
-// The renderer still uses ArcPowerIcon.png for full-size artwork.
+// the packaged executable. The live taskbar uses the optimized PNG buffer;
+// the external ICO is retained for Windows shell/relaunch metadata. The
+// renderer still uses ArcPowerIcon.png for full-size artwork.
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
@@ -292,16 +291,20 @@ const WINDOWS_APP_ICON_PATH = app.isPackaged && fs.existsSync(PACKAGED_APP_ICON_
   ? PACKAGED_APP_ICON_PATH
   : APP_ICON_PATH;
 const APP_ICON = (() => {
+  // Electron's live Windows taskbar path is more reliable with the optimized
+  // PNG than with a PNG-in-ICO. Read it through Electron's ASAR-aware fs
+  // layer, then hand nativeImage the bytes so packaged and dev launches use
+  // the same native image. The ICO remains the shell/shortcut resource.
+  try {
+    const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
+    if (!icon.isEmpty()) return icon;
+  } catch { /* fall through to the external ICO */ }
   for (const iconPath of [WINDOWS_APP_ICON_PATH, APP_ICON_PATH]) {
     try {
       const icon = nativeImage.createFromPath(iconPath);
       if (!icon.isEmpty()) return icon;
     } catch { /* try the next source */ }
   }
-  try {
-    const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
-    if (!icon.isEmpty()) return icon;
-  } catch { /* the empty icon is handled by the platform */ }
   return nativeImage.createEmpty();
 })();
 

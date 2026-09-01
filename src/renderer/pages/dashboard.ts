@@ -29,7 +29,7 @@ import { selectedDashboardController } from '../pure/dashboard.ts';
 import { aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
-import type { ProfilesEnvelope, RecordingClip, RecordingStorageInfo, TelemetrySample } from '../types.ts';
+import type { ProfilesEnvelope, RecordingClip, RecordingSettings, RecordingStorageInfo, TelemetrySample } from '../types.ts';
 
 /** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half - the current
  *  CPU frequency from the telemetry tick, ALWAYS in GHz with 1 decimal
@@ -84,7 +84,7 @@ const pulsePathNodes = new Map<DashboardPulseId, SVGPathElement>();
 let sessionRuntimeNode: HTMLElement | null = null;
 let sessionPeakNode: HTMLElement | null = null;
 let sessionAverageNode: HTMLElement | null = null;
-type DashboardControlId = 'profile' | 'apply' | 'capture' | 'last' | 'storage';
+type DashboardControlId = 'profile' | 'capture' | 'last' | 'storage' | 'replay';
 type DashboardControlLevel = 'ok' | 'warn' | 'error' | 'unknown' | 'recording' | 'replay';
 type DashboardControlDatum = { value: string; note: string; level?: DashboardControlLevel };
 const controlValueNodes = new Map<DashboardControlId, HTMLElement>();
@@ -100,8 +100,9 @@ let controlCenterGeneration = 0;
 let controlCenterRemote: {
   profiles: ProfilesEnvelope | null;
   clips: RecordingClip[] | null;
+  recordingSettings: RecordingSettings | null;
   storage: RecordingStorageInfo | null;
-} = { profiles: null, clips: null, storage: null };
+} = { profiles: null, clips: null, recordingSettings: null, storage: null };
 
 function resetDashboardHistory(deviceId: number | null): void {
   if (dashboardHistoryDeviceId === deviceId) return;
@@ -542,9 +543,9 @@ function dashboardControlCenterState(ctx: PageContext): { values: Record<Dashboa
   const s = ctx.store.get();
   const activeProfileId = controlCenterRemote.profiles?.settings.activeProfileId ?? null;
   const activeProfile = controlCenterRemote.profiles?.profiles.find((profile) => profile.id === activeProfileId) ?? null;
-  const apply = s.lastApply;
   const capture = snapshotCaptureState(s.recordingStatus);
   const latestClip = newestRecordingClip(controlCenterRemote.clips);
+  const recordingSettings = controlCenterRemote.recordingSettings;
   const storage = controlCenterRemote.storage;
   return {
     values: {
@@ -552,9 +553,6 @@ function dashboardControlCenterState(ctx: PageContext): { values: Record<Dashboa
         value: activeProfile?.name ?? (controlCenterRemote.profiles ? 'No active profile' : 'Loading…'),
         note: activeProfile ? (controlCenterRemote.profiles?.settings.ocOnBoot ? 'Starts with Windows' : 'Manual apply') : 'Profiles are optional',
       },
-      apply: apply
-        ? { value: apply.ok ? 'Applied' : 'Failed', note: compactDashboardText(apply.detail, 'Latest tuning result'), level: apply.ok ? 'ok' : 'error' }
-        : { value: 'No apply yet', note: 'Tuning results appear here' },
       capture: { ...capture, level: captureStatusLevel(s.recordingStatus) },
       last: latestClip
         ? { value: compactDashboardText(latestClip.fileName, 'Latest capture'), note: 'Latest saved clip or recording' }
@@ -562,6 +560,9 @@ function dashboardControlCenterState(ctx: PageContext): { values: Record<Dashboa
       storage: storage
         ? { value: dashboardStorageText(storage.freeBytes), note: compactDashboardText(storage.location, 'Recording folder') }
         : { value: 'Loading…', note: 'Recording folder space' },
+      replay: recordingSettings && Number.isFinite(recordingSettings.replayLengthSec)
+        ? { value: `${recordingSettings.replayLengthSec} sec`, note: 'Saved clip duration' }
+        : { value: 'Loading…', note: 'Replay buffer length' },
     },
   };
 }
@@ -620,7 +621,7 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
       el('div', { class: 'dashboard-hub-details' }, [
         detail('last', 'Last capture', 'dashboard-hub-detail-wide'),
         detail('profile', 'Active profile'),
-        detail('apply', 'Last apply'),
+        detail('replay', 'Replay window'),
         detail('storage', 'Storage'),
       ]),
     ]),
@@ -642,10 +643,11 @@ async function loadDashboardControlCenter(ctx: PageContext, force = false): Prom
   const request = Promise.all([
     api.profilesList().catch(() => null),
     api.recordingClipsList().catch(() => null),
+    api.recordingSettingsGet().catch(() => null),
     api.recordingStorageInfo().catch(() => null),
-  ]).then(([profiles, clips, storage]) => {
+  ]).then(([profiles, clips, recordingSettings, storage]) => {
     if (generation !== controlCenterGeneration) return;
-    controlCenterRemote = { profiles, clips, storage };
+    controlCenterRemote = { profiles, clips, recordingSettings, storage };
     if (controlCenterContext) updateDashboardControlCenter(controlCenterContext);
   }).finally(() => {
     if (generation === controlCenterGeneration) controlCenterLoadPromise = null;

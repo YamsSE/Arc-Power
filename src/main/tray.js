@@ -173,9 +173,10 @@ function paintRoundedRect(pixels, width, height, left, top, right, bottom, radiu
 }
 
 /**
- * Add the small status pill to the canonical 32px tray artwork. Keeping the
- * composition in PNG bytes makes the icon reliable on Windows tray surfaces,
- * including packaged Portable builds where SVG decoding is not guaranteed.
+ * Add the high-visibility status pill to the canonical 32px tray artwork.
+ * Keeping the composition in PNG bytes makes the icon reliable on Windows
+ * tray surfaces, including packaged Portable builds where SVG decoding is not
+ * guaranteed.
  */
 export function createTrayStatusIconBuffer(baseBuffer, status) {
   const color = TRAY_STATUS_COLOR[status];
@@ -183,10 +184,10 @@ export function createTrayStatusIconBuffer(baseBuffer, status) {
   try {
     const image = decodeRgbaPng(baseBuffer);
     const border = [3, 7, 15, 255];
-    const left = image.width - 12;
-    const top = image.height - 9;
-    paintRoundedRect(image.pixels, image.width, image.height, left, top, image.width - 2, image.height - 2, 4, border);
-    paintRoundedRect(image.pixels, image.width, image.height, left + 2, top + 2, image.width - 4, image.height - 4, 2, [...color, 255]);
+    const left = image.width - 17;
+    const top = image.height - 12;
+    paintRoundedRect(image.pixels, image.width, image.height, left, top, image.width - 2, image.height - 2, 5, border);
+    paintRoundedRect(image.pixels, image.width, image.height, left + 2, top + 2, image.width - 4, image.height - 4, 3, [...color, 255]);
     return encodeRgbaPng(image);
   } catch {
     return Buffer.from(baseBuffer ?? []);
