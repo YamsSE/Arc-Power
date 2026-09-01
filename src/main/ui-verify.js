@@ -7732,6 +7732,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (recordingStatusPillHandle.getState().visible) {
     fail('M144: the recording status pill must be hidden while the engine is idle');
   }
+  // M145: the stock setting is OFF, so explicitly enable the isolated handle
+  // for the visual red/blue state checks; the persisted opt-in flow is tested
+  // separately below through the Recording tab checkbox.
+  recordingStatusPillHandle.apply(true);
   recordingStatusPillHandle.setRecordingState({
     running: true,
     mode: 'video',
@@ -7764,6 +7768,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.hidden === true`, 5000))) {
     fail('M144: the recording status pill stayed visible after capture stopped');
   }
+  recordingStatusPillHandle.apply(false);
   step('m144-pill-state', 'the sibling top-right status overlay shows the Arc Power mark with a red REC or blue REPLAY chip, and hides again after stop');
 
   // (b) the overlay DOM lines. The mock telemetry: util 42, cpuFreq 4300
@@ -8199,14 +8204,14 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M144: the Overlay view still renders the recording status pill toggle');
   }
   await js(`location.hash = '#/recording'`);
-  if (!(await waitFor(win, `!!document.querySelector('.recording-heading') && !!document.querySelector('.recording-pill-setting')`, 8000))) {
+  if (!(await waitFor(win, `!!document.querySelector('.recording-heading') && !!document.querySelector('.recording-storage-controls .recording-field + .recording-pill-setting')`, 8000))) {
     fail('M144: the Recording tab did not render the recording status pill setting');
   }
   if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]')`, 5000))) {
     fail('M144: the Recording tab has no recording status pill toggle');
   }
-  if (await js(`document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]')?.checked !== true`)) {
-    fail('M144: the Recording-tab recording status pill toggle is not enabled by the fresh-store default');
+  if (await js(`document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]')?.checked !== false`)) {
+    fail('M145: the Recording-tab recording status pill toggle is not off by the stock default');
   }
   recordingStatusPillHandle.setRecordingState({
     running: true,
@@ -8214,27 +8219,27 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     activeModes: { video: true, replay: false },
     startedAt: Date.now() - 2000,
   });
-  if (!(await waitFor(statusPillWin, `document.getElementById('status-label')?.textContent === 'REC'`, 5000))) {
-    fail('M144: the status pill did not enter the active state before its setting toggle test');
-  }
-  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]'); b.click(); })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayRecordingPill === false)`, 5000))) {
-    fail('M144: turning off the Recording-tab status pill did not persist overlayRecordingPill=false');
-  }
-  await sleep(250);
   if (recordingStatusPillHandle.getState().visible) {
-    fail('M144: turning off the Recording-tab status pill did not hide the sibling overlay immediately');
+    fail('M145: the stock-off Recording-tab setting did not keep the active status pill hidden');
   }
   await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]'); b.click(); })()`);
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayRecordingPill === true)`, 5000))) {
-    fail('M144: restoring the Recording-tab status pill did not persist overlayRecordingPill=true');
+    fail('M145: enabling the Recording-tab status pill did not persist overlayRecordingPill=true');
   }
   await sleep(250);
   if (!recordingStatusPillHandle.getState().visible) {
-    fail('M144: restoring the Recording-tab status pill did not show the active sibling overlay immediately');
+    fail('M145: enabling the Recording-tab status pill did not show the sibling overlay immediately');
+  }
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayRecordingPill === false)`, 5000))) {
+    fail('M145: disabling the Recording-tab status pill did not persist overlayRecordingPill=false');
+  }
+  await sleep(250);
+  if (recordingStatusPillHandle.getState().visible) {
+    fail('M145: disabling the Recording-tab status pill did not hide the active sibling overlay immediately');
   }
   recordingStatusPillHandle.setRecordingState({ running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null });
-  step('m144-pill-toggle-location', 'the Recording-tab toggle persisted off/on and hid/showed the independent top-right pill immediately while capture was active; Overlay no longer owns the setting');
+  step('m145-pill-opt-in', 'the Recording-tab pill is off by default, then enabling it shows the active indicator immediately and disabling it hides it; Overlay no longer owns the setting');
 
   await js(`location.hash = '#/monitoring'`);
   if (!(await waitFor(win, `!!document.querySelector('#overlay-settings-root')`, 8000))) {

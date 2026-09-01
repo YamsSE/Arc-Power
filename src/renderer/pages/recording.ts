@@ -65,7 +65,7 @@ let fpsCustomEditing = false;
 let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
-let recordingPillEnabled = true;
+let recordingPillEnabled = false;
 
 function recordingClipKind(clip: RecordingClip): 'recording' | 'clip' {
   return /^Arc Recording \d+\.mp4$/i.test(clip.fileName) ? 'recording' : 'clip';
@@ -350,6 +350,26 @@ function renderCaptureActions(): HTMLElement {
   ]);
 }
 
+function renderRecordingPillSetting(): HTMLElement {
+  return el('div', { class: 'recording-pill-setting' }, [
+    el('div', { class: 'recording-pill-setting-copy' }, [
+      el('span', { class: 'recording-field-label', text: 'On-screen indicator' }),
+      el('strong', { text: 'Recording Pill' }),
+      el('span', { class: 'recording-field-note', text: 'Shows the Arc Power icon with a red or blue status pill while capture is active.' }),
+    ]),
+    el('label', { class: 'recording-check-row' }, [
+      el('input', {
+        type: 'checkbox',
+        class: 'settings-checkbox',
+        dataset: { setting: 'overlayRecordingPill' },
+        checked: recordingPillEnabled,
+        onchange: (ev: Event) => void onRecordingPillToggle((ev.target as HTMLInputElement).checked),
+      }),
+      el('span', { text: 'Show while recording' }),
+    ]),
+  ]);
+}
+
 function renderCapturePanel(): HTMLElement {
   const working = settingsForRender();
   const replayLength = working?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC;
@@ -368,23 +388,6 @@ function renderCapturePanel(): HTMLElement {
       ]),
       el('span', { class: `recording-settings-state${settingsDirty ? ' is-unsaved' : ''}`, text: settingsDirty ? 'Unsaved' : 'Applied' }),
     ]) : null,
-    el('div', { class: 'recording-pill-setting' }, [
-      el('div', { class: 'recording-pill-setting-copy' }, [
-        el('span', { class: 'recording-field-label', text: 'On-screen indicator' }),
-        el('strong', { text: 'Recording Pill' }),
-        el('span', { class: 'recording-field-note', text: 'Shows the Arc Power icon with a red or blue status pill while capture is active.' }),
-      ]),
-      el('label', { class: 'recording-check-row' }, [
-        el('input', {
-          type: 'checkbox',
-          class: 'settings-checkbox',
-          dataset: { setting: 'overlayRecordingPill' },
-          checked: recordingPillEnabled,
-          onchange: (ev: Event) => void onRecordingPillToggle((ev.target as HTMLInputElement).checked),
-        }),
-        el('span', { text: 'Show while recording' }),
-      ]),
-    ]),
     renderCaptureActions(),
     renderCaptureTargetSettings(),
     status.error && status.available ? el('p', { class: 'recording-inline-error', text: messageOf(status.error) }) : null,
@@ -398,7 +401,7 @@ async function onRecordingPillToggle(checked: boolean): Promise<void> {
   render();
   try {
     const result = await api.profilesSettingsSave({ overlayRecordingPill: checked });
-    recordingPillEnabled = result.overlayRecordingPill !== false;
+    recordingPillEnabled = result.overlayRecordingPill === true;
     toast(checked ? 'success' : 'info', checked ? 'Recording Pill enabled' : 'Recording Pill disabled', '');
   } catch (err) {
     recordingPillEnabled = previous;
@@ -805,7 +808,10 @@ function renderStorage(): HTMLElement {
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Files' }), el('h2', { class: 'recording-panel-title', text: 'Save location' })]),
       el('span', { class: 'recording-panel-badge', text: 'Recordings and clips' }),
     ]),
-    field('Recording folder', el('div', { class: 'recording-input-row' }, [location, button('Browse', () => void chooseFolder(), 'btn btn-secondary'), button('Open folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Recording folder', messageOf(err))), 'btn btn-secondary', !locationValue)])),
+    el('div', { class: 'recording-storage-controls' }, [
+      field('Recording folder', el('div', { class: 'recording-input-row' }, [location, button('Browse', () => void chooseFolder(), 'btn btn-secondary'), button('Open folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Recording folder', messageOf(err))), 'btn btn-secondary', !locationValue)])),
+      renderRecordingPillSetting(),
+    ]),
     el('div', { class: 'recording-storage-summary' }, [
       el('span', { class: 'recording-field-label', text: 'Available space' }),
       el('strong', { text: spaceText }),
@@ -1267,7 +1273,7 @@ async function load(): Promise<void> {
     if (recordingStateRevision === loadStateRevision) setStatus(loadedStatus);
     clips = loadedClips;
     storageInfo = loadedStorage;
-    recordingPillEnabled = profileEnvelope?.settings?.overlayRecordingPill !== false;
+    recordingPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
@@ -1429,7 +1435,7 @@ export const recordingPage: Page = {
     applyingSettings = false;
     fpsCustomEditing = false;
     storageInfo = null;
-    recordingPillEnabled = true;
+    recordingPillEnabled = false;
     recordingTargets = { displays: [], windows: [] };
     recordingTargetsBusy = false;
     renderContainer = null;

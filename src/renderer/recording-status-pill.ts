@@ -1,4 +1,4 @@
-// Arc Power - M144 recording/replay status pill renderer.
+// Arc Power - M145 recording/replay status pill renderer.
 
 import { api } from './ipc.ts';
 import { recordingPillView } from './pure/overlay.ts';

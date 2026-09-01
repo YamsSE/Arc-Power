@@ -96,10 +96,9 @@ const OVERLAY_COLOR_DEFAULT = '#ffffff';
 // translucent box behind the HUD); garbage degrades to these at the STORE.
 const OVERLAY_BG_COLOR_DEFAULT = '#000000';
 const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
-// M143: the ReLive/Shadowplay-style recording status pill is enabled by
-// default so existing overlay users get immediate feedback when capture is
-// active; the Overlay Settings General card can disable it.
-const OVERLAY_RECORDING_PILL_DEFAULT = true;
+// M145: the ReLive/Shadowplay-style recording status pill is opt-in. A stock
+// profile starts with it off; an explicit saved true remains enabled.
+const OVERLAY_RECORDING_PILL_DEFAULT = false;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range + default (100-2000 ms, step 50, default
 // 400 - M17g: the user's stock polling rate FLIPS 500 -> 400). The
@@ -319,8 +318,8 @@ export class ProfileStore {
    * M24: overlayTheme (the overlay THEME - the Intel-Arc harness redesign
    * vs the classic HUD) rides it too ('arc' when absent - the redesign IS
    * the product default).
-   * M143: overlayRecordingPill (the live recording/replay status indicator)
-   * rides it too (enabled when absent so old settings files gain the feature).
+   * M145: overlayRecordingPill (the live recording/replay status indicator)
+   * rides it too (disabled when absent; users opt in from Recording).
    * M23: the ADVANCED overlay fields (advancedOverlayEnabled/
    * advancedOverlayHotkeyLetter/advancedOverlayPosition) - absent on old
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
@@ -392,7 +391,7 @@ export class ProfileStore {
         // product default; 'classic' stays one click away via the Theme
         // row - the same absent-field mechanism, NO schema bump).
         overlayTheme: OVERLAY_THEME_DEFAULT,
-        // M143: absent on old settings files -> enabled; this adds the
+        // M145: absent on old settings files -> disabled; users opt in from the
         // recording/replay indicator without changing any capture behavior.
         overlayRecordingPill: OVERLAY_RECORDING_PILL_DEFAULT,
         // M23: the ADVANCED overlay - absent -> off, the letter 'P' (the
@@ -468,9 +467,9 @@ export class ProfileStore {
       overlayTheme: OVERLAY_THEMES.includes(data.overlayTheme)
         ? data.overlayTheme
         : OVERLAY_THEME_DEFAULT,
-      // M143: the status pill is on unless the user explicitly disabled it;
-      // missing/garbage values on old files receive the new feature.
-      overlayRecordingPill: data.overlayRecordingPill !== false,
+      // M145: the status pill is on only when explicitly enabled; missing or
+      // garbage values keep the stock opt-in default off.
+      overlayRecordingPill: data.overlayRecordingPill === true,
       // M23: the ADVANCED overlay (the M5 overlaySettings pattern, NO
       // schema bump): enabled off when absent, the letter 'P', anchored
       // 'right'; a garbage value degrades to the default - never a crash.
@@ -552,9 +551,9 @@ export class ProfileStore {
       overlayTheme: OVERLAY_THEMES.includes(settings.overlayTheme)
         ? settings.overlayTheme
         : OVERLAY_THEME_DEFAULT,
-      // M143: explicit false disables the live status pill; missing/garbage
-      // direct saves receive the enabled default.
-      overlayRecordingPill: settings.overlayRecordingPill !== false,
+      // M145: only explicit true enables the live status pill; missing or
+      // garbage direct saves receive the stock opt-in default.
+      overlayRecordingPill: settings.overlayRecordingPill === true,
       // M23: the ADVANCED overlay - validated on save like the theme (the
       // channel validates first + rejects the hotkey-letter collision at
       // the envelope; the store fallback covers direct callers - an

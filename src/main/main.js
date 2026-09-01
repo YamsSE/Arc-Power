@@ -1652,9 +1652,9 @@ async function main() {
         overlayBgColor: overlayOn ? '#000000' : cur.overlayBgColor,
         overlayBgOpacity: overlayOn ? 0.5 : cur.overlayBgOpacity,
         overlayTheme: overlayOn ? 'classic' : cur.overlayTheme,
-        // M143: the status-pill verifier starts from the product default ON;
+        // M145: the status-pill verifier starts from the product default OFF;
         // keep the isolated mock store deterministic between variants.
-        overlayRecordingPill: overlayOn ? true : cur.overlayRecordingPill,
+        overlayRecordingPill: overlayOn ? false : cur.overlayRecordingPill,
         // M53: reset the HUD device-name/multi-GPU fields with the rest of
         // the overlay seed so a failed verifier cannot bleed state forward.
         overlayChipNames: overlayOn ? false : cur.overlayChipNames,
@@ -2614,14 +2614,20 @@ async function main() {
     if (!recordingStatusPillHandle) return;
     let settings = {};
     try { settings = store.loadSettingsSync() ?? {}; } catch { settings = {}; }
-    recordingStatusPillHandle.apply(settings.overlayRecordingPill !== false);
+    recordingStatusPillHandle.apply(settings.overlayRecordingPill === true);
   };
   if (shouldCreateRecordingStatusPill) {
     recordingStatusPillHandle = createRecordingStatusPillWindow({
       getAnchorWindow: () => win,
       getRecordingState: () => recordingEngine.getState(),
     });
-    if (uiVerify) stealthVerifyWindow(recordingStatusPillHandle.getWindow?.() ?? null);
+    // M145: keep the verifier's sibling window available even though the
+    // product default is OFF; the hidden window lets the harness prove the
+    // opt-in transition without showing anything to the user.
+    if (uiVerify) {
+      recordingStatusPillHandle.apply(true);
+      stealthVerifyWindow(recordingStatusPillHandle.getWindow?.() ?? null);
+    }
     applyRecordingStatusPillSettings();
   }
 

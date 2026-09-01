@@ -1,4 +1,4 @@
-/* M144: a compact, desktop-level capture status pill. The native window is
+/* M145: a compact, desktop-level capture status pill. The native window is
    transparent, click-through, focusless, and fixed to the active display's
    top-right corner by recording-status-pill.js. */
 
@@ -16,13 +16,13 @@ body {
 
 #recording-status-pill {
   box-sizing: border-box;
-  width: calc(100% - 12px);
-  height: 40px;
-  margin: 6px;
+  width: calc(100% - 8px);
+  height: 28px;
+  margin: 4px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 3px;
+  gap: 5px;
+  padding: 0 2px;
   font-family: 'Segoe UI', Arial, sans-serif;
 }
 
@@ -32,31 +32,31 @@ body {
 
 .brand-icon {
   display: block;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
+  width: 21px;
+  height: 21px;
+  flex: 0 0 21px;
   object-fit: contain;
-  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.58));
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.58));
 }
 
 .status-chip {
   box-sizing: border-box;
-  min-width: 142px;
-  height: 30px;
+  min-width: 105px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 11px 0 9px;
+  gap: 5px;
+  padding: 0 8px 0 7px;
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 999px;
   color: #fff;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.055em;
+  letter-spacing: 0.045em;
   line-height: 1;
   white-space: nowrap;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  box-shadow: 0 3px 9px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 #recording-status-pill.recording .status-chip {
@@ -70,18 +70,18 @@ body {
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: #ff6572;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18), 0 0 10px rgba(255, 91, 105, 0.95);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 0 6px rgba(255, 91, 105, 0.95);
   animation: status-pulse 1.35s ease-in-out infinite;
 }
 
 #recording-status-pill.replay .status-dot {
   background: #65ccff;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18), 0 0 10px rgba(77, 185, 255, 0.95);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 0 6px rgba(77, 185, 255, 0.95);
 }
 
 #status-elapsed {
