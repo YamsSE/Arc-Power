@@ -210,6 +210,8 @@ const OVERLAY_POLL_MS_MAX = 2000;
 // driver range; the fallback only applies when the device reports no range,
 // so the clamp can never offer an un-appliable value).
 const GRAPHICS_FRAME_LIMIT_FALLBACK = { min: 30, max: 300, step: 1, default: 60 };
+const GRAPHICS_MEMORY_OVERRIDE_MIN = 13;
+const GRAPHICS_MEMORY_OVERRIDE_MAX = 100;
 
 /**
  * M8: validate a graphics-settings payload and return a clean copy - the
@@ -230,7 +232,23 @@ export function sanitizeGraphicsSettings(payload, range = null) {
   /** @type {Record<string, unknown>} */
   const out = {};
   for (const [key, value] of Object.entries(payload)) {
-    if (key === 'frameGenOverride') {
+    if (key === 'enduranceGaming') {
+      if (!['off', 'on', 'auto'].includes(value)) throw new Error('enduranceGaming must be one of: off, on, auto');
+      out[key] = value;
+    } else if (key === 'enduranceGamingMode') {
+      if (!['performance', 'balanced', 'battery'].includes(value)) throw new Error('enduranceGamingMode must be one of: performance, balanced, battery');
+      out[key] = value;
+    } else if (key === 'sharedMemoryOverride') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || typeof value.enabled !== 'boolean'
+        || typeof value.percentage !== 'number'
+        || !Number.isInteger(value.percentage)
+        || value.percentage < GRAPHICS_MEMORY_OVERRIDE_MIN
+        || value.percentage > GRAPHICS_MEMORY_OVERRIDE_MAX) {
+        throw new Error(`sharedMemoryOverride must be { enabled: boolean, percentage: integer ${GRAPHICS_MEMORY_OVERRIDE_MIN}-${GRAPHICS_MEMORY_OVERRIDE_MAX} }`);
+      }
+      out[key] = { enabled: value.enabled, percentage: value.percentage };
+    } else if (key === 'frameGenOverride') {
       if (!GRAPHICS_FRAME_GEN_OPTIONS.includes(value)) throw new Error(`frameGenOverride must be one of: ${GRAPHICS_FRAME_GEN_OPTIONS.join(', ')}`);
       out[key] = value;
     } else if (key === 'flipMode') {
@@ -2704,12 +2722,18 @@ export function createIpcHandlers({
         catch (err) { throw new Error(`game-catalog-add: ${err instanceof Error ? err.message : String(err)}`); }
       },
 
-      'game-profile-capabilities': async (deviceId) => {
+      'game-profile-capabilities': async (...args) => {
+        if (args.length > 2) throw new Error('game-profile-capabilities takes a device id and optional executable path');
+        const [deviceId, exePath] = args;
         assertValidDeviceId(deviceId);
+        const safeExePath = exePath === undefined || exePath === null ? undefined : canonicalExePath(exePath);
+        if (exePath !== undefined && exePath !== null && !safeExePath) {
+          throw new Error('game-profile-capabilities: exePath must be an absolute Windows executable path');
+        }
         if (typeof backend.getGameProfileCapabilities !== 'function') {
           return { enduranceGaming: false, xeFg: false, xeFgOptions: [], reason: 'Game Profile driver capabilities are unavailable.', xeFgReason: 'Game Profile driver capabilities are unavailable.' };
         }
-        return backend.getGameProfileCapabilities(deviceId);
+        return backend.getGameProfileCapabilities(deviceId, safeExePath);
       },
 
       'game-catalog-sync': async (payload) => {
@@ -2738,8 +2762,30 @@ export function createIpcHandlers({
             throw new Error('game-settings-save: tuning profile was not found');
           }
         }
-        const saved = await gameProfiles.saveSettings({ ...payload, ...clean, exePath: safePath });
         const persisted = await store.loadSettings();
+        let graphics = clean.graphics;
+        let xeFgRefusal = null;
+        if (Object.prototype.hasOwnProperty.call(graphics, 'frameGenOverride')) {
+          let capabilities = null;
+          if (Number.isInteger(persisted?.deviceId) && typeof backend.getGameProfileCapabilities === 'function') {
+            try { capabilities = await backend.getGameProfileCapabilities(persisted.deviceId, safePath); } catch { /* fail closed below */ }
+          }
+          if (capabilities?.xeFg !== true) {
+            const { frameGenOverride: _ignored, ...withoutXeFg } = graphics;
+            graphics = withoutXeFg;
+            if (clean.enabled === true) {
+              xeFgRefusal = {
+                ok: false,
+                errorCode: 'unsupported',
+                message: capabilities?.xeFgReason ?? 'XeFG is unavailable for this executable.',
+              };
+            }
+          }
+        }
+        // Never persist an XeFG override for an executable that the capability
+        // gate did not prove eligible. This also cleans stale values from an
+        // older sidecar when a profile is edited after the gate is tightened.
+        const saved = await gameProfiles.saveSettings({ ...payload, ...clean, exePath: safePath, graphics });
         let apply;
         if (!Number.isInteger(persisted?.deviceId) || typeof backend.setGameProfileSettings !== 'function') {
           apply = { ok: false, skipped: true, errorCode: 'unsupported', message: 'The selected graphics adapter cannot apply per-game driver settings.' };
@@ -2748,6 +2794,13 @@ export function createIpcHandlers({
             // Always update the driver scope. Disabling Use Profile must
             // restore this executable to the global graphics settings.
             apply = await backend.setGameProfileSettings(persisted.deviceId, safePath, saved.graphics ?? {}, saved.enabled === true);
+            if (xeFgRefusal) {
+              apply = {
+                ...apply,
+                ok: false,
+                perControl: { ...(apply?.perControl ?? {}), frameGenOverride: xeFgRefusal },
+              };
+            }
           } catch (err) {
             apply = { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
           }

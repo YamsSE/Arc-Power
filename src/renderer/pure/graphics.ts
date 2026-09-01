@@ -7,7 +7,7 @@
 // sanitizeGraphicsSettings - the main side is the authoritative gate; this
 // module keeps the UI honest before it ever sends a payload).
 
-import type { FrameGenOverride, FlipMode, GraphicsSettings, GraphicsState, LowLatency } from '../types.ts';
+import type { EnduranceGaming, EnduranceGamingMode, FrameGenOverride, FlipMode, GraphicsSettings, GraphicsState, LowLatency } from '../types.ts';
 
 // The option lists - the renderer mirror of the main-side contract (the
 // page never re-derives them; a driver-gated option list comes from the
@@ -15,6 +15,8 @@ import type { FrameGenOverride, FlipMode, GraphicsSettings, GraphicsState, LowLa
 export const FRAME_GEN_OPTIONS: FrameGenOverride[] = ['app-choice', '2x', '3x', '4x'];
 export const FLIP_MODE_OPTIONS: FlipMode[] = ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame'];
 export const LOW_LATENCY_OPTIONS: LowLatency[] = ['off', 'on', 'on-boost'];
+export const ENDURANCE_GAMING_OPTIONS: EnduranceGaming[] = ['off', 'on', 'auto'];
+export const ENDURANCE_GAMING_MODE_OPTIONS: EnduranceGamingMode[] = ['performance', 'balanced', 'battery'];
 
 // The frame-limit slider range fallback (the plan: range-driven, never a
 // hardcoded 30-300 that could offer an un-appliable value - the fallback
@@ -34,12 +36,17 @@ export type FrameLimitRange = { min: number; max: number; step: number; default:
 // (the null driver value would) and NEVER enter an apply payload (the
 // backend would refuse it per-control 'unsupported').
 const CONTROL_SUPPORT_KEY: Record<string, keyof GraphicsState['supported']> = {
+  enduranceGaming: 'enduranceGaming',
+  enduranceGamingMode: 'enduranceGaming',
+  sharedMemoryOverride: 'sharedMemoryOverride',
   frameGenOverride: 'frameGen',
   flipMode: 'flipModes',
   frameLimit: 'frameLimit',
   lowLatency: 'lowLatency',
 };
 const CONTROL_OPTIONS_KEY: Record<string, keyof GraphicsState['supportedOptions']> = {
+  enduranceGaming: 'enduranceGaming',
+  enduranceGamingMode: 'enduranceGamingModes',
   frameGenOverride: 'frameGen',
   flipMode: 'flipModes',
   lowLatency: 'lowLatency',
@@ -57,8 +64,13 @@ export function isGraphicsControlSupported(state: GraphicsState | null | undefin
   const supportKey = CONTROL_SUPPORT_KEY[control];
   if (!supportKey || !state) return false;
   if (state.supported[supportKey] !== true) return false;
+  if (control === 'sharedMemoryOverride') {
+    const range = state.sharedMemoryRange;
+    if (!range || !Number.isInteger(range.min) || !Number.isInteger(range.max)
+      || range.min < 13 || range.max < range.min || range.max > 100) return false;
+  }
   const optionsKey = CONTROL_OPTIONS_KEY[control];
-  if (optionsKey && state.supportedOptions[optionsKey].length === 0) return false;
+  if (optionsKey && (state.supportedOptions[optionsKey]?.length ?? 0) === 0) return false;
   return true;
 }
 
@@ -114,6 +126,24 @@ export function normalizeGraphicsSettings(state: GraphicsState | null | undefine
     out.frameLimit = { enabled: fl?.enabled === true, value: clampFrameLimitValue(fl?.value, range) };
     return out;
   }
+  if (isGraphicsControlSupported(state, 'enduranceGaming')) {
+    out.enduranceGaming = values?.enduranceGaming
+      ?? options?.enduranceGaming?.[0]
+      ?? ENDURANCE_GAMING_OPTIONS[0];
+  }
+  if (isGraphicsControlSupported(state, 'enduranceGamingMode')) {
+    out.enduranceGamingMode = values?.enduranceGamingMode
+      ?? options?.enduranceGamingModes?.[0]
+      ?? ENDURANCE_GAMING_MODE_OPTIONS[0];
+  }
+  if (isGraphicsControlSupported(state, 'sharedMemoryOverride')) {
+    const memory = values?.sharedMemoryOverride;
+    const range = state.sharedMemoryRange;
+    out.sharedMemoryOverride = {
+      enabled: memory?.enabled === true,
+      percentage: clampPercentage(memory?.percentage, range?.default ?? 57, range),
+    };
+  }
   if (isGraphicsControlSupported(state, 'frameGenOverride')) {
     out.frameGenOverride = values?.frameGenOverride ?? options?.frameGen[0] ?? FRAME_GEN_OPTIONS[0];
   }
@@ -133,6 +163,17 @@ export function normalizeGraphicsSettings(state: GraphicsState | null | undefine
 const FRAME_GEN_SET = new Set<unknown>(FRAME_GEN_OPTIONS);
 const FLIP_MODE_SET = new Set<unknown>(FLIP_MODE_OPTIONS);
 const LOW_LATENCY_SET = new Set<unknown>(LOW_LATENCY_OPTIONS);
+const ENDURANCE_GAMING_SET = new Set<unknown>(ENDURANCE_GAMING_OPTIONS);
+const ENDURANCE_GAMING_MODE_SET = new Set<unknown>(ENDURANCE_GAMING_MODE_OPTIONS);
+
+function clampPercentage(value: unknown, fallback: number, range?: { min: number; max: number; step: number } | null): number {
+  const min = Number.isFinite(range?.min) ? range!.min : 13;
+  const max = Number.isFinite(range?.max) ? range!.max : 100;
+  const step = Number.isFinite(range?.step) && range!.step > 0 ? range!.step : 1;
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  const snapped = Math.round(n / step) * step;
+  return Math.min(max, Math.max(min, snapped));
+}
 
 /**
  * True when `value` is a legal graphics-settings payload (the renderer-side
@@ -142,7 +183,18 @@ const LOW_LATENCY_SET = new Set<unknown>(LOW_LATENCY_OPTIONS);
 export function validateGraphicsSettings(value: unknown): value is GraphicsSettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   for (const [key, v] of Object.entries(value)) {
-    if (key === 'frameGenOverride') {
+    if (key === 'enduranceGaming') {
+      if (!ENDURANCE_GAMING_SET.has(v)) return false;
+    } else if (key === 'enduranceGamingMode') {
+      if (!ENDURANCE_GAMING_MODE_SET.has(v)) return false;
+    } else if (key === 'sharedMemoryOverride') {
+      if (typeof v !== 'object' || v === null || Array.isArray(v)
+        || typeof (v as { enabled?: unknown }).enabled !== 'boolean'
+        || typeof (v as { percentage?: unknown }).percentage !== 'number'
+        || !Number.isInteger((v as { percentage: number }).percentage)
+        || (v as { percentage: number }).percentage < 13
+        || (v as { percentage: number }).percentage > 100) return false;
+    } else if (key === 'frameGenOverride') {
       if (!FRAME_GEN_SET.has(v)) return false;
     } else if (key === 'flipMode') {
       if (!FLIP_MODE_SET.has(v)) return false;
@@ -169,6 +221,11 @@ function sameFrameLimit(a: { enabled: boolean; value: number } | null | undefine
   return a.enabled === b.enabled && a.value === b.value;
 }
 
+function sameSharedMemory(a: GraphicsSettings['sharedMemoryOverride'], b: GraphicsSettings['sharedMemoryOverride']): boolean {
+  if (!a || !b) return a === b;
+  return a.enabled === b.enabled && a.percentage === b.percentage;
+}
+
 /**
  * True when ONE control of the draft differs from the driver's read-back
  * (a missing driver value counts as dirty - the UI must surface an
@@ -187,6 +244,7 @@ export function isGraphicsControlDirty(control: string, draft: GraphicsSettings,
   const driver = state.values[control as keyof GraphicsState['values']];
   if (driver === null || driver === undefined) return true;
   if (typeof wanted === 'string') return wanted !== driver;
+  if (control === 'sharedMemoryOverride') return !sameSharedMemory(wanted as GraphicsSettings['sharedMemoryOverride'], driver as GraphicsSettings['sharedMemoryOverride']);
   return !sameFrameLimit(wanted as { enabled: boolean; value: number }, driver as { enabled: boolean; value: number } | null);
 }
 
@@ -206,6 +264,7 @@ export function isGraphicsControlDirtyVsApplied(control: string, draft: Graphics
   if (control in applied) {
     const appliedValue = (applied as Record<string, unknown>)[control];
     if (typeof wanted === 'string') return wanted !== appliedValue;
+    if (control === 'sharedMemoryOverride') return !sameSharedMemory(wanted as GraphicsSettings['sharedMemoryOverride'], appliedValue as GraphicsSettings['sharedMemoryOverride']);
     return !sameFrameLimit(wanted as { enabled: boolean; value: number }, appliedValue as { enabled: boolean; value: number });
   }
   return isGraphicsControlDirty(control, draft, state);

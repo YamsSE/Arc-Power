@@ -91,6 +91,7 @@ import { createSysStats, createMockSysStats } from './sys-stats.js';
 import { createMsrReader } from './msr-reader.js';
 import { createMonitorLog } from './monitor-log.js';
 import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar, createDriverReBar } from './sysinfo.js';
+import { trustedCpuRamSnapshotOf } from './backend/shared-memory-override.js';
 import { applyProfile, runApplyOnStartup, applyProfileBoot, resolveApplyDeviceId } from './apply-on-boot.js';
 import { runBootApplyMode } from './boot-apply-mode.js';
 import { shouldUseInstanceLock, acquireInstanceLock, focusExistingWindow } from './single-instance.js';
@@ -687,14 +688,25 @@ async function main() {
     // clamp here would silently cap extended values in advanced sessions:
     // exactly the forbidden behavior).
     const workerOldIgcl = new OldIgcl();
+    let workerSystemInfo = null;
+    try {
+      // The elevated worker is a fresh process, so it cannot see the parent
+      // renderer's lazy sysinfo cache. Build the same bounded CPU/RAM proof
+      // here before constructing the backend; otherwise an eligible mobile
+      // iGPU would be rejected solely because the write crossed elevation.
+      workerSystemInfo = trustedCpuRamSnapshotOf(await collectSysinfo({ timeoutMs: 10000 }));
+    } catch { /* the Shared Memory control remains fail-closed */ }
     const workerBackend = createBackend({
       kind: 'igcl',
+      igcl: {
         extended: {
           isCapable: () => workerOldIgcl.isCapable(),
           isTempCapable: () => workerOldIgcl.isTempCapable(),
         },
         sysmanPowerLimits: workerSysmanLimits,
         ocMode: 'advanced',
+        systemInfoOf: () => workerSystemInfo,
+      },
     });
     // M30: the worker receives the durable key and uses the same routing
     // wrapper. With no OS snapshot in the short-lived worker, an OS-only key
@@ -1266,6 +1278,10 @@ async function main() {
           // lazily ONCE (a desktop's non-portable shape -> the subsystem
           // decode stays authoritative).
           laptopInfoOf: () => (cached && cached.laptop ? cached.laptop : null),
+          // M140: the shared-memory control has a stricter product gate than
+          // the adapter's integrated bit. Read only the trusted, cached CPU
+          // and RAM snapshot; missing data must fail closed.
+          systemInfoOf: () => cached,
         }
       : {},
     // M17c: the mock mirrors the laptop provider shape (the mock caps
@@ -1506,7 +1522,7 @@ async function main() {
     : null;
   if (mockGameDir) {
     fs.mkdirSync(mockGameDir, { recursive: true });
-    for (const name of ['RID-Verify-One.exe', 'RID-Verify-Two.exe']) {
+    for (const name of ['RID-Verify-One.exe', 'Cyberpunk2077.exe', '3DMark.exe']) {
       const fixturePath = path.join(mockGameDir, name);
       if (!fs.existsSync(fixturePath)) fs.writeFileSync(fixturePath, 'Arc Power UI verification fixture');
     }
@@ -1517,7 +1533,8 @@ async function main() {
         ? {
           apps: [
             { exePath: path.join(mockGameDir, 'RID-Verify-One.exe'), processName: 'RID-Verify-One.exe', displayName: 'RID Verify One', artwork: 'data:image/png;base64,AA==', source: 'fixture' },
-            { exePath: path.join(mockGameDir, 'RID-Verify-Two.exe'), processName: 'RID-Verify-Two.exe', displayName: 'RID Verify Two', source: 'fixture' },
+            { exePath: path.join(mockGameDir, 'Cyberpunk2077.exe'), processName: 'Cyberpunk2077.exe', displayName: 'Cyberpunk 2077', source: 'fixture' },
+            { exePath: path.join(mockGameDir, '3DMark.exe'), processName: '3DMark.exe', displayName: '3DMark', source: 'fixture' },
           ],
         }
         : { apps: [] },

@@ -1,6 +1,8 @@
-// Arc Power - M8 the Graphics tab (the IGS-mirror page). Four cards in the
-// planned order: XeSS Frame Generation Override, Frame Synchronization,
-// FPS Limit, Low Latency. The page mirrors Intel Graphics Software (IGS):
+// Arc Power - M8 the Graphics tab (the IGS-mirror page). Standard cards are
+// rendered in the planned order: XeSS Frame Generation Override, Frame
+// Synchronization, FPS Limit, Low Latency. Integrated adapters may prepend
+// their mobile-only Endurance Gaming and shared-memory cards. The page mirrors
+// Intel Graphics Software (IGS):
 // every setting is a real IGCL 3D feature (ctlGetSupported3DCapabilities /
 // ctlGetSet3DFeature - live-verified settable on this driver by the M8
 // checkpoint-1 probe).
@@ -49,6 +51,8 @@ import {
   FRAME_GEN_OPTIONS,
   FLIP_MODE_OPTIONS,
   LOW_LATENCY_OPTIONS,
+  ENDURANCE_GAMING_OPTIONS,
+  ENDURANCE_GAMING_MODE_OPTIONS,
   frameLimitRange,
   clampFrameLimitValue,
   normalizeGraphicsSettings,
@@ -87,6 +91,9 @@ export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 // never duplicate - the option lists/labels/titles/notes are the single
 // source both surfaces render from).
 export const CARD_NOTES: Record<string, string> = {
+  enduranceGaming: 'Battery-aware game tuning for supported Intel integrated graphics. Auto lets the driver manage the mode while on battery.',
+  enduranceGamingMode: 'Choose the battery target used by Endurance Gaming: 60 FPS, 40 FPS, or 30 FPS.',
+  sharedMemoryOverride: 'Changes how much system memory the integrated GPU/NPU may share. Restart Windows after applying.',
   frameGenOverride: "Sets the driver's XeSS frame-generation override for games that use XeSS Frame Generation (the game may need a restart for the change to apply).",
   flipMode: 'The driver\'s frame-synchronization mode (VSync / Smooth Sync / Speed Sync). Smart VSync is not exposed by the driver interface.',
   frameLimit: 'A driver-level frame-rate cap. The limiter works independently of Arc Power.',
@@ -103,6 +110,9 @@ const DISPLAY_WIRE_READONLY_NOTE = 'The driver did not report writable color-for
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
 export const CARD_TITLES: Record<string, string> = {
+  enduranceGaming: 'Endurance Gaming',
+  enduranceGamingMode: 'Endurance Gaming Preset',
+  sharedMemoryOverride: 'Shared GPU/NPU Memory Override',
   frameGenOverride: 'XeSS Frame Generation Override',
   flipMode: 'Frame Synchronization',
   frameLimit: 'FPS Limit',
@@ -110,6 +120,8 @@ export const CARD_TITLES: Record<string, string> = {
 };
 
 export const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
+  enduranceGaming: { off: 'Off', on: 'On', auto: 'Auto' },
+  enduranceGamingMode: { performance: 'Performance · 60 FPS', balanced: 'Balanced · 40 FPS', battery: 'Battery · 30 FPS' },
   frameGenOverride: { 'app-choice': 'Application Default', '2x': '2x Frame Generation', '3x': '3x Frame Generation', '4x': '4x Frame Generation' },
   flipMode: { 'application-default': 'Application Choice', 'vsync-on': 'Enable VSync', 'vsync-off': 'Disable VSync', 'smooth-sync': 'Smooth Sync', 'speed-frame': 'Speed Sync' },
   lowLatency: { off: 'Off', on: 'On', 'on-boost': 'On + Boost' },
@@ -176,11 +188,15 @@ const ARC_SYNC_LABELS: Record<string, string> = {
 // capability list; callers then retain the historical first-supported
 // fallback instead of manufacturing an unsupported reset payload.
 export const GRAPHICS_RESET_DEFAULTS: Record<string, string> = {
+  enduranceGaming: 'off',
+  enduranceGamingMode: 'performance',
   frameGenOverride: 'app-choice',
   flipMode: 'application-default',
   lowLatency: 'off',
 };
 export const DROPDOWN_OPTIONS: Record<string, string[]> = {
+  enduranceGaming: ENDURANCE_GAMING_OPTIONS,
+  enduranceGamingMode: ENDURANCE_GAMING_MODE_OPTIONS,
   frameGenOverride: FRAME_GEN_OPTIONS,
   flipMode: FLIP_MODE_OPTIONS,
   lowLatency: LOW_LATENCY_OPTIONS,
@@ -238,6 +254,7 @@ const sliderNodes = new Map<string, HTMLInputElement>();
 const sliderRowNodes = new Map<string, HTMLElement>();
 const toggleNodes = new Map<string, HTMLSelectElement>();
 const selectNodes = new Map<string, HTMLSelectElement>();
+const GRAPHICS_REFRESH_KEYS = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
 let viewContainer: HTMLElement | null = null;
 let displayPickerHost: HTMLElement | null = null;
 let currentCtx: PageContext | null = null;
@@ -254,10 +271,10 @@ api.onGraphicsStateUpdated((payload) => {
   const s = currentCtx.store.get();
   if (s.deviceId === null || payload.deviceId !== s.deviceId) return;
   graphicsState = payload.graphicsState;
-  const pushed = normalizeGraphicsSettings(payload.graphicsState);
-  for (const key of ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']) {
+  const pushedDraft = normalizeGraphicsSettings(payload.graphicsState);
+  for (const key of GRAPHICS_REFRESH_KEYS) {
     if (key in applied) continue;
-    (draft as Record<string, unknown>)[key] = (pushed as Record<string, unknown>)[key];
+    if (key in pushedDraft) (draft as Record<string, unknown>)[key] = (pushedDraft as Record<string, unknown>)[key];
   }
   if (viewContainer && viewContainer.isConnected) {
     renderCards(viewContainer, currentCtx);
@@ -415,7 +432,7 @@ function updateFloating() {
 }
 
 function refreshAll() {
-  for (const key of ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']) refreshChip(key);
+  for (const key of GRAPHICS_REFRESH_KEYS) refreshChip(key);
   updateFloating();
 }
 
@@ -621,6 +638,16 @@ async function renderSettingsView(view: HTMLElement, ctx: PageContext, generatio
 
 function supportedOf(state: GraphicsState, key: string): boolean {
   switch (key) {
+    case 'enduranceGaming': return state.supported.enduranceGaming === true;
+    case 'enduranceGamingMode': return state.supported.enduranceGaming === true
+      && (state.supportedOptions.enduranceGamingModes?.length ?? 0) > 0;
+    case 'sharedMemoryOverride': {
+      const range = state.sharedMemoryRange;
+      return state.supported.sharedMemoryOverride === true
+        && !!range
+        && Number.isInteger(range.min) && Number.isInteger(range.max)
+        && range.min >= 13 && range.max >= range.min && range.max <= 100;
+    }
     case 'frameGenOverride': return state.supported.frameGen;
     case 'flipMode': return state.supported.flipModes;
     case 'frameLimit': return state.supported.frameLimit;
@@ -639,11 +666,22 @@ function supportedOf(state: GraphicsState, key: string): boolean {
 // honest refusal through the apply-result machinery - never raw hex).
 function optionsOf(state: GraphicsState, key: string): string[] {
   switch (key) {
+    case 'enduranceGaming': return state.supportedOptions.enduranceGaming ?? [];
+    case 'enduranceGamingMode': return state.supportedOptions.enduranceGamingModes ?? [];
     case 'frameGenOverride': return state.supportedOptions.frameGen;
     case 'flipMode': return state.supportedOptions.flipModes;
     case 'lowLatency': return LOW_LATENCY_OPTIONS;
     default: return [];
   }
+}
+
+function sharedMemoryRange(state: GraphicsState): { min: number; max: number; step: number; default: number } {
+  const range = state.sharedMemoryRange;
+  if (range && Number.isFinite(range.min) && Number.isFinite(range.max)
+    && range.max >= range.min && Number.isFinite(range.step) && range.step > 0) {
+    return range;
+  }
+  return { min: 13, max: 100, step: 1, default: 57 };
 }
 
 function renderCards(view: HTMLElement, ctx: PageContext) {
@@ -655,7 +693,8 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   // an all-false session (the honest degrade) has nothing to apply (the
   // null driver values would otherwise count as dirty and show the button).
   const anySupported = state.supported.frameGen || state.supported.flipModes
-    || state.supported.frameLimit || state.supported.lowLatency;
+    || state.supported.frameLimit || state.supported.lowLatency
+    || supportedOf(state, 'enduranceGaming') || supportedOf(state, 'sharedMemoryOverride');
   applyBtn = anySupported ? el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT }) : null;
   applyBtn?.addEventListener('click', () => {
     if (applying) return;
@@ -666,7 +705,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     class: 'btn btn-ghost btn-sm',
     text: 'Reset to default',
     onClick: () => {
-      for (const key of ['frameGenOverride', 'flipMode', 'lowLatency']) {
+      for (const key of ['enduranceGaming', 'enduranceGamingMode', 'frameGenOverride', 'flipMode', 'lowLatency']) {
         const options = optionsOf(state, key);
         const defaultValue = resetOption(key, options, GRAPHICS_RESET_DEFAULTS);
         if (defaultValue !== null) {
@@ -685,12 +724,24 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       if (value) value.textContent = String(range.default) + ' FPS';
       const row = sliderRowNodes.get('frameLimit');
       if (row) row.hidden = true;
+      const memoryRange = sharedMemoryRange(state);
+      draft.sharedMemoryOverride = { enabled: false, percentage: memoryRange.default };
+      const memoryToggle = toggleNodes.get('sharedMemoryOverride');
+      if (memoryToggle) memoryToggle.value = 'off';
+      const memorySlider = sliderNodes.get('sharedMemoryOverride');
+      if (memorySlider) memorySlider.value = String(memoryRange.default);
+      const memoryValue = valueNodes.get('sharedMemoryOverride');
+      if (memoryValue) memoryValue.textContent = `${memoryRange.default}% of system memory`;
+      const memoryRow = sliderRowNodes.get('sharedMemoryOverride');
+      if (memoryRow) memoryRow.hidden = true;
       refreshAll();
     },
   });
 
   const buildDropdownCard = (key: string): HTMLElement => {
     const supported = supportedOf(state, key);
+    const optionalMobileControl = key === 'enduranceGaming' || key === 'enduranceGamingMode';
+    if (!supported && optionalMobileControl) return el('span', { hidden: true });
     if (!supported) {
       return el('section', { class: 'card graphics-card graphics-unsupported', dataset: { control: key } }, [
         el('h2', { class: 'card-title', text: CARD_TITLES[key] }),
@@ -699,6 +750,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     }
     const options = optionsOf(state, key);
     if (options.length === 0) {
+      if (optionalMobileControl) return el('span', { hidden: true });
       // Supported but the driver exposes no option bits - honest no-control
       // state (offering un-appliable values would lie).
       return el('section', { class: 'card graphics-card graphics-unsupported', dataset: { control: key } }, [
@@ -870,14 +922,108 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     return card;
   };
 
-  // The four cards in the planned order (plan 2): FG override, Frame Sync,
-  // FPS Limit, Low Latency.
+  const buildSharedMemoryCard = (): HTMLElement => {
+    const range = sharedMemoryRange(state);
+    const current = draft.sharedMemoryOverride ?? { enabled: false, percentage: range.default };
+    const clamp = (value: number): number => {
+      const snapped = range.step > 0 ? Math.round(value / range.step) * range.step : value;
+      return Math.min(range.max, Math.max(range.min, snapped));
+    };
+    const toggle = el('select', {
+      class: 'graphics-select graphics-toggle',
+      dataset: { graphicsToggle: 'sharedMemoryOverride' },
+      onchange: (e: Event) => {
+        const enabled = (e.target as HTMLSelectElement).value === 'on';
+        draft.sharedMemoryOverride = { enabled, percentage: clamp(draft.sharedMemoryOverride?.percentage ?? range.default) };
+        const row = sliderRowNodes.get('sharedMemoryOverride');
+        if (row) row.hidden = !enabled;
+        refreshChip('sharedMemoryOverride');
+        updateFloating();
+      },
+    }, [
+      el('option', { value: 'off', text: 'Off', selected: !current.enabled }),
+      el('option', { value: 'on', text: 'On', selected: current.enabled }),
+    ]);
+    toggleNodes.set('sharedMemoryOverride', toggle);
+    const slider = el('input', {
+      type: 'range',
+      class: 'graphics-slider',
+      min: range.min,
+      max: range.max,
+      step: range.step,
+      value: clamp(current.percentage),
+      oninput: (e: Event) => {
+        const percentage = clamp(Number((e.target as HTMLInputElement).value));
+        draft.sharedMemoryOverride = { enabled: true, percentage };
+        const value = valueNodes.get('sharedMemoryOverride');
+        if (value) value.textContent = `${percentage}% of system memory`;
+        const t = toggleNodes.get('sharedMemoryOverride');
+        if (t) t.value = 'on';
+        refreshChip('sharedMemoryOverride');
+        updateFloating();
+      },
+    });
+    sliderNodes.set('sharedMemoryOverride', slider);
+    const value = el('span', { class: 'graphics-fps-value graphics-memory-value', text: `${clamp(current.percentage)}% of system memory` });
+    valueNodes.set('sharedMemoryOverride', value);
+    const sliderRow = el('div', { class: 'graphics-fps-slider-row', hidden: !current.enabled }, [slider, value]);
+    sliderRowNodes.set('sharedMemoryOverride', sliderRow);
+    const card = el('section', { class: 'card graphics-card', dataset: { control: 'sharedMemoryOverride' } }, [
+      el('div', { class: 'graphics-card-heading' }, [
+        el('h2', { class: 'card-title', text: CARD_TITLES.sharedMemoryOverride }),
+        el('div', { class: 'graphics-control graphics-inline-control' }, [toggle]),
+      ]),
+      el('p', { class: 'card-note', text: CARD_NOTES.sharedMemoryOverride }),
+      el('div', { class: 'graphics-fps-row' }, [sliderRow]),
+      el('div', { class: 'graphics-card-actions' }, [
+        el('span', { class: 'chip oc-chip-status', hidden: true }),
+        el('button', {
+          class: 'chip chip-btn oc-chip-apply',
+          hidden: true,
+          text: 'Apply',
+          onClick: () => {
+            if (applying) return;
+            void apply(ctx, 'sharedMemoryOverride');
+          },
+        }),
+        el('button', {
+          class: 'btn btn-ghost btn-sm',
+          text: 'Reset to default',
+          onClick: () => {
+            draft.sharedMemoryOverride = { enabled: false, percentage: range.default };
+            toggle.value = 'off';
+            slider.value = String(range.default);
+            value.textContent = `${range.default}% of system memory`;
+            sliderRow.hidden = true;
+            refreshChip('sharedMemoryOverride');
+            updateFloating();
+          },
+        }),
+      ]),
+    ]);
+    chipNodes.set('sharedMemoryOverride', card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+    chipApplyNodes.set('sharedMemoryOverride', card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+    refreshChip('sharedMemoryOverride');
+    return card;
+  };
+
+  const mobileCards: HTMLElement[] = [];
+  // These cards are appended only when the backend proves the selected
+  // adapter is an integrated Intel GPU. A discrete mobile Arc adapter never
+  // receives these nodes, even if its name contains "Mobile" or ends in M.
+  if (supportedOf(state, 'enduranceGaming')) mobileCards.push(buildDropdownCard('enduranceGaming'));
+  if (supportedOf(state, 'enduranceGamingMode')) mobileCards.push(buildDropdownCard('enduranceGamingMode'));
+  if (supportedOf(state, 'sharedMemoryOverride')) mobileCards.push(buildSharedMemoryCard());
+
+  // The standard cards remain in the established order; the mobile/iGPU-only
+  // controls sit together at the top of the list.
   view.append(
     el('div', { class: 'graphics-general-actions' }, [
       ...(applyBtn ? [applyBtn as Node] : []),
       resetAllBtn,
     ]),
     el('div', { class: 'card-stack graphics-stack' }, [
+      ...mobileCards,
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),
       buildFrameLimitCard(),

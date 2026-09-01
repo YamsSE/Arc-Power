@@ -744,8 +744,17 @@ export type FlipMode = 'application-default' | 'vsync-on' | 'vsync-off' | 'smoot
 /** M8: the low-latency mode options (the IGCL enum values). */
 export type LowLatency = 'off' | 'on' | 'on-boost';
 
+/** Intel integrated/mobile Endurance Gaming control modes. */
+export type EnduranceGaming = 'off' | 'on' | 'auto';
+
+/** Intel Graphics Software's battery-mode preset targets. */
+export type EnduranceGamingMode = 'performance' | 'balanced' | 'battery';
+
 /** M8 apply intent; an absent field = leave the driver value untouched. */
 export interface GraphicsSettings {
+  enduranceGaming?: EnduranceGaming;
+  enduranceGamingMode?: EnduranceGamingMode;
+  sharedMemoryOverride?: { enabled: boolean; percentage: number };
   frameGenOverride?: FrameGenOverride;
   flipMode?: FlipMode;
   frameLimit?: { enabled: boolean; value: number };
@@ -755,16 +764,33 @@ export interface GraphicsSettings {
 /** M8: the driver read-back (getGraphicsSettings) - never throws; the
  *  all-false/null shape is the honest "not supported on this GPU" degrade. */
 export interface GraphicsState {
-  supported: { frameGen: boolean; flipModes: boolean; frameLimit: boolean; lowLatency: boolean };
+  supported: {
+    frameGen: boolean;
+    flipModes: boolean;
+    frameLimit: boolean;
+    lowLatency: boolean;
+    enduranceGaming?: boolean;
+    sharedMemoryOverride?: boolean;
+  };
   /** M8: the driver's SupportedTypes-gated option lists (Speed Sync etc.) -
    *  the page's dropdown gating source. */
-  supportedOptions: { frameGen: FrameGenOverride[]; flipModes: FlipMode[]; lowLatency: LowLatency[] };
+  supportedOptions: {
+    frameGen: FrameGenOverride[];
+    flipModes: FlipMode[];
+    lowLatency: LowLatency[];
+    enduranceGaming?: EnduranceGaming[];
+    enduranceGamingModes?: EnduranceGamingMode[];
+  };
   frameLimitRange: { min: number; max: number; step: number; default: number } | null;
+  sharedMemoryRange?: { min: number; max: number; step: number; default: number } | null;
   values: {
     frameGenOverride: FrameGenOverride | null;
     flipMode: FlipMode | null;
     frameLimit: { enabled: boolean; value: number } | null;
     lowLatency: LowLatency | null;
+    enduranceGaming?: EnduranceGaming | null;
+    enduranceGamingMode?: EnduranceGamingMode | null;
+    sharedMemoryOverride?: { enabled: boolean; percentage: number } | null;
   };
 }
 

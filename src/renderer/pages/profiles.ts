@@ -318,6 +318,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let gameCatalogLoading = Boolean(gameCatalogSession.loading || gameCatalogSession.scanLoading);
   let gameCatalogError: string | null = null;
   let gameProfileCapabilities: GameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
+  let gameCapabilityRequestGeneration = 0;
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
   let startupWarning: string | null = null;
@@ -331,7 +332,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ? 'Save and load named game presets. Enable a game profile only when that executable should override the global graphics settings.'
       : 'Save and load named tuning presets. Loading applies the profile immediately; the active profile can start at boot.';
   };
-  try { gameProfileCapabilities = await api.gameProfileCapabilities(s.deviceId); } catch { /* unsupported surface stays hidden */ }
   try {
     // The optional per-game sidecar must never gate the legacy profile page.
     // Keep the independent profile/startup calls usable even when the
@@ -342,6 +342,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     root.append(el('p', { class: 'text-error', text: `Could not load profiles: ${err instanceof Error ? err.message : String(err)}` }));
     return;
   }
+  const deviceId = s.deviceId;
   try { bootState = await api.startupGet(); }
   catch (err) { startupWarning = `Start-at-boot state unavailable: ${err instanceof Error ? err.message : String(err)}`; }
 
@@ -385,7 +386,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const renderGameCatalog = (): void => {
     const cards = gameCatalog.map((game) => {
       const settings = gameSettingFor(game.exePath);
-      return el('button', { class: 'game-catalog-card', dataset: { exePath: game.exePath }, onclick: () => { selectedGameExePath = game.exePath; renderGameDetail(game); } }, [
+      return el('button', { class: 'game-catalog-card', dataset: { exePath: game.exePath }, onclick: () => void openGameDetail(game) }, [
         gameBannerTile(game.banner, game.artwork, game.displayName, 'game-catalog-artwork'),
         el('span', { class: 'game-catalog-copy' }, [el('strong', { text: game.displayName }), el('small', { text: settings?.enabled === false ? 'Use Profile off' : 'Installed game' })]),
       ]);
@@ -406,6 +407,18 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           ? el('div', { class: 'game-catalog-grid' }, cards)
           : el('p', { class: 'card-note game-catalog-empty', text: gameCatalogLoading || gameCatalogSession.loading || gameCatalogSession.scanLoading ? 'Loading installed games…' : 'No installed games were found.' }),
     ]));
+  };
+
+  const openGameDetail = async (game: GameCatalogEntry): Promise<void> => {
+    selectedGameExePath = game.exePath;
+    const requestGeneration = ++gameCapabilityRequestGeneration;
+    gameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
+    try {
+      const capabilities = await api.gameProfileCapabilities(deviceId, game.exePath);
+      if (requestGeneration !== gameCapabilityRequestGeneration || selectedGameExePath !== game.exePath) return;
+      gameProfileCapabilities = capabilities;
+    } catch { /* unsupported surface stays hidden */ }
+    if (requestGeneration === gameCapabilityRequestGeneration && viewMode === 'game' && selectedGameExePath === game.exePath) renderGameDetail(game);
   };
 
   const renderGameDetail = (game: GameCatalogEntry): void => {
@@ -503,7 +516,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     renderGameCatalog();
     if (selectedGameExePath) {
       const selected = gameCatalog.find((item) => item.exePath === selectedGameExePath);
-      if (selected) { renderGameDetail(selected); return; }
+      if (selected) { void openGameDetail(selected); return; }
       selectedGameExePath = null;
     }
     if (!gameCatalogLoaded) {
@@ -511,7 +524,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         if (viewMode !== 'game') return;
         if (selectedGameExePath) {
           const selected = gameCatalog.find((item) => item.exePath === selectedGameExePath);
-          if (selected) { renderGameDetail(selected); return; }
+          if (selected) { void openGameDetail(selected); return; }
         }
         renderGameCatalog();
       }).catch(() => { if (viewMode === 'game') renderGameCatalog(); });

@@ -27,6 +27,7 @@ import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFan
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
 import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
+import { classifyXeFgExecutable } from '../game-profile-capabilities.js';
 import {
   DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS,
   DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_RETRO_SCALING_METHOD_OPTIONS,
@@ -231,7 +232,8 @@ export class MockBackend {
    *   reverseEnumeration?: boolean,      // reverse raw fixture order before sorting
    *   graphicsUnsupported?: boolean,     // honest all-false graphics surface
    *                                      // (RID_MOCK_GRAPHICS_UNSUPPORTED=1)
-   *                                      // the multi-device iGPU degrades regardless
+   *                                      // unless the opt-in integrated graphics
+   *                                      // verifier path is enabled
    *   displayUnsupported?: boolean,     // honest empty Display surface
    *   displayWireReadonly?: boolean,    // simulate the real driver's
    *                                      // silent/no-readback wire-format surface
@@ -461,7 +463,14 @@ export class MockBackend {
         tick: 0,
         waiverAccepted: prior?.waiverAccepted === true,
         telemetryCbs: prior?.telemetryCbs instanceof Set ? prior.telemetryCbs : new Set(),
-        graphics: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
+        graphics: {
+          ...JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
+          ...(device.integrated && this._enduranceGamingSupported ? {
+            enduranceGaming: 'auto',
+            enduranceGamingMode: 'balanced',
+            sharedMemoryOverride: { enabled: false, percentage: 57 },
+          } : {}),
+        },
         displays: displayFixtureFor(device.deviceKey, device.name, {
           displayDuplicateIdentity: this._displayDuplicateIdentity,
           displayRetroSymbolsMissing: this._displayRetroSymbolsMissing,
@@ -1021,43 +1030,63 @@ export class MockBackend {
    * four features supported, the probe-recorded frame-limit range, the
    * option lists mirroring the live caps - no speed-frame, no on-boost);
    * the apply mutates the device's own copy so the next read reflects it
-   * (the mock round trip). Device 1 (the multi-device iGPU) and the
-   * RID_MOCK_GRAPHICS_UNSUPPORTED knob serve the honest supported-all-false
-   * degrade - a device switch must never crash the page. Never throws.
+   * (the mock round trip). Device 1 (the multi-device iGPU) keeps the
+   * historical degraded surface by default; RID_MOCK_ENDURANCE=1 opts into
+   * the integrated-only graphics cards for end-to-end UI verification.
    * @param {number} [deviceId]
    * @returns {Promise<object>} the GraphicsState shape
    */
   async getGraphicsSettings(deviceId = 0) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
-    const degraded = id !== 0 || this._graphicsUnsupported || this._noIntel;
+    const e = this._entry(id);
+    const integratedControls = e.device?.integrated === true && this._enduranceGamingSupported;
+    const degraded = (id !== 0 && !integratedControls) || this._graphicsUnsupported || this._noIntel;
     if (degraded) {
       return JSON.parse(JSON.stringify(GRAPHICS_DEGRADED));
     }
-    const e = this._entry(id);
+    const optional = e.device?.integrated === true && this._enduranceGamingSupported;
+    const supported = { ...GRAPHICS_FIXTURE.supported };
+    const supportedOptions = JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.supportedOptions));
+    if (optional) {
+      supported.enduranceGaming = true;
+      supported.enduranceGamingMode = true;
+      supported.sharedMemoryOverride = true;
+      supportedOptions.enduranceGaming = ['off', 'on', 'auto'];
+      supportedOptions.enduranceGamingModes = ['performance', 'balanced', 'battery'];
+    }
     return {
-      supported: { ...GRAPHICS_FIXTURE.supported },
-      supportedOptions: JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.supportedOptions)),
+      supported,
+      supportedOptions,
       frameLimitRange: { ...GRAPHICS_FIXTURE.frameLimitRange },
+      ...(optional ? { sharedMemoryRange: { min: 13, max: 87, step: 1, default: 57 } } : {}),
       values: JSON.parse(JSON.stringify(e.graphics)),
     };
   }
 
-  async getGameProfileCapabilities(deviceId = 0) {
+  async getGameProfileCapabilities(deviceId = 0, exePath) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const entry = this._entry(id);
-    const name = String(entry.device?.name ?? '');
-    const integratedOrMobile = isIntegratedStyleDevice(entry.device)
-      || /\b(?:Mobile|(?:A|B)\d{3,4}M)\b/i.test(name);
-    const supported = integratedOrMobile && this._enduranceGamingSupported;
-    const xeFg = id === 0 && !this._graphicsUnsupported && !this._noIntel && GRAPHICS_FIXTURE.supported.frameGen === true;
+    // Match the real backend's hard gate: only the adapter-properties
+    // integrated bit qualifies. A name such as A370M or "Mobile" is not
+    // enough because those are discrete mobile GPUs too.
+    const integrated = entry.device?.integrated === true;
+    const supported = integrated && this._enduranceGamingSupported;
+    const executable = classifyXeFgExecutable(exePath);
+    const xeFg = id === 0
+      && !this._graphicsUnsupported
+      && !this._noIntel
+      && GRAPHICS_FIXTURE.supported.frameGen === true
+      && executable.supported;
     return {
       enduranceGaming: supported,
       xeFg,
       xeFgOptions: xeFg ? [...GRAPHICS_FIXTURE.supportedOptions.frameGen] : [],
-      reason: supported ? null : (integratedOrMobile
+      reason: supported ? null : (integrated
         ? 'The mock driver does not expose Endurance Gaming for this fixture.'
-        : 'Endurance Gaming is available only on integrated or mobile GPUs.'),
-      xeFgReason: xeFg ? null : 'XeFG is unavailable for this graphics adapter.',
+        : 'Endurance Gaming is available only on integrated Intel graphics.'),
+      xeFgReason: xeFg ? null : (!executable.supported
+        ? executable.reason
+        : 'XeFG is unavailable for this graphics adapter.'),
     };
   }
 
@@ -1074,7 +1103,7 @@ export class MockBackend {
     }
     const controls = ['enduranceGaming', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
       .filter((key) => settings[key] !== null && settings[key] !== undefined);
-    const profileCaps = await this.getGameProfileCapabilities(id);
+    const profileCaps = await this.getGameProfileCapabilities(id, exePath);
     if (settings.enduranceGaming !== undefined && settings.enduranceGaming !== null && !profileCaps.enduranceGaming) {
       result.ok = false;
       result.perControl.enduranceGaming = { ok: false, errorCode: 'unsupported', message: profileCaps.reason };
@@ -1119,9 +1148,11 @@ export class MockBackend {
   async setGraphicsSettings(deviceId = 0, settings = {}) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const result = { ok: true, perControl: {} };
-    const controls = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
-    const degraded = id !== 0 || this._graphicsUnsupported || this._noIntel;
+    const e = this._entry(id);
+    const integratedControls = e.device?.integrated === true && this._enduranceGamingSupported;
+    const degraded = (id !== 0 && !integratedControls) || this._graphicsUnsupported || this._noIntel;
     if (degraded) {
       for (const c of controls) {
         result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'graphics features are not supported on this device' };
@@ -1129,7 +1160,43 @@ export class MockBackend {
       result.ok = controls.length === 0;
       return result;
     }
-    const e = this._entry(id);
+    if (!integratedControls) {
+      for (const c of ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride']) {
+        if (settings[c] !== null && settings[c] !== undefined) {
+          result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'integrated-only graphics features are not supported on this device' };
+          result.ok = false;
+        }
+      }
+    }
+    if (integratedControls && settings.enduranceGaming !== undefined && settings.enduranceGaming !== null) {
+      if (!['off', 'on', 'auto'].includes(settings.enduranceGaming)) {
+        result.perControl.enduranceGaming = { ok: false, errorCode: 'out-of-range', message: 'unknown Endurance Gaming control' };
+        result.ok = false;
+      } else {
+        e.graphics.enduranceGaming = settings.enduranceGaming;
+        result.perControl.enduranceGaming = { ok: true, readBackEqual: true };
+      }
+    }
+    if (integratedControls && settings.enduranceGamingMode !== undefined && settings.enduranceGamingMode !== null) {
+      if (!['performance', 'balanced', 'battery'].includes(settings.enduranceGamingMode)) {
+        result.perControl.enduranceGamingMode = { ok: false, errorCode: 'out-of-range', message: 'unknown Endurance Gaming preset' };
+        result.ok = false;
+      } else {
+        e.graphics.enduranceGamingMode = settings.enduranceGamingMode;
+        result.perControl.enduranceGamingMode = { ok: true, readBackEqual: true };
+      }
+    }
+    if (integratedControls && settings.sharedMemoryOverride !== undefined && settings.sharedMemoryOverride !== null) {
+      const memory = settings.sharedMemoryOverride;
+      const percentage = Number(memory?.percentage);
+      if (typeof memory !== 'object' || memory === null || !Number.isInteger(percentage) || percentage < 13 || percentage > 87) {
+        result.perControl.sharedMemoryOverride = { ok: false, errorCode: 'out-of-range', message: 'Memory limit must be between 13% and 87%.' };
+        result.ok = false;
+      } else {
+        e.graphics.sharedMemoryOverride = { enabled: memory.enabled === true, percentage };
+        result.perControl.sharedMemoryOverride = { ok: true, readBackEqual: true, warning: 'Restart Windows for the new shared-memory limit to take effect.' };
+      }
+    }
     if (settings.frameGenOverride !== undefined && settings.frameGenOverride !== null) {
       e.graphics.frameGenOverride = settings.frameGenOverride;
       result.perControl.frameGenOverride = { ok: true, readBackEqual: true };

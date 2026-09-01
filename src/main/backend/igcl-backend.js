@@ -51,6 +51,7 @@ import {
 } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
+import { classifyXeFgExecutable } from '../game-profile-capabilities.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
 // imports fine under the packaged Electron (Node 22.21 - type stripping is
 // default since 22.18); the pure module carries no runtime TS-only features.
@@ -76,6 +77,7 @@ import {
   SCALING_STATE_GPU,
   SCALING_STATE_DISPLAY,
 } from './vrr-registry.js';
+import { createSharedMemoryOverride, sharedMemoryPlatformSupported } from './shared-memory-override.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -282,14 +284,88 @@ function globalVrrRequest(lib, adapterHandle, features, { bSet, enumValue } = {}
 }
 
 function endurancePlatformSupported(device, laptopInfo = null) {
-  const name = String(device?.name ?? '');
-  // Reuse the inventory's conservative model classification, then add the
-  // explicit mobile SKU forms. Never use enumeration order: laptops can have
-  // both an integrated adapter and a discrete mobile adapter.
-  return isIntegratedStyleDevice(device)
-    || /\b(?:A|B)\d{3,4}M\b/i.test(name)
-    || /\bMobile\b/i.test(name)
-    || (Boolean(laptopInfo) && /\b(?:A|B)\d{3,4}M\b/i.test(name));
+  // Intel exposes this capability only on the integrated adapter. The
+  // adapter-properties bit is authoritative; name-derived "Mobile"/SKU
+  // guesses are deliberately not accepted because an Arc A370M/A750M is a
+  // discrete mobile GPU and must never receive this control.
+  return device?.integrated === true;
+}
+
+const ENDURANCE_CONTROL_TO_IGCL = Object.freeze({ off: 0, on: 1, auto: 2 });
+const ENDURANCE_CONTROL_FROM_IGCL = Object.freeze({ 0: 'off', 1: 'on', 2: 'auto' });
+const ENDURANCE_MODE_TO_FPS = Object.freeze({ performance: 60, balanced: 40, battery: 30 });
+const ENDURANCE_MODE_FROM_FPS = Object.freeze({ 60: 'performance', 40: 'balanced', 30: 'battery' });
+const ENDURANCE_CONTROL_OPTIONS = Object.freeze(['off', 'on', 'auto']);
+const ENDURANCE_MODE_OPTIONS = Object.freeze(['performance', 'balanced', 'battery']);
+
+function enduranceValueTypeSupported(valueType) {
+  return [
+    CTL_PROPERTY_VALUE_TYPE.ENUM,
+    CTL_PROPERTY_VALUE_TYPE.INT32,
+    CTL_PROPERTY_VALUE_TYPE.UINT32,
+  ].includes(valueType);
+}
+
+function enduranceControlOptionsOf(detail) {
+  if (!detail || !enduranceValueTypeSupported(detail.valueType)) return [];
+  if (detail.valueType !== CTL_PROPERTY_VALUE_TYPE.ENUM || detail.enumSupportedTypes == null || detail.enumSupportedTypes === 0n) {
+    return detail.valueType === CTL_PROPERTY_VALUE_TYPE.INT32 || detail.valueType === CTL_PROPERTY_VALUE_TYPE.UINT32
+      ? ['off', 'on']
+      : [...ENDURANCE_CONTROL_OPTIONS];
+  }
+  return ENDURANCE_CONTROL_OPTIONS.filter((name) => (
+    detail.enumSupportedTypes & (1n << BigInt(ENDURANCE_CONTROL_TO_IGCL[name]))
+  ) !== 0n);
+}
+
+function enduranceModeOptionsOf(detail) {
+  if (detail?.valueType !== CTL_PROPERTY_VALUE_TYPE.INT32 && detail?.valueType !== CTL_PROPERTY_VALUE_TYPE.UINT32) return [];
+  const range = detail.intRange;
+  if (!range) return [];
+  return ENDURANCE_MODE_OPTIONS.filter((mode) => ENDURANCE_MODE_TO_FPS[mode] >= range.min && ENDURANCE_MODE_TO_FPS[mode] <= range.max);
+}
+
+function enduranceControlFromValue(value) {
+  return ENDURANCE_CONTROL_FROM_IGCL[value] ?? null;
+}
+
+function enduranceModeFromFps(value) {
+  return ENDURANCE_MODE_FROM_FPS[value] ?? null;
+}
+
+function readEnduranceGamingValue(lib, adapterHandle, detail, applicationName = '') {
+  if (!detail || !enduranceValueTypeSupported(detail.valueType)) return null;
+  try {
+    if (detail.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
+      const gs = encode3dFeatureGetset({
+        featureType: CTL_3D_FEATURE.ENDURANCE_GAMING,
+        valueType: detail.valueType,
+        bSet: false,
+        applicationName,
+      });
+      if (lib.ctlGetSet3DFeature(adapterHandle, gs.buf) !== CTL_RESULT.SUCCESS) return null;
+      const raw = decode3dFeatureGetsetValue(gs.buf, detail.valueType);
+      return { enduranceGaming: enduranceControlFromValue(raw.enableType), enduranceGamingMode: null };
+    }
+    if (detail.valueType === CTL_PROPERTY_VALUE_TYPE.INT32 || detail.valueType === CTL_PROPERTY_VALUE_TYPE.UINT32) {
+      const gs = encode3dFeatureGetset({
+        featureType: CTL_3D_FEATURE.ENDURANCE_GAMING,
+        valueType: detail.valueType,
+        bSet: false,
+        applicationName,
+      });
+      if (lib.ctlGetSet3DFeature(adapterHandle, gs.buf) !== CTL_RESULT.SUCCESS) return null;
+      const raw = decode3dFeatureGetsetValue(gs.buf, detail.valueType);
+      return {
+        enduranceGaming: raw.enable === true ? 'on' : 'off',
+        enduranceGamingMode: enduranceModeFromFps(raw.value),
+        enduranceGamingFps: raw.value,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // M10b (the Graphics "Display" view): the canonical <-> IGCL value tables
@@ -847,6 +923,10 @@ export class IgclBackend {
    *                                   // on desktops) - the getCapabilities
    *                                   // AIB decode's laptop branch feeds on
    *                                   // it (the vramBytesOf injection pattern)
+   *   sharedMemoryOverride?: object|null, // DxgKrnl shared GPU/NPU memory
+   *                                   // registry adapter; omitted in native
+   *                                   // test fakes and created for product use
+   *   systemInfoOf?: () => object|null, // trusted cached CPU/RAM snapshot
    * }} opts
    */
   constructor(opts = {}) {
@@ -873,6 +953,13 @@ export class IgclBackend {
     // vramBytesOf injection pattern; null on desktops (the subsystem decode
     // then stays authoritative).
     this._laptopInfoOf = typeof opts.laptopInfoOf === 'function' ? opts.laptopInfoOf : null;
+    this._systemInfoOf = typeof opts.systemInfoOf === 'function' ? opts.systemInfoOf : null;
+    // Intel Graphics Software stores the integrated shared-memory limit in
+    // DxgKrnl's MemoryManager key rather than in IGCL's 3D feature table.
+    // Keep the adapter injectable so tests never touch the real registry.
+    this._sharedMemoryOverride = Object.prototype.hasOwnProperty.call(opts, 'sharedMemoryOverride')
+      ? opts.sharedMemoryOverride
+      : (opts.lib ? null : createSharedMemoryOverride());
     // Injected native libraries are test seams. They must never cause a test
     // to query or write the real Windows registry; a product backend without
     // an injected lib gets the real, identity-resolved fallback instead.
@@ -2572,10 +2659,10 @@ export class IgclBackend {
 
   /**
    * Return only Game Profile capabilities that are safe to expose for this
-   * adapter. Endurance Gaming requires both an integrated/mobile adapter and
+   * adapter. Endurance Gaming requires an integrated adapter and
    * a driver-reported per-application feature surface.
    */
-  async getGameProfileCapabilities(deviceId) {
+  async getGameProfileCapabilities(deviceId, exePath) {
     try {
       const dev = await this._device(deviceId);
       const features = await this._graphicsCapsOf(deviceId, dev.handle);
@@ -2583,28 +2670,32 @@ export class IgclBackend {
       const frameGenDetail = features?.get(CTL_3D_FEATURE.FRAME_GENERATION);
       const platform = endurancePlatformSupported(dev, this._laptopInfoOf ? this._laptopInfoOf() : null);
       const supported = platform
-        && [CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32].includes(detail?.valueType)
+        && enduranceValueTypeSupported(detail?.valueType)
         && detail.perAppSupport === true;
       // XeFG is a per-executable control only when the driver reports the
       // frame-generation feature with the enum ABI and explicitly marks it
       // as per-app capable. The option is deliberately hidden otherwise;
       // device-level support alone must not make a game-profile control look
       // writable.
+      const executable = classifyXeFgExecutable(exePath);
       const xeFg = frameGenDetail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM
         && frameGenDetail.perAppSupport === true;
+      const xeFgAllowed = xeFg && executable.supported;
       return {
         enduranceGaming: supported,
-        xeFg,
-        xeFgOptions: xeFg ? [...GRAPHICS_FRAME_GEN_OPTIONS] : [],
+        xeFg: xeFgAllowed,
+        xeFgOptions: xeFgAllowed ? [...GRAPHICS_FRAME_GEN_OPTIONS] : [],
         reason: supported ? null : (!platform
-          ? 'Endurance Gaming is available only on integrated or mobile GPUs.'
+          ? 'Endurance Gaming is available only on integrated Intel graphics.'
           : !detail
             ? 'The driver does not expose Endurance Gaming for this adapter.'
             : detail.perAppSupport !== true
               ? 'The driver does not expose Endurance Gaming as a per-game control.'
               : 'Endurance Gaming is not available on this driver surface.'),
-        xeFgReason: xeFg ? null : (!frameGenDetail
-          ? 'The driver does not expose XeFG for this adapter.'
+        xeFgReason: xeFgAllowed ? null : (!executable.supported
+          ? executable.reason
+          : !frameGenDetail
+            ? 'The driver does not expose XeFG for this adapter.'
           : frameGenDetail.perAppSupport !== true
             ? 'The driver does not expose XeFG as a per-game control.'
             : 'XeFG is not available on this driver surface.'),
@@ -2628,6 +2719,23 @@ export class IgclBackend {
     const features = await this._graphicsCapsOf(deviceId, dev.handle);
     const detail = features?.get(CTL_3D_FEATURE.GLOBAL_OR_PER_APP);
     const result = { ok: true, perControl: {} };
+    let settingsForApply = settings;
+    if (enabled === true && settings.frameGenOverride !== null && settings.frameGenOverride !== undefined) {
+      const profileCaps = await this.getGameProfileCapabilities(deviceId, exePath);
+      if (!profileCaps.xeFg) {
+        result.ok = false;
+        result.perControl.frameGenOverride = {
+          ok: false,
+          errorCode: 'unsupported',
+          message: profileCaps.xeFgReason,
+        };
+        // Preserve the legacy per-game controls in a mixed request. The
+        // unsupported XeFG field is omitted before the native apply so the
+        // driver cannot receive it accidentally.
+        const { frameGenOverride: _ignored, ...legacySettings } = settings;
+        settingsForApply = legacySettings;
+      }
+    }
     const scope = enabled === true ? 'per-app' : 'global';
     const igclValue = GLOBAL_OR_PER_APP_TO_IGCL[scope];
     // GLOBAL_OR_PER_APP is the scope selector itself. Its ApplicationName
@@ -2655,8 +2763,8 @@ export class IgclBackend {
     };
     if (!readBackEqual) return { ...result, ok: false };
     if (enabled !== true) return result;
-    const applied = await this.setGraphicsSettings(deviceId, settings, appName);
-    return { ok: applied.ok, perControl: { ...result.perControl, ...applied.perControl } };
+    const applied = await this.setGraphicsSettings(deviceId, settingsForApply, appName);
+    return { ok: result.ok && applied.ok, perControl: { ...result.perControl, ...applied.perControl } };
   }
 
   /**
@@ -2672,12 +2780,14 @@ export class IgclBackend {
   async getGraphicsSettings(deviceId) {
     try {
       const lib = this._libOrThrow();
-      if (this._isUnavailable(lib.ctlGetSupported3DCapabilities) || this._isUnavailable(lib.ctlGetSet3DFeature)) {
-        return this._graphicsDegraded();
-      }
       const dev = await this._device(deviceId);
-      const features = await this._graphicsCapsOf(deviceId, dev.handle);
-      if (!features) return this._graphicsDegraded();
+      const threeDSurface = !this._isUnavailable(lib.ctlGetSupported3DCapabilities)
+        && !this._isUnavailable(lib.ctlGetSet3DFeature);
+      // The shared-memory override is a DxgKrnl registry control, not an
+      // IGCL 3D feature. Keep it readable on an integrated adapter even if a
+      // particular runtime lacks the optional 3D symbols.
+      const features = threeDSurface ? await this._graphicsCapsOf(deviceId, dev.handle) : new Map();
+      if (threeDSurface && !features) return this._graphicsDegraded();
 
       const supported = {
         frameGen: features.has(CTL_3D_FEATURE.FRAME_GENERATION),
@@ -2734,7 +2844,52 @@ export class IgclBackend {
         }
       }
 
-      return { supported, supportedOptions, frameLimitRange, values };
+      const platform = endurancePlatformSupported(dev, this._laptopInfoOf ? this._laptopInfoOf() : null);
+      const sharedMemoryPlatform = sharedMemoryPlatformSupported(dev, this._systemInfoOf ? this._systemInfoOf() : null);
+      let sharedMemoryRange;
+      if (platform) {
+        const enduranceDetail = features.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
+        if (enduranceValueTypeSupported(enduranceDetail?.valueType)) {
+          const enduranceOptions = enduranceControlOptionsOf(enduranceDetail);
+          const enduranceModes = enduranceModeOptionsOf(enduranceDetail);
+          supported.enduranceGaming = enduranceOptions.length > 0;
+          supportedOptions.enduranceGaming = enduranceOptions;
+          supportedOptions.enduranceGamingModes = enduranceModes;
+          const enduranceValue = readEnduranceGamingValue(lib, dev.handle, enduranceDetail);
+          values.enduranceGaming = enduranceValue?.enduranceGaming ?? null;
+          values.enduranceGamingMode = enduranceValue?.enduranceGamingMode ?? null;
+        } else {
+          supported.enduranceGaming = false;
+          supportedOptions.enduranceGaming = [];
+          supportedOptions.enduranceGamingModes = [];
+          values.enduranceGaming = null;
+          values.enduranceGamingMode = null;
+        }
+
+        if (sharedMemoryPlatform && this._sharedMemoryOverride && typeof this._sharedMemoryOverride.read === 'function') {
+          try {
+            const shared = await this._sharedMemoryOverride.read(dev);
+            if (shared) {
+              supported.sharedMemoryOverride = true;
+              values.sharedMemoryOverride = {
+                enabled: shared.enabled === true,
+                percentage: Number(shared.percentage),
+              };
+              sharedMemoryRange = shared.range ? { ...shared.range } : null;
+            }
+          } catch {
+            // A registry read failure must not hide the IGCL controls.
+          }
+        }
+      }
+
+      return {
+        supported,
+        supportedOptions,
+        frameLimitRange,
+        ...(sharedMemoryRange ? { sharedMemoryRange } : {}),
+        values,
+      };
     } catch {
       return this._graphicsDegraded();
     }
@@ -2767,14 +2922,44 @@ export class IgclBackend {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    const features = await this._graphicsCapsOf(deviceId, dev.handle);
-    const surfaceUp = features !== null
-      && !this._isUnavailable(lib.ctlGetSupported3DCapabilities)
+    const threeDSurface = !this._isUnavailable(lib.ctlGetSupported3DCapabilities)
       && !this._isUnavailable(lib.ctlGetSet3DFeature);
-    const controls = ['enduranceGaming', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+    const featureMap = threeDSurface ? await this._graphicsCapsOf(deviceId, dev.handle) : null;
+    const features = featureMap ?? new Map();
+    const surfaceUp = featureMap !== null && threeDSurface;
+    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
+
+    // Shared GPU/NPU memory is a Windows graphics-memory-manager setting and
+    // is intentionally independent of the 3D-feature surface.
+    if (settings.sharedMemoryOverride !== null && settings.sharedMemoryOverride !== undefined) {
+      const platform = sharedMemoryPlatformSupported(dev, this._systemInfoOf ? this._systemInfoOf() : null);
+      if (!platform) {
+        fail('sharedMemoryOverride', 'unsupported', 'Shared GPU/NPU Memory Override requires an eligible Intel integrated platform.');
+      } else if (!this._sharedMemoryOverride || typeof this._sharedMemoryOverride.set !== 'function') {
+        fail('sharedMemoryOverride', 'unavailable-symbol', 'the Windows graphics-memory manager adapter is unavailable');
+      } else {
+        try {
+          const memoryResult = await this._sharedMemoryOverride.set(dev, settings.sharedMemoryOverride);
+          result.perControl.sharedMemoryOverride = {
+            ok: memoryResult?.ok === true,
+            errorCode: memoryResult?.ok === true ? undefined : (memoryResult?.errorCode ?? 'io-failed'),
+            message: memoryResult?.message,
+            readBackEqual: memoryResult?.readBackEqual,
+            warning: memoryResult?.requiresRestart === true
+              ? 'Restart Windows for the new shared-memory limit to take effect.'
+              : undefined,
+          };
+          if (memoryResult?.ok !== true) result.ok = false;
+        } catch {
+          fail('sharedMemoryOverride', 'io-failed', 'the shared-memory override could not be applied');
+        }
+      }
+    }
+
+    const nativeControls = controls.filter((c) => c !== 'sharedMemoryOverride');
     if (!surfaceUp) {
-      for (const c of controls) {
+      for (const c of nativeControls) {
         fail(c, 'unavailable-symbol', 'the 3D-feature API is missing in the IGCL runtime');
       }
       return result;
@@ -2824,47 +3009,126 @@ export class IgclBackend {
       if (!readBackEqual) result.ok = false;
     };
 
-    if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {
+    if ((settings.enduranceGaming !== null && settings.enduranceGaming !== undefined)
+      || (settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined)) {
       const detail = features.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
       const platform = endurancePlatformSupported(dev, this._laptopInfoOf ? this._laptopInfoOf() : null);
       const valueType = detail?.valueType;
-      if (!platform || !detail || ![CTL_PROPERTY_VALUE_TYPE.ENUM, CTL_PROPERTY_VALUE_TYPE.INT32, CTL_PROPERTY_VALUE_TYPE.UINT32].includes(valueType) || detail.perAppSupport !== true) {
-        fail('enduranceGaming', 'unsupported', 'Endurance Gaming is only available as a per-game setting on integrated or mobile GPUs');
+      if (!platform || !detail || !enduranceValueTypeSupported(valueType)) {
+        if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {
+          fail('enduranceGaming', 'unsupported', 'Endurance Gaming is only available on Intel integrated graphics supported by the driver.');
+        }
+        if (settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined) {
+          fail('enduranceGamingMode', 'unsupported', 'Endurance Gaming presets are only available on Intel integrated graphics supported by the driver.');
+        }
+      } else if (appScope && detail.perAppSupport !== true) {
+        if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {
+          fail('enduranceGaming', 'unsupported', 'Endurance Gaming is not exposed as a per-game driver setting.');
+        }
+        if (settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined) {
+          fail('enduranceGamingMode', 'unsupported', 'Endurance Gaming presets are not exposed as a per-game driver setting.');
+        }
+      } else if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM
+        && settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined) {
+        fail('enduranceGamingMode', 'unsupported', 'This driver exposes Endurance Gaming without selectable FPS presets.');
       } else if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
-        // Older driver branches report the simple Off/On enum directly.
-        setEnum('enduranceGaming', CTL_3D_FEATURE.ENDURANCE_GAMING, settings.enduranceGaming, { off: 0, on: 1 }, null);
+        // Older driver branches report the control as an enum. They do not
+        // expose the separate FPS presets on this ABI.
+        const optionOk = (v) => enduranceControlOptionsOf(detail).some((name) => ENDURANCE_CONTROL_TO_IGCL[name] === v);
+        setEnum('enduranceGaming', CTL_3D_FEATURE.ENDURANCE_GAMING, settings.enduranceGaming, ENDURANCE_CONTROL_TO_IGCL, optionOk);
+      } else if (valueType === CTL_PROPERTY_VALUE_TYPE.INT32 || valueType === CTL_PROPERTY_VALUE_TYPE.UINT32) {
+        // Some older IGCL builds describe Endurance as an integer feature:
+        // the enable bit controls Off/On and the integer is the DC-mode
+        // target FPS. The IGS Performance/Balanced/Battery presets are
+        // exactly 60/40/30 FPS on this ABI.
+        const requestedControl = settings.enduranceGaming;
+        const requestedMode = settings.enduranceGamingMode;
+        const current = readEnduranceGamingValue(lib, dev.handle, detail, appScope);
+        const options = enduranceControlOptionsOf(detail);
+        const modes = enduranceModeOptionsOf(detail);
+        if (requestedControl === 'auto') {
+          fail('enduranceGaming', 'unsupported', 'This IGCL driver exposes Endurance Gaming as an On/Off FPS control; Auto is managed by the Intel Graphics Software profile layer.');
+        } else if (requestedControl !== null && requestedControl !== undefined && !options.includes(requestedControl)) {
+          fail('enduranceGaming', 'out-of-range', `unknown Endurance Gaming control '${requestedControl}'`);
+        } else if (requestedMode !== null && requestedMode !== undefined && !modes.includes(requestedMode)) {
+          fail('enduranceGamingMode', 'unsupported', 'The requested Endurance Gaming preset is outside this driver\'s supported FPS range.');
+        } else if ((requestedControl === null || requestedControl === undefined || requestedMode === null || requestedMode === undefined)
+          && (!current
+            || (requestedControl !== null && requestedControl !== undefined && !Number.isFinite(current.enduranceGamingFps))
+            || (requestedMode !== null && requestedMode !== undefined && typeof current.enduranceGaming !== 'string'))) {
+          // A partial update must preserve the omitted sibling. If the
+          // current per-app/global value could not be read, refuse without a
+          // write instead of silently resetting the sibling to a fallback.
+          if (requestedControl !== null && requestedControl !== undefined) {
+            fail('enduranceGaming', 'io-failed', 'The current Endurance Gaming value could not be read; no change was written.');
+          }
+          if (requestedMode !== null && requestedMode !== undefined) {
+            fail('enduranceGamingMode', 'io-failed', 'The current Endurance Gaming value could not be read; no change was written.');
+          }
+        } else if (
+          (requestedControl !== null && requestedControl !== undefined)
+          || (requestedMode !== null && requestedMode !== undefined)
+        ) {
+          const range = detail.intRange;
+          const requestedFps = requestedMode !== null && requestedMode !== undefined
+            ? ENDURANCE_MODE_TO_FPS[requestedMode]
+            : current?.enduranceGamingFps;
+          const targetFps = range && Number.isFinite(requestedFps)
+            ? clampAndSnap(requestedFps, range)
+            : range && Number.isFinite(range.default) ? clampAndSnap(range.default, range) : 60;
+          const enabled = requestedControl === 'on'
+            ? true
+            : requestedControl === 'off'
+              ? false
+              : current?.enduranceGaming === 'on';
+          const gs = encode3dFeatureGetset({
+            featureType: CTL_3D_FEATURE.ENDURANCE_GAMING,
+            valueType,
+            bSet: true,
+            intEnable: enabled,
+            intValue: targetFps,
+            applicationName: appScope,
+          });
+          const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          if (setResult !== CTL_RESULT.SUCCESS) {
+            const errorCode = igclErrorCode(setResult) ?? 'io-failed';
+            if (requestedControl !== null && requestedControl !== undefined) fail('enduranceGaming', errorCode, `IGCL ${describeResult(setResult)}`);
+            if (requestedMode !== null && requestedMode !== undefined) fail('enduranceGamingMode', errorCode, `IGCL ${describeResult(setResult)}`);
+          } else {
+            const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.ENDURANCE_GAMING, valueType, bSet: false, applicationName: appScope });
+            const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+            const got = getResult === CTL_RESULT.SUCCESS ? decode3dFeatureGetsetValue(rb.buf, valueType) : null;
+            const controlEqual = requestedControl === null || requestedControl === undefined || got?.enable === enabled;
+            const modeEqual = requestedMode === null || requestedMode === undefined || got?.value === targetFps;
+            const readBackMessage = (equal) => equal ? undefined : `read-back ${got ? JSON.stringify(got) : describeResult(getResult)} did not match the requested Endurance Gaming value`;
+            if (requestedControl !== null && requestedControl !== undefined) {
+              result.perControl.enduranceGaming = {
+                ok: controlEqual,
+                errorCode: controlEqual ? undefined : 'io-failed',
+                message: readBackMessage(controlEqual),
+                readBackEqual: controlEqual,
+                silentNoop: setResult === CTL_RESULT.SUCCESS && !controlEqual,
+              };
+              if (!controlEqual) result.ok = false;
+            }
+            if (requestedMode !== null && requestedMode !== undefined) {
+              result.perControl.enduranceGamingMode = {
+                ok: modeEqual,
+                errorCode: modeEqual ? undefined : 'io-failed',
+                message: readBackMessage(modeEqual),
+                readBackEqual: modeEqual,
+                silentNoop: setResult === CTL_RESULT.SUCCESS && !modeEqual,
+              };
+              if (!modeEqual) result.ok = false;
+            }
+          }
+        }
       } else {
-        // Current IGCL describes Endurance Gaming as an integer feature: the
-        // enable bit controls Off/On and the integer is the DC-mode target
-        // FPS. The UI exposes the IGS control only, so preserve the driver's
-        // default target when enabling it.
-        const range = detail.intRange;
-        const targetFps = range && Number.isFinite(range.default) ? clampAndSnap(range.default, range) : 60;
-        const enabled = settings.enduranceGaming === 'on';
-        const gs = encode3dFeatureGetset({
-          featureType: CTL_3D_FEATURE.ENDURANCE_GAMING,
-          valueType,
-          bSet: true,
-          intEnable: enabled,
-          intValue: targetFps,
-          applicationName: appScope,
-        });
-        const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
-        if (setResult !== CTL_RESULT.SUCCESS) {
-          fail('enduranceGaming', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
-        } else {
-          const rb = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.ENDURANCE_GAMING, valueType, bSet: false, applicationName: appScope });
-          const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
-          const got = getResult === CTL_RESULT.SUCCESS ? decode3dFeatureGetsetValue(rb.buf, valueType) : null;
-          const readBackEqual = got?.enable === enabled;
-          result.perControl.enduranceGaming = {
-            ok: readBackEqual,
-            errorCode: readBackEqual ? undefined : 'io-failed',
-            message: readBackEqual ? undefined : `read-back ${got ? JSON.stringify(got) : describeResult(getResult)} did not match requested ${settings.enduranceGaming}`,
-            readBackEqual,
-            silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
-          };
-          if (!readBackEqual) result.ok = false;
+        if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {
+          fail('enduranceGaming', 'unsupported', 'This driver exposes an undocumented Endurance Gaming value type.');
+        }
+        if (settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined) {
+          fail('enduranceGamingMode', 'unsupported', 'This driver exposes an undocumented Endurance Gaming value type.');
         }
       }
     }

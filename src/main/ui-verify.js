@@ -444,7 +444,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // joined the sidebar. M8: 8 nav links - the Graphics tab (#/graphics)
   // joined below Tuning. M9: 7 again - the Overlay Settings content moved
   // INTO the Monitoring page's Overlay view (the Overlay tab is gone).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
@@ -614,7 +614,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // M4-D: the sidebar - per-tab icons left of the names, the brand
   // "Power" illuminated like the title bar, the brand BOLD.
-  const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
+  const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
   if (sidebarIcons.length !== 7) fail(`M9: expected 7 sidebar links with icons (the Overlay tab moved into the Monitoring page in M9 - the Graphics tab joined in M8), got ${sidebarIcons.length}`);
   // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
@@ -704,7 +704,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       hasIcon: !!link?.querySelector('.sidebar-icon'),
       hasLabel: !!link?.querySelector('.sidebar-link-label'),
       label: link?.querySelector('.sidebar-link-label')?.textContent ?? null,
-      justify: footer ? getComputedStyle(footer).justifyContent : null,
+      justify: footer?.querySelector('.sidebar-footer-links')
+        ? getComputedStyle(footer.querySelector('.sidebar-footer-links')).justifyContent
+        : null,
     });
   })()`);
   const sfl = JSON.parse(settingsFooter);
@@ -844,8 +846,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       red: 'rgb(20, 9, 13)',
       yellow: 'rgb(20, 17, 7)',
     }[theme] ?? 'rgb(10, 13, 19)';
-    if (bg !== want) {
-      fail(`M51: the computed background of ${sel} is '${bg}' (expected the --control-bg token '${want}' in the ${theme} theme)`);
+    if (bg !== want && !(await waitFor(win, `getComputedStyle(document.querySelector('${sel}')).backgroundColor === '${want}'`, 1000))) {
+      fail(`M51: the computed background of ${sel} is '${await js(`getComputedStyle(document.querySelector('${sel}')).backgroundColor`)}' (expected the --control-bg token '${want}' in the ${theme} theme)`);
     }
   };
   const clickThemeChip = (theme) => js(`(() => { const b = Array.from(document.querySelectorAll('button.theme-option')).find((x) => x.dataset.themeOption === '${theme}'); if (b) b.click(); return !!b; })()`);
@@ -1040,13 +1042,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('clocks-kv', `device card combined clocks kv = ${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)}`);
 
-  // Memory clock readout next to core clock (a770 featureset: 2187 MHz).
-  // M4-H (C3): the readout is TWO labeled groups - the GPU tiles live in
-  // the GPU group container (tile lookups SCOPED to the group - N8).
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock' && (t.querySelector('.stat-value')?.textContent ?? '') === '2187')`))) {
-    fail('memory-clock readout missing or not 2187 MHz');
+  // M140: Performance Pulse replaced the legacy stat-tile strip. The
+  // selected GPU's memory clock remains visible in the combined Clocks row,
+  // so keep the readout pin on that current compact surface.
+  if (!(await waitFor(win, `(() => {
+    const row = document.querySelector('.card-grid .kv[data-label="Clocks"]');
+    return (row?.textContent ?? '').includes('2187 MHz Memory');
+  })()`))) {
+    fail('memory-clock readout missing from the combined Clocks row or not 2187 MHz');
   }
-  step('mem-clock', `memory clock readout = ${await js(`Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Memory clock')?.querySelector('.stat-value')?.textContent ?? ''`)} MHz (compact tiles)`);
+  step('mem-clock', `memory clock readout = ${await js(`document.querySelector('.card-grid .kv[data-label="Clocks"]')?.textContent ?? ''`)} (Performance Pulse dashboard)`);
 
   // --- M4-D + M4-D2 (§9): the CPU & memory card (sysinfo:get fixture)
   // The card sits BEFORE the GPU card in the card-grid and renders the mock
@@ -1181,65 +1186,18 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m4i-card-align', `M4-I (A4): the sysinfo-card and device-card kv rows start at the same y (diff ${kvTopDiff}px)`);
 
-  // --- M4-H (C3)/M4M (D)/M4N (A): the TWO-GROUP live readout (CPU above
-  // GPU) ----------------------------------------------------------------
-  // The tile lookups are SCOPED to the group containers (N8 - both groups
-  // carry Temperature/Util-like labels). CPU: 4 tiles incl. the Power tile
-  // (cpuPowerW 125.5 from the mock PowerMeter fixture; M4N: renamed from
-  // Wattage); GPU: 6 tiles (M4N: 'Power' replaces 'Power draw'). M4N: the
-  // CPU Core Frequency tile reads the mock's 4300 MHz as '4.3' GHz.
-  // M4M (D): Util FIRST in both groups (the order pin).
-  const groupLabels = await js(`JSON.stringify(Array.from(document.querySelectorAll('.readout-card .readout-group-label')).map((l) => l.textContent))`);
-  if (JSON.parse(groupLabels).join(',') !== 'CPU,GPU') fail(`M4-H: the readout groups are '${groupLabels}' (expected 'CPU','GPU' - CPU ABOVE GPU)`);
-  const cpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
-  const cpuParsed = JSON.parse(cpuTiles);
-  if (cpuParsed.length !== 4) fail(`M4-H: the CPU group has ${cpuParsed.length} tiles (expected 4): ${cpuTiles}`);
-  if (cpuParsed.map(([l]) => l).join(',') !== 'Util,Core Frequency,Temperature,Power') {
-    fail(`M4N: the CPU group order is '${cpuParsed.map(([l]) => l).join(',')}' (expected Util, Core Frequency, Temperature, Power - Util first)`);
+  // M140: the dashboard now uses one compact Performance Pulse strip for
+  // live telemetry instead of the legacy CPU/GPU stat-tile groups. Validate
+  // the four current metric cards and the selected GPU utilization value.
+  const pulseMetrics = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-metric')).map((m) => ({ label: m.querySelector('.dashboard-pulse-label')?.textContent?.trim() ?? '', value: m.querySelector('.dashboard-pulse-value')?.textContent?.trim() ?? '' })))`));
+  const pulseLabels = pulseMetrics.map((m) => m.label).join(',');
+  if (pulseLabels !== 'GPU utilization,GPU temperature,GPU power,VRAM in use') {
+    fail(`M140: Performance Pulse metrics are '${pulseLabels}' (expected the compact GPU telemetry set)`);
   }
-  // M4-I (C2): RID_MOCK_NO_POWER_METER=1 -> the mock cpuPowerW stays null -
-  // the Power tile honestly reads '-' (the no-metering shape; the gated
-  // pin below asserts it explicitly).
-  const wantPower = process.env.RID_MOCK_NO_POWER_METER === '1' ? '-' : '125.5';
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Power' && (t.querySelector('.stat-value')?.textContent ?? '') === '${wantPower}')`, 8000))) {
-    fail(`M4-H/M4-N: the CPU Power tile is missing/not ${wantPower} W: ${cpuTiles}`);
+  if (!(await waitFor(win, `document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42'`, 8000))) {
+    fail(`M140: GPU utilization pulse is '${await js(`document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent ?? ''`)}' (expected 42)`);
   }
-  for (const want of ['Core Frequency', 'Util', 'Temperature']) {
-    if (!cpuParsed.some(([l]) => l === want)) fail(`M4-H: the CPU group is missing the '${want}' tile: ${cpuTiles}`);
-  }
-  // M4N (A.3): the CPU Core Frequency tile reads the mock cpuFreqMhz 4300
-  // as '4.3' GHz (the shared ghzFreq helper) - the value + the unit.
-  if (!(await waitFor(win, `(() => {
-    const tile = Array.from(document.querySelectorAll('#dash-readout-cpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Core Frequency');
-    return !!tile && (tile.querySelector('.stat-value')?.textContent ?? '') === '4.3' && (tile.querySelector('.stat-unit')?.textContent ?? '') === 'GHz';
-  })()`, 8000))) {
-    fail(`M4N: the CPU Core Frequency tile is not '4.3' GHz: ${cpuTiles}`);
-  }
-  const gpuTiles = await js(`JSON.stringify(Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()]))`);
-  const gpuParsed = JSON.parse(gpuTiles);
-  if (gpuParsed.length !== 8) fail(`M16: the GPU group has ${gpuParsed.length} tiles (expected 8): ${gpuTiles}`);
-  if (gpuParsed.map(([l]) => l).join(',') !== 'Util,Core clock,Memory clock,Voltage,VramTemp,Temperature,Power,Fan speed') {
-    fail(`M16: the GPU group order is '${gpuParsed.map(([l]) => l).join(',')}' (expected Util, Core clock, Memory clock, Voltage, VramTemp, Temperature, Power, Fan speed - Util first)`);
-  }
-  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Fan speed', 'Util', 'Voltage', 'VramTemp']) {
-    if (!gpuParsed.some(([l]) => l === want)) fail(`M16: the GPU group is missing the '${want}' tile: ${gpuTiles}`);
-  }
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Util' && (t.querySelector('.stat-value')?.textContent ?? '') === '42')`, 8000))) {
-    fail(`M4-H: the GPU Util tile is not 42 (the mock utilPct): ${gpuTiles}`);
-  }
-  // M4N (A.2): the GPU Power tile reads the mock powerW fixture 38.8.
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Power' && (t.querySelector('.stat-value')?.textContent ?? '') === '38.8')`, 8000))) {
-    fail(`M4N: the GPU Power tile is not 38.8 (the mock powerW fixture): ${gpuTiles}`);
-  }
-  // M16: the Voltage + VramTemp tiles read the mock telemetry (0.652 V /
-  // the 44..53 °C ramp).
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Voltage' && (t.querySelector('.stat-value')?.textContent ?? '') === '0.652')`, 8000))) {
-    fail(`M16: the GPU Voltage tile is not 0.652 (the mock gpuVoltageV): ${gpuTiles}`);
-  }
-  if (!(await waitFor(win, `Array.from(document.querySelectorAll('#dash-readout-gpu .stat-tile')).some((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'VramTemp' && /^\\d+$/.test(t.querySelector('.stat-value')?.textContent ?? ''))`, 8000))) {
-    fail(`M16: the GPU VramTemp tile is missing (expected the 44..53 °C ramp): ${gpuTiles}`);
-  }
-  step('m4h-readout-groups', `M4-H/M4M/M4N/M16: readout groups 'CPU,GPU'; CPU 4 tiles in order '${cpuParsed.map(([l]) => l).join(',')}' (incl. Power '${cpuParsed.find(([l]) => l === 'Power')?.[1]} W', Core Frequency '4.3 GHz'), GPU 8 tiles in order '${gpuParsed.map(([l]) => l).join(',')}' (incl. Util '42' + Power '38.8' + Voltage '0.652' + VramTemp - Util first in both)`);
+  step('m140-performance-pulse', `M140: compact Performance Pulse has '${pulseLabels}' with GPU utilization 42%`);
 
   // --- M4-D2 (§3): the ReBAR pill is STANDALONE (no label kv row) --------
   // The mock fixture models a healthy setup: a multi-GiB BAR (rebarActive
@@ -1405,7 +1363,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail(`M30: mixed A770+A750 Dashboard selector could not select device 0: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
     }
     step('m30-mixed-selectors', `mixed A770+A750: Dashboard and Tuning expose the same generic selector options ${JSON.stringify(mixedOptions)} and each selects both rows`);
-  } else if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+  } else if (process.env.RID_MOCK_MULTI_DEVICE === '1' && process.env.RID_MOCK_ENDURANCE !== '1') {
     const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
     const IGPU_NAME = 'Mock Arc iGPU (fixture)';
     const driveSelector = (value, selector = '.device-select') => js(`(() => {
@@ -1587,6 +1545,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail(`M4-F: the switch back did not persist deviceId=0 (deviceGet=${JSON.stringify(await js(`window.arcPower.deviceGet()`))})`);
     }
     step('m4f-switch-back', `M4-F: Tuning selector -> device 0: header '${A770_NAME}', 4+ control cards, PL '210 W', deviceGet=0 persisted - both selectors drive the same switch`);
+  } else if (process.env.RID_MOCK_MULTI_DEVICE === '1' && process.env.RID_MOCK_ENDURANCE === '1') {
+    // M140 uses the dedicated graphics verifier below for the integrated
+    // cards; keep this older Tuning-only single-device assertion out of that
+    // opt-in session.
+    step('m140-multi-device-setup', 'M140: multi-device integrated graphics verifier session is active');
   } else {
     // M4-F: single-device degradation - the live 1-GPU machine shows NO
     // selector anywhere (the default variant pins the absent state).
@@ -4182,21 +4145,33 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!tuningSubtitle.includes('tuning presets')) fail(`M58: Tuning Profile subtitle was '${tuningSubtitle}'`);
     await js(`Array.from(document.querySelectorAll('.profiles-mode-toggle button')).find((b) => b.textContent.trim() === 'Game Profile')?.click()`);
     if (!(await waitFor(win, `(document.querySelector('#profiles-subtitle')?.textContent ?? '').includes('game presets')`))) fail('M58: Game Profile subtitle did not switch to game presets');
-    if (!(await waitFor(win, `document.querySelectorAll('.game-catalog-card').length === 2`, 8000))) fail('M55: Game Profile view did not show the installed mock catalog');
-    await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('rid-verify-two.exe'))?.click()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.game-catalog-card').length === 3`, 8000))) fail('M55: Game Profile view did not show the installed mock catalog');
+    await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('cyberpunk2077.exe'))?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.game-profile-back') && (document.body.textContent ?? '').includes('Back to catalog')`))) fail('M55: clicking a catalog card did not open the in-page detail view');
     const gameLabels = await js(`Array.from(document.querySelectorAll('.game-profile-detail .profile-setting-label strong')).map((x) => x.textContent.trim()).concat(Array.from(document.querySelectorAll('.game-use-profile')).map(() => 'Use Profile'))`);
     for (const label of ['XeFG multiplier', 'Frame Synchronization', 'FPS Limiter', 'Low Latency Mode', 'Use Profile']) if (!gameLabels.includes(label)) fail(`M127: Game Profile detail is missing ${label}`);
     if (gameLabels.includes('Endurance Gaming')) fail('M55: Endurance Gaming was exposed on the discrete mock adapter');
     await js(`(() => { const controlFor = (label) => Array.from(document.querySelectorAll('.game-profile-detail .profile-setting-row')).find((row) => row.querySelector('.profile-setting-label strong')?.textContent.trim() === label)?.querySelector('select'); const frame = controlFor('Frame Synchronization'); const latency = controlFor('Low Latency Mode'); if (!frame || !latency) return false; frame.value = 'vsync-off'; frame.dispatchEvent(new Event('change', { bubbles: true })); latency.value = 'on'; latency.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-    if (!(await waitFor(win, `window.arcPower.gameCatalogList().then((e) => e.settings.some((s) => s.exePath.endsWith('rid-verify-two.exe') && s.graphics.flipMode === 'vsync-off' && s.graphics.lowLatency === 'on'))`, 8000))) fail('M55: Game Profile settings did not read back independently from the catalog');
+    if (!(await waitFor(win, `window.arcPower.gameCatalogList().then((e) => e.settings.some((s) => s.exePath.endsWith('cyberpunk2077.exe') && s.graphics.flipMode === 'vsync-off' && s.graphics.lowLatency === 'on'))`, 8000))) fail('M55: Game Profile settings did not read back independently from the catalog');
     await js(`document.querySelector('.game-profile-back')?.click()`);
-    if (!(await waitFor(win, `document.querySelectorAll('.game-catalog-card').length === 2`))) fail('M55: Back to catalog did not restore the installed-game cards');
+    await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('rid-verify-one.exe'))?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.game-profile-back') && (document.body.textContent ?? '').includes('Back to catalog')`))) fail('M140: clicking the unknown fixture did not open the game detail view');
+    const unknownGameLabels = await js(`Array.from(document.querySelectorAll('.game-profile-detail .profile-setting-label strong')).map((x) => x.textContent.trim())`);
+    if (unknownGameLabels.includes('XeFG multiplier')) fail('M140: XeFG was exposed for an unknown executable');
+    for (const label of ['Frame Synchronization', 'FPS Limiter', 'Low Latency Mode']) if (!unknownGameLabels.includes(label)) fail(`M140: legacy control ${label} disappeared for an unknown executable`);
+    await js(`document.querySelector('.game-profile-back')?.click()`);
+    await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('3dmark.exe'))?.click()`);
+    if (!(await waitFor(win, `!!document.querySelector('.game-profile-back') && (document.body.textContent ?? '').includes('3DMark')`))) fail('M140: clicking the 3DMark fixture did not open the game detail view');
+    const benchmarkLabels = await js(`Array.from(document.querySelectorAll('.game-profile-detail .profile-setting-label strong')).map((x) => x.textContent.trim())`);
+    if (benchmarkLabels.includes('XeFG multiplier')) fail('M140: XeFG multiplier was exposed for 3DMark');
+    for (const label of ['Frame Synchronization', 'FPS Limiter', 'Low Latency Mode']) if (!benchmarkLabels.includes(label)) fail(`M140: legacy control ${label} disappeared for 3DMark`);
+    await js(`document.querySelector('.game-profile-back')?.click()`);
+    if (!(await waitFor(win, `document.querySelectorAll('.game-catalog-card').length === 3`))) fail('M55: Back to catalog did not restore the installed-game cards');
     const settingsAfterAssociationDelete = await js(`window.arcPower.gameCatalogList()`);
-    if (!settingsAfterAssociationDelete.settings.some((s) => s.exePath.endsWith('rid-verify-two.exe'))) fail('M55: OC association deletion removed the independent game settings record');
+    if (!settingsAfterAssociationDelete.settings.some((s) => s.exePath.endsWith('cyberpunk2077.exe'))) fail('M55: OC association deletion removed the independent game settings record');
     await js(`document.querySelector('.profiles-mode-toggle button')?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.profile-create')`))) fail('M55: OC Profile toggle did not restore the legacy profile browser');
-    step('profiles-game-catalog', 'M55: Game Profile toggle showed both installed mock games, detail/back worked, executable-keyed settings read back, and OC association deletion did not remove game settings');
+    step('profiles-game-catalog', 'M55/M140: Game Profile showed the known game, unknown executable, and 3DMark fixtures; XeFG appeared only for the known game, legacy controls stayed available, detail/back worked, and executable-keyed settings read back');
   }
 
   // After the OC flow the waiver is accepted (either this run or persisted):
@@ -4494,7 +4469,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`, 15000))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 15000))) {
     fail('M4-H: the reload did not boot the shell (7 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
   }
   await js(`location.hash = '#/tuning'`);
@@ -5553,7 +5528,36 @@ export async function runGraphicsVerify(win, backend) {
     }
     await js(`location.hash = '#/graphics'`);
     await sleep(250);
-    if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4 && Array.from(document.querySelectorAll('.graphics-card')).every((c) => (c.textContent ?? '').includes('Not supported on this GPU.'))`, 8000))) {
+    if (process.env.RID_MOCK_ENDURANCE === '1') {
+      if (!(await waitFor(win, `document.querySelector('[data-control="enduranceGaming"]') && document.querySelector('[data-control="enduranceGamingMode"]') && document.querySelector('[data-control="sharedMemoryOverride"]')`, 8000))) {
+        fail('M140: the integrated fixture must render Endurance Gaming and Shared Memory Override cards');
+      }
+      const integratedCards = await js(`Array.from(document.querySelectorAll('.graphics-card')).filter((c) => ['enduranceGaming','enduranceGamingMode','sharedMemoryOverride'].includes(c.dataset.control)).length`);
+      if (integratedCards !== 3) fail(`M140: expected three integrated-only cards, got ${integratedCards}`);
+      await js(`(() => {
+        const set = (selector, value) => { const node = document.querySelector(selector); if (!node) return false; node.value = value; node.dispatchEvent(new Event('change', { bubbles: true })); return true; };
+        const eg = set('[data-graphics-select="enduranceGaming"]', 'on');
+        const mode = set('[data-graphics-select="enduranceGamingMode"]', 'battery');
+        const memory = set('[data-graphics-toggle="sharedMemoryOverride"]', 'on');
+        const slider = document.querySelector('[data-control="sharedMemoryOverride"] input[type="range"]');
+        if (slider) { slider.value = '75'; slider.dispatchEvent(new Event('input', { bubbles: true })); }
+        return eg && mode && memory;
+      })()`);
+      if (!(await waitFor(win, `!document.querySelector('.floating-apply')?.hidden`, 2000))) fail('M140: integrated edits did not become dirty');
+      await js(`document.querySelector('.floating-apply')?.click()`);
+      if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 8000))) fail('M140: integrated-only graphics apply did not succeed');
+      const integratedApplied = await js(`window.arcPower.graphicsGet(1)`);
+      if (integratedApplied.values.enduranceGaming !== 'on' || integratedApplied.values.enduranceGamingMode !== 'battery' || integratedApplied.values.sharedMemoryOverride?.percentage !== 75) {
+        fail(`M140: integrated graphics read-back mismatch: ${JSON.stringify(integratedApplied.values)}`);
+      }
+      await js(`document.querySelector('.graphics-general-actions .btn-ghost')?.click()`);
+      await js(`document.querySelector('.floating-apply')?.click()`);
+      if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 8000))) fail('M140: integrated-only graphics reset did not succeed');
+      const integratedReset = await js(`window.arcPower.graphicsGet(1)`);
+      if (integratedReset.values.enduranceGaming !== 'off' || integratedReset.values.enduranceGamingMode !== 'performance' || integratedReset.values.sharedMemoryOverride?.enabled !== false) {
+        fail(`M140: integrated graphics reset read-back mismatch: ${JSON.stringify(integratedReset.values)}`);
+      }
+    } else if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4 && Array.from(document.querySelectorAll('.graphics-card')).every((c) => (c.textContent ?? '').includes('Not supported on this GPU.'))`, 8000))) {
       fail(`M8: the iGPU must show the supported-all-false state on all four cards (a device switch must never crash - page='${(await js(`(document.getElementById('page')?.textContent ?? '').slice(0, 200)`)).slice(0, 200)}')`);
     }
     // Switch back to the A770 -> the fixture returns.
@@ -5568,7 +5572,9 @@ export async function runGraphicsVerify(win, backend) {
     if (!(await waitFor(win, `document.querySelectorAll('.graphics-card').length === 4 && !document.querySelectorAll('.graphics-card')[0].textContent.includes('Not supported')`, 8000))) {
       fail('M8: the A770 graphics surface must return after switching back (the fixture)');
     }
-    step('m8-multi-device', 'M8 (RID_MOCK_MULTI_DEVICE=1): the iGPU serves the supported-all-false state (no crash); switching back to the A770 restores the fixture');
+    step('m8-multi-device', process.env.RID_MOCK_ENDURANCE === '1'
+      ? 'M140 (RID_MOCK_MULTI_DEVICE=1 + RID_MOCK_ENDURANCE=1): integrated-only graphics cards render, apply, reset, and switch back cleanly'
+      : 'M8 (RID_MOCK_MULTI_DEVICE=1): the iGPU serves the supported-all-false state (no crash); switching back to the A770 restores the fixture');
   }
 }
 
@@ -5625,7 +5631,7 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // nav links (the Overlay Settings page joined the sidebar). M8: 8 (the
   // Graphics tab joined below Tuning). M9: 7 again (the Overlay tab moved
   // into the Monitoring page's Overlay view).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
@@ -6308,7 +6314,7 @@ export async function runLaptopSysinfoVerify(win) {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   // --- 1. shell + the shared waiver boot step -------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected)');
   }
   await bootWaiverStep(win, js, waitFor);
@@ -6363,7 +6369,7 @@ export async function runSyntheticOsVerify(win) {
   const expectedDriver = nvidia ? '31.0.15.6262' : '31.0.12027.9001';
   const expectedVram = nvidia ? '4GB' : '8GB';
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('M30 synthetic OS: sidebar did not render');
   }
   const devices = await js(`window.arcPower.listDevices()`);
@@ -6447,7 +6453,7 @@ async function runZeroGpuVerify(win) {
   };
   const js = (code) => win.webContents.executeJavaScript(code);
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`, 10000))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 10000))) {
     fail('M30 zero-GPU: shell did not render (7 sidebar links expected)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
@@ -6549,7 +6555,7 @@ export async function runNoIntelVerify(win) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders ----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
@@ -6843,7 +6849,7 @@ export async function runTweaksApplyVerify(win) {
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
   // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
   // moved into the Monitoring page's Overlay view).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
@@ -7026,7 +7032,7 @@ export async function runFanGateVerify(win, backend) {
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
   // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
   // moved into the Monitoring page's Overlay view).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
@@ -9419,6 +9425,10 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   await sleep(250);
   if (!(await waitFor(panelWin, `document.querySelectorAll('.graphics-card').length === 4`, 10000))) {
     fail(`M23: the panel Graphics tab did not render four cards (got ${await ojs(`document.querySelectorAll('.graphics-card').length`)} - page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
+  }
+  const advancedGraphicsText = await ojs(`document.getElementById('adv-content')?.textContent ?? ''`);
+  if (advancedGraphicsText.includes('Endurance Gaming') || advancedGraphicsText.includes('Shared GPU/NPU Memory Override')) {
+    fail('M140: the compact Advanced Overlay exposed restart-sensitive or integrated-only Graphics controls');
   }
   if (await ojs(`Array.from(document.querySelectorAll('.graphics-card')).some((c) => (c.textContent ?? '').includes('Not supported on this GPU.'))`)) {
     fail('M23: a panel Graphics card shows the unsupported state (the mock supports all four)');

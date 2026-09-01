@@ -435,7 +435,7 @@ html, body {
 .sidebar-brand {
   font-family: var(--font-display);
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: 0.025em;
   padding: 0 10px;
   color: var(--text);
@@ -1950,6 +1950,7 @@ input[type="number"] {
 .graphics-fps-slider-row { display: flex; align-items: center; gap: 10px; }
 .graphics-slider { flex: 1; accent-color: var(--accent-strong); }
 .graphics-fps-value { font-size: 13px; min-width: 64px; text-align: right; color: var(--text); }
+.graphics-memory-value { min-width: 150px; }
 
 /* Graphics | Display segmented view and compact IGS-style Display rows. */
 .graphics-view-toolbar { margin: 2px 0 14px; display: flex; flex-direction: column; align-items: flex-start; }
@@ -2246,6 +2247,7 @@ input[type="number"] {
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   background: var(--control-bg);
+  background-color: var(--control-bg);
   display: inline-grid;
   place-content: center;
   flex-shrink: 0;
@@ -2253,8 +2255,13 @@ input[type="number"] {
   transition: background .14s ease, border-color .14s ease;
 }
 .settings-checkbox:hover { border-color: var(--accent); }
+[data-theme="light"] .settings-checkbox:not(:checked) { background-color: #dce2ea; }
+[data-theme="red"] .settings-checkbox:not(:checked) { background-color: #14090d; }
+[data-theme="yellow"] .settings-checkbox:not(:checked) { background-color: #141107; }
+[data-theme="midnight"] .settings-checkbox:not(:checked) { background-color: #131a28; }
 .settings-checkbox:checked {
   background: var(--accent-strong);
+  background-color: var(--accent-strong);
   border-color: var(--accent-strong);
 }
 .settings-checkbox::after {

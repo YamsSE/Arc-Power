@@ -858,6 +858,11 @@ let graphicsApplied: GraphicsSettings = {};
 let graphicsApplying = false;
 let graphicsApplyBtn: HTMLButtonElement | null = null;
 
+// The Advanced Overlay is a quick per-session control surface. Keep the
+// restart-sensitive Shared GPU/NPU Memory Override and the battery/platform
+// Endurance Gaming controls on the full Graphics page, where their eligibility
+// and restart behavior can be explained without making the compact overlay
+// imply that they are available on every adapter.
 const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
 
 function renderGraphicsCards(view: HTMLElement): void {
