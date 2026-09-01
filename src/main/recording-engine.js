@@ -68,7 +68,10 @@ function captureSourceOf(settings = {}) {
   if (source.type === 'window' && Number.isSafeInteger(source.windowHandle) && source.windowHandle > 0) {
     return {
       monitor: { enable: false, force: false, cursor: false, monitor_handle: 0 },
-      window: { enable: true, force: true, cursor: false, window_handle: source.windowHandle },
+      // Ascent-OBS names this source window_capture. Sending it as "window"
+      // is silently ignored by the runtime, leaving no active source and
+      // producing the generic command error (-4) on program capture.
+      window_capture: { enable: true, force: true, cursor: false, window_handle: source.windowHandle },
     };
   }
   const monitorHandle = Number.isSafeInteger(source.monitorHandle) && source.monitorHandle >= 0 && source.monitorHandle <= 0xffffffff
