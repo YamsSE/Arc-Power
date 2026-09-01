@@ -444,7 +444,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const xeFg = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.frameGenOverride ?? 'app-choice' },
       xeFgOptions.map((option) => el('option', { value: option, text: xeFgLabels[option] ?? option }))) as HTMLSelectElement;
     const frame = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.flipMode ?? 'application-default' }, [
-      el('option', { value: 'application-default', text: 'Application Choice' }), el('option', { value: 'vsync-on', text: 'VSync On' }), el('option', { value: 'vsync-off', text: 'VSync Off' }), el('option', { value: 'smooth-sync', text: 'Smooth Sync' }), el('option', { value: 'speed-frame', text: 'Speed / Frame' }),
+      el('option', { value: 'application-default', text: 'Application Choice' }), el('option', { value: 'smart-vsync', text: 'Smart VSync' }), el('option', { value: 'vsync-on', text: 'VSync On' }), el('option', { value: 'vsync-off', text: 'VSync Off' }), el('option', { value: 'smooth-sync', text: 'Smooth Sync' }), el('option', { value: 'speed-frame', text: 'Speed / Frame' }),
     ]) as HTMLSelectElement;
     const fps = el('input', { class: 'profile-setting-check game-setting-control', type: 'checkbox', checked: graphics.frameLimit?.enabled === true }) as HTMLInputElement;
     const fpsValue = el('input', { class: 'profile-setting-number game-setting-control', type: 'number', min: 1, max: 1000, value: graphics.frameLimit?.value ?? 60 }) as HTMLInputElement;

@@ -272,10 +272,10 @@ async function boundShutdown(proxy) {
   }
 }
 let bootWindowTheme = 'dark';
-// A Portable build runs its child from a temporary extraction directory. Give
-// that child its own stable Windows identity so the shell does not reuse the
-// old installed/default icon entry for com.rid.arcpower.
-const APP_USER_MODEL_ID = portableWrapperPath ? 'com.rid.arcpower.portable' : 'com.rid.arcpower';
+// Keep one stable Windows identity for installed and Portable launches. A
+// Portable-specific AppUserModelID makes Windows create a second taskbar
+// identity whose icon can fall back to the generic document placeholder.
+const APP_USER_MODEL_ID = 'com.rid.arcpower';
 // Set the Windows identity while this module is loading, before Electron can
 // create the startup splash or the main window. Keeping this at the earliest
 // possible point prevents the shell from briefly assigning the default
@@ -318,14 +318,13 @@ function applyWindowIdentity(win) {
   }
   if (process.platform !== 'win32') return;
   const taskbarExecutablePath = portableWrapperPath ?? process.execPath;
-  const taskbarIconPath = portableWrapperPath ?? WINDOWS_APP_ICON_PATH;
   try {
     win.setAppDetails({
       appId: APP_USER_MODEL_ID,
-      // Portable's child executable lives in a temporary extraction folder.
-      // Point the shell at the stable wrapper instead, whose icon is visible
-      // to Windows before extraction and remains valid after relaunch.
-      appIconPath: taskbarIconPath,
+      // Always give the shell the real external ICO shipped beside the
+      // packaged app. The Portable wrapper is only the stable relaunch
+      // command; its extracted child path is not an icon source.
+      appIconPath: WINDOWS_APP_ICON_PATH,
       appIconIndex: 0,
       relaunchCommand: taskbarExecutablePath,
       relaunchDisplayName: 'Arc Power',
@@ -349,8 +348,10 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // requested `show` value is honored in the ready-to-show handler below;
     // start-minimized and splash-held windows remain hidden.
     show: false,
-    // Canonical Arc Power icon used by the live window and taskbar.
-    icon: APP_ICON,
+    // Give Chromium/Windows the real ICO at construction time. The native
+    // PNG is still applied below for the live window handle, but the
+    // constructor path prevents a generic icon during taskbar registration.
+    icon: WINDOWS_APP_ICON_PATH,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
     autoHideMenuBar: true,

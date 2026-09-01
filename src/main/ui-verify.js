@@ -5222,15 +5222,15 @@ export async function runGraphicsVerify(win, backend) {
   if (JSON.stringify(JSON.parse(titles)) !== JSON.stringify(wantTitles)) {
     fail(`M8: the card order is ${titles} (expected ${JSON.stringify(wantTitles)} - the planned order)`);
   }
-  // The honest notes render (the Smart-VSync-out note on the Frame Sync card).
+  // The Frame Sync card keeps a concise user-facing description.
   const flipNote = await js(cardNote('flipMode'));
-  if (!flipNote.includes('Smart VSync is not exposed')) {
-    fail(`M8: the Frame Sync note must carry the Smart-VSync-out honesty: '${flipNote}'`);
+  if (flipNote !== 'Choose how frames are synchronized with your display.') {
+    fail(`M141: the Frame Sync note is not the concise description: '${flipNote}'`);
   }
   if (await js(`document.body.textContent.includes("These settings are applied via the Intel driver's control interface")`)) {
     fail('M8: the removed Graphics/Display implementation note is still visible');
   }
-  step('m8-cards', `M8: #/graphics renders the four cards in the planned order ${JSON.stringify(wantTitles)}; the Frame Sync note carries the Smart-VSync-out honesty; the removed implementation note is absent`);
+  step('m8-cards', `M8/M141: #/graphics renders the four cards in the planned order ${JSON.stringify(wantTitles)}; the Frame Sync note uses the concise description and the removed implementation note is absent`);
 
   // --- 2. the fixture values + the driver-gated options ----------------------
   const fixtureValues = await js(`JSON.stringify({
@@ -5242,8 +5242,9 @@ export async function runGraphicsVerify(win, backend) {
   if (fv.fg !== 'app-choice' || fv.flip !== 'application-default' || fv.ll !== 'off') {
     fail(`M8: the dropdowns do not show the mock fixture values: ${fixtureValues}`);
   }
-  // The dropdown options mirror the LIVE caps (the probe record): no
-  // Speed Sync (the flip caps 0x6f lack the bit), all four FG options.
+  // The dropdown options mirror the LIVE caps (the probe record): Smart VSync
+  // is present through the CAPPED_FPS bit; Speed Sync remains absent because
+  // the flip caps 0x6f lack its bit.
   // M9 (the On + Boost fix): the Low Latency list is the FULL off/on/
   // on-boost on every driver (the option is no longer driver-gated - what
   // hid it was the M8 caps 0x3 lacking the boost bit; the backend set of
@@ -5252,6 +5253,9 @@ export async function runGraphicsVerify(win, backend) {
   const llOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="lowLatency"] option')).map((o) => o.value))`);
   if (JSON.parse(flipOptions).includes('speed-frame')) {
     fail(`M8: the Frame Sync dropdown offers Speed Sync, but the mock caps (the live 0x6f) do not expose the bit: ${flipOptions}`);
+  }
+  if (!JSON.parse(flipOptions).includes('smart-vsync')) {
+    fail(`M141: the Frame Sync dropdown is missing Smart VSync from the mock CAPPED_FPS capability: ${flipOptions}`);
   }
   if (!JSON.parse(llOptions).includes('on-boost')) {
     fail(`M9: the Low Latency dropdown must offer On + Boost (the option is no longer driver-gated - the M9 optionsOf change): ${llOptions}`);
@@ -5274,7 +5278,7 @@ export async function runGraphicsVerify(win, backend) {
     fail('M9: a pristine Graphics card must carry the hidden chip and no VISIBLE .oc-chip-apply button');
   }
   if (await js(`document.body.textContent.includes('Unapplied')`)) fail('M9: the "Unapplied" chip text must not exist anywhere in the DOM');
-  step('m9-fixture', `M9: dropdowns show the fixture (fg '${fv.fg}', flip '${fv.flip}', ll '${fv.ll}'); options are driver-gated (no speed-frame in ${flipOptions}, the FULL on-boost list in ${llOptions}); the Apply stays hidden while clean; pristine cards carry only the hidden chip`);
+  step('m9-fixture', `M9/M141: dropdowns show the fixture (fg '${fv.fg}', flip '${fv.flip}', ll '${fv.ll}'); options are driver-gated (smart-vsync present, no speed-frame in ${flipOptions}, the FULL on-boost list in ${llOptions}); the Apply stays hidden while clean; pristine cards carry only the hidden chip`);
 
   // --- 3. the FPS dropdown: Off -> the WHOLE slider-row hides (the value
   // --- text included - the M17c "30 FPS" text bug); On -> both appear ---
@@ -5533,7 +5537,7 @@ export async function runGraphicsVerify(win, backend) {
         fail('M140: the integrated fixture must render Endurance Gaming and Shared Memory Override cards');
       }
       const integratedCards = await js(`Array.from(document.querySelectorAll('.graphics-card')).filter((c) => ['enduranceGaming','enduranceGamingMode','sharedMemoryOverride'].includes(c.dataset.control)).length`);
-      if (integratedCards !== 3) fail(`M140: expected three integrated-only cards, got ${integratedCards}`);
+      if (integratedCards !== 3) fail(`M140: expected three integrated/mobile cards, got ${integratedCards}`);
       await js(`(() => {
         const set = (selector, value) => { const node = document.querySelector(selector); if (!node) return false; node.value = value; node.dispatchEvent(new Event('change', { bubbles: true })); return true; };
         const eg = set('[data-graphics-select="enduranceGaming"]', 'on');
@@ -5545,14 +5549,14 @@ export async function runGraphicsVerify(win, backend) {
       })()`);
       if (!(await waitFor(win, `!document.querySelector('.floating-apply')?.hidden`, 2000))) fail('M140: integrated edits did not become dirty');
       await js(`document.querySelector('.floating-apply')?.click()`);
-      if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 8000))) fail('M140: integrated-only graphics apply did not succeed');
+      if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 8000))) fail('M140: integrated/mobile graphics apply did not succeed');
       const integratedApplied = await js(`window.arcPower.graphicsGet(1)`);
       if (integratedApplied.values.enduranceGaming !== 'on' || integratedApplied.values.enduranceGamingMode !== 'battery' || integratedApplied.values.sharedMemoryOverride?.percentage !== 75) {
         fail(`M140: integrated graphics read-back mismatch: ${JSON.stringify(integratedApplied.values)}`);
       }
       await js(`document.querySelector('.graphics-general-actions .btn-ghost')?.click()`);
       await js(`document.querySelector('.floating-apply')?.click()`);
-      if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 8000))) fail('M140: integrated-only graphics reset did not succeed');
+      if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 8000))) fail('M140: integrated/mobile graphics reset did not succeed');
       const integratedReset = await js(`window.arcPower.graphicsGet(1)`);
       if (integratedReset.values.enduranceGaming !== 'off' || integratedReset.values.enduranceGamingMode !== 'performance' || integratedReset.values.sharedMemoryOverride?.enabled !== false) {
         fail(`M140: integrated graphics reset read-back mismatch: ${JSON.stringify(integratedReset.values)}`);
@@ -5573,7 +5577,7 @@ export async function runGraphicsVerify(win, backend) {
       fail('M8: the A770 graphics surface must return after switching back (the fixture)');
     }
     step('m8-multi-device', process.env.RID_MOCK_ENDURANCE === '1'
-      ? 'M140 (RID_MOCK_MULTI_DEVICE=1 + RID_MOCK_ENDURANCE=1): integrated-only graphics cards render, apply, reset, and switch back cleanly'
+      ? 'M140 (RID_MOCK_MULTI_DEVICE=1 + RID_MOCK_ENDURANCE=1): integrated/mobile graphics cards render, apply, reset, and switch back cleanly'
       : 'M8 (RID_MOCK_MULTI_DEVICE=1): the iGPU serves the supported-all-false state (no crash); switching back to the A770 restores the fixture');
   }
 }

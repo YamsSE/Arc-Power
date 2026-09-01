@@ -199,6 +199,7 @@ const GRAPHICS_FG_TO_IGCL = { 'app-choice': 0, '2x': 1, '3x': 2, '4x': 3 };
 const GRAPHICS_FG_FROM_IGCL = { 0: 'app-choice', 1: '2x', 2: '3x', 3: '4x' };
 const GRAPHICS_FLIP_TO_IGCL = {
   'application-default': CTL_GAMING_FLIP_MODE_FLAG.APPLICATION_DEFAULT,
+  'smart-vsync': CTL_GAMING_FLIP_MODE_FLAG.CAPPED_FPS,
   'vsync-off': CTL_GAMING_FLIP_MODE_FLAG.VSYNC_OFF,
   'vsync-on': CTL_GAMING_FLIP_MODE_FLAG.VSYNC_ON,
   'smooth-sync': CTL_GAMING_FLIP_MODE_FLAG.SMOOTH_SYNC,
@@ -284,11 +285,10 @@ function globalVrrRequest(lib, adapterHandle, features, { bSet, enumValue } = {}
 }
 
 function endurancePlatformSupported(device, laptopInfo = null) {
-  // Intel exposes this capability only on the integrated adapter. The
-  // adapter-properties bit is authoritative; name-derived "Mobile"/SKU
-  // guesses are deliberately not accepted because an Arc A370M/A750M is a
-  // discrete mobile GPU and must never receive this control.
-  return device?.integrated === true;
+  // IGS exposes these controls on built-in/integrated Arc and mobile Arc
+  // adapters. Real desktop discrete GPUs have neither identity and remain
+  // excluded.
+  return device?.integrated === true || device?.mobile === true;
 }
 
 const ENDURANCE_CONTROL_TO_IGCL = Object.freeze({ off: 0, on: 1, auto: 2 });
@@ -1202,7 +1202,9 @@ export class IgclBackend {
       // trustworthy. Honest null when unmatched - the plain IGCL name. A
       // future ctlGetMemoryInfo binding would land here as a better source.
       const plainName = (p.name || '').replace(/\0+$/, '');
-      const mobile = /\b(?:A|B)\d{3,4}M\b|\bMobile\b/i.test(plainName);
+      const mobile = /\b(?:A|B)\d{3,4}M\b|\bB(?:370|390)\b|\bMobile\b/i.test(plainName);
+      const integrated = (Number(p.graphics_adapter_properties) & CTL_ADAPTER_PROPERTIES_FLAG.INTEGRATED) !== 0
+        || isIntegratedStyleDevice({ name: plainName });
       const dev = {
         id: i,
         handle,
@@ -1215,7 +1217,7 @@ export class IgclBackend {
         driverVersion: '0x' + p.driver_version.toString(16).padStart(16, '0'),
         graphicsClockMHz: p.Frequency,
         numXeCores: p.num_xe_cores,
-        integrated: (Number(p.graphics_adapter_properties) & CTL_ADAPTER_PROPERTIES_FLAG.INTEGRATED) !== 0,
+        integrated,
         mobile,
         vramBytes: null,
         // M17c: the ALREADY-BOUND IGCL subsystem fields (igcl-bindings.js:
@@ -2659,7 +2661,7 @@ export class IgclBackend {
 
   /**
    * Return only Game Profile capabilities that are safe to expose for this
-   * adapter. Endurance Gaming requires an integrated adapter and
+   * adapter. Endurance Gaming requires an integrated or mobile Arc adapter and
    * a driver-reported per-application feature surface.
    */
   async getGameProfileCapabilities(deviceId, exePath) {
@@ -2677,7 +2679,11 @@ export class IgclBackend {
       // as per-app capable. The option is deliberately hidden otherwise;
       // device-level support alone must not make a game-profile control look
       // writable.
-      const executable = classifyXeFgExecutable(exePath);
+      // Use package evidence as well as the known-title fallback so new XeFG
+      // games are not silently omitted until the next app release. The
+      // explicit classifier deny list still prevents benchmark/software
+      // executables from receiving a game-only control.
+      const executable = classifyXeFgExecutable(exePath, { inspectRuntime: true });
       const xeFg = frameGenDetail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM
         && frameGenDetail.perAppSupport === true;
       const xeFgAllowed = xeFg && executable.supported;
@@ -2784,7 +2790,7 @@ export class IgclBackend {
       const threeDSurface = !this._isUnavailable(lib.ctlGetSupported3DCapabilities)
         && !this._isUnavailable(lib.ctlGetSet3DFeature);
       // The shared-memory override is a DxgKrnl registry control, not an
-      // IGCL 3D feature. Keep it readable on an integrated adapter even if a
+      // IGCL 3D feature. Keep it readable on an integrated/mobile adapter even if a
       // particular runtime lacks the optional 3D symbols.
       const features = threeDSurface ? await this._graphicsCapsOf(deviceId, dev.handle) : new Map();
       if (threeDSurface && !features) return this._graphicsDegraded();
@@ -2935,7 +2941,7 @@ export class IgclBackend {
     if (settings.sharedMemoryOverride !== null && settings.sharedMemoryOverride !== undefined) {
       const platform = sharedMemoryPlatformSupported(dev, this._systemInfoOf ? this._systemInfoOf() : null);
       if (!platform) {
-        fail('sharedMemoryOverride', 'unsupported', 'Shared GPU/NPU Memory Override requires an eligible Intel integrated platform.');
+        fail('sharedMemoryOverride', 'unsupported', 'Shared GPU/NPU Memory Override requires an eligible Intel integrated or mobile platform.');
       } else if (!this._sharedMemoryOverride || typeof this._sharedMemoryOverride.set !== 'function') {
         fail('sharedMemoryOverride', 'unavailable-symbol', 'the Windows graphics-memory manager adapter is unavailable');
       } else {
@@ -3016,10 +3022,10 @@ export class IgclBackend {
       const valueType = detail?.valueType;
       if (!platform || !detail || !enduranceValueTypeSupported(valueType)) {
         if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {
-          fail('enduranceGaming', 'unsupported', 'Endurance Gaming is only available on Intel integrated graphics supported by the driver.');
+          fail('enduranceGaming', 'unsupported', 'Endurance Gaming is only available on supported Intel integrated or mobile graphics.');
         }
         if (settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined) {
-          fail('enduranceGamingMode', 'unsupported', 'Endurance Gaming presets are only available on Intel integrated graphics supported by the driver.');
+          fail('enduranceGamingMode', 'unsupported', 'Endurance Gaming presets are only available on supported Intel integrated or mobile graphics.');
         }
       } else if (appScope && detail.perAppSupport !== true) {
         if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {

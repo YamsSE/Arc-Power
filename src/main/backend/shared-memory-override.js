@@ -29,13 +29,18 @@ export function isCoreUltraSeries2OrLater(cpuName) {
   return match !== null;
 }
 
+/** Mobile Arc and built-in/integrated Arc adapters share this IGS control. */
+export function sharedMemoryAdapterSupported(device) {
+  return device?.integrated === true || device?.mobile === true;
+}
+
 /**
  * Shared GPU/NPU Memory Override is not a generic integrated-GPU setting.
  * Keep all eligibility inputs explicit so missing system information fails
  * closed instead of turning a name heuristic into a writable control.
  */
 export function sharedMemoryPlatformSupported(device, systemInfo) {
-  if (device?.integrated !== true) return false;
+  if (!sharedMemoryAdapterSupported(device)) return false;
   const rawVendor = device?.pciVendorId;
   let vendor = null;
   if (typeof rawVendor === 'number' && Number.isInteger(rawVendor) && rawVendor >= 0 && rawVendor <= 0xffff) {
@@ -170,7 +175,7 @@ export function createSharedMemoryOverride(deps = {}) {
 
   return {
     async read(device) {
-      if (device?.integrated !== true) return null;
+      if (!sharedMemoryAdapterSupported(device)) return null;
       const configured = await queryValue(SHARED_MEMORY_OVERRIDE_VALUE);
       const configuredMax = await queryValue(SHARED_MEMORY_OVERRIDE_MAX_VALUE);
       // DxgKrnl documents the max value as runtime-provided. Never invent a
@@ -188,8 +193,8 @@ export function createSharedMemoryOverride(deps = {}) {
     },
 
     async set(device, settings) {
-      if (device?.integrated !== true) {
-        return { ok: false, errorCode: 'unsupported', message: 'Shared GPU/NPU Memory Override is only available on integrated Intel graphics.' };
+      if (!sharedMemoryAdapterSupported(device)) {
+        return { ok: false, errorCode: 'unsupported', message: 'Shared GPU/NPU Memory Override is only available on integrated or mobile Intel Arc graphics.' };
       }
       const enabled = settings?.enabled === true;
       let current;

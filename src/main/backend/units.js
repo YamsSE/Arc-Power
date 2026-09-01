@@ -318,6 +318,10 @@ export function deviceHardwareKey(device) {
 export function isIntegratedStyleDevice(device) {
   const name = String(device?.name ?? '').replace(/\s+\d+\s*GB(?:\s+\S+)?$/i, '');
   if (/\b(?:iris|uhd|hd graphics|xe graphics)\b/i.test(name)) return true;
+  // Panther Lake Arc B370/B390 is a built-in mobile/integrated GPU. Some
+  // driver versions omit the integrated adapter flag, so keep this narrow
+  // identity fallback instead of classifying it as a desktop dGPU.
+  if (/\barc\b/i.test(name) && /\bB(?:370|390)\b/i.test(name)) return true;
   if (/\barc\b/i.test(name) && !/\b(?:a\d{3}|b\d{2,3}|pro)\b/i.test(name)) return true;
   return false;
 }

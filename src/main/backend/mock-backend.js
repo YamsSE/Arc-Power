@@ -70,7 +70,8 @@ const MOCK_V1_PL_MAX_W = 315;
 // M8 (the Graphics tab): the mock's graphics fixture - mirrors the
 // M8 checkpoint-1 probe record (pipeline/live-3d-feature.md, the A770
 // driver): all four 3D features supported; the flip-mode caps 0x6f expose
-// application-default/vsync-on/vsync-off/smooth-sync but NOT speed-frame
+// application-default/smart-vsync/vsync-on/vsync-off/smooth-sync but NOT
+// speed-frame
 // (the Speed Sync dropdown option is gated off, exactly like the live
 // driver); the low-latency caps 0x3 expose off/on but NOT on-boost; the
 // XeSS FG caps expose no restrictions (all four options); the frame-limit
@@ -81,7 +82,7 @@ const GRAPHICS_FIXTURE = Object.freeze({
   supported: { frameGen: true, flipModes: true, frameLimit: true, lowLatency: true },
   supportedOptions: {
     frameGen: ['app-choice', '2x', '3x', '4x'],
-    flipModes: ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync'],
+    flipModes: ['application-default', 'smart-vsync', 'vsync-on', 'vsync-off', 'smooth-sync'],
     lowLatency: ['off', 'on'],
   },
   frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },
@@ -465,7 +466,7 @@ export class MockBackend {
         telemetryCbs: prior?.telemetryCbs instanceof Set ? prior.telemetryCbs : new Set(),
         graphics: {
           ...JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.values)),
-          ...(device.integrated && this._enduranceGamingSupported ? {
+          ...((device.integrated || device.mobile) && this._enduranceGamingSupported ? {
             enduranceGaming: 'auto',
             enduranceGamingMode: 'balanced',
             sharedMemoryOverride: { enabled: false, percentage: 57 },
@@ -660,7 +661,7 @@ export class MockBackend {
       ? 'Mock Ambiguous Arc Graphics'
       : fs.deviceName;
     const integrated = fs.integrated === true || isIntegratedStyleDevice({ name: plainName });
-    const mobile = fs.mobile === true || /\b(?:A|B)\d{3,4}M\b|\bMobile\b/i.test(plainName);
+    const mobile = fs.mobile === true || /\b(?:A|B)\d{3,4}M\b|\bB(?:370|390)\b|\bMobile\b/i.test(plainName);
     return {
       id,
       // M4-B: the VRAM suffix is formatted ONCE here (listDevices time) -
@@ -1032,19 +1033,19 @@ export class MockBackend {
    * the apply mutates the device's own copy so the next read reflects it
    * (the mock round trip). Device 1 (the multi-device iGPU) keeps the
    * historical degraded surface by default; RID_MOCK_ENDURANCE=1 opts into
-   * the integrated-only graphics cards for end-to-end UI verification.
+   * the integrated/mobile graphics cards for end-to-end UI verification.
    * @param {number} [deviceId]
    * @returns {Promise<object>} the GraphicsState shape
    */
   async getGraphicsSettings(deviceId = 0) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const e = this._entry(id);
-    const integratedControls = e.device?.integrated === true && this._enduranceGamingSupported;
-    const degraded = (id !== 0 && !integratedControls) || this._graphicsUnsupported || this._noIntel;
+    const mobileControls = (e.device?.integrated === true || e.device?.mobile === true) && this._enduranceGamingSupported;
+    const degraded = (id !== 0 && !mobileControls) || this._graphicsUnsupported || this._noIntel;
     if (degraded) {
       return JSON.parse(JSON.stringify(GRAPHICS_DEGRADED));
     }
-    const optional = e.device?.integrated === true && this._enduranceGamingSupported;
+    const optional = mobileControls;
     const supported = { ...GRAPHICS_FIXTURE.supported };
     const supportedOptions = JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.supportedOptions));
     if (optional) {
@@ -1066,11 +1067,10 @@ export class MockBackend {
   async getGameProfileCapabilities(deviceId = 0, exePath) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const entry = this._entry(id);
-    // Match the real backend's hard gate: only the adapter-properties
-    // integrated bit qualifies. A name such as A370M or "Mobile" is not
-    // enough because those are discrete mobile GPUs too.
-    const integrated = entry.device?.integrated === true;
-    const supported = integrated && this._enduranceGamingSupported;
+    // Match the real backend's platform gate: built-in/integrated and mobile
+    // Arc adapters qualify; real desktop discrete GPUs do not.
+    const mobileOrIntegrated = entry.device?.integrated === true || entry.device?.mobile === true;
+    const supported = mobileOrIntegrated && this._enduranceGamingSupported;
     const executable = classifyXeFgExecutable(exePath);
     const xeFg = id === 0
       && !this._graphicsUnsupported
@@ -1081,9 +1081,9 @@ export class MockBackend {
       enduranceGaming: supported,
       xeFg,
       xeFgOptions: xeFg ? [...GRAPHICS_FIXTURE.supportedOptions.frameGen] : [],
-      reason: supported ? null : (integrated
+      reason: supported ? null : (mobileOrIntegrated
         ? 'The mock driver does not expose Endurance Gaming for this fixture.'
-        : 'Endurance Gaming is available only on integrated Intel graphics.'),
+        : 'Endurance Gaming is available only on integrated or mobile Intel Arc graphics.'),
       xeFgReason: xeFg ? null : (!executable.supported
         ? executable.reason
         : 'XeFG is unavailable for this graphics adapter.'),
@@ -1151,8 +1151,8 @@ export class MockBackend {
     const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
     const e = this._entry(id);
-    const integratedControls = e.device?.integrated === true && this._enduranceGamingSupported;
-    const degraded = (id !== 0 && !integratedControls) || this._graphicsUnsupported || this._noIntel;
+    const mobileControls = (e.device?.integrated === true || e.device?.mobile === true) && this._enduranceGamingSupported;
+    const degraded = (id !== 0 && !mobileControls) || this._graphicsUnsupported || this._noIntel;
     if (degraded) {
       for (const c of controls) {
         result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'graphics features are not supported on this device' };
@@ -1160,15 +1160,15 @@ export class MockBackend {
       result.ok = controls.length === 0;
       return result;
     }
-    if (!integratedControls) {
+    if (!mobileControls) {
       for (const c of ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride']) {
         if (settings[c] !== null && settings[c] !== undefined) {
-          result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'integrated-only graphics features are not supported on this device' };
+          result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'integrated/mobile graphics features are not supported on this device' };
           result.ok = false;
         }
       }
     }
-    if (integratedControls && settings.enduranceGaming !== undefined && settings.enduranceGaming !== null) {
+    if (mobileControls && settings.enduranceGaming !== undefined && settings.enduranceGaming !== null) {
       if (!['off', 'on', 'auto'].includes(settings.enduranceGaming)) {
         result.perControl.enduranceGaming = { ok: false, errorCode: 'out-of-range', message: 'unknown Endurance Gaming control' };
         result.ok = false;
@@ -1177,7 +1177,7 @@ export class MockBackend {
         result.perControl.enduranceGaming = { ok: true, readBackEqual: true };
       }
     }
-    if (integratedControls && settings.enduranceGamingMode !== undefined && settings.enduranceGamingMode !== null) {
+    if (mobileControls && settings.enduranceGamingMode !== undefined && settings.enduranceGamingMode !== null) {
       if (!['performance', 'balanced', 'battery'].includes(settings.enduranceGamingMode)) {
         result.perControl.enduranceGamingMode = { ok: false, errorCode: 'out-of-range', message: 'unknown Endurance Gaming preset' };
         result.ok = false;
@@ -1186,7 +1186,7 @@ export class MockBackend {
         result.perControl.enduranceGamingMode = { ok: true, readBackEqual: true };
       }
     }
-    if (integratedControls && settings.sharedMemoryOverride !== undefined && settings.sharedMemoryOverride !== null) {
+    if (mobileControls && settings.sharedMemoryOverride !== undefined && settings.sharedMemoryOverride !== null) {
       const memory = settings.sharedMemoryOverride;
       const percentage = Number(memory?.percentage);
       if (typeof memory !== 'object' || memory === null || !Number.isInteger(percentage) || percentage < 13 || percentage > 87) {

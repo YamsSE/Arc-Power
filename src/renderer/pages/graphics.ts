@@ -1,7 +1,7 @@
 // Arc Power - M8 the Graphics tab (the IGS-mirror page). Standard cards are
 // rendered in the planned order: XeSS Frame Generation Override, Frame
-// Synchronization, FPS Limit, Low Latency. Integrated adapters may prepend
-// their mobile-only Endurance Gaming and shared-memory cards. The page mirrors
+// Synchronization, FPS Limit, Low Latency. Integrated/mobile adapters may
+// prepend their Endurance Gaming and shared-memory cards. The page mirrors
 // Intel Graphics Software (IGS):
 // every setting is a real IGCL 3D feature (ctlGetSupported3DCapabilities /
 // ctlGetSet3DFeature - live-verified settable on this driver by the M8
@@ -32,7 +32,7 @@
 // "Unapplied" warn chip is GONE). The supported-features caps gate the
 // cards ('Not supported on this GPU.' - no control); the driver's
 // SupportedTypes gate the dropdown options
-// (Speed Sync only when the driver exposes them - the honest probe record;
+// (Smart/Speed Sync only when the driver exposes them - the honest probe record;
 // the M9 On + Boost change makes the Low Latency list FULL off/on/on-boost
 // on every driver - the card gate stays).
 //
@@ -91,11 +91,11 @@ export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 // never duplicate - the option lists/labels/titles/notes are the single
 // source both surfaces render from).
 export const CARD_NOTES: Record<string, string> = {
-  enduranceGaming: 'Battery-aware game tuning for supported Intel integrated graphics. Auto lets the driver manage the mode while on battery.',
+  enduranceGaming: 'Battery-aware game tuning for supported Intel integrated or mobile graphics. Auto lets the driver manage the mode while on battery.',
   enduranceGamingMode: 'Choose the battery target used by Endurance Gaming: 60 FPS, 40 FPS, or 30 FPS.',
-  sharedMemoryOverride: 'Changes how much system memory the integrated GPU/NPU may share. Restart Windows after applying.',
+  sharedMemoryOverride: 'Changes how much system memory the integrated or mobile GPU/NPU may share. Restart Windows after applying.',
   frameGenOverride: "Sets the driver's XeSS frame-generation override for games that use XeSS Frame Generation (the game may need a restart for the change to apply).",
-  flipMode: 'The driver\'s frame-synchronization mode (VSync / Smooth Sync / Speed Sync). Smart VSync is not exposed by the driver interface.',
+  flipMode: 'Choose how frames are synchronized with your display.',
   frameLimit: 'A driver-level frame-rate cap. The limiter works independently of Arc Power.',
   lowLatency: 'The driver\'s XeLL-based low-latency mode.',
 };
@@ -123,7 +123,7 @@ export const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
   enduranceGaming: { off: 'Off', on: 'On', auto: 'Auto' },
   enduranceGamingMode: { performance: 'Performance · 60 FPS', balanced: 'Balanced · 40 FPS', battery: 'Battery · 30 FPS' },
   frameGenOverride: { 'app-choice': 'Application Default', '2x': '2x Frame Generation', '3x': '3x Frame Generation', '4x': '4x Frame Generation' },
-  flipMode: { 'application-default': 'Application Choice', 'vsync-on': 'Enable VSync', 'vsync-off': 'Disable VSync', 'smooth-sync': 'Smooth Sync', 'speed-frame': 'Speed Sync' },
+  flipMode: { 'application-default': 'Application Choice', 'smart-vsync': 'Smart VSync', 'vsync-on': 'Enable VSync', 'vsync-off': 'Disable VSync', 'smooth-sync': 'Smooth Sync', 'speed-frame': 'Speed Sync' },
   lowLatency: { off: 'Off', on: 'On', 'on-boost': 'On + Boost' },
 };
 
@@ -1009,8 +1009,8 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
 
   const mobileCards: HTMLElement[] = [];
   // These cards are appended only when the backend proves the selected
-  // adapter is an integrated Intel GPU. A discrete mobile Arc adapter never
-  // receives these nodes, even if its name contains "Mobile" or ends in M.
+  // adapter is integrated or mobile Intel Arc graphics. Real desktop dGPUs
+  // never receive these nodes.
   if (supportedOf(state, 'enduranceGaming')) mobileCards.push(buildDropdownCard('enduranceGaming'));
   if (supportedOf(state, 'enduranceGamingMode')) mobileCards.push(buildDropdownCard('enduranceGamingMode'));
   if (supportedOf(state, 'sharedMemoryOverride')) mobileCards.push(buildSharedMemoryCard());
