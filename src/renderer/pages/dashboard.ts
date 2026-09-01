@@ -28,6 +28,7 @@ import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/ha
 import { selectedDashboardController } from '../pure/dashboard.ts';
 import { aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
+import { toast } from '../components/toast.ts';
 import type { ProfilesEnvelope, RecordingClip, RecordingStorageInfo, TelemetrySample } from '../types.ts';
 
 /** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half - the current
@@ -83,14 +84,15 @@ const pulsePathNodes = new Map<DashboardPulseId, SVGPathElement>();
 let sessionRuntimeNode: HTMLElement | null = null;
 let sessionPeakNode: HTMLElement | null = null;
 let sessionAverageNode: HTMLElement | null = null;
-type DashboardControlId = 'profile' | 'apply' | 'capture' | 'last' | 'storage' | 'attention';
+type DashboardControlId = 'profile' | 'apply' | 'capture' | 'last' | 'storage';
 type DashboardControlLevel = 'ok' | 'warn' | 'error' | 'unknown' | 'recording' | 'replay';
 type DashboardControlDatum = { value: string; note: string; level?: DashboardControlLevel };
 const controlValueNodes = new Map<DashboardControlId, HTMLElement>();
 const controlNoteNodes = new Map<DashboardControlId, HTMLElement>();
-let controlHealthNode: HTMLElement | null = null;
 let controlCaptureDotNode: HTMLElement | null = null;
-let controlAttentionRowNode: HTMLElement | null = null;
+type DashboardCaptureActionKind = 'recording' | 'replay';
+const controlCaptureActionNodes = new Map<DashboardCaptureActionKind, { button: HTMLButtonElement; label: HTMLElement; note: HTMLElement }>();
+let dashboardCaptureActionBusy = false;
 let controlCenterContext: PageContext | null = null;
 let controlCenterLoadPromise: Promise<void> | null = null;
 let controlCenterRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -252,15 +254,37 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
   ]);
 }
 
-type DashboardActionKind = 'recording' | 'profiles' | 'tuning';
+type DashboardActionKind = 'recording' | 'replay' | 'tuning';
 
 const DASHBOARD_ACTION_PATHS: Record<DashboardActionKind, string> = {
   recording: 'M8 5v14l11-7L8 5Z',
-  profiles: 'M5 5h14v14H5zM8 9h8M8 13h5',
+  replay: 'M20 11a8 8 0 0 0-14-4L4 9M4 5v4h4M4 13a8 8 0 0 0 14 4l2-2M20 19v-4h-4',
   tuning: 'M4 7h16M4 12h16M4 17h16',
 };
 
+function captureModeRunning(status: AppState['recordingStatus'], mode: DashboardCaptureActionKind): boolean {
+  if (!status) return false;
+  return mode === 'recording'
+    ? status.activeModes?.video === true || (!status.activeModes && status.running === true && status.mode === 'video')
+    : status.activeModes?.replay === true || (!status.activeModes && status.running === true && status.mode === 'replay');
+}
+
+function dashboardCaptureActionCopy(kind: DashboardCaptureActionKind, running: boolean): { label: string; description: string } {
+  if (kind === 'recording') {
+    return running
+      ? { label: 'Stop Recording', description: 'Stop the current recording' }
+      : { label: 'Start Recording', description: 'Start a full recording' };
+  }
+  return running
+    ? { label: 'Stop Replay Buffer', description: 'Stop the replay buffer' }
+    : { label: 'Start Replay Buffer', description: 'Keep the rolling buffer running' };
+}
+
 function dashboardAction(label: string, hash: string, description: string, kind: DashboardActionKind, primary = false): HTMLElement {
+  const captureAction = kind === 'recording' || kind === 'replay';
+  const captureMode = captureAction ? kind : null;
+  const running = captureMode ? captureModeRunning(controlCenterContext?.store.get().recordingStatus ?? null, captureMode) : false;
+  const copy = captureMode ? dashboardCaptureActionCopy(captureMode, running) : { label, description };
   const icon = svgEl('svg', {
     class: 'dashboard-hub-action-icon',
     viewBox: '0 0 24 24',
@@ -281,14 +305,70 @@ function dashboardAction(label: string, hash: string, description: string, kind:
       svgEl('circle', { cx: 11, cy: 17, r: 2, fill: 'var(--bg-elev)', stroke: 'currentColor', 'stroke-width': 1.7 }),
     );
   }
-  return el('a', { class: `dashboard-hub-action${primary ? ' dashboard-hub-action-primary' : ''}`, href: hash }, [
+  const action = el(captureAction ? 'button' : 'a', captureAction ? {
+    class: `dashboard-hub-action dashboard-hub-action-${kind}${primary ? ' dashboard-hub-action-primary' : ''}`,
+    type: 'button',
+    disabled: dashboardCaptureActionBusy || controlCenterContext?.store.get().recordingStatus?.available !== true,
+    title: copy.label,
+    'aria-label': copy.label,
+    onClick: () => void toggleDashboardCapture(captureMode as DashboardCaptureActionKind),
+  } : {
+    class: `dashboard-hub-action dashboard-hub-action-${kind}${primary ? ' dashboard-hub-action-primary' : ''}`,
+    href: hash,
+  }, [
     el('span', { class: 'dashboard-hub-action-icon-wrap' }, [icon]),
     el('span', { class: 'dashboard-hub-action-copy' }, [
-      el('strong', { text: label }),
-      el('small', { text: description }),
+      el('strong', { text: copy.label }),
+      el('small', { text: copy.description }),
     ]),
-    el('span', { class: 'dashboard-hub-action-arrow', text: '↗', 'aria-hidden': 'true' }),
-  ]);
+    el('span', { class: 'dashboard-hub-action-arrow', text: captureAction ? '›' : '↗', 'aria-hidden': 'true' }),
+  ]) as HTMLElement;
+  if (captureMode) {
+    const button = action as HTMLButtonElement;
+    const actionCopy = action.querySelector('.dashboard-hub-action-copy');
+    const labelNode = actionCopy?.querySelector('strong');
+    const noteNode = actionCopy?.querySelector('small');
+    if (labelNode && noteNode) controlCaptureActionNodes.set(captureMode, { button, label: labelNode as HTMLElement, note: noteNode as HTMLElement });
+  }
+  return action;
+}
+
+function updateDashboardCaptureActions(status: AppState['recordingStatus']): void {
+  for (const [kind, nodes] of controlCaptureActionNodes) {
+    const running = captureModeRunning(status, kind);
+    const copy = dashboardCaptureActionCopy(kind, running);
+    nodes.label.textContent = copy.label;
+    nodes.note.textContent = copy.description;
+    nodes.button.disabled = dashboardCaptureActionBusy || status?.available !== true;
+    nodes.button.title = copy.label;
+    nodes.button.setAttribute('aria-label', copy.label);
+  }
+}
+
+async function toggleDashboardCapture(mode: DashboardCaptureActionKind): Promise<void> {
+  const ctx = controlCenterContext;
+  if (!ctx || dashboardCaptureActionBusy) return;
+  const status = ctx.store.get().recordingStatus;
+  if (status?.available !== true) {
+    toast('error', 'Capture unavailable', 'Arc Capture is not ready yet.');
+    return;
+  }
+  const running = captureModeRunning(status, mode);
+  dashboardCaptureActionBusy = true;
+  updateDashboardCaptureActions(status);
+  try {
+    const nextState = running
+      ? await api.recordingStop(mode === 'recording' ? 'video' : 'replay')
+      : mode === 'recording'
+        ? (await api.recordingStart()).state
+        : (await api.recordingReplayStart()).state;
+    ctx.store.set({ recordingStatus: nextState });
+  } catch (err) {
+    toast('error', mode === 'recording' ? 'Recording failed' : 'Replay buffer failed', err instanceof Error ? err.message : String(err));
+  } finally {
+    dashboardCaptureActionBusy = false;
+    if (controlCenterContext === ctx) updateDashboardControlCenter(ctx);
+  }
 }
 
 function sharedMemoryBytesOf(
@@ -458,14 +538,8 @@ function newestRecordingClip(clips: RecordingClip[] | null): RecordingClip | nul
   })[0] ?? null;
 }
 
-function dashboardControlCenterState(ctx: PageContext): { health: 'ok' | 'warn' | 'error' | 'unknown'; healthLabel: string; values: Record<DashboardControlId, DashboardControlDatum> } {
+function dashboardControlCenterState(ctx: PageContext): { values: Record<DashboardControlId, DashboardControlDatum> } {
   const s = ctx.store.get();
-  const device = s.devices.find((entry) => entry.id === s.deviceId) ?? null;
-  const osOnly = device?.synthetic === true && device.backendKind === 'os';
-  const rows = dashboardHealthRows(ctx, device, osOnly);
-  const issue = rows.find((row) => row.level === 'error') ?? rows.find((row) => row.level === 'warn');
-  const health = issue?.level ?? (rows.length > 0 ? 'ok' : 'unknown');
-  const healthLabel = health === 'ok' ? 'All clear' : health === 'warn' ? 'Check status' : health === 'error' ? 'Needs attention' : 'Waiting';
   const activeProfileId = controlCenterRemote.profiles?.settings.activeProfileId ?? null;
   const activeProfile = controlCenterRemote.profiles?.profiles.find((profile) => profile.id === activeProfileId) ?? null;
   const apply = s.lastApply;
@@ -473,8 +547,6 @@ function dashboardControlCenterState(ctx: PageContext): { health: 'ok' | 'warn' 
   const latestClip = newestRecordingClip(controlCenterRemote.clips);
   const storage = controlCenterRemote.storage;
   return {
-    health,
-    healthLabel,
     values: {
       profile: {
         value: activeProfile?.name ?? (controlCenterRemote.profiles ? 'No active profile' : 'Loading…'),
@@ -490,9 +562,6 @@ function dashboardControlCenterState(ctx: PageContext): { health: 'ok' | 'warn' 
       storage: storage
         ? { value: dashboardStorageText(storage.freeBytes), note: compactDashboardText(storage.location, 'Recording folder') }
         : { value: 'Loading…', note: 'Recording folder space' },
-      attention: issue
-        ? { value: issue.level === 'error' ? 'Needs attention' : `Check ${issue.label}`, note: compactDashboardText(issue.detail, 'Review this status'), level: issue.level }
-        : { value: health === 'unknown' ? 'Waiting' : 'All clear', note: health === 'unknown' ? 'Status is still loading' : 'No action needed', level: health },
     },
   };
 }
@@ -501,13 +570,11 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
   controlCenterContext = ctx;
   controlValueNodes.clear();
   controlNoteNodes.clear();
-  controlHealthNode = null;
   controlCaptureDotNode = null;
-  controlAttentionRowNode = null;
+  controlCaptureActionNodes.clear();
   const state = dashboardControlCenterState(ctx);
-  controlHealthNode = el('span', { class: `chip dashboard-control-health status-${state.health}`, text: state.healthLabel, hidden: state.health === 'ok' });
 
-  const detail = (id: Exclude<DashboardControlId, 'capture' | 'attention'>, label: string, className = ''): HTMLElement => {
+  const detail = (id: Exclude<DashboardControlId, 'capture'>, label: string, className = ''): HTMLElement => {
     const item = state.values[id];
     const valueNode = el('strong', { class: 'dashboard-control-value', text: item.value, dataset: { controlValue: id } });
     const noteNode = el('span', { class: 'dashboard-control-note', text: item.note, dataset: { controlNote: id } });
@@ -527,24 +594,12 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
   controlNoteNodes.set('capture', captureNoteNode);
   controlCaptureDotNode = el('span', { class: `dashboard-hub-status-dot status-${capture.level ?? 'unknown'}`, 'aria-hidden': 'true' });
 
-  const attention = state.values.attention;
-  const attentionValueNode = el('strong', { class: 'dashboard-control-value', text: attention.value, dataset: { controlValue: 'attention' } });
-  const attentionNoteNode = el('span', { class: 'dashboard-control-note', text: attention.note, dataset: { controlNote: 'attention' } });
-  controlValueNodes.set('attention', attentionValueNode);
-  controlNoteNodes.set('attention', attentionNoteNode);
-  controlAttentionRowNode = el('div', { class: `dashboard-hub-attention status-${attention.level ?? state.health}`, hidden: state.health === 'ok' }, [
-    el('span', { class: 'dashboard-control-label', text: 'Attention' }),
-    attentionValueNode,
-    attentionNoteNode,
-  ]);
-
   return el('section', { class: 'card dashboard-control-card' }, [
     el('div', { class: 'dashboard-control-heading' }, [
       el('div', {}, [
         el('span', { class: 'dashboard-eyebrow', text: 'Quick capture' }),
         el('h2', { class: 'card-title', text: 'Capture hub' }),
       ]),
-      controlHealthNode,
     ]),
     el('div', { class: 'dashboard-hub-layout' }, [
       el('div', { class: 'dashboard-hub-capture' }, [
@@ -557,8 +612,8 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
           ]),
         ]),
         el('div', { class: 'dashboard-hub-actions' }, [
-          dashboardAction('Open recording', '#/recording', 'Record, replay & clips', 'recording', true),
-          dashboardAction('Open profiles', '#/profiles', 'Startup profiles', 'profiles'),
+          dashboardAction('Start Recording', '', 'Start a full recording', 'recording', true),
+          dashboardAction('Start Replay Buffer', '', 'Keep the rolling buffer running', 'replay'),
           dashboardAction('Open tuning', '#/tuning', 'GPU & fan controls', 'tuning'),
         ]),
       ]),
@@ -569,7 +624,6 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
         detail('storage', 'Storage'),
       ]),
     ]),
-    controlAttentionRowNode,
   ]);
 }
 
@@ -578,15 +632,7 @@ function updateDashboardControlCenter(ctx: PageContext): void {
   for (const [id, node] of controlValueNodes) node.textContent = state.values[id].value;
   for (const [id, node] of controlNoteNodes) node.textContent = state.values[id].note;
   if (controlCaptureDotNode) controlCaptureDotNode.className = `dashboard-hub-status-dot status-${state.values.capture.level ?? 'unknown'}`;
-  if (controlHealthNode) {
-    controlHealthNode.className = `chip dashboard-control-health status-${state.health}`;
-    controlHealthNode.textContent = state.healthLabel;
-    controlHealthNode.hidden = state.health === 'ok';
-  }
-  if (controlAttentionRowNode) {
-    controlAttentionRowNode.className = `dashboard-hub-attention status-${state.values.attention.level ?? state.health}`;
-    controlAttentionRowNode.hidden = state.health === 'ok';
-  }
+  updateDashboardCaptureActions(ctx.store.get().recordingStatus);
 }
 
 async function loadDashboardControlCenter(ctx: PageContext, force = false): Promise<void> {
@@ -873,7 +919,6 @@ export const dashboardPage: Page = {
 function controlCenterValueNodesReset(): void {
   controlValueNodes.clear();
   controlNoteNodes.clear();
-  controlHealthNode = null;
+  controlCaptureActionNodes.clear();
   controlCaptureDotNode = null;
-  controlAttentionRowNode = null;
 }
