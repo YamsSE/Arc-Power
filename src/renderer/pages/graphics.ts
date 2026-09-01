@@ -123,7 +123,7 @@ export const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
   enduranceGaming: { off: 'Off', on: 'On', auto: 'Auto' },
   enduranceGamingMode: { performance: 'Performance · 60 FPS', balanced: 'Balanced · 40 FPS', battery: 'Battery · 30 FPS' },
   frameGenOverride: { 'app-choice': 'Application Default', '2x': '2x Frame Generation', '3x': '3x Frame Generation', '4x': '4x Frame Generation' },
-  flipMode: { 'application-default': 'Application Choice', 'smart-vsync': 'Smart VSync', 'vsync-on': 'Enable VSync', 'vsync-off': 'Disable VSync', 'smooth-sync': 'Smooth Sync', 'speed-frame': 'Speed Sync' },
+  flipMode: { 'application-default': 'Application Choice', 'vsync-on': 'Enable VSync', 'vsync-off': 'Disable VSync', 'smooth-sync': 'Smooth Sync', 'speed-frame': 'Speed Sync', 'smart-vsync': 'Smart VSync' },
   lowLatency: { off: 'Off', on: 'On', 'on-boost': 'On + Boost' },
 };
 

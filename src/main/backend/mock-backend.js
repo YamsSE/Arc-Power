@@ -70,7 +70,7 @@ const MOCK_V1_PL_MAX_W = 315;
 // M8 (the Graphics tab): the mock's graphics fixture - mirrors the
 // M8 checkpoint-1 probe record (pipeline/live-3d-feature.md, the A770
 // driver): all four 3D features supported; the flip-mode caps 0x6f expose
-// application-default/smart-vsync/vsync-on/vsync-off/smooth-sync but NOT
+// application-default/vsync-on/vsync-off/smooth-sync/smart-vsync but NOT
 // speed-frame
 // (the Speed Sync dropdown option is gated off, exactly like the live
 // driver); the low-latency caps 0x3 expose off/on but NOT on-boost; the
@@ -82,7 +82,7 @@ const GRAPHICS_FIXTURE = Object.freeze({
   supported: { frameGen: true, flipModes: true, frameLimit: true, lowLatency: true },
   supportedOptions: {
     frameGen: ['app-choice', '2x', '3x', '4x'],
-    flipModes: ['application-default', 'smart-vsync', 'vsync-on', 'vsync-off', 'smooth-sync'],
+    flipModes: ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'smart-vsync'],
     lowLatency: ['off', 'on'],
   },
   frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },

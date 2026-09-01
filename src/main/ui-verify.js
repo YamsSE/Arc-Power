@@ -5243,14 +5243,18 @@ export async function runGraphicsVerify(win, backend) {
     fail(`M8: the dropdowns do not show the mock fixture values: ${fixtureValues}`);
   }
   // The dropdown options mirror the LIVE caps (the probe record): Smart VSync
-  // is present through the CAPPED_FPS bit; Speed Sync remains absent because
-  // the flip caps 0x6f lack its bit.
+  // is present through the CAPPED_FPS bit and stays at the bottom like IGS;
+  // Speed Sync remains absent because the flip caps 0x6f lack its bit.
   // M9 (the On + Boost fix): the Low Latency list is the FULL off/on/
   // on-boost on every driver (the option is no longer driver-gated - what
   // hid it was the M8 caps 0x3 lacking the boost bit; the backend set of
   // on-boost on such a driver still refuses honestly).
   const flipOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="flipMode"] option')).map((o) => o.value))`);
   const llOptions = await js(`JSON.stringify(Array.from(document.querySelectorAll('.graphics-select[data-graphics-select="lowLatency"] option')).map((o) => o.value))`);
+  const expectedFlipOptions = ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'smart-vsync'];
+  if (JSON.stringify(JSON.parse(flipOptions)) !== JSON.stringify(expectedFlipOptions)) {
+    fail(`M142: the Frame Sync dropdown order must put Smart VSync last: ${flipOptions}`);
+  }
   if (JSON.parse(flipOptions).includes('speed-frame')) {
     fail(`M8: the Frame Sync dropdown offers Speed Sync, but the mock caps (the live 0x6f) do not expose the bit: ${flipOptions}`);
   }

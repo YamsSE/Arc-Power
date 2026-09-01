@@ -51,7 +51,7 @@ function cleanText(value, max, fallback = '') {
 function cleanGraphics(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const out = {};
-  if (['application-default', 'smart-vsync', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame'].includes(value.flipMode)) out.flipMode = value.flipMode;
+  if (['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame', 'smart-vsync'].includes(value.flipMode)) out.flipMode = value.flipMode;
   if (value.frameLimit && typeof value.frameLimit === 'object' && typeof value.frameLimit.enabled === 'boolean'
     && typeof value.frameLimit.value === 'number' && Number.isFinite(value.frameLimit.value)) {
     out.frameLimit = { enabled: value.frameLimit.enabled, value: Math.max(1, Math.min(1000, Math.round(value.frameLimit.value))) };

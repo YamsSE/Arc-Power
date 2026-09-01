@@ -13,7 +13,7 @@ import type { EnduranceGaming, EnduranceGamingMode, FrameGenOverride, FlipMode, 
 // page never re-derives them; a driver-gated option list comes from the
 // state's supportedOptions).
 export const FRAME_GEN_OPTIONS: FrameGenOverride[] = ['app-choice', '2x', '3x', '4x'];
-export const FLIP_MODE_OPTIONS: FlipMode[] = ['application-default', 'smart-vsync', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame'];
+export const FLIP_MODE_OPTIONS: FlipMode[] = ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame', 'smart-vsync'];
 export const LOW_LATENCY_OPTIONS: LowLatency[] = ['off', 'on', 'on-boost'];
 export const ENDURANCE_GAMING_OPTIONS: EnduranceGaming[] = ['off', 'on', 'auto'];
 export const ENDURANCE_GAMING_MODE_OPTIONS: EnduranceGamingMode[] = ['performance', 'balanced', 'battery'];

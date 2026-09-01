@@ -318,13 +318,14 @@ function applyWindowIdentity(win) {
   }
   if (process.platform !== 'win32') return;
   const taskbarExecutablePath = portableWrapperPath ?? process.execPath;
+  const taskbarIconPath = portableWrapperPath ?? WINDOWS_APP_ICON_PATH;
   try {
     win.setAppDetails({
       appId: APP_USER_MODEL_ID,
-      // Always give the shell the real external ICO shipped beside the
-      // packaged app. The Portable wrapper is only the stable relaunch
-      // command; its extracted child path is not an icon source.
-      appIconPath: WINDOWS_APP_ICON_PATH,
+      // Portable's child runs from a temporary extraction directory. Point
+      // Windows at the stable outer wrapper for both relaunch and icon
+      // metadata; installed builds use the stable packaged ICO instead.
+      appIconPath: taskbarIconPath,
       appIconIndex: 0,
       relaunchCommand: taskbarExecutablePath,
       relaunchDisplayName: 'Arc Power',

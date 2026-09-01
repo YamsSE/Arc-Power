@@ -68,7 +68,7 @@
  *   enduranceGamingMode?: 'performance' | 'balanced' | 'battery',
  *   sharedMemoryOverride?: { enabled: boolean, percentage: number },
  *   frameGenOverride?: 'app-choice' | '2x' | '3x' | '4x',
- *   flipMode?: 'application-default' | 'smart-vsync' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame',
+ *   flipMode?: 'application-default' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame' | 'smart-vsync',
  *   frameLimit?: { enabled: boolean, value: number },
  *   lowLatency?: 'off' | 'on' | 'on-boost',
  * }} GraphicsSettings
@@ -329,7 +329,7 @@ export const CONTROLS = [
 // sanitizeSettings (the OC payload validator) must keep rejecting them; the
 // graphics apply path has its OWN validator.
 export const GRAPHICS_FRAME_GEN_OPTIONS = ['app-choice', '2x', '3x', '4x'];
-export const GRAPHICS_FLIP_MODE_OPTIONS = ['application-default', 'smart-vsync', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame'];
+export const GRAPHICS_FLIP_MODE_OPTIONS = ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'speed-frame', 'smart-vsync'];
 export const GRAPHICS_LOW_LATENCY_OPTIONS = ['off', 'on', 'on-boost'];
 
 // M10b (the Graphics "Display" view): the canonical display vocabularies -

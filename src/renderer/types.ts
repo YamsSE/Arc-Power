@@ -739,7 +739,7 @@ export interface MockSwapResponse {
 export type FrameGenOverride = 'app-choice' | '2x' | '3x' | '4x';
 
 /** M8: the frame-synchronization (flip-mode) options (the IGCL flag values). */
-export type FlipMode = 'application-default' | 'smart-vsync' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame';
+export type FlipMode = 'application-default' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame' | 'smart-vsync';
 
 /** M8: the low-latency mode options (the IGCL enum values). */
 export type LowLatency = 'off' | 'on' | 'on-boost';
