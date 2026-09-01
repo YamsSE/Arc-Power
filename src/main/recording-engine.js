@@ -11,6 +11,7 @@ export const ASCENT_ENCODER_START_ERROR_CODES = Object.freeze([-6, -8]);
 export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2']);
 const DEFAULT_SHUTDOWN_MS = 1500;
 const DEFAULT_PROBE_MS = 15000;
+const REPLAY_FILE_WAIT_MS = 30000;
 
 /**
  * FFmpeg writes these two informational lines while a normal output closes.
@@ -755,26 +756,57 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
-  async function waitForReplayFile(filePath, timeoutMs = 1500) {
+  async function waitForReplayFile(filePath, timeoutMs = REPLAY_FILE_WAIT_MS) {
+    const isReady = () => {
+      try {
+        const stat = fs.statSync(filePath);
+        return stat.isFile() && stat.size > 0;
+      } catch { return false; }
+    };
+    if (isReady()) return true;
+    if (timeoutMs <= 0) return false;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() <= deadline) {
-      try {
-        if (fs.statSync(filePath).isFile()) return true;
-      } catch { /* the runtime may publish the file just after its response */ }
+      if (isReady()) return true;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return false;
   }
 
+  function discardReplayClip(filePath) {
+    try { fs.rmSync(filePath, { force: true }); } catch { /* best effort; the save still reports failure */ }
+  }
+
+  async function boundReplayClip(clipPath, headDuration, fileReady = false) {
+    if (typeof trimReplayClip !== 'function') return false;
+    if (!fileReady && !await waitForReplayFile(clipPath)) return false;
+    try {
+      return await trimReplayClip({ path: clipPath, durationMs: headDuration }) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function enforceReplayClipDuration(clipPath, headDuration, fileReady = false) {
+    if (typeof trimReplayClip !== 'function') return;
+    if (await boundReplayClip(clipPath, headDuration, fileReady)) return;
+    discardReplayClip(clipPath);
+    const error = new Error('Replay clip could not be limited to the requested duration');
+    error.code = 'REPLAY_CLIP_DURATION_FAILED';
+    throw error;
+  }
+
   async function saveReplayClipInternal({ path: clipPath, headDuration, thumbnailFolder }) {
     const activeReplay = activeRecorders.get('replay');
     if (!activeReplay || activeReplay.type !== ASCENT_RECORDER_TYPES.REPLAY) throw new Error('Start the replay buffer before saving a clip');
+    const durationMs = Number(headDuration);
+    if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('Replay clip duration must be greater than zero');
     if (replayCapture && !(await recoverReplayCapture())) throw new Error('A replay clip is still being finalized; stop and restart the replay buffer before trying again');
     const bufferIdentifier = activeReplay.identifier;
     const captureIdentifier = nextIdentifier++;
     replayCapture = { bufferIdentifier, captureIdentifier, phase: 'starting' };
     try {
-      await request(ASCENT_COMMANDS.START_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, { path: clipPath, head_duration: Math.max(0, Math.round(headDuration)), thumbnail_folder: thumbnailFolder }, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_STARTED], 10000, captureIdentifier);
+      await request(ASCENT_COMMANDS.START_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, { path: clipPath, head_duration: Math.round(durationMs), thumbnail_folder: thumbnailFolder }, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_STARTED], 10000, captureIdentifier);
       // Ascent acknowledges START_REPLAY_CAPTURE before writing the file. The
       // file is only usable after STOP_REPLAY_CAPTURE causes replay_ready.
       replayCapture.phase = 'capturing';
@@ -783,10 +815,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // The native replay output can include the previous keyframe/PTS lead-in
       // even when the requested head duration is shorter. Bound the completed
       // file to the requested tail after the runtime has released it.
-      if (typeof trimReplayClip === 'function') {
-        await waitForReplayFile(clipPath);
-        try { await trimReplayClip({ path: clipPath, durationMs: headDuration }); } catch { /* preserve the runtime output if trimming is unavailable */ }
-      }
+      await enforceReplayClipDuration(clipPath, durationMs);
       return response;
     } catch (error) {
       // Some runtime builds finalize the file and then emit a second
@@ -796,8 +825,12 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // still-running replay buffer.
       if (replayCapture?.bufferIdentifier === bufferIdentifier
         && replayCapture.phase === 'capturing'
-        && await waitForReplayFile(clipPath)) {
+        && await waitForReplayFile(clipPath, typeof trimReplayClip === 'function' ? REPLAY_FILE_WAIT_MS : 0)) {
         replayCapture = null;
+        // Some runtime builds write the clip and then report a secondary
+        // "not capturing" error. That file is still authoritative, but it
+        // must go through the same duration bound as the normal success path.
+        await enforceReplayClipDuration(clipPath, durationMs, true);
         publish({ error: null });
         return { event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath };
       }

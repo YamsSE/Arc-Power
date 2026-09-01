@@ -2551,7 +2551,11 @@ export function createIpcHandlers({
         if (!recordingEngine?.saveReplayClip || !recordingStore) throw new Error('Recording engine is not available');
         const settings = await recordingStore.settings();
         const location = recordingAbsolutePath(settings.location, 'location');
-        const headDurationMs = Number.isFinite(payload.headDurationMs) ? Math.min(3600000, Math.max(0, Math.round(payload.headDurationMs))) : settings.replayLengthSec * 1000;
+        const requestedDurationMs = Number(payload.headDurationMs);
+        const configuredDurationMs = Number(settings.replayLengthSec) * 1000;
+        const headDurationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0
+          ? Math.min(3600000, Math.round(requestedDurationMs))
+          : configuredDurationMs;
         fs.mkdirSync(location, { recursive: true });
         const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fs.existsSync(candidate) });
         const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });

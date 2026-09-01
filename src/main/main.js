@@ -2986,6 +2986,9 @@ async function main() {
     }
   };
   const showRecordingStateToast = (state, previous) => {
+    // The tray icon is a second, desktop-wide status surface. Update it from
+    // the engine stream so button actions and global hotkeys stay identical.
+    try { trayRef?.setRecordingState?.(state); } catch { /* tray status is best effort */ }
     if (!state || !previous) return;
     const previousModes = previous.activeModes ?? { video: previous.mode === 'video' && previous.running === true, replay: previous.mode === 'replay' && previous.running === true };
     const stateModes = state.activeModes ?? { video: state.mode === 'video' && state.running === true, replay: state.mode === 'replay' && state.running === true };

@@ -14,9 +14,11 @@ function validDurationSeconds(durationMs) {
 export function recordingClipTrimArguments(inputPath, outputPath, durationMs) {
   const seconds = validDurationSeconds(durationMs);
   if (!seconds) return null;
-  // Replay capture is allowed to include encoder/keyframe lead-in. Seek from
-  // the end and keep only the requested tail while copying every original
-  // stream, so trimming does not re-encode or change the selected codec.
+  // Replay capture can have no keyframe near the requested start (especially
+  // when the native output is a long-lived session). Stream-copy trimming can
+  // then fall back to the first keyframe and preserve the whole recording.
+  // Re-encode the video/audio tail so the duration bound is real, not merely a
+  // best-effort timestamp hint.
   const duration = seconds.toFixed(3);
   return [
     '-hide_banner',
@@ -26,7 +28,10 @@ export function recordingClipTrimArguments(inputPath, outputPath, durationMs) {
     '-i', inputPath,
     '-map', '0',
     '-t', duration,
-    '-c', 'copy',
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '18',
+    '-c:a', 'aac',
     '-avoid_negative_ts', 'make_zero',
     '-f', 'mp4',
     '-y', outputPath,
