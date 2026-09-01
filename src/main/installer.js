@@ -16,6 +16,7 @@ import { mkdir, cp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { removeUserDataTree } from './cache-lifecycle.js';
+import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
@@ -38,7 +39,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 const INSTALLER_HTML = path.join(__dirname, '..', 'installer', 'installer.html');
 const INSTALLER_PRELOAD = path.join(__dirname, '..', 'installer', 'installer-preload.cjs');
-const INSTALLER_ICON = path.join(__dirname, '..', 'assets', 'icon.png');
+const INSTALLER_ICON = resolveWindowIconPath();
 const INSTALLER_NATIVE_ICON = (() => {
   try {
     return nativeImage.createFromBuffer(readFileSync(INSTALLER_ICON));
@@ -578,6 +579,7 @@ export async function runInstallerMode(mode = 'install') {
       nodeIntegration: false,
     },
   });
+  applyWindowIconLifecycle(win);
   registerInstallerIpc(win, mode);
   // Register the event before loading. Electron can emit ready-to-show before
   // loadFile() resolves; registering it afterwards leaves this intentionally

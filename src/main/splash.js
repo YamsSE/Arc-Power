@@ -5,9 +5,9 @@ import { BrowserWindow } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFatalSplashFallback } from './startup-update.js';
+import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const assetPath = (name) => path.join(__dirname, '..', 'assets', name);
 const SPLASH_PRELOAD = path.join(__dirname, '..', 'renderer', 'splash-preload.cjs');
 
 function publishStartupUpdateStatus(splash, payload) {
@@ -40,7 +40,7 @@ export function createStartupSplash({ onFatalLoad = null } = {}) {
     alwaysOnTop: true,
     title: 'Arc Power',
     backgroundColor: '#090b12',
-    icon: assetPath('icon.png'),
+    icon: resolveWindowIconPath(),
     webPreferences: {
       preload: SPLASH_PRELOAD,
       contextIsolation: true,
@@ -48,6 +48,7 @@ export function createStartupSplash({ onFatalLoad = null } = {}) {
       nodeIntegration: false,
     },
   });
+  applyWindowIconLifecycle(splash);
 
   const fatalSplashFallback = createFatalSplashFallback({
     onFailure: onFatalLoad,

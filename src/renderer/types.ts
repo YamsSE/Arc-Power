@@ -45,6 +45,8 @@ export interface Settings {
    *  100-2000). APPENDED - the OC apply surface
    *  never reads it; it mirrors the settings.json field. */
   overlayPollMs?: number;
+  /** M143: the persisted Overlay recording/replay status pill preference. */
+  overlayRecordingPill?: boolean;
 }
 
 /** Read-back of the device's current state (all supported controls resolved). */
@@ -658,6 +660,8 @@ export interface ProfileSettingsState {
    *  same absent-field mechanism, NO schema bump). The Overlay Settings
    *  Appearance card's Theme row persists this. */
   overlayTheme: 'classic' | 'arc';
+  /** M143: the Overlay recording/replay status pill preference. */
+  overlayRecordingPill: boolean;
   /** M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
    *  panel - CONTROL + <letter>, stock P; absent on old files -> the
    *  defaults: off / 'P' / 'right' - the same absent-field mechanism, NO

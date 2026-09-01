@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Arc Power Capture Status</title>
+  <link rel="stylesheet" href="./recording-status-pill.css">
+</head>
+<body>
+  <div id="recording-status-pill" hidden aria-live="polite">
+    <span class="status-dot" aria-hidden="true"></span>
+    <span id="status-label"></span>
+    <span id="status-elapsed"></span>
+  </div>
+  <script src="./out/recording-status-pill.js"></script>
+</body>
+</html>

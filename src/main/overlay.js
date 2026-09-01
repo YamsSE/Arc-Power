@@ -34,6 +34,7 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -222,6 +223,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
       height: size.height,
       x: xFor(applied.position, bounds, size.width),
       y: yFor(applied.position, bounds, size.height),
+      icon: resolveWindowIconPath(),
       // Transparent + frameless + no shadow: the text floats directly on
       // the screen - no window chrome, no boxes.
       transparent: true,
@@ -245,6 +247,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
         backgroundThrottling: false,
       },
     });
+    applyWindowIconLifecycle(win);
     // The always-on-top level 'screen-saver' (above normal windows + the
     // taskbar edge cases); the overlay never takes focus or mouse input.
     win.setAlwaysOnTop(true, 'screen-saver');

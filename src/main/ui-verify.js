@@ -7685,8 +7685,10 @@ export async function runNoSysmanVerify(win, backend) {
  *   the injected counting hotkey probe (never a real registration)
  * @param {() => number} [getFpsPolls] dev probe: fps-poll invocations (the
  *   M17f fast-rate pin - the overlay's own fps loop counts through it)
+ * @param {{ getWindow: () => import('electron').BrowserWindow | null, getState: () => object, setRecordingState: (state: object|null) => void }|null} [recordingStatusPillHandle]
+ *   M143: the sibling top-right recording status overlay
  */
-export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, getFpsPolls = () => 0) {
+export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, getFpsPolls = () => 0, recordingStatusPillHandle = null) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -7702,6 +7704,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M5: the overlay window does not exist under RID_MOCK_OVERLAY=1 (main.js must create it under the knob)');
   }
   const ojs = (code) => overlayWin.webContents.executeJavaScript(code);
+  const statusPillWin = recordingStatusPillHandle?.getWindow?.() ?? null;
   const mockFps = process.env.RID_MOCK_FPS === '1';
   // M13: RID_MOCK_API=1 - the mock fps sample carries the 'dx12' fixture
   // (the knobs travel together; without RID_MOCK_FPS the poll returns null
@@ -7718,6 +7721,50 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (s0.visible) fail('M5: the overlay must NOT show on boot (M24 user directive - visible:true)');
   if (s0.hotkeyRegistered !== true) fail(`M5: the boot hotkey registration did not land (hotkeyRegistered ${s0.hotkeyRegistered}, probe ${JSON.stringify(hotkeyProbe.registrations)})`);
   step('m5-get-state', `overlay:get-state -> exists + hidden-on-boot (position '${s0.position}', scale ${s0.scale})`);
+
+  // M143: the recording indicator is a sibling transparent window pinned to
+  // the active display's top-right corner. Exercise the live state path with
+  // synthetic engine envelopes so the verifier never needs a native capture
+  // runtime or a real recording file.
+  if (!statusPillWin || statusPillWin.isDestroyed()) {
+    fail('M143: the recording status pill window does not exist in the overlay variant');
+  }
+  if (recordingStatusPillHandle.getState().visible) {
+    fail('M143: the recording status pill must be hidden while the engine is idle');
+  }
+  recordingStatusPillHandle.setRecordingState({
+    running: true,
+    mode: 'video',
+    activeModes: { video: true, replay: false },
+    startedAt: Date.now() - 65000,
+  });
+  if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.classList.contains('recording') === true && document.getElementById('status-label')?.textContent === 'RECORDING'`, 5000))) {
+    fail(`M143: the recording status pill did not render the red RECORDING state (state=${JSON.stringify(recordingStatusPillHandle.getState())})`);
+  }
+  const pillBounds = recordingStatusPillHandle.getState().bounds;
+  const displayBounds = screen.getPrimaryDisplay().bounds;
+  if (!pillBounds || pillBounds.x + pillBounds.width > displayBounds.x + displayBounds.width || pillBounds.y < displayBounds.y) {
+    fail(`M143: the recording status pill is not inside the display's top-right corner (bounds=${JSON.stringify(pillBounds)})`);
+  }
+  recordingStatusPillHandle.setRecordingState({
+    running: true,
+    mode: 'replay',
+    activeModes: { video: false, replay: true },
+    startedAt: Date.now() - 125000,
+  });
+  if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.classList.contains('replay') === true && document.getElementById('status-label')?.textContent === 'REPLAY BUFFER'`, 5000))) {
+    fail('M143: the recording status pill did not switch to the blue REPLAY BUFFER state');
+  }
+  recordingStatusPillHandle.setRecordingState({
+    running: false,
+    mode: null,
+    activeModes: { video: false, replay: false },
+    startedAt: null,
+  });
+  if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.hidden === true`, 5000))) {
+    fail('M143: the recording status pill stayed visible after capture stopped');
+  }
+  step('m143-pill-state', 'the sibling top-right status overlay is hidden at idle, red for RECORDING, blue for REPLAY BUFFER, and hidden again after stop');
 
   // (b) the overlay DOM lines. The mock telemetry: util 42, cpuFreq 4300
   // ('4.3GHz'), cpuTemp 61|62 alternating, memClock 2187, vram 2971324416
@@ -8143,6 +8190,43 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   step('d1-overlay-side-panel', 'D1: Overlay removed the duplicate Show the side panel checkbox; the General-card advancedOverlayEnabled master remains the only control');
   step('m9-position-below-monitor-hotkey', 'M9: the stock Monitor Position select sits directly below its hotkey in the Hotkey card; HUD/Panel labels are renamed Monitor/Advanced');
+
+  // (f2a-m143) M143: the sibling pill has its own Overlay Settings toggle.
+  // Keep the synthetic active video state alive while flipping the setting so
+  // the verifier proves both persistence and the immediate native hide/show.
+  if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]')`, 5000))) {
+    fail('M143: the Overlay view General card has no recording status pill toggle');
+  }
+  if (await js(`document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]')?.checked !== true`)) {
+    fail('M143: the recording status pill toggle is not enabled by the fresh-store default');
+  }
+  recordingStatusPillHandle.setRecordingState({
+    running: true,
+    mode: 'video',
+    activeModes: { video: true, replay: false },
+    startedAt: Date.now() - 2000,
+  });
+  if (!(await waitFor(statusPillWin, `document.getElementById('status-label')?.textContent === 'RECORDING'`, 5000))) {
+    fail('M143: the status pill did not enter the active state before its setting toggle test');
+  }
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayRecordingPill === false)`, 5000))) {
+    fail('M143: turning off the recording status pill did not persist overlayRecordingPill=false');
+  }
+  await sleep(250);
+  if (recordingStatusPillHandle.getState().visible) {
+    fail('M143: turning off the recording status pill did not hide the sibling overlay immediately');
+  }
+  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]'); b.click(); })()`);
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayRecordingPill === true)`, 5000))) {
+    fail('M143: restoring the recording status pill did not persist overlayRecordingPill=true');
+  }
+  await sleep(250);
+  if (!recordingStatusPillHandle.getState().visible) {
+    fail('M143: restoring the recording status pill did not show the active sibling overlay immediately');
+  }
+  recordingStatusPillHandle.setRecordingState({ running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null });
+  step('m143-pill-toggle', 'the Overlay General-card toggle persisted off/on and hid/showed the independent top-right pill immediately while capture was active');
 
   // (f2b) M6-amd3: the enable toggle MOVED to the General card at the top
   // of the overlay view - clicking it flips the persisted overlayEnabled

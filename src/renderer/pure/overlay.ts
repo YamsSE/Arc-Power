@@ -205,6 +205,58 @@ export function clampOverlayPollMs(v: unknown): number {
   return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
 }
 
+/** M143: the compact ReLive/Shadowplay-style status indicator model. Video
+ * recording wins when both capture modes are active, while replay-only mode
+ * gets its own blue label. The state is deliberately derived from
+ * activeModes when present and falls back to the historical mode field for
+ * older/mock engine envelopes. */
+export type RecordingPillKind = 'recording' | 'replay';
+export interface RecordingPillView {
+  visible: boolean;
+  kind: RecordingPillKind | null;
+  label: 'RECORDING' | 'REPLAY BUFFER' | '';
+  elapsed: string;
+}
+
+export function formatRecordingElapsed(startedAt: unknown, now = Date.now()): string {
+  const start = typeof startedAt === 'number' && Number.isFinite(startedAt) ? startedAt : null;
+  if (start === null) return '--:--';
+  const elapsed = Math.max(0, Math.floor((now - start) / 1000));
+  const seconds = elapsed % 60;
+  const minutes = Math.floor(elapsed / 60) % 60;
+  const hours = Math.floor(elapsed / 3600);
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+export function recordingPillView(state: unknown, now = Date.now()): RecordingPillView {
+  if (!state || typeof state !== 'object') {
+    return { visible: false, kind: null, label: '', elapsed: '' };
+  }
+  const value = state as {
+    running?: unknown;
+    mode?: unknown;
+    activeModes?: { video?: unknown; replay?: unknown } | null;
+    startedAt?: unknown;
+  };
+  const modes = value.activeModes;
+  const video = modes && typeof modes === 'object'
+    ? modes.video === true
+    : value.running === true && value.mode === 'video';
+  const replay = modes && typeof modes === 'object'
+    ? modes.replay === true
+    : value.running === true && value.mode === 'replay';
+  if (!video && !replay) return { visible: false, kind: null, label: '', elapsed: '' };
+  const kind: RecordingPillKind = video ? 'recording' : 'replay';
+  return {
+    visible: true,
+    kind,
+    label: video ? 'RECORDING' : 'REPLAY BUFFER',
+    elapsed: formatRecordingElapsed(value.startedAt, now),
+  };
+}
+
 /** M6: the preset swatch labels (one per preset hex). */
 export const OVERLAY_COLOR_LABELS: Record<string, string> = {
   '#ffffff': 'White',

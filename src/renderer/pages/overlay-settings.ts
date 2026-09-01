@@ -106,6 +106,8 @@ interface PersistedOverlay {
   // slider) - the telemetry push cadence in ms (100-2000, 400 the default
   // - M17g: the stock polling rate FLIPS 500 -> 400).
   pollMs: number;
+  // M143: the ReLive/Shadowplay-style recording/replay status pill.
+  recordingPill: boolean;
   // M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
   // panel - CONTROL + <letter>, stock P). Absent on old files -> the
   // defaults (off / 'P' / 'right').
@@ -154,6 +156,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // M17e: the polling-rate (absent on old files -> the 400 ms default
       // - M17g: the stock polling rate FLIPS 500 -> 400).
       pollMs: clampOverlayPollMs(s.overlayPollMs),
+      // M143: old settings files receive the pill by default; only an
+      // explicit false disables it.
+      recordingPill: s.overlayRecordingPill !== false,
       // M23: the ADVANCED overlay (absent on old files -> off / 'P' /
       // 'right' - the same absent-field mechanism; NO scale key - the
       // panel is a fixed compact size).
@@ -240,6 +245,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             onchange: (ev: Event) => void onOverlayEnabledToggle((ev.target as HTMLInputElement).checked),
           }),
           el('span', { text: 'Show the overlay' }),
+        ]),
+      ]),
+      // M143: the status pill is a separate preference from the HUD master
+      // switch, so users can keep telemetry visible without the capture
+      // badge (or vice versa when the HUD is shown again).
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'overlayRecordingPill' },
+            checked: persisted.recordingPill,
+            onchange: (ev: Event) => void onRecordingPillToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Show recording status pill' }),
         ]),
       ]),
       // M25: the "Show Advanced Overlay" toggle moved here from the
@@ -700,6 +720,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // Classic exposes additional background controls. Rebuild the settings
     // surface immediately so the card appears/disappears with the theme.
     render();
+  };
+
+  // M143: the status pill toggle saves through the same profile-settings
+  // channel as the HUD master switch and receives an immediate push from
+  // main, so it never waits for a restart or a recording transition.
+  const onRecordingPillToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="overlayRecordingPill"]');
+    try {
+      await api.profilesSettingsSave({ overlayRecordingPill: checked });
+      persisted.recordingPill = checked;
+      toast(checked ? 'success' : 'info', checked ? 'Recording status pill shown' : 'Recording status pill hidden', '');
+    } catch (err) {
+      toast('error', 'Recording status pill could not be changed', err instanceof Error ? err.message : String(err));
+      if (box) box.checked = persisted.recordingPill;
+    }
   };
 
   const onColorSelect = async (hex: string): Promise<void> => {

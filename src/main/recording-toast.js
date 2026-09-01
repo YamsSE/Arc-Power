@@ -7,6 +7,7 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOAST_WIDTH = 390;
@@ -63,6 +64,7 @@ export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}
     if (win && !win.isDestroyed()) return win;
     win = new BrowserWindow({
       ...boundsFor(),
+      icon: resolveWindowIconPath(),
       transparent: true,
       frame: false,
       resizable: false,
@@ -79,6 +81,7 @@ export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}
         backgroundThrottling: false,
       },
     });
+    applyWindowIconLifecycle(win);
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setIgnoreMouseEvents(true);
     topmostTimer = setInterval(reassertTopmost, 3000);

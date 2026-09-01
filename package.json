@@ -17,7 +17,7 @@
                     "make:icon":  "node scripts/make-icon.js",
                     "make:og":  "electron scripts/make-og.js",
                     "make:banner":  "electron scripts/make-banner.js",
-                    "build:renderer":  "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138 && esbuild src/renderer/advanced-overlay.ts --bundle --outfile=src/renderer/out/advanced-overlay.js --format=iife --target=chrome138 && esbuild src/renderer/recording-toast.ts --bundle --outfile=src/renderer/out/recording-toast.js --format=iife --target=chrome138",
+                    "build:renderer":  "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138 && esbuild src/renderer/advanced-overlay.ts --bundle --outfile=src/renderer/out/advanced-overlay.js --format=iife --target=chrome138 && esbuild src/renderer/recording-toast.ts --bundle --outfile=src/renderer/out/recording-toast.js --format=iife --target=chrome138 && esbuild src/renderer/recording-status-pill.ts --bundle --outfile=src/renderer/out/recording-status-pill.js --format=iife --target=chrome138",
                     "typecheck":  "tsc --noEmit",
                     "dist":  "npm run build:renderer \u0026\u0026 node build/build-dist.js"
                 },

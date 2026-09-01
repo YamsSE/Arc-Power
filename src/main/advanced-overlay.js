@@ -43,6 +43,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT } from './store/profile-store.js';
+import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -130,6 +131,7 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
       height: PANEL_HEIGHT,
       x: geom.x,
       y: geom.y,
+      icon: resolveWindowIconPath(),
       // Frameless + no taskbar entry: a floating control surface, never a
       // window you Alt-Tab to. INTERACTIVE - no setIgnoreMouseEvents.
       frame: false,
@@ -151,6 +153,7 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
         backgroundThrottling: false,
       },
     });
+    applyWindowIconLifecycle(win);
     // The always-on-top level 'screen-saver' (above normal windows + the
     // taskbar edge cases).
     win.setAlwaysOnTop(true, 'screen-saver');

@@ -96,6 +96,10 @@ const OVERLAY_COLOR_DEFAULT = '#ffffff';
 // translucent box behind the HUD); garbage degrades to these at the STORE.
 const OVERLAY_BG_COLOR_DEFAULT = '#000000';
 const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
+// M143: the ReLive/Shadowplay-style recording status pill is enabled by
+// default so existing overlay users get immediate feedback when capture is
+// active; the Overlay Settings General card can disable it.
+const OVERLAY_RECORDING_PILL_DEFAULT = true;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range + default (100-2000 ms, step 50, default
 // 400 - M17g: the user's stock polling rate FLIPS 500 -> 400). The
@@ -122,7 +126,7 @@ function normalizeOverlayDeviceKeys(v) {
 }
 
 
-export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT };
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RECORDING_PILL_DEFAULT };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -315,12 +319,14 @@ export class ProfileStore {
    * M24: overlayTheme (the overlay THEME - the Intel-Arc harness redesign
    * vs the classic HUD) rides it too ('arc' when absent - the redesign IS
    * the product default).
+   * M143: overlayRecordingPill (the live recording/replay status indicator)
+   * rides it too (enabled when absent so old settings files gain the feature).
    * M23: the ADVANCED overlay fields (advancedOverlayEnabled/
    * advancedOverlayHotkeyLetter/advancedOverlayPosition) - absent on old
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -386,6 +392,9 @@ export class ProfileStore {
         // product default; 'classic' stays one click away via the Theme
         // row - the same absent-field mechanism, NO schema bump).
         overlayTheme: OVERLAY_THEME_DEFAULT,
+        // M143: absent on old settings files -> enabled; this adds the
+        // recording/replay indicator without changing any capture behavior.
+        overlayRecordingPill: OVERLAY_RECORDING_PILL_DEFAULT,
         // M23: the ADVANCED overlay - absent -> off, the letter 'P' (the
         // stock Adrenaline shortcut), anchored right (the same absent-field
         // mechanism, NO schema bump; NO scale key - the panel is a fixed
@@ -459,6 +468,9 @@ export class ProfileStore {
       overlayTheme: OVERLAY_THEMES.includes(data.overlayTheme)
         ? data.overlayTheme
         : OVERLAY_THEME_DEFAULT,
+      // M143: the status pill is on unless the user explicitly disabled it;
+      // missing/garbage values on old files receive the new feature.
+      overlayRecordingPill: data.overlayRecordingPill !== false,
       // M23: the ADVANCED overlay (the M5 overlaySettings pattern, NO
       // schema bump): enabled off when absent, the letter 'P', anchored
       // 'right'; a garbage value degrades to the default - never a crash.
@@ -475,7 +487,7 @@ export class ProfileStore {
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     this._writeAtomic(this.settingsPath, {
@@ -540,6 +552,9 @@ export class ProfileStore {
       overlayTheme: OVERLAY_THEMES.includes(settings.overlayTheme)
         ? settings.overlayTheme
         : OVERLAY_THEME_DEFAULT,
+      // M143: explicit false disables the live status pill; missing/garbage
+      // direct saves receive the enabled default.
+      overlayRecordingPill: settings.overlayRecordingPill !== false,
       // M23: the ADVANCED overlay - validated on save like the theme (the
       // channel validates first + rejects the hotkey-letter collision at
       // the envelope; the store fallback covers direct callers - an

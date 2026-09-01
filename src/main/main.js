@@ -67,6 +67,7 @@ import { createGameScanAdapter, findGamePosterArtwork } from './game-scan.js';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
 import { createRecordingToastWindow } from './recording-toast.js';
+import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 // M23 (Part B): the ADVANCED overlay module (the AMD-Adrenaline-style
 // interactive side panel - CONTROL + <letter>, stock P). The HUD's
 // overlay.js stays untouched - this panel has its own lifecycle + its own
@@ -1651,6 +1652,9 @@ async function main() {
         overlayBgColor: overlayOn ? '#000000' : cur.overlayBgColor,
         overlayBgOpacity: overlayOn ? 0.5 : cur.overlayBgOpacity,
         overlayTheme: overlayOn ? 'classic' : cur.overlayTheme,
+        // M143: the status-pill verifier starts from the product default ON;
+        // keep the isolated mock store deterministic between variants.
+        overlayRecordingPill: overlayOn ? true : cur.overlayRecordingPill,
         // M53: reset the HUD device-name/multi-GPU fields with the rest of
         // the overlay seed so a failed verifier cannot bleed state forward.
         overlayChipNames: overlayOn ? false : cur.overlayChipNames,
@@ -2412,6 +2416,8 @@ async function main() {
   win.on('closed', () => {
     overlayHandle?.destroy();
     unregisterOverlayHotkey();
+    recordingStatusPillHandle?.destroy();
+    recordingStatusPillHandle = null;
     recordingToastHandle?.destroy();
     recordingToastHandle = null;
     // M23 (Part B): the ADVANCED overlay rides the SAME lifecycle rule - the
@@ -2436,6 +2442,7 @@ async function main() {
   // overlay while the master overlayEnabled is OFF - the gate lives in
   // overlay.js toggle().
   let overlayHandle = null;
+  let recordingStatusPillHandle = null;
   let recordingToastHandle = null;
   let overlayHotkeyAccelerator = null;
   // The hotkey seam (M6): product path - a REAL globalShortcut registration
@@ -2486,14 +2493,18 @@ async function main() {
   // module sends it DIRECTLY to the overlay window (webContents.send);
   // ipc.js's emit stays telemetry-only (N1).
   const onOverlaySettings = async (patch) => {
-    if (!overlayHandle) return;
-    const masterChanged = patch
-      && typeof patch === 'object'
-      && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
-    applyOverlaySettings({ preserveVisibility: !masterChanged });
-    if (patch && typeof patch.overlayHotkeyLetter === 'string') {
-      registerOverlayHotkey(patch.overlayHotkeyLetter);
+    if (overlayHandle) {
+      const masterChanged = patch
+        && typeof patch === 'object'
+        && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
+      applyOverlaySettings({ preserveVisibility: !masterChanged });
+      if (patch && typeof patch.overlayHotkeyLetter === 'string') {
+        registerOverlayHotkey(patch.overlayHotkeyLetter);
+      }
     }
+    // M143: a status-pill preference change applies independently of the HUD
+    // master toggle; the pill is a separate desktop-level overlay surface.
+    applyRecordingStatusPillSettings();
   };
   const applyOverlaySettings = ({ preserveVisibility = false } = {}) => {
     if (!overlayHandle) return;
@@ -2592,6 +2603,28 @@ async function main() {
     registerOverlayHotkey(bootLetter);
   }
 
+  // M143: the recording status pill is a separate, click-through desktop
+  // overlay. Product builds create it hidden; ui-verify creates it only in
+  // the overlay variant and immediately stealths it so verification cannot
+  // flash a window over the user's desktop.
+  const shouldCreateRecordingStatusPill = uiVerify
+    ? process.env.RID_MOCK_OVERLAY === '1'
+    : true;
+  const applyRecordingStatusPillSettings = () => {
+    if (!recordingStatusPillHandle) return;
+    let settings = {};
+    try { settings = store.loadSettingsSync() ?? {}; } catch { settings = {}; }
+    recordingStatusPillHandle.apply(settings.overlayRecordingPill !== false);
+  };
+  if (shouldCreateRecordingStatusPill) {
+    recordingStatusPillHandle = createRecordingStatusPillWindow({
+      getAnchorWindow: () => win,
+      getRecordingState: () => recordingEngine.getState(),
+    });
+    if (uiVerify) stealthVerifyWindow(recordingStatusPillHandle.getWindow?.() ?? null);
+    applyRecordingStatusPillSettings();
+  }
+
   // Recording notifications are a separate, non-interactive desktop layer.
   // They are deliberately independent from the telemetry HUD: disabling or
   // hiding the HUD must never hide a recording/clip result notification.
@@ -2605,6 +2638,8 @@ async function main() {
   app.on('will-quit', () => {
     overlayHandle?.destroy();
     unregisterOverlayHotkey();
+    recordingStatusPillHandle?.destroy();
+    recordingStatusPillHandle = null;
     recordingToastHandle?.destroy();
     recordingToastHandle = null;
   });
@@ -3155,7 +3190,13 @@ async function main() {
     refreshRecordingHotkeys: () => recordingHotkeys.register(),
     getRecordingHotkeyState: () => recordingHotkeys.getState(),
     onRecordingActionResult: showRecordingActionToast,
-    onRecordingState: showRecordingStateToast,
+    // M143: keep the pill on the same authoritative engine subscription as
+    // the main renderer and desktop notifications. Save Clip does not change
+    // state, so no action-result path is used for visibility.
+    onRecordingState: (state, previous) => {
+      recordingStatusPillHandle?.setRecordingState?.(state);
+      showRecordingStateToast(state, previous);
+    },
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach
@@ -3350,7 +3391,7 @@ async function main() {
       if (process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY !== '1') {
         await runGraphicsVerify(win, backend);
       }
-      await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe, () => fpsPolls);
+      await runOverlayVerify(win, overlayHandle, store, overlayHotkeyProbe, () => fpsPolls, recordingStatusPillHandle);
     } else if (process.env.RID_MOCK_ADV_OVERLAY === '1') {
       // M23 (Part B): the ADVANCED-overlay variant - the panel window is
       // REAL (created above under the knob, seeded advancedOverlayEnabled:

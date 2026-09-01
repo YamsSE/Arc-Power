@@ -3032,6 +3032,11 @@ export function createIpcHandlers({
           overlayTheme: patch.overlayTheme === undefined
             ? cur.overlayTheme
             : validateOverlayTheme(patch.overlayTheme),
+          // M143: the ReLive/Shadowplay-style recording status pill is a
+          // boolean Overlay preference; absent keeps the current value.
+          overlayRecordingPill: patch.overlayRecordingPill === undefined
+            ? cur.overlayRecordingPill
+            : patch.overlayRecordingPill === true,
           // M23: the ADVANCED-overlay fields (the Overlay view's Advanced
           // card persists them through this channel - the M5 overlaySettings
           // pattern, new keys). The letter REJECTS with an honest error when
@@ -3115,7 +3120,7 @@ export function createIpcHandlers({
         // persists but onOverlaySettings never fires and the HUD never
         // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme']) {
+        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {
