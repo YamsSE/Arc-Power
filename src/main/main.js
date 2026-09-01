@@ -271,7 +271,10 @@ async function boundShutdown(proxy) {
   }
 }
 let bootWindowTheme = 'dark';
-const APP_USER_MODEL_ID = 'com.rid.arcpower';
+// A Portable build runs its child from a temporary extraction directory. Give
+// that child its own stable Windows identity so the shell does not reuse the
+// old installed/default icon entry for com.rid.arcpower.
+const APP_USER_MODEL_ID = portableWrapperPath ? 'com.rid.arcpower.portable' : 'com.rid.arcpower';
 // Set the Windows identity while this module is loading, before Electron can
 // create the startup splash or the main window. Keeping this at the earliest
 // possible point prevents the shell from briefly assigning the default
@@ -313,15 +316,17 @@ function applyWindowIdentity(win) {
     try { win.setIcon(APP_ICON); } catch { /* best effort */ }
   }
   if (process.platform !== 'win32') return;
+  const taskbarExecutablePath = portableWrapperPath ?? process.execPath;
+  const taskbarIconPath = portableWrapperPath ?? WINDOWS_APP_ICON_PATH;
   try {
     win.setAppDetails({
       appId: APP_USER_MODEL_ID,
-      // setAppDetails requires a real filesystem path. The packaged ICO is
-      // shipped as an extra resource so Windows does not resolve an icon
-      // from inside app.asar or inherit the default Electron icon.
-      appIconPath: WINDOWS_APP_ICON_PATH,
+      // Portable's child executable lives in a temporary extraction folder.
+      // Point the shell at the stable wrapper instead, whose icon is visible
+      // to Windows before extraction and remains valid after relaunch.
+      appIconPath: taskbarIconPath,
       appIconIndex: 0,
-      relaunchCommand: process.execPath,
+      relaunchCommand: taskbarExecutablePath,
       relaunchDisplayName: 'Arc Power',
     });
   } catch { /* best effort on platforms without taskbar details */ }
