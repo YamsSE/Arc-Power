@@ -337,11 +337,12 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // 1.0.1 Themes (M3): the persisted theme's background (the caller
     // resolves it before createWindow; the Dark Steel default here).
     backgroundColor,
-    // M4J (G): Start minimized -> the TRAY. The window is created HIDDEN
-    // (show:false - tray-only, no taskbar entry, no minimize race) when
-    // the pre-create settings read says startMinimized; ready-to-show does
-    // nothing then. The tray toggle's hidden->show branch restores it.
-    show,
+    // Create every window hidden until its native identity has been applied.
+    // A visible BrowserWindow can make Windows create the taskbar button with
+    // the generic document icon before win.setIcon/setAppDetails run. The
+    // requested `show` value is honored in the ready-to-show handler below;
+    // start-minimized and splash-held windows remain hidden.
+    show: false,
     // Canonical Arc Power icon used by the live window and taskbar.
     icon: APP_ICON,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
@@ -366,7 +367,10 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
   // before the renderer has finished loading.
   applyWindowIdentity(win);
   win.webContents.once('did-finish-load', () => applyWindowIdentity(win));
-  win.once('ready-to-show', () => applyWindowIdentity(win));
+  win.once('ready-to-show', () => {
+    applyWindowIdentity(win);
+    if (show && !win.isDestroyed()) win.show();
+  });
   win.webContents.on('console-message', (event) => {
     // Electron >= 30: the event object carries { level, message, ... }.
     const level = typeof event.level === 'number' ? event.level : 0;
