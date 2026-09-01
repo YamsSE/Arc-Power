@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PILL_WIDTH = 238;
+const PILL_WIDTH = 220;
 const PILL_HEIGHT = 52;
 const PILL_MARGIN = 16;
 const STATUS_CHANNEL = 'recording:state';

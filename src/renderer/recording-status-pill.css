@@ -1,4 +1,4 @@
-/* M143: a compact, desktop-level capture status pill. The native window is
+/* M144: a compact, desktop-level capture status pill. The native window is
    transparent, click-through, focusless, and fixed to the active display's
    top-right corner by recording-status-pill.js. */
 
@@ -17,42 +17,61 @@ body {
 #recording-status-pill {
   box-sizing: border-box;
   width: calc(100% - 12px);
-  height: 38px;
+  height: 40px;
   margin: 6px;
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  padding: 0 13px 0 11px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  border-radius: 999px;
-  color: #fff;
+  gap: 8px;
+  padding: 0 3px;
   font-family: 'Segoe UI', Arial, sans-serif;
-  font-size: 13px;
-  font-weight: 800;
-  letter-spacing: 0.035em;
-  line-height: 1;
-  white-space: nowrap;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 #recording-status-pill[hidden] {
   display: none;
 }
 
-#recording-status-pill.recording {
-  background: linear-gradient(135deg, rgba(170, 24, 43, 0.98), rgba(108, 13, 32, 0.98));
-  border-color: rgba(255, 111, 125, 0.82);
+.brand-icon {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  object-fit: contain;
+  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.58));
 }
 
-#recording-status-pill.replay {
-  background: linear-gradient(135deg, rgba(20, 111, 180, 0.98), rgba(17, 59, 132, 0.98));
-  border-color: rgba(102, 200, 255, 0.86);
+.status-chip {
+  box-sizing: border-box;
+  min-width: 142px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  line-height: 1;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+#recording-status-pill.recording .status-chip {
+  background: linear-gradient(135deg, rgba(190, 29, 51, 0.98), rgba(112, 13, 33, 0.98));
+  border-color: rgba(255, 111, 125, 0.88);
+}
+
+#recording-status-pill.replay .status-chip {
+  background: linear-gradient(135deg, rgba(24, 125, 199, 0.98), rgba(17, 62, 139, 0.98));
+  border-color: rgba(102, 200, 255, 0.9);
 }
 
 .status-dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: #ff6572;

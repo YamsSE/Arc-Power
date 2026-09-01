@@ -1,4 +1,4 @@
-// Arc Power - M143 recording/replay status pill renderer.
+// Arc Power - M144 recording/replay status pill renderer.
 
 import { api } from './ipc.ts';
 import { recordingPillView } from './pure/overlay.ts';
@@ -14,7 +14,9 @@ function render(): void {
   root.hidden = !view.visible;
   root.classList.toggle('recording', view.visible && view.kind === 'recording');
   root.classList.toggle('replay', view.visible && view.kind === 'replay');
-  label.textContent = view.visible ? view.label : '';
+  // The Arc Power mark carries the brand; keep the adjacent status chip
+  // deliberately short so the indicator reads at a glance in a game.
+  label.textContent = view.visible ? view.kind === 'recording' ? 'REC' : 'REPLAY' : '';
   elapsed.textContent = view.visible ? view.elapsed : '';
 }
 

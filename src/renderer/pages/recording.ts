@@ -65,6 +65,7 @@ let fpsCustomEditing = false;
 let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
+let recordingPillEnabled = true;
 
 function recordingClipKind(clip: RecordingClip): 'recording' | 'clip' {
   return /^Arc Recording \d+\.mp4$/i.test(clip.fileName) ? 'recording' : 'clip';
@@ -367,11 +368,43 @@ function renderCapturePanel(): HTMLElement {
       ]),
       el('span', { class: `recording-settings-state${settingsDirty ? ' is-unsaved' : ''}`, text: settingsDirty ? 'Unsaved' : 'Applied' }),
     ]) : null,
+    el('div', { class: 'recording-pill-setting' }, [
+      el('div', { class: 'recording-pill-setting-copy' }, [
+        el('span', { class: 'recording-field-label', text: 'On-screen indicator' }),
+        el('strong', { text: 'Recording Pill' }),
+        el('span', { class: 'recording-field-note', text: 'Shows the Arc Power icon with a red or blue status pill while capture is active.' }),
+      ]),
+      el('label', { class: 'recording-check-row' }, [
+        el('input', {
+          type: 'checkbox',
+          class: 'settings-checkbox',
+          dataset: { setting: 'overlayRecordingPill' },
+          checked: recordingPillEnabled,
+          onchange: (ev: Event) => void onRecordingPillToggle((ev.target as HTMLInputElement).checked),
+        }),
+        el('span', { text: 'Show while recording' }),
+      ]),
+    ]),
     renderCaptureActions(),
     renderCaptureTargetSettings(),
     status.error && status.available ? el('p', { class: 'recording-inline-error', text: messageOf(status.error) }) : null,
     status.hotkeys.error ? el('p', { class: 'recording-inline-error', text: `Shortcut registration issue: ${messageOf(status.hotkeys.error)}` }) : null,
   ]);
+}
+
+async function onRecordingPillToggle(checked: boolean): Promise<void> {
+  const previous = recordingPillEnabled;
+  recordingPillEnabled = checked;
+  render();
+  try {
+    const result = await api.profilesSettingsSave({ overlayRecordingPill: checked });
+    recordingPillEnabled = result.overlayRecordingPill !== false;
+    toast(checked ? 'success' : 'info', checked ? 'Recording Pill enabled' : 'Recording Pill disabled', '');
+  } catch (err) {
+    recordingPillEnabled = previous;
+    toast('error', 'Recording Pill could not be changed', messageOf(err));
+  }
+  render();
 }
 
 function captureTargetKey(target: RecordingCaptureTarget): string {
@@ -1216,11 +1249,12 @@ async function load(): Promise<void> {
   loading = true;
   const loadStateRevision = recordingStateRevision;
   try {
-    const [loadedSettings, loadedStatus, loadedClips, loadedStorage] = await Promise.all([
+    const [loadedSettings, loadedStatus, loadedClips, loadedStorage, profileEnvelope] = await Promise.all([
       api.recordingSettingsGet(),
       api.recordingStatus(),
       api.recordingClipsList(),
       api.recordingStorageInfo().catch(() => null),
+      api.profilesList().catch(() => null),
     ]);
     settings = loadedSettings;
     draftSettings = cloneRecordingSettings(loadedSettings);
@@ -1233,6 +1267,7 @@ async function load(): Promise<void> {
     if (recordingStateRevision === loadStateRevision) setStatus(loadedStatus);
     clips = loadedClips;
     storageInfo = loadedStorage;
+    recordingPillEnabled = profileEnvelope?.settings?.overlayRecordingPill !== false;
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
@@ -1394,6 +1429,7 @@ export const recordingPage: Page = {
     applyingSettings = false;
     fpsCustomEditing = false;
     storageInfo = null;
+    recordingPillEnabled = true;
     recordingTargets = { displays: [], windows: [] };
     recordingTargetsBusy = false;
     renderContainer = null;

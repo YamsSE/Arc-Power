@@ -87,6 +87,58 @@ function patchUnpackedExecutable() {
   if (result.status !== 0) throw new Error(`rcedit failed for ${target} with exit code ${result.status}`);
 }
 
+function peImageEnd(buffer) {
+  if (buffer.length < 0x40 || buffer.readUInt16LE(0) !== 0x5a4d) {
+    throw new Error('portable wrapper does not start with a DOS header');
+  }
+  const peOffset = buffer.readUInt32LE(0x3c);
+  if (peOffset < 0x40 || peOffset + 24 > buffer.length || buffer.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0') {
+    throw new Error('portable wrapper does not contain a valid PE header');
+  }
+  const sectionCount = buffer.readUInt16LE(peOffset + 6);
+  const optionalHeaderSize = buffer.readUInt16LE(peOffset + 20);
+  const sectionsStart = peOffset + 24 + optionalHeaderSize;
+  if (sectionsStart + sectionCount * 40 > buffer.length) throw new Error('portable wrapper section table is truncated');
+  let end = sectionsStart + sectionCount * 40;
+  for (let index = 0; index < sectionCount; index += 1) {
+    const section = sectionsStart + index * 40;
+    const rawSize = buffer.readUInt32LE(section + 16);
+    const rawPointer = buffer.readUInt32LE(section + 20);
+    end = Math.max(end, rawPointer + rawSize);
+  }
+  return end;
+}
+
+function patchPortableWrapperIcon(artifactPath) {
+  // A portable EXE is an NSIS wrapper: its PE stub is followed by an
+  // integrity-sensitive installer payload. rcedit must receive only the PE
+  // stub; editing the complete wrapper destroys the NSIS payload and leaves
+  // Windows with a broken or generic shell entry.
+  const original = readFileSync(artifactPath);
+  const imageEnd = peImageEnd(original);
+  if (imageEnd <= 0 || imageEnd >= original.length) throw new Error(`portable wrapper has no NSIS payload: ${artifactPath}`);
+  const stubPath = `${artifactPath}.icon-stub.tmp`;
+  try {
+    writeFileSync(stubPath, original.subarray(0, imageEnd));
+    const result = spawnSync(rceditCli, [stubPath, '--set-icon', iconPath], {
+      cwd: root,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`rcedit failed for portable stub ${artifactPath} with exit code ${result.status}`);
+    const brandedStub = readFileSync(stubPath);
+    if (brandedStub.length > imageEnd) throw new Error(`branded portable stub grew into the NSIS payload: ${artifactPath}`);
+    writeFileSync(artifactPath, Buffer.concat([
+      brandedStub,
+      Buffer.alloc(imageEnd - brandedStub.length),
+      original.subarray(imageEnd),
+    ]));
+  } finally {
+    rmSync(stubPath, { force: true });
+  }
+}
+
 function buildUnpackedApp() {
   writeBuildConfig(path.basename(portable), 'dir');
   try {
@@ -103,13 +155,16 @@ function buildPortableArtifact(artifactName) {
     // Build the wrapper from the already-branded unpacked directory. A
     // Portable wrapper embeds its own copy of the application; patching
     // win-unpacked after creating the wrapper leaves that embedded copy with
-    // electron-builder's placeholder executable icon.
+    // electron-builder's placeholder executable icon. The wrapper itself is
+    // branded below through a PE-stub-only edit so its NSIS payload remains
+    // intact.
     runBuilder('portable', ['--prepackaged', unpacked]);
   } finally {
     rmSync(tempConfig, { force: true });
   }
   const artifactPath = path.join(dist, artifactName);
   if (!existsSync(artifactPath)) throw new Error(`electron-builder did not produce ${artifactPath}`);
+  patchPortableWrapperIcon(artifactPath);
 }
 
 buildUnpackedApp();
