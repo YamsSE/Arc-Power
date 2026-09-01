@@ -84,10 +84,13 @@ let sessionRuntimeNode: HTMLElement | null = null;
 let sessionPeakNode: HTMLElement | null = null;
 let sessionAverageNode: HTMLElement | null = null;
 type DashboardControlId = 'profile' | 'apply' | 'capture' | 'last' | 'storage' | 'attention';
-type DashboardControlDatum = { value: string; note: string; level?: 'ok' | 'warn' | 'error' | 'unknown' };
+type DashboardControlLevel = 'ok' | 'warn' | 'error' | 'unknown' | 'recording' | 'replay';
+type DashboardControlDatum = { value: string; note: string; level?: DashboardControlLevel };
 const controlValueNodes = new Map<DashboardControlId, HTMLElement>();
 const controlNoteNodes = new Map<DashboardControlId, HTMLElement>();
 let controlHealthNode: HTMLElement | null = null;
+let controlCaptureDotNode: HTMLElement | null = null;
+let controlAttentionRowNode: HTMLElement | null = null;
 let controlCenterContext: PageContext | null = null;
 let controlCenterLoadPromise: Promise<void> | null = null;
 let controlCenterRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -249,8 +252,43 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
   ]);
 }
 
-function dashboardAction(label: string, hash: string): HTMLElement {
-  return el('a', { class: 'dashboard-quick-action', href: hash, text: label });
+type DashboardActionKind = 'recording' | 'profiles' | 'tuning';
+
+const DASHBOARD_ACTION_PATHS: Record<DashboardActionKind, string> = {
+  recording: 'M8 5v14l11-7L8 5Z',
+  profiles: 'M5 5h14v14H5zM8 9h8M8 13h5',
+  tuning: 'M4 7h16M4 12h16M4 17h16',
+};
+
+function dashboardAction(label: string, hash: string, description: string, kind: DashboardActionKind, primary = false): HTMLElement {
+  const icon = svgEl('svg', {
+    class: 'dashboard-hub-action-icon',
+    viewBox: '0 0 24 24',
+    'aria-hidden': 'true',
+  });
+  icon.append(svgEl('path', {
+    d: DASHBOARD_ACTION_PATHS[kind],
+    fill: kind === 'recording' ? 'currentColor' : 'none',
+    stroke: kind === 'recording' ? 'none' : 'currentColor',
+    'stroke-width': 1.7,
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+  }));
+  if (kind === 'tuning') {
+    icon.append(
+      svgEl('circle', { cx: 9, cy: 7, r: 2, fill: 'var(--bg-elev)', stroke: 'currentColor', 'stroke-width': 1.7 }),
+      svgEl('circle', { cx: 15, cy: 12, r: 2, fill: 'var(--bg-elev)', stroke: 'currentColor', 'stroke-width': 1.7 }),
+      svgEl('circle', { cx: 11, cy: 17, r: 2, fill: 'var(--bg-elev)', stroke: 'currentColor', 'stroke-width': 1.7 }),
+    );
+  }
+  return el('a', { class: `dashboard-hub-action${primary ? ' dashboard-hub-action-primary' : ''}`, href: hash }, [
+    el('span', { class: 'dashboard-hub-action-icon-wrap' }, [icon]),
+    el('span', { class: 'dashboard-hub-action-copy' }, [
+      el('strong', { text: label }),
+      el('small', { text: description }),
+    ]),
+    el('span', { class: 'dashboard-hub-action-arrow', text: '↗', 'aria-hidden': 'true' }),
+  ]);
 }
 
 function sharedMemoryBytesOf(
@@ -385,6 +423,19 @@ function snapshotCaptureState(status: AppState['recordingStatus']): { value: str
   return { value: 'Unavailable', note: 'Capture engine is unavailable' };
 }
 
+function captureStatusLevel(status: AppState['recordingStatus']): DashboardControlLevel {
+  if (!status) return 'unknown';
+  const videoActive = status.activeModes
+    ? status.activeModes.video === true
+    : status.running === true && status.mode !== 'replay';
+  const replayActive = status.activeModes
+    ? status.activeModes.replay === true
+    : status.running === true && status.mode === 'replay';
+  if (status.running && videoActive) return 'recording';
+  if (status.running && replayActive) return 'replay';
+  return status.available ? 'ok' : 'unknown';
+}
+
 function compactDashboardText(value: string | null | undefined, fallback: string): string {
   const text = typeof value === 'string' ? value.trim() : '';
   if (!text) return fallback;
@@ -432,7 +483,7 @@ function dashboardControlCenterState(ctx: PageContext): { health: 'ok' | 'warn' 
       apply: apply
         ? { value: apply.ok ? 'Applied' : 'Failed', note: compactDashboardText(apply.detail, 'Latest tuning result'), level: apply.ok ? 'ok' : 'error' }
         : { value: 'No apply yet', note: 'Tuning results appear here' },
-      capture: { ...capture, level: s.recordingStatus?.running ? 'ok' : s.recordingStatus?.available ? 'ok' : 'unknown' },
+      capture: { ...capture, level: captureStatusLevel(s.recordingStatus) },
       last: latestClip
         ? { value: compactDashboardText(latestClip.fileName, 'Latest capture'), note: 'Latest saved clip or recording' }
         : { value: controlCenterRemote.clips ? 'No captures yet' : 'Loading…', note: 'Saved clips and recordings' },
@@ -451,42 +502,74 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
   controlValueNodes.clear();
   controlNoteNodes.clear();
   controlHealthNode = null;
+  controlCaptureDotNode = null;
+  controlAttentionRowNode = null;
   const state = dashboardControlCenterState(ctx);
-  controlHealthNode = el('span', { class: `chip dashboard-control-health status-${state.health}`, text: state.healthLabel });
-  const labels: Array<{ id: DashboardControlId; label: string }> = [
-    { id: 'profile', label: 'Active profile' },
-    { id: 'apply', label: 'Last apply' },
-    { id: 'capture', label: 'Arc Capture' },
-    { id: 'last', label: 'Last capture' },
-    { id: 'storage', label: 'Storage' },
-    { id: 'attention', label: 'Attention' },
-  ];
-  const items = labels.map(({ id, label }) => {
+  controlHealthNode = el('span', { class: `chip dashboard-control-health status-${state.health}`, text: state.healthLabel, hidden: state.health === 'ok' });
+
+  const detail = (id: Exclude<DashboardControlId, 'capture' | 'attention'>, label: string, className = ''): HTMLElement => {
     const item = state.values[id];
     const valueNode = el('strong', { class: 'dashboard-control-value', text: item.value, dataset: { controlValue: id } });
     const noteNode = el('span', { class: 'dashboard-control-note', text: item.note, dataset: { controlNote: id } });
     controlValueNodes.set(id, valueNode);
     controlNoteNodes.set(id, noteNode);
-    return el('div', { class: `dashboard-control-item${item.level ? ` status-${item.level}` : ''}` }, [
+    return el('div', { class: `dashboard-hub-detail${className ? ` ${className}` : ''}` }, [
       el('span', { class: 'dashboard-control-label', text: label }),
       valueNode,
       noteNode,
     ]);
-  });
+  };
+
+  const capture = state.values.capture;
+  const captureValueNode = el('strong', { class: 'dashboard-hub-state-value dashboard-control-value', text: capture.value, dataset: { controlValue: 'capture' } });
+  const captureNoteNode = el('span', { class: 'dashboard-hub-state-note dashboard-control-note', text: capture.note, dataset: { controlNote: 'capture' } });
+  controlValueNodes.set('capture', captureValueNode);
+  controlNoteNodes.set('capture', captureNoteNode);
+  controlCaptureDotNode = el('span', { class: `dashboard-hub-status-dot status-${capture.level ?? 'unknown'}`, 'aria-hidden': 'true' });
+
+  const attention = state.values.attention;
+  const attentionValueNode = el('strong', { class: 'dashboard-control-value', text: attention.value, dataset: { controlValue: 'attention' } });
+  const attentionNoteNode = el('span', { class: 'dashboard-control-note', text: attention.note, dataset: { controlNote: 'attention' } });
+  controlValueNodes.set('attention', attentionValueNode);
+  controlNoteNodes.set('attention', attentionNoteNode);
+  controlAttentionRowNode = el('div', { class: `dashboard-hub-attention status-${attention.level ?? state.health}`, hidden: state.health === 'ok' }, [
+    el('span', { class: 'dashboard-control-label', text: 'Attention' }),
+    attentionValueNode,
+    attentionNoteNode,
+  ]);
+
   return el('section', { class: 'card dashboard-control-card' }, [
     el('div', { class: 'dashboard-control-heading' }, [
       el('div', {}, [
-        el('span', { class: 'dashboard-eyebrow', text: 'Activity & actions' }),
-        el('h2', { class: 'card-title', text: 'Control center' }),
+        el('span', { class: 'dashboard-eyebrow', text: 'Quick capture' }),
+        el('h2', { class: 'card-title', text: 'Capture hub' }),
       ]),
       controlHealthNode,
     ]),
-    el('div', { class: 'dashboard-control-grid' }, items),
-    el('div', { class: 'dashboard-control-actions' }, [
-      dashboardAction('Open Recording', '#/recording'),
-      dashboardAction('Open Profiles', '#/profiles'),
-      dashboardAction('Open Tuning', '#/tuning'),
+    el('div', { class: 'dashboard-hub-layout' }, [
+      el('div', { class: 'dashboard-hub-capture' }, [
+        el('div', { class: 'dashboard-hub-state' }, [
+          controlCaptureDotNode,
+          el('div', { class: 'dashboard-hub-state-copy' }, [
+            el('span', { class: 'dashboard-hub-kicker', text: 'Arc Capture' }),
+            captureValueNode,
+            captureNoteNode,
+          ]),
+        ]),
+        el('div', { class: 'dashboard-hub-actions' }, [
+          dashboardAction('Open recording', '#/recording', 'Record, replay & clips', 'recording', true),
+          dashboardAction('Open profiles', '#/profiles', 'Startup profiles', 'profiles'),
+          dashboardAction('Open tuning', '#/tuning', 'GPU & fan controls', 'tuning'),
+        ]),
+      ]),
+      el('div', { class: 'dashboard-hub-details' }, [
+        detail('last', 'Last capture', 'dashboard-hub-detail-wide'),
+        detail('profile', 'Active profile'),
+        detail('apply', 'Last apply'),
+        detail('storage', 'Storage'),
+      ]),
     ]),
+    controlAttentionRowNode,
   ]);
 }
 
@@ -494,9 +577,15 @@ function updateDashboardControlCenter(ctx: PageContext): void {
   const state = dashboardControlCenterState(ctx);
   for (const [id, node] of controlValueNodes) node.textContent = state.values[id].value;
   for (const [id, node] of controlNoteNodes) node.textContent = state.values[id].note;
+  if (controlCaptureDotNode) controlCaptureDotNode.className = `dashboard-hub-status-dot status-${state.values.capture.level ?? 'unknown'}`;
   if (controlHealthNode) {
     controlHealthNode.className = `chip dashboard-control-health status-${state.health}`;
     controlHealthNode.textContent = state.healthLabel;
+    controlHealthNode.hidden = state.health === 'ok';
+  }
+  if (controlAttentionRowNode) {
+    controlAttentionRowNode.className = `dashboard-hub-attention status-${state.values.attention.level ?? state.health}`;
+    controlAttentionRowNode.hidden = state.health === 'ok';
   }
 }
 
@@ -719,7 +808,7 @@ export const dashboardPage: Page = {
         healthCard(ctx),
       ]),
 
-      // Performance Pulse above owns live telemetry; the Control Center
+        // Performance Pulse above owns live telemetry; the Capture Hub
       // keeps the bottom of the dashboard focused on actions and recent work.
       dashboardControlCenter(ctx),
     );
@@ -733,7 +822,7 @@ export const dashboardPage: Page = {
   onUpdate(container: HTMLElement, ctx: PageContext) {
     // Full re-render only when a status slot changed (boot probe, boot
     // errors) - NOT on telemetry ticks. A tick refreshes the live cards and
-    // Control Center values in place; the clocks health row is gone.
+    // Capture Hub values in place; the clocks health row is gone.
     const sig = currentSig(ctx);
     if (dashboardNeedsFullRender(lastSig, sig)) {
       lastSig = sig;
@@ -785,4 +874,6 @@ function controlCenterValueNodesReset(): void {
   controlValueNodes.clear();
   controlNoteNodes.clear();
   controlHealthNode = null;
+  controlCaptureDotNode = null;
+  controlAttentionRowNode = null;
 }
