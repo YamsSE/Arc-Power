@@ -19,14 +19,12 @@ import type { AppState, Page, PageContext } from '../router.ts';
 import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
-import { buildDeviceSelect } from '../components/device-select.ts';
-import { selectDevice } from '../app.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
-import { selectedDashboardController } from '../pure/dashboard.ts';
-import { aibOfPnpDeviceId } from '../pure/aib.ts';
+import { deviceHardwareKey } from '../pure/device.ts';
+import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import type { ProfilesEnvelope, RecordingClip, RecordingSettings, RecordingStorageInfo, TelemetrySample } from '../types.ts';
@@ -76,14 +74,17 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
 ];
 
 const DASHBOARD_HISTORY_LIMIT = 60;
-let dashboardHistory: TelemetrySample[] = [];
-let dashboardHistoryDeviceId: number | null | undefined;
-let dashboardSessionStartedAt = Date.now();
-const pulseValueNodes = new Map<DashboardPulseId, HTMLElement>();
-const pulsePathNodes = new Map<DashboardPulseId, SVGPathElement>();
-let sessionRuntimeNode: HTMLElement | null = null;
-let sessionPeakNode: HTMLElement | null = null;
-let sessionAverageNode: HTMLElement | null = null;
+type DashboardPulseLane = {
+  key: string;
+  history: TelemetrySample[];
+  startedAt: number;
+  valueNodes: Map<DashboardPulseId, HTMLElement>;
+  pathNodes: Map<DashboardPulseId, SVGPathElement>;
+  runtimeNode: HTMLElement | null;
+  peakNode: HTMLElement | null;
+  averageNode: HTMLElement | null;
+};
+const dashboardPulseLanes = new Map<string, DashboardPulseLane>();
 type DashboardControlId = 'profile' | 'capture' | 'last' | 'storage' | 'replay';
 type DashboardControlLevel = 'ok' | 'warn' | 'error' | 'unknown' | 'recording' | 'replay';
 type DashboardControlDatum = { value: string; note: string; level?: DashboardControlLevel };
@@ -104,19 +105,37 @@ let controlCenterRemote: {
   storage: RecordingStorageInfo | null;
 } = { profiles: null, clips: null, recordingSettings: null, storage: null };
 
-function resetDashboardHistory(deviceId: number | null): void {
-  if (dashboardHistoryDeviceId === deviceId) return;
-  dashboardHistoryDeviceId = deviceId;
-  dashboardHistory = [];
-  dashboardSessionStartedAt = Date.now();
+function dashboardDeviceKey(device: { id: number; deviceKey?: string; pciVendorId: string; pciDeviceId: string; bdf: { bus: number; device: number; function: number } }): string {
+  return device.deviceKey ?? deviceHardwareKey(device);
 }
 
-function rememberDashboardSample(sample: TelemetrySample | null, deviceId: number | null): void {
+function dashboardSampleFor(state: AppState, device: { id: number; deviceKey?: string; pciVendorId: string; pciDeviceId: string; bdf: { bus: number; device: number; function: number } }): TelemetrySample | null {
+  const key = dashboardDeviceKey(device);
+  return state.latestSamples?.[key] ?? (state.deviceId === device.id ? state.latestSample : null);
+}
+
+function pulseLaneFor(key: string): DashboardPulseLane {
+  const existing = dashboardPulseLanes.get(key);
+  if (existing) return existing;
+  const created: DashboardPulseLane = {
+    key,
+    history: [],
+    startedAt: Date.now(),
+    valueNodes: new Map(),
+    pathNodes: new Map(),
+    runtimeNode: null,
+    peakNode: null,
+    averageNode: null,
+  };
+  dashboardPulseLanes.set(key, created);
+  return created;
+}
+
+function rememberDashboardSample(lane: DashboardPulseLane, sample: TelemetrySample | null): void {
   if (!sample) return;
-  if (sample.deviceId !== undefined && sample.deviceId !== null && sample.deviceId !== deviceId) return;
-  const last = dashboardHistory[dashboardHistory.length - 1];
-  if (last && last.t === sample.t && last.deviceId === sample.deviceId) return;
-  dashboardHistory = [...dashboardHistory, sample].slice(-DASHBOARD_HISTORY_LIMIT);
+  const last = lane.history[lane.history.length - 1];
+  if (last && last.t === sample.t && last.deviceKey === sample.deviceKey) return;
+  lane.history = [...lane.history, sample].slice(-DASHBOARD_HISTORY_LIMIT);
 }
 
 function pulseSampleValue(id: DashboardPulseId, sample: TelemetrySample): number | undefined {
@@ -133,16 +152,16 @@ function pulseDisplayValue(id: DashboardPulseId, sample: TelemetrySample | null)
   return id === 'power' ? statValue(value, 1) : id === 'vram' ? (value === undefined ? '-' : value.toFixed(1)) : statValue(value);
 }
 
-function pulseHistoryValues(id: DashboardPulseId): number[] {
-  return dashboardHistory
+function pulseHistoryValues(lane: DashboardPulseLane, id: DashboardPulseId): number[] {
+  return lane.history
     .map((sample) => pulseSampleValue(id, sample))
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
 }
 
-function updatePulsePath(id: DashboardPulseId): void {
-  const path = pulsePathNodes.get(id);
+function updatePulsePath(lane: DashboardPulseLane, id: DashboardPulseId): void {
+  const path = lane.pathNodes.get(id);
   if (!path) return;
-  const values = pulseHistoryValues(id);
+  const values = pulseHistoryValues(lane, id);
   if (values.length < 2) {
     path.setAttribute('d', 'M 0 16 L 120 16');
     return;
@@ -158,8 +177,8 @@ function updatePulsePath(id: DashboardPulseId): void {
   path.setAttribute('d', `M ${points.join(' L ')}`);
 }
 
-function formatSessionAge(): string {
-  const totalSeconds = Math.max(0, Math.floor((Date.now() - dashboardSessionStartedAt) / 1000));
+function formatSessionAge(startedAt: number): string {
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
@@ -168,39 +187,34 @@ function formatSessionAge(): string {
     : `${minutes}m ${String(seconds).padStart(2, '0')}s`;
 }
 
-function updateSessionStats(): void {
-  const temps = pulseHistoryValues('temperature');
-  const utils = pulseHistoryValues('gpu-util');
-  if (sessionRuntimeNode) sessionRuntimeNode.textContent = formatSessionAge();
-  if (sessionPeakNode) sessionPeakNode.textContent = temps.length ? `${Math.round(Math.max(...temps))} °C` : '-';
-  if (sessionAverageNode) sessionAverageNode.textContent = utils.length
+function updateSessionStats(lane: DashboardPulseLane): void {
+  const temps = pulseHistoryValues(lane, 'temperature');
+  const utils = pulseHistoryValues(lane, 'gpu-util');
+  if (lane.runtimeNode) lane.runtimeNode.textContent = formatSessionAge(lane.startedAt);
+  if (lane.peakNode) lane.peakNode.textContent = temps.length ? `${Math.round(Math.max(...temps))} °C` : '-';
+  if (lane.averageNode) lane.averageNode.textContent = utils.length
     ? `${Math.round(utils.reduce((sum, value) => sum + value, 0) / utils.length)} %`
     : '-';
 }
 
-function updateDashboardPulse(ctx: PageContext): void {
-  const state = ctx.store.get();
-  resetDashboardHistory(state.deviceId);
-  rememberDashboardSample(state.latestSample, state.deviceId);
+function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | null): void {
+  rememberDashboardSample(lane, sample);
   for (const metric of DASHBOARD_PULSE) {
-    const valueNode = pulseValueNodes.get(metric.id);
-    if (valueNode) valueNode.textContent = pulseDisplayValue(metric.id, state.latestSample);
-    updatePulsePath(metric.id);
+    const valueNode = lane.valueNodes.get(metric.id);
+    if (valueNode) valueNode.textContent = pulseDisplayValue(metric.id, sample);
+    updatePulsePath(lane, metric.id);
   }
-  updateSessionStats();
+  updateSessionStats(lane);
 }
 
-function dashboardPulse(ctx: PageContext): HTMLElement {
-  const state = ctx.store.get();
-  resetDashboardHistory(state.deviceId);
-  rememberDashboardSample(state.latestSample, state.deviceId);
-  pulseValueNodes.clear();
-  pulsePathNodes.clear();
-  sessionRuntimeNode = null;
-  sessionPeakNode = null;
-  sessionAverageNode = null;
-
-  const selectedDevice = state.devices.find((device) => device.id === state.deviceId);
+function pulseLaneElement(
+  lane: DashboardPulseLane,
+  gpuLabel: string,
+  gpuName: string,
+  sample: TelemetrySample | null,
+): HTMLElement {
+  lane.valueNodes.clear();
+  lane.pathNodes.clear();
   const pulseCards = DASHBOARD_PULSE.map((metric) => {
     const path = svgEl('path', {
       d: 'M 0 16 L 120 16',
@@ -214,44 +228,121 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
       class: 'dashboard-sparkline',
       viewBox: '0 0 120 32',
       role: 'img',
-      'aria-label': `${metric.label} history`,
+      'aria-label': `${gpuLabel} ${metric.label} history`,
     });
     svg.append(path);
-    const valueNode = el('strong', { class: 'dashboard-pulse-value', text: pulseDisplayValue(metric.id, state.latestSample) });
-    pulseValueNodes.set(metric.id, valueNode);
-    pulsePathNodes.set(metric.id, path);
-    const card = el('div', { class: 'dashboard-pulse-metric', dataset: { pulseMetric: metric.id } }, [
+    const valueNode = el('strong', { class: 'dashboard-pulse-value', text: pulseDisplayValue(metric.id, sample) });
+    lane.valueNodes.set(metric.id, valueNode);
+    lane.pathNodes.set(metric.id, path);
+    return el('div', { class: 'dashboard-pulse-metric', dataset: { pulseMetric: metric.id } }, [
       el('div', { class: 'dashboard-pulse-metric-head' }, [
         el('span', { class: 'dashboard-pulse-label', text: metric.label }),
         el('span', { class: 'dashboard-pulse-inline-value' }, [valueNode, el('span', { class: 'dashboard-pulse-unit', text: metric.unit })]),
       ]),
       svg,
     ]);
-    updatePulsePath(metric.id);
-    return card;
   });
-
-  sessionRuntimeNode = el('strong', { text: formatSessionAge() });
-  sessionPeakNode = el('strong', { text: '-' });
-  sessionAverageNode = el('strong', { text: '-' });
+  lane.runtimeNode = el('strong', { text: formatSessionAge(lane.startedAt) });
+  lane.peakNode = el('strong', { text: '-' });
+  lane.averageNode = el('strong', { text: '-' });
   const sessionStats = el('div', { class: 'dashboard-session-stats' }, [
     el('span', { class: 'dashboard-session-title', text: 'Since launch' }),
-    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Session' }), sessionRuntimeNode]),
-    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Peak temp' }), sessionPeakNode]),
-    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Average GPU' }), sessionAverageNode]),
+    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Session' }), lane.runtimeNode]),
+    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Peak temp' }), lane.peakNode]),
+    el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Average GPU' }), lane.averageNode]),
   ]);
-  updateSessionStats();
+  updatePulseLane(lane, sample);
+  return el('section', { class: 'dashboard-pulse-lane', dataset: { deviceKey: lane.key } }, [
+    el('div', { class: 'dashboard-pulse-heading' }, [
+      el('div', {}, [
+        el('span', { class: 'dashboard-eyebrow', text: gpuLabel }),
+        el('h3', { class: 'card-title', text: gpuName || 'GPU' }),
+      ]),
+    ]),
+    el('div', { class: 'dashboard-pulse-grid' }, pulseCards),
+    sessionStats,
+  ]);
+}
 
+function dashboardPulse(ctx: PageContext): HTMLElement {
+  const state = ctx.store.get();
+  const entries = state.devices.length > 0
+    ? state.devices.map((device, index) => ({
+        device,
+        label: `GPU ${index + 1}`,
+        name: device.name,
+        key: dashboardDeviceKey(device),
+        sample: dashboardSampleFor(state, device),
+      }))
+    : [{ device: null, label: 'System', name: state.osGpu?.name ?? 'No GPU selected', key: 'system', sample: state.latestSample }];
+  const activeKeys = new Set(entries.map((entry) => entry.key));
+  for (const key of dashboardPulseLanes.keys()) {
+    if (!activeKeys.has(key)) dashboardPulseLanes.delete(key);
+  }
   return el('section', { class: 'card dashboard-pulse-card' }, [
     el('div', { class: 'dashboard-pulse-heading' }, [
       el('div', {}, [
         el('span', { class: 'dashboard-eyebrow', text: 'Live telemetry' }),
         el('h2', { class: 'card-title', text: 'Performance pulse' }),
       ]),
-      el('span', { class: `dashboard-pulse-device${selectedDevice ? '' : ' text-unknown' }`, text: selectedDevice?.name ?? 'No GPU selected' }),
+      el('span', { class: `dashboard-pulse-device${entries.length ? '' : ' text-unknown' }`, text: `${entries.length} GPU${entries.length === 1 ? '' : 's'}` }),
     ]),
-    el('div', { class: 'dashboard-pulse-grid' }, pulseCards),
-    sessionStats,
+    el('div', { class: 'dashboard-pulse-lanes' }, entries.map((entry) => pulseLaneElement(
+      pulseLaneFor(entry.key), entry.label, entry.name, entry.sample,
+    ))),
+  ]);
+}
+
+function updateDashboardPulse(ctx: PageContext): void {
+  const state = ctx.store.get();
+  if (state.devices.length === 0) {
+    updatePulseLane(pulseLaneFor('system'), state.latestSample);
+    return;
+  }
+  for (const device of state.devices) {
+    updatePulseLane(pulseLaneFor(dashboardDeviceKey(device)), dashboardSampleFor(state, device));
+  }
+}
+
+function dashboardGpuCard(device: AppState['devices'][number], index: number, state: AppState): HTMLElement {
+  const sample = dashboardSampleFor(state, device);
+  const rebar = rebarState(device.osController ? { rebarActive: device.osController.rebarActive } : null);
+  const aib = aibOf(device.pciSubsysVendorId, device.pciSubsysId);
+  const core = Number.isFinite(device.graphicsClockMHz) ? device.graphicsClockMHz : null;
+  const memory = typeof sample?.memClockMhz === 'number' && Number.isFinite(sample.memClockMhz)
+    ? sample.memClockMhz
+    : null;
+  return el('section', { class: 'card device-card', dataset: { deviceKey: dashboardDeviceKey(device) } }, [
+    el('div', { class: 'device-card-head' }, [
+      el('div', { class: 'hardware-card-heading' }, [
+        el('h2', { class: 'card-title', text: `GPU ${index}` }),
+        hardwareIcon(gpuIconPath(gpuIconKeyOf(device.name, device.gpuVendor, device)), `${device.name} icon`, 'gpu'),
+      ]),
+    ]),
+    el('div', { class: 'card-body kv-grid' }, [
+      el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: device.name })]),
+      el('div', { class: 'kv', 'data-label': 'Board partner' }, [el('span', {
+        class: aib ? undefined : 'text-unknown',
+        text: aib ? (aib.model ? `${aib.vendor} (${aib.model})` : aib.vendor) : '-',
+      })]),
+      el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', {
+        class: device.numXeCores > 0 ? undefined : 'text-unknown',
+        text: device.numXeCores > 0
+          ? `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}`
+          : '-',
+      })]),
+      el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', {
+        class: 'kv-clocks',
+        text: `${core ?? '--'} MHz Core / ${memory ?? '--'} MHz Memory`,
+      })]),
+      el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(device.vramBytes, device.memType) })]),
+      ...(sharedMemoryBytesOf(device, null) !== null
+        ? [el('div', { class: 'kv', 'data-label': 'Shared GPU Memory' }, [el('span', { text: `${formatGpuMemoryGb(sharedMemoryBytesOf(device, null))} GB` })])]
+        : []),
+      el('div', { class: 'kv kv-rebar' }, [
+        el('span', { class: `chip rebar-pill status-${rebar.level}`, text: rebar.label }),
+      ]),
+    ]),
   ]);
 }
 
@@ -662,17 +753,22 @@ export const dashboardPage: Page = {
   render(container: HTMLElement, ctx: PageContext) {
     lastSig = currentSig(ctx);
     const s = ctx.store.get();
-    const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
+    // Dashboard is an inventory view in multi-GPU mode. Focus selection stays
+    // on Tuning/Graphics; GPU cards are ordered from the complete inventory.
+    const device = s.devices[0] ?? null;
+    const firstSample = device ? dashboardSampleFor(s, device) : s.latestSample;
     const osOnly = device?.synthetic === true && device.backendKind === 'os';
     const noIntelPresentation = s.noIntel || osOnly;
-    // M30: static GPU rows are sourced only from the selected inventory row.
-    // The explicit no-device presentation uses the already-selected OS GPU
-    // object; no name match may attach another controller's facts here.
-    const selectedController = selectedDashboardController(device?.osController, s.osGpu, s.deviceId !== null);
-    const matchedController = selectedController;
-    const osController = selectedController;
-    const rebarController = selectedController
-      ? { ...selectedController, rebarActive: selectedController.rebarActive ?? null }
+    // ReBAR is per physical inventory row, never the focused adapter's row.
+    const osController: {
+      name?: string | null;
+      vramBytes?: number | null;
+      pnpDeviceId?: string | null;
+      driverVersion?: string | null;
+      rebarActive?: boolean | null;
+    } | null = device?.osController ?? (!device ? s.osGpu : null);
+    const rebarController = osController
+      ? { ...osController, rebarActive: osController.rebarActive ?? null }
       : null;
     // M17d: the no-Intel Board-partner decode - the controller's PNPDeviceID
     // SUBSYS through pure/aib.ts (works for ANY GPU); null -> the honest '-'.
@@ -682,7 +778,7 @@ export const dashboardPage: Page = {
     const sysRows = cpuCardRows(s.sysinfo);
     const cpuName = s.sysinfo?.cpu?.name ?? '';
     const gpuName = noIntelPresentation ? (s.osGpu?.name ?? '') : (device?.name ?? '');
-    const gpuIcon = gpuIconPath(gpuIconKeyOf(gpuName, device?.gpuVendor));
+    const gpuIcon = gpuIconPath(gpuIconKeyOf(gpuName, device?.gpuVendor, device ?? s.osGpu));
 
     clear(container);
     container.append(
@@ -744,43 +840,21 @@ export const dashboardPage: Page = {
           ]),
         ]),
 
-        // --- device card ---
-        // M4-F: the card header row carries the compact GPU selector (hidden
-        // with <= 1 device - the honest single-device degradation).
-        // M4-H (C1): the card title is "GPU" and the device name moved to a
-        // kv row under it (the CPU card's layout mirrored: title, then the
-        // 'CPU' kv row - the GPU card is title 'GPU' + a 'GPU' kv row). The
-        // Driver version row is REMOVED from this card (the health card
-        // keeps it - N7: the no-Intel branch gets the SAME restructure).
-        // ReBAR pill, Compute, Clocks rows stay.
-        el('section', { class: 'card device-card' }, [
-          el('div', { class: 'device-card-head' }, [
-            el('div', { class: 'hardware-card-heading' }, [
-              el('h2', { class: 'card-title', text: 'GPU' }),
-              hardwareIcon(gpuIcon, `${gpuName || 'GPU'} icon`, 'gpu'),
-            ]),
-            buildDeviceSelect(ctx.store, (id) => void selectDevice(id)),
-          ]),
-          ...(noIntelPresentation
-            ? [
-                // M4-I (D3)/M17d: the no-Intel branch renders the REAL rows
-                // the OS + the vendor lane have: Driver version (the NEW
-                // videoControllers driverVersion field - works on any GPU),
-                // PNPDeviceID SUBSYS decode through pure/aib.ts
-                // aibOfPnpDeviceId - works for ANY GPU; '<vendor>
-                // (<model-stripped>)'; unknown -> the honest grey '-'),
-                // Compute '<n> Cores' (deviceInfo().computeCores - the NVML
-                // core count; honest '-' when the lane has no source),
-                // Clocks LIVE (the vendor lane's memClockMhz + gpuClockMhz
-                // replace the static '- MHz Core / - MHz Memory' on ticks),
-                // VRAM (deviceInfo().vramBytes - the NVML total primary -
-                // with the OS controller bytes as the fallback), ReBAR pill
-                // REAL (the OS pnputil/allocated sources are GPU-agnostic).
-                // The 'Non supported GPU' note stays. NOTE: this REVERSES
-                // the M4-H pin that asserted the driver row's ABSENCE AND
-                // the M17c round-1-N3 pin that asserted the Board-partner
-                // row's ABSENCE on the no-Intel branch - the inversions are
-                // explicit (the M17d no-Intel rows are real, not placeholders).
+        // --- GPU cards ---
+        // M152: with multiple adapters each card is a complete physical-GPU
+        // readout. The focused-device selector is intentionally absent here;
+        // Tuning/Graphics retain their own target selectors.
+        ...(noIntelPresentation
+          ? [
+              el('section', { class: 'card device-card', dataset: device ? { deviceKey: dashboardDeviceKey(device) } : undefined }, [
+                el('div', { class: 'device-card-head' }, [
+                  el('div', { class: 'hardware-card-heading' }, [
+                    el('h2', { class: 'card-title', text: 'GPU 1' }),
+                    hardwareIcon(gpuIcon, `${gpuName || 'GPU'} icon`, 'gpu'),
+                  ]),
+                ]),
+                // M4-I (D3)/M17d: the no-Intel branch renders the real OS
+                // and vendor rows, with every unavailable field honest.
                 el('div', { class: 'card-body kv-grid' }, [
                   el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: s.osGpu?.name ?? '-' })]),
                   el('div', { class: 'kv', 'data-label': 'Board partner' }, [
@@ -796,7 +870,7 @@ export const dashboardPage: Page = {
                       ? `${s.vendorInfo.computeCores} Cores`
                       : '-',
                   })]),
-                  el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { class: 'kv-clocks', text: noIntelClocksText(s.latestSample) })]),
+                  el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { class: 'kv-clocks', text: noIntelClocksText(firstSample) })]),
                   el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(s.vendorInfo?.vramBytes ?? s.osGpu?.vramBytes, null) })]),
                   ...(sharedMemoryBytesOf(null, s.osGpu) !== null
                     ? [el('div', { class: 'kv', 'data-label': 'Shared GPU Memory' }, [el('span', { text: `${formatGpuMemoryGb(sharedMemoryBytesOf(null, s.osGpu))} GB` })])]
@@ -806,51 +880,13 @@ export const dashboardPage: Page = {
                   ]),
                 ]),
                 el('p', { class: 'card-note', text: 'Non supported GPU - overclocking requires an Intel Arc GPU; this state is permanent on non-Intel machines.' }),
-              ]
-            : device
-              ? [el('div', { class: 'card-body kv-grid' }, [
-                el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: device.name })]),
-                // M17c: the Board partner row BELOW the Device row -
-                // '<AIB vendor> (<model>)' from the caps AIB fields
-                // (aibVendor/aibModel - the pure/aib.ts decode); unknown
-                // (both null) -> the honest grey '-' (text-unknown).
-                // M17d: the no-Intel branch has its OWN Board-partner row
-                // (the PNP SUBSYS decode - the round-1-N3 absence note is
-                // INVERTED; see the no-Intel branch below).
-                el('div', { class: 'kv', 'data-label': 'Board partner' }, [
-                  el('span', {
-                    class: s.caps?.aibVendor ? undefined : 'text-unknown',
-                    text: boardPartnerText(s.caps),
-                  }),
-                ]),
-                // M2b-B: no PCI ID, no persistent waiver status.
-                device.numXeCores > 0
-                  ? el('div', { class: 'kv', 'data-label': 'Compute' }, [el('span', { text: `Xe Cores ${device.numXeCores} - Shader Units ${shaderUnits(device.numXeCores)}` })])
-                  : null,
-                // M4-D: core + memory clock BUNDLED into one row -
-                // "2400 MHz Core / 2187 MHz Memory" (the memory half tracks
-                // the latest telemetry sample in place).
-                el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', {
-                  class: 'kv-clocks',
-                  text: `${device.graphicsClockMHz} MHz Core / ${s.latestSample?.memClockMhz !== undefined ? s.latestSample.memClockMhz : '--'} MHz Memory`,
-                })]),
-                // M4-I (B2): the VRAM row below the Shader info - the same
-                // ceil contract as formatDeviceName with the memType CARRIED
-                // ON THE DEVICE PAYLOAD (no renderer-side table).
-                el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(device.vramBytes, device.memType) })]),
-                ...(sharedMemoryBytesOf(device, null) !== null
-                  ? [el('div', { class: 'kv', 'data-label': 'Shared GPU Memory' }, [el('span', { text: `${formatGpuMemoryGb(sharedMemoryBytesOf(device, null))} GB` })])]
-                  : []),
-                // M4-D2 (§3): the ReBAR pill is STANDALONE - no label kv row
-                // around it (the "Resizable BAR" row is gone). Green "ReBAR
-                // on" / red "ReBAR off" / grey "ReBAR -", data-driven from
-                // the sysinfo controller's rebarActive.
-                el('div', { class: 'kv kv-rebar' }, [
-                  el('span', { class: `chip rebar-pill status-${rebar.level}`, text: rebar.label }),
-                ]),
-              ])]
-            : [el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' })]),
-        ]),
+              ]),
+            ]
+          : device
+            ? [dashboardGpuCard(device, 1, s)]
+            : [el('section', { class: 'card device-card' }, [el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' })])]),
+
+        ...s.devices.slice(1).map((gpu, index) => dashboardGpuCard(gpu, index + 2, s)),
 
         // --- M3-A: the general GPU Status card (was the Service Status card) ---
         healthCard(ctx),
@@ -883,21 +919,29 @@ export const dashboardPage: Page = {
     // the vendor lane's sample (NVML clock graphics = gpuClockMhz +
     // NVML_CLOCK_MEM = memClockMhz) replaces the static '- MHz Core / -
     // MHz Memory' on ticks (the pre-M17d noIntel flag skipped the row).
-    const clocksValue = container.querySelector<HTMLElement>('.card-grid .kv[data-label="Clocks"] span');
-    if (clocksValue) {
-      const live = ctx.store.get();
-      const mem = live.latestSample?.memClockMhz;
-      const liveDevice = live.devices.find((d) => d.id === live.deviceId) ?? null;
+    const live = ctx.store.get();
+    const clockNodes = container.querySelectorAll<HTMLElement>('.device-card[data-device-key] .kv[data-label="Clocks"] span');
+    clockNodes.forEach((clocksValue) => {
+      const key = clocksValue.closest<HTMLElement>('.device-card')?.dataset.deviceKey;
+      const liveDevice = live.devices.find((candidate) => dashboardDeviceKey(candidate) === key) ?? null;
+      const sample = liveDevice ? dashboardSampleFor(live, liveDevice) : null;
       const osOnly = liveDevice?.synthetic === true && liveDevice.backendKind === 'os';
       if (live.noIntel || osOnly) {
-        const core = live.latestSample?.gpuClockMhz;
+        const core = sample?.gpuClockMhz;
         const coreText = typeof core === 'number' && Number.isFinite(core) ? core : '-';
-        const memText = typeof mem === 'number' && Number.isFinite(mem) ? mem : '-';
+        const memText = typeof sample?.memClockMhz === 'number' && Number.isFinite(sample.memClockMhz) ? sample.memClockMhz : '-';
         clocksValue.textContent = `${coreText} MHz Core / ${memText} MHz Memory`;
       } else {
         const core = liveDevice?.graphicsClockMHz;
+        const mem = sample?.memClockMhz;
         clocksValue.textContent = `${core !== undefined ? core : '--'} MHz Core / ${mem !== undefined ? mem : '--'} MHz Memory`;
       }
+    });
+    // A no-device system card has no physical key. Keep its existing
+    // OS/vendor clock path alive for that explicit fallback view.
+    if (live.devices.length === 0) {
+      const clocksValue = container.querySelector<HTMLElement>('.card-grid .kv[data-label="Clocks"] span');
+      if (clocksValue) clocksValue.textContent = noIntelClocksText(live.latestSample);
     }
     // M4-D2 (§6): the CPU card's "Cores / clock" LIVE half (the current
     // frequency, GHz always) tracks the telemetry tick in place - same

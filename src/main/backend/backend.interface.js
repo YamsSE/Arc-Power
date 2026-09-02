@@ -232,6 +232,8 @@
  *   schemaVersion: number,
  *   settings: Settings,
  *   ocOnBoot: boolean,
+ *   deviceKey?: string|null,
+ *   deviceName?: string|null,
  * }} Profile
  */
 

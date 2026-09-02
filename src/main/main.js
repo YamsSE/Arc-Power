@@ -53,7 +53,7 @@ import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerif
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
-import { ProfileStore, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
+import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
@@ -462,8 +462,7 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysm
     try {
       const settings = await store.loadSettings();
       const profiles = await store.loadProfiles();
-      hasActiveProfile = settings.activeProfileId !== null
-        && profiles.some((p) => p.id === settings.activeProfileId);
+      hasActiveProfile = activeProfileEntries(settings, profiles).length > 0;
     } catch {
       hasActiveProfile = false;
     }
@@ -904,10 +903,11 @@ async function main() {
     try {
       const out = await runBootApplyMode({
         store: bootStore,
-        apply: (profileId) => applyProfileBoot({
+        apply: (profileId, deviceKey) => applyProfileBoot({
           backend: bootBackend,
           store: bootStore,
           profileId,
+          deviceKey,
           deviceId: bootDeviceId,
           oldIgcl: mock ? createMockOldIgcl(bootBackend) : bootOldIgcl,
           sysmanPowerLimits: bootSysmanLimits,
@@ -1509,7 +1509,42 @@ async function main() {
     resolveFfmpegPath: resolveRecordingFfmpegPath,
   });
   const recordingEngine = createAscentEngine({
-    onEncoderDemoted: (encoderId) => recordingStore.demoteEncoder(encoderId),
+    onEncoderDemoted: (encoderId, _error, context = {}) => recordingStore.demoteEncoder(
+      context.selectionId ?? encoderId,
+      context.adapterTarget ?? null,
+    ),
+    resolveEncoderTarget: async (target) => {
+      // The recording page stores a stable GPU key/BDF in its concrete
+      // GPU+codec selection. Resolve that physical row to the DXGI LUID at
+      // start time so the patched recording runtime can initialize QSV on
+      // the requested adapter instead of its default adapter 0.
+      if (!target || typeof target !== 'object') return target;
+      const devices = await backend.listDevices();
+      const bdfText = (value) => {
+        if (!value || typeof value !== 'object') return null;
+        const bus = Number(value.bus);
+        const device = Number(value.device);
+        const func = Number(value.function ?? value.func ?? 0);
+        return [bus, device, func].every(Number.isInteger) ? `${bus}:${device}.${func}` : null;
+      };
+      const wantedBdf = bdfText(target.bdf);
+      const matches = devices.filter((device) => {
+        const keyMatch = typeof target.deviceKey === 'string'
+          && typeof device.deviceKey === 'string'
+          && target.deviceKey === device.deviceKey;
+        const bdfMatch = wantedBdf !== null && bdfText(device.bdf) === wantedBdf;
+        return keyMatch || bdfMatch;
+      });
+      if (matches.length !== 1) return target;
+      const device = matches[0];
+      const deviceId = typeof device.pciDeviceId === 'string'
+        ? device.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/)?.[1]
+        : null;
+      if (!deviceId) return target;
+      const luid = await fpsAdapter.adapterLuidOf?.(`0x${deviceId}`, device.bdf) ?? null;
+      if (!luid || !Number.isFinite(luid.low) || !Number.isFinite(luid.high)) return target;
+      return { ...target, luid: `${luid.high >>> 0}:${luid.low >>> 0}` };
+    },
     // Resolve the selected native display/window at the moment capture
     // starts. Electron's display.id is not an HMONITOR, so the helper keeps
     // the persisted stable name separate from the runtime handle.
@@ -1765,6 +1800,7 @@ async function main() {
         ...cur,
         ocOnBoot: bootApplyOn || bootApplyExtOn,
         activeProfileId: seedOn ? 'boot-apply-probe' : null,
+        activeProfileIds: {},
         waiverAccepted: seedOn ? true : cur.waiverAccepted,
       });
       if (seedOn) {
@@ -2301,48 +2337,56 @@ async function main() {
   markProfileBoot('device-resolve');
   try {
     const bootSettings = await store.loadSettings();
-    if (bootSettings.ocOnBoot === true && bootSettings.activeProfileId) {
-      const out = await applyProfileBoot({
-        backend,
-        store,
-        profileId: bootSettings.activeProfileId,
-        deviceId: bootDeviceId,
-        oldIgcl,
-        // M17i: the window-path boot apply is an in-process electron+IGCL
-        // apply of the acceptance-1 class - the sysman companion delegates
-        // to the IGCL-free helper through the window path's proxy (the
-        // mock seam in mock mode; null under RID_MOCK_NO_SYSMAN).
-        sysmanPowerLimits,
-        log: (s) => console.log(s),
-      });
-      if (mock) recordBootApply(bootSettings.activeProfileId, out);
-      // M4N (A.1): record the outcome for the renderer's boot fetch. The
-      // success detail = "Profile '<name>' applied" with the name resolved
-      // like the balloon (the same loadProfiles lookup); a failure carries
-      // the apply's reason. A THROWN apply records too (the catch below).
-      // M16: the dashboard OC row no longer displays this record (it shows
-      // the STOCK-STATE verdict from the driver read-back) - the record is
-      // kept for the boot fetch contract + the boot-apply ui-verify pins.
-      let profileName = null;
-      try {
-        const ps = await store.loadProfiles();
-        profileName = ps.find((p) => p.id === bootSettings.activeProfileId)?.name ?? null;
-      } catch { /* best effort name */ }
+    const bootProfiles = await store.loadProfiles();
+    const activeEntries = activeProfileEntries(bootSettings, bootProfiles);
+    if (bootSettings.ocOnBoot === true && activeEntries.length > 0) {
+      // M152: apply every active profile to its own physical adapter. The
+      // legacy scalar is only one fallback entry for pre-M152 stores.
+      const outcomes = [];
+      for (const entry of activeEntries) {
+        let out;
+        try {
+          out = await applyProfileBoot({
+            backend,
+            store,
+            profileId: entry.profileId,
+            deviceKey: entry.deviceKey,
+            deviceId: bootDeviceId,
+            oldIgcl,
+            // M17i: the window-path boot apply is an in-process electron+IGCL
+            // apply of the acceptance-1 class - the sysman companion delegates
+            // to the IGCL-free helper through the window path's proxy (the
+            // mock seam in mock mode; null under RID_MOCK_NO_SYSMAN).
+            sysmanPowerLimits,
+            log: (s) => console.log(s),
+          });
+        } catch (err) {
+          out = { applied: false, reason: `profile apply threw: ${err.message}` };
+        }
+        outcomes.push({ entry, out });
+        if (mock) recordBootApply(entry.profileId, out);
+      }
+      // M4N (A.1): retain one compact aggregate outcome for the renderer's
+      // boot fetch while the mock log records each physical adapter.
+      const failed = outcomes.find(({ out }) => out.applied !== true);
+      const names = outcomes.map(({ entry }) => entry.profile?.name ?? entry.profileId);
       bootApplyOutcome = {
-        ok: out.applied === true,
+        ok: !failed,
         at: Date.now(),
-        detail: out.applied === true
-          ? `Profile '${profileName ?? bootSettings.activeProfileId}' applied`
-          : `Profile apply failed: ${out.reason}`,
+        detail: failed
+          ? `Profile apply failed: ${failed.out.reason}`
+          : names.length === 1
+            ? `Profile '${names[0]}' applied`
+            : `Profiles '${names.join("', '")}' applied`,
       };
-      if (!out.applied && trayRef && !trayRef.isDestroyed()) {
-        // M4M (F4): the moved block holds only the profile ID - the NAME is
-        // resolved here (the runApplyOnStartup pattern) for the honest
-        // reason balloon.
-        const content = isElevated()
-          ? trayBalloonForOutcome(out, profileName)
-          : 'Profile apply needs administrator approval - the elevated logon apply is not set up.';
-        if (content) trayRef.displayBalloon({ title: 'Arc Power', content });
+      if (trayRef && !trayRef.isDestroyed()) {
+        for (const { entry, out } of outcomes) {
+          if (out.applied) continue;
+          const content = isElevated()
+            ? trayBalloonForOutcome(out, entry.profile?.name ?? entry.profileId)
+            : 'Profile apply needs administrator approval - the elevated logon apply is not set up.';
+          if (content) trayRef.displayBalloon({ title: 'Arc Power', content });
+        }
       }
     }
   } catch (err) {
@@ -2880,7 +2924,13 @@ async function main() {
     } catch (err) {
       return { applied: false, reason: `settings read failed: ${err.message}`, log: mockBootApplyLog.slice() };
     }
-    if (settings.ocOnBoot !== true || !settings.activeProfileId) {
+    let activeEntries = [];
+    try {
+      activeEntries = activeProfileEntries(settings, await store.loadProfiles());
+    } catch {
+      activeEntries = [];
+    }
+    if (settings.ocOnBoot !== true || activeEntries.length === 0) {
       return { applied: false, reason: 'Start-at-boot is disabled or no active profile', log: mockBootApplyLog.slice() };
     }
     // The REAL boot-apply code path: boot-gated, applyRunner-less
@@ -2894,17 +2944,34 @@ async function main() {
     } catch (err) {
       console.log(`[mock-boot-apply] deviceId resolution skipped: ${err.message}`);
     }
-    const out = await applyProfileBoot({
-      backend,
-      store,
-      profileId: settings.activeProfileId,
-      deviceId: mockBootDeviceId,
-      oldIgcl,
-      sysmanPowerLimits,
-      log: (s) => console.log(`[mock-boot-apply] ${s}`),
-    });
-    recordBootApply(settings.activeProfileId, out);
-    return { ...out, log: mockBootApplyLog.slice() };
+    const outcomes = [];
+    for (const entry of activeEntries) {
+      let out;
+      try {
+        out = await applyProfileBoot({
+          backend,
+          store,
+          profileId: entry.profileId,
+          deviceKey: entry.deviceKey,
+          deviceId: mockBootDeviceId,
+          oldIgcl,
+          sysmanPowerLimits,
+          log: (s) => console.log(`[mock-boot-apply] ${s}`),
+        });
+      } catch (err) {
+        out = { applied: false, reason: `profile apply threw: ${err.message}` };
+      }
+      outcomes.push(out);
+      recordBootApply(entry.profileId, out);
+    }
+    const failed = outcomes.find((out) => out.applied !== true);
+    return {
+      ...(failed ?? outcomes[0]),
+      applied: !failed,
+      reason: failed?.reason ?? null,
+      results: outcomes,
+      log: mockBootApplyLog.slice(),
+    };
   };
   const mockCtl = mock
     ? {
@@ -3083,6 +3150,7 @@ async function main() {
     // The tray icon is a second, desktop-wide status surface. Update it from
     // the engine stream so button actions and global hotkeys stay identical.
     try { trayRef?.setRecordingState?.(state); } catch { /* tray status is best effort */ }
+    try { recordingStatusPillHandle?.setRecordingState?.(state); } catch { /* status pill is best effort */ }
     if (!state || !previous) return;
     const previousModes = previous.activeModes ?? { video: previous.mode === 'video' && previous.running === true, replay: previous.mode === 'replay' && previous.running === true };
     const stateModes = state.activeModes ?? { video: state.mode === 'video' && state.running === true, replay: state.mode === 'replay' && state.running === true };
@@ -3221,10 +3289,7 @@ async function main() {
     // M143: keep the pill on the same authoritative engine subscription as
     // the main renderer and desktop notifications. Save Clip does not change
     // state, so no action-result path is used for visibility.
-    onRecordingState: (state, previous) => {
-      recordingStatusPillHandle?.setRecordingState?.(state);
-      showRecordingStateToast(state, previous);
-    },
+    onRecordingState: showRecordingStateToast,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }
       // Dev-only probe: lets --ui-verify assert that profile changes reach

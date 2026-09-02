@@ -828,6 +828,10 @@ html, body {
 .dashboard-eyebrow { display: block; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 2px; }
 .dashboard-pulse-heading .card-title { margin: 0; }
 .dashboard-pulse-device { max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 11px; padding-top: 13px; }
+.dashboard-pulse-lanes { display: flex; flex-direction: column; gap: 9px; }
+.dashboard-pulse-lane { min-width: 0; padding: 9px 10px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-inset) 52%, transparent); }
+.dashboard-pulse-lane .dashboard-pulse-heading { margin-bottom: 8px; }
+.dashboard-pulse-lane .dashboard-pulse-heading .card-title { font-size: 13px; }
 .dashboard-pulse-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 7px; }
 .dashboard-pulse-metric { min-width: 0; padding: 8px 10px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-inset) 78%, var(--accent) 2%); }
 .dashboard-pulse-metric-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }

@@ -227,11 +227,18 @@ function renderReadOnly(container: HTMLElement, ctx: PageContext, points: CurveP
   const s = ctx.store.get();
   const maxRpm = s.caps?.fan.maxRpm ?? -1;
   const domain = curveDomain(points);
+  const displayedMode = mode && MODE_NAMES[mode] ? mode : 'auto';
+  const readOnlyModes: FanMode[] = ['auto', 'curve', 'fixed'];
   container.append(
     el('section', { class: 'card fan-card', dataset: { fanDomainMin: String(domain.minT), fanDomainMax: String(domain.maxT) } }, [
       el('div', { class: 'fan-head' }, [
-        el('div', { class: 'chips' }, [
-          el('span', { class: 'chip', text: `Mode: ${MODE_NAMES[mode ?? 'auto']}` }),
+        el('div', { class: 'chips fan-mode-toggle' }, [
+          ...readOnlyModes.map((fanMode) => el('button', {
+            class: `chip chip-btn fan-mode-readonly${fanMode === displayedMode ? ' chip-active' : ''}`,
+            text: MODE_NAMES[fanMode],
+            disabled: true,
+            title: 'Fan control is read-only for this GPU',
+          })),
           el('span', { class: 'chip', text: `${points.length} points` }),
         ]),
         el('span', { class: 'fan-rpm', id: 'fan-rpm-readout', text: '-' }),

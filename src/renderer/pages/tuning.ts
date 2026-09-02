@@ -65,7 +65,7 @@ import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { consumeFanViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
-import { snapToRange, normalizedPosition, formatControlValue, formatControlDriverValue, controlDisplay, isOffGrid } from '../pure/slider.ts';
+import { snapToRange, normalizedPosition, formatControlValue, formatControlDriverValue, controlDisplay, controlDisplayRange, controlValueFromDisplay, controlValueToDisplay, isOffGrid } from '../pure/slider.ts';
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
@@ -76,10 +76,11 @@ import { toast } from '../components/toast.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
+import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
 // M4-H (B): the profiles page's prompt modal + id generator + the
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
-import { newProfileId, promptModal, settingsFromState } from './profiles.ts';
+import { activeProfileIdForGpu, newProfileId, profileGpuIdentity, promptModal, profileMatchesGpu, settingsFromState } from './profiles.ts';
 import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, PowerLimitsRead } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
@@ -112,8 +113,8 @@ export const ELEVATION_CANCELED_TEXT = 'Apply requires administrator approval.';
 function supportedScalars(caps: Capabilities): string[] {
   return CONTROL_ORDER.filter((k) => {
     const range = caps.ranges[k];
-    // The range's units drive the card value/readout (% or W); never
-    // relabel a percent-unit power limit as watts.
+    // A capability range is the source of support; the visible unit is
+    // converted below for Battlemage while the apply value stays raw.
     return range !== undefined;
   });
 }
@@ -205,8 +206,9 @@ function editableNumber(value: number, range: RangeInfo, decimalsOverride?: numb
 
 function controlRangeText(key: string, range: RangeInfo, deviceName: string): string {
   const display = controlDisplay(key, range, deviceName);
+  const visible = controlDisplayRange(key, range, deviceName);
   const number = (value: number) => display.decimals === 0 ? String(Math.round(value)) : String(value);
-  return `${number(range.min)} – ${number(range.max)} ${display.units} · step ${range.step}`;
+  return `${number(visible.min)} – ${number(visible.max)} ${display.units} · step ${visible.step}`;
 }
 
 function resetPageState(state: DeviceState, caps: Capabilities) {
@@ -322,8 +324,11 @@ async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
   } catch {
     limits = null;
   }
+  const powerRange = renderCaps?.ranges?.powerLimitW;
   const enforced = typeof currentState?.powerLimitW === 'number' && Number.isFinite(currentState.powerLimitW)
-    ? (currentState.powerLimitW as number)
+    ? (powerRange
+      ? controlValueToDisplay(currentState.powerLimitW as number, 'powerLimitW', powerRange, renderCaps?.deviceName ?? '')
+      : (currentState.powerLimitW as number))
     : null;
   sysmanLimitsNode.textContent = formatSysmanLimits(limits, pl2SetByDevice.get(deviceId), enforced);
 }
@@ -366,7 +371,8 @@ function refreshCard(key: string) {
   if (!range) return;
   const value = values[key];
   const sliderRange = range;
-  const displayValue = value;
+  const displayRange = controlDisplayRange(key, sliderRange, caps.deviceName);
+  const displayValue = controlValueToDisplay(value, key, sliderRange, caps.deviceName);
   const input = cards.get(key)?.querySelector<HTMLInputElement>(`input[type="range"]`);
   const fill = cards.get(key)?.querySelector<HTMLElement>('.oc-track-fill');
   const valueNode = valueNodes.get(key);
@@ -377,19 +383,19 @@ function refreshCard(key: string) {
   const driverText = formatControlDriverValue(typeof rawDriver === 'number' ? rawDriver : null, key, sliderRange, caps.deviceName);
   const display = controlDisplay(key, sliderRange, caps.deviceName);
   if (input) {
-    input.min = String(sliderRange.min);
-    input.max = String(sliderRange.max);
-    input.step = String(sliderRange.step);
-    input.value = String(snapToRange(displayValue, sliderRange));
+    input.min = String(displayRange.min);
+    input.max = String(displayRange.max);
+    input.step = String(displayRange.step);
+    input.value = String(snapToRange(displayValue, displayRange));
   }
   if (valueInput) {
-    valueInput.min = String(sliderRange.min);
-    valueInput.max = String(sliderRange.max);
-    valueInput.step = String(sliderRange.step);
-    valueInput.value = editableNumber(snapToRange(displayValue, sliderRange), sliderRange, display.decimals);
+    valueInput.min = String(displayRange.min);
+    valueInput.max = String(displayRange.max);
+    valueInput.step = String(displayRange.step);
+    valueInput.value = editableNumber(snapToRange(displayValue, displayRange), displayRange, display.decimals);
   }
-  if (fill) fill.style.width = `${normalizedPosition(displayValue, sliderRange) * 100}%`;
-  if (valueNode) valueNode.textContent = formatControlValue(displayValue, key, sliderRange, caps.deviceName);
+  if (fill) fill.style.width = `${normalizedPosition(displayValue, displayRange) * 100}%`;
+  if (valueNode) valueNode.textContent = formatControlValue(value, key, sliderRange, caps.deviceName);
   // The meta range caption describes the CURRENT slider (the offset range
   // the card was built with - the en-dash caption format is shared).
   if (rangeNode) rangeNode.textContent = controlRangeText(key, sliderRange, caps.deviceName);
@@ -402,7 +408,7 @@ function refreshCard(key: string) {
   if (diffNode) {
     const pending = isPendingControl(key);
     diffNode.textContent = pending
-      ? `${driverText} → ${formatControlValue(displayValue, key, sliderRange, caps.deviceName)}`
+      ? `${driverText} → ${formatControlValue(value, key, sliderRange, caps.deviceName)}`
       : 'In sync';
     diffNode.className = `tuning-diff${pending ? ' is-pending' : ''}`;
   }
@@ -539,6 +545,7 @@ export const tuningPage: Page = {
       // range is the offset range, always (the offset stays the only mode).
       const sliderRange = range;
       const display = controlDisplay(key, sliderRange, caps.deviceName);
+      const displayRange = controlDisplayRange(key, sliderRange, caps.deviceName);
       const rawDriver = state[key as keyof DeviceState];
       const driverRaw = typeof rawDriver === 'number' ? rawDriver : null;
       const driverValue = driverRaw;
@@ -813,10 +820,10 @@ export const tuningPage: Page = {
       const valueInput = el('input', {
         type: 'number',
         class: 'oc-value-input',
-        min: String(sliderRange.min),
-        max: String(sliderRange.max),
-        step: String(sliderRange.step),
-        value: editableNumber(values[key], sliderRange, display.decimals),
+        min: String(displayRange.min),
+        max: String(displayRange.max),
+        step: String(displayRange.step),
+        value: editableNumber(controlValueToDisplay(values[key], key, sliderRange, caps.deviceName), displayRange, display.decimals),
         'aria-label': `${CONTROL_LABELS[key] ?? key} value`,
         onchange: (e: Event) => {
           const raw = Number((e.target as HTMLInputElement).value);
@@ -825,7 +832,7 @@ export const tuningPage: Page = {
             return;
           }
           hiddenNegativeControls.delete(key);
-          values[key] = snapToRange(raw, sliderRange);
+          values[key] = snapToRange(controlValueFromDisplay(raw, key, sliderRange, caps.deviceName), sliderRange);
           refreshCard(key);
         },
       }) as HTMLInputElement;
@@ -851,14 +858,14 @@ export const tuningPage: Page = {
             el('div', { class: 'oc-track-fill' }),
             el('input', {
               type: 'range',
-              min: sliderRange.min,
-              max: sliderRange.max,
-              step: sliderRange.step,
-              value: snapToRange(values[key], sliderRange),
+              min: displayRange.min,
+              max: displayRange.max,
+              step: displayRange.step,
+              value: snapToRange(controlValueToDisplay(values[key], key, sliderRange, caps.deviceName), displayRange),
               oninput: (e: Event) => {
                 const raw = Number((e.target as HTMLInputElement).value);
                 hiddenNegativeControls.delete(key);
-                values[key] = snapToRange(raw, range);
+                values[key] = snapToRange(controlValueFromDisplay(raw, key, sliderRange, caps.deviceName), range);
                 refreshCard(key);
               },
             }),
@@ -1065,6 +1072,12 @@ export const tuningPage: Page = {
       const selectedDevice = live.devices.find((device) => device.id === deviceId) ?? null;
       const deviceKey = selectedDevice?.deviceKey ?? null;
       if (mode === previousMode || deviceId === null) return;
+      if (isBattlemageGpuName(caps.deviceName)) {
+        // Battlemage uses one native tuning surface. Do not send the legacy
+        // global Stock/Advanced write even if an old renderer or stale DOM
+        // event tries to invoke it.
+        return;
+      }
       if (mode === 'advanced') {
         // M3-C-D disclaimer: enabling Advanced warns about beyond-standard
         // limits, card/driver/PSU dependence, and the BiFrost 300 W profile.
@@ -1142,7 +1155,9 @@ export const tuningPage: Page = {
       const refreshLabel = async (): Promise<void> => {
         try {
           const env = await api.profilesList();
-          const active = env.profiles.find((p) => p.id === env.settings.activeProfileId) ?? null;
+          const currentGpu = profileGpuIdentity(ctx.store.get());
+          const activeId = activeProfileIdForGpu(env.settings, env.profiles, currentGpu.key);
+          const active = env.profiles.find((p) => p.id === activeId && profileMatchesGpu(p, currentGpu.key)) ?? null;
           saveProfileBtn.textContent = active ? 'Override Profile' : 'Save as Profile';
           // M4N (C): the tag mirrors the button's label truth - present
           // with 'Profile: <name>' while an active profile exists, absent
@@ -1172,7 +1187,9 @@ export const tuningPage: Page = {
           let active: Profile | null = null;
           try {
             const env = await api.profilesList();
-            active = env.profiles.find((p) => p.id === env.settings.activeProfileId) ?? null;
+            const currentGpu = profileGpuIdentity(ctx.store.get());
+            const activeId = activeProfileIdForGpu(env.settings, env.profiles, currentGpu.key);
+            active = env.profiles.find((p) => p.id === activeId && profileMatchesGpu(p, currentGpu.key)) ?? null;
           } catch {
             // degraded: fall back to the create flow (never a wrong override)
           }
@@ -1184,12 +1201,15 @@ export const tuningPage: Page = {
             toast('error', 'Could not save profile', 'The settings payload failed validation - this is a bug.');
             return;
           }
+          const currentGpu = profileGpuIdentity(ctx.store.get());
           try {
             await api.profilesSave({
               id: active?.id ?? newProfileId(),
               name,
               settings,
               ocOnBoot: active?.ocOnBoot ?? false,
+              deviceKey: currentGpu.key,
+              deviceName: currentGpu.label,
             });
             toast('success', active ? 'Profile overridden' : 'Profile saved', name);
             void api.trayRebuild().catch(() => {});
@@ -1241,25 +1261,26 @@ export const tuningPage: Page = {
           }),
         ]),
       ]),
-      // M4J clarification: the OC-mode column (Stock/Advanced pill) renders
-      // on EVERY device as in 1.0.3 - the user clarified that "Advanced
-      // gone for Alchemist" means ONLY the bottom Advanced EXPERT SETTINGS
-      // section (keyed on advancedUi below), never the mode pill.
-      el('div', { class: 'oc-mode-col oc-mode-col-mode' }, [
-        el('span', { class: 'oc-mode-label', text: 'OC mode' }),
-        el('div', { class: 'oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
-          el('button', {
-            class: `oc-mode-btn${s.ocMode === 'stock' ? ' active' : ''}`,
-            text: 'Stock',
-            onClick: () => void setMode('stock'),
-          }),
-          el('button', {
-            class: `oc-mode-btn${s.ocMode === 'advanced' ? ' active' : ''}`,
-            text: 'Advanced',
-            onClick: () => void setMode('advanced'),
-          }),
-        ]),
-      ]),
+      // Battlemage has one native tuning surface, so the legacy global
+      // Stock/Advanced control is hidden there. Alchemist-only and mixed
+      // configurations keep the control when the focused adapter is A-series.
+      ...(!isBattlemageGpuName(caps.deviceName)
+        ? [el('div', { class: 'oc-mode-col oc-mode-col-mode' }, [
+            el('span', { class: 'oc-mode-label', text: 'OC mode' }),
+            el('div', { class: 'oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
+              el('button', {
+                class: `oc-mode-btn${s.ocMode === 'stock' ? ' active' : ''}`,
+                text: 'Stock',
+                onClick: () => void setMode('stock'),
+              }),
+              el('button', {
+                class: `oc-mode-btn${s.ocMode === 'advanced' ? ' active' : ''}`,
+                text: 'Advanced',
+                onClick: () => void setMode('advanced'),
+              }),
+            ]),
+          ])]
+        : []),
       ...(deviceSelect ? [el('div', { class: 'oc-mode-col device-select-col' }, [
         el('span', { class: 'oc-mode-label', text: 'GPU' }),
         deviceSelect,

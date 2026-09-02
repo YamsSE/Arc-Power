@@ -25,6 +25,7 @@
 import type { Capabilities, DeviceState, DeviceInfo } from './types.ts';
 import type { ArcPowerApi } from './arcpower.d.ts';
 import type { Store } from './router.ts';
+import { deviceHardwareKey } from './pure/device.ts';
 
 export interface DeviceSwitchDeps {
   api: Pick<ArcPowerApi, 'telemetryStop' | 'telemetryStart' | 'getCapabilities' | 'getCurrentSettings' | 'deviceSet'> & Partial<Pick<ArcPowerApi, 'vendorInfo'>>;
@@ -124,9 +125,10 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
       } catch {
         vendorInfo = null;
       }
-      // latestSample + lastApply reset: the monitoring series and the
-      // "OC working" row must never carry the OLD device's values onto
-      // the new device.
+      // Keep the adapter's own sample when focus changes. The map is updated
+      // by the boot-level telemetry subscription, so switching GPU must not
+      // blank the overlay/dashboard until the next tick.
+      const latestSample = deps.store.get().latestSamples?.[selected.deviceKey ?? deviceHardwareKey(selected)] ?? null;
       deps.store.set({
         deviceId: id,
         caps,
@@ -137,7 +139,7 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
         // otherwise a two-GPU switch can leave Stock/Advanced visually and
         // behaviorally bound to the previous GPU.
         ocMode: caps.ocMode ?? deps.store.get().ocMode,
-        latestSample: null,
+        latestSample,
         lastApply: null,
         noIntel: false,
         osGpu: selected.osController ?? null,

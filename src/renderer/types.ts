@@ -528,6 +528,10 @@ export interface Profile {
   schemaVersion: number;
   settings: Settings;
   ocOnBoot: boolean;
+  /** Stable physical adapter identity; absent on legacy profiles. */
+  deviceKey?: string | null;
+  /** Human-readable adapter label captured when the profile was saved. */
+  deviceName?: string | null;
 }
 
 /** M5: the 4 overlay corners (mirrors profile-store.js + pure/overlay.ts). */
@@ -617,6 +621,8 @@ export interface ProfileSettingsState {
   waiverAccepted: boolean;
   ocOnBoot: boolean;
   activeProfileId: string | null;
+  /** M152: one active tuning profile per physical GPU. */
+  activeProfileIds?: Record<string, string>;
   /** M3-C-E: the OC mode ('stock'|'advanced'), persisted in settings.json. */
   ocMode: OcMode;
   /** M4-B: the once-only Advanced OC Mode warning acceptance. */

@@ -19,6 +19,7 @@
 // (main.js) owns app.exit(0) after the returned outcome.
 
 import { trayBalloonForOutcome } from './tray.js';
+import { activeProfileEntries } from './store/profile-store.js';
 
 /** The failure balloon's visibility dwell before the process exits. */
 export const BOOT_APPLY_DWELL_MS = 10000;
@@ -28,7 +29,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * @param {{
  *   store: import('./store/profile-store.js').ProfileStore,
- *   apply: (profileId: string) => Promise<{ applied: boolean, reason: string, [k: string]: unknown }>,
+ *   apply: (profileId: string, deviceKey?: string|null) => Promise<{ applied: boolean, reason: string, [k: string]: unknown }>,
  *   setupTray: () => Promise<{ displayBalloon: (o: { title: string, content: string }) => void }>,
  *   log?: (s: string) => void,
  *   dwellMs?: number,
@@ -49,29 +50,36 @@ export async function runBootApplyMode({ store, apply, setupTray, log = () => {}
     log(`settings read failed (${err.message}) - silent exit`);
     return { action: 'silent-exit' };
   }
-  if (settings.ocOnBoot !== true || !settings.activeProfileId) {
+  const profiles = await store.loadProfiles().catch(() => []);
+  const entries = activeProfileEntries(settings, profiles);
+  if (settings.ocOnBoot !== true || entries.length === 0) {
     log('ocOnBoot is off or no active profile - silent exit');
     return { action: 'silent-exit' };
   }
 
-  let out;
-  try {
-    out = await apply(settings.activeProfileId);
-  } catch (err) {
-    out = { applied: false, reason: `apply threw: ${err.message}` };
+  const results = [];
+  for (const entry of entries) {
+    let out;
+    try {
+      out = await apply(entry.profileId, entry.deviceKey);
+    } catch (err) {
+      out = { applied: false, reason: `apply threw: ${err.message}` };
+    }
+    results.push({ entry, out });
   }
-  if (out.applied === true) {
-    log(`applied profile '${settings.activeProfileId}' - exiting`);
+  const failed = results.find((result) => result.out.applied !== true);
+  if (!failed) {
+    log(`applied ${results.length} active profile${results.length === 1 ? '' : 's'} - exiting`);
     return { action: 'applied' };
   }
 
   // Failure: the honest balloon, a visible dwell, then the caller exits.
   // The balloon never claims "defaults restored" unless a restore actually
   // ran (trayBalloonForOutcome's contract).
-  log(`NOT applied: ${out.reason}`);
+  const out = failed.out;
+  log(`NOT applied for '${failed.entry.profileId}': ${out.reason}`);
   try {
-    const profiles = await store.loadProfiles().catch(() => []);
-    const name = (profiles.find((p) => p.id === settings.activeProfileId) ?? {}).name ?? settings.activeProfileId;
+    const name = failed.entry.profile?.name ?? failed.entry.profileId;
     const content = trayBalloonForOutcome(out, name);
     if (content) {
       const tray = await setupTray();
@@ -85,5 +93,5 @@ export async function runBootApplyMode({ store, apply, setupTray, log = () => {}
   }
   log(`dwelling ${dwellMs} ms so the failure balloon is visible, then exiting`);
   await sleep(dwellMs);
-  return { action: 'failed', reason: out.reason };
+  return { action: 'failed', reason: out.reason, results };
 }

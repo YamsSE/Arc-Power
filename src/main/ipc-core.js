@@ -40,7 +40,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, activeProfileEntries } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
 // koffi, hook = the no-device telemetry path, mock fixtures under
 // RID_MOCK_VENDOR).
@@ -826,7 +826,7 @@ export async function resolvePreferredDevice(backend, devices = null) {
       try {
         const state = await backend.getDisplaySettings(device.id);
         const displays = Array.isArray(state?.displays) ? state.displays : [];
-        if (displays.some((display) => display?.flags?.active !== false)) activeIds.add(device.id);
+        if (displays.some((display) => display?.flags?.active === true)) activeIds.add(device.id);
       } catch {
         // An unsupported or transient display read must not block startup.
       }
@@ -945,7 +945,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; M17d: wraps the pm-service + sidecar SOURCE CHAIN; null in mock/tests - the determinism seam like foregroundApi)
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
- *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
+ *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -1143,6 +1143,7 @@ export function createIpcHandlers({
   // degrades to the null adapter - honest no vendor readouts, never a
   // crash.
   vendorTelemetry = createVendorTelemetry({ sysinfo }),
+  vendorTelemetryFactory = null,
   gameProfiles = null,
   gameScan = createGameScanAdapter(),
   chooseGameExecutable = async () => null,
@@ -1190,7 +1191,8 @@ export function createIpcHandlers({
   // HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc,
   // so the adapter is assigned into the holder after this call; a by-value
   // capture here would freeze null forever). A holder-shaped sysStats is
-  // rebound to a per-access forwarding shim - the five consumption sites
+  // rebound to a per-access forwarding shim - the telemetry and target
+  // selection consumption sites
   // (the no-device + device telemetry pushes + the slow-lane lifecycle)
   // and the defaults + the plain-adapter tests stay untouched; a plain
   // adapter passes through unchanged. The shim is null-safe: before the
@@ -1204,6 +1206,7 @@ export function createIpcHandlers({
       sampleForTarget: (...args) => holder.current?.sampleForTarget?.(...args),
       registerTarget: (...args) => holder.current?.registerTarget?.(...args),
       sampleSlow: (...args) => holder.current?.sampleSlow?.(...args),
+      setTarget: (...args) => holder.current?.setTarget?.(...args),
       startSlowLane: (...args) => holder.current?.startSlowLane?.(...args),
       stopSlowLane: (...args) => holder.current?.stopSlowLane?.(...args),
     };
@@ -1595,9 +1598,16 @@ export function createIpcHandlers({
       const device = devices.find((entry) => entry.id === deviceId);
       const target = await backend.getDeviceTarget?.(deviceId);
       if (generation !== overlayTelemetryGeneration) return;
+      // Register every physical target before choosing its telemetry source.
+      // Synthetic AMD/NVIDIA lanes use vendor samples for vendor-specific
+      // fields, but generic VRAM/utilization counters still come from the
+      // per-adapter sysStats record.
+      try { sysStats.registerTarget?.(target); } catch { /* per-target stats registration is best effort */ }
       if (target?.synthetic || target?.backendKind === 'os') {
         // renderer's vendor singleton must never be rebound by this lane.
-        const vendorLane = createVendorTelemetry({ sysinfo });
+        const vendorLane = typeof vendorTelemetryFactory === 'function'
+          ? vendorTelemetryFactory({ sysinfo, target })
+          : createVendorTelemetry({ sysinfo });
         let vendor = null;
         try {
           vendor = typeof vendorLane.startFor === 'function'
@@ -1608,16 +1618,24 @@ export function createIpcHandlers({
           try { await vendorLane.close?.(); } catch { /* stale lane */ }
           return;
         }
-        if (!vendor) {
-          try { await vendorLane.close?.(); } catch { /* best effort */ }
-          continue;
-        }
         const timer = setInterval(() => {
           void (async () => {
             if (generation !== overlayTelemetryGeneration) return;
+            let extra = {};
+            try {
+              extra = await sysStats.sampleForTarget?.(target) ?? {};
+            } catch { /* honest empty OS fields */ }
             let sample = null;
             try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
             if (generation !== overlayTelemetryGeneration) return;
+            const merged = {
+              ...extra,
+              ...(sample ?? {}),
+              // A vendor adapter may report null for generic fields even
+              // though the OS stats lane has a valid per-target value.
+              gpuMemUsedBytes: sample?.gpuMemUsedBytes ?? extra.gpuMemUsedBytes ?? null,
+              gpuUtilPct: sample?.gpuUtilPct ?? extra.gpuUtilPct ?? null,
+            };
             emitTelemetry({
               t: Date.now(),
               deviceId,
@@ -1626,7 +1644,7 @@ export function createIpcHandlers({
                 ? [...target.deviceKeys]
                 : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
               sessionGeneration: telemetryGeneration,
-              ...(sample ?? {}),
+              ...merged,
             });
           })();
         }, pollMs);
@@ -1638,15 +1656,12 @@ export function createIpcHandlers({
         });
         continue;
       }
-      try { sysStats.registerTarget?.(target); } catch { /* per-target stats registration is best effort */ }
       const svc = new TelemetryService(backend, deviceId, { pollMs, immediate: true });
       svc.onSample(async (sample) => {
         if (generation !== overlayTelemetryGeneration) return;
         let extra = {};
         try {
           extra = await sysStats.sampleForTarget?.(target) ?? {};
-          // Older injected adapters expose only the selected-target method.
-          if (Object.keys(extra).length === 0) extra = await sysStats.sampleFast?.() ?? {};
         } catch { /* honest empty OS fields */ }
         if (generation !== overlayTelemetryGeneration) return;
         emitTelemetry({
@@ -2436,11 +2451,18 @@ export function createIpcHandlers({
         //   applyOnBoot = value exists AND the profile's start-at-boot is
         //   on AND an active profile exists.
         const settings = await store.loadSettings();
+        let hasActiveProfile = Boolean(settings.activeProfileId);
+        try {
+          hasActiveProfile = activeProfileEntries(settings, await store.loadProfiles()).length > 0 || hasActiveProfile;
+        } catch {
+          // Keep the legacy scalar fallback if the profile list is temporarily
+          // unavailable; the persisted intent remains authoritative.
+        }
         return {
           startWithWindows: raw.valueExists === true && settings.startWithWindows === true,
           applyOnBoot: raw.valueExists === true
             && settings.ocOnBoot === true
-            && !!settings.activeProfileId,
+            && hasActiveProfile,
         };
       },
 
@@ -3075,6 +3097,8 @@ export function createIpcHandlers({
           createdAt: existing?.createdAt ?? (typeof profile.createdAt === 'string' ? profile.createdAt : new Date().toISOString()),
           settings,
           ocOnBoot: profile.ocOnBoot,
+          ...(profile.deviceKey !== undefined ? { deviceKey: profile.deviceKey } : {}),
+          ...(profile.deviceName !== undefined ? { deviceName: profile.deviceName } : {}),
         });
         return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
       },
@@ -3085,6 +3109,17 @@ export function createIpcHandlers({
         }
         return serializeGameProfileMutation(async () => {
           await store.deleteProfile(id);
+          const settings = await store.loadSettings();
+          const activeMap = settings.activeProfileIds && typeof settings.activeProfileIds === 'object'
+            ? Object.fromEntries(Object.entries(settings.activeProfileIds).filter(([, profileId]) => profileId !== id))
+            : undefined;
+          if (activeMap !== undefined || settings.activeProfileId === id) {
+            await store.saveSettings({
+              ...settings,
+              activeProfileIds: activeMap ?? {},
+              activeProfileId: settings.activeProfileId === id ? null : settings.activeProfileId,
+            });
+          }
           const remaining = await store.loadProfiles();
           // The optional sidecar is best-effort cleanup.  A corrupt/future
           // sidecar must not make the legacy profile delete action fail.
@@ -3132,6 +3167,15 @@ export function createIpcHandlers({
           activeProfileId: patch.activeProfileId === undefined
             ? cur.activeProfileId
             : (typeof patch.activeProfileId === 'string' && patch.activeProfileId.length > 0 ? patch.activeProfileId : null),
+          ...(patch.activeProfileIds !== undefined || cur.activeProfileIds !== undefined
+            ? {
+                activeProfileIds: patch.activeProfileIds === undefined
+                  ? cur.activeProfileIds
+                  : (patch.activeProfileIds && typeof patch.activeProfileIds === 'object' && !Array.isArray(patch.activeProfileIds)
+                    ? patch.activeProfileIds
+                    : {}),
+              }
+            : {}),
           // M3-C-E: the OC mode is never touched by the profiles patch.
           ocMode: cur.ocMode,
           // M4-B: the once-only Advanced-mode warning acceptance is never
@@ -3296,12 +3340,22 @@ export function createIpcHandlers({
         }
         // M4-D2 (plan F4): derive the Run value from the merged intent and
         // write it through the startup adapter (write when true, delete when
-        // false - one reg.exe call per save, mock-safe). A registry failure
-        // degrades to the honest save envelope below (never a failed save).
+        // false - one reg.exe call per save, mock-safe). M152: a multi-GPU
+        // profile map is active when at least one mapped profile still exists;
+        // the legacy scalar remains a compatibility fallback. A registry
+        // failure degrades to the honest save envelope below (never a failed
+        // save).
+        let hasActiveProfile = Boolean(next.activeProfileId);
+        try {
+          hasActiveProfile = activeProfileEntries(next, await store.loadProfiles()).length > 0 || hasActiveProfile;
+        } catch {
+          // Keep the scalar fallback if the profile list is temporarily
+          // unavailable; the persisted intent must still be saved.
+        }
         try {
           await startup.set(
             next.startWithWindows === true
-              || (next.ocOnBoot === true && !!next.activeProfileId),
+              || (next.ocOnBoot === true && hasActiveProfile),
           );
         } catch {
           // honest degradation: the persisted intent stays, the renderer's

@@ -127,6 +127,9 @@ export interface AppState {
   caps: Capabilities | null;
   state: DeviceState | null;
   latestSample: TelemetrySample | null;
+  /** Live samples keyed by stable physical GPU identity. The focused sample
+   *  remains mirrored in latestSample for existing single-GPU surfaces. */
+  latestSamples: Record<string, TelemetrySample>;
   /** M3-A: the last OC apply outcome (dashboard "OC working" health row). */
   lastApply: LastApply | null;
   /** Display-driver registry date ("7-5-2026") from the driver-info IPC. */
@@ -187,6 +190,7 @@ const INITIAL: AppState = {
   caps: null,
   state: null,
   latestSample: null,
+  latestSamples: {},
   lastApply: null,
   driverDate: null,
   appVersion: '0.0.0',

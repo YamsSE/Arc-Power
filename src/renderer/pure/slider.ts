@@ -10,35 +10,83 @@ import type { RangeInfo } from '../types.ts';
 export interface ControlDisplay {
   units: string;
   decimals: number;
+  toDisplay: (value: number) => number;
+  fromDisplay: (value: number) => number;
+}
+
+/**
+ * Battlemage's current IGCL driver exposes these three controls through a
+ * percent-shaped enum. The product surface keeps the values useful to a
+ * person tuning a card: voltage offset in mV, temperature in °C, and power
+ * in watts. The power reference is the card's published board-power class;
+ * the other two controls are one-to-one driver steps.
+ */
+export function battlemagePowerReferenceW(deviceName = ''): number {
+  if (/\bB570\b/i.test(deviceName)) return 150;
+  if (/\bB50\b/i.test(deviceName)) return 70;
+  return 190;
+}
+
+export function controlValueToDisplay(value: number, key: string, range: RangeInfo, deviceName = ''): number {
+  return controlDisplay(key, range, deviceName).toDisplay(value);
+}
+
+export function controlValueFromDisplay(value: number, key: string, range: RangeInfo, deviceName = ''): number {
+  return controlDisplay(key, range, deviceName).fromDisplay(value);
+}
+
+/** Range used by the visible slider/input while the backend keeps its
+ * canonical/raw settings payload. */
+export function controlDisplayRange(key: string, range: RangeInfo, deviceName = ''): RangeInfo {
+  const display = controlDisplay(key, range, deviceName);
+  return {
+    ...range,
+    min: display.toDisplay(range.min),
+    max: display.toDisplay(range.max),
+    default: display.toDisplay(range.default),
+    step: key === 'vramFreqOffsetGts' && range.units === 'MHz'
+      ? 1
+      : Math.abs(display.toDisplay(range.min + range.step) - display.toDisplay(range.min)) || range.step,
+    units: display.units,
+  };
 }
 
 /**
  * User-facing tuning units. The apply range remains untouched: some
- * Battlemage drivers expose the voltage and temperature controls with a
- * percent enum even though the product surface is an offset in mV and a
- * limit in °C. This helper changes presentation only, never the numeric
- * payload sent through settings.
+ * Battlemage drivers expose the voltage, power, and temperature controls
+ * with a percent enum. This helper supplies the visible-unit conversion;
+ * tuning.ts converts the edited value back before building the canonical
+ * settings payload.
  */
 export function controlDisplay(key: string, range: RangeInfo, deviceName = ''): ControlDisplay {
   const battlemage = /battlemage|\bB\d{2,4}\b/i.test(deviceName);
   if (battlemage && key === 'gpuVoltOffsetV' && range.units === '%') {
-    return { units: 'mV', decimals: 0 };
+    return { units: 'mV', decimals: 0, toDisplay: (value) => value, fromDisplay: (value) => value };
+  }
+  if (battlemage && key === 'powerLimitW' && range.units === '%') {
+    const referenceW = battlemagePowerReferenceW(deviceName);
+    return {
+      units: 'W',
+      decimals: 0,
+      toDisplay: (value) => value * referenceW / 100,
+      fromDisplay: (value) => value * 100 / referenceW,
+    };
   }
   if (battlemage && key === 'tempLimitC' && range.units === '%') {
-    return { units: 'C', decimals: 0 };
+    return { units: 'C', decimals: 0, toDisplay: (value) => value, fromDisplay: (value) => value };
   }
   // Battlemage VRAM speed ranges are absolute MHz after the backend's unit
   // conversion. Their capability step may still be fractional (0.125), but
   // the requested product readout is a whole MHz value.
   if (key === 'vramFreqOffsetGts' && range.units === 'MHz') {
-    return { units: 'MHz', decimals: 0 };
+    return { units: 'MHz', decimals: 0, toDisplay: (value) => value, fromDisplay: (value) => value };
   }
-  return { units: range.units, decimals: range.units === 'V' ? 3 : 0 };
+  return { units: range.units, decimals: range.units === 'V' ? 3 : 0, toDisplay: (value) => value, fromDisplay: (value) => value };
 }
 
 export function formatControlValue(value: number, key: string, range: RangeInfo, deviceName = ''): string {
   const display = controlDisplay(key, range, deviceName);
-  return formatValue(value, display.units, display.decimals);
+  return formatValue(display.toDisplay(value), display.units, display.decimals);
 }
 
 export function formatControlDriverValue(value: number | null | undefined, key: string, range: RangeInfo, deviceName = ''): string {
@@ -47,7 +95,7 @@ export function formatControlDriverValue(value: number | null | undefined, key: 
   // A displayed mV/°C value is not in the raw range's unit vocabulary, and
   // VRAM MHz intentionally suppresses off-grid precision in the readout.
   if (display.units !== range.units || (key === 'vramFreqOffsetGts' && range.units === 'MHz')) {
-    return formatValue(value, display.units, display.decimals);
+    return formatValue(display.toDisplay(value), display.units, display.decimals);
   }
   return formatDriverValue(value, range);
 }

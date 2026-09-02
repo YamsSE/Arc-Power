@@ -13,6 +13,7 @@
 // the reason-specific message).
 
 import { applyProfile, resolveApplyDeviceId } from './apply-on-boot.js';
+import { activeProfileEntries } from './store/profile-store.js';
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
 // M24 (Part B): the channel vocabulary is HOISTED into ipc-core.js (the
 // owner of the channel names); this module re-exports the constant
@@ -58,37 +59,53 @@ export { DEVICE_STATE_UPDATED_CHANNEL };
 export async function trayApplyActiveProfile({ backend, store, oldIgcl = null, applyRunner = null, sysmanPowerLimits = null, getWindow = () => null, getTray = () => null, log = console.error }) {
   try {
     const settings = await store.loadSettings();
-    // M4-F (S2): the tray apply targets the PERSISTED/SELECTED device
-    // (resolved like every other apply - explicit id ?? persisted ?? devices[0]).
-    const deviceId = await resolveApplyDeviceId(backend, store, null);
-    const out = await applyProfile({ backend, store, profileId: settings.activeProfileId, deviceId, oldIgcl, applyRunner, sysmanPowerLimits });
-    // M16-F1 (D2): push the fresh post-apply read-back to the renderer so
-    // the dashboard OC status row (derived from the LIVE driver values)
-    // flips in place - a tray apply must never leave the stale pre-apply
-    // verdict. Pushed on a SUCCESSFUL apply AND on the defaults-restored
-    // failure (both carry the post-apply read-back); gate refusals and
-    // degraded read-backs carry null/undefined and never push (nothing
-    // changed on the driver - the renderer keeps its honest state).
-    if (out.state != null) {
-      const win = getWindow();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(DEVICE_STATE_UPDATED_CHANNEL, { deviceId, state: out.state });
+    const profiles = await store.loadProfiles();
+    const entries = activeProfileEntries(settings, profiles);
+    // M152: tray apply is per physical GPU. A multi-GPU session may have one
+    // active profile for each adapter; applying only the legacy scalar would
+    // silently leave the other tuned GPU untouched.
+    const results = [];
+    for (const entry of entries) {
+      let entryDeviceId = null;
+      let out;
+      try {
+        // Resolve each profile independently. A stale/missing adapter for one
+        // map entry must not prevent the other physical GPUs from applying.
+        entryDeviceId = await resolveApplyDeviceId(backend, store, null, entry.deviceKey ?? undefined);
+        out = await applyProfile({
+          backend,
+          store,
+          profileId: entry.profileId,
+          deviceKey: entry.deviceKey,
+          deviceId: entryDeviceId,
+          oldIgcl,
+          applyRunner,
+          sysmanPowerLimits,
+        });
+      } catch (err) {
+        out = { applied: false, reason: `profile apply threw: ${err.message}` };
+      }
+      results.push({ entry, out });
+      // M16-F1 (D2): push each adapter's fresh post-apply read-back. The
+      // payload carries that adapter's session id, so the renderer never
+      // mistakes GPU 2's state for GPU 1's.
+      if (out.state != null) {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send(DEVICE_STATE_UPDATED_CHANNEL, { deviceId: entryDeviceId, deviceKey: entry.deviceKey ?? null, state: out.state });
+        }
       }
     }
-    // The balloon only claims "defaults restored" when a restore actually
-    // ran (M2b review F1) - gate refusals (incl. the oc-mode refusal) get
-    // a reason-specific message.
-    if (!out.applied) {
-      const tray = getTray();
-      if (tray && !tray.isDestroyed()) {
-        let name = 'unknown';
-        try {
-          const ps = await store.loadProfiles();
-          const p = ps.find((x) => x.id === settings.activeProfileId);
-          if (p) name = p.name;
-        } catch { /* best effort name */ }
-        const content = trayBalloonForOutcome(out, name);
-        if (content) tray.displayBalloon({ title: TRAY_BALLOON_TITLE, content });
+    for (const { entry, out } of results) {
+      // The balloon only claims "defaults restored" when a restore actually
+      // ran. Failure for one adapter must not prevent the remaining profiles
+      // from being attempted.
+      if (!out.applied) {
+        const tray = getTray();
+        if (tray && !tray.isDestroyed()) {
+          const content = trayBalloonForOutcome(out, entry.profile?.name ?? entry.profileId);
+          if (content) tray.displayBalloon({ title: TRAY_BALLOON_TITLE, content });
+        }
       }
     }
   } catch (err) {

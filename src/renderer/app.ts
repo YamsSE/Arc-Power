@@ -21,7 +21,7 @@ import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
 import { setMonitorLogToFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
-import { resolveBootDevice, resolveFeaturesetSwapSelection, telemetryMatchesSelection } from './pure/device.ts';
+import { deviceHardwareKey, resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
 import type { RecordingEngineState, TelemetrySample } from './types.ts';
@@ -137,6 +137,25 @@ export function applyTheme(theme: string): void {
   redrawMonitoringGraphs();
 }
 let featuresetSwapInFlight = false;
+
+/**
+ * Keep one live telemetry lane for every physical adapter. The selected
+ * adapter owns the normal telemetry session; the remaining adapters use the
+ * identity-bound secondary lanes that already power the overlay. Reissuing
+ * the complete list on selection changes also moves the previous focus into
+ * the secondary set without leaving a stale lane behind.
+ */
+async function configureDashboardTelemetry(focusedId: number | null, devices: Array<{ id: number }>): Promise<void> {
+  const secondaryIds = devices
+    .map((device) => device.id)
+    .filter((id) => Number.isInteger(id) && id >= 0 && id !== focusedId);
+  try {
+    await api.overlayTelemetryStart(secondaryIds);
+  } catch (err) {
+    toast('warn', 'Telemetry', `Additional GPU telemetry could not start: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElement, store, {
   // M2D: the mock featureset swap re-reads caps + state + device + health in
   // main (one mock:set-featureset round trip) and re-renders the whole page
@@ -196,6 +215,7 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
       const state = await api.getCurrentSettings(target.id);
       // Start exactly one service for the freshly resolved session id.
       targetTelemetryStarted = await startTelemetry(api, target.id, warn);
+      await configureDashboardTelemetry(target.id, out.devices);
       // If the old stable key disappeared, persist the visible fallback so
       // the next boot does not resurrect the stale selection.
       if (!selection.preserved) {
@@ -211,6 +231,7 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
         caps,
         state,
         latestSample: null,
+        latestSamples: {},
         health: out.health,
         featuresetId: out.featureset.id,
         // M2D: the swap replaces the boot registry date with the featureset's
@@ -271,6 +292,7 @@ export const selectDevice = createDeviceSwitcher({
   store,
   onSwitched: (id) => {
     renderPage(currentPage());
+    void configureDashboardTelemetry(id, store.get().devices);
     void mainSelectionGenerationReady.then((ready) => {
       if (!ready) return;
       const live = store.get();
@@ -327,7 +349,7 @@ api.onDeviceSelectionUpdated((payload) => {
     deviceId: payload.deviceId,
     caps: payload.caps,
     state: payload.state,
-    latestSample: null,
+    latestSample: live.latestSamples[target.deviceKey ?? deviceHardwareKey(target)] ?? null,
     lastApply: null,
     osGpu: target.osController ?? null,
   });
@@ -493,7 +515,7 @@ async function boot() {
     toast('error', 'No devices', err instanceof Error ? err.message : String(err));
     return;
   }
-  store.set({ devices });
+  store.set({ devices, latestSamples: {} });
 
   // M151: the first unified inventory snapshot can be empty while the
   // deferred Windows controller/backend enrichment is still in flight. Keep
@@ -618,7 +640,7 @@ async function boot() {
     // keep the boot enumeration - the devices slot must never regress on a
     // transient re-fetch failure
   }
-  store.set({ sysinfo: info ?? null, devices: freshDevices });
+  store.set({ sysinfo: info ?? null, devices: freshDevices, latestSamples: {} });
   noDevice = freshDevices.length === 0;
   if (!noDevice) {
     // M151: the first inventory paint may precede the Windows controller
@@ -738,21 +760,35 @@ async function boot() {
   // subscription, so log-file logging works for free there.
   const acceptTelemetrySample = (sample: TelemetrySample): void => {
     const live = store.get();
-    const selected = live.devices.find((device) => device.id === live.deviceId) ?? null;
-    const selectedKey = live.caps?.deviceKey ?? selected?.deviceKey ?? null;
-    const selectedAliases = [
-      ...(Array.isArray(live.caps?.deviceKeys) ? live.caps.deviceKeys : []),
-      ...(Array.isArray(selected?.deviceKeys) ? selected.deviceKeys : []),
-    ];
-    if (!telemetryMatchesSelection(
-      sample.deviceId,
-      sample.deviceKey,
-      live.deviceId,
-      selectedKey,
-      Array.isArray(sample.deviceKeys) ? sample.deviceKeys : [],
-      selectedAliases,
-    )) return;
-    store.set({ latestSample: sample });
+    const sampleKeys = [sample.deviceKey, ...(Array.isArray(sample.deviceKeys) ? sample.deviceKeys : [])]
+      .filter((key): key is string => typeof key === 'string' && key.trim().length > 0);
+    const matches = live.devices.filter((device) => {
+      if (device.identityAmbiguous === true) return false;
+      const deviceKeys = [device.deviceKey, ...(Array.isArray(device.deviceKeys) ? device.deviceKeys : []), deviceHardwareKey(device)]
+        .filter((key): key is string => typeof key === 'string' && key.trim().length > 0);
+      return sampleKeys.some((key) => deviceKeys.includes(key));
+    });
+    const target = matches.length === 1
+      ? matches[0]
+      : sampleKeys.length === 0 && Number.isInteger(sample.deviceId)
+        ? live.devices.find((device) => device.id === sample.deviceId && device.identityAmbiguous !== true) ?? null
+        : null;
+    const isSystemSample = target === null
+      && (sample.deviceId === undefined || sample.deviceId === null)
+      && live.deviceId === null;
+    if (!target && !isSystemSample) return;
+
+    if (isSystemSample) {
+      store.set({ latestSample: sample });
+    } else if (target) {
+      store.set({
+        latestSamples: {
+          ...live.latestSamples,
+          [target.deviceKey ?? deviceHardwareKey(target)]: sample,
+        },
+        ...(target.id === live.deviceId ? { latestSample: sample } : {}),
+      });
+    }
     if (getMonitorLogToFile()) {
       void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
         .catch(() => { /* a failed append never breaks the UI */ });
@@ -786,6 +822,7 @@ async function boot() {
     } catch (err) {
       toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
     }
+    await configureDashboardTelemetry(null, []);
     // M17d (round-1 S2): the vendor-lane static info (the no-Intel
     // dashboard VRAM/Compute rows' source - { vramBytes, computeCores }:
     // the NVML total + core count; honest nulls when the lane has no
@@ -808,12 +845,14 @@ async function boot() {
     // leaving the GPU-scoped dashboard fields honest instead of selecting an
     // ambiguous row by enumeration order.
     try { await api.telemetryStart(null); } catch { /* OS telemetry is best effort */ }
+    await configureDashboardTelemetry(null, []);
     store.set({ noIntel: false, osGpu: null, vendorInfo: null });
     console.log('[renderer] boot complete - no safe automatic GPU focus');
     pb('boot-complete');
   } else {
     try {
       await api.telemetryStart(deviceId as number);
+      await configureDashboardTelemetry(deviceId, store.get().devices);
       // M151: hydrate from main's latest per-device snapshot as well as the
       // push. This closes the startup window where another renderer created
       // the lane before this listener was registered.

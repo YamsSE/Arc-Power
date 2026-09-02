@@ -27,6 +27,7 @@ import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { formatValue } from '../pure/slider.ts';
+import type { AppState } from '../router.ts';
 import type { Capabilities, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
@@ -96,6 +97,64 @@ function newProfileId(): string {
 // M4-H (B): exported for the Tuning page's "Save as Profile" card (the
 // profiles page's own create/save flows stay untouched).
 export { newProfileId };
+
+/** M152: the renderer's current physical GPU identity for profile binding. */
+export function profileGpuIdentity(state: Pick<AppState, 'devices' | 'deviceId' | 'caps'>): { key: string | null; label: string } {
+  const gpu = state.devices.find((device) => device.id === state.deviceId) ?? null;
+  return {
+    key: gpu?.deviceKey ?? state.caps?.deviceKey ?? null,
+    label: gpu?.name ?? state.caps?.deviceName ?? 'Current GPU',
+  };
+}
+
+/** A profile without a key is a legacy profile and can be migrated on the
+ * first successful load; keyed profiles are usable only on that adapter. */
+export function profileMatchesGpu(profile: Profile, deviceKey: string | null): boolean {
+  const profileKey = profile.deviceKey ?? null;
+  return profileKey === null ? deviceKey === null || deviceKey.length > 0 : profileKey === deviceKey;
+}
+
+export function activeProfileIds(settings: ProfilesEnvelope['settings']): Record<string, string> {
+  const value = settings.activeProfileIds;
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(Object.entries(value).filter(([key, id]) => Boolean(key) && typeof id === 'string' && id.length > 0));
+}
+
+/** Resolve the active profile for the focused GPU, retaining scalar legacy
+ * compatibility without showing GPU A's profile as active on GPU B. */
+export function activeProfileIdForGpu(settings: ProfilesEnvelope['settings'], profiles: Profile[], deviceKey: string | null): string | null {
+  const mapped = deviceKey ? activeProfileIds(settings)[deviceKey] : undefined;
+  if (mapped && profiles.some((profile) => profile.id === mapped && profileMatchesGpu(profile, deviceKey))) return mapped;
+  const legacy = settings.activeProfileId;
+  const profile = profiles.find((candidate) => candidate.id === legacy);
+  return profile && profileMatchesGpu(profile, deviceKey) ? legacy : null;
+}
+
+/** Only mappings whose profile is actually bound to the mapped physical GPU
+ * count as active. Stale or cross-GPU IDs are intentionally ignored. */
+export function validActiveProfileIds(settings: ProfilesEnvelope['settings'], profiles: Profile[]): Set<string> {
+  const ids = new Set<string>();
+  for (const [deviceKey, profileId] of Object.entries(activeProfileIds(settings))) {
+    const profile = profiles.find((candidate) => candidate.id === profileId);
+    if (profile && profileMatchesGpu(profile, deviceKey)) ids.add(profileId);
+  }
+  const legacy = profiles.find((profile) => profile.id === settings.activeProfileId);
+  if (legacy) ids.add(legacy.id);
+  return ids;
+}
+
+export function profileIsActiveForGpu(profile: Profile, settings: ProfilesEnvelope['settings'], profiles: Profile[], deviceKey: string | null): boolean {
+  return activeProfileIdForGpu(settings, profiles, deviceKey) === profile.id;
+}
+
+export function profileIsActiveOnOtherGpu(profile: Profile, settings: ProfilesEnvelope['settings'], profiles: Profile[], deviceKey: string | null): boolean {
+  const mappedElsewhere = Object.entries(activeProfileIds(settings)).some(([mappedKey, profileId]) => (
+    mappedKey !== deviceKey && profileId === profile.id && profileMatchesGpu(profile, mappedKey)
+  ));
+  if (mappedElsewhere) return true;
+  return settings.activeProfileId === profile.id
+    && !profileMatchesGpu(profile, deviceKey);
+}
 
 /**
  * Build a Settings payload from the driver's current read-back (only
@@ -343,6 +402,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     return;
   }
   const deviceId = s.deviceId;
+  const gpuIdentity = profileGpuIdentity(s);
   try { bootState = await api.startupGet(); }
   catch (err) { startupWarning = `Start-at-boot state unavailable: ${err instanceof Error ? err.message : String(err)}`; }
 
@@ -542,15 +602,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const renderList = (): void => {
-    const activeId = envelope.settings.activeProfileId;
-    const activeProfile = envelope.profiles.find((p) => p.id === activeId) ?? null;
+    const activeIds = validActiveProfileIds(envelope.settings, envelope.profiles);
+    const activeProfiles = envelope.profiles.filter((p) => activeIds.has(p.id));
     const waiverAccepted = caps.waiverAccepted === true;
     // Honest ocOnBoot state: the startup-get derivation is the truth
     // (applyOnBoot = the Run value exists AND ocOnBoot is on AND an active
     // profile exists), settings.json the persisted intent - a mismatch
     // surfaces as a hint, never a lie.
     const applyOnBoot = bootState?.applyOnBoot === true;
-    const bootMismatch = applyOnBoot !== (envelope.settings.ocOnBoot === true && !!envelope.settings.activeProfileId);
+    const bootMismatch = applyOnBoot !== (envelope.settings.ocOnBoot === true && activeProfiles.length > 0);
 
     const bootCard = el('section', { class: 'card boot-card' }, [
       el('h2', { class: 'card-title', text: 'Start at boot' }),
@@ -568,16 +628,16 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
       !waiverAccepted
         ? el('p', { class: 'card-note', text: 'Accept the warranty waiver to enable start-at-boot.' })
-        : activeProfile
-          ? el('p', { class: 'card-note', text: `Applies "${activeProfile.name}" at boot.` })
-          : el('p', { class: 'card-note', text: 'Load a profile first - start-at-boot applies the active profile.' }),
+        : activeProfiles.length > 0
+          ? el('p', { class: 'card-note', text: `Applies ${activeProfiles.map((profile) => `"${profile.name}"`).join(' and ')} at boot.` })
+          : el('p', { class: 'card-note', text: 'Load a profile first - start-at-boot applies active profiles for each GPU.' }),
       bootMismatch
         ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree - the toggle reflects the registration.' })
         : null,
     ]);
 
     const filtered = envelope.profiles
-      .filter((p) => showFilter === 'all' || p.id === activeId);
+      .filter((p) => showFilter === 'all' || profileIsActiveForGpu(p, envelope.settings, envelope.profiles, gpuIdentity.key));
     filtered.sort((a, b) => sortMode === 'recent' ? b.createdAt.localeCompare(a.createdAt) : a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     const listCard = el('section', { class: 'profile-browser' }, [
       el('div', { class: 'profile-browser-head' }, [
@@ -603,7 +663,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
       filtered.length === 0
         ? el('p', { class: 'card-note profile-empty', text: envelope.profiles.length === 0 ? 'No profiles yet - add one to get started.' : 'No profiles match the current filter.' })
-        : el('div', { class: `profile-list profile-cards ${cardMode === 'grid' ? 'profile-grid' : 'profile-list-mode'}` }, filtered.map((p) => profileRow(p, p.id === activeId, activeId))),
+        : el('div', { class: `profile-list profile-cards ${cardMode === 'grid' ? 'profile-grid' : 'profile-list-mode'}` }, filtered.map((p) => profileRow(
+          p,
+          profileIsActiveForGpu(p, envelope.settings, envelope.profiles, gpuIdentity.key),
+          profileIsActiveOnOtherGpu(p, envelope.settings, envelope.profiles, gpuIdentity.key),
+          gpuIdentity.key,
+        ))),
     ]);
 
     clear(root);
@@ -611,10 +676,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     root.append(modeToggle(), bootCard, listCard);
   };
 
-  const profileRow = (p: Profile, active: boolean, activeId: string | null): HTMLElement => {
+  const profileRow = (p: Profile, active: boolean, activeOnOtherGpu: boolean, deviceKey: string | null): HTMLElement => {
+    const usableOnCurrentGpu = profileMatchesGpu(p, deviceKey);
     // F3 instant apply (M2C-B): the Load button is a single trigger - one
     // attempt, immediate result (no in-flight cancel surface anymore).
-    const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load' });
+    const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load', disabled: !usableOnCurrentGpu, title: usableOnCurrentGpu ? 'Apply this profile to the current GPU' : 'This profile belongs to another GPU' });
     let loadInFlight = false;
     loadBtn.addEventListener('click', () => {
       if (loadInFlight) return;
@@ -622,17 +688,19 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       void onLoad(p, () => { loadInFlight = false; });
     });
     const row = el('div', {
-      class: `profile-row${active ? ' profile-active' : ''}`,
+      class: `profile-row${active ? ' profile-active' : ''}${activeOnOtherGpu ? ' profile-active-other' : ''}`,
       dataset: { id: p.id },
     }, [
       el('div', { class: 'profile-info' }, [
         el('span', { class: 'profile-name', text: p.name }),
-        active ? el('span', { class: 'badge profile-badge', text: 'Active' }) : null,
+        active ? el('span', { class: 'badge profile-badge', text: 'Active for this GPU' })
+          : activeOnOtherGpu ? el('span', { class: 'badge profile-badge', text: 'Active on another GPU' }) : null,
+        el('span', { class: 'profile-gpu-label', text: `GPU: ${p.deviceName ?? (p.deviceKey ? p.deviceKey : 'Legacy / unassigned')}` }),
       ]),
       el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps).map((t) => el('span', { class: 'chip', text: t }))),
       el('div', { class: 'profile-actions' }, [
         loadBtn,
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Save', title: 'Overwrite this profile with the current driver settings', onClick: () => void onSave(p) }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Save', disabled: !usableOnCurrentGpu, title: usableOnCurrentGpu ? 'Overwrite this profile with the current driver settings' : 'This profile belongs to another GPU', onClick: () => void onSave(p) }),
         el('button', { class: 'btn btn-ghost btn-sm', text: 'Rename', onClick: () => void onRename(p) }),
         el('button', { class: 'btn btn-ghost btn-sm btn-danger-text', text: 'Delete', onClick: () => void onDelete(p) }),
       ]),
@@ -675,10 +743,17 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onBootToggle = async (checked: boolean): Promise<void> => {
     const box = root.querySelector('.boot-checkbox') as HTMLInputElement | null;
     if (checked) {
-      const activeId = envelope.settings.activeProfileId;
-      const activeProfile = envelope.profiles.find((p) => p.id === activeId) ?? null;
-      if (!activeProfile) {
-        toast('warn', 'No active profile', 'Load a profile first - start-at-boot applies the active profile.');
+      const activeMap = Object.fromEntries(Object.entries(activeProfileIds(envelope.settings)).filter(([deviceKey, profileId]) => {
+        const profile = envelope.profiles.find((candidate) => candidate.id === profileId);
+        return profile ? profileMatchesGpu(profile, deviceKey) : false;
+      }));
+      const activeProfiles = envelope.profiles.filter((profile) => validActiveProfileIds(envelope.settings, envelope.profiles).has(profile.id));
+      const currentActiveId = activeProfileIdForGpu(envelope.settings, envelope.profiles, profileGpuIdentity(ctx.store.get()).key);
+      const activeProfile = envelope.profiles.find((profile) => profile.id === currentActiveId)
+        ?? activeProfiles[0]
+        ?? (envelope.settings.activeProfileId ? envelope.profiles.find((p) => p.id === envelope.settings.activeProfileId) : null);
+      if (!activeProfile && activeProfiles.length === 0) {
+        toast('warn', 'No active profile', 'Load a profile first - start-at-boot applies active profiles for each GPU.');
         if (box) box.checked = false;
         return;
       }
@@ -687,14 +762,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         // profilesSettingsSave({ ocOnBoot }) is the ONLY writer of the Run
         // value (main re-derives it from the merged intent; NO direct
         // startupSet call).
-        await api.profilesSettingsSave({ ocOnBoot: true, activeProfileId: activeProfile.id });
+        await api.profilesSettingsSave({
+          ocOnBoot: true,
+          activeProfileIds: activeMap,
+          activeProfileId: activeProfile?.id ?? null,
+        });
       } catch (err) {
         toast('error', 'Start at boot could not be set', err instanceof Error ? err.message : String(err));
         if (box) box.checked = false; // transient honest state - the re-render below follows startup-get
         await refresh(); // F3: re-render the card from startup-get so the honest state shows immediately
         return;
       }
-      toast('success', 'Start at boot enabled', `"${activeProfile.name}" will apply when Arc Power starts.`);
+      toast('success', 'Start at boot enabled', activeProfiles.length > 1
+        ? `${activeProfiles.length} GPU profiles will apply when Arc Power starts.`
+        : `"${activeProfile?.name ?? 'the active profile'}" will apply when Arc Power starts.`);
     } else {
       try {
         // M4-D2 (plan F4): disabling just persists the intent - main
@@ -723,7 +804,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
     try {
-      await api.profilesSave({ id: newProfileId(), name, settings, ocOnBoot: false });
+      const currentGpu = profileGpuIdentity(ctx.store.get());
+      await api.profilesSave({ id: newProfileId(), name, settings, ocOnBoot: false, deviceKey: currentGpu.key, deviceName: currentGpu.label });
       toast('success', 'Profile saved', name);
       void api.trayRebuild().catch(() => {});
       await refresh();
@@ -733,13 +815,18 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const onSave = async (p: Profile): Promise<void> => {
+    const currentGpu = profileGpuIdentity(ctx.store.get());
+    if (!profileMatchesGpu(p, currentGpu.key)) {
+      toast('warn', 'Profile belongs to another GPU', 'Switch to that GPU before overwriting its tuning profile.');
+      return;
+    }
     const settings = settingsFromState(ctx.store.get().state as DeviceState);
     if (!validateSettingsPayload(settings)) {
       toast('error', 'Could not save profile', 'The settings payload failed validation - this is a bug.');
       return;
     }
     try {
-      await api.profilesSave({ id: p.id, name: p.name, settings, ocOnBoot: p.ocOnBoot });
+      await api.profilesSave({ id: p.id, name: p.name, settings, ocOnBoot: p.ocOnBoot, deviceKey: currentGpu.key, deviceName: currentGpu.label });
       toast('success', 'Profile updated', p.name);
       void api.trayRebuild().catch(() => {});
       await refresh();
@@ -765,15 +852,18 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const yes = await confirmModal('Delete profile', `Delete "${p.name}"? This cannot be undone.`);
     if (!yes) return;
     try {
-      const wasActive = envelope.settings.activeProfileId === p.id;
+      const activeMap = activeProfileIds(envelope.settings);
+      const wasActive = Object.values(activeMap).includes(p.id) || envelope.settings.activeProfileId === p.id;
       await api.profilesDelete(p.id);
       if (wasActive) {
-        // M4-D2 (plan F4): clearing the active slot + ocOnBoot re-derives
-        // the Run value in main - removed unless the Settings page's
-        // startWithWindows still owns it (no renderer-side guard needed;
-        // the single writer cannot double-remove).
-        await api.profilesSettingsSave({ ocOnBoot: false, activeProfileId: null });
-        toast('info', 'Active profile deleted', 'Start-at-boot was disabled.');
+        const nextMap = Object.fromEntries(Object.entries(activeMap).filter(([, profileId]) => profileId !== p.id));
+        const remainingActive = envelope.profiles.some((candidate) => candidate.id !== p.id && Object.values(nextMap).includes(candidate.id));
+        await api.profilesSettingsSave({
+          ocOnBoot: remainingActive ? envelope.settings.ocOnBoot : false,
+          activeProfileIds: nextMap,
+          activeProfileId: envelope.settings.activeProfileId === p.id ? null : envelope.settings.activeProfileId,
+        });
+        toast('info', 'Active profile deleted', remainingActive ? 'The other GPU profiles remain active.' : 'Start-at-boot was disabled.');
       }
       toast('success', 'Profile deleted', p.name);
       void api.trayRebuild().catch(() => {});
@@ -784,8 +874,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const onLoad = async (p: Profile, done: () => void): Promise<void> => {
-    const deviceId = s.deviceId;
-    if (deviceId === null) return;
+    const live = ctx.store.get();
+    const deviceId = live.deviceId;
+    const currentGpu = profileGpuIdentity(live);
+    if (deviceId === null) { done(); return; }
+    if (!profileMatchesGpu(p, currentGpu.key)) {
+      done();
+      toast('warn', 'Profile belongs to another GPU', 'Switch to the GPU shown by this profile before loading it.');
+      return;
+    }
     // M3-C review F4: the waiver gate reads the LIVE store's caps - an
     // in-session acceptance must not re-prompt (the mount-time caps lag
     // until a re-render).
@@ -888,7 +985,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // failed load keeps the per-control error toasts but marks nothing.
       const outcome = profileApplyOutcome(result, p.name, changed);
       if (outcome.markActive) {
-        await api.profilesSettingsSave({ activeProfileId: p.id });
+        // M152: one active slot per physical GPU. Keep the scalar in sync for
+        // old builds/files, but make the durable map authoritative whenever a
+        // physical key is available.
+        const currentMap = activeProfileIds((await api.profilesList()).settings);
+        if (currentGpu.key) currentMap[currentGpu.key] = p.id;
+        await api.profilesSettingsSave({ activeProfileIds: currentMap, activeProfileId: p.id });
         toast('info', 'Profile loaded', outcome.toast ?? '');
         void api.trayRebuild().catch(() => {});
       }

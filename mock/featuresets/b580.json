@@ -1,0 +1,31 @@
+{
+  "id": "b580",
+  "name": "Arc B580 (Battlemage)",
+  "tag": "estimated - verify on hardware",
+  "deviceName": "Mock Arc B580 Graphics (fixture)",
+  "pciDeviceId": "0x0000e20b",
+  "pciSubsysVendorId": 32902,
+  "driverVersion": "32.0.140.4109",
+  "driverDate": null,
+  "numXeCores": 20,
+  "shaders": 2560,
+  "graphicsClockMHz": 2850,
+  "memClockMHz": 2375,
+  "vramBytes": 12884901888,
+  "memType": "GDDR6",
+  "hasFan": true,
+  "fanCanControl": true,
+  "fanMaxCurvePoints": 10,
+  "extendedRanges": false,
+  "extended": { "plMax": 0, "tlMax": 0 },
+  "ranges": {
+    "gpuFreqOffsetMhz": { "units": "MHz", "min": -500, "max": 500, "step": 1, "default": 0 },
+    "gpuVoltOffsetV": { "units": "%", "min": -100, "max": 100, "step": 1, "default": 0 },
+    "powerLimitW": { "units": "%", "min": 0, "max": 150, "step": 1, "default": 100 },
+    "tempLimitC": { "units": "%", "min": 0, "max": 100, "step": 1, "default": 100 },
+    "vramFreqOffsetGts": { "units": "MHz", "min": 0, "max": 3000, "step": 100, "default": 0 }
+  },
+  "supportedControls": ["gpuFreqOffset", "gpuVoltOffset", "powerLimit", "tempLimit", "vramFreqOffset", "vfCurve"],
+  "telemetry": { "gpuClockBaseMhz": 750, "memClockMhz": 2375, "tempCBase": 38, "fanRpm": [1450], "powerW": 45 },
+  "notes": "Estimated - verify on hardware. Battlemage (BMG non-G31) reports percent units for volt/PL/TL per the IGCL sample; vramMemSpeedLimit in MHz; vfCurve R/W supported; gpuLock NOT supported; fan canControl=true. extendedRanges=false: the bundled 2023 IGCL runtime is Alchemist-era and does not apply to Battlemage. M17c: pciSubsysVendorId 32902 (0x8086 - the Intel LE decode) so the mock exercises the 'Intel (Limited Edition)' AIB row; no pciSubsysId (the variant is unknown on this estimated fixture)."
+}

@@ -14,6 +14,45 @@ function safeId(value) {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(value) ? value : null;
 }
 
+const RECORDING_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
+
+function encoderTargetKey(target) {
+  if (!target || typeof target !== 'object') return null;
+  const deviceKey = typeof (target.deviceKey ?? target.device_key) === 'string'
+    ? (target.deviceKey ?? target.device_key).trim()
+    : '';
+  const bdfValue = target.bdf;
+  const bdf = Array.isArray(bdfValue)
+    ? { domain: Number(bdfValue[0]) || 0, bus: Number(bdfValue[1]), device: Number(bdfValue[2]), function: Number(bdfValue[3]) }
+    : bdfValue && typeof bdfValue === 'object'
+      ? { domain: Number(bdfValue.domain) || 0, bus: Number(bdfValue.bus), device: Number(bdfValue.device), function: Number(bdfValue.function ?? bdfValue.func ?? 0) }
+      : null;
+  const luid = target.luid ?? target.adapterLuid ?? target.adapter_luid;
+  if (!deviceKey && (!bdf || ![bdf.bus, bdf.device, bdf.function].every(Number.isSafeInteger)) && (luid === undefined || luid === null || luid === '')) return null;
+  return JSON.stringify({ deviceKey: deviceKey || null, bdf: bdf && [bdf.bus, bdf.device, bdf.function].every(Number.isSafeInteger) ? bdf : null, luid: luid ?? null });
+}
+
+function persistedEncoderMatches(value, encoderId, adapterTarget) {
+  if (!adapterTarget) return value === encoderId;
+  if (typeof value !== 'string' || !value.startsWith(RECORDING_SELECTION_PREFIX)) return false;
+  try {
+    const requested = encoderId.startsWith(RECORDING_SELECTION_PREFIX)
+      ? JSON.parse(Buffer.from(encoderId.slice(RECORDING_SELECTION_PREFIX.length), 'base64url').toString('utf8'))
+      : null;
+    const expectedCodec = requested?.codec ?? requested?.c ?? encoderId;
+    const parsed = JSON.parse(Buffer.from(value.slice(RECORDING_SELECTION_PREFIX.length), 'base64url').toString('utf8'));
+    const codec = parsed.codec ?? parsed.c;
+    const target = parsed.target ?? {
+      ...(typeof parsed.k === 'string' ? { deviceKey: parsed.k } : {}),
+      ...(Array.isArray(parsed.b) ? { bdf: parsed.b } : {}),
+      ...(parsed.l !== undefined ? { luid: parsed.l } : {}),
+    };
+    return codec === expectedCodec && encoderTargetKey(target) === encoderTargetKey(adapterTarget);
+  } catch {
+    return false;
+  }
+}
+
 const WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
 
 function hasReparseAttribute(value) {
@@ -149,11 +188,16 @@ export class RecordingStore {
     });
   }
 
-  async demoteEncoder(encoderId) {
-    if (typeof encoderId !== 'string' || !encoderId) return this.settings();
+  async demoteEncoder(selectionId, adapterTarget = null) {
+    if (typeof selectionId !== 'string' || !selectionId) return this.settings();
     return this._enqueueMutation(() => {
       const { data: current } = this._readData();
-      if (current.settings.encoderId !== encoderId) return current.settings;
+      // Compare the codec and concrete target together. The complete
+      // versioned selection ID is authoritative for the engine path, while
+      // the decoded target keeps legacy `(codec, target)` callers scoped too.
+      if (adapterTarget
+        ? !persistedEncoderMatches(current.settings.encoderId, selectionId, adapterTarget)
+        : current.settings.encoderId !== selectionId) return current.settings;
       const settings = normalizeRecordingSettings({ ...current.settings, encoderId: 'automatic' });
       this._write({ ...current, schemaVersion: RECORDING_SCHEMA_VERSION, settings });
       return settings;

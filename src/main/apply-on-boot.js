@@ -151,6 +151,7 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   profileId: string,
+ *   deviceKey?: string | null,  // M152: profile-bound physical GPU key
  *   deviceId?: number | null,    // M4-F: explicit target device (default:
  *                                // persisted settings' deviceId ?? devices[0].id)
  *   log?: (s: string) => void,
@@ -173,15 +174,28 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, deviceId = null, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false, sysmanPowerLimits = null }) {
+export async function applyProfile({ backend, store, profileId, deviceId = null, deviceKey = undefined, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false, sysmanPowerLimits = null }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
   }
 
+  // Resolve the profile before resolving the target so a per-GPU profile can
+  // override the legacy global device selection. This is identity-first: a
+  // missing profile key is a stale target, never another GPU by ordinal.
+  const profiles = await store.loadProfiles();
+  const profile = profiles.find((p) => p.id === profileId);
+  if (!profile) {
+    return { applied: false, reason: `profile '${profileId}' not found` };
+  }
+  const profileDeviceKey = typeof profile.deviceKey === 'string' && profile.deviceKey.length > 0
+    ? profile.deviceKey
+    : null;
+  const requestedDeviceKey = profileDeviceKey ?? (typeof deviceKey === 'string' && deviceKey.length > 0 ? deviceKey : undefined);
+
   let targetDeviceId;
   try {
-    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId, settings.deviceKey);
+    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId, requestedDeviceKey ?? settings.deviceKey);
   } catch (err) {
     return { applied: false, reason: `device enumeration failed: ${err.message}` };
   }
@@ -206,7 +220,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       : (await backend.listDevices()).find((device) => device.id === deviceId_) ?? null;
     resolvedTarget = target ?? null;
     targetDeviceKey = target?.deviceKey ?? (target ? deviceHardwareKey(target) : null);
-    const persistedKey = typeof settings.deviceKey === 'string' ? settings.deviceKey : null;
+    const persistedKey = requestedDeviceKey ?? (typeof settings.deviceKey === 'string' ? settings.deviceKey : null);
     if (typeof backend.getDeviceTarget === 'function' && persistedKey && !stableTargetMatchesKey(target, persistedKey)) {
       return { applied: false, reason: 'stale GPU target: the persisted device no longer matches the selected session' };
     }
@@ -239,12 +253,6 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // The driver lost the waiver since the last session - never auto-accept.
       return { applied: false, reason: 'waiver not accepted on the device' };
     }
-  }
-
-  const profiles = await store.loadProfiles();
-  const profile = profiles.find((p) => p.id === profileId);
-  if (!profile) {
-    return { applied: false, reason: `profile '${profileId}' not found` };
   }
 
   // M4O (decision): the OC-mode gate is the INTERACTIVE slider gate
@@ -598,8 +606,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileOnBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null, applyRunner = null, sysmanPowerLimits = null }) {
-  return applyProfile({ backend, store, profileId, deviceId, log, requireOcOnBoot: true, oldIgcl, applyRunner, sysmanPowerLimits });
+export async function applyProfileOnBoot({ backend, store, profileId, deviceId = null, deviceKey = undefined, log = () => {}, oldIgcl = null, applyRunner = null, sysmanPowerLimits = null }) {
+  return applyProfile({ backend, store, profileId, deviceId, deviceKey, log, requireOcOnBoot: true, oldIgcl, applyRunner, sysmanPowerLimits });
 }
 
 /**
@@ -625,9 +633,9 @@ export async function applyProfileOnBoot({ backend, store, profileId, deviceId =
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileBoot({ backend, store, profileId, deviceId = null, log = () => {}, oldIgcl = null, sysmanPowerLimits = null }) {
+export async function applyProfileBoot({ backend, store, profileId, deviceId = null, deviceKey = undefined, log = () => {}, oldIgcl = null, sysmanPowerLimits = null }) {
   return applyProfile({
-    backend, store, profileId, deviceId, log,
+    backend, store, profileId, deviceId, deviceKey, log,
     requireOcOnBoot: true,
     oldIgcl,
     applyRunner: null,

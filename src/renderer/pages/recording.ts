@@ -6,7 +6,7 @@ import type { Page, PageContext } from '../router.ts';
 import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
-import { recordingBitrateRange, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
+import { parseRecordingEncoderSelection, recordingAdapterTargetOf, recordingBitrateRange, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -210,6 +210,22 @@ function compactPath(value: string): string {
 
 function selectedEncoderLabel(id: string): string {
   if (id === 'automatic') return 'Automatic';
+  const selection = parseRecordingEncoderSelection(id);
+  if (selection) {
+    const concrete = recordingGpuEncoderOptions(recordingDevices, status.encoders).find(([optionId]) => optionId === id);
+    if (concrete) return concrete[1];
+    const matchingDevice = recordingDevices.find((device) => {
+      const target = recordingAdapterTargetOf(device);
+      if (!target) return false;
+      if (selection.target.deviceKey && target.deviceKey) return selection.target.deviceKey === target.deviceKey;
+      if (selection.target.bdf && target.bdf) return JSON.stringify(selection.target.bdf) === JSON.stringify(target.bdf);
+      return Boolean(selection.target.luid && target.luid && selection.target.luid === target.luid);
+    });
+    const name = matchingDevice?.name ?? selection.deviceName ?? 'GPU';
+    const sku = name.match(/\b[AB]\d{3}\b/i)?.[0]?.toUpperCase();
+    const codec = selection.codec === 'obs_qsv11_av1' ? 'AV1' : selection.codec === 'obs_qsv11_hevc' ? 'HEVC' : 'H264';
+    return `${sku ?? name} ${codec}`;
+  }
   const encoder = status.encoders.find((candidate) => candidate.type === id);
   if (encoder) return encoderLabel(encoder);
   return ({ obs_qsv11_v2: 'Intel H264', obs_qsv11_hevc: 'Intel HEVC', obs_qsv11_av1: 'Intel AV1' } as Record<string, string>)[id] ?? id;
@@ -297,18 +313,27 @@ function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string
   return encoder.description || encoder.type;
 }
 
-function encoderOptions(): Array<[string, string]> {
+function encoderOptions(selectedId: string): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
   const known = new Map(status.encoders.filter((encoder) => INTEL_QSV_ENCODERS.has(encoder.type)).map((encoder) => [encoder.type, encoder]));
+  const concrete = recordingGpuEncoderOptions(recordingDevices, status.encoders);
+  options.push(...concrete);
   const checking = status.probeComplete !== true && status.encoders.length === 0
     && (!status.error || /^Loading recording engine/i.test(status.error));
   for (const [id, label] of [['obs_qsv11_v2', 'Intel H264'], ['obs_qsv11_hevc', 'Intel HEVC'], ['obs_qsv11_av1', 'Intel AV1']] as const) {
+    // Once concrete choices exist, keep the dropdown focused on physical
+    // GPU+codec pairs. A legacy global ID is retained only when it is the
+    // persisted selection, so old settings remain representable and usable.
+    if (concrete.length && id !== selectedId) continue;
     const encoder = known.get(id);
     const unavailable = !encoder
       ? checking ? ' — checking…' : ' — unavailable'
       : (encoder.startTested && !encoder.startSupported) || encoder.probeValid !== true ? ' — unavailable' : '';
-    options.push([id, `${encoder ? encoderLabel(encoder) : label}${unavailable}`]);
+    options.push([id, `${encoder ? encoderLabel(encoder) : label}${concrete.length ? ' (legacy)' : ''}${unavailable}`]);
   }
+  // Keep an older persisted global ID visible even if a future renderer
+  // cannot currently enumerate a stable physical target for it.
+  if (selectedId && !options.some(([id]) => id === selectedId)) options.push([selectedId, selectedEncoderLabel(selectedId)]);
   return options;
 }
 
@@ -596,7 +621,8 @@ function renderQualitySettings(): HTMLElement {
     const value = Number(bitrate.value);
     if (Number.isFinite(value) && value > 0) stagePatch({ bitrateKbps: value }, false);
   });
-  const encoder = select(working?.encoderId ?? 'automatic', encoderOptions(), (value) => stagePatch({ encoderId: value }));
+  const selectedEncoder = working?.encoderId ?? 'automatic';
+  const encoder = select(selectedEncoder, encoderOptions(selectedEncoder), (value) => stagePatch({ encoderId: value }));
   const resolution = select(selectedResolution, RESOLUTIONS, (value) => stagePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [

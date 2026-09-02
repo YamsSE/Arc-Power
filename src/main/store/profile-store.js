@@ -124,8 +124,62 @@ function normalizeOverlayDeviceKeys(v) {
   return out.length > 0 ? out : null;
 }
 
+// M152: tuning profiles are bound to a physical adapter, not the volatile
+// session id. Keep these helpers deliberately small and fail-closed: a bad
+// persisted key must never make a profile land on the first enumerated GPU.
+function normalizeProfileGpuKey(v) {
+  return typeof v === 'string' && v.length > 0 && v.length <= 256 ? v : null;
+}
 
-export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RECORDING_PILL_DEFAULT };
+function normalizeProfileGpuLabel(v) {
+  return typeof v === 'string' && v.trim().length > 0 && v.length <= 256 ? v.trim() : null;
+}
+
+function normalizeActiveProfileIds(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out = {};
+  for (const [deviceKey, profileId] of Object.entries(v)) {
+    if (normalizeProfileGpuKey(deviceKey) && typeof profileId === 'string' && profileId.length > 0 && profileId.length <= 256) {
+      out[deviceKey] = profileId;
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve the active tuning profiles without collapsing a multi-GPU map to
+ * the legacy scalar slot. The scalar remains a compatibility fallback for
+ * profiles created before per-GPU identity existed.
+ * @param {{activeProfileId?: string|null, activeProfileIds?: Record<string,string>}} settings
+ * @param {Array<{id: string, deviceKey?: string|null}>} profiles
+ * @returns {Array<{profileId: string, deviceKey: string|null, profile: object}>}
+ */
+export function activeProfileEntries(settings, profiles) {
+  const byId = new Map((Array.isArray(profiles) ? profiles : []).map((p) => [p.id, p]));
+  const out = [];
+  const seen = new Set();
+  for (const [deviceKey, profileId] of Object.entries(normalizeActiveProfileIds(settings?.activeProfileIds))) {
+    const profile = byId.get(profileId);
+    if (!profile || seen.has(profileId)) continue;
+    const profileKey = normalizeProfileGpuKey(profile.deviceKey);
+    // A keyed profile can only be active for its own physical adapter. An
+    // unbound legacy profile may be carried by the map while it is migrated.
+    if (profileKey && profileKey !== deviceKey) continue;
+    seen.add(profileId);
+    out.push({ profileId, deviceKey: profileKey ?? deviceKey, profile });
+  }
+  const legacyId = typeof settings?.activeProfileId === 'string' ? settings.activeProfileId : null;
+  const legacy = legacyId ? byId.get(legacyId) : null;
+  if (legacy && !seen.has(legacy.id)) {
+    const profileKey = normalizeProfileGpuKey(legacy.deviceKey);
+    seen.add(legacy.id);
+    out.push({ profileId: legacy.id, deviceKey: profileKey, profile: legacy });
+  }
+  return out;
+}
+
+
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RECORDING_PILL_DEFAULT, normalizeActiveProfileIds, normalizeProfileGpuKey, normalizeProfileGpuLabel };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -283,8 +337,19 @@ export class ProfileStore {
   async saveProfile(profile) {
     const profiles = await this.loadProfiles();
     const idx = profiles.findIndex((p) => p.id === profile.id);
-    if (idx >= 0) profiles[idx] = { ...profile, schemaVersion: SCHEMA_VERSION };
-    else profiles.push({ ...profile, schemaVersion: SCHEMA_VERSION });
+    const existing = idx >= 0 ? profiles[idx] : null;
+    const normalized = {
+      ...profile,
+      schemaVersion: SCHEMA_VERSION,
+      ...(profile.deviceKey !== undefined || existing?.deviceKey !== undefined
+        ? { deviceKey: normalizeProfileGpuKey(profile.deviceKey ?? existing?.deviceKey) }
+        : {}),
+      ...(profile.deviceName !== undefined || existing?.deviceName !== undefined
+        ? { deviceName: normalizeProfileGpuLabel(profile.deviceName ?? existing?.deviceName) }
+        : {}),
+    };
+    if (idx >= 0) profiles[idx] = normalized;
+    else profiles.push(normalized);
     await this.saveProfiles(profiles);
   }
 
@@ -325,7 +390,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -403,7 +468,7 @@ export class ProfileStore {
         advancedOverlayPosition: 'right',
       };
     }
-    return {
+    const out = {
       waiverAccepted: data.waiverAccepted === true,
       ocOnBoot: data.ocOnBoot === true,
       activeProfileId: typeof data.activeProfileId === 'string' ? data.activeProfileId : null,
@@ -483,13 +548,18 @@ export class ProfileStore {
         ? data.advancedOverlayPosition
         : 'right',
     };
+    // M152: additive per-physical-GPU active profile map. Omit it from old
+    // settings envelopes when absent so legacy callers remain byte/shape
+    // compatible; once present it is normalized and round-tripped.
+    if (data.activeProfileIds !== undefined) out.activeProfileIds = normalizeActiveProfileIds(data.activeProfileIds);
+    return out;
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
-    this._writeAtomic(this.settingsPath, {
+    const persisted = {
       schemaVersion: SCHEMA_VERSION,
       waiverAccepted: settings.waiverAccepted === true,
       ocOnBoot: settings.ocOnBoot === true,
@@ -567,11 +637,21 @@ export class ProfileStore {
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(settings.advancedOverlayPosition)
         ? settings.advancedOverlayPosition
         : 'right',
-    });
+    };
+    // M152: read-modify-write callers that predate the map (including the
+    // existing IPC settings patch) must not erase active profiles for other
+    // adapters. An explicit map, including {}, is authoritative; omission
+    // retains the last loaded map for compatibility.
+    const activeProfileMap = settings.activeProfileIds !== undefined
+      ? normalizeActiveProfileIds(settings.activeProfileIds)
+      : this._settingsCache?.activeProfileIds;
+    if (activeProfileMap !== undefined) persisted.activeProfileIds = normalizeActiveProfileIds(activeProfileMap);
+    this._writeAtomic(this.settingsPath, persisted);
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.
     this._settingsCache = this._settingsFromData({
       ...settings,
+      ...(activeProfileMap !== undefined ? { activeProfileIds: activeProfileMap } : {}),
       schemaVersion: SCHEMA_VERSION,
     });
   }

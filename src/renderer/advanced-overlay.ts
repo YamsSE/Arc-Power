@@ -42,7 +42,15 @@ import { Store } from './router.ts';
 import { buildDeviceSelect } from './components/device-select.ts';
 import type { PageContext } from './router.ts';
 import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, TelemetrySample } from './types.ts';
-import { snapToRange, normalizedPosition, formatValue } from './pure/slider.ts';
+import {
+  snapToRange,
+  normalizedPosition,
+  formatValue,
+  controlDisplay,
+  controlDisplayRange,
+  controlValueFromDisplay,
+  controlValueToDisplay,
+} from './pure/slider.ts';
 import {
   buildScalarSettings,
   validateSettingsPayload,
@@ -281,6 +289,7 @@ api.onDeviceSelectionUpdated((payload) => {
 api.onGraphicsStateUpdated((payload) => {
   if (payload && payload.deviceId === store.get().deviceId && graphicsStateGeneration === panelGeneration) {
     graphicsState = payload.graphicsState;
+    if (activeTab === 'graphics' && !graphicsApplying) renderGraphics();
   }
 });
 
@@ -454,8 +463,9 @@ document.querySelectorAll<HTMLButtonElement>('.adv-tab').forEach((t) => {
 // the M22-safe lock editor + the floating Apply (Apply-button model)
 // The scalar cards (the panel's set - PL IS included: editable like the
 // main Tuning page; the PL1/PL2 sysman readout rides its card's meta line).
-// Gated by caps.controls like the main Tuning page; percent-unit PL is not a
-// wattage control and never receives a fabricated W label.
+// Gated by caps.controls like the main Tuning page.  The visible units use the
+// same Battlemage presentation conversion as the main Tuning page while the
+// apply payload keeps the driver's raw capability units.
 const SCALAR_CONTROLS = ['powerLimitW', 'gpuFreqOffsetMhz', 'gpuVoltOffsetV', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV'];
 
 let values: Record<string, number> = {};
@@ -509,8 +519,8 @@ async function renderTuning(): Promise<void> {
   // (gpuFreqOffset/gpuVoltOffset/...), never the canonical range keys; a
   const controls = SCALAR_CONTROLS.filter((key) => {
     const range = cardSliderRange(caps, key);
-    // The range's units drive the card value/readout (% or W); never
-    // relabel a percent-unit power limit as watts.
+    // A capability range is the source of support; the visible unit is
+    // converted below for Battlemage while the apply value stays raw.
     return range !== undefined;
   });
   hiddenNegativeControls = new Set<string>();
@@ -541,51 +551,59 @@ async function renderTuning(): Promise<void> {
   // The scalar slider cards (the Tuning page's compact pattern).
   const buildCard = (key: string): HTMLElement => {
     const range = cardSliderRange(caps, key) as NonNullable<ReturnType<typeof cardSliderRange>>;
+    const display = controlDisplay(key, range, caps.deviceName);
+    const displayRange = controlDisplayRange(key, range, caps.deviceName);
+    const visibleValue = (): number => controlValueToDisplay(values[key], key, range, caps.deviceName);
+    const visibleNumber = (value: number): string => display.decimals === 0
+      ? String(Math.round(value))
+      : value.toFixed(Math.min(6, String(displayRange.step).split('.')[1]?.length ?? 3));
     const valueInput = el('input', {
       type: 'number',
       class: 'oc-value-input',
-      min: String(range.min),
-      max: String(range.max),
-      step: String(range.step),
-      value: editableNumber(values[key], range),
+      min: String(displayRange.min),
+      max: String(displayRange.max),
+      step: String(displayRange.step),
+      value: editableNumber(visibleValue(), displayRange),
       'aria-label': `${CONTROL_LABELS[key] ?? key} value`,
       onchange: (ev: Event) => {
-        const raw = Number((ev.target as HTMLInputElement).value);
-        if (!Number.isFinite(raw)) return;
+        const visible = Number((ev.target as HTMLInputElement).value);
+        if (!Number.isFinite(visible)) return;
         hiddenNegativeControls.delete(key);
-        values[key] = snapToRange(raw, range);
-        valueInput.value = editableNumber(values[key], range);
-        valueNode.textContent = formatValue(values[key], range.units);
-        slider.value = String(values[key]);
-        fill.style.width = `${normalizedPosition(values[key], range) * 100}%`;
+        values[key] = snapToRange(controlValueFromDisplay(visible, key, range, caps.deviceName), range);
+        const shown = visibleValue();
+        valueInput.value = editableNumber(shown, displayRange);
+        valueNode.textContent = formatValue(shown, display.units, display.decimals);
+        slider.value = String(shown);
+        fill.style.width = `${normalizedPosition(shown, displayRange) * 100}%`;
         refreshChip(key);
         updateFloating();
       },
     }) as HTMLInputElement;
     const valueField = el('div', { class: 'oc-value-field' }, [
       valueInput,
-      el('span', { class: 'oc-value-unit', text: range.units === 'C' ? '°C' : range.units }),
+      el('span', { class: 'oc-value-unit', text: display.units === 'C' ? '°C' : display.units }),
     ]);
     // Keep the established text node for the panel's verification contract;
     // the editable input is the visible control.
-    const valueNode = el('span', { class: 'oc-value', text: formatValue(values[key], range.units), 'aria-hidden': 'true' });
-    const rangeNode = el('span', { class: 'oc-range', text: `${range.min} – ${range.max} ${range.units}` });
+    const valueNode = el('span', { class: 'oc-value', text: formatValue(visibleValue(), display.units, display.decimals), 'aria-hidden': 'true' });
+    const rangeNode = el('span', { class: 'oc-range', text: `${visibleNumber(displayRange.min)} – ${visibleNumber(displayRange.max)} ${display.units}` });
     const fill = el('div', { class: 'oc-track-fill' });
-    fill.style.width = `${normalizedPosition(values[key], range) * 100}%`;
+    fill.style.width = `${normalizedPosition(visibleValue(), displayRange) * 100}%`;
     const slider = el('input', {
       type: 'range',
-      min: String(range.min),
-      max: String(range.max),
-      step: String(range.step),
-      value: String(values[key]),
+      min: String(displayRange.min),
+      max: String(displayRange.max),
+      step: String(displayRange.step),
+      value: String(visibleValue()),
       oninput: (ev: Event) => {
-        const raw = Number((ev.target as HTMLInputElement).value);
-        const v = snapToRange(raw, range);
+        const visible = Number((ev.target as HTMLInputElement).value);
+        const v = snapToRange(controlValueFromDisplay(visible, key, range, caps.deviceName), range);
         hiddenNegativeControls.delete(key);
         values[key] = v;
-        valueNode.textContent = formatValue(v, range.units);
-        valueInput.value = editableNumber(v, range);
-        fill.style.width = `${normalizedPosition(v, range) * 100}%`;
+        const shown = controlValueToDisplay(v, key, range, caps.deviceName);
+        valueNode.textContent = formatValue(shown, display.units, display.decimals);
+        valueInput.value = editableNumber(shown, displayRange);
+        fill.style.width = `${normalizedPosition(shown, displayRange) * 100}%`;
         refreshChip(key);
         updateFloating();
       },
@@ -767,10 +785,14 @@ async function renderTuning(): Promise<void> {
       const fill = card.querySelector<HTMLElement>('.oc-track-fill');
       const valueNode = card.querySelector<HTMLElement>('.oc-value');
       const valueInput = card.querySelector<HTMLInputElement>('.oc-value-input');
-      if (slider) slider.value = String(snapToRange(values[key], range));
-      if (fill) fill.style.width = `${normalizedPosition(values[key], range) * 100}%`;
-      if (valueNode) valueNode.textContent = formatValue(values[key], range.units);
-      if (valueInput) valueInput.value = editableNumber(snapToRange(values[key], range), range);
+      const display = controlDisplay(key, range, caps.deviceName);
+      const displayRange = controlDisplayRange(key, range, caps.deviceName);
+      const raw = snapToRange(values[key], range);
+      const shown = controlValueToDisplay(raw, key, range, caps.deviceName);
+      if (slider) slider.value = String(shown);
+      if (fill) fill.style.width = `${normalizedPosition(shown, displayRange) * 100}%`;
+      if (valueNode) valueNode.textContent = formatValue(shown, display.units, display.decimals);
+      if (valueInput) valueInput.value = editableNumber(shown, displayRange);
     }
     // The chips + the floating button re-derive from the applied reference.
     for (const key of controls) {

@@ -9,6 +9,7 @@ export const ASCENT_RECORDER_TYPES = Object.freeze({ VIDEO: 1, REPLAY: 2, STREAM
 export const ASCENT_EVENTS = Object.freeze({ QUERY_MACHINE_INFO: 1, ERR: 2, READY: 3, RECORDING_STARTED: 4, RECORDING_STOPPING: 5, RECORDING_STOPPED: 6, VIDEO_FILE_SPLIT: 8, REPLAY_STARTED: 9, REPLAY_STOPPING: 10, REPLAY_STOPPED: 11, REPLAY_ARMED: 12, REPLAY_CAPTURE_VIDEO_STARTED: 13, REPLAY_CAPTURE_VIDEO_READY: 14, REPLAY_ERROR: 15 });
 export const ASCENT_ENCODER_START_ERROR_CODES = Object.freeze([-6, -8]);
 export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2']);
+export const RECORDING_GPU_ENCODER_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
 const DEFAULT_SHUTDOWN_MS = 1500;
 const DEFAULT_PROBE_MS = 15000;
 const REPLAY_FILE_WAIT_MS = 30000;
@@ -109,18 +110,171 @@ function unsupportedEncoderError(requested, encoders) {
   return error;
 }
 
+function invalidEncoderSelectionError(value) {
+  const error = new Error(`Encoder selection '${String(value)}' is malformed or does not contain a stable physical adapter target.`);
+  error.code = 'INVALID_ENCODER_SELECTION';
+  return error;
+}
+
+function integerOf(value) {
+  if (typeof value === 'string' && !value.trim()) return null;
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+function luidOf(value) {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  if (Array.isArray(value) && value.length >= 2) {
+    const low = luidOf(value[0]);
+    const high = luidOf(value[1]);
+    return low && high ? `${high}:${low}` : null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const low = value.low ?? value.LowPart ?? value.lowPart;
+  const high = value.high ?? value.HighPart ?? value.highPart;
+  if (low === undefined || high === undefined) return null;
+  const lowText = luidOf(low);
+  const highText = luidOf(high);
+  return lowText && highText ? `${highText}:${lowText}` : null;
+}
+
+function normalizedAdapterTarget(value) {
+  if (!value || typeof value !== 'object') return null;
+  const deviceKeyValue = value.deviceKey ?? value.device_key ?? value.k;
+  const deviceKey = typeof deviceKeyValue === 'string' && deviceKeyValue.trim() ? deviceKeyValue.trim() : null;
+  const bdfValue = value.bdf ?? value.b;
+  const bdfSource = Array.isArray(bdfValue)
+    ? { domain: bdfValue[0], bus: bdfValue[1], device: bdfValue[2], function: bdfValue[3] }
+    : bdfValue && typeof bdfValue === 'object' ? bdfValue : null;
+  const domain = integerOf(bdfSource?.domain) ?? 0;
+  const bus = integerOf(bdfSource?.bus);
+  const device = integerOf(bdfSource?.device);
+  const func = integerOf(bdfSource?.function);
+  const bdf = bus !== null && device !== null && func !== null && domain >= 0 && bus >= 0 && device >= 0 && func >= 0
+    ? { domain, bus, device, function: func }
+    : null;
+  const luid = luidOf(value.luid ?? value.adapterLuid ?? value.adapter_luid ?? value.l);
+  if (!deviceKey && !bdf && !luid) return null;
+  return {
+    ...(deviceKey ? { deviceKey } : {}),
+    ...(bdf ? { bdf } : {}),
+    ...(luid ? { luid } : {}),
+  };
+}
+
+function encoderAdapterTarget(encoder) {
+  if (!encoder || typeof encoder !== 'object') return null;
+  const nested = encoder.adapter_target ?? encoder.adapterTarget ?? encoder.target;
+  return normalizedAdapterTarget(nested) ?? normalizedAdapterTarget(encoder);
+}
+
+function adapterTargetHasIdentity(target) {
+  const normalized = normalizedAdapterTarget(target);
+  return Boolean(normalized?.deviceKey || normalized?.bdf || normalized?.luid);
+}
+
+function adapterTargetsMatch(left, right) {
+  const a = normalizedAdapterTarget(left);
+  const b = normalizedAdapterTarget(right);
+  if (!a || !b) return false;
+  let compared = false;
+  if (a.deviceKey && b.deviceKey) {
+    compared = true;
+    if (a.deviceKey !== b.deviceKey) return false;
+  }
+  if (a.bdf && b.bdf) {
+    compared = true;
+    if (JSON.stringify(a.bdf) !== JSON.stringify(b.bdf)) return false;
+  }
+  if (a.luid && b.luid) {
+    compared = true;
+    if (a.luid !== b.luid) return false;
+  }
+  return compared;
+}
+
+function encoderDemotionKey(codec, target) {
+  const normalized = normalizedAdapterTarget(target);
+  return `${codec}|${normalized ? JSON.stringify(normalized) : 'legacy'}`;
+}
+
+function encoderTargetMatchesSelection(encoder, target) {
+  const runtimeTarget = encoderAdapterTarget(encoder);
+  return runtimeTarget ? adapterTargetsMatch(runtimeTarget, target) : !adapterTargetHasIdentity(target);
+}
+
+function encoderTargetUnavailableError(requested) {
+  const error = new Error(`Encoder selection '${requested}' does not match a concrete adapter target reported by the recording runtime.`);
+  error.code = 'ENCODER_TARGET_UNAVAILABLE';
+  return error;
+}
+
+/**
+ * Decode the renderer's versioned GPU+codec ID. Legacy global encoder IDs
+ * intentionally return null so callers can continue handling them unchanged.
+ */
+export function parseRecordingEncoderSelection(value) {
+  if (typeof value !== 'string' || !value.startsWith(RECORDING_GPU_ENCODER_SELECTION_PREFIX)) return null;
+  try {
+    const encoded = value.slice(RECORDING_GPU_ENCODER_SELECTION_PREFIX.length);
+    let parsed;
+    try {
+      parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    } catch {
+      // Accept the first development-format IDs as a migration courtesy.
+      parsed = JSON.parse(decodeURIComponent(encoded));
+    }
+    if (!parsed || typeof parsed !== 'object') throw invalidEncoderSelectionError(value);
+    const codec = typeof parsed.codec === 'string' ? parsed.codec : parsed.c;
+    if (!ASCENT_QSV_ENCODER_PREFERENCE.includes(codec)) throw invalidEncoderSelectionError(value);
+    const compactTarget = parsed.target ?? {
+      ...(typeof parsed.k === 'string' ? { deviceKey: parsed.k } : {}),
+      ...(Array.isArray(parsed.b) ? { bdf: parsed.b } : {}),
+      ...(parsed.l !== undefined ? { luid: parsed.l } : {}),
+    };
+    const adapterTarget = normalizedAdapterTarget(compactTarget);
+    if (!adapterTarget) throw invalidEncoderSelectionError(value);
+    const deviceName = typeof parsed.deviceName === 'string' && parsed.deviceName.trim() ? parsed.deviceName.trim() : undefined;
+    return { codec, target: adapterTarget, ...(deviceName ? { deviceName } : {}) };
+  } catch (error) {
+    if (error?.code === 'INVALID_ENCODER_SELECTION') throw error;
+    throw invalidEncoderSelectionError(value);
+  }
+}
+
 export function resolveRecordingEncoder(requested, encoders) {
+  const selection = parseRecordingEncoderSelection(requested);
+  const encoderId = selection?.codec ?? requested;
   const usable = (Array.isArray(encoders) ? encoders : []).filter(isUsableEncoder);
-  if (requested === 'automatic') {
+  if (encoderId === 'automatic') {
     // Automatic is intentionally AV1-only for Intel Arc. Falling back to a
     // different codec would silently change the user's configured output.
     if (usable.some((encoder) => encoder.type === 'obs_qsv11_av1')) return 'obs_qsv11_av1';
-    throw unsupportedEncoderError(requested, encoders);
+    throw unsupportedEncoderError(encoderId, encoders);
   }
-  if (!ASCENT_QSV_ENCODER_PREFERENCE.includes(requested) || !usable.some((encoder) => encoder.type === requested)) {
-    throw unsupportedEncoderError(requested, encoders);
+  if (!ASCENT_QSV_ENCODER_PREFERENCE.includes(encoderId) || !usable.some((encoder) => encoder.type === encoderId)) {
+    throw unsupportedEncoderError(encoderId, encoders);
   }
-  return requested;
+  return encoderId;
+}
+
+export function resolveRecordingEncoderSelection(requested, encoders) {
+  const selection = parseRecordingEncoderSelection(requested);
+  const encoderId = resolveRecordingEncoder(requested, encoders);
+  if (selection?.target) {
+    const runtimeEncoders = (Array.isArray(encoders) ? encoders : [])
+      .filter((encoder) => encoder?.type === encoderId);
+    const hasRuntimeTargetMetadata = runtimeEncoders.some((encoder) => adapterTargetHasIdentity(encoderAdapterTarget(encoder)));
+    if (hasRuntimeTargetMetadata && !runtimeEncoders.some((encoder) => encoderTargetMatchesSelection(encoder, selection.target))) {
+      throw encoderTargetUnavailableError(requested);
+    }
+  }
+  return {
+    encoderId,
+    adapterTarget: selection?.target ?? null,
+    selection,
+  };
 }
 
 function audioDeviceId(deviceId) {
@@ -210,7 +364,14 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
   const output = recordingOutputDimensions(settings.resolution, capture.width, capture.height);
   const outputWidth = output.width;
   const outputHeight = output.height;
-  const encoderId = settings.encoderId;
+  const selection = parseRecordingEncoderSelection(settings.encoderId);
+  const encoderId = selection?.codec ?? settings.encoderId;
+  const adapterTarget = normalizedAdapterTarget(settings.encoderTarget ?? selection?.target);
+  const adapterTargetPayload = adapterTarget ? {
+    ...(adapterTarget.deviceKey ? { device_key: adapterTarget.deviceKey } : {}),
+    ...(adapterTarget.bdf ? { bdf: adapterTarget.bdf } : {}),
+    ...(adapterTarget.luid ? { luid: adapterTarget.luid } : {}),
+  } : null;
   return buildAscentCommand(ASCENT_COMMANDS.START, identifier, recorderType, {
     sources: captureSourceOf(settings),
     video_settings: {
@@ -221,6 +382,9 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       base_height: capture.height,
       output_width: outputWidth,
       output_height: outputHeight,
+      // Video initialization happens before the encoder object is created;
+      // the runtime resolves this stable physical target before OBS/QSV starts.
+      ...(adapterTargetPayload ? { adapter_target: adapterTargetPayload } : {}),
       // Make the OBS color pipeline explicit instead of depending on the
       // runtime's empty-extra-settings defaults. NV12 + Rec.709 + partial
       // range is the normal SDR hardware-capture path and keeps the encoded
@@ -228,6 +392,7 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       extra_options: colorSettingsOf(settings),
       video_encoder: {
         id: encoderId,
+        ...(adapterTargetPayload ? { adapter_target: adapterTargetPayload } : {}),
         // Ascent-OBS maps the QSV name "quality" to TU1, which is the
         // Intel Media SDK best-quality target usage. Sending the semantic
         // value keeps the setting explicit and avoids relying on a numeric
@@ -264,7 +429,7 @@ function isEncoderStartRejection(error) {
   return Number.isInteger(error?.code) && ASCENT_ENCODER_START_ERROR_CODES.includes(error.code);
 }
 
-export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, trimReplayClip = null, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
+export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, resolveEncoderTarget = async (target) => target, trimReplayClip = null, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
   let child = null;
   let output = '';
   let decoder = new StringDecoder('utf8');
@@ -626,7 +791,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       const response = await request(ASCENT_COMMANDS.QUERY_MACHINE_INFO, ASCENT_RECORDER_TYPES.VIDEO, {}, [ASCENT_EVENTS.QUERY_MACHINE_INFO], DEFAULT_PROBE_MS, null, { acceptUnidentified: true });
       const encoders = Array.isArray(response.vid_encs) ? response.vid_encs.map((encoder) => {
         const type = String(encoder.type ?? '');
-        const demoted = demotedEncoders.has(type);
+        const target = encoderAdapterTarget(encoder);
+        const demoted = demotedEncoders.has(encoderDemotionKey(type, target))
+          || (!target && demotedEncoders.has(encoderDemotionKey(type, null)));
         const valid = encoder.valid === true;
         return { ...encoder, type, enumerated: true, probeValid: valid && !demoted, startTested: demoted, startSupported: valid && !demoted, code: demoted ? -8 : null, status: demoted ? 'start rejected' : valid ? '' : 'invalid' };
       }) : [];
@@ -667,10 +834,36 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // start. That made a rejected H264/HEVC start appear to succeed while the
     // runtime silently recorded AV1 instead. The selection must either be
     // honored or fail with the actual encoder availability message.
-    const encoderId = resolveRecordingEncoder(settings.encoderId, state.encoders);
+    const resolvedEncoder = resolveRecordingEncoderSelection(settings.encoderId, state.encoders);
+    let resolvedAdapterTarget = resolvedEncoder.adapterTarget;
+    if (resolvedAdapterTarget) {
+      try {
+        // The renderer carries the stable physical identity in the selected
+        // GPU+codec id. Resolve that identity to the DXGI LUID in the main
+        // process immediately before starting OBS/QSV; this keeps the
+        // encoder choice bound to the selected physical adapter even when
+        // the runtime's machine-info inventory is global.
+        resolvedAdapterTarget = normalizedAdapterTarget(await resolveEncoderTarget(resolvedAdapterTarget)) ?? resolvedAdapterTarget;
+      } catch {
+        // Keep the original stable target so a temporary DXGI refresh failure
+        // cannot silently turn a concrete GPU choice into Automatic.
+      }
+    }
+    const demotionKeys = new Set([
+      encoderDemotionKey(resolvedEncoder.encoderId, resolvedEncoder.adapterTarget),
+      encoderDemotionKey(resolvedEncoder.encoderId, resolvedAdapterTarget),
+    ]);
+    if ([...demotionKeys].some((key) => demotedEncoders.has(key))) {
+      throw unsupportedEncoderError(resolvedEncoder.encoderId, state.encoders);
+    }
     let captureDimensions = null;
     try { captureDimensions = await getCaptureDimensions?.(settings); } catch { /* display enumeration is best effort */ }
-    const payload = buildAscentStartPayload({ ...settings, encoderId, ...captureDimensions }, outputPath, type);
+    const payload = buildAscentStartPayload({
+      ...settings,
+      encoderId: resolvedEncoder.encoderId,
+      encoderTarget: resolvedAdapterTarget,
+      ...captureDimensions,
+    }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
     startingRecorders.set(mode, { identifier, type, mode, ready: false });
@@ -690,10 +883,20 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       }
       const encoderId = payload.video_settings.video_encoder.id;
       if (isEncoderStartRejection(error) && state.encoders.some((item) => item.type === encoderId)) {
-        demotedEncoders.add(encoderId);
-        publish({ encoders: state.encoders.map((item) => item.type === encoderId ? { ...item, startTested: true, startSupported: false, probeValid: false, code: error.code, status: 'start rejected' } : item) });
+        const failedTarget = normalizedAdapterTarget(payload.video_settings.video_encoder.adapter_target) ?? resolvedAdapterTarget;
+        demotedEncoders.add(encoderDemotionKey(encoderId, failedTarget));
+        if (resolvedEncoder.adapterTarget && JSON.stringify(resolvedEncoder.adapterTarget) !== JSON.stringify(failedTarget)) {
+          demotedEncoders.add(encoderDemotionKey(encoderId, resolvedEncoder.adapterTarget));
+        }
+        publish({ encoders: state.encoders.map((item) => item.type === encoderId && encoderTargetMatchesSelection(item, failedTarget)
+          ? { ...item, startTested: true, startSupported: false, probeValid: false, code: error.code, status: 'start rejected' }
+          : item) });
         try {
-          await onEncoderDemoted(encoderId, error);
+          await onEncoderDemoted(encoderId, error, {
+            selectionId: settings.encoderId,
+            adapterTarget: failedTarget,
+            codec: encoderId,
+          });
         } catch (persistError) {
           error.persistenceError = persistError;
           publish({ error: `Encoder was rejected, but its persisted selection could not be reset: ${persistError.message}` });
@@ -704,7 +907,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // The started event has already made the recorder active. Keep its
     // authoritative mode/timestamp and only add the successful encoder
     // validation here.
-    publish({ error: null, encoders: state.encoders.map((item) => item.type === payload.video_settings.video_encoder.id ? { ...item, startTested: true, startSupported: true, status: 'started' } : item) });
+    const successfulTarget = normalizedAdapterTarget(payload.video_settings.video_encoder.adapter_target) ?? resolvedAdapterTarget;
+    publish({ error: null, encoders: state.encoders.map((item) => item.type === payload.video_settings.video_encoder.id && encoderTargetMatchesSelection(item, successfulTarget)
+      ? { ...item, startTested: true, startSupported: true, status: 'started' }
+      : item) });
     return state;
   }
 
