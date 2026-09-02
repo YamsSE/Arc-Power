@@ -1307,9 +1307,13 @@ export class IgclBackend {
     const validBytes = (value) => Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
     let info = null;
     try { info = this._adapterMemoryInfoOf ? this._adapterMemoryInfoOf(dev) : null; } catch { info = null; }
-    const dedicatedFromVram = validBytes(this._vramBytesOf ? this._vramBytesOf(dev) : null);
     const dedicatedFromDxgi = validBytes(info?.dedicatedVideoMemoryBytes);
-    dev.vramBytes = dedicatedFromVram ?? dedicatedFromDxgi;
+    // DXGI reports the adapter's actual dedicated segment size.  The WMI /
+    // registry value is retained as a fallback because older drivers can
+    // omit the DXGI descriptor, but it may under-report Battlemage cards
+    // (11 GiB shown for a 12 GiB B580).
+    const dedicatedFromVram = validBytes(this._vramBytesOf ? this._vramBytesOf(dev) : null);
+    dev.vramBytes = dedicatedFromDxgi ?? dedicatedFromVram;
     dev.sharedMemoryBytes = null;
     dev.sharedMemorySource = null;
     // Shared capacity is not VRAM. It is eligible only for an explicitly

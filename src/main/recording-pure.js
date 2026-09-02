@@ -215,6 +215,10 @@ function boundedString(value, fallback = '', max = 1024) {
   return typeof value === 'string' && value.length <= max ? value : fallback;
 }
 
+function optionalEncoderString(value, max = 256) {
+  return typeof value === 'string' && value.length <= max && value.trim() ? value : undefined;
+}
+
 export function recordingAbsolutePath(value, label = 'location') {
   if (typeof value !== 'string' || value.length > 4096 || !value.trim()) throw new Error(`${label} must be a non-empty path`);
   const candidate = value.trim();
@@ -290,16 +294,26 @@ export function normalizeRecordingSettings(raw = {}) {
 export function normalizeEncoderStates(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => item && typeof item === 'object' && typeof item.type === 'string')
-    .map((item) => ({
-      type: item.type.slice(0, 128),
-      description: boundedString(item.description, item.type, 256),
-      enumerated: true,
-      probeValid: item.probeValid === true || item.valid === true,
-      startTested: item.startTested === true,
-      startSupported: item.startSupported !== false,
-      code: Number.isInteger(item.code) ? item.code : null,
-      status: boundedString(item.status, '', 256),
-    }));
+    .map((item) => {
+      const deviceKey = optionalEncoderString(item.deviceKey);
+      const deviceName = optionalEncoderString(item.deviceName);
+      const adapterName = optionalEncoderString(item.adapterName);
+      const gpuName = optionalEncoderString(item.gpuName);
+      return {
+        type: item.type.slice(0, 128),
+        description: boundedString(item.description, item.type, 256),
+        enumerated: true,
+        probeValid: item.probeValid === true || item.valid === true,
+        startTested: item.startTested === true,
+        startSupported: item.startSupported !== false,
+        code: Number.isInteger(item.code) ? item.code : null,
+        status: boundedString(item.status, '', 256),
+        ...(deviceKey !== undefined ? { deviceKey } : {}),
+        ...(deviceName !== undefined ? { deviceName } : {}),
+        ...(adapterName !== undefined ? { adapterName } : {}),
+        ...(gpuName !== undefined ? { gpuName } : {}),
+      };
+    });
 }
 
 export function safeVideoExtension(filePath) {

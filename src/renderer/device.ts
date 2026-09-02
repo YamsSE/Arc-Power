@@ -131,6 +131,12 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
         deviceId: id,
         caps,
         state,
+        // OC mode is global in the backend, but capabilities are refreshed
+        // for the newly selected physical adapter. Keep the segmented
+        // control and fan/tuning surface aligned with that fresh snapshot;
+        // otherwise a two-GPU switch can leave Stock/Advanced visually and
+        // behaviorally bound to the previous GPU.
+        ocMode: caps.ocMode ?? deps.store.get().ocMode,
         latestSample: null,
         lastApply: null,
         noIntel: false,

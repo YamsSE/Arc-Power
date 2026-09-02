@@ -1107,6 +1107,8 @@ export function createIpcHandlers({
     sysStats = {
       sample: (...args) => holder.current?.sample?.(...args),
       sampleFast: (...args) => holder.current?.sampleFast?.(...args),
+      sampleForTarget: (...args) => holder.current?.sampleForTarget?.(...args),
+      registerTarget: (...args) => holder.current?.registerTarget?.(...args),
       sampleSlow: (...args) => holder.current?.sampleSlow?.(...args),
       startSlowLane: (...args) => holder.current?.startSlowLane?.(...args),
       stopSlowLane: (...args) => holder.current?.stopSlowLane?.(...args),
@@ -1337,7 +1339,7 @@ export function createIpcHandlers({
       });
       return;
     }
-    const svc = new TelemetryService(backend, deviceId, { pollMs });
+    const svc = new TelemetryService(backend, deviceId, { pollMs, immediate: true });
     let lastTelemetryError = null;
     // M4-D2: the pushed sample carries the system stats (CPU util/freq/
     // temp + GPU memory) - the injected sysStats adapter. M17g: the push
@@ -1504,8 +1506,16 @@ export function createIpcHandlers({
         });
         continue;
       }
-      const svc = new TelemetryService(backend, deviceId, { pollMs });
-      svc.onSample((sample) => {
+      try { sysStats.registerTarget?.(target); } catch { /* per-target stats registration is best effort */ }
+      const svc = new TelemetryService(backend, deviceId, { pollMs, immediate: true });
+      svc.onSample(async (sample) => {
+        if (generation !== overlayTelemetryGeneration) return;
+        let extra = {};
+        try {
+          extra = await sysStats.sampleForTarget?.(target) ?? {};
+          // Older injected adapters expose only the selected-target method.
+          if (Object.keys(extra).length === 0) extra = await sysStats.sampleFast?.() ?? {};
+        } catch { /* honest empty OS fields */ }
         if (generation !== overlayTelemetryGeneration) return;
         emitTelemetry({
           deviceId,
@@ -1514,10 +1524,16 @@ export function createIpcHandlers({
             ? [...target.deviceKeys]
             : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
           sessionGeneration: telemetryGeneration,
+          ...extra,
           ...sample,
         });
       });
       try {
+        if (generation !== overlayTelemetryGeneration) {
+          await svc.stop();
+          return;
+        }
+        await svc.start();
         if (generation !== overlayTelemetryGeneration) {
           await svc.stop();
           return;

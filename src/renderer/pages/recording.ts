@@ -3,10 +3,10 @@
 import { el, clear } from '../dom.ts';
 import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
-import type { RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
+import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
-import { recordingBitrateRange, recordingMessage } from '../pure/recording.ts';
+import { recordingBitrateRange, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -66,6 +66,7 @@ let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
 let recordingPillEnabled = false;
+let recordingDevices: DeviceInfo[] = [];
 
 function recordingClipKind(clip: RecordingClip): 'recording' | 'clip' {
   return /^Arc Recording \d+\.mp4$/i.test(clip.fileName) ? 'recording' : 'clip';
@@ -309,6 +310,23 @@ function encoderOptions(): Array<[string, string]> {
     options.push([id, `${encoder ? encoderLabel(encoder) : label}${unavailable}`]);
   }
   return options;
+}
+
+function renderGpuEncoderInventory(): HTMLElement {
+  const rows = recordingGpuEncoderRows(recordingDevices, status.encoders);
+  const body = rows.length
+    ? rows.map((row) => el('div', { class: 'recording-encoder-row' }, [
+      el('span', { class: 'recording-encoder-device', text: row.deviceName }),
+      el('strong', { class: 'recording-encoder-codecs', text: row.encoderLabels.join(' · ') }),
+    ]))
+    : [el('p', { class: 'recording-encoder-empty', text: status.probeComplete === true ? 'No GPU encoders were verified.' : 'Checking encoder availability…' })];
+  return el('div', { class: 'recording-encoder-inventory' }, [
+    el('div', { class: 'recording-encoder-heading' }, [
+      el('span', { class: 'recording-field-label', text: 'GPU encoder inventory' }),
+      el('span', { class: 'recording-field-note', text: 'Detected codecs by graphics adapter' }),
+    ]),
+    ...body,
+  ]);
 }
 
 function renderRecordingHeadingActions(): HTMLElement {
@@ -591,6 +609,7 @@ function renderQualitySettings(): HTMLElement {
       field('Encoder', encoder),
       field('Bitrate (Kbps)', bitrate),
     ]),
+    renderGpuEncoderInventory(),
     el('div', { class: 'recording-quality-meta' }, [
       el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Bitrate Recommendation' }), el('strong', { text: bitrateRange.label })]),
       el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Estimated video size' }), el('strong', { text: `≈ ${estimatedVideoSizePerMinute(Number(working?.bitrateKbps ?? bitrateRange.default))} / min` })]),
@@ -1412,8 +1431,9 @@ function closePlayer(): void {
 
 export const recordingPage: Page = {
   id: 'recording',
-  render(container: HTMLElement, _context?: PageContext): void {
+  render(container: HTMLElement, context: PageContext): void {
     renderContainer = container;
+    recordingDevices = context.store.get().devices;
     if (!unsubscribeRecordingState) {
       unsubscribeRecordingState = api.onRecordingStateUpdated((next) => {
         setStatus(next);
@@ -1427,6 +1447,13 @@ export const recordingPage: Page = {
     void load();
     void refreshRecordingCaptureTargets();
   },
+  onUpdate(container: HTMLElement, context: PageContext): void {
+    const devices = context.store.get().devices;
+    if (devices !== recordingDevices) {
+      recordingDevices = devices;
+      if (renderContainer === container) render();
+    }
+  },
   leave(): void {
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
@@ -1438,6 +1465,7 @@ export const recordingPage: Page = {
     fpsCustomEditing = false;
     storageInfo = null;
     recordingPillEnabled = false;
+    recordingDevices = [];
     recordingTargets = { displays: [], windows: [] };
     recordingTargetsBusy = false;
     renderContainer = null;

@@ -980,6 +980,17 @@ async function main() {
       },
       mock: { sysmanPowerCapable: true },
     });
+    // Use the same identity-matched DXGI capacity source as the normal
+    // window path. The CIM/registry value is a fallback, but it can under-
+    // report modern adapters (for example, a 12 GiB B580 as 11 GiB).
+    const smokeDxgi = mock ? null : createDxgiFpsAdapter();
+    if (!mock && typeof backend?.setAdapterMemoryInfoOf === 'function') {
+      backend.setAdapterMemoryInfoOf((device) => smokeDxgi?.adapterMemoryInfoOf?.(
+        device?.pciDeviceId,
+        device?.bdf,
+        device?.pciVendorId,
+      ) ?? null);
+    }
     try {
       // M4-D2 (§13 smoke gate): unelevated smoke runs SKIP the no-op write
       // round trips (reported as "skipped (unelevated)") - the real A770
@@ -990,8 +1001,10 @@ async function main() {
         isElevated: mock ? () => true : isElevatedReal,
       });
       console.log('\nSMOKE OK - ' + lines.filter((l) => l.startsWith('[health]')).length + ' health line(s), see above for the full sequence.');
+      smokeDxgi?.stop?.();
       app.exit(0);
     } catch (err) {
+      smokeDxgi?.stop?.();
       console.error(`\nSMOKE FAILED: ${err.message}`);
       app.exit(1);
     }
@@ -1227,36 +1240,46 @@ async function main() {
       }
       return cached;
     };
-    // M19: the driver-BAR reader is the MEMOIZED-PROMISE seam (sysinfo.js
-    // createDriverReBar) - the one-shot latch RACED: the main renderer
-    // (app.ts:347) and the overlay (overlay.ts:372) fire sysinfo:get
-    // CONCURRENTLY at boot, caller B saw the latch and returned the
-    // STILL-NULL cache -> the dashboard ReBAR pill rendered gray for the
-    // whole session. The seam shares ONE in-flight promise - both callers
-    // await the SAME resolving verdict (green pill on the first landing);
-    // a query failure still resolves null (the honest gray + the OS
-    // fallback stays), cached for the session.
-    // M19 (round-2 S1): the seam is DEFERRED to the first get() - the
-    // backend binding is declared AFTER this block (TDZ: an eager seam
-    // construction at this point evaluates the backend before its
-    // declaration and throws on the real boot - the mock/headless paths
-    // return before it, so every harness stayed green). get() is only
-    // reachable once the whole boot body has run, so `backend` exists by
-    // then; the null-guard creates the seam exactly once and its returned
-    // The ReBAR reader must bind to the raw backend. The unified inventory
+    // The ReBAR readers bind to the raw backend. The unified inventory
     // wrapper's listDevices() can consult sysinfo.get(), which is this getter;
-    // binding it here would recurse while the first sysinfo read is landing.
-    let driverReBar = null;
+    // binding a reader to that wrapper would recurse while the first sysinfo
+    // read is landing. Each reader is memoized independently so concurrent
+    // sysinfo callers share each adapter's verdict without collapsing all
+    // adapters onto the first raw handle.
+    // M150: one driver-BAR reader per physical adapter. The previous
+    // single reader intentionally selected rawBackend.listDevices()[0], so
+    // only the first controller received the driver's ReBAR verdict on a
+    // multi-GPU machine.  Keep each reader memoized, but merge every
+    // identity-matched verdict into the corresponding OS controller.
+    const driverReBars = new Map();
+    const rebarTargetKey = (target) => {
+      if (typeof target?.deviceKey === 'string' && target.deviceKey.trim()) return `key:${target.deviceKey.trim().toUpperCase()}`;
+      const vendor = typeof target?.pciVendorId === 'string' ? target.pciVendorId : '';
+      const device = typeof target?.pciDeviceId === 'string' ? target.pciDeviceId : '';
+      const bdf = target?.bdf && typeof target.bdf === 'object'
+        ? `${target.bdf.domain ?? 0}:${target.bdf.bus ?? ''}:${target.bdf.device ?? ''}.${target.bdf.function ?? 0}`
+        : '';
+      return vendor || device || bdf ? `physical:${vendor}|${device}|${bdf}` : null;
+    };
     sysinfo = {
       get: async () => {
-        const result = await sysinfoResult();
-        if (driverReBar === null) driverReBar = createDriverReBar(rawBackend);
-        // Bind the raw driver query to the controller in this exact sysinfo
-        // snapshot before the memoized promise starts.  The raw runtime may
-        // enumerate property-less handles or reorder adapters.
-        driverReBar.setTarget?.(result);
-        const verdict = await driverReBar();
-        return verdict === null ? result : applyDriverReBar(result, verdict, driverReBar.target);
+        let result = await sysinfoResult();
+        let rawDevices = [];
+        try { rawDevices = await rawBackend.listDevices(); } catch { rawDevices = []; }
+        for (const target of rawDevices) {
+          const key = rebarTargetKey(target);
+          if (!key) continue;
+          let reader = driverReBars.get(key);
+          if (!reader) {
+            reader = createDriverReBar(rawBackend, target);
+            driverReBars.set(key, reader);
+          }
+          const verdict = await reader();
+          if (verdict !== null && verdict !== undefined) {
+            result = applyDriverReBar(result, verdict, reader.target ?? target);
+          }
+        }
+        return result;
       },
     };
   }
@@ -3289,6 +3312,9 @@ async function main() {
       msrReader = createMsrReader({ cpuVendor: null });
     }
     sysStatsHolder.current = createSysStats({
+      deviceKey: initialTarget?.deviceKey ?? null,
+      pnpDeviceId: initialTarget?.pnpDeviceId ?? initialTarget?.osController?.pnpDeviceId ?? null,
+      pciVendorId: initialTarget?.pciVendorId ?? null,
       deviceIdHex,
       bdf: initialTarget?.bdf ?? null,
       integrated: initialTarget?.integrated === true,

@@ -1057,6 +1057,11 @@ export interface RecordingAudioDevice { id: string; deviceId: string; name: stri
 export interface RecordingEncoderState {
   type: string;
   description: string;
+  /** Optional adapter identity supplied by runtimes that enumerate encoders per GPU. */
+  deviceKey?: string | null;
+  deviceName?: string | null;
+  adapterName?: string | null;
+  gpuName?: string | null;
   enumerated: boolean;
   probeValid: boolean;
   startTested: boolean;

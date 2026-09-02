@@ -466,6 +466,9 @@ export function createCpuUtilReader(deps = {}) {
  * @param {{
  *   execFile?: typeof execFile,
  *   luidOf?: (deviceIdHex: string, bdf?: string|null) => Promise<{ high: number, low: number } | null>,
+ *   deviceKey?: string|null,       // stable physical adapter identity
+ *   pnpDeviceId?: string|null,     // Windows identity fallback
+ *   pciVendorId?: string|null,     // PCI identity fallback
  *   deviceIdHex?: string | null,   // e.g. '0x56a0' - the backend device's PCI id
  *   bdf?: string | null,           // durable PCI/BDF bridge for same-model adapters
  *   msrReader?: {                   // M4L: the PawnIO MSR provider (optional)
@@ -545,6 +548,87 @@ export function createSysStats(deps = {}) {
   let slowOwner = undefined;
   let slowInflight = false;
 
+  // M150: system counters are queried once, but the GPU fields are cached
+  // per physical adapter.  The old adapter had one mutable target, so a
+  // second overlay lane could only ever inherit the selected GPU's LUID,
+  // memory and utilization.  Identity is deliberately based on the same
+  // stable evidence as the inventory; numeric session ids are never used.
+  const emptyLaneCache = () => ({
+    cpuUtilPct: null,
+    cpuTempC: null,
+    cpuFreqMhz: null,
+    gpuMemUsedBytes: null,
+    gpuMemorySource: null,
+    cpuPowerW: null,
+    gpuUtilPct: null,
+  });
+  const targetSpecOf = (target = null) => {
+    const controller = target?.osController ?? {};
+    const pciVendorId = target?.pciVendorId ?? controller.pciVendorId ?? null;
+    const pciDeviceId = typeof (target?.pciDeviceId ?? target?.deviceIdHex ?? controller.pciDeviceId) === 'string'
+      ? (target.pciDeviceId ?? target.deviceIdHex ?? controller.pciDeviceId)
+      : null;
+    return {
+      deviceKey: typeof target?.deviceKey === 'string' && target.deviceKey.trim() ? target.deviceKey.trim() : null,
+      pnpDeviceId: target?.pnpDeviceId ?? controller.pnpDeviceId ?? null,
+      pciVendorId,
+      pciDeviceId,
+      bdf: target?.bdf ?? controller.bdf ?? null,
+      deviceIdHex: pciDeviceId,
+      osLuid: target?.osLuid ?? controller.luid ?? null,
+      integrated: target?.integrated === true,
+      mobile: target?.mobile === true,
+      dedicatedCapacityBytes: target?.vramBytes ?? controller.vramBytes ?? null,
+    };
+  };
+  const identityText = (value) => typeof value === 'string' && value.trim()
+    ? value.trim().replace(/[\u0000\s]+/g, '').toUpperCase()
+    : null;
+  const bdfText = (value) => {
+    if (typeof value === 'string' && value.trim()) return value.trim().toLowerCase();
+    if (!value || typeof value !== 'object') return null;
+    const bus = Number(value.bus);
+    const device = Number(value.device);
+    const fn = Number(value.function ?? value.func ?? 0);
+    if ([bus, device, fn].every(Number.isInteger)) return `${bus}:${device}.${fn}`;
+    return null;
+  };
+  const targetKeyOf = (target) => {
+    const spec = targetSpecOf(target);
+    if (spec.deviceKey) return `key:${identityText(spec.deviceKey)}`;
+    const pnp = identityText(spec.pnpDeviceId);
+    const bdf = bdfText(spec.bdf);
+    const vendor = identityText(spec.pciVendorId);
+    const pci = identityText(spec.pciDeviceId ?? spec.deviceIdHex);
+    if (pnp || bdf || pci) return `physical:${pnp ?? '-'}|${vendor ?? '-'}:${pci ?? '-'}|${bdf ?? '-'}`;
+    return 'default';
+  };
+  const targetRecords = new Map();
+  const ensureTargetRecord = (target = null) => {
+    const spec = targetSpecOf(target);
+    const key = targetKeyOf(spec);
+    let record = targetRecords.get(key);
+    if (!record) {
+      record = { key, ...spec, cache: emptyLaneCache() };
+      targetRecords.set(key, record);
+    } else {
+      Object.assign(record, spec);
+    }
+    return record;
+  };
+  let activeRecord = ensureTargetRecord({
+    deviceKey: deps.deviceKey ?? null,
+    pnpDeviceId: deps.pnpDeviceId ?? null,
+    pciVendorId: deps.pciVendorId ?? null,
+    pciDeviceId: deviceIdHex,
+    bdf: deviceBdf,
+    osLuid: luidOverride,
+    integrated: targetIntegrated,
+    mobile: targetMobile,
+    vramBytes: dedicatedCapacityBytes,
+  });
+  laneCache = activeRecord.cache;
+
   // M4L (B4): the once-per-session MSR degrade note - fired when the MSR
   // provider reports an unavailable state (device absent, install failed,
   // AV quarantine) so the honest text (with the pawnio.eu link) reaches
@@ -569,6 +653,43 @@ export function createSysStats(deps = {}) {
     msrPowerDegradeFired = true;
     onMsrDegrade(`CPU wattage unavailable: ${detail} (the RAPL power path - temp may keep working)`);
   };
+
+  async function sampleFastForRecord(record) {
+    let util = null;
+    try {
+      util = await cpuUtilReader.read();
+    } catch {
+      util = null;
+    }
+    let msrTemp = null;
+    let msrPower = null;
+    try {
+      msrTemp = msrReader ? await msrReader.packageTempC() : null;
+    } catch {
+      msrTemp = null;
+    }
+    try {
+      msrPower = msrReader ? await msrReader.packagePowerW() : null;
+    } catch {
+      msrPower = null;
+    }
+    // M17g: the once-per-session MSR degrade notes move with the MSR reads.
+    if (msrReader && msrTemp === null && msrPower === null) fireMsrDegrade();
+    if (msrReader && msrPower === null) fireMsrPowerDegrade();
+    let memBytes = null;
+    try {
+      memBytes = await memoryUtil.detect();
+    } catch {
+      memBytes = null;
+    }
+    return {
+      ...record.cache,
+      cpuUtilPct: util ?? record.cache.cpuUtilPct,
+      cpuTempC: msrTemp ?? record.cache.cpuTempC,
+      cpuPowerW: msrPower ?? record.cache.cpuPowerW,
+      memoryUsedBytes: memBytes,
+    };
+  }
 
   let adapter = null; // M17g: the self-reference - slowTick drives the lane methods
 
@@ -646,31 +767,6 @@ export function createSysStats(deps = {}) {
         // Fix round 2: single samples of the OS-formatted counters.
         const utilPct = raw.fmtUtil;
         const freqMhz = freqFromPerfPct(raw.fmtPerf, maxClockMhz);
-        // GPU memory: the perf-counter instance whose name encodes the
-        // device's LUID (resolved via DXGI GetDesc1 by PCI device id).
-        let gpuBytes = null;
-        let gpuMemorySource = null;
-        let gpuUtil = null;
-        if (deviceIdHex) {
-          try {
-            const luid = luidOverride ?? await luidOf(deviceIdHex, deviceBdf);
-            const memory = gpuMemoryUsageOf(raw.gpuMemRows, luid, {
-              integrated: targetIntegrated,
-              mobile: targetMobile,
-              dedicatedCapacityBytes,
-            });
-            if (memory) {
-              gpuBytes = memory.bytes;
-              gpuMemorySource = memory.source;
-            }
-            // M4-I (D1): the GPUEngine aggregation for the SAME LUID.
-            gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
-          } catch {
-            gpuBytes = null;
-            gpuMemorySource = null;
-            gpuUtil = null;
-          }
-        }
         // M4-I (C1)/M4J (C): the WMI CPU temperature (the MSAcpi zones
         // first, then the perf counter) - the shared frozenDrop window
         // STAYS with the slow-lane WMI fallbacks (the MSR reading in the
@@ -678,19 +774,48 @@ export function createSysStats(deps = {}) {
         const tempK10 = raw.msaTempK10Max !== null ? raw.msaTempK10Max : raw.tempK10Max;
         const wmiTempC = tempK10 !== null ? tempK10 / 10 : null;
         tempWindow = [...tempWindow, wmiTempC].slice(-5);
-        laneCache = {
+        const common = {
           cpuUtilPct: utilPct,
           cpuFreqMhz: freqMhz,
           cpuTempC: frozenDrop(tempWindow),
-          gpuMemUsedBytes: gpuBytes,
-          gpuMemorySource,
           // M4-H: the PowerMeter's formatted 'Power' (watts, single
           // sample); null when the class is absent (honest '-').
           cpuPowerW: raw.powerW,
-          // M4-I (D1): the OS GPU-utilization counter; null when
-          // unpopulated (the honest '-').
-          gpuUtilPct: gpuUtil,
         };
+        // M150: resolve every registered physical target against the SAME
+        // query.  Each adapter keeps its own LUID/memory/utilization cache;
+        // a selected-device switch cannot overwrite another overlay lane.
+        for (const record of targetRecords.values()) {
+          let gpuBytes = null;
+          let gpuMemorySource = null;
+          let gpuUtil = null;
+          if (record.deviceIdHex || record.osLuid) {
+            try {
+              const luid = record.osLuid ?? await luidOf(record.deviceIdHex, record.bdf);
+              const memory = gpuMemoryUsageOf(raw.gpuMemRows, luid, {
+                integrated: record.integrated,
+                mobile: record.mobile,
+                dedicatedCapacityBytes: record.dedicatedCapacityBytes,
+              });
+              if (memory) {
+                gpuBytes = memory.bytes;
+                gpuMemorySource = memory.source;
+              }
+              gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
+            } catch {
+              gpuBytes = null;
+              gpuMemorySource = null;
+              gpuUtil = null;
+            }
+          }
+          record.cache = {
+            ...common,
+            gpuMemUsedBytes: gpuBytes,
+            gpuMemorySource,
+            gpuUtilPct: gpuUtil,
+          };
+        }
+        laneCache = activeRecord.cache;
         return laneCache;
       } catch {
         // a stats failure degrades honestly - never breaks the tick
@@ -715,67 +840,29 @@ export function createSysStats(deps = {}) {
      * @returns {Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null, cpuPowerW: number | null, gpuUtilPct: number | null, memoryUsedBytes: number | null }>}
      */
     async sampleFast() {
-      let util = null;
-      try {
-        util = await cpuUtilReader.read();
-      } catch {
-        util = null;
-      }
-      let msrTemp = null;
-      let msrPower = null;
-      try {
-        msrTemp = msrReader ? await msrReader.packageTempC() : null;
-      } catch {
-        msrTemp = null;
-      }
-      try {
-        msrPower = msrReader ? await msrReader.packagePowerW() : null;
-      } catch {
-        msrPower = null;
-      }
-      // M17g: the once-per-session MSR degrade notes MOVE WITH the MSR
-      // reads to the fast lane - a degrade must still fire, never lost in
-      // the move (the once-flags keep the legacy sample() path + this
-      // lane safe together - at most one note per session).
-      if (msrReader && msrTemp === null && msrPower === null) fireMsrDegrade();
-      // M17b (N4): the per-field POWER degrade - the named AMD status
-      // reaches the log on the POWER path ALONE (temp may keep working).
-      if (msrReader && msrPower === null) fireMsrPowerDegrade();
-      let memBytes = null;
-      try {
-        memBytes = await memoryUtil.detect();
-      } catch {
-        memBytes = null;
-      }
-      return {
-        ...laneCache,
-        cpuUtilPct: util ?? laneCache.cpuUtilPct,
-        cpuTempC: msrTemp ?? laneCache.cpuTempC,
-        cpuPowerW: msrPower ?? laneCache.cpuPowerW,
-        memoryUsedBytes: memBytes,
-      };
+      return sampleFastForRecord(activeRecord);
+    },
+
+    // M150: fast native fields are shared in meaning but merged with the
+    // selected physical adapter's slow cache.  This is the per-lane entry
+    // point used by overlay and multi-device consumers.
+    async sampleForTarget(target = null) {
+      const record = ensureTargetRecord(target);
+      return sampleFastForRecord(record);
+    },
+
+    registerTarget(target = null) {
+      return ensureTargetRecord(target).key;
     },
 
     setTarget(target = null) {
-      const nextPci = typeof target?.pciDeviceId === 'string' ? target.pciDeviceId : null;
-      const nextBdf = target?.bdf ?? target?.osController?.bdf ?? null;
-      const nextLuid = target?.osLuid ?? target?.osController?.luid ?? null;
-      const nextIntegrated = target?.integrated === true;
-      const nextMobile = target?.mobile === true;
-      const nextDedicated = target?.vramBytes ?? target?.osController?.vramBytes ?? null;
-      if (nextPci === deviceIdHex
-        && nextBdf === deviceBdf
-        && JSON.stringify(nextLuid) === JSON.stringify(luidOverride)
-        && nextIntegrated === targetIntegrated
-        && nextMobile === targetMobile
-        && nextDedicated === dedicatedCapacityBytes) return;
-      deviceIdHex = nextPci;
-      deviceBdf = nextBdf;
-      luidOverride = nextLuid;
-      targetIntegrated = nextIntegrated;
-      targetMobile = nextMobile;
-      dedicatedCapacityBytes = nextDedicated;
-      laneCache = { cpuUtilPct: null, cpuTempC: null, cpuFreqMhz: null, gpuMemUsedBytes: null, gpuMemorySource: null, cpuPowerW: null, gpuUtilPct: null };
+      const next = target === null
+        ? ensureTargetRecord(null)
+        : ensureTargetRecord(target);
+      const same = next === activeRecord;
+      activeRecord = next;
+      laneCache = activeRecord.cache;
+      if (same) return;
     },
 
     /**
@@ -902,6 +989,8 @@ export function createMockSysStats(overrides = {}) {
     // query). The mock NEVER returns a null first sample (the
     // determinism pins stay - no GetSystemTimes baseline tick here).
     async sampleFast() { return sampleOf(); },
+    async sampleForTarget() { return sampleOf(); },
+    registerTarget() {},
     async sampleSlow() { return sampleOf(); },
     async sample() { return sampleOf(); },
     // M17g: the mock needs no background slow lane (every call returns

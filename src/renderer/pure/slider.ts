@@ -7,6 +7,51 @@
 
 import type { RangeInfo } from '../types.ts';
 
+export interface ControlDisplay {
+  units: string;
+  decimals: number;
+}
+
+/**
+ * User-facing tuning units. The apply range remains untouched: some
+ * Battlemage drivers expose the voltage and temperature controls with a
+ * percent enum even though the product surface is an offset in mV and a
+ * limit in °C. This helper changes presentation only, never the numeric
+ * payload sent through settings.
+ */
+export function controlDisplay(key: string, range: RangeInfo, deviceName = ''): ControlDisplay {
+  const battlemage = /battlemage|\bB\d{2,4}\b/i.test(deviceName);
+  if (battlemage && key === 'gpuVoltOffsetV' && range.units === '%') {
+    return { units: 'mV', decimals: 0 };
+  }
+  if (battlemage && key === 'tempLimitC' && range.units === '%') {
+    return { units: 'C', decimals: 0 };
+  }
+  // Battlemage VRAM speed ranges are absolute MHz after the backend's unit
+  // conversion. Their capability step may still be fractional (0.125), but
+  // the requested product readout is a whole MHz value.
+  if (key === 'vramFreqOffsetGts' && range.units === 'MHz') {
+    return { units: 'MHz', decimals: 0 };
+  }
+  return { units: range.units, decimals: range.units === 'V' ? 3 : 0 };
+}
+
+export function formatControlValue(value: number, key: string, range: RangeInfo, deviceName = ''): string {
+  const display = controlDisplay(key, range, deviceName);
+  return formatValue(value, display.units, display.decimals);
+}
+
+export function formatControlDriverValue(value: number | null | undefined, key: string, range: RangeInfo, deviceName = ''): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'unavailable';
+  const display = controlDisplay(key, range, deviceName);
+  // A displayed mV/°C value is not in the raw range's unit vocabulary, and
+  // VRAM MHz intentionally suppresses off-grid precision in the readout.
+  if (display.units !== range.units || (key === 'vramFreqOffsetGts' && range.units === 'MHz')) {
+    return formatValue(value, display.units, display.decimals);
+  }
+  return formatDriverValue(value, range);
+}
+
 /**
  * Snap `value` to the nearest multiple of `range.step` from `range.min`,
  * then clamp to [min, max]. Preserves min/max exactly (a step need not

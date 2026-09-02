@@ -65,7 +65,7 @@ import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { consumeFanViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
-import { snapToRange, normalizedPosition, formatValue, formatDriverValue, isOffGrid } from '../pure/slider.ts';
+import { snapToRange, normalizedPosition, formatControlValue, formatControlDriverValue, controlDisplay, isOffGrid } from '../pure/slider.ts';
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
@@ -196,11 +196,17 @@ let applying = false;
 let view: 'tuning' | 'fan' = 'tuning';
 let viewContainer: HTMLElement | null = null;
 
-function editableNumber(value: number, range: RangeInfo): string {
-  const decimals = Number.isInteger(range.step)
+function editableNumber(value: number, range: RangeInfo, decimalsOverride?: number): string {
+  const decimals = decimalsOverride ?? (Number.isInteger(range.step)
     ? 0
-    : Math.min(6, String(range.step).split('.')[1]?.length ?? 3);
+    : Math.min(6, String(range.step).split('.')[1]?.length ?? 3));
   return value.toFixed(decimals);
+}
+
+function controlRangeText(key: string, range: RangeInfo, deviceName: string): string {
+  const display = controlDisplay(key, range, deviceName);
+  const number = (value: number) => display.decimals === 0 ? String(Math.round(value)) : String(value);
+  return `${number(range.min)} – ${number(range.max)} ${display.units} · step ${range.step}`;
 }
 
 function resetPageState(state: DeviceState, caps: Capabilities) {
@@ -355,6 +361,7 @@ function refreshLockEditor(): void {
  *  mode; pure/clock.ts died with it). */
 function refreshCard(key: string) {
   const caps = renderCaps;
+  if (!caps) return;
   const range = cardSliderRange(caps, key);
   if (!range) return;
   const value = values[key];
@@ -367,7 +374,8 @@ function refreshCard(key: string) {
   const rangeNode = rangeNodes.get(key);
   const valueInput = valueInputs.get(key);
   const rawDriver = currentState?.[key as keyof DeviceState];
-  const driverText = formatDriverValue(typeof rawDriver === 'number' ? rawDriver : null, sliderRange);
+  const driverText = formatControlDriverValue(typeof rawDriver === 'number' ? rawDriver : null, key, sliderRange, caps.deviceName);
+  const display = controlDisplay(key, sliderRange, caps.deviceName);
   if (input) {
     input.min = String(sliderRange.min);
     input.max = String(sliderRange.max);
@@ -378,13 +386,13 @@ function refreshCard(key: string) {
     valueInput.min = String(sliderRange.min);
     valueInput.max = String(sliderRange.max);
     valueInput.step = String(sliderRange.step);
-    valueInput.value = editableNumber(snapToRange(displayValue, sliderRange), sliderRange);
+    valueInput.value = editableNumber(snapToRange(displayValue, sliderRange), sliderRange, display.decimals);
   }
   if (fill) fill.style.width = `${normalizedPosition(displayValue, sliderRange) * 100}%`;
-  if (valueNode) valueNode.textContent = formatValue(displayValue, sliderRange.units);
+  if (valueNode) valueNode.textContent = formatControlValue(displayValue, key, sliderRange, caps.deviceName);
   // The meta range caption describes the CURRENT slider (the offset range
   // the card was built with - the en-dash caption format is shared).
-  if (rangeNode) rangeNode.textContent = `${sliderRange.min} – ${sliderRange.max} ${sliderRange.units} · step ${sliderRange.step}`;
+  if (rangeNode) rangeNode.textContent = controlRangeText(key, sliderRange, caps.deviceName);
   // The "Driver:" readout always reflects the FRESH state - never built once
   // at render (the stale part that forced the leave-and-return dance).
   if (driverNode) {
@@ -394,7 +402,7 @@ function refreshCard(key: string) {
   if (diffNode) {
     const pending = isPendingControl(key);
     diffNode.textContent = pending
-      ? `${driverText} → ${formatValue(displayValue, sliderRange.units)}`
+      ? `${driverText} → ${formatControlValue(displayValue, key, sliderRange, caps.deviceName)}`
       : 'In sync';
     diffNode.className = `tuning-diff${pending ? ' is-pending' : ''}`;
   }
@@ -530,10 +538,11 @@ export const tuningPage: Page = {
       // M17e: the M4-B Clock-mode presentation is REMOVED - the slider
       // range is the offset range, always (the offset stays the only mode).
       const sliderRange = range;
+      const display = controlDisplay(key, sliderRange, caps.deviceName);
       const rawDriver = state[key as keyof DeviceState];
       const driverRaw = typeof rawDriver === 'number' ? rawDriver : null;
       const driverValue = driverRaw;
-      const driverText = formatDriverValue(driverValue, sliderRange);
+      const driverText = formatControlDriverValue(driverValue, key, sliderRange, caps.deviceName);
       const offGrid = isOffGrid(driverValue, sliderRange);
 
       // M17e (Run B): the LOCK-MODE editor - rendered INSIDE the freq card
@@ -807,7 +816,7 @@ export const tuningPage: Page = {
         min: String(sliderRange.min),
         max: String(sliderRange.max),
         step: String(sliderRange.step),
-        value: editableNumber(values[key], sliderRange),
+        value: editableNumber(values[key], sliderRange, display.decimals),
         'aria-label': `${CONTROL_LABELS[key] ?? key} value`,
         onchange: (e: Event) => {
           const raw = Number((e.target as HTMLInputElement).value);
@@ -822,11 +831,11 @@ export const tuningPage: Page = {
       }) as HTMLInputElement;
       const valueField = el('div', { class: 'oc-value-field' }, [
         valueInput,
-        el('span', { class: 'oc-value-unit', text: sliderRange.units === 'C' ? '°C' : sliderRange.units }),
+        el('span', { class: 'oc-value-unit', text: display.units === 'C' ? '°C' : display.units }),
       ]);
       // Keep the legacy text readout in the DOM for existing UI verification
       // and accessibility probes; the editable field is the visible control.
-      const valueText = el('span', { class: 'oc-value', text: formatValue(values[key], sliderRange.units), 'aria-hidden': 'true' });
+      const valueText = el('span', { class: 'oc-value', text: formatControlValue(values[key], key, sliderRange, caps.deviceName), 'aria-hidden': 'true' });
       const card = el('section', { class: 'card oc-card', dataset: { control: key } }, [
         el('div', { class: 'oc-card-head' }, [
           el('h2', { class: 'card-title', text: CONTROL_LABELS[key] ?? key }),
@@ -887,7 +896,7 @@ export const tuningPage: Page = {
         // M3-C-G: the preset chips are gone - the meta row is the range line
         // only (single line; the freed space makes the tab more compact).
         el('div', { class: 'oc-meta' }, [
-          el('span', { class: 'oc-range', text: `${sliderRange.min} – ${sliderRange.max} ${sliderRange.units} · step ${sliderRange.step}` }),
+          el('span', { class: 'oc-range', text: controlRangeText(key, sliderRange, caps.deviceName) }),
           ...(key === 'gpuFreqOffsetMhz' && caps.controlStatus?.gpuLock?.reason
             ? [el('span', { class: 'oc-control-status', text: caps.controlStatus.gpuLock.reason })]
             : []),
@@ -1087,7 +1096,7 @@ export const tuningPage: Page = {
         const currentDevice = current.devices.find((device) => device.id === deviceId) ?? null;
         if (current.deviceId !== deviceId || currentDevice !== selectedDevice
           || currentDevice?.deviceKey !== deviceKey) return;
-        ctx.store.set({ ocMode: mode, caps: freshCaps, state: freshState });
+        ctx.store.set({ ocMode: freshCaps.ocMode ?? mode, caps: freshCaps, state: freshState });
         if (mode === 'advanced') {
           toast('info', 'Advanced OC Mode enabled', 'Extended power/temperature limits are now available.');
         } else {
@@ -1456,7 +1465,7 @@ export const tuningPage: Page = {
             // so the offset applies can no longer reach this reference; the
             // LOCK editor's own apply path owns the appliedLock sync.
             if (!isNoopApply(key, settings, before as DeviceState)) {
-              toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof wanted === 'number' && range ? formatValue(wanted, range.units) : '');
+              toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof wanted === 'number' && range ? formatControlValue(wanted, key, range, caps.deviceName) : '');
             }
             setCardResult(key, true, isNoopApply(key, settings, before as DeviceState) ? 'No change' : 'Applied');
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.

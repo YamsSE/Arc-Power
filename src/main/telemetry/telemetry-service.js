@@ -18,12 +18,13 @@ export class TelemetryService {
   /**
    * @param {IOCBackend} backend
    * @param {number} deviceId
-   * @param {{ pollMs?: number, ringSize?: number }} opts
+   * @param {{ pollMs?: number, ringSize?: number, immediate?: boolean }} opts
    */
   constructor(backend, deviceId, opts = {}) {
     this.backend = backend;
     this.deviceId = deviceId;
     this.pollMs = Math.max(opts.pollMs ?? 400, IGCL_MIN_POLL_MS);
+    this.immediate = opts.immediate === true;
     this.ringSize = Math.max(opts.ringSize ?? 300, 2);
     this._ring = [];
     this._lastRaw = null;
@@ -49,6 +50,17 @@ export class TelemetryService {
       this.backend.sampleRawTelemetry(this.deviceId)
         .catch((err) => this._onPollError(err));
     }, this.pollMs);
+    // A freshly selected lane must publish a first sample before the next
+    // interval.  Without this, switching GPUs leaves the Monitoring and
+    // Overlay cards at '-' until the next poll, and a secondary lane that was
+    // just added appears permanently empty at normal UI speeds.
+    if (this.immediate) {
+      try {
+        await this.backend.sampleRawTelemetry(this.deviceId);
+      } catch (err) {
+        this._onPollError(err);
+      }
+    }
   }
 
   async stop() {
