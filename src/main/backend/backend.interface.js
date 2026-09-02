@@ -167,7 +167,8 @@
  * @typedef {{
  *   oemName: string,
  *   deviceName: string,
- *   deviceKey?: string | null, // Stable PCI/BDF identity shared by device enumeration and apply routing.
+ *   deviceKey?: string | null, // Current stable identity shared by device enumeration and apply routing.
+ *   deviceKeys?: string[] | null, // Verified PCI/BDF + PNP aliases across inventory enrichment.
  *   learnedCeilings?: Record<string, number>, // Session/native lower ceilings retained for profile-range transforms.
  *   controls: {
  *     gpuFreqOffset?: boolean, gpuVoltOffset?: boolean, gpuLock?: boolean,
@@ -197,6 +198,7 @@
  *   sharedMemorySource?: string|null,
  *   integrated?: boolean,    // IGCL graphics_adapter_properties bit 0
  *   mobile?: boolean,        // name-derived mobile SKU fallback
+ *   deviceKeys?: string[]|null, // verified physical identity aliases
  * }} DeviceInfo
  */
 
@@ -205,6 +207,7 @@
  * Power is NOT here - it is derived by TelemetryService from energy deltas.
  * @typedef {{
  *   t: number,
+ *   deviceKeys?: string[]|null, // verified physical identity aliases
  *   gpuClockMhz?: number, memClockMhz?: number, tempC?: number,
  *   memTempC?: number, vramTempC?: number, gpuVoltageV?: number,
  *   gpuEnergyJ?: number, vramEnergyJ?: number, totalEnergyJ?: number,

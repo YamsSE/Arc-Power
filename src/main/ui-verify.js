@@ -9616,7 +9616,10 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(panelWin, `(document.getElementById('adv-readout-power')?.textContent ?? '').trim() === '38.8 W'`, 10000))) {
     fail(`M23: the readout power strip is '${await ojs(`document.getElementById('adv-readout-power')?.textContent ?? ''`)}' (expected '38.8 W' from the mock telemetry)`);
   }
-  step('m23-readout', `M23: the live readout strip renders honest telemetry values - temp '${await ojs(`document.getElementById('adv-readout-temp')?.textContent ?? ''`)}', fan '${await ojs(`document.getElementById('adv-readout-fan')?.textContent ?? ''`)}', power '${await ojs(`document.getElementById('adv-readout-power')?.textContent ?? ''`)}' (the third consumer of the sample stream)`);
+  if (!(await waitFor(panelWin, `(document.getElementById('adv-readout-memory')?.textContent ?? '').trim() === '3.0 GB'`, 10000))) {
+    fail(`M23: the readout VRAM strip is '${await ojs(`document.getElementById('adv-readout-memory')?.textContent ?? ''`)}' (expected '3.0 GB' from the mock telemetry)`);
+  }
+  step('m23-readout', `M23: the live readout strip renders honest telemetry values - temp '${await ojs(`document.getElementById('adv-readout-temp')?.textContent ?? ''`)}', fan '${await ojs(`document.getElementById('adv-readout-fan')?.textContent ?? ''`)}', power '${await ojs(`document.getElementById('adv-readout-power')?.textContent ?? ''`)}', VRAM '${await ojs(`document.getElementById('adv-readout-memory')?.textContent ?? ''`)}' (the third consumer of the sample stream)`);
 
   // (7) the hotkey collision: saving the advanced letter equal to the HUD
   // letter is refused with a toast (the renderer refuses - the ENVELOPE

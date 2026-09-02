@@ -28,18 +28,36 @@ export function resolveSelectionDevice(
 /**
  * Match telemetry to the selected adapter. If either side has a durable
  * identity, both must have the same identity; numeric IDs are a fallback
- * only when neither side is durably identified.
+ * only when neither side is durably identified. A verified alias overlap is
+ * allowed for the initial PCI/BDF -> enriched PNP transition, but only when
+ * the session id is also unchanged.
  */
 export function telemetryMatchesSelection(
   sampleDeviceId: number | null | undefined,
   sampleKey: string | null | undefined,
   selectedDeviceId: number | null,
   selectedKey: string | null | undefined,
+  sampleAliases: readonly unknown[] = [],
+  selectedAliases: readonly unknown[] = [],
 ): boolean {
   const sampleIdentity = normalizeDeviceKey(sampleKey);
   const selectedIdentity = normalizeDeviceKey(selectedKey);
+  const sampleIdentities = new Set(
+    [sampleIdentity, ...(Array.isArray(sampleAliases) ? sampleAliases : [])]
+      .map((value) => normalizeDeviceKey(value))
+      .filter((value): value is string => value !== null),
+  );
+  const selectedIdentities = new Set(
+    [selectedIdentity, ...(Array.isArray(selectedAliases) ? selectedAliases : [])]
+      .map((value) => normalizeDeviceKey(value))
+      .filter((value): value is string => value !== null),
+  );
   if (sampleIdentity !== null || selectedIdentity !== null) {
-    return sampleIdentity !== null && selectedIdentity !== null && sampleIdentity === selectedIdentity;
+    if (sampleIdentity !== null && selectedIdentity !== null && sampleIdentity === selectedIdentity) return true;
+    return sampleDeviceId !== undefined
+      && selectedDeviceId !== null
+      && sampleDeviceId === selectedDeviceId
+      && [...sampleIdentities].some((identity) => selectedIdentities.has(identity));
   }
   return sampleDeviceId === undefined || sampleDeviceId === selectedDeviceId;
 }

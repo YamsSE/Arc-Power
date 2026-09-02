@@ -1276,7 +1276,7 @@ export function createIpcHandlers({
     });
   };
 
-  const startTelemetry = async (deviceId) => {
+  const startTelemetryLane = async (deviceId) => {
     if (telemetry.has(deviceId)) return;
     const generation = ++telemetryGeneration;
     // M17e (round-2 N4, the overlay polling-rate slider): the telemetry
@@ -1298,6 +1298,7 @@ export function createIpcHandlers({
     // with another adapter's numeric id.
     const target = await backend.getDeviceTarget?.(deviceId);
     if (generation !== telemetryGeneration) return;
+    const telemetryAliases = Array.isArray(target?.deviceKeys) ? [...target.deviceKeys] : null;
     try { await sysStats.setTarget?.(target); } catch { /* stale OS target degrades to null fields */ }
     if (generation !== telemetryGeneration) return;
     if (target?.synthetic || target?.backendKind === 'os') {
@@ -1319,6 +1320,7 @@ export function createIpcHandlers({
             t: Date.now(),
             deviceId,
             deviceKey: target?.deviceKey ?? null,
+            deviceKeys: telemetryAliases,
             sessionGeneration: generation,
             ...extra,
             ...(sample ?? {}),
@@ -1370,6 +1372,7 @@ export function createIpcHandlers({
       emitTelemetry({
         deviceId,
         deviceKey: target?.deviceKey ?? null,
+        deviceKeys: telemetryAliases,
         sessionGeneration: generation,
         ...extra,
         ...sample,
@@ -1395,6 +1398,7 @@ export function createIpcHandlers({
           t: Date.now(),
           deviceId,
           deviceKey: target?.deviceKey ?? null,
+          deviceKeys: telemetryAliases,
           sessionGeneration: generation,
           ...extra,
         });
@@ -1412,6 +1416,26 @@ export function createIpcHandlers({
     try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
     if (await cleanupStaleTelemetryStartup({ generation, service: svc })) return;
     telemetry.set(deviceId, svc);
+  };
+
+  // The Advanced Overlay can be opened before the main renderer has reached
+  // its normal telemetry-start call (for example while the app is hidden in
+  // the tray). Keep that panel self-sufficient by allowing its snapshot read
+  // to bring up the same selected-device lane. Serialize this with the main
+  // renderer's start so two concurrent callers can never create competing
+  // TelemetryService instances for one device.
+  const telemetryStarting = new Map();
+  const startTelemetry = async (deviceId) => {
+    if (telemetry.has(deviceId)) return;
+    const pending = telemetryStarting.get(deviceId);
+    if (pending) return pending;
+    const start = startTelemetryLane(deviceId);
+    telemetryStarting.set(deviceId, start);
+    try {
+      await start;
+    } finally {
+      if (telemetryStarting.get(deviceId) === start) telemetryStarting.delete(deviceId);
+    }
   };
   /**
    * Start the Basic Overlay's secondary GPU lanes. These lanes deliberately
@@ -1464,6 +1488,9 @@ export function createIpcHandlers({
               t: Date.now(),
               deviceId,
               deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
+              deviceKeys: Array.isArray(target?.deviceKeys)
+                ? [...target.deviceKeys]
+                : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
               sessionGeneration: telemetryGeneration,
               ...(sample ?? {}),
             });
@@ -1483,6 +1510,9 @@ export function createIpcHandlers({
         emitTelemetry({
           deviceId,
           deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
+          deviceKeys: Array.isArray(target?.deviceKeys)
+            ? [...target.deviceKeys]
+            : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
           sessionGeneration: telemetryGeneration,
           ...sample,
         });
@@ -1502,6 +1532,10 @@ export function createIpcHandlers({
   const stopAllTelemetry = async () => {
     telemetryGeneration += 1;
     overlayTelemetryGeneration += 1;
+    // A startup can still be waiting on inventory/sysinfo when teardown
+    // arrives. Do not let a later snapshot read join that invalidated promise
+    // instead of starting a fresh lane for the current panel.
+    telemetryStarting.clear();
     for (const svc of telemetry.values()) {
       try { await svc.stop(); } catch { /* best effort */ }
     }
@@ -2122,6 +2156,10 @@ export function createIpcHandlers({
       },
       'telemetry-latest': async (deviceId) => {
         assertValidDeviceId(deviceId);
+        // A panel opened before the main renderer's boot telemetry call must
+        // still receive live data. This is idempotent and shares the same
+        // in-flight startup promise as telemetry-start.
+        await startTelemetry(deviceId);
         return latestTelemetry.get(deviceId) ?? null;
       },
       'overlay-telemetry-start': async (deviceIds) => {
@@ -2138,6 +2176,7 @@ export function createIpcHandlers({
           // service in the map; otherwise a rollback can be followed by a
           // stale timer appearing after this stop returns.
           telemetryGeneration += 1;
+          telemetryStarting.delete(NULL_DEVICE_KEY);
           latestTelemetry.delete(NULL_DEVICE_KEY);
           if (svc) {
             await svc.stop();
@@ -2150,6 +2189,7 @@ export function createIpcHandlers({
         // The map can still be empty while target/provider/service startup
         // awaits. Stop must invalidate that pending start unconditionally.
         telemetryGeneration += 1;
+        telemetryStarting.delete(deviceId);
         latestTelemetry.delete(deviceId);
         if (svc) {
           await svc.stop();

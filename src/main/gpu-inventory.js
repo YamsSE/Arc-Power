@@ -196,6 +196,24 @@ function mergedPhysicalParts(device, controller) {
   };
 }
 
+// Keep every identity proven for one physical row. The first inventory pass
+// can only have the IGCL PCI/BDF key; once the Windows controller snapshot
+// lands, the same row gains its stronger PNP key. These are aliases for the
+// same adapter, not alternate ways to select an arbitrary session row.
+function identityAliasesOf(device, controller, parts) {
+  const aliases = new Set();
+  const add = (value) => {
+    if (typeof value !== 'string') return;
+    const normalized = value.trim();
+    if (normalized) aliases.add(normalized);
+  };
+  add(device?.deviceKey);
+  if (parts?.pnp) add(`pnp:${parts.pnp}`);
+  if (parts?.ven && parts?.dev && parts?.bdf) add(`pci:${parts.ven}:${parts.dev}@${parts.bdf}`);
+  add(legacyKeyOf(parts?.ven, parts?.dev, parts?.bdf));
+  return [...aliases];
+}
+
 /**
  * Build a one-to-one inventory.  IGCL entries are matched first; an OS row
  * can be consumed by at most one IGCL row.  Every remaining real OS row is
@@ -237,6 +255,7 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
       backendKind,
       synthetic: false,
       deviceKey: null,
+      deviceKeys: identityAliasesOf(device, controller, parts),
       identityBase: base,
       identityTie: JSON.stringify([device?.name ?? '', parts.ven, parts.dev, parts.bdf, parts.luid, parts.token]),
       pnpDeviceId: pnp,
@@ -274,6 +293,7 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
       backendKind: 'os',
       synthetic: true,
       deviceKey: null,
+      deviceKeys: identityAliasesOf(null, controller, parts),
       identityBase: base,
       identityTie: JSON.stringify([controller?.name ?? '', controller?.pnpDeviceId ?? '', controller?.luid ?? controller?.adapterLuid ?? null]),
       pnpDeviceId: pnp,
@@ -359,6 +379,9 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
     });
   }
   for (const row of rows) {
+    if (typeof row.deviceKey === 'string' && row.deviceKey.length > 0) {
+      row.deviceKeys = [...new Set([...(row.deviceKeys ?? []), row.deviceKey])];
+    }
     delete row.identityBase;
     delete row.identityTie;
   }
@@ -380,6 +403,7 @@ function syntheticCapabilities(device) {
     oemName: device.gpuVendor ? `${device.gpuVendor} (Windows)` : 'Windows GPU',
     deviceName: device.name,
     deviceKey: device.deviceKey,
+    deviceKeys: device.deviceKeys ?? null,
     memType: device.memType ?? null,
     waiverAccepted: false,
     overclockingSupported: false,
@@ -737,7 +761,7 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       const d = await route(id);
       if (d.synthetic) return syntheticCapabilities(d);
       const caps = await backend.getCapabilities(d.backendId);
-      return { ...caps, deviceKey: d.deviceKey };
+      return { ...caps, deviceKey: d.deviceKey, deviceKeys: d.deviceKeys ?? null };
     },
     async getCurrentSettings(id) { const d = await route(id); return d.synthetic ? nullDeviceState() : backend.getCurrentSettings(d.backendId); },
     async getGraphicsSettings(id) { const d = await route(id); return d.synthetic ? { supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false }, supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] }, frameLimitRange: null, values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null } } : backend.getGraphicsSettings(d.backendId); },

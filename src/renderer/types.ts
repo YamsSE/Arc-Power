@@ -98,6 +98,8 @@ export interface Capabilities {
   deviceName: string;
   /** Stable PCI/BDF identity shared by device enumeration and apply routing. */
   deviceKey?: string | null;
+  /** All physical identities proven for this session row (PCI/BDF + PNP when available). */
+  deviceKeys?: string[] | null;
   /** M4-I (S1): the memory type carried on the caps payload (the igcl
    *  backend derives it once from the token table; the mock fixture
    *  supplies it). Null when unknown. */
@@ -203,6 +205,8 @@ export interface DeviceInfo {
   mobile?: boolean;
   /** Stable PCI/BDF identity; session `id` is intentionally not durable. */
   deviceKey?: string;
+  /** Physical identity aliases retained across the initial/enriched inventory transition. */
+  deviceKeys?: string[] | null;
   /** M4-B: VRAM in bytes for the display-name suffix. */
   vramBytes?: number | null;
   /** Shared system-memory capacity; never included in VRAM/name formatting. */
@@ -461,6 +465,8 @@ export interface TelemetrySample {
   /** Main-process session identity; stale handover samples are ignored. */
   deviceId?: number | null;
   deviceKey?: string | null;
+  /** Physical identity aliases retained across inventory enrichment. */
+  deviceKeys?: string[] | null;
   sessionGeneration?: number;
   gpuClockMhz?: number;
   memClockMhz?: number;
