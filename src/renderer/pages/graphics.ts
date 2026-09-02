@@ -1,7 +1,7 @@
 // Arc Power - M8 the Graphics tab (the IGS-mirror page). Standard cards are
 // rendered in the planned order: XeSS Frame Generation Override, Frame
 // Synchronization, FPS Limit, Low Latency. Integrated/mobile adapters may
-// prepend their Endurance Gaming and shared-memory cards. The page mirrors
+// prepend their merged Endurance Gaming and shared-memory cards. The page mirrors
 // Intel Graphics Software (IGS):
 // every setting is a real IGCL 3D feature (ctlGetSupported3DCapabilities /
 // ctlGetSet3DFeature - live-verified settable on this driver by the M8
@@ -392,6 +392,38 @@ function refreshChip(key: string) {
   if (btn) btn.hidden = state !== 'dirty';
 }
 
+/** The merged Endurance card owns two driver controls but presents one
+ * status/apply surface. A change to either toggle or preset makes the one
+ * card's Apply chip appear. */
+function refreshEnduranceChip(): void {
+  const chip = chipNodes.get('enduranceGaming');
+  const btn = chipApplyNodes.get('enduranceGaming');
+  if (!chip || !btn || !graphicsState) return;
+  const toggleState = chipState(
+    'enduranceGaming',
+    draft as Record<string, unknown>,
+    applied as Record<string, unknown>,
+    graphicsState.values.enduranceGaming,
+    supportedOf(graphicsState, 'enduranceGaming'),
+  );
+  const presetSupported = supportedOf(graphicsState, 'enduranceGamingMode');
+  const presetState = presetSupported
+    ? chipState(
+      'enduranceGamingMode',
+      draft as Record<string, unknown>,
+      applied as Record<string, unknown>,
+      graphicsState.values.enduranceGamingMode,
+      true,
+    )
+    : 'none';
+  const dirty = toggleState === 'dirty' || presetState === 'dirty';
+  const appliedState = !dirty && (toggleState === 'applied' || presetState === 'applied');
+  chip.hidden = !appliedState;
+  chip.textContent = appliedState ? 'Applied' : '';
+  chip.className = appliedState ? 'chip oc-chip-status chip-ok' : 'chip oc-chip-status';
+  btn.hidden = !dirty;
+}
+
 /** Display-view chip state uses the driver value and its capability gate;
  *  controls without a complete writable contract remain read-only. */
 function refreshDisplayChip(key: string) {
@@ -432,7 +464,8 @@ function updateFloating() {
 }
 
 function refreshAll() {
-  for (const key of GRAPHICS_REFRESH_KEYS) refreshChip(key);
+  refreshEnduranceChip();
+  for (const key of GRAPHICS_REFRESH_KEYS.filter((key) => key !== 'enduranceGaming' && key !== 'enduranceGamingMode')) refreshChip(key);
   updateFloating();
 }
 
@@ -710,7 +743,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
         const defaultValue = resetOption(key, options, GRAPHICS_RESET_DEFAULTS);
         if (defaultValue !== null) {
           (draft as Record<string, unknown>)[key] = defaultValue;
-          const select = selectNodes.get(key);
+          const select = key === 'enduranceGaming' ? toggleNodes.get(key) : selectNodes.get(key);
           if (select) select.value = defaultValue;
         }
       }
@@ -734,9 +767,101 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       if (memoryValue) memoryValue.textContent = `${memoryRange.default}% of system memory`;
       const memoryRow = sliderRowNodes.get('sharedMemoryOverride');
       if (memoryRow) memoryRow.hidden = true;
+      const endurancePresetRow = view.querySelector<HTMLElement>('.graphics-endurance-preset-row');
+      if (endurancePresetRow) endurancePresetRow.hidden = true;
       refreshAll();
     },
   });
+
+  const buildEnduranceCard = (): HTMLElement => {
+    const options = optionsOf(state, 'enduranceGaming');
+    const current = (draft as Record<string, unknown>).enduranceGaming as string;
+    const modes = optionsOf(state, 'enduranceGamingMode');
+    const hasPreset = supportedOf(state, 'enduranceGamingMode') && modes.length > 0;
+    const toggle = el('select', {
+      class: 'graphics-select graphics-toggle',
+      dataset: { graphicsToggle: 'enduranceGaming' },
+      onchange: (e: Event) => {
+        const value = (e.target as HTMLSelectElement).value as GraphicsSettings['enduranceGaming'];
+        if (!value) return;
+        draft.enduranceGaming = value;
+        const presetRow = card.querySelector<HTMLElement>('.graphics-endurance-preset-row');
+        if (presetRow) presetRow.hidden = value !== 'on';
+        refreshEnduranceChip();
+        updateFloating();
+      },
+    }, options.map((o) => el('option', {
+      value: o,
+      text: DROPDOWN_LABELS.enduranceGaming?.[o] ?? o,
+      selected: o === current,
+    })));
+    toggleNodes.set('enduranceGaming', toggle);
+
+    const preset = hasPreset ? el('select', {
+      class: 'graphics-select graphics-endurance-preset',
+      dataset: { graphicsSelect: 'enduranceGamingMode' },
+      onchange: (e: Event) => {
+        draft.enduranceGamingMode = (e.target as HTMLSelectElement).value as GraphicsSettings['enduranceGamingMode'];
+        refreshEnduranceChip();
+        updateFloating();
+      },
+    }, modes.map((o) => el('option', {
+      value: o,
+      text: DROPDOWN_LABELS.enduranceGamingMode?.[o] ?? o,
+      selected: o === draft.enduranceGamingMode,
+    }))) as HTMLSelectElement : null;
+    if (preset) selectNodes.set('enduranceGamingMode', preset);
+    const presetRow = el('div', {
+      class: 'graphics-endurance-preset-row',
+      hidden: !hasPreset || current !== 'on',
+    }, [
+      el('span', { class: 'graphics-endurance-preset-label', text: 'Preset' }),
+      ...(preset ? [preset] : []),
+    ]);
+    const card = el('section', { class: 'card graphics-card', dataset: { control: 'enduranceGaming' } }, [
+      el('div', { class: 'graphics-card-heading' }, [
+        el('h2', { class: 'card-title', text: CARD_TITLES.enduranceGaming }),
+        el('div', { class: 'graphics-control graphics-inline-control' }, [toggle]),
+      ]),
+      el('p', { class: 'card-note', text: CARD_NOTES.enduranceGaming }),
+      presetRow,
+      el('div', { class: 'graphics-card-actions' }, [
+        el('span', { class: 'chip oc-chip-status', hidden: true }),
+        el('button', {
+          class: 'chip chip-btn oc-chip-apply',
+          hidden: true,
+          text: 'Apply',
+          onClick: () => {
+            if (applying) return;
+            void apply(ctx, ['enduranceGaming', ...(hasPreset ? ['enduranceGamingMode'] : [])]);
+          },
+        }),
+        el('button', {
+          class: 'btn btn-ghost btn-sm',
+          text: 'Reset to default',
+          onClick: () => {
+            const defaultToggle = resetOption('enduranceGaming', options, GRAPHICS_RESET_DEFAULTS);
+            if (defaultToggle !== null) {
+              draft.enduranceGaming = defaultToggle as GraphicsSettings['enduranceGaming'];
+              toggle.value = defaultToggle;
+            }
+            const defaultMode = resetOption('enduranceGamingMode', modes, GRAPHICS_RESET_DEFAULTS);
+            if (defaultMode !== null) {
+              draft.enduranceGamingMode = defaultMode as GraphicsSettings['enduranceGamingMode'];
+              if (preset) preset.value = defaultMode;
+            }
+            presetRow.hidden = true;
+            refreshEnduranceChip();
+            updateFloating();
+          },
+        }),
+      ]),
+    ]);
+    chipNodes.set('enduranceGaming', card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+    chipApplyNodes.set('enduranceGaming', card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+    refreshEnduranceChip();
+    return card;
+  };
 
   const buildDropdownCard = (key: string): HTMLElement => {
     const supported = supportedOf(state, key);
@@ -1011,8 +1136,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   // These cards are appended only when the backend proves the selected
   // adapter is integrated or mobile Intel Arc graphics. Real desktop dGPUs
   // never receive these nodes.
-  if (supportedOf(state, 'enduranceGaming')) mobileCards.push(buildDropdownCard('enduranceGaming'));
-  if (supportedOf(state, 'enduranceGamingMode')) mobileCards.push(buildDropdownCard('enduranceGamingMode'));
+  if (supportedOf(state, 'enduranceGaming')) mobileCards.push(buildEnduranceCard());
   if (supportedOf(state, 'sharedMemoryOverride')) mobileCards.push(buildSharedMemoryCard());
 
   // The standard cards remain in the established order; the mobile/iGPU-only
@@ -1727,17 +1851,18 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
 // ---------------------------------------------------------------------------
 
 // M9: `only` - the per-card apply path: the SAME graphics:apply channel
-// with the single key (the payload holds that control alone; the rest of
-// the flow - the per-control toasts + the applied reference + the busy
+// with the selected key(s) (the payload holds that card's controls alone;
+// the rest of the flow - per-control toasts + applied references + busy
 // state - is shared).
-async function apply(ctx: PageContext, only?: string) {
+async function apply(ctx: PageContext, only?: string | string[]) {
   const live = ctx.store.get();
   const deviceId = live.deviceId;
   if (deviceId === null || !graphicsState) return;
-  const payload = only !== undefined
-    ? (isGraphicsControlDirtyVsApplied(only, draft, graphicsState, applied)
-      ? { [only]: (draft as Record<string, unknown>)[only] } as unknown as GraphicsSettings
-      : {})
+  const onlyKeys = only === undefined ? null : (Array.isArray(only) ? only : [only]);
+  const payload = onlyKeys !== null
+    ? Object.fromEntries(onlyKeys
+      .filter((key) => isGraphicsControlDirtyVsApplied(key, draft, graphicsState, applied))
+      .map((key) => [key, (draft as Record<string, unknown>)[key]])) as GraphicsSettings
     : buildGraphicsSettings(draft, graphicsState, applied);
   if (!validateGraphicsSettings(payload)) {
     toast('error', 'Apply aborted', 'The graphics payload failed validation - this is a bug.');

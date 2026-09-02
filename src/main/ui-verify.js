@@ -5537,19 +5537,23 @@ export async function runGraphicsVerify(win, backend) {
     await js(`location.hash = '#/graphics'`);
     await sleep(250);
     if (process.env.RID_MOCK_ENDURANCE === '1') {
-      if (!(await waitFor(win, `document.querySelector('[data-control="enduranceGaming"]') && document.querySelector('[data-control="enduranceGamingMode"]') && document.querySelector('[data-control="sharedMemoryOverride"]')`, 8000))) {
-        fail('M140: the integrated fixture must render Endurance Gaming and Shared Memory Override cards');
+      if (!(await waitFor(win, `document.querySelector('[data-control="enduranceGaming"]') && !document.querySelector('[data-control="enduranceGamingMode"]') && document.querySelector('[data-control="sharedMemoryOverride"]')`, 8000))) {
+        fail('M148: the integrated fixture must render one merged Endurance Gaming card and Shared Memory Override');
       }
       const integratedCards = await js(`Array.from(document.querySelectorAll('.graphics-card')).filter((c) => ['enduranceGaming','enduranceGamingMode','sharedMemoryOverride'].includes(c.dataset.control)).length`);
-      if (integratedCards !== 3) fail(`M140: expected three integrated/mobile cards, got ${integratedCards}`);
+      if (integratedCards !== 2) fail(`M148: expected two integrated/mobile cards, got ${integratedCards}`);
+      if (await js(`document.querySelector('[data-control="enduranceGaming"] .graphics-endurance-preset-row')?.hidden !== true`)) {
+        fail('M148: the Endurance Gaming preset must be hidden while the merged card is Off');
+      }
       await js(`(() => {
         const set = (selector, value) => { const node = document.querySelector(selector); if (!node) return false; node.value = value; node.dispatchEvent(new Event('change', { bubbles: true })); return true; };
-        const eg = set('[data-graphics-select="enduranceGaming"]', 'on');
+        const eg = set('[data-graphics-toggle="enduranceGaming"]', 'on');
+        const presetVisible = !document.querySelector('[data-control="enduranceGaming"] .graphics-endurance-preset-row')?.hidden;
         const mode = set('[data-graphics-select="enduranceGamingMode"]', 'battery');
         const memory = set('[data-graphics-toggle="sharedMemoryOverride"]', 'on');
         const slider = document.querySelector('[data-control="sharedMemoryOverride"] input[type="range"]');
         if (slider) { slider.value = '75'; slider.dispatchEvent(new Event('input', { bubbles: true })); }
-        return eg && mode && memory;
+        return eg && presetVisible && mode && memory;
       })()`);
       if (!(await waitFor(win, `!document.querySelector('.floating-apply')?.hidden`, 2000))) fail('M140: integrated edits did not become dirty');
       await js(`document.querySelector('.floating-apply')?.click()`);
@@ -5581,7 +5585,7 @@ export async function runGraphicsVerify(win, backend) {
       fail('M8: the A770 graphics surface must return after switching back (the fixture)');
     }
     step('m8-multi-device', process.env.RID_MOCK_ENDURANCE === '1'
-      ? 'M140 (RID_MOCK_MULTI_DEVICE=1 + RID_MOCK_ENDURANCE=1): integrated/mobile graphics cards render, apply, reset, and switch back cleanly'
+      ? 'M148 (RID_MOCK_MULTI_DEVICE=1 + RID_MOCK_ENDURANCE=1): merged Endurance/mobile cards render, apply, reset, and switch back cleanly'
       : 'M8 (RID_MOCK_MULTI_DEVICE=1): the iGPU serves the supported-all-false state (no crash); switching back to the A770 restores the fixture');
   }
 }

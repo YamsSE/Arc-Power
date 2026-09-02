@@ -19,6 +19,11 @@ export const GRAPHICS_MEMORY_MANAGER_KEY = 'HKLM\\SYSTEM\\CurrentControlSet\\Con
 export const SHARED_MEMORY_OVERRIDE_VALUE = 'SystemPartitionCommitLimitPercentage';
 export const SHARED_MEMORY_OVERRIDE_MAX_VALUE = 'SystemPartitionCommitLimitPercentageMax';
 export const SHARED_MEMORY_OVERRIDE_MIN = 13;
+// DxgKrnl treats the MemoryManager override values as optional registry
+// values. Intel Graphics Software presents 87% as the upper bound on the
+// supported shared-memory surface when Windows has not materialized the
+// optional max value yet (common on a fresh mobile/iGPU installation).
+export const SHARED_MEMORY_OVERRIDE_MAX_FALLBACK = 87;
 export const SHARED_MEMORY_OVERRIDE_DEFAULT = 57;
 export const SHARED_MEMORY_OVERRIDE_RAM_MIN_BYTES = 10 * 1024 ** 3;
 export const SHARED_MEMORY_OVERRIDE_TIMEOUT_MS = 5000;
@@ -176,10 +181,13 @@ export function createSharedMemoryOverride(deps = {}) {
       if (!sharedMemoryAdapterSupported(device)) return null;
       const configured = await queryValue(SHARED_MEMORY_OVERRIDE_VALUE);
       const configuredMax = await queryValue(SHARED_MEMORY_OVERRIDE_MAX_VALUE);
-      // DxgKrnl documents the max value as runtime-provided. Never invent a
-      // ceiling: without it the control is not safely writable.
-      if (!validPercentage(configuredMax, 100)) return null;
-      const max = configuredMax;
+      // DxgKrnl documents both override values as optional and uses safe
+      // runtime defaults when they are absent. A missing max therefore means
+      // the key has not been materialized yet, not that an eligible Intel
+      // mobile/iGPU adapter lost the feature. Keep malformed explicit values
+      // fail-closed, but recover the normal IGS 13-87% surface when absent.
+      const max = configuredMax === null ? SHARED_MEMORY_OVERRIDE_MAX_FALLBACK : configuredMax;
+      if (!validPercentage(max, 100)) return null;
       const percentage = validPercentage(configured, max) ? configured : Math.min(SHARED_MEMORY_OVERRIDE_DEFAULT, max);
       return {
         enabled: validPercentage(configured, max),

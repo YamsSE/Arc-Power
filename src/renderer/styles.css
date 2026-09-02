@@ -1933,6 +1933,20 @@ input[type="number"] {
 }
 .graphics-select:focus { outline: none; border-color: var(--accent-strong); }
 .graphics-card-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+.graphics-endurance-preset-row {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 42%);
+  align-items: center;
+  gap: 0;
+}
+.graphics-endurance-preset-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.graphics-endurance-preset-row .graphics-select {
+  min-width: 0;
+}
 .graphics-fps-row {
   margin-top: 8px;
   display: flex;
@@ -2029,7 +2043,7 @@ input[type="number"] {
 .display-mode-advanced-note, .display-mode-description { flex-basis: 100%; }
 .display-no-displays { padding: 14px; }
 @media (max-width: 680px) {
-  .graphics-card-heading, .display-control-heading { grid-template-columns: 1fr; gap: 8px; }
+  .graphics-card-heading, .graphics-endurance-preset-row, .display-control-heading { grid-template-columns: 1fr; gap: 8px; }
   .graphics-inline-control, .display-inline-control { width: 100%; padding-top: 8px; padding-left: 0; border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-left: 0; justify-self: stretch; }
   .display-wire-format-row, .display-mode-row { flex-direction: column; align-items: stretch; }
   .display-mode-toggle { margin-left: 0; }
