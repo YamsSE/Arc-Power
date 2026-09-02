@@ -367,11 +367,20 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
   const selection = parseRecordingEncoderSelection(settings.encoderId);
   const encoderId = selection?.codec ?? settings.encoderId;
   const adapterTarget = normalizedAdapterTarget(settings.encoderTarget ?? selection?.target);
-  const adapterTargetPayload = adapterTarget ? {
-    ...(adapterTarget.deviceKey ? { device_key: adapterTarget.deviceKey } : {}),
-    ...(adapterTarget.bdf ? { bdf: adapterTarget.bdf } : {}),
-    ...(adapterTarget.luid ? { luid: adapterTarget.luid } : {}),
-  } : null;
+  // The app keeps the complete stable identity (device key/BDF/LUID) for
+  // matching, persistence, and diagnostics. The recording runtime must get
+  // only the resolved DXGI LUID, however: when BDF and LUID are sent
+  // together, older Ascent/OBS adapter selection can fall back to adapter 0
+  // (the display-output GPU) before QSV is created. `runtimeAdapterTarget` is
+  // supplied by the main-process resolver immediately before START.
+  const runtimeAdapterTarget = normalizedAdapterTarget(settings.runtimeAdapterTarget);
+  const adapterTargetPayload = runtimeAdapterTarget?.luid
+    ? { luid: runtimeAdapterTarget.luid }
+    : adapterTarget ? {
+      ...(adapterTarget.deviceKey ? { device_key: adapterTarget.deviceKey } : {}),
+      ...(adapterTarget.bdf ? { bdf: adapterTarget.bdf } : {}),
+      ...(adapterTarget.luid ? { luid: adapterTarget.luid } : {}),
+    } : null;
   return buildAscentCommand(ASCENT_COMMANDS.START, identifier, recorderType, {
     sources: captureSourceOf(settings),
     video_settings: {
@@ -857,7 +866,11 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const payload = buildAscentStartPayload({
       ...settings,
       encoderId: resolvedEncoder.encoderId,
-      encoderTarget: resolvedAdapterTarget,
+      // Keep the original identity for app-side matching and persistence;
+      // runtimeAdapterTarget is deliberately reduced to the resolved LUID in
+      // the START payload.
+      encoderTarget: resolvedEncoder.adapterTarget,
+      runtimeAdapterTarget: resolvedAdapterTarget,
       ...captureDimensions,
     }, outputPath, type);
     const identifier = nextIdentifier++;
@@ -879,7 +892,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       }
       const encoderId = payload.video_settings.video_encoder.id;
       if (isEncoderStartRejection(error) && state.encoders.some((item) => item.type === encoderId)) {
-        const failedTarget = normalizedAdapterTarget(payload.video_settings.video_encoder.adapter_target) ?? resolvedAdapterTarget;
+        const failedTarget = resolvedEncoder.adapterTarget ?? resolvedAdapterTarget;
         demotedEncoders.add(encoderDemotionKey(encoderId, failedTarget));
         if (resolvedEncoder.adapterTarget && JSON.stringify(resolvedEncoder.adapterTarget) !== JSON.stringify(failedTarget)) {
           demotedEncoders.add(encoderDemotionKey(encoderId, resolvedEncoder.adapterTarget));
@@ -890,7 +903,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         try {
           await onEncoderDemoted(encoderId, error, {
             selectionId: settings.encoderId,
-            adapterTarget: failedTarget,
+            adapterTarget: resolvedEncoder.adapterTarget ?? failedTarget,
             codec: encoderId,
           });
         } catch (persistError) {
@@ -903,7 +916,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // The started event has already made the recorder active. Keep its
     // authoritative mode/timestamp and only add the successful encoder
     // validation here.
-    const successfulTarget = normalizedAdapterTarget(payload.video_settings.video_encoder.adapter_target) ?? resolvedAdapterTarget;
+    const successfulTarget = resolvedEncoder.adapterTarget ?? resolvedAdapterTarget;
     publish({ error: null, encoders: state.encoders.map((item) => item.type === payload.video_settings.video_encoder.id && encoderTargetMatchesSelection(item, successfulTarget)
       ? { ...item, startTested: true, startSupported: true, status: 'started' }
       : item) });

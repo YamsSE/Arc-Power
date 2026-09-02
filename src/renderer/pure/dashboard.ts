@@ -32,7 +32,7 @@ export function dashboardGpuOrder<T extends Pick<DeviceInfo, 'id' | 'name' | 'pc
 }
 
 export function dashboardDeviceStatusLabel(index: number, gpuCount: number): string {
-  return gpuCount > 1 ? `Device detected ${index + 1}` : 'Device detected';
+  return `GPU ${index + 1} Detected`;
 }
 
 export function selectedDashboardController(

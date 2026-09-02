@@ -1569,7 +1569,10 @@ async function main() {
       if (!deviceId) throw targetUnavailable('the selected GPU has no PCI device id');
       const luid = await fpsAdapter.adapterLuidOf?.(`0x${deviceId}`, device.bdf) ?? null;
       if (!luid || !Number.isFinite(luid.low) || !Number.isFinite(luid.high)) throw targetUnavailable('DXGI did not report the selected adapter');
-      return { ...target, luid: formatDxgiLuid(luid) };
+      // The runtime's adapter selector must receive one unambiguous physical
+      // identity. Keep BDF/deviceKey in the app-side selection, but send only
+      // the resolved DXGI LUID to Ascent so it cannot fall back to adapter 0.
+      return { luid: formatDxgiLuid(luid) };
     },
     // Resolve the selected native display/window at the moment capture
     // starts. Electron's display.id is not an HMONITOR, so the helper keeps

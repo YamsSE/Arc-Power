@@ -1245,8 +1245,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (rowIds !== expectedRowIds) fail(`health card rows are '${rowIds}' (expected ${expectedRowIds})`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
   const expectedRowLabels = dashboardGpuCount > 1
-    ? Array.from({ length: dashboardGpuCount }, (_, index) => `Device detected ${index + 1}`).concat(['Driver installed', 'OC status', 'OC waiver', 'Arc Power working'])
-    : ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working'];
+    ? Array.from({ length: dashboardGpuCount }, (_, index) => `GPU ${index + 1} Detected`).concat(['Driver installed', 'OC status', 'OC waiver', 'Arc Power working'])
+    : ['GPU 1 Detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working'];
   for (const want of expectedRowLabels) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
@@ -5770,8 +5770,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   if (rowIds !== expectedRowIds) fail(`health card rows are '${rowIds}' (expected ${expectedRowIds})`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
   const expectedRowLabels = dashboardGpuCount > 1
-    ? Array.from({ length: dashboardGpuCount }, (_, index) => `Device detected ${index + 1}`).concat(['Driver installed', 'OC status', 'OC waiver', 'Arc Power working'])
-    : ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working'];
+    ? Array.from({ length: dashboardGpuCount }, (_, index) => `GPU ${index + 1} Detected`).concat(['Driver installed', 'OC status', 'OC waiver', 'Arc Power working'])
+    : ['GPU 1 Detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working'];
   for (const want of expectedRowLabels) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
