@@ -68,6 +68,15 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
 export const SAFE_VIDEO_EXTENSIONS = Object.freeze(['.mp4', '.mkv', '.mov', '.webm', '.m4v']);
 export const ASCENT_MAX_MESSAGE_BYTES = 8096;
 
+// Ascent's concrete adapter_target contract uses the DXGI LUID as two fixed-
+// width hexadecimal DWORDs. Keep this formatter electron-free so the bridge
+// contract is unit-testable without live hardware.
+export function formatDxgiLuid(value) {
+  if (!value || !Number.isSafeInteger(Number(value.low)) || !Number.isSafeInteger(Number(value.high))) return null;
+  const hex = (part) => `0x${(Number(part) >>> 0).toString(16).padStart(8, '0').toUpperCase()}`;
+  return `${hex(value.high)}:${hex(value.low)}`;
+}
+
 export function recordingBitrateRange(resolution = DEFAULT_RECORDING_SETTINGS.resolution) {
   return RECORDING_BITRATE_RANGES[resolution] ?? RECORDING_BITRATE_RANGES.default;
 }

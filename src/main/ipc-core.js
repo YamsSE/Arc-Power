@@ -1198,8 +1198,14 @@ export function createIpcHandlers({
   // adapter passes through unchanged. The shim is null-safe: before the
   // holder lands (never in practice - telemetry starts after the block),
   // a call degrades to undefined, which the sites' try/catch swallow.
+  let reconcileSysStatsReady = async () => {};
   if (sysStats && typeof sysStats === 'object' && 'current' in sysStats) {
     const holder = sysStats;
+    const previousReady = typeof holder.onReady === 'function' ? holder.onReady : null;
+    holder.onReady = () => {
+      try { previousReady?.(); } catch { /* readiness hooks are best effort */ }
+      void reconcileSysStatsReady().catch(() => {});
+    };
     sysStats = {
       sample: (...args) => holder.current?.sample?.(...args),
       sampleFast: (...args) => holder.current?.sampleFast?.(...args),
@@ -1433,7 +1439,10 @@ export function createIpcHandlers({
       if (await cleanupStaleTelemetryStartup({ generation, vendor })) return;
       const sampleNow = async () => {
         let extra = {};
-        try { extra = await sysStats.sampleFast(); } catch { /* honest empty OS fields */ }
+        // Synthetic/vendor lanes are physical secondary targets. The generic
+        // fast lane is focused-adapter state, so it must never fill a missing
+        // per-target sample and misattribute VRAM/utilization to this lane.
+        try { extra = await sysStats.sampleForTarget?.(target) ?? {}; } catch { /* honest empty target fields */ }
         let sample = null;
         try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
         if (generation !== telemetryGeneration) return false;
@@ -1690,6 +1699,25 @@ export function createIpcHandlers({
         try { await svc.stop(); } catch { /* best effort */ }
       }
     }
+    // Secondary lanes can be the first telemetry consumer (for example when
+    // the main window is still loading). Their registrations must seed the
+    // shared per-target slow caches themselves; the main lane remains free to
+    // share this idempotent timer later.
+    if (wanted.length > 0) {
+      try { await sysStats.startSlowLane?.(undefined, telemetryGeneration); } catch { /* best effort */ }
+    }
+  };
+
+  // M152: the main process assigns the holder after IPC registration. If a
+  // renderer starts a lane during that window, its initial optional calls are
+  // intentionally empty; once the adapter lands, reconcile the live session
+  // without creating a second timer or orphaning the existing service.
+  reconcileSysStatsReady = async () => {
+    if (telemetry.size === 0 && overlayTelemetry.size === 0 && telemetryStarting.size === 0) return;
+    try { await sysStats.startSlowLane?.(undefined, telemetryGeneration); } catch { /* best effort */ }
+    await Promise.all([...telemetry.values()].map(async (service) => {
+      try { await service.sampleNow?.(); } catch { /* retain the live lane */ }
+    }));
   };
 
   const stopAllTelemetry = async () => {

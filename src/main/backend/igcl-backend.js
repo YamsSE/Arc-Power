@@ -1445,7 +1445,7 @@ export class IgclBackend {
         const buf = koffi.alloc('ctl_fan_properties_t', 1);
         koffi.encode(buf, 'ctl_fan_properties_t', { Size: koffi.sizeof('ctl_fan_properties_t'), Version: 0 });
         if (lib.ctlFanGetProperties(handle, buf) === CTL_RESULT.SUCCESS
-          && koffi.decode(buf, 'ctl_fan_properties_t').bCanControl === true) {
+          && koffi.decode(buf, 'ctl_fan_properties_t').canControl === true) {
           this._fanPreferredHandle.set(deviceId, handle);
           return handle;
         }
@@ -2083,10 +2083,14 @@ export class IgclBackend {
             caps.extendedRanges = true;
           }
         } else {
+          // isAvailable only proves that the bundled DLL was found. The
+          // temperature writer has its own capability probe and must be
+          // required before exposing the extended Celsius range. Power keeps
+          // its separate Sysman/runtime capability path below.
           const tempCapable = this._extended
             ? (typeof this._extended.isTempCapable === 'function'
-              ? await this._extended.isTempCapable()
-              : runtimeCapable)
+              ? (await this._extended.isTempCapable()) === true
+              : false)
             : false;
           const explicitSysmanPower = await this._sysmanPowerCapability();
           const powerCapable = explicitSysmanPower === null ? runtimeCapable : explicitSysmanPower;

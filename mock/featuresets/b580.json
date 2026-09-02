@@ -23,9 +23,9 @@
     "gpuVoltOffsetV": { "units": "%", "min": -100, "max": 100, "step": 1, "default": 0 },
     "powerLimitW": { "units": "%", "min": 0, "max": 150, "step": 1, "default": 100 },
     "tempLimitC": { "units": "%", "min": 0, "max": 100, "step": 1, "default": 100 },
-    "vramFreqOffsetGts": { "units": "MHz", "min": 0, "max": 3000, "step": 100, "default": 0 }
+    "vramFreqOffsetGts": { "units": "MHz", "min": 2375, "max": 3000, "step": 1, "default": 2375 }
   },
   "supportedControls": ["gpuFreqOffset", "gpuVoltOffset", "powerLimit", "tempLimit", "vramFreqOffset", "vfCurve"],
   "telemetry": { "gpuClockBaseMhz": 750, "memClockMhz": 2375, "tempCBase": 38, "fanRpm": [1450], "powerW": 45 },
-  "notes": "Estimated - verify on hardware. Battlemage (BMG non-G31) reports percent units for volt/PL/TL per the IGCL sample; vramMemSpeedLimit in MHz; vfCurve R/W supported; gpuLock NOT supported; fan canControl=true. extendedRanges=false: the bundled 2023 IGCL runtime is Alchemist-era and does not apply to Battlemage. M17c: pciSubsysVendorId 32902 (0x8086 - the Intel LE decode) so the mock exercises the 'Intel (Limited Edition)' AIB row; no pciSubsysId (the variant is unknown on this estimated fixture)."
+  "notes": "Estimated - verify on hardware. Battlemage (BMG non-G31) reports percent-shaped volt/PL/TL controls at the native boundary; the UI displays those as mV/W/°C without routing them through Alchemist watt/C extended paths. vramMemSpeedLimit is an absolute whole-MHz value (2375 MHz stock); vfCurve R/W supported; gpuLock NOT supported; fan canControl=true. extendedRanges=false: the bundled 2023 IGCL runtime is Alchemist-era and does not apply to Battlemage. M17c: pciSubsysVendorId 32902 (0x8086 - the Intel LE decode) so the mock exercises the 'Intel (Limited Edition)' AIB row; no pciSubsysId (the variant is unknown on this estimated fixture)."
 }

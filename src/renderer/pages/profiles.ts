@@ -26,9 +26,11 @@ import { toast } from '../components/toast.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
-import { formatValue } from '../pure/slider.ts';
+import { chipLabelGpu } from '../pure/chip-label.ts';
+import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
+import { controlDisplay, formatValue } from '../pure/slider.ts';
 import type { AppState } from '../router.ts';
-import type { Capabilities, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, Settings, StartupGetState } from '../types.ts';
+import type { Capabilities, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 const MAX_GAME_BANNER_DATA_LENGTH = 12_000_000;
@@ -134,12 +136,16 @@ export function activeProfileIdForGpu(settings: ProfilesEnvelope['settings'], pr
  * count as active. Stale or cross-GPU IDs are intentionally ignored. */
 export function validActiveProfileIds(settings: ProfilesEnvelope['settings'], profiles: Profile[]): Set<string> {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   for (const [deviceKey, profileId] of Object.entries(activeProfileIds(settings))) {
     const profile = profiles.find((candidate) => candidate.id === profileId);
-    if (profile && profileMatchesGpu(profile, deviceKey)) ids.add(profileId);
+    if (profile && profileMatchesGpu(profile, deviceKey) && !keys.has(deviceKey)) {
+      ids.add(profileId);
+      keys.add(deviceKey);
+    }
   }
   const legacy = profiles.find((profile) => profile.id === settings.activeProfileId);
-  if (legacy) ids.add(legacy.id);
+  if (legacy && (!legacy.deviceKey || !keys.has(legacy.deviceKey))) ids.add(legacy.id);
   return ids;
 }
 
@@ -209,16 +215,55 @@ export function settingsFromState(state: DeviceState): Settings {
   return out;
 }
 
-function settingsSummary(settings: Settings, caps: Capabilities | null): string[] {
+/**
+ * Profile settings are canonical driver values, but a profile can be shown
+ * while a different GPU is focused. Prefer the saved GPU family when the
+ * current caps would otherwise give a different unit vocabulary. This keeps
+ * a B580 profile's percent-shaped driver values from being summarized with
+ * the focused A770's W/V/C ranges (and the reverse).
+ */
+function profileSummaryRange(key: string, caps: Capabilities | null, profileDeviceName: string): RangeInfo | null {
+  const range = caps?.ranges[key] ?? null;
+  const battlemage = isBattlemageGpuName(profileDeviceName);
+  const alchemist = isAlchemistGpuName(profileDeviceName);
+  const canonicalUnit = key === 'gpuVoltOffsetV' || key === 'vramVoltOffsetV'
+    ? 'V'
+    : key === 'powerLimitW' ? 'W'
+      : key === 'tempLimitC' ? 'C' : null;
+
+  if (battlemage && key === 'vramFreqOffsetGts') {
+    return range ? { ...range, units: 'MHz' } : { min: 0, max: 0, step: 1, default: 0, units: 'MHz' };
+  }
+  if (battlemage && (canonicalUnit || key === 'powerLimitW')) {
+    return range ? { ...range, units: '%' } : { min: 0, max: 0, step: 1, default: 0, units: '%' };
+  }
+  if (alchemist && canonicalUnit) {
+    return range ? { ...range, units: canonicalUnit } : { min: 0, max: 0, step: 1, default: 0, units: canonicalUnit };
+  }
+  return range;
+}
+
+export function settingsSummary(settings: Settings, caps: Capabilities | null, profileDeviceName = caps?.deviceName ?? ''): string[] {
   const out: string[] = [];
   for (const [key, value] of Object.entries(settings)) {
     if (typeof value !== 'number') continue;
     const compactSigned = (number: number, suffix: string): string => `${number >= 0 ? '+' : ''}${number}${suffix}`;
-    if (key === 'powerLimitW') out.push(`${Math.round(value)}W`);
-    else if (key === 'gpuVoltOffsetV' || key === 'vramVoltOffsetV') out.push(compactSigned(Math.round(value * 1000), 'mV'));
-    else if (key === 'gpuFreqOffsetMhz') out.push(compactSigned(Math.round(value), 'MHz'));
-    else if (key === 'vramFreqOffsetGts') out.push(compactSigned(Math.round(value * 10) / 10, 'GTS'));
-    else if (key === 'tempLimitC') out.push(`TL: ${Math.round(value)}°C`);
+    const range = profileSummaryRange(key, caps, profileDeviceName);
+    const display = range ? controlDisplay(key, range, profileDeviceName) : null;
+    const displayValue = display ? display.toDisplay(value) : value;
+    if (key === 'powerLimitW') {
+      out.push(`${Math.round(displayValue)}W`);
+    }
+    else if (key === 'gpuVoltOffsetV' || key === 'vramVoltOffsetV') {
+      const voltage = display?.units === 'V' ? displayValue * 1000 : displayValue;
+      out.push(compactSigned(Math.round(voltage), 'mV'));
+    }
+    else if (key === 'gpuFreqOffsetMhz') out.push(compactSigned(Math.round(displayValue), display?.units ?? 'MHz'));
+    else if (key === 'vramFreqOffsetGts') {
+      if (display?.units === 'MHz') out.push(`${Math.round(displayValue)}MHz`);
+      else out.push(compactSigned(Math.round(displayValue * 10) / 10, display?.units ?? 'GTS'));
+    }
+    else if (key === 'tempLimitC') out.push(`TL: ${Math.round(displayValue)}°C`);
     else if (key === 'fixedFanPct') out.push(`Fan ${Math.round(value)}%`);
     else {
       const units = caps?.ranges[key]?.units ?? '';
@@ -227,6 +272,26 @@ function settingsSummary(settings: Settings, caps: Capabilities | null): string[
   }
   if (settings.fanCurve) out.push('Fan Curve');
   else if (settings.fanMode && settings.fanMode !== 'auto') out.push(`Fan ${settings.fanMode}`);
+  return out;
+}
+
+/** Keep a saved profile's fan payload compatible with the focused physical
+ * adapter. Scalar tuning values remain loadable when only the fan surface is
+ * unsupported or exposes a different set of modes. */
+export function profileSettingsForCapabilities(settings: Settings, caps: Capabilities | null): Settings {
+  const out = { ...settings };
+  const fanKeys = ['fanMode', 'fanCurve', 'fixedFanPct'] as const;
+  if (caps?.fan?.canControl !== true) {
+    for (const key of fanKeys) delete out[key];
+    return out;
+  }
+  const requestedMode = settings.fanMode ?? (settings.fanCurve ? 'curve' : null);
+  if (requestedMode && !caps.fan.modes.includes(requestedMode)) {
+    for (const key of fanKeys) delete out[key];
+    return out;
+  }
+  if (settings.fanCurve && !caps.fan.modes.includes('curve')) delete out.fanCurve;
+  if (settings.fixedFanPct !== undefined && !caps.fan.modes.includes('fixed')) delete out.fixedFanPct;
   return out;
 }
 
@@ -678,6 +743,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const profileRow = (p: Profile, active: boolean, activeOnOtherGpu: boolean, deviceKey: string | null): HTMLElement => {
     const usableOnCurrentGpu = profileMatchesGpu(p, deviceKey);
+    const gpuLabel = chipLabelGpu(p.deviceName) ?? 'GPU';
     // F3 instant apply (M2C-B): the Load button is a single trigger - one
     // attempt, immediate result (no in-flight cancel surface anymore).
     const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load', disabled: !usableOnCurrentGpu, title: usableOnCurrentGpu ? 'Apply this profile to the current GPU' : 'This profile belongs to another GPU' });
@@ -693,11 +759,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     }, [
       el('div', { class: 'profile-info' }, [
         el('span', { class: 'profile-name', text: p.name }),
-        active ? el('span', { class: 'badge profile-badge', text: 'Active for this GPU' })
-          : activeOnOtherGpu ? el('span', { class: 'badge profile-badge', text: 'Active on another GPU' }) : null,
-        el('span', { class: 'profile-gpu-label', text: `GPU: ${p.deviceName ?? (p.deviceKey ? p.deviceKey : 'Legacy / unassigned')}` }),
+        active ? el('span', { class: 'badge profile-badge', text: gpuLabel, title: 'Active for this GPU' })
+          : activeOnOtherGpu ? el('span', { class: 'badge profile-badge', text: `${gpuLabel} active`, title: 'Active on another GPU' }) : null,
       ]),
-      el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps).map((t) => el('span', { class: 'chip', text: t }))),
+      el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps, p.deviceName ?? caps?.deviceName ?? '').map((t) => el('span', { class: 'chip', text: t }))),
       el('div', { class: 'profile-actions' }, [
         loadBtn,
         el('button', { class: 'btn btn-ghost btn-sm', text: 'Save', disabled: !usableOnCurrentGpu, title: usableOnCurrentGpu ? 'Overwrite this profile with the current driver settings' : 'This profile belongs to another GPU', onClick: () => void onSave(p) }),
@@ -917,7 +982,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // applies as saved against the driver's true limits; the >375 W
       // ceiling (M21: the sysman-primary ceiling) + the runtime-capability
       // refusals still apply in main).
-      const { result, state: fresh } = await api.applySettings(deviceId, p.settings, { profileApply: true });
+      const settingsToApply = profileSettingsForCapabilities(p.settings, liveCaps ?? caps);
+      const { result, state: fresh } = await api.applySettings(deviceId, settingsToApply, { profileApply: true });
       // M3-C review F2: only store a NON-NULL fresh state - a refusal
       // envelope's null state must never null out the store's device state
       // (that renders the OC page 'Loading device capabilities…' forever
@@ -985,6 +1051,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // failed load keeps the per-control error toasts but marks nothing.
       const outcome = profileApplyOutcome(result, p.name, changed);
       if (outcome.markActive) {
+        // A pre-M152 profile has no physical identity. Bind it only after a
+        // successful explicit load, so its next use is isolated to the GPU
+        // that was actually tuned rather than remaining globally reusable.
+        if (!p.deviceKey && currentGpu.key) {
+          await api.profilesSave({ ...p, deviceKey: currentGpu.key, deviceName: currentGpu.label });
+        }
         // M152: one active slot per physical GPU. Keep the scalar in sync for
         // old builds/files, but make the durable map authoritative whenever a
         // physical key is available.

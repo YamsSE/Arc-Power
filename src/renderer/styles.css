@@ -1067,15 +1067,26 @@ input[type="number"] {
   display: block;
   width: 48px;
   height: 48px;
+  aspect-ratio: 1 / 1;
   min-width: 48px;
   min-height: 48px;
-  aspect-ratio: 1;
   flex: 0 0 48px;
   object-fit: contain;
   border-radius: 0;
   border: 1px solid #000;
 }
 .device-card-head .hardware-card-icon { margin-right: 2px; }
+.hardware-card-icon-alchemist { object-fit: cover; }
+.health-gpu-detection-pill {
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-inset);
+}
+.health-gpu-detection-pill .health-row-label { min-width: auto; }
 
 /* ------------------------------------------------------------------ buttons */
 

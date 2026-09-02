@@ -1189,19 +1189,21 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // M140: the dashboard now uses one compact Performance Pulse strip for
   // live telemetry instead of the legacy CPU/GPU stat-tile groups. Validate
   // the four current metric cards and the selected GPU utilization value.
+  if (!(await waitFor(win, `document.querySelectorAll('.dashboard-pulse-lane').length > 0`, 10000))) {
+    fail('M140: the Dashboard did not render a Performance Pulse lane');
+  }
+  const dashboardGpuCount = Number(await js(`document.querySelectorAll('.dashboard-pulse-lane').length`));
   const pulseMetrics = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-metric')).map((m) => ({ label: m.querySelector('.dashboard-pulse-label')?.textContent?.trim() ?? '', value: m.querySelector('.dashboard-pulse-value')?.textContent?.trim() ?? '' })))`));
   const pulseLabels = pulseMetrics.map((m) => m.label).join(',');
-  const multiGpuDashboard = process.env.RID_MOCK_MULTI_DEVICE === '1';
-  const expectedPulseLabels = multiGpuDashboard
-    ? 'GPU utilization,GPU temperature,GPU power,VRAM in use,GPU utilization,GPU temperature,GPU power,VRAM in use'
-    : 'GPU utilization,GPU temperature,GPU power,VRAM in use';
+  const multiGpuDashboard = dashboardGpuCount > 1;
+  const expectedPulseLabels = Array.from({ length: dashboardGpuCount }, () => ['GPU utilization', 'GPU temperature', 'GPU power', 'VRAM in use']).flat().join(',');
   if (pulseLabels !== expectedPulseLabels) {
     fail(`M140: Performance Pulse metrics are '${pulseLabels}' (expected the compact GPU telemetry set)`);
   }
   if (!(await waitFor(win, `document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42'`, 8000))) {
     fail(`M140: GPU utilization pulse is '${await js(`document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent ?? ''`)}' (expected 42)`);
   }
-  if (multiGpuDashboard && !(await waitFor(win, `Array.from(document.querySelectorAll('.dashboard-pulse-lane')).length === 2 && Array.from(document.querySelectorAll('.dashboard-pulse-lane')).every((lane) => lane.querySelector('[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42' && lane.querySelector('[data-pulse-metric="vram-used"] .dashboard-pulse-value')?.textContent?.trim() !== '-')`, 10000))) {
+  if (multiGpuDashboard && !(await waitFor(win, `Array.from(document.querySelectorAll('.dashboard-pulse-lane')).length === ${dashboardGpuCount} && Array.from(document.querySelectorAll('.dashboard-pulse-lane')).every((lane) => lane.querySelector('[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42' && lane.querySelector('[data-pulse-metric="vram"] .dashboard-pulse-value')?.textContent?.trim() !== '-')`, 10000))) {
     fail(`M140: multi-GPU Performance Pulse did not populate both GPU lanes: '${await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-lane')).map((lane) => Array.from(lane.querySelectorAll('.dashboard-pulse-value')).map((n) => n.textContent.trim())))`)}'`);
   }
   step('m140-performance-pulse', `M140: compact Performance Pulse has '${pulseLabels}' with per-GPU utilization${multiGpuDashboard ? ' and VRAM values in both lanes' : ' 42%'}`);
@@ -1232,13 +1234,20 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) fail('expected exactly one GPU Status card');
   const statusTitle = await js(`document.querySelector('.health-card .card-title')?.textContent ?? ''`);
   if (statusTitle.trim() !== 'GPU Status') fail(`health card title is '${statusTitle}'`);
-  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
-    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
+  const expectedHealthRowCount = dashboardGpuCount + 4;
+  if (await js(`document.querySelectorAll('.health-card .health-row').length !== ${expectedHealthRowCount}`)) {
+    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected ${expectedHealthRowCount})`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'device,driver,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected device,driver,oc,waiver,app - the M16 flip puts the device row FIRST)`);
+  const expectedRowIds = dashboardGpuCount > 1
+    ? Array.from({ length: dashboardGpuCount }, (_, index) => `device-${index + 1}`).concat(['driver', 'oc', 'waiver', 'app']).join(',')
+    : 'device,driver,oc,waiver,app';
+  if (rowIds !== expectedRowIds) fail(`health card rows are '${rowIds}' (expected ${expectedRowIds})`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working']) {
+  const expectedRowLabels = dashboardGpuCount > 1
+    ? Array.from({ length: dashboardGpuCount }, (_, index) => `Device detected ${index + 1}`).concat(['Driver installed', 'OC status', 'OC waiver', 'Arc Power working'])
+    : ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working'];
+  for (const want of expectedRowLabels) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   if (rowLabels.includes('Clocks normal')) fail('M3-C-I: the "Clocks normal" health row is still rendered');
@@ -5749,13 +5758,21 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   if (!(await waitFor(win, `document.querySelectorAll('.health-card').length === 1`))) {
     fail('expected exactly one GPU Status card');
   }
-  if (await js(`document.querySelectorAll('.health-card .health-row').length !== 5`)) {
-    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected 5)`);
+  const dashboardGpuCount = Number(await js(`document.querySelectorAll('.dashboard-pulse-lane').length`));
+  const expectedHealthRowCount = dashboardGpuCount + 4;
+  if (await js(`document.querySelectorAll('.health-card .health-row').length !== ${expectedHealthRowCount}`)) {
+    fail(`health card rows: got ${await js(`document.querySelectorAll('.health-card .health-row').length`)} (expected ${expectedHealthRowCount})`);
   }
   const rowIds = await js(`Array.from(document.querySelectorAll('.health-card .health-row')).map((r) => r.dataset.row).join(',')`);
-  if (rowIds !== 'device,driver,oc,waiver,app') fail(`health card rows are '${rowIds}' (expected device,driver,oc,waiver,app - the M16 flip)`);
+  const expectedRowIds = dashboardGpuCount > 1
+    ? Array.from({ length: dashboardGpuCount }, (_, index) => `device-${index + 1}`).concat(['driver', 'oc', 'waiver', 'app']).join(',')
+    : 'device,driver,oc,waiver,app';
+  if (rowIds !== expectedRowIds) fail(`health card rows are '${rowIds}' (expected ${expectedRowIds})`);
   const rowLabels = await js(`Array.from(document.querySelectorAll('.health-card .health-row-label')).map((l) => l.textContent).join('|')`);
-  for (const want of ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working']) {
+  const expectedRowLabels = dashboardGpuCount > 1
+    ? Array.from({ length: dashboardGpuCount }, (_, index) => `Device detected ${index + 1}`).concat(['Driver installed', 'OC status', 'OC waiver', 'Arc Power working'])
+    : ['Device detected', 'Driver installed', 'OC status', 'OC waiver', 'Arc Power working'];
+  for (const want of expectedRowLabels) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
@@ -5839,25 +5856,25 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
     if (fsId === 'b580') {
       if (!plRange.includes('W')) fail(`b580 PL range does not show W units: '${plRange}'`);
       if (plValue.trim() !== '190 W') fail(`b580 PL readout is '${plValue}' (expected '190 W')`);
-      // M17f: the sysman PL2 read-out on a PERCENT-UNIT device - the honest
-      // '-' (the real sysman layer reads watts regardless of the IGCL
-      // units, and the percent fixture value must never masquerade as W).
-      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 - / PL2 -'`, 5000))) {
-        fail(`M17f: the b580 PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected the honest 'PL1 - / PL2 -' on a percent-unit device)`);
+      // M17f: the sysman PL2 read-out is always in actual watts. The
+      // Battlemage fixture stores the IGCL value as a percentage, so the
+      // mock converts the 100% stock value through the B580 190 W reference.
+      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 190 W / PL2 190 W'`, 5000))) {
+        fail(`M17f: the b580 PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected actual-watt 'PL1 190 W / PL2 190 W')`);
       }
-      step('m17f-pl2-b580', `M17f: the b580 (percent-unit) power-limit card shows the honest 'PL1 - / PL2 -' sysman read-out (the percent fixture never masquerades as W)`);
-      // M17g: the percent-unit apply never emits the pl2Note (the units
-      // gate) - the envelope carries null, so the '(set)' render can never
-      // appear on the b580.
+      step('m17f-pl2-b580', `M17f: the b580 power-limit card converts its percent-unit fixture to the actual-watt sysman read-out 'PL1 190 W / PL2 190 W'`);
+      // M17g: a Battlemage apply is expressed in the canonical percent
+      // payload internally, while the visible/sysman read-out remains W.
       const b580Pl2Env = await js(`window.arcPower.applySettings(0, { powerLimitW: 120 })`);
       if (b580Pl2Env.result.ok !== true) fail(`M17g: the b580 120 % apply failed: ${JSON.stringify(b580Pl2Env.result)}`);
       if (b580Pl2Env.result.pl2Note !== null) {
         fail(`M17g: the b580 pl2Note is '${JSON.stringify(b580Pl2Env.result.pl2Note)}' (expected null - the percent units gate)`);
       }
-      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 - / PL2 -'`, 5000))) {
-        fail(`M17g: the b580 read-out after a percent apply is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected the honest 'PL1 - / PL2 -' - no note, no sysman)`);
+      const b580LimitsAfterApply = await js(`window.arcPower.powerLimitsRead(0)`);
+      if (b580LimitsAfterApply?.sustainedW !== 228 || b580LimitsAfterApply?.burstW !== 228) {
+        fail(`M17g: the b580 actual-watt limits after the 120% apply are ${JSON.stringify(b580LimitsAfterApply)} (expected sustained/burst 228 W)`);
       }
-      step('m17g-pl2note-b580', `M17g: the b580 percent apply never emits the pl2Note (${JSON.stringify(b580Pl2Env.result.pl2Note)} - the units gate); the 'PL1 - / PL2 -' pin stays green`);
+      step('m17g-pl2note-b580', `M17g: the b580 120% apply keeps pl2Note null and the power-limits source reports actual 'PL1 228 W / PL2 228 W'`);
       const plMax = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] input[type="range"]')?.getAttribute('max')`);
       if (plMax !== '285') fail(`b580 PL slider max is '${plMax}' (expected 285 W)`);
       // M4-B: the b580 freq range mirrors into the negative half-plane too
@@ -5892,13 +5909,13 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
       const vramMin = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] input[type="range"]')?.getAttribute('min')`);
       const vramMax = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] input[type="range"]')?.getAttribute('max')`);
       const vramStep = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] input[type="range"]')?.getAttribute('step')`);
-      if (vramMin !== '0' || vramMax !== '3000' || vramStep !== '1') {
-        fail(`M4J (D): the VRAM slider range is ${vramMin}..${vramMax} step ${vramStep} (expected 0..3000 MHz step 1)`);
+      if (vramMin !== '2375' || vramMax !== '3000' || vramStep !== '1') {
+        fail(`M4J (D): the VRAM slider range is ${vramMin}..${vramMax} step ${vramStep} (expected 2375..3000 MHz step 1)`);
       }
       const vramMeta = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-meta .oc-range')?.textContent ?? ''`);
       if (!vramMeta.includes('MHz')) fail(`M4J (D): the VRAM card meta line does not show MHz units: '${vramMeta}'`);
       if (await js(`!!document.querySelector('.oc-mode-col-mode')`)) fail('M4J (D): the Battlemage Stock/Advanced toggle is visible');
-      step('oc-b580', `b580: 5 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no Stock/Advanced toggle, no preset chips (M3-C-G), VRAM card 0..3000 MHz step 1`);
+      step('oc-b580', `b580: 5 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no Stock/Advanced toggle, no preset chips (M3-C-G), VRAM card 2375..3000 MHz step 1`);
     } else if (fsId === 'a750' || fsId === 'acer-a750') {
       // M17c/M17d (round-1 N2 + round-1 S1): the a750 slider maxes are
       // AUTOMATED here (the user-hardware-only pin becomes a mock variant;
@@ -6249,6 +6266,9 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) {
       fail('b580 watt apply success toast missing');
     }
+    if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 228 W / PL2 228 W'`, 5000))) {
+      fail(`b580 watt apply did not refresh the visible actual-watt PL1/PL2 line: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}'`);
+    }
     // NIT 3 (M2D): a per-control routing failure (tempLimitC 100 % routed to
     // the 2023 runtime) would toast an error even when the PL toast is
     // green - assert the whole apply succeeded: no error toast + ALL four
@@ -6281,27 +6301,27 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       return (card.querySelector('.oc-value')?.textContent ?? '').trim();
     })()`);
-    const vramReadout = await setVramSlider(1500);
-    if (vramReadout !== '1500 MHz') fail(`M4J (D): the VRAM slider readout is '${vramReadout}' (expected '1500 MHz')`);
+    const vramReadout = await setVramSlider(2500);
+    if (vramReadout !== '2500 MHz') fail(`M4J (D): the VRAM slider readout is '${vramReadout}' (expected '2500 MHz')`);
     await clearToasts();
     await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-chip-apply')?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4J (D): the VRAM clock apply success toast missing');
     if (await js(`!!document.querySelector('.toast-error')`)) fail('M4J (D): the VRAM clock apply showed an error toast');
     const vramApplied = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(vramApplied.vramFreqOffsetGts - 1500) > 1e-6) {
-      fail(`M4J (D): the VRAM clock apply did not stick: ${vramApplied.vramFreqOffsetGts} (expected 1500 MHz)`);
+    if (Math.abs(vramApplied.vramFreqOffsetGts - 2500) > 1e-6) {
+      fail(`M4J (D): the VRAM clock apply did not stick: ${vramApplied.vramFreqOffsetGts} (expected 2500 MHz)`);
     }
     const vramDriver = await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-driver-value')?.textContent ?? ''`);
-    if (!vramDriver.includes('1500 MHz')) fail(`M4J (D): the VRAM driver readback is '${vramDriver}' (expected 1500 MHz)`);
+    if (!vramDriver.includes('2500 MHz')) fail(`M4J (D): the VRAM driver readback is '${vramDriver}' (expected 2500 MHz)`);
     await clearToasts();
-    await setVramSlider(0);
+    await setVramSlider(2375);
     await js(`document.querySelector('.oc-card[data-control="vramFreqOffsetGts"] .oc-chip-apply')?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M4J (D): the VRAM clock restore did not apply');
     const vramRestored = await js(`window.arcPower.getCurrentSettings(0)`);
-    if (Math.abs(vramRestored.vramFreqOffsetGts) > 1e-6) {
-      fail(`M4J (D): the VRAM clock restore did not land: ${vramRestored.vramFreqOffsetGts} (expected 0)`);
+    if (Math.abs(vramRestored.vramFreqOffsetGts - 2375) > 1e-6) {
+      fail(`M4J (D): the VRAM clock restore did not land: ${vramRestored.vramFreqOffsetGts} (expected 2375 MHz)`);
     }
-    step('b580-vram-oc', `M4J (D): VRAM card round trip - slider 1500 MHz -> chip Apply -> read-back ${vramDriver.trim()}, restored to 0`);
+    step('b580-vram-oc', `M4J (D): VRAM card round trip - slider 2500 MHz -> chip Apply -> read-back ${vramDriver.trim()}, restored to 2375 MHz`);
     await clearToasts();
   }
 

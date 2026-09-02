@@ -158,6 +158,7 @@ export function activeProfileEntries(settings, profiles) {
   const byId = new Map((Array.isArray(profiles) ? profiles : []).map((p) => [p.id, p]));
   const out = [];
   const seen = new Set();
+  const seenKeys = new Set();
   for (const [deviceKey, profileId] of Object.entries(normalizeActiveProfileIds(settings?.activeProfileIds))) {
     const profile = byId.get(profileId);
     if (!profile || seen.has(profileId)) continue;
@@ -165,14 +166,19 @@ export function activeProfileEntries(settings, profiles) {
     // A keyed profile can only be active for its own physical adapter. An
     // unbound legacy profile may be carried by the map while it is migrated.
     if (profileKey && profileKey !== deviceKey) continue;
+    const effectiveKey = profileKey ?? deviceKey;
+    if (seenKeys.has(effectiveKey)) continue;
     seen.add(profileId);
-    out.push({ profileId, deviceKey: profileKey ?? deviceKey, profile });
+    seenKeys.add(effectiveKey);
+    out.push({ profileId, deviceKey: effectiveKey, profile });
   }
   const legacyId = typeof settings?.activeProfileId === 'string' ? settings.activeProfileId : null;
   const legacy = legacyId ? byId.get(legacyId) : null;
   if (legacy && !seen.has(legacy.id)) {
     const profileKey = normalizeProfileGpuKey(legacy.deviceKey);
+    if (profileKey && seenKeys.has(profileKey)) return out;
     seen.add(legacy.id);
+    if (profileKey) seenKeys.add(profileKey);
     out.push({ profileId: legacy.id, deviceKey: profileKey, profile: legacy });
   }
   return out;

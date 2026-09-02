@@ -52,11 +52,12 @@ import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify, runAdvancedOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, clampOverlayScale, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
+import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
 import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
+import { formatDxgiLuid } from './recording-pure.js';
 import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
 import { trimRecordingClipToDuration } from './recording-clip.js';
 import { captureRecordingScreenshot } from './recording-screenshot.js';
@@ -703,6 +704,7 @@ async function main() {
         extended: {
           isCapable: () => workerOldIgcl.isCapable(),
           isTempCapable: () => workerOldIgcl.isTempCapable(),
+          isAvailable: () => workerOldIgcl.isAvailable(),
         },
         sysmanPowerLimits: workerSysmanLimits,
         ocMode: 'advanced',
@@ -861,6 +863,7 @@ async function main() {
         extended: {
           isCapable: () => bootOldIgcl.isCapable(),
           isTempCapable: () => bootOldIgcl.isTempCapable(),
+          isAvailable: () => bootOldIgcl.isAvailable(),
         },
         sysmanPowerLimits: bootRealSysmanLimits,
       } : {},
@@ -968,9 +971,10 @@ async function main() {
         allowAutoWaiver: true, // smoke/tests only (plan §9 M1 waiver clause)
         extended: smokeOldIgcl
           ? {
-              isCapable: () => smokeOldIgcl.isCapable(),
-              isTempCapable: () => smokeOldIgcl.isTempCapable(),
-            }
+            isCapable: () => smokeOldIgcl.isCapable(),
+            isTempCapable: () => smokeOldIgcl.isTempCapable(),
+            isAvailable: () => smokeOldIgcl.isAvailable(),
+          }
           : undefined,
         sysmanPowerCapable: !mock,
         // M3-C-E: the smoke's no-op round trips must never clamp a device
@@ -1289,6 +1293,7 @@ async function main() {
         extended: {
           isCapable: () => realOldIgcl.isCapable(),
           isTempCapable: () => realOldIgcl.isTempCapable(),
+          isAvailable: () => realOldIgcl.isAvailable(),
         },
         sysmanPowerLimits: realSysmanLimits,
           // M4J (A): pass the CACHED CIM data (with .videoControllers) - the
@@ -1520,30 +1525,51 @@ async function main() {
       // the requested adapter instead of its default adapter 0.
       if (!target || typeof target !== 'object') return target;
       const devices = await backend.listDevices();
+      const targetUnavailable = (reason) => {
+        const error = new Error(`Recording adapter target could not be resolved to a DXGI LUID${reason ? `: ${reason}` : ''}.`);
+        error.code = 'ENCODER_TARGET_UNAVAILABLE';
+        return error;
+      };
       const bdfText = (value) => {
+        if (typeof value === 'string') {
+          const match = value.trim().match(/^(?:0x)?[0-9a-f]+:([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i)
+            ?? value.trim().match(/^([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+          if (match) return `${Number.parseInt(match[1], 16)}:${Number.parseInt(match[2], 16)}.${Number.parseInt(match[3], 10)}`;
+          return null;
+        }
         if (!value || typeof value !== 'object') return null;
         const bus = Number(value.bus);
         const device = Number(value.device);
         const func = Number(value.function ?? value.func ?? 0);
         return [bus, device, func].every(Number.isInteger) ? `${bus}:${device}.${func}` : null;
       };
+      const luidText = (value) => {
+        if (typeof value === 'string' && value.trim()) return value.trim();
+        if (!value || typeof value !== 'object') return null;
+        const low = Number(value.low ?? value.LowPart ?? value.lowPart);
+        const high = Number(value.high ?? value.HighPart ?? value.highPart);
+        return Number.isSafeInteger(low) && Number.isSafeInteger(high) ? `${high >>> 0}:${low >>> 0}` : null;
+      };
       const wantedBdf = bdfText(target.bdf);
+      const wantedLuid = luidText(target.luid ?? target.adapterLuid ?? target.adapter_luid);
       const matches = devices.filter((device) => {
         const keyMatch = typeof target.deviceKey === 'string'
           && typeof device.deviceKey === 'string'
           && target.deviceKey === device.deviceKey;
         const bdfMatch = wantedBdf !== null && bdfText(device.bdf) === wantedBdf;
-        return keyMatch || bdfMatch;
+        const deviceLuid = luidText(device.osLuid ?? device.osController?.luid ?? device.luid ?? device.adapterLuid);
+        const luidMatch = wantedLuid !== null && deviceLuid === wantedLuid;
+        return keyMatch || bdfMatch || luidMatch;
       });
-      if (matches.length !== 1) return target;
+      if (matches.length !== 1) throw targetUnavailable(matches.length === 0 ? 'the selected GPU is no longer present' : 'the physical identity is ambiguous');
       const device = matches[0];
       const deviceId = typeof device.pciDeviceId === 'string'
         ? device.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/)?.[1]
         : null;
-      if (!deviceId) return target;
+      if (!deviceId) throw targetUnavailable('the selected GPU has no PCI device id');
       const luid = await fpsAdapter.adapterLuidOf?.(`0x${deviceId}`, device.bdf) ?? null;
-      if (!luid || !Number.isFinite(luid.low) || !Number.isFinite(luid.high)) return target;
-      return { ...target, luid: `${luid.high >>> 0}:${luid.low >>> 0}` };
+      if (!luid || !Number.isFinite(luid.low) || !Number.isFinite(luid.high)) throw targetUnavailable('DXGI did not report the selected adapter');
+      return { ...target, luid: formatDxgiLuid(luid) };
     },
     // Resolve the selected native display/window at the moment capture
     // starts. Electron's display.id is not an HMONITOR, so the helper keeps
@@ -2052,7 +2078,11 @@ async function main() {
   // monitored device - the pre-M17d source was the CIM controller list's
   // first pnpDeviceId, which could name a different adapter on multi-GPU
   // boxes). Unmatched -> null (honest '-').
-  const sysStatsHolder = { current: null };
+  const sysStatsHolder = { current: null, onReady: null };
+  const assignSysStats = (adapter) => {
+    sysStatsHolder.current = adapter;
+    try { sysStatsHolder.onReady?.(); } catch { /* best effort */ }
+  };
   let msrReader = null;
   // M4-D2: the Monitoring log-to-file writer. RID_MOCK_LOG_DIR redirects
   // the directory (ui-verify); the default is <Documents>\Arc Power.
@@ -3345,7 +3375,7 @@ async function main() {
   // boot re-fetches devices after sysinfo:get so the header/dashboard/
   // dropdown get the enriched names.
   if (mock) {
-    sysStatsHolder.current = createMockSysStats();
+    assignSysStats(createMockSysStats());
   } else {
     // M4L (B): the PawnIO MSR reader (CPU temp + wattage - the HWiNFO-class
     // route). Lazy open + module load once per session (the reader's
@@ -3367,7 +3397,10 @@ async function main() {
       // CIM controller list's first pnpDeviceId (a multi-GPU box could
       // name a different adapter).
       const devices = await backend.listDevices();
-      const row = devices.find((d) => typeof d?.pciDeviceId === 'string' && /0x[0-9a-fA-F]{6,8}/.test(d.pciDeviceId)) ?? devices[0];
+      // Use the same display-output-aware dGPU preference as the renderer.
+      // Telemetry must not initialize from enumeration order because that can
+      // bind the first slow query to an iGPU or to a non-driving adapter.
+      const row = await resolvePreferredDevice(backend, devices);
       initialTarget = row;
       const m = typeof row?.pciDeviceId === 'string' ? row.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/) : null;
       if (m) deviceIdHex = `0x${m[1].toLowerCase()}`;
@@ -3376,12 +3409,13 @@ async function main() {
       deviceIdHex = null;
       msrReader = createMsrReader({ cpuVendor: null });
     }
-    sysStatsHolder.current = createSysStats({
+    assignSysStats(createSysStats({
       deviceKey: initialTarget?.deviceKey ?? null,
       pnpDeviceId: initialTarget?.pnpDeviceId ?? initialTarget?.osController?.pnpDeviceId ?? null,
       pciVendorId: initialTarget?.pciVendorId ?? null,
       deviceIdHex,
       bdf: initialTarget?.bdf ?? null,
+      osLuid: initialTarget?.osLuid ?? initialTarget?.osController?.luid ?? null,
       integrated: initialTarget?.integrated === true,
       mobile: initialTarget?.mobile === true,
       dedicatedCapacityBytes: initialTarget?.vramBytes ?? null,
@@ -3398,7 +3432,7 @@ async function main() {
       // mode - the createSysStats null-returning default keeps the
       // determinism seam, and the mock adapter is used there anyway).
       memoryUtil,
-    });
+    }));
   }
 
   if (uiVerify) {

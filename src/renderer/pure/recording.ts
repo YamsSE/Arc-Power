@@ -242,7 +242,6 @@ export function recordingGpuEncoderOptions(
     .map((device) => ({ device, target: recordingAdapterTargetOf(device) }))
     .filter((entry): entry is { device: RecordingGpuLike; target: RecordingAdapterTarget } => Boolean(entry.target));
   const annotated = usable.map((encoder) => ({ encoder, metadata: metadataOf(encoder) }));
-  const hasAdapterMetadata = annotated.some(({ metadata }) => metadata.key || metadata.name);
   const options: Array<[string, string]> = [];
 
   for (const encoderId of RECORDING_QSV_ENCODER_IDS) {
@@ -250,11 +249,14 @@ export function recordingGpuEncoderOptions(
     if (!codec) continue;
     const codecLabel = encoderShortLabel(codec);
     if (!codecLabel) continue;
+    const codecEntries = annotated.filter(({ encoder }) => encoder.type === encoderId);
+    const hasCodecMetadata = codecEntries.some(({ metadata }) => metadata.key || metadata.name);
+    const hasUnboundCodecEntry = codecEntries.some(({ metadata }) => !metadata.key && !metadata.name);
     for (const { device, target } of gpuDevices) {
-      const matchingMetadata = annotated.find(({ encoder, metadata }) => encoder.type === encoderId
-        && ((metadata.key && device.deviceKey && metadata.key === device.deviceKey)
+      const matchingMetadata = codecEntries.find(({ metadata }) =>
+        ((metadata.key && device.deviceKey && metadata.key === device.deviceKey)
           || (metadata.name && metadata.name.toLowerCase() === String(device.name ?? '').toLowerCase())));
-      if (hasAdapterMetadata && !matchingMetadata && annotated.some(({ encoder, metadata }) => encoder.type === encoderId && (metadata.key || metadata.name))) continue;
+      if (hasCodecMetadata && !hasUnboundCodecEntry && !matchingMetadata) continue;
       const id = encodeRecordingEncoderSelection(encoderId, device);
       if (id) options.push([id, `${deviceShortLabel(device)} ${codecLabel}`]);
     }
@@ -282,6 +284,22 @@ function metadataMatchesDevice(metadata: { key: string | null; name: string | nu
   return false;
 }
 
+function encoderLabelsForDevice(
+  annotated: Array<{ encoder: RecordingEncoderLike; metadata: { key: string | null; name: string | null } }>,
+  device: RecordingGpuLike,
+): string[] {
+  const labels: string[] = [];
+  for (const encoderType of [...new Set(annotated.map(({ encoder }) => encoder.type))]) {
+    const codecEntries = annotated.filter(({ encoder }) => encoder.type === encoderType);
+    const hasCodecMetadata = codecEntries.some(({ metadata }) => metadata.key || metadata.name);
+    const hasUnboundCodecEntry = codecEntries.some(({ metadata }) => !metadata.key && !metadata.name);
+    if (hasCodecMetadata && !hasUnboundCodecEntry
+      && !codecEntries.some(({ metadata }) => metadataMatchesDevice(metadata, device))) continue;
+    labels.push(...codecEntries.map(({ encoder }) => encoderInventoryLabel(encoder)));
+  }
+  return [...new Set(labels)].filter(Boolean);
+}
+
 /**
  * Build the recording page's adapter/codec inventory from stable GPU rows.
  * The current QSV runtime may expose codec support without an adapter field;
@@ -299,16 +317,10 @@ export function recordingGpuEncoderRows(
 
   const gpuDevices = (Array.isArray(devices) ? devices : []).filter(intelGpu);
   const annotated = usable.map((encoder) => ({ encoder, metadata: metadataOf(encoder) }));
-  const hasAdapterMetadata = annotated.some(({ metadata }) => metadata.key || metadata.name);
   const rows: RecordingGpuEncoderRow[] = [];
 
   for (const device of gpuDevices) {
-    const deviceLabels = hasAdapterMetadata
-      ? annotated
-        .filter(({ metadata }) => !metadata.key && !metadata.name || metadataMatchesDevice(metadata, device))
-        .map(({ encoder }) => encoderInventoryLabel(encoder))
-      : labels;
-    const uniqueLabels = [...new Set(deviceLabels)].filter(Boolean);
+    const uniqueLabels = encoderLabelsForDevice(annotated, device);
     if (uniqueLabels.length) rows.push({ deviceKey: device.deviceKey ?? null, deviceName: device.name, encoderLabels: uniqueLabels });
   }
 

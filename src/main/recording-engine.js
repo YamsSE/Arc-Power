@@ -837,17 +837,13 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const resolvedEncoder = resolveRecordingEncoderSelection(settings.encoderId, state.encoders);
     let resolvedAdapterTarget = resolvedEncoder.adapterTarget;
     if (resolvedAdapterTarget) {
-      try {
-        // The renderer carries the stable physical identity in the selected
-        // GPU+codec id. Resolve that identity to the DXGI LUID in the main
-        // process immediately before starting OBS/QSV; this keeps the
-        // encoder choice bound to the selected physical adapter even when
-        // the runtime's machine-info inventory is global.
-        resolvedAdapterTarget = normalizedAdapterTarget(await resolveEncoderTarget(resolvedAdapterTarget)) ?? resolvedAdapterTarget;
-      } catch {
-        // Keep the original stable target so a temporary DXGI refresh failure
-        // cannot silently turn a concrete GPU choice into Automatic.
-      }
+      // The renderer carries the stable physical identity in the selected
+      // GPU+codec id. Resolve that identity to the DXGI LUID in the main
+      // process immediately before starting OBS/QSV; this keeps the
+      // encoder choice bound to the selected physical adapter even when
+      // the runtime's machine-info inventory is global. Any bridge failure
+      // is propagated: a concrete choice must never start unresolved.
+      resolvedAdapterTarget = normalizedAdapterTarget(await resolveEncoderTarget(resolvedAdapterTarget)) ?? resolvedAdapterTarget;
     }
     const demotionKeys = new Set([
       encoderDemotionKey(resolvedEncoder.encoderId, resolvedEncoder.adapterTarget),

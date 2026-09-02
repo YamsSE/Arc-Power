@@ -530,9 +530,12 @@ const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {Record<string, { units?: string }>} [ranges]
  * @param {string|null} [mode] OC_MODE_STOCK | OC_MODE_ADVANCED (absent ->
  *   the historical threshold behavior)
+ * @param {object|null} [sysmanPowerLimits] the optional W-unit companion
+ * @param {object|null} [limitsKey] device identity used to distinguish a
+ *   listed card's stock PL ceiling from the generic 252 W threshold
  * @returns {{ driverstore: Record<string, unknown>, extended: Record<string, unknown> }}
  */
-export function splitByRuntime(settings, ranges = null, mode = null, sysmanPowerLimits = null) {
+export function splitByRuntime(settings, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null) {
   const driverstore = {};
   const extended = {};
   const isWcUnits = (key) => {
@@ -541,10 +544,20 @@ export function splitByRuntime(settings, ranges = null, mode = null, sysmanPower
     return key === 'powerLimitW' ? units === 'W' : units === 'C';
   };
   const isWcControl = (key) => key === 'powerLimitW' || key === 'tempLimitC';
+  // Advanced mode uses the V1 writer only when the requested PL is outside
+  // the selected card's stock DriverStore ceiling. This preserves the A750
+  // 250 W probe path (its stock ceiling is 216/228 W) while keeping an A770
+  // request of exactly 252 W on the working DriverStore path. Calls without
+  // an identity retain the historical all-advanced-W behavior for backwards
+  // compatibility with older direct callers.
+  const advancedPowerThreshold = mode === OC_MODE_ADVANCED && limitsKey !== null && limitsKey !== undefined
+    ? deviceGateThresholds(limitsKey, false).plMax
+    : STD_PL_MAX_W;
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
     const advancedWControl = mode === OC_MODE_ADVANCED
-      && key === 'powerLimitW' && isWcUnits(key);
+      && key === 'powerLimitW' && isWcUnits(key)
+      && (limitsKey === null || limitsKey === undefined || value > advancedPowerThreshold);
     const advancedTempControl = mode === OC_MODE_ADVANCED
       && key === 'tempLimitC' && isWcUnits(key) && value > STD_TL_MAX_C;
     if (advancedWControl || advancedTempControl) {
@@ -953,7 +966,7 @@ export function isMomentaryLieCandidate(per) {
  * }>}
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
-  const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode, sysmanPowerLimits);
+  const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode, sysmanPowerLimits, limitsKey);
   // M41: keep fan/VF writes after the extended W/C phase. The driver has
   // different ownership/order rules for those controls in Advanced mode.
   const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
@@ -1255,6 +1268,19 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     let state = null;
     try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
     return { result: { ok: Object.keys(perControl).length === 0, perControl }, state };
+  }
+  // Direct callers (including the elevated worker) must receive the same
+  // explicit Stock/Advanced refusal as the IPC/profile entry points. Keep
+  // the null mode legacy path unchanged: older callers intentionally use the
+  // threshold split without a persisted mode.
+  if (ocMode === OC_MODE_STOCK || ocMode === OC_MODE_ADVANCED) {
+    const modeRefusal = ocModeRefusal(ocMode, settings, caps?.ranges ?? null, caps);
+    if (modeRefusal) {
+      const perControl = refusalPerControl(modeRefusal);
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      return { result: { ok: false, perControl }, state };
+    }
   }
   // M50: OldIgcl can select a unique legacy handle from the PNP vendor/device
   // pair even when Windows cannot provide a usable BDF (-1:-1.-1 on some

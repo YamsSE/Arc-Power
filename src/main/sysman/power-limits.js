@@ -251,9 +251,9 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
  * fixture's stock default 210 W at boot; the applied value after an apply -
  * the per-apply read-out freshness, deterministic for the ui-verify pins);
  * peakW is the documented A770 peak 800 W. PERCENT-UNIT devices
- * (Battlemage) answer null - the honest '-': the real sysman layer reads
- * WATTS regardless of the IGCL units, and the mock's percent fixture value
- * must never masquerade as W. setLimits() RECORDS the call (the
+ * (Battlemage) are converted to their card's published board-power class
+ * before the W-only readout is returned; the mock's percent fixture value
+ * must never masquerade as the same number of watts. setLimits() RECORDS the call (the
  * companion-sync-path assertion surface) and answers ok. M21: setLimits
  * ALSO WRITES the canonical per-device state
  * (`backend._entry(deviceId).state.powerLimitW`) - for the >315 W
@@ -271,6 +271,21 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
  */
 export function createMockSysmanPowerLimits({ backend }) {
   const calls = [];
+  const battlemagePowerReferenceW = (deviceName = '') => {
+    if (/\bB570\b/i.test(deviceName)) return 150;
+    if (/\bB50\b/i.test(deviceName)) return 70;
+    return 190;
+  };
+  const battlemage = (deviceName = '') => /battlemage|\bB\d{2,4}\b/i.test(deviceName);
+  const capsFor = async (deviceId) => {
+    try {
+      return await backend.getCapabilities?.(deviceId) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const percentToWatts = (value, caps) => value * battlemagePowerReferenceW(caps?.deviceName) / 100;
+  const wattsToPercent = (value, caps) => value * 100 / battlemagePowerReferenceW(caps?.deviceName);
   return {
     /** the recorded setLimits calls ({ sustainedW, burstW } each) */
     get calls() { return calls; },
@@ -287,14 +302,13 @@ export function createMockSysmanPowerLimits({ backend }) {
         pl = null;
       }
       if (pl === null) return null;
-      try {
-        const caps = await backend.getCapabilities?.(deviceId);
-        const units = caps?.ranges?.powerLimitW?.units;
-        if (units !== undefined && units !== 'W') return null;
-      } catch {
-        // degraded caps read - keep the fixture mirror
-      }
-      return { sustainedW: pl, burstW: pl, peakW: 800 };
+      const caps = await capsFor(deviceId);
+      const units = caps?.ranges?.powerLimitW?.units;
+      if (units !== undefined && units !== 'W' && units !== '%') return null;
+      const watts = units === '%' && battlemage(caps?.deviceName)
+        ? percentToWatts(pl, caps)
+        : pl;
+      return { sustainedW: watts, burstW: watts, peakW: 800 };
     },
     /** M21: the deviceId rides as the SECOND argument (the routed companion
      *  passes its own deviceId through; the real adapter + the proxy take
@@ -307,7 +321,12 @@ export function createMockSysmanPowerLimits({ backend }) {
       // what the routed block checks).
       try {
         const entry = backend._entry?.(deviceId);
-        if (entry && entry.state) entry.state.powerLimitW = sustainedW;
+        const caps = await capsFor(deviceId);
+        const units = caps?.ranges?.powerLimitW?.units;
+        const rawValue = units === '%' && battlemage(caps?.deviceName)
+          ? wattsToPercent(sustainedW, caps)
+          : sustainedW;
+        if (entry && entry.state) entry.state.powerLimitW = rawValue;
       } catch {
         // no _entry seam (or an unknown device id) - the recording + the ok
         // answer stay unconditional

@@ -342,6 +342,41 @@ export function gpuUtilPctOf(rows, luid) {
   return Math.min(100, sum);
 }
 
+/** Normalize the LUID shapes used by DXGI, koffi, JSON, and persisted GPU
+ * inventory rows into the numeric pair consumed by the perf-counter matcher.
+ * A missing/invalid identity must never fall through to an ordinal adapter. */
+export function normalizeLuid(value) {
+  if (value === null || value === undefined) return null;
+  const part = (raw) => {
+    if (typeof raw === 'bigint') {
+      if (raw < 0n || raw > 0xffffffffn) return null;
+      return Number(raw);
+    }
+    if (typeof raw === 'number') return Number.isSafeInteger(raw) && raw >= 0 && raw <= 0xffffffff ? raw : null;
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    const text = raw.trim();
+    const parsed = /^0x[0-9a-f]+$/i.test(text)
+      ? Number.parseInt(text.slice(2), 16)
+      : /^[0-9]+$/.test(text)
+        ? Number(text)
+        : /^[0-9a-f]+$/i.test(text)
+          ? Number.parseInt(text, 16)
+          : NaN;
+    return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 0xffffffff ? parsed : null;
+  };
+  if (typeof value === 'string') {
+    const match = value.trim().match(/^(.*?):(.*?)$/);
+    if (!match) return null;
+    const high = part(match[1]);
+    const low = part(match[2]);
+    return high === null || low === null ? null : { high: high >>> 0, low: low >>> 0 };
+  }
+  if (typeof value !== 'object') return null;
+  const high = part(value.high ?? value.High ?? value.highPart ?? value.HighPart);
+  const low = part(value.low ?? value.Low ?? value.lowPart ?? value.LowPart);
+  return high === null || low === null ? null : { high: high >>> 0, low: low >>> 0 };
+}
+
 // ---------------------------------------------------------------------------
 // M17g - the GetSystemTimes CPU-utilization reader (kernel32 via koffi)
 // ---------------------------------------------------------------------------
@@ -575,7 +610,7 @@ export function createSysStats(deps = {}) {
       pciDeviceId,
       bdf: target?.bdf ?? controller.bdf ?? null,
       deviceIdHex: pciDeviceId,
-      osLuid: target?.osLuid ?? controller.luid ?? null,
+      osLuid: normalizeLuid(target?.osLuid ?? controller.luid ?? null),
       integrated: target?.integrated === true,
       mobile: target?.mobile === true,
       dedicatedCapacityBytes: target?.vramBytes ?? controller.vramBytes ?? null,
@@ -593,6 +628,10 @@ export function createSysStats(deps = {}) {
     if ([bus, device, fn].every(Number.isInteger)) return `${bus}:${device}.${fn}`;
     return null;
   };
+  const luidText = (value) => {
+    const luid = normalizeLuid(value);
+    return luid ? `${luid.high}:${luid.low}` : null;
+  };
   const targetKeyOf = (target) => {
     const spec = targetSpecOf(target);
     if (spec.deviceKey) return `key:${identityText(spec.deviceKey)}`;
@@ -600,7 +639,8 @@ export function createSysStats(deps = {}) {
     const bdf = bdfText(spec.bdf);
     const vendor = identityText(spec.pciVendorId);
     const pci = identityText(spec.pciDeviceId ?? spec.deviceIdHex);
-    if (pnp || bdf || pci) return `physical:${pnp ?? '-'}|${vendor ?? '-'}:${pci ?? '-'}|${bdf ?? '-'}`;
+    const luid = luidText(spec.osLuid);
+    if (pnp || bdf || pci || luid) return `physical:${pnp ?? '-'}|${vendor ?? '-'}:${pci ?? '-'}|${bdf ?? '-'}|luid:${luid ?? '-'}`;
     return 'default';
   };
   const targetRecords = new Map();
@@ -791,7 +831,7 @@ export function createSysStats(deps = {}) {
           let gpuUtil = null;
           if (record.deviceIdHex || record.osLuid) {
             try {
-              const luid = record.osLuid ?? await luidOf(record.deviceIdHex, record.bdf);
+              const luid = normalizeLuid(record.osLuid) ?? normalizeLuid(await luidOf(record.deviceIdHex, record.bdf));
               const memory = gpuMemoryUsageOf(raw.gpuMemRows, luid, {
                 integrated: record.integrated,
                 mobile: record.mobile,
@@ -847,6 +887,10 @@ export function createSysStats(deps = {}) {
     // selected physical adapter's slow cache.  This is the per-lane entry
     // point used by overlay and multi-device consumers.
     async sampleForTarget(target = null) {
+      // A target without stable physical identity cannot be joined to a
+      // per-adapter cache. Never let it observe the focused/default record;
+      // secondary overlay callers must receive an honest empty lane.
+      if (targetKeyOf(target) === 'default') return emptyLaneCache();
       const record = ensureTargetRecord(target);
       return sampleFastForRecord(record);
     },

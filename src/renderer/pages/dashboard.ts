@@ -24,6 +24,7 @@ import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { deviceHardwareKey } from '../pure/device.ts';
+import { dashboardDeviceStatusLabel, dashboardGpuOrder } from '../pure/dashboard.ts';
 import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
@@ -266,8 +267,9 @@ function pulseLaneElement(
 
 function dashboardPulse(ctx: PageContext): HTMLElement {
   const state = ctx.store.get();
-  const entries = state.devices.length > 0
-    ? state.devices.map((device, index) => ({
+  const devices = dashboardGpuOrder(state.devices);
+  const entries = devices.length > 0
+    ? devices.map((device, index) => ({
         device,
         label: `GPU ${index + 1}`,
         name: device.name,
@@ -299,7 +301,7 @@ function updateDashboardPulse(ctx: PageContext): void {
     updatePulseLane(pulseLaneFor('system'), state.latestSample);
     return;
   }
-  for (const device of state.devices) {
+  for (const device of dashboardGpuOrder(state.devices)) {
     updatePulseLane(pulseLaneFor(dashboardDeviceKey(device)), dashboardSampleFor(state, device));
   }
 }
@@ -474,7 +476,7 @@ function sharedMemoryBytesOf(
 function hardwareIcon(path: string | null, alt: string, kind: 'cpu' | 'gpu'): HTMLElement | null {
   if (!path) return null;
   return el('img', {
-    class: `hardware-card-icon hardware-card-icon-${kind}`,
+    class: `hardware-card-icon hardware-card-icon-${kind}${path.endsWith('/intel-arc-alchemist.png') ? ' hardware-card-icon-alchemist' : ''}`,
     src: path,
     alt,
     loading: 'eager',
@@ -557,10 +559,25 @@ function healthCard(ctx: PageContext): HTMLElement {
   const device = s.devices.find((d) => d.id === s.deviceId) ?? null;
   const osOnly = device?.synthetic === true && device.backendKind === 'os';
   const rows = dashboardHealthRows(ctx, device, osOnly);
+  const devices = dashboardGpuOrder(s.devices);
+  const detectionRows = devices.length > 1
+    ? devices.map((gpu, index) => gpuDetectionPill(gpu, index, devices.length))
+    : rows.map((row) => healthRowEl(row, ctx));
 
   return el('section', { class: 'card health-card' }, [
     el('h2', { class: 'card-title', text: 'GPU Status' }),
-    el('div', { class: 'card-body' }, rows.map((row) => healthRowEl(row, ctx))),
+    el('div', { class: 'card-body' }, [
+      ...detectionRows,
+      ...(devices.length > 1 ? rows.filter((row) => row.id !== 'device').map((row) => healthRowEl(row, ctx)) : []),
+    ]),
+  ]);
+}
+
+function gpuDetectionPill(device: AppState['devices'][number], index: number, gpuCount: number): HTMLElement {
+  return el('div', { class: 'health-row health-gpu-detection-pill', 'data-row': `device-${index + 1}` }, [
+    el('span', { class: 'status-dot health-dot status-ok', title: device.name }),
+    el('span', { class: 'health-row-label', text: dashboardDeviceStatusLabel(index, gpuCount) }),
+    el('span', { class: 'health-row-detail text-ok', text: device.name }),
   ]);
 }
 
@@ -755,10 +772,11 @@ export const dashboardPage: Page = {
     const s = ctx.store.get();
     // Dashboard is an inventory view in multi-GPU mode. Focus selection stays
     // on Tuning/Graphics; GPU cards are ordered from the complete inventory.
-    const device = s.devices[0] ?? null;
+    const dashboardDevices = dashboardGpuOrder(s.devices);
+    const device = dashboardDevices[0] ?? null;
     const firstSample = device ? dashboardSampleFor(s, device) : s.latestSample;
     const osOnly = device?.synthetic === true && device.backendKind === 'os';
-    const noIntelPresentation = s.noIntel || osOnly;
+    const noIntelPresentation = (s.noIntel || osOnly) && s.devices.length <= 1;
     // ReBAR is per physical inventory row, never the focused adapter's row.
     const osController: {
       name?: string | null;
@@ -886,7 +904,7 @@ export const dashboardPage: Page = {
             ? [dashboardGpuCard(device, 1, s)]
             : [el('section', { class: 'card device-card' }, [el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' })])]),
 
-        ...s.devices.slice(1).map((gpu, index) => dashboardGpuCard(gpu, index + 2, s)),
+        ...dashboardDevices.slice(1).map((gpu, index) => dashboardGpuCard(gpu, index + 2, s)),
 
         // --- M3-A: the general GPU Status card (was the Service Status card) ---
         healthCard(ctx),

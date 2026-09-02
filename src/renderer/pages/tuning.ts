@@ -178,6 +178,10 @@ let appliedLock: { voltageV: number; freqMhz: number } | null = null;
 // (boot); the element text is 'PL1 210 W / PL2 210 W' when the layer
 // answers, the honest 'PL1 - / PL2 -' when absent.
 let sysmanLimitsNode: HTMLElement | null = null;
+// Ignore an older asynchronous read when an apply or GPU switch has already
+// requested a newer one. Without this guard, the boot read can finish after
+// an apply and overwrite the fresh PL1/PL2 line with the old value.
+let sysmanRefreshToken = 0;
 // M17g: the PER-DEVICE SESSION-tracked last-applied PL2 - fed ONLY from
 // the apply envelope's pl2Note (the '(set)' fallback when the sysman layer
 // is absent; the boot one-shot + the profile/tray applies never feed it -
@@ -235,6 +239,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   chipApplyNodes.clear();
   lockCurrentNode = null;
   lockApplyBtn = null;
+  sysmanRefreshToken += 1;
   sysmanLimitsNode = null;
   applyBtn = null;
   pendingSummaryNode = null;
@@ -318,19 +323,22 @@ function formatSysmanLimits(limits: PowerLimitsRead | null, set: { landed?: bool
  *  (fed ONLY from the apply envelope's pl2Note). */
 async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
   if (!sysmanLimitsNode || deviceId === null) return;
+  const token = ++sysmanRefreshToken;
+  const targetNode = sysmanLimitsNode;
   let limits: PowerLimitsRead | null = null;
   try {
     limits = await api.powerLimitsRead(deviceId);
   } catch {
     limits = null;
   }
+  if (token !== sysmanRefreshToken || targetNode !== sysmanLimitsNode) return;
   const powerRange = renderCaps?.ranges?.powerLimitW;
   const enforced = typeof currentState?.powerLimitW === 'number' && Number.isFinite(currentState.powerLimitW)
     ? (powerRange
       ? controlValueToDisplay(currentState.powerLimitW as number, 'powerLimitW', powerRange, renderCaps?.deviceName ?? '')
       : (currentState.powerLimitW as number))
     : null;
-  sysmanLimitsNode.textContent = formatSysmanLimits(limits, pl2SetByDevice.get(deviceId), enforced);
+  targetNode.textContent = formatSysmanLimits(limits, pl2SetByDevice.get(deviceId), enforced);
 }
 
 /** M17d (Run D): refresh the gpuLock card's current-driver-lock read-out
@@ -1518,7 +1526,11 @@ export const tuningPage: Page = {
         // line after every apply (the power limit may have moved the burst
         // domain via the companion sync; the '(set)' fallback re-renders
         // from the session state just fed).
-        void refreshSysmanLimits(deviceId);
+        // Wait for the fresh read before resolving the apply flow. This keeps
+        // the visible PL1/PL2 line from briefly (or permanently, when a
+        // verifier samples immediately) showing the boot value after a new
+        // power-limit apply.
+        await refreshSysmanLimits(deviceId);
         if (!result.ok) {
           // The waiver may have been lost on the device (e.g. driver reset).
           const freshCaps = await api.getCapabilities(deviceId);
