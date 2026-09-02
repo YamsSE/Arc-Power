@@ -7742,8 +7742,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     activeModes: { video: true, replay: false },
     startedAt: Date.now() - 65000,
   });
-  if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.classList.contains('recording') === true && !!document.querySelector('.brand-icon') && !!document.querySelector('.status-chip') && document.getElementById('status-label')?.textContent === 'REC'`, 5000))) {
-    fail(`M144: the recording status pill did not render the Arc Power mark and red REC state (state=${JSON.stringify(recordingStatusPillHandle.getState())})`);
+  if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.classList.contains('recording') === true && !!document.querySelector('.brand-icon') && !!document.querySelector('.status-dot') && !document.getElementById('status-label') && !document.getElementById('status-elapsed')`, 5000))) {
+    fail(`M146: the recording status indicator did not render only the Arc Power mark and red dot (state=${JSON.stringify(recordingStatusPillHandle.getState())})`);
   }
   const pillBounds = recordingStatusPillHandle.getState().bounds;
   const displayBounds = screen.getPrimaryDisplay().bounds;
@@ -7756,8 +7756,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     activeModes: { video: false, replay: true },
     startedAt: Date.now() - 125000,
   });
-  if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.classList.contains('replay') === true && document.getElementById('status-label')?.textContent === 'REPLAY'`, 5000))) {
-    fail('M144: the recording status pill did not switch to the blue REPLAY state');
+  if (!(await waitFor(statusPillWin, `document.getElementById('recording-status-pill')?.classList.contains('replay') === true && !!document.querySelector('.status-dot')`, 5000))) {
+    fail('M146: the recording status indicator did not switch to the blue replay dot');
   }
   recordingStatusPillHandle.setRecordingState({
     running: false,
@@ -7769,7 +7769,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M144: the recording status pill stayed visible after capture stopped');
   }
   recordingStatusPillHandle.apply(false);
-  step('m144-pill-state', 'the sibling top-right status overlay shows the Arc Power mark with a red REC or blue REPLAY chip, and hides again after stop');
+  step('m146-pill-state', 'the sibling top-right status overlay shows only the Arc Power mark with a red recording or blue replay dot, and hides again after stop');
 
   // (b) the overlay DOM lines. The mock telemetry: util 42, cpuFreq 4300
   // ('4.3GHz'), cpuTemp 61|62 alternating, memClock 2187, vram 2971324416
@@ -8204,8 +8204,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M144: the Overlay view still renders the recording status pill toggle');
   }
   await js(`location.hash = '#/recording'`);
-  if (!(await waitFor(win, `!!document.querySelector('.recording-heading') && !!document.querySelector('.recording-storage-controls .recording-field + .recording-pill-setting')`, 8000))) {
+  if (!(await waitFor(win, `!!document.querySelector('.recording-heading') && !!document.querySelector('.recording-storage-heading-meta .recording-storage-space') && !!document.querySelector('.recording-storage-controls .recording-field + .recording-pill-setting')`, 8000))) {
     fail('M144: the Recording tab did not render the recording status pill setting');
+  }
+  if (await js(`!!document.querySelector('.recording-storage-summary')`)) {
+    fail('M146: the Save location panel still renders the old lower storage summary');
   }
   if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayRecordingPill"]')`, 5000))) {
     fail('M144: the Recording tab has no recording status pill toggle');

@@ -806,15 +806,17 @@ function renderStorage(): HTMLElement {
   return el('section', { class: 'recording-panel recording-storage-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Files' }), el('h2', { class: 'recording-panel-title', text: 'Save location' })]),
-      el('span', { class: 'recording-panel-badge', text: 'Recordings and clips' }),
+      el('div', { class: 'recording-storage-heading-meta' }, [
+        el('div', { class: 'recording-storage-space' }, [
+          el('span', { class: 'recording-field-label', text: 'Available space' }),
+          el('strong', { text: spaceText }),
+        ]),
+        el('span', { class: 'recording-panel-badge', text: 'Recordings and clips' }),
+      ]),
     ]),
     el('div', { class: 'recording-storage-controls' }, [
       field('Recording folder', el('div', { class: 'recording-input-row' }, [location, button('Browse', () => void chooseFolder(), 'btn btn-secondary'), button('Open folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Recording folder', messageOf(err))), 'btn btn-secondary', !locationValue)])),
       renderRecordingPillSetting(),
-    ]),
-    el('div', { class: 'recording-storage-summary' }, [
-      el('span', { class: 'recording-field-label', text: 'Available space' }),
-      el('strong', { text: spaceText }),
     ]),
   ]);
 }

@@ -2870,8 +2870,10 @@ input[type="number"] {
 .recording-storage-panel { display: grid; grid-template-columns: minmax(170px, .6fr) minmax(260px, 1fr); gap: 12px 16px; }
 .recording-storage-panel .recording-panel-heading { grid-column: 1 / -1; }
 .recording-storage-controls { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.recording-storage-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding-top: 9px; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
-.recording-storage-summary strong { color: var(--text-muted); font: 650 11px var(--font); text-align: right; }
+.recording-storage-heading-meta { display: flex; align-items: center; justify-content: flex-end; gap: 18px; min-width: 0; }
+.recording-storage-space { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
+.recording-storage-space .recording-field-label { color: var(--text-dim); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.recording-storage-space strong { color: var(--text-muted); font: 650 11px var(--font); white-space: nowrap; }
 .recording-quickstart { padding: 0 11px; border: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--bg-elev) 72%, transparent); }
 .recording-quickstart-summary { display: flex; align-items: center; gap: 9px; min-height: 34px; cursor: pointer; list-style: none; }
 .recording-quickstart-summary::-webkit-details-marker { display: none; }
@@ -2971,7 +2973,7 @@ input[type="number"] {
 .recording-player-timeline-ruler { display: flex; justify-content: space-between; padding: 5px 43px 0; color: var(--text-dim); font: 10px var(--mono); }
 .recording-empty { margin: 0; padding: 16px; color: var(--text-dim); text-align: center; font-size: 12px; }
 @media (max-width: 1050px) { .recording-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid, .recording-capture-target-row { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-hotkey-row { grid-template-columns: 1fr 150px; } .recording-hotkey-warning, .recording-hotkey-registered { grid-column: 1 / -1; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } .recording-target-refresh { width: max-content; } }
+@media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid, .recording-capture-target-row { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-storage-heading-meta { width: 100%; justify-content: space-between; } .recording-hotkey-row { grid-template-columns: 1fr 150px; } .recording-hotkey-warning, .recording-hotkey-registered { grid-column: 1 / -1; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } .recording-target-refresh { width: max-content; } }
 .recording-delete-modal { width: min(460px, calc(100vw - 32px)); }
 .recording-delete-file { overflow-wrap: anywhere; word-break: break-word; }
 @media (max-width: 900px) { .dashboard-pulse-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); } }
