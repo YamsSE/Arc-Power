@@ -93,7 +93,7 @@ export function buildSysinfoScript() {
     '$bb = Get-CimInstance Win32_BaseBoard | Select-Object -First 1 Manufacturer,Product',
     // M4-I: the video controllers also carry DriverVersion (the no-Intel
     // device card's Driver version row - works on ANY GPU).
-    '$vga = @(Get-CimInstance Win32_VideoController | Select-Object DeviceID,Name,AdapterRAM,PNPDeviceID,DriverVersion)',
+    '$vga = @(Get-CimInstance Win32_VideoController | Select-Object DeviceID,Name,AdapterRAM,PNPDeviceID,DriverVersion,CurrentHorizontalResolution,CurrentVerticalResolution)',
     // M30: bridge OS PNP rows to the stable PCI BDF exposed by NVML/ADL.
     // LocationInfo is optional; an unavailable PnP cmdlet/property simply
     // leaves the identity bridge absent and telemetry fails closed.
@@ -113,7 +113,7 @@ export function buildSysinfoScript() {
     // still emit MaxBarBytes (always 0) and the payload still carries
     // allocatedBar (always []) - the parse side is untouched (a
     // functioning multi-GiB OS window can no longer flip the verdict).
-    '$vga = @($vga | ForEach-Object { [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $_.PNPDeviceID; DriverVersion = $_.DriverVersion; LocationInfo = $pnpLocations[$_.PNPDeviceID]; MaxBarBytes = 0 } })',
+    '$vga = @($vga | ForEach-Object { [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $_.PNPDeviceID; DriverVersion = $_.DriverVersion; CurrentHorizontalResolution = $_.CurrentHorizontalResolution; CurrentVerticalResolution = $_.CurrentVerticalResolution; LocationInfo = $pnpLocations[$_.PNPDeviceID]; MaxBarBytes = 0 } })',
     '$barRes = @()',
     '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; systemEnclosure = $enc; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
@@ -1000,6 +1000,15 @@ export function parseCimOutput(stdout) {
           // M4-I: the controller's display-driver version (works on ANY
           // GPU - the no-Intel device card's Driver version row source).
           driverVersion: typeof c?.DriverVersion === 'string' && c.DriverVersion ? c.DriverVersion : null,
+          // Windows reports a current mode for a controller with an active
+          // display path. This is a preference signal only; an older cached
+          // payload without these fields keeps the historical shape.
+          ...((c?.CurrentHorizontalResolution !== undefined || c?.CurrentVerticalResolution !== undefined)
+            ? { displayActive: Number.isFinite(Number(c?.CurrentHorizontalResolution))
+              && Number(c.CurrentHorizontalResolution) > 0
+              && Number.isFinite(Number(c?.CurrentVerticalResolution))
+              && Number(c.CurrentVerticalResolution) > 0 }
+            : {}),
           rebarActive: null,
           ...(typeof c?.LocationInfo === 'string' && c.LocationInfo ? { locationInfo: c.LocationInfo } : {}),
           // M4-D2: the pnputil source rides along (merged with the

@@ -32,6 +32,11 @@ export class TelemetryService {
     this._timer = null;
     this._unsubRaw = null;
     this._running = false;
+    // Async consumers (ipc-core merges OS statistics before emitting) are
+    // invoked synchronously by handleSample but finish later. Keep track of
+    // those promises so an explicit startup refresh can wait for the composed
+    // sample to reach the IPC snapshot before returning.
+    this._pendingDispatches = new Set();
   }
 
   get running() {
@@ -47,19 +52,34 @@ export class TelemetryService {
     this._unsubRaw = this.backend.onRawTelemetry(this.deviceId, (raw) => this.handleSample(raw));
     this._running = true;
     this._timer = setInterval(() => {
-      this.backend.sampleRawTelemetry(this.deviceId)
-        .catch((err) => this._onPollError(err));
+      void this.sampleNow();
     }, this.pollMs);
     // A freshly selected lane must publish a first sample before the next
     // interval.  Without this, switching GPUs leaves the Monitoring and
     // Overlay cards at '-' until the next poll, and a secondary lane that was
     // just added appears permanently empty at normal UI speeds.
     if (this.immediate) {
-      try {
-        await this.backend.sampleRawTelemetry(this.deviceId);
-      } catch (err) {
-        this._onPollError(err);
+      await this.sampleNow();
+    }
+  }
+
+  /**
+   * Request one sample immediately and wait for asynchronous sample
+   * consumers. This is idempotent and is also used when a renderer subscribes
+   * after another window has already started the shared lane.
+   * @returns {Promise<boolean>} whether the backend read succeeded
+   */
+  async sampleNow() {
+    if (!this._running) return false;
+    try {
+      await this.backend.sampleRawTelemetry(this.deviceId);
+      if (this._pendingDispatches.size > 0) {
+        await Promise.all([...this._pendingDispatches]);
       }
+      return true;
+    } catch (err) {
+      this._onPollError(err);
+      return false;
     }
   }
 
@@ -106,7 +126,16 @@ export class TelemetryService {
     this._lastRaw = { ...raw, _powerEnergyKey: energyKey };
     this._ring.push(sample);
     if (this._ring.length > this.ringSize) this._ring.splice(0, this._ring.length - this.ringSize);
-    for (const cb of this._sampleCbs) { try { cb(sample); } catch { /* ignore */ } }
+    for (const cb of this._sampleCbs) {
+      try {
+        const result = cb(sample);
+        if (result && typeof result.then === 'function') {
+          const pending = Promise.resolve(result).catch(() => {});
+          this._pendingDispatches.add(pending);
+          void pending.then(() => this._pendingDispatches.delete(pending));
+        }
+      } catch { /* ignore */ }
+    }
     return sample;
   }
 

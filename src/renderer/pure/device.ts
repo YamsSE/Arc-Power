@@ -21,8 +21,13 @@ export function resolveSelectionDevice(
   deviceKey: string | null | undefined,
 ): DeviceInfo | null {
   const key = normalizeDeviceKey(deviceKey);
-  if (key !== null) return devices.find((device) => normalizeDeviceKey(device.deviceKey) === key) ?? null;
-  return devices.find((device) => device.id === deviceId && normalizeDeviceKey(device.deviceKey) === null) ?? null;
+  if (key !== null) {
+    const matches = devices.filter((device) => deviceIdentityMatches(device, key));
+    return matches.length === 1 ? matches[0] : null;
+  }
+  return devices.find((device) => device.id === deviceId
+    && device.identityAmbiguous !== true
+    && normalizeDeviceKey(device.deviceKey) === null) ?? null;
 }
 
 /**
@@ -62,19 +67,84 @@ export function telemetryMatchesSelection(
   return sampleDeviceId === undefined || sampleDeviceId === selectedDeviceId;
 }
 
+function deviceIdentityValues(device: DeviceInfo): Set<string> {
+  return new Set([
+    normalizeDeviceKey(device.deviceKey),
+    ...(Array.isArray(device.deviceKeys) ? device.deviceKeys.map(normalizeDeviceKey) : []),
+    deviceHardwareKey(device),
+  ].filter((value): value is string => value !== null));
+}
+
+function deviceIdentityMatches(device: DeviceInfo, key: string): boolean {
+  if (device.identityAmbiguous === true) return false;
+  return deviceIdentityValues(device).has(key);
+}
+
+function uniqueIdentityMatch(devices: DeviceInfo[], key: string): DeviceInfo | null {
+  const matches = devices.filter((device) => deviceIdentityMatches(device, key));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function automaticIdentity(device: DeviceInfo): string {
+  return normalizeDeviceKey(device.deviceKey) ?? deviceHardwareKey(device);
+}
+
+function uniqueAutomaticCandidates(devices: DeviceInfo[]): DeviceInfo[] {
+  const counts = new Map<string, number>();
+  for (const device of devices) {
+    const identity = automaticIdentity(device);
+    counts.set(identity, (counts.get(identity) ?? 0) + 1);
+  }
+  return devices.filter((device) => device.identityAmbiguous !== true
+    && counts.get(automaticIdentity(device)) === 1);
+}
+
+function sortAutomaticCandidates(devices: DeviceInfo[]): DeviceInfo[] {
+  return [...devices].sort((a, b) => automaticIdentity(a).localeCompare(automaticIdentity(b)));
+}
+
 /**
  * Resolve a boot selection. With a durable key, identity wins; an explicit
- * null/absent key marks a legacy numeric-only setting as unverified.
+ * null/absent key marks a legacy numeric-only setting as unverified. M151's
+ * optional preferred id/key is a read-only automatic startup result. A valid
+ * persisted dGPU is an explicit user target and therefore wins over that
+ * automatic preference; a persisted iGPU is not allowed to defeat the
+ * dGPU-first focus contract.
  */
-export function resolveBootDevice(devices: DeviceInfo[], persistedId: number | null, persistedKey?: string | null): number | null {
+export function resolveBootDevice(
+  devices: DeviceInfo[],
+  persistedId: number | null,
+  persistedKey?: string | null,
+  preferredId?: number | null,
+  preferredKey?: string | null,
+): number | null {
   if (devices.length === 0) return null;
-  if (typeof persistedKey === 'string' && persistedKey.length > 0) {
-    const matched = devices.find((d) => (d.deviceKey ?? deviceHardwareKey(d)) === persistedKey);
-    if (matched) return matched.id;
-  } else if (persistedKey === undefined && persistedId !== null && devices.some((d) => d.id === persistedId)) {
-    return persistedId;
+  const allDiscrete = devices.filter((device) => !device.integrated && !isIntegratedStyleDevice(device));
+  const discrete = uniqueAutomaticCandidates(allDiscrete);
+  const hasDiscrete = allDiscrete.length > 0;
+  const automatic = hasDiscrete ? discrete : uniqueAutomaticCandidates(devices);
+  const persisted = typeof persistedKey === 'string' && persistedKey.length > 0
+    ? uniqueIdentityMatch(devices, persistedKey)
+    : persistedKey === undefined && Number.isInteger(persistedId)
+      ? devices.find((device) => device.id === persistedId && device.identityAmbiguous !== true) ?? null
+      : null;
+  // A valid persisted/manual dGPU is explicit user intent. Keep it even when
+  // the current display output is attached to another adapter.
+  if (persisted && (!hasDiscrete || discrete.some((candidate) => candidate.id === persisted.id))) {
+    return persisted.id;
   }
-  return devices[0].id;
+
+  if (typeof preferredKey === 'string' && preferredKey.length > 0) {
+    const preferred = uniqueIdentityMatch(devices, preferredKey);
+    if (preferred && automatic.some((candidate) => candidate.id === preferred.id)) {
+      return preferred.id;
+    }
+  }
+  if ((!preferredKey || preferredKey.length === 0)
+    && Number.isInteger(preferredId)
+    && automatic.some((candidate) => candidate.id === preferredId)) return preferredId as number;
+  if (allDiscrete.length > 0) return sortAutomaticCandidates(discrete)[0]?.id ?? null;
+  return sortAutomaticCandidates(automatic)[0]?.id ?? null;
 }
 
 /**
@@ -125,7 +195,9 @@ export function deviceHardwareKey(device: Pick<DeviceInfo, 'pciVendorId' | 'pciD
 export function isIntegratedStyleDevice(device: Pick<DeviceInfo, 'name'>): boolean {
   const name = String(device.name ?? '').replace(/\s+\d+\s*GB(?:\s+\S+)?$/i, '');
   if (/\b(?:iris|uhd|hd graphics|xe graphics)\b/i.test(name)) return true;
-  return /\barc\b/i.test(name) && !/\b(?:a\d{3}|b\d{2,3}|pro)\b/i.test(name);
+  return /\b(?:amd\s+)?radeon(?:\s*\([^)]*\))?\s+graphics\b/i.test(name)
+    || /\b(?:radeon|vega)(?:\s*\([^)]*\))?\s+\d{3,4}m\b/i.test(name)
+    || (/\barc\b/i.test(name) && !/\b(?:a\d{3}|b\d{2,3}|pro)\b/i.test(name));
 }
 
 export function sortDevicesDiscreteFirst<T extends Pick<DeviceInfo, 'name' | 'pciVendorId' | 'pciDeviceId' | 'bdf'>>(devices: T[]): T[] {

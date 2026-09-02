@@ -30,7 +30,7 @@ import { promisify } from 'node:util';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
-import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey } from './backend/units.js';
+import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey, isIntegratedStyleDevice } from './backend/units.js';
 import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
@@ -759,6 +759,100 @@ export function assertNoPayload(args, channel) {
 }
 
 /**
+ * M151: classify an adapter for the startup focus preference. Explicit IGCL
+ * integrated metadata is authoritative; synthetic OS-only rows may not carry
+ * that bit, so their conservative name classification remains available.
+ * This is a preference only - it never authorizes a write or replaces the
+ * stable physical identity checks used by routing.
+ */
+function isIntegratedFocusDevice(device) {
+  if (device?.integrated === true) return true;
+  if (device?.synthetic !== true && device?.integrated === false) return false;
+  const name = String(device?.name ?? '');
+  if (isIntegratedStyleDevice(device)) return true;
+  return /\b(?:igpu|integrated)\b/i.test(name)
+    || /\b(?:amd\s+)?radeon(?:\s*\([^)]*\))?\s+graphics\b/i.test(name)
+    || /\b(?:radeon|vega)(?:\s*\([^)]*\))?\s+\d{3,4}m\b/i.test(name);
+}
+
+function automaticIdentityOf(device) {
+  return typeof device?.deviceKey === 'string' && device.deviceKey.length > 0
+    ? device.deviceKey
+    : deviceHardwareKey(device);
+}
+
+function uniqueAutomaticDevices(devices) {
+  const counts = new Map();
+  for (const device of devices) {
+    const identity = automaticIdentityOf(device);
+    counts.set(identity, (counts.get(identity) ?? 0) + 1);
+  }
+  return devices.filter((device) => device?.identityAmbiguous !== true
+    && counts.get(automaticIdentityOf(device)) === 1);
+}
+
+/**
+ * M151: choose the generic startup focus target. A discrete adapter is always
+ * preferred when one exists; among discrete adapters, one with at least one
+ * active display output wins. If no discrete adapter exists, the same active
+ * output preference is used across the remaining adapters. Durable identity
+ * is the deterministic tie-breaker, with the session id used only when two
+ * rows expose the same identity.
+ *
+ * The display API is best-effort and read-only. Unsupported vendor backends,
+ * missing symbols, and transient output failures simply fall back to the
+ * discrete-first choice. No GPU model or vendor is hardcoded here.
+ */
+export async function resolvePreferredDevice(backend, devices = null) {
+  const rows = Array.isArray(devices)
+    ? devices
+    : typeof backend?.listDevices === 'function' ? await backend.listDevices() : [];
+  if (rows.length === 0) return null;
+
+  const known = uniqueAutomaticDevices(rows);
+  const allDiscrete = rows.filter((device) => !isIntegratedFocusDevice(device));
+  const discrete = uniqueAutomaticDevices(allDiscrete);
+  // An ambiguous dGPU must never cause an iGPU to be selected by ordinal.
+  // If every dGPU is ambiguous, there is no safe automatic focus target.
+  const candidates = allDiscrete.length > 0 ? discrete : known;
+  if (candidates.length === 0) return null;
+  const activeIds = new Set();
+  if (typeof backend?.getDisplaySettings === 'function') {
+    await Promise.all(candidates.map(async (device) => {
+      if (device?.displayActive === true || device?.osController?.displayActive === true) {
+        activeIds.add(device.id);
+        return;
+      }
+      try {
+        const state = await backend.getDisplaySettings(device.id);
+        const displays = Array.isArray(state?.displays) ? state.displays : [];
+        if (displays.some((display) => display?.flags?.active !== false)) activeIds.add(device.id);
+      } catch {
+        // An unsupported or transient display read must not block startup.
+      }
+    }));
+  }
+
+  return candidates
+    .map((device, index) => ({ device, index }))
+    .sort((a, b) => {
+      const activeDiff = Number(activeIds.has(b.device.id)) - Number(activeIds.has(a.device.id));
+      if (activeDiff !== 0) return activeDiff;
+      const keyA = typeof a.device.deviceKey === 'string' && a.device.deviceKey.length > 0
+        ? a.device.deviceKey : deviceHardwareKey(a.device);
+      const keyB = typeof b.device.deviceKey === 'string' && b.device.deviceKey.length > 0
+        ? b.device.deviceKey : deviceHardwareKey(b.device);
+      const keyDiff = keyA.localeCompare(keyB);
+      return keyDiff !== 0 ? keyDiff : a.index - b.index;
+    })[0]?.device ?? null;
+}
+
+/** M151: id-only convenience seam for tests and callers that need no key. */
+export async function resolvePreferredDeviceId(backend, devices = null) {
+  return (await resolvePreferredDevice(backend, devices))?.id ?? null;
+}
+
+/**
  * M29: resolve the boot device by durable PCI/BDF identity. A legacy
  * numeric-only setting is deliberately unverified after reorder, so the
  * sorted preferred device is chosen and both identity fields are healed.
@@ -1142,6 +1236,29 @@ export function createIpcHandlers({
     latestTelemetry.set(key, payload);
     emit('telemetry:sample', payload);
   };
+  // M151: device-preferred-get may be called concurrently by the main window
+  // and either overlay. Deduplicate only the currently running probe. Do not
+  // retain a completed result: active display topology can change without an
+  // inventory id/name change, so every later request must re-read it.
+  let preferredSelectionPromise = null;
+  const preferredSelection = async () => {
+    if (preferredSelectionPromise) return preferredSelectionPromise;
+    const promise = (async () => {
+      const devices = await backend.listDevices();
+      const device = await resolvePreferredDevice(backend, devices);
+      return {
+        deviceId: device?.id ?? null,
+        deviceKey: typeof device?.deviceKey === 'string' && device.deviceKey.length > 0
+          ? device.deviceKey : device ? deviceHardwareKey(device) : null,
+      };
+    })();
+    preferredSelectionPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (preferredSelectionPromise === promise) preferredSelectionPromise = null;
+    }
+  };
   /** Overlay-only secondary GPU services. The main renderer keeps one
    * selected-device service; the HUD may additionally subscribe to every
    * other inventory row without changing the selected-device state flow. */
@@ -1200,7 +1317,14 @@ export function createIpcHandlers({
    * lifecycle - stopped with stopAllTelemetry).
    */
   const startNullTelemetry = async () => {
-    if (telemetry.has(NULL_DEVICE_KEY)) return;
+    const active = telemetry.get(NULL_DEVICE_KEY);
+    if (active) {
+      // A renderer may attach after another window started null/focus-
+      // unavailable mode. Refresh the shared lane so its first snapshot is
+      // available immediately instead of waiting for the next interval.
+      try { await active.sampleNow?.(); } catch { /* retain the live lane */ }
+      return;
+    }
     const generation = ++telemetryGeneration;
     // M17e (round-2 N3): the no-Intel lane honors the overlay polling-rate
     // slider too - the SAME store read as startTelemetry (the pollMs is
@@ -1228,42 +1352,30 @@ export function createIpcHandlers({
       vendor = null; // a lane failure must never break the no-device timer
     }
     if (await cleanupStaleTelemetryStartup({ generation, vendor })) return;
-    const timer = setInterval(() => {
-      void (async () => {
-        try {
-          // M17g: the push decoupling - the handler samples the FAST lane
-          // per tick (ms-fast: GetSystemTimes/MSR/GlobalMemoryStatusEx -
-          // never PowerShell) and emits IMMEDIATELY with the merged cache
-          // (fast ?? slow); the slow CIM query is NEVER awaited inline
-          // (it runs on the adapter's startSlowLane background timer).
-          const extra = await sysStats.sampleFast();
-          let vendorSample = null;
-          try {
-            vendorSample = vendor ? await vendor.sample() : null;
-          } catch {
-            vendorSample = null; // a vendor read failure skips this tick's readouts
-          }
-          if (generation !== telemetryGeneration) return;
-          emitTelemetry({
-            t: Date.now(),
-            deviceId: null,
-            sessionGeneration: generation,
-            ...extra,
-            // M17c: the vendor readouts win over the WMI sys-stats (the
-            // NVML used-VRAM is the better source on NVIDIA) - the device
-            // path's { ...extra, ...sample } precedence mirror.
-            ...(vendorSample ?? {}),
-            // M17g: the memoryUsedBytes composition MOVED into the fast
-            // lane (the sysStats adapter's sampleFast carries the field);
-            // the vendor's used-VRAM still wins (the device-wins
-            // precedence stays as today).
-            memoryUsedBytes: vendorSample?.gpuMemUsedBytes ?? extra.memoryUsedBytes,
-          });
-        } catch {
-          // a stats failure must never break the timer (skip this tick)
-        }
-      })();
-    }, pollMs);
+    const sampleNow = async () => {
+      // M17g: sample the FAST lane per tick (ms-fast:
+      // GetSystemTimes/MSR/GlobalMemoryStatusEx - never PowerShell) and merge
+      // the slow-lane cache. Each source degrades independently so one
+      // unavailable probe does not suppress an otherwise useful first sample.
+      let extra = {};
+      try { extra = await sysStats.sampleFast(); } catch { /* honest empty OS fields */ }
+      let vendorSample = null;
+      try { vendorSample = vendor ? await vendor.sample() : null; } catch { vendorSample = null; }
+      if (generation !== telemetryGeneration) return false;
+      emitTelemetry({
+        t: Date.now(),
+        deviceId: null,
+        sessionGeneration: generation,
+        ...extra,
+        // M17c: vendor readouts win over the WMI sys-stats on overlap.
+        ...(vendorSample ?? {}),
+        // M17g: used-RAM composition stays in the fast lane; vendor used-VRAM
+        // remains the preferred value where it exists.
+        memoryUsedBytes: vendorSample?.gpuMemUsedBytes ?? extra.memoryUsedBytes,
+      });
+      return true;
+    };
+    const timer = setInterval(() => { void sampleNow(); }, pollMs);
     // M17g: the slow lane starts WITH the no-device session (the
     // background PowerShell cadence refreshing the remaining OS-counter
     // fields; stopped with stopAllTelemetry - the idempotent start in the
@@ -1275,7 +1387,12 @@ export function createIpcHandlers({
         clearInterval(timer);
         try { await vendor?.close?.(); } catch { /* best effort */ }
       },
+      sampleNow,
     });
+    // Null/focus-unavailable mode has the same immediate-first-sample
+    // contract as a device lane. This keeps CPU/OS telemetry populated on
+    // startup even when no safe GPU target can be focused.
+    await sampleNow();
   };
 
   const startTelemetryLane = async (deviceId) => {
@@ -1311,24 +1428,24 @@ export function createIpcHandlers({
           : await vendorTelemetry.start();
       } catch { vendor = null; }
       if (await cleanupStaleTelemetryStartup({ generation, vendor })) return;
-      const timer = setInterval(() => {
-        void (async () => {
-          let extra = {};
-          try { extra = await sysStats.sampleFast(); } catch { /* honest empty OS fields */ }
-          let sample = null;
-          try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
-          if (generation !== telemetryGeneration) return;
-          emitTelemetry({
-            t: Date.now(),
-            deviceId,
-            deviceKey: target?.deviceKey ?? null,
-            deviceKeys: telemetryAliases,
-            sessionGeneration: generation,
-            ...extra,
-            ...(sample ?? {}),
-          });
-        })();
-      }, pollMs);
+      const sampleNow = async () => {
+        let extra = {};
+        try { extra = await sysStats.sampleFast(); } catch { /* honest empty OS fields */ }
+        let sample = null;
+        try { sample = vendor?.sample ? await vendor.sample() : null; } catch { sample = null; }
+        if (generation !== telemetryGeneration) return false;
+        emitTelemetry({
+          t: Date.now(),
+          deviceId,
+          deviceKey: target?.deviceKey ?? null,
+          deviceKeys: telemetryAliases,
+          sessionGeneration: generation,
+          ...extra,
+          ...(sample ?? {}),
+        });
+        return true;
+      };
+      const timer = setInterval(() => { void sampleNow(); }, pollMs);
       try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
       if (await cleanupStaleTelemetryStartup({ generation, timer, vendor })) return;
       telemetry.set(deviceId, {
@@ -1336,7 +1453,12 @@ export function createIpcHandlers({
           clearInterval(timer);
           try { await vendor?.close?.(); } catch { /* best effort */ }
         },
+        sampleNow,
       });
+      // Synthetic AMD/NVIDIA rows use the vendor/OS lane rather than
+      // TelemetryService, so explicitly publish the first composed sample
+      // before the first timer tick as well.
+      await sampleNow();
       return;
     }
     const svc = new TelemetryService(backend, deviceId, { pollMs, immediate: true });
@@ -1427,8 +1549,18 @@ export function createIpcHandlers({
   // renderer's start so two concurrent callers can never create competing
   // TelemetryService instances for one device.
   const telemetryStarting = new Map();
-  const startTelemetry = async (deviceId) => {
-    if (telemetry.has(deviceId)) return;
+  const startTelemetry = async (deviceId, refreshExisting = true) => {
+    const active = telemetry.get(deviceId);
+    if (active) {
+      // M151: a secondary renderer may have started this shared lane before
+      // the main dashboard installed its listener. Re-sample an existing
+      // native lane so the current consumer receives a fresh composed sample;
+      // synthetic/vendor lanes have no sampleNow seam and keep their timer.
+      if (refreshExisting) {
+        try { await active.sampleNow?.(); } catch { /* retain the live lane */ }
+      }
+      return;
+    }
     const pending = telemetryStarting.get(deviceId);
     if (pending) return pending;
     const start = startTelemetryLane(deviceId);
@@ -1727,6 +1859,18 @@ export function createIpcHandlers({
         const s = await store.loadSettings();
         return { deviceId: s.deviceId, deviceKey: s.deviceKey ?? null };
       },
+      // M151: the persisted selection remains a user-owned setting. This
+      // separate read-only channel supplies the automatic startup preference
+      // so a stale/legacy iGPU selection can never force the focused view away
+      // from a live discrete adapter. It is intentionally not persisted.
+      'device-preferred-get': async (...args) => {
+        assertNoPayload(args, 'device-preferred-get');
+        try {
+          return await preferredSelection();
+        } catch {
+          return { deviceId: null, deviceKey: null };
+        }
+      },
       // Main-renderer selection generations survive renderer reloads in this
       // process. The renderer handshakes before its first selection push so
       // its local counter cannot restart below the main-owned latest value.
@@ -1743,6 +1887,9 @@ export function createIpcHandlers({
         const devices = await backend.listDevices();
         const device = devices.find((d) => d.id === deviceId);
         if (!device) throw new Error(`unknown device id ${deviceId}`);
+        if (device.identityAmbiguous === true) {
+          throw new Error(`cannot persist selection for device id ${deviceId}: physical identity is ambiguous`);
+        }
         const deviceKey = device.deviceKey ?? deviceHardwareKey(device);
         if (isObject && selection.deviceKey !== undefined
           && (typeof selection.deviceKey !== 'string' || selection.deviceKey !== deviceKey)) {
@@ -2175,7 +2322,9 @@ export function createIpcHandlers({
         // A panel opened before the main renderer's boot telemetry call must
         // still receive live data. This is idempotent and shares the same
         // in-flight startup promise as telemetry-start.
-        await startTelemetry(deviceId);
+        // A snapshot read must not perturb the cadence or advance the mock/
+        // native counter; it only starts a missing lane.
+        await startTelemetry(deviceId, false);
         return latestTelemetry.get(deviceId) ?? null;
       },
       'overlay-telemetry-start': async (deviceIds) => {

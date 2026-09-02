@@ -65,6 +65,8 @@ export interface ArcPowerApi {
   listDevices(): Promise<DeviceInfo[]>;
   /** M29: persisted GPU selection (numeric id + durable PCI/BDF key). */
   deviceGet(): Promise<{ deviceId: number | null; deviceKey: string | null }>;
+  /** M151: automatic startup focus; read-only and not a persisted setting. */
+  devicePreferredGet(): Promise<{ deviceId: number | null; deviceKey: string | null }>;
   /** Main-renderer monotonic selection generation, for reload-safe handshakes. */
   deviceSelectionGenerationGet(): Promise<{ generation: number }>;
   /** Persist the selected GPU and its stable identity. */

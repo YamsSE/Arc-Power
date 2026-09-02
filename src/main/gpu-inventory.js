@@ -177,6 +177,7 @@ function osControllerOf(controller) {
     pciDeviceId: pciId(controller.pciDeviceId) ?? pnpParts(controller.pnpDeviceId)?.dev ?? null,
     bdf: bdfKey(controller.bdf ?? controller.location ?? controller.locationInfo ?? controller.locationPath),
     driverVersion: typeof controller.driverVersion === 'string' ? controller.driverVersion : null,
+    displayActive: controller.displayActive === true ? true : controller.displayActive === false ? false : null,
     rebarActive: controller.rebarActive === true ? true : controller.rebarActive === false ? false : null,
     luid: controller.luid ?? controller.adapterLuid ?? null,
     physicalToken: controller.physicalToken ?? controller.uniqueToken ?? controller.adapterUuid ?? controller.uuid ?? null,
@@ -267,6 +268,8 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
       sharedMemorySource: device?.sharedMemorySource ?? controller?.sharedMemorySource ?? null,
       integrated: device?.integrated ?? controller?.integrated ?? false,
       mobile: device?.mobile ?? controller?.mobile ?? false,
+      displayActive: device?.displayActive === true || controller?.displayActive === true
+        ? true : device?.displayActive === false || controller?.displayActive === false ? false : null,
       physicalToken: parts.token,
       osController: osControllerOf(controller ? {
         ...controller,
@@ -313,6 +316,7 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
       sharedMemorySource: controller?.sharedMemorySource ?? null,
       integrated: controller?.integrated === true,
       mobile: controller?.mobile === true,
+      displayActive: controller?.displayActive === true ? true : controller?.displayActive === false ? false : null,
       memType: null,
       osController: osControllerOf(controller),
       osLuid: controller?.luid ?? controller?.adapterLuid ?? null,
@@ -375,12 +379,36 @@ export function buildGpuInventory({ backendDevices = [], videoControllers = [], 
     // durable tie-breaker: a driver rename must not move #2 to another GPU.
     list.sort((a, b) => String(stableSecondary(a) ?? a.identityTie).localeCompare(String(stableSecondary(b) ?? b.identityTie)));
     list.forEach((row, index) => {
-      row.deviceKey = index === 0 ? base : `${base}#${index + 1}`;
+      // A duplicated PNP id is not itself a unique alias. Give every
+      // collision row an explicit stable secondary suffix, including the
+      // first row, so the unsuffixed PNP token can never route to whichever
+      // row happened to receive the base slot.
+      row.deviceKey = duplicatePnp ? `${base}#${index + 1}` : index === 0 ? base : `${base}#${index + 1}`;
     });
   }
   for (const row of rows) {
     if (typeof row.deviceKey === 'string' && row.deviceKey.length > 0) {
       row.deviceKeys = [...new Set([...(row.deviceKeys ?? []), row.deviceKey])];
+    }
+  }
+  // An alias is usable for routing only when it names exactly one row. In
+  // particular, a duplicate firmware PNP id may still have unique BDF-based
+  // collision keys, but the unsuffixed PNP alias must not select whichever row
+  // happened to be enumerated first. Keep the unique collision key and drop
+  // every shared alias from the cross-refresh alias set.
+  const aliasCounts = new Map();
+  for (const row of rows) {
+    for (const alias of new Set(row.deviceKeys ?? [])) {
+      if (typeof alias !== 'string' || alias.length === 0) continue;
+      aliasCounts.set(alias, (aliasCounts.get(alias) ?? 0) + 1);
+    }
+  }
+  for (const row of rows) {
+    row.deviceKeys = [...new Set((row.deviceKeys ?? []).filter((alias) => aliasCounts.get(alias) === 1))];
+    if (typeof row.deviceKey === 'string' && row.deviceKey.length > 0
+      && aliasCounts.get(row.deviceKey) === 1
+      && !row.deviceKeys.includes(row.deviceKey)) {
+      row.deviceKeys.push(row.deviceKey);
     }
     delete row.identityBase;
     delete row.identityTie;

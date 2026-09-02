@@ -341,12 +341,24 @@ async function resolveAdvancedOverlaySelection(): Promise<{ devices: DeviceInfo[
   } catch {
     return { devices, deviceId: null };
   }
+  let preferred: { deviceId?: number | null; deviceKey?: string | null } | null = null;
+  try {
+    preferred = await api.devicePreferredGet();
+  } catch {
+    // Older or unavailable backends keep the persisted-selection fallback.
+  }
   const fallback = typeof persisted?.deviceId === 'number' && persisted.deviceId >= 0
     ? persisted.deviceId
     : null;
   return {
     devices,
-    deviceId: resolveBootDevice(devices, fallback, persisted?.deviceKey ?? null),
+    deviceId: resolveBootDevice(
+      devices,
+      fallback,
+      persisted?.deviceKey ?? null,
+      preferred?.deviceId ?? null,
+      preferred?.deviceKey ?? null,
+    ),
   };
 }
 

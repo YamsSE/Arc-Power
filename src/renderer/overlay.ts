@@ -633,10 +633,18 @@ async function resolveOverlayDeviceId(): Promise<number | null> {
     : null;
   try {
     const devices = await api.listDevices();
+    let preferred: { deviceId?: number | null; deviceKey?: string | null } | null = null;
+    try {
+      preferred = await api.devicePreferredGet();
+    } catch {
+      // Keep the persisted-selection fallback when the preference probe is unavailable.
+    }
     return resolveBootDevice(
       devices,
       fallback,
       persisted?.deviceKey ?? null,
+      preferred?.deviceId ?? null,
+      preferred?.deviceKey ?? null,
     );
   } catch {
     return fallback;

@@ -203,6 +203,10 @@ export interface DeviceInfo {
   integrated?: boolean;
   /** Name-derived mobile SKU fallback used for telemetry policy. */
   mobile?: boolean;
+  /** Read-only Windows/backend signal that this adapter currently drives a display. */
+  displayActive?: boolean | null;
+  /** True when the inventory could not prove which physical row is which. */
+  identityAmbiguous?: boolean;
   /** Stable PCI/BDF identity; session `id` is intentionally not durable. */
   deviceKey?: string;
   /** Physical identity aliases retained across the initial/enriched inventory transition. */
@@ -228,6 +232,7 @@ export interface DeviceInfo {
     sharedMemorySource?: string | null;
     pnpDeviceId: string | null;
     driverVersion: string | null;
+    displayActive?: boolean | null;
     rebarActive: boolean | null;
     luid?: unknown;
   } | null;
@@ -402,6 +407,8 @@ export interface VideoControllerInfo {
    *  the no-Intel device card's Driver version row source; null when the
    *  CIM query degraded). */
   driverVersion?: string | null;
+  /** True when Win32_VideoController reports a current display mode. */
+  displayActive?: boolean | null;
   /** M4-D: ReBAR verdict - true when the device's memory resources
    *  include a multi-GiB BAR (a functioning Resizable BAR), false when only
    *  the small aperture BAR exists, null when unknown. M4-D2: sourced from

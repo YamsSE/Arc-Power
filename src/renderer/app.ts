@@ -21,10 +21,10 @@ import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
 import { setMonitorLogToFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
-import { resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
+import { resolveBootDevice, resolveFeaturesetSwapSelection, telemetryMatchesSelection } from './pure/device.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
-import type { RecordingEngineState } from './types.ts';
+import type { RecordingEngineState, TelemetrySample } from './types.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -495,34 +495,55 @@ async function boot() {
   }
   store.set({ devices });
 
-  // 1.0.1 no-Intel round (S1): the boot branches on devices.length === 0
-  // (NEVER on a derived flag). On the no-Intel path the WHOLE deviceId
-  // resolution block below is SKIPPED (deviceId stays null - resolveBootDevice
-  // returns null on [] and devices[0].id would throw a TypeError; the block
-  // stays exactly as-is for the non-empty path). caps/state stay null there;
-  // the boot-level telemetry subscription + telemetryStart(null) (the
-  // no-device mode) run on BOTH paths; the noIntel store flag is set after.
-  // M30: an empty unified inventory is the true zero-GPU case. A synthetic
-  // OS-only row is still a selectable GPU and must receive caps/state and
-  // device-scoped telemetry just like an IGCL row.
-  const noDevice = devices.length === 0;
-  // M4-F: the boot device id - resolved ONLY on the Intel path (S1: the
-  // no-Intel path skips the whole resolution block and deviceId stays
-  // null). Read by the caps/state block and the final telemetryStart below.
+  // M151: the first unified inventory snapshot can be empty while the
+  // deferred Windows controller/backend enrichment is still in flight. Keep
+  // this state mutable until sysinfo + the follow-up listDevices call land;
+  // only the final enriched snapshot decides whether null/no-device mode is
+  // real. A synthetic OS-only row is still a selectable GPU.
+  let noDevice = devices.length === 0;
+  // M4-F: the focused device id. It is null only while the inventory is
+  // empty or when no non-ambiguous automatic target can be proven.
   let deviceId: number | null = null;
-  if (!noDevice) {
-    let persistedDeviceId: number | null = null;
-    let persistedDeviceKey: string | null = null;
+  let focusUnavailable = false;
+  let persistedDeviceId: number | null = null;
+  let persistedDeviceKey: string | null = null;
+  const resolveFocusedDevice = async (availableDevices: typeof devices): Promise<void> => {
+    noDevice = availableDevices.length === 0;
+    if (noDevice) {
+      deviceId = null;
+      focusUnavailable = false;
+      store.set({ deviceId: null });
+      return;
+    }
+    let preferredDeviceId: number | null = null;
+    let preferredDeviceKey: string | null = null;
     try {
       const persisted = await api.deviceGet();
       persistedDeviceId = persisted.deviceId;
       persistedDeviceKey = persisted.deviceKey ?? null;
     } catch {
       persistedDeviceId = null;
+      persistedDeviceKey = null;
     }
-    deviceId = resolveBootDevice(devices, persistedDeviceId, persistedDeviceKey) ?? devices[0].id;
+    try {
+      const preferred = await api.devicePreferredGet();
+      preferredDeviceId = preferred?.deviceId ?? null;
+      preferredDeviceKey = preferred?.deviceKey ?? null;
+    } catch {
+      // The resolver still preserves a valid persisted dGPU and otherwise
+      // falls back to the safe discrete-first inventory order.
+    }
+    deviceId = resolveBootDevice(
+      availableDevices,
+      persistedDeviceId,
+      persistedDeviceKey,
+      preferredDeviceId,
+      preferredDeviceKey,
+    );
+    focusUnavailable = deviceId === null;
     store.set({ deviceId });
-  }
+  };
+  if (!noDevice) await resolveFocusedDevice(devices);
 
   // App version for the header line (M2C-B B3). Failure degrades to the
   // initial placeholder - the header stays up.
@@ -579,20 +600,36 @@ async function boot() {
   // earlier) saw PLAIN device names. Re-fetch listDevices now that the CIM
   // payload landed and set BOTH in ONE store.set - a single set re-renders
   // once, no plain-name flicker. The no-Intel path is guarded: the
-  // re-fetch there answers [] (harmless - the boot already branched on the
-  // empty list), and a re-fetch failure keeps the boot enumeration.
+  // re-fetch there may now be the enriched inventory. If a non-empty first
+  // snapshot is followed by a transient empty response, retain the known
+  // inventory; an initially empty snapshot is allowed to recover to a
+  // non-empty late result.
+  let info = null;
   try {
-    const info = await api.sysinfo();
-    let freshDevices = devices;
-    try {
-      freshDevices = await api.listDevices();
-    } catch {
-      // keep the boot enumeration - the devices slot must never regress to
-      // a stale/empty list on a transient re-fetch failure
-    }
-    store.set({ sysinfo: info ?? null, devices: freshDevices });
+    info = await api.sysinfo();
   } catch {
-    store.set({ sysinfo: null });
+    info = null;
+  }
+  let freshDevices = devices;
+  try {
+    const candidateDevices = await api.listDevices();
+    if (devices.length === 0 || candidateDevices.length > 0) freshDevices = candidateDevices;
+  } catch {
+    // keep the boot enumeration - the devices slot must never regress on a
+    // transient re-fetch failure
+  }
+  store.set({ sysinfo: info ?? null, devices: freshDevices });
+  noDevice = freshDevices.length === 0;
+  if (!noDevice) {
+    // M151: the first inventory paint may precede the Windows controller
+    // snapshot. Re-resolve after that enrichment so a display-driving dGPU
+    // discovered late still becomes the focused adapter before caps/state and
+    // telemetry are started. This also recovers from an initially empty list.
+    try {
+      await resolveFocusedDevice(freshDevices);
+    } catch {
+      // Keep the first safe selection when the late preference probe fails.
+    }
   }
   // 1.0.1 no-Intel round: the OS GPU - the sysinfo PRIMARY non-basic video
   // controller (mirror matchVideoController's pick for a model-less device
@@ -634,10 +671,11 @@ async function boot() {
     store.set({ ocMode: 'stock' });
   }
 
-  if (noDevice) {
+  if (noDevice || focusUnavailable || deviceId === null) {
     // 1.0.1 no-Intel round: caps/state are SKIPPED on the no-device path
     // (they stay null - there is no IGCL device to read, and the waiver
-    // prompt + the OC surface must never render).
+    // prompt + the OC surface must never render). An all-ambiguous inventory
+    // also stays un-focused rather than binding by ordinal.
   } else {
     try {
       pb('pre-caps');
@@ -698,17 +736,29 @@ async function boot() {
   // 1.0.1 no-Intel round (S1): registered on BOTH boot paths - the
   // no-device telemetry push (telemetry-start null mode) rides the SAME
   // subscription, so log-file logging works for free there.
-  api.onTelemetrySample((sample) => {
+  const acceptTelemetrySample = (sample: TelemetrySample): void => {
     const live = store.get();
     const selected = live.devices.find((device) => device.id === live.deviceId) ?? null;
-    if (sample.deviceId !== undefined && sample.deviceId !== live.deviceId) return;
-    if (sample.deviceKey && selected?.deviceKey && sample.deviceKey !== selected.deviceKey) return;
+    const selectedKey = live.caps?.deviceKey ?? selected?.deviceKey ?? null;
+    const selectedAliases = [
+      ...(Array.isArray(live.caps?.deviceKeys) ? live.caps.deviceKeys : []),
+      ...(Array.isArray(selected?.deviceKeys) ? selected.deviceKeys : []),
+    ];
+    if (!telemetryMatchesSelection(
+      sample.deviceId,
+      sample.deviceKey,
+      live.deviceId,
+      selectedKey,
+      Array.isArray(sample.deviceKeys) ? sample.deviceKeys : [],
+      selectedAliases,
+    )) return;
     store.set({ latestSample: sample });
     if (getMonitorLogToFile()) {
       void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
         .catch(() => { /* a failed append never breaks the UI */ });
     }
-  });
+  };
+  api.onTelemetrySample(acceptTelemetrySample);
 
   // M16-F1 (D2): the tray "Apply active profile" runs ENTIRELY in main -
   // this subscription receives the pushed post-apply read-back
@@ -753,9 +803,27 @@ async function boot() {
     store.set({ noIntel: true, osGpu });
     console.log('[renderer] boot complete - no Intel GPU');
     pb('boot-complete');
+  } else if (focusUnavailable || deviceId === null) {
+    // No safe automatic target exists. Keep CPU/OS telemetry available while
+    // leaving the GPU-scoped dashboard fields honest instead of selecting an
+    // ambiguous row by enumeration order.
+    try { await api.telemetryStart(null); } catch { /* OS telemetry is best effort */ }
+    store.set({ noIntel: false, osGpu: null, vendorInfo: null });
+    console.log('[renderer] boot complete - no safe automatic GPU focus');
+    pb('boot-complete');
   } else {
     try {
       await api.telemetryStart(deviceId as number);
+      // M151: hydrate from main's latest per-device snapshot as well as the
+      // push. This closes the startup window where another renderer created
+      // the lane before this listener was registered.
+      try {
+        const initialSample = await api.telemetryLatest(deviceId as number);
+        if (initialSample) acceptTelemetrySample(initialSample);
+      } catch {
+        // The live push remains the normal path; a snapshot failure is honest
+        // and must not make the whole boot fail.
+      }
     } catch (err) {
       toast('warn', 'Telemetry unavailable', err instanceof Error ? err.message : String(err));
     }

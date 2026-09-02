@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   listDevices: () => ipcRenderer.invoke('list-devices'),
   // M29: device identity carries the session id plus durable PCI/BDF key.
   deviceGet: () => ipcRenderer.invoke('device-get'),
+  // M151: read-only automatic startup focus (display-driving dGPU first).
+  devicePreferredGet: () => ipcRenderer.invoke('device-preferred-get'),
   deviceSelectionGenerationGet: () => ipcRenderer.invoke('device-selection-generation-get'),
   deviceSet: (selection) => ipcRenderer.invoke('device-set', selection),
   // M31: the Advanced Overlay requests a durable-key switch; the main
