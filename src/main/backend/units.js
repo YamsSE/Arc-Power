@@ -314,16 +314,36 @@ export function deviceHardwareKey(device) {
   return `pci:${vendor}:${pci}@${hasBdf ? bus : -1}:${hasBdf ? slot : -1}.${hasBdf ? fn : -1}`;
 }
 
-/** True for conservative integrated-style names (including model-less Arc). */
+/** True for conservative integrated-style names (including mobile/model-less Arc). */
 export function isIntegratedStyleDevice(device) {
   const name = String(device?.name ?? '').replace(/\s+\d+\s*GB(?:\s+\S+)?$/i, '');
   if (/\b(?:iris|uhd|hd graphics|xe graphics)\b/i.test(name)) return true;
-  // Panther Lake Arc B370/B390 is a built-in mobile/integrated GPU. Some
-  // driver versions omit the integrated adapter flag, so keep this narrow
-  // identity fallback instead of classifying it as a desktop dGPU.
-  if (/\barc\b/i.test(name) && /\bB(?:370|390)\b/i.test(name)) return true;
+  // Mobile Arc SKUs do not all carry an M suffix. In particular, Panther
+  // Lake's built-in Arc B370/B390 are reported without one. Keep those
+  // known built-in identities separate from desktop B570/B580/B770 cards.
+  if (/\barc\b/i.test(name) && /\b(?:A|B)\d{2,4}M\b|\bB(?:370|390)\b|\b(?:mobile|integrated|igpu)\b/i.test(name)) return true;
+  if (/\bintel(?:\s*\([^)]*\))?\s+graphics\b/i.test(name) && !/\barc\b/i.test(name)) return true;
   if (/\barc\b/i.test(name) && !/\b(?:a\d{3}|b\d{2,3}|pro)\b/i.test(name)) return true;
   return false;
+}
+
+/**
+ * True only for an Intel integrated/mobile Arc-style adapter. A known
+ * non-Intel PCI vendor always wins over names and driver flags, so real
+ * discrete AMD/NVIDIA adapters cannot receive the mobile-only controls.
+ */
+export function isIntelIntegratedOrMobileArc(device) {
+  const rawVendor = device?.pciVendorId;
+  let vendor = null;
+  if (typeof rawVendor === 'number' && Number.isInteger(rawVendor) && rawVendor >= 0 && rawVendor <= 0xffff) {
+    vendor = rawVendor.toString(16).padStart(4, '0');
+  } else if (typeof rawVendor === 'string') {
+    const hex = rawVendor.trim().toLowerCase().replace(/^0x/, '').replace(/^0+(?=[0-9a-f])/, '');
+    if (/^[0-9a-f]{1,4}$/.test(hex)) vendor = hex.padStart(4, '0');
+    else if (/^[0-9a-f]{5,8}$/.test(hex) && hex.endsWith('8086')) vendor = '8086';
+  }
+  if (vendor !== null && vendor !== '8086') return false;
+  return device?.integrated === true || device?.mobile === true || isIntegratedStyleDevice(device);
 }
 
 /** Stable discrete-first ordering; input order is only the final tie-break. */

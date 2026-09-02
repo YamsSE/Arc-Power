@@ -273,10 +273,10 @@ async function boundShutdown(proxy) {
   }
 }
 let bootWindowTheme = 'dark';
-// Keep one stable Windows identity for installed and Portable launches. A
-// Portable-specific AppUserModelID makes Windows create a second taskbar
-// identity whose icon can fall back to the generic document placeholder.
-const APP_USER_MODEL_ID = 'com.rid.arcpower';
+// Keep one stable Windows identity for installed and Portable launches. This
+// fresh desktop identity also avoids reusing the generic-document taskbar
+// cache created under the earlier identity.
+const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop';
 // Set the Windows identity while this module is loading, before Electron can
 // create the startup splash or the main window. Keeping this at the earliest
 // possible point prevents the shell from briefly assigning the default
@@ -285,9 +285,9 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
 // Keep the native Windows identity on the same generated resources used by
-// the packaged executable. The live taskbar uses the optimized PNG buffer;
-// the external ICO is retained for Windows shell/relaunch metadata. The
-// renderer still uses ArcPowerIcon.png for full-size artwork.
+// the packaged executable. The live window uses the optimized PNG buffer;
+// Windows taskbar metadata always uses the external ICO, never the Portable
+// wrapper or Electron's extracted executable.
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
@@ -319,13 +319,12 @@ function applyWindowIdentity(win) {
   }
   if (process.platform !== 'win32') return;
   const taskbarExecutablePath = portableWrapperPath ?? process.execPath;
-  const taskbarIconPath = portableWrapperPath ?? WINDOWS_APP_ICON_PATH;
+  const taskbarIconPath = WINDOWS_APP_ICON_PATH;
   try {
     win.setAppDetails({
       appId: APP_USER_MODEL_ID,
-      // Portable's child runs from a temporary extraction directory. Point
-      // Windows at the stable outer wrapper for both relaunch and icon
-      // metadata; installed builds use the stable packaged ICO instead.
+      // The Portable wrapper is only the relaunch target. It is not the live
+      // taskbar icon source.
       appIconPath: taskbarIconPath,
       appIconIndex: 0,
       relaunchCommand: taskbarExecutablePath,

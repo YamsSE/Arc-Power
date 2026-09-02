@@ -22,7 +22,7 @@
                     "dist":  "npm run build:renderer \u0026\u0026 node build/build-dist.js"
                 },
     "build":  {
-                  "appId":  "com.rid.arcpower",
+                  "appId":  "com.rid.arcpower.desktop",
                   "productName":  "Arc Power",
                   "icon":  "build/icon.ico",
                   "files":  [
@@ -35,10 +35,36 @@
                                 "src/main/backend/presentmon/LICENSE",
                                 "THIRD_PARTY_NOTICES.txt",
                                 "LICENSE",
-                                "package.json"
+                                "package.json",
+                                "!node_modules/koffi/CHANGELOG.md",
+                                "!node_modules/koffi/README.md",
+                                "!node_modules/koffi/index.d.ts",
+                                "!node_modules/koffi/doc/**",
+                                "!node_modules/koffi/src/**",
+                                "!node_modules/koffi/lib/**",
+                                "!node_modules/koffi/vendor/**",
+                                "!node_modules/koffi/build/koffi/darwin_arm64/**",
+                                "!node_modules/koffi/build/koffi/darwin_x64/**",
+                                "!node_modules/koffi/build/koffi/freebsd_arm64/**",
+                                "!node_modules/koffi/build/koffi/freebsd_ia32/**",
+                                "!node_modules/koffi/build/koffi/freebsd_x64/**",
+                                "!node_modules/koffi/build/koffi/linux_arm64/**",
+                                "!node_modules/koffi/build/koffi/linux_armhf/**",
+                                "!node_modules/koffi/build/koffi/linux_ia32/**",
+                                "!node_modules/koffi/build/koffi/linux_loong64/**",
+                                "!node_modules/koffi/build/koffi/linux_riscv64d/**",
+                                "!node_modules/koffi/build/koffi/linux_x64/**",
+                                "!node_modules/koffi/build/koffi/musl_arm64/**",
+                                "!node_modules/koffi/build/koffi/musl_x64/**",
+                                "!node_modules/koffi/build/koffi/openbsd_ia32/**",
+                                "!node_modules/koffi/build/koffi/openbsd_x64/**",
+                                "!node_modules/koffi/build/koffi/win32_arm64/**",
+                                "!node_modules/koffi/build/koffi/win32_ia32/**",
+                                "!node_modules/koffi/build/koffi/win32_x64/koffi.exp",
+                                "!node_modules/koffi/build/koffi/win32_x64/koffi.lib"
                             ],
                   "asarUnpack":  [
-                                     "node_modules/koffi/**",
+                                     "node_modules/koffi/build/koffi/win32_x64/koffi.node",
                                      "src/main/backend/igcl2023/**",
                                      "src/main/backend/PawnIO_setup.exe",
                                      "src/main/backend/presentmon/**"

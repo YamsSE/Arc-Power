@@ -49,7 +49,7 @@ import {
   DISPLAY_GLOBAL_VRR_MODE_OPTIONS,
   DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice, isIntelIntegratedOrMobileArc } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
 import { classifyXeFgExecutable } from '../game-profile-capabilities.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
@@ -288,7 +288,7 @@ function endurancePlatformSupported(device, laptopInfo = null) {
   // IGS exposes these controls on built-in/integrated Arc and mobile Arc
   // adapters. Real desktop discrete GPUs have neither identity and remain
   // excluded.
-  return device?.integrated === true || device?.mobile === true;
+  return isIntelIntegratedOrMobileArc(device);
 }
 
 const ENDURANCE_CONTROL_TO_IGCL = Object.freeze({ off: 0, on: 1, auto: 2 });
@@ -366,6 +366,43 @@ function readEnduranceGamingValue(lib, adapterHandle, detail, applicationName = 
   } catch {
     return null;
   }
+}
+
+/**
+ * A few driver branches answer the Endurance GET but omit feature 1 from
+ * ctlGetSupported3DCapabilities. Probe the documented generic INT32 ABI so
+ * eligible mobile/iGPU adapters are not incorrectly reduced to desktop cards.
+ * A failed probe remains unsupported; no UI capability is invented.
+ */
+function probeEnduranceGamingDetail(lib, adapterHandle) {
+  if (typeof lib?.ctlGetSet3DFeature !== 'function') return null;
+  try {
+    const gs = encode3dFeatureGetset({
+      featureType: CTL_3D_FEATURE.ENDURANCE_GAMING,
+      valueType: CTL_PROPERTY_VALUE_TYPE.INT32,
+      bSet: false,
+    });
+    if (lib.ctlGetSet3DFeature(adapterHandle, gs.buf) !== CTL_RESULT.SUCCESS) return null;
+    const current = decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.INT32);
+    if (!Number.isFinite(current?.value)) return null;
+    return {
+      featureType: CTL_3D_FEATURE.ENDURANCE_GAMING,
+      valueType: CTL_PROPERTY_VALUE_TYPE.INT32,
+      enumSupportedTypes: null,
+      intRange: { min: 30, max: 60, step: 1, default: 60 },
+      perAppSupport: false,
+      probed: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function enduranceDetailOf(lib, adapterHandle, features) {
+  const detail = features?.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
+  return enduranceValueTypeSupported(detail?.valueType)
+    ? detail
+    : probeEnduranceGamingDetail(lib, adapterHandle);
 }
 
 // M10b (the Graphics "Display" view): the canonical <-> IGCL value tables
@@ -2854,7 +2891,7 @@ export class IgclBackend {
       const sharedMemoryPlatform = sharedMemoryPlatformSupported(dev, this._systemInfoOf ? this._systemInfoOf() : null);
       let sharedMemoryRange;
       if (platform) {
-        const enduranceDetail = features.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
+        const enduranceDetail = enduranceDetailOf(lib, dev.handle, features);
         if (enduranceValueTypeSupported(enduranceDetail?.valueType)) {
           const enduranceOptions = enduranceControlOptionsOf(enduranceDetail);
           const enduranceModes = enduranceModeOptionsOf(enduranceDetail);
@@ -2872,20 +2909,24 @@ export class IgclBackend {
           values.enduranceGamingMode = null;
         }
 
-        if (sharedMemoryPlatform && this._sharedMemoryOverride && typeof this._sharedMemoryOverride.read === 'function') {
-          try {
-            const shared = await this._sharedMemoryOverride.read(dev);
-            if (shared) {
-              supported.sharedMemoryOverride = true;
-              values.sharedMemoryOverride = {
-                enabled: shared.enabled === true,
-                percentage: Number(shared.percentage),
-              };
-              sharedMemoryRange = shared.range ? { ...shared.range } : null;
-            }
-          } catch {
-            // A registry read failure must not hide the IGCL controls.
+      }
+
+      // Shared GPU/NPU memory is independent of the 3D feature table. Keep
+      // it outside the Endurance branch so a driver that omits feature 1
+      // cannot hide a valid MemoryManager-backed control.
+      if (sharedMemoryPlatform && this._sharedMemoryOverride && typeof this._sharedMemoryOverride.read === 'function') {
+        try {
+          const shared = await this._sharedMemoryOverride.read(dev);
+          if (shared) {
+            supported.sharedMemoryOverride = true;
+            values.sharedMemoryOverride = {
+              enabled: shared.enabled === true,
+              percentage: Number(shared.percentage),
+            };
+            sharedMemoryRange = shared.range ? { ...shared.range } : null;
           }
+        } catch {
+          // A registry read failure must not hide the IGCL controls.
         }
       }
 
@@ -3017,8 +3058,8 @@ export class IgclBackend {
 
     if ((settings.enduranceGaming !== null && settings.enduranceGaming !== undefined)
       || (settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined)) {
-      const detail = features.get(CTL_3D_FEATURE.ENDURANCE_GAMING);
       const platform = endurancePlatformSupported(dev, this._laptopInfoOf ? this._laptopInfoOf() : null);
+      const detail = platform ? enduranceDetailOf(lib, dev.handle, features) : null;
       const valueType = detail?.valueType;
       if (!platform || !detail || !enduranceValueTypeSupported(valueType)) {
         if (settings.enduranceGaming !== null && settings.enduranceGaming !== undefined) {

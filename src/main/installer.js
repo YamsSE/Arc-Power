@@ -548,7 +548,7 @@ function registerInstallerIpc(win, mode) {
 
 export async function runInstallerMode(mode = 'install') {
   await app.whenReady();
-  app.setAppUserModelId?.('com.rid.arcpower');
+  app.setAppUserModelId?.('com.rid.arcpower.desktop');
   if (mode === 'update') {
     try {
       return await runInstalledUpdate(parseUpdateArguments(process.argv));

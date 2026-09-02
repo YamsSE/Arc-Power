@@ -9,6 +9,7 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isElevated } from '../elevation.js';
 import { buildElevatedLaunch } from '../igs-service.js';
+import { isIntelIntegratedOrMobileArc } from './units.js';
 
 const execFile = promisify(nodeExecFile);
 const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
@@ -25,19 +26,20 @@ export const SHARED_MEMORY_OVERRIDE_WRITE_TIMEOUT_MS = 120000;
 
 /** Intel's product gate: Core Ultra Series 2 (200-series) or later. */
 export function isCoreUltraSeries2OrLater(cpuName) {
-  const match = String(cpuName ?? '').match(/\bCore(?:\s*\([^)]*\))?\s+Ultra(?:\s+\d+)?\s+([2-9]\d{2})[A-Z]{0,3}\b/i);
+  const match = String(cpuName ?? '').match(/\bCore(?:\s*\([^)]*\))?\s+Ultra(?:\s+[A-Z]{0,2}\d+)?\s+([2-9]\d{2})[A-Z]{0,3}\b/i);
   return match !== null;
 }
 
 /** Mobile Arc and built-in/integrated Arc adapters share this IGS control. */
 export function sharedMemoryAdapterSupported(device) {
-  return device?.integrated === true || device?.mobile === true;
+  return isIntelIntegratedOrMobileArc(device);
 }
 
 /**
- * Shared GPU/NPU Memory Override is not a generic integrated-GPU setting.
- * Keep all eligibility inputs explicit so missing system information fails
- * closed instead of turning a name heuristic into a writable control.
+ * The driver publishes the MemoryManager ceiling only when the installed
+ * graphics stack supports this control. Use that runtime-published ceiling
+ * as the capability signal instead of a brittle CPU-name/RAM prerequisite;
+ * this also covers Core Ultra Series 3/B390 OEM naming variants.
  */
 export function sharedMemoryPlatformSupported(device, systemInfo) {
   if (!sharedMemoryAdapterSupported(device)) return false;
@@ -57,11 +59,7 @@ export function sharedMemoryPlatformSupported(device, systemInfo) {
     }
   }
   if (vendor !== '8086') return false;
-  const cpuName = systemInfo?.cpu?.name;
-  const totalBytes = systemInfo?.ram?.totalBytes;
-  return isCoreUltraSeries2OrLater(cpuName)
-    && Number.isInteger(totalBytes)
-    && totalBytes >= SHARED_MEMORY_OVERRIDE_RAM_MIN_BYTES;
+  return true;
 }
 
 /** Copy only the bounded CPU/RAM fields trusted by the parent process. */
