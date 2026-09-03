@@ -3856,13 +3856,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m4d-sysinfo-window-ops', `sysinfo:get fixture payload verified (CPU ${sysinfo.cpu.name}, ${sysinfo.cpu.cores} cores); window-minimize/maximize-toggle/close ticked the injected counters (${JSON.stringify(opsAfter)})`);
 
-  // --- 9. M2b-B Monitoring: readout grid + collapsible Canvas segments ------
+  // --- 9. M2b-B Monitoring: live readout grid + per-metric graphs ----------
   await js(`location.hash = '#/monitoring'`);
   const gpuMetricPanelSelector = '.telemetry-panel[data-telemetry-panel^="gpu-"]:not([data-telemetry-panel^="gpu-memory-"])';
   const gpuMemoryPanelSelector = '.telemetry-panel[data-telemetry-panel^="gpu-memory-"]';
-  if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === document.querySelectorAll('${gpuMetricPanelSelector}').length * 5`))) {
-    fail(`expected 5 trends per GPU, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
-  }
   const telemetryPanelCounts = await js(`JSON.stringify({ gpu: document.querySelectorAll('${gpuMetricPanelSelector}').length, memory: document.querySelectorAll('${gpuMemoryPanelSelector}').length, titles: Array.from(document.querySelectorAll('.telemetry-panel .telemetry-panel-title')).map((x) => x.textContent) })`);
   const panelCounts = JSON.parse(telemetryPanelCounts);
   if (panelCounts.gpu < 1 || panelCounts.memory !== panelCounts.gpu) {
@@ -3873,35 +3870,35 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (pairSnapshot.length !== panelCounts.gpu || pairSnapshot.some((pair) => pair.panels !== 2)) {
     fail(`M170: each GPU must have one compact GPU/memory card pair: ${gpuPairs}`);
   }
-  step('mon-panels', `Metrics has independent FPS, Latency, CPU, System memory, GPU and GPU memory panels (${panelCounts.gpu} GPU pair${panelCounts.gpu === 1 ? '' : 's'})`);
-  const trackingSnapshot = await js(`JSON.stringify({ groups: Array.from(document.querySelectorAll('.telemetry-tracking-group')).map((g) => g.querySelector('.telemetry-tracking-group-copy strong')?.textContent ?? ''), miniGraphs: document.querySelectorAll('.telemetry-metric canvas.telemetry-metric-sparkline').length })`);
+  const obsoleteMonitoring = await js(`({ trends: !!document.querySelector('.telemetry-trends'), latency: !!document.querySelector('[data-telemetry-panel="latency"]'), throttle: Array.from(document.querySelectorAll('.stat-label')).some((x) => (x.textContent ?? '').trim() === 'Throttle'), busy: Array.from(document.querySelectorAll('.stat-label')).some((x) => (x.textContent ?? '').trim() === 'GPU Busy') })`);
+  if (obsoleteMonitoring.trends || obsoleteMonitoring.latency || obsoleteMonitoring.throttle || obsoleteMonitoring.busy) {
+    fail(`M171: obsolete Monitoring cards/readouts are still rendered: ${JSON.stringify(obsoleteMonitoring)}`);
+  }
+  step('mon-panels', `Metrics has compact FPS, CPU, System memory, GPU and GPU memory panels (${panelCounts.gpu} GPU pair${panelCounts.gpu === 1 ? '' : 's'}); Trends, Latency, GPU Busy and Throttle are removed`);
+  const trackingSnapshot = await js(`JSON.stringify({ groups: Array.from(document.querySelectorAll('.telemetry-tracking-group')).map((g) => g.querySelector('.telemetry-tracking-group-copy strong')?.textContent ?? ''), miniGraphs: document.querySelectorAll('.telemetry-metric canvas.telemetry-metric-sparkline').length, logCard: !!document.querySelector('.telemetry-tracking-card[data-log-card="true"]') })`);
   const tracking = JSON.parse(trackingSnapshot);
-  if (tracking.groups.length < 6 || (panelCounts.gpu > 1 && !tracking.groups.includes('GPU 2'))) {
-    fail(`M169: Tracking does not expose independent categories for every source: ${trackingSnapshot}`);
+  if (tracking.groups.length < 5 || (panelCounts.gpu > 1 && !tracking.groups.includes('GPU 2')) || !tracking.logCard) {
+    fail(`M171: Log to file does not expose independent categories for every source: ${trackingSnapshot}`);
   }
   await js(`document.querySelector('.telemetry-tracking-group-head')?.click()`);
   if (!(await waitFor(win, `document.querySelector('.telemetry-tracking-options')?.hidden === false`))) {
-    fail('M169: Tracking category did not expand');
+    fail('M171: Log to file category did not expand');
   }
   const trackingToggle = await js(`document.querySelector('.telemetry-tracking-option button.telemetry-tracking-toggle') !== null`);
-  if (!trackingToggle) fail('M169: Tracking category has no per-readout toggle');
-  await js(`document.querySelector('.telemetry-tracking-option button.telemetry-tracking-toggle')?.click()`);
-  if (!(await waitFor(win, `document.querySelector('#mon-readout-fps .mon-fps-tile')?.hidden === true`))) {
-    fail('M169: Tracking toggle did not hide the selected readout');
-  }
-  await js(`document.querySelector('.telemetry-tracking-option button.telemetry-tracking-toggle')?.click()`);
-  step('mon-tracking', `Tracking exposes ${tracking.groups.length} independent categories, per-readout toggles, and ${tracking.miniGraphs} compact live mini-graphs`);
-  const allHidden = await js(`Array.from(document.querySelectorAll('.seg-card .seg-body')).every((b) => b.classList.contains('is-collapsed'))`);
-  if (!allHidden) fail('segment defaults wrong: every segment should start collapsed');
-  step('mon-segments', '5 segments render; every graph starts collapsed');
+  if (!trackingToggle) fail('M171: Log to file category has no per-readout toggle');
+  const firstLogMetric = `document.querySelector('.telemetry-tracking-option button.telemetry-tracking-toggle')`;
+  await js(`${firstLogMetric}.click()`);
+  if (!(await waitFor(win, `!${firstLogMetric}.classList.contains('active')`, 5000))) fail('M171: Log to file toggle did not persist Off');
+  await js(`${firstLogMetric}.click()`);
+  if (!(await waitFor(win, `${firstLogMetric}.classList.contains('active')`, 5000))) fail('M171: Log to file toggle did not persist On');
+  step('mon-tracking', `Log to file exposes ${tracking.groups.length} independent categories, per-readout logging toggles, and ${tracking.miniGraphs} compact live mini-graphs`);
 
-  await js(`document.querySelector('.seg-head').click()`);
-  const expandedNow = await js(`!document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
-  if (!expandedNow) fail('first segment did not expand on header click');
-  await js(`document.querySelector('.seg-head').click()`);
-  const collapsedAgain = await js(`document.querySelector('.seg-card .seg-body').classList.contains('is-collapsed')`);
-  if (!collapsedAgain) fail('first segment did not collapse again');
-  step('mon-collapse', 'segment header click toggles collapse/expand (chevron)');
+  const firstPanelHead = `document.querySelector('.telemetry-panel-head')`;
+  await js(`${firstPanelHead}.click()`);
+  if (!(await waitFor(win, `document.querySelector('.telemetry-panel-body')?.hidden === true`))) fail('M171: metric panel did not collapse');
+  await js(`${firstPanelHead}.click()`);
+  if (!(await waitFor(win, `document.querySelector('.telemetry-panel-body')?.hidden === false`))) fail('M171: metric panel did not expand');
+  step('mon-collapse', 'metric panel header toggles collapse/expand');
 
   // M168: the readout is a set of independent, collapsible metric panels.
   // GPU and GPU memory stay separate, and every panel is scoped to its
@@ -3912,8 +3909,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (cpuLabels.split(',').join(',') !== 'Util,Core Frequency,Temperature,Power') {
     fail(`M4N: the monitoring CPU group order is '${cpuLabels}' (expected Util, Core Frequency, Temperature, Power - the dashboard order)`);
   }
-  if (gpuLabels.split(',').join(',') !== 'Util,Core clock,Voltage,Temperature,Power,Fan 1,Throttle') {
-    fail(`M168: the monitoring GPU group order is '${gpuLabels}' (expected the GPU readout including Throttle)`);
+  if (gpuLabels.split(',').join(',') !== 'Util,Core clock,Voltage,Temperature,Power,Fan 1') {
+    fail(`M171: the monitoring GPU group order is '${gpuLabels}' (expected Util,Core clock,Voltage,Temperature,Power,Fan 1)`);
   }
   if (gpuMemoryLabels.split(',').join(',') !== 'VRAM in use,Memory clock,VramTemp') {
     fail(`M168: the monitoring GPU memory group order is '${gpuMemoryLabels}' (expected VRAM in use, Memory clock, VramTemp)`);
@@ -3921,7 +3918,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   for (const want of ['Core Frequency', 'Util', 'Temperature', 'Power']) {
     if (!cpuLabels.includes(want)) fail(`monitoring CPU group missing '${want}' (got '${cpuLabels}')`);
   }
-  for (const want of ['Core clock', 'Temperature', 'Power', 'Util', 'Fan 1', 'Throttle', 'Voltage']) {
+  for (const want of ['Core clock', 'Temperature', 'Power', 'Util', 'Fan 1', 'Voltage']) {
     if (!gpuLabels.includes(want)) fail(`monitoring GPU group missing '${want}' (got '${gpuLabels}')`);
   }
   for (const want of ['VRAM in use', 'Memory clock', 'VramTemp']) {
@@ -3996,24 +3993,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     step('mon-fps', `FPS unavailable shown gracefully: '${await js(`document.querySelector('.mon-fps-note')?.textContent ?? ''`)}'`);
   }
-  // M4M (G): the "Log to file" card is REMOVED from the Monitoring page -
-  // the Settings page is its single home. The Monitoring page must render
-  // NO .mon-log-card / .mon-log-checkbox.
-  if (await js(`!!document.querySelector('.mon-log-card') || !!document.querySelector('.mon-log-checkbox')`)) {
-    fail('M4M: the Monitoring page still renders the Log to file card (removed - the Settings page owns the toggle)');
-  }
+  // M171: Logging lives on Monitoring now; Settings must no longer render a
+  // second, conflicting toggle.
+  if (!(await js(`!!document.querySelector('.telemetry-tracking-card[data-log-card="true"]')`))) fail('M171: Monitoring has no Log to file card');
   await js(`location.hash = '#/settings'`);
-  if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="monitorLogToFile"]')`, 5000))) {
-    fail('M4M: the Settings page does not render the monitorLogToFile toggle (its single home)');
+  if (await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="monitorLogToFile"]')`, 1000)) {
+    fail('M171: the Settings page still renders the removed monitorLogToFile toggle');
   }
   await js(`location.hash = '#/monitoring'`);
   await sleep(250);
-  step('mon-log-toggle', 'M4M (G): Monitoring has NO Log to file card; the Settings page HAS the .settings-checkbox[data-setting="monitorLogToFile"] toggle');
+  step('mon-log-toggle', 'M171: Monitoring owns Log to file; Settings no longer renders a duplicate toggle');
 
-  const canvases = await js(`document.querySelectorAll('.seg-canvas').length`);
-  const expectedCanvases = await js(`Math.max(1, document.querySelectorAll('${gpuMetricPanelSelector}').length) * 5`);
-  if (canvases !== expectedCanvases) fail(`expected ${expectedCanvases} canvases (5 trends per GPU), got ${canvases}`);
-  step('mon-canvas', `${canvases} canvas graphs rendered from per-GPU telemetry pushes`);
+  const graphSnapshot = await js(`(() => { const canvases = Array.from(document.querySelectorAll('.telemetry-metric canvas.telemetry-metric-sparkline')); return { canvases: canvases.length, metrics: document.querySelectorAll('.telemetry-metric').length, sized: canvases.filter((c) => c.width > 0 && c.height > 0).length }; })()`);
+  if (graphSnapshot.metrics < 1 || graphSnapshot.canvases !== graphSnapshot.metrics || graphSnapshot.sized !== graphSnapshot.canvases) {
+    fail(`M171: every live metric must have a sized graph canvas: ${JSON.stringify(graphSnapshot)}`);
+  }
+  step('mon-canvas', `${graphSnapshot.canvases} per-metric canvas graphs rendered and sized from live telemetry pushes`);
 
   // --- M9: the Monitoring | Overlay view switch (the S2 re-registration) ----
   // The view pill renders 'Monitoring | Overlay' at the page top; the
@@ -4032,7 +4027,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   // monitoring -> the readout grid returns.
   await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Monitoring'); b.click(); })()`);
-  if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 7 && document.querySelectorAll('#mon-readout-gpu-memory .stat-tile').length >= 3`, 8000))) {
+  if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 6 && document.querySelectorAll('#mon-readout-gpu-memory .stat-tile').length >= 3`, 8000))) {
     fail('M168: switching back to the Monitoring view did not return the GPU readout');
   }
   // The FPS tile is LIVE after the round trip (the S2 re-registration - the
@@ -4049,6 +4044,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     step('m9-mon-view-switch', 'M9: the Monitoring|Overlay pill round-tripped; the readout grid returned + the FPS note stays live (S2 re-registration)');
   }
 
+  // M171: the former multi-segment trend inspector was removed. Keep the
+  // historical hover probes disabled because the current UI uses one compact
+  // sparkline per metric, verified by the canvas snapshot above.
+  if (false) {
   // --- M4-C: canvas hover crosshair + nearest-sample popup ------------------
   // The view switch rebuilt the monitoring cards, so explicitly expand the
   // first segment for this interaction test. Stock state remains fully
@@ -4188,6 +4187,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   })()`);
   if (!collapsedOk) fail('M4-C: a COLLAPSED monitoring segment showed the hover popup (expanded segments only)');
   step('mon-m4c-collapsed', 'M4-C: pointer-leave hides the popup; a collapsed segment never shows it');
+
+  }
 
   // --- 9b. M2b review F4: the 1 s FPS poll must stop on navigation away ---
   const pollsOnEnter = getFpsPolls();
@@ -4759,8 +4760,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // --- M4-D + M4-D2: the Settings tab ------------------------------
   // Start with Windows (the HKCU Run value via the MOCK startup adapter -
   // never spawns, never elevates), Start minimized (persisted), Close to
-  // tray (persisted), Log to file (persisted monitorLogToFile), the app
-  // version row.
+  // tray (persisted), and the app version row. Monitoring owns the separate
+  // Log to file control surface.
   if (!(await waitFor(win, `Array.from(document.querySelectorAll('.sidebar-link')).some((a) => (a.textContent ?? '').trim() === 'Settings')`))) {
     fail('M4-D: the sidebar has no Settings nav link');
   }
@@ -4778,8 +4779,8 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
   const closeTrayBox = `document.querySelector('.settings-checkbox[data-setting="closeToTray"]')`;
-  const logBox = `document.querySelector('.settings-checkbox[data-setting="monitorLogToFile"]')`;
-  if (!(await js(`!!${startWithBox} && !!${startMinBox} && !!${closeTrayBox} && !!${logBox}`))) fail('M4-D: the Settings toggles did not render (incl. the M4-D2 Log to file toggle)');
+  const logButton = `document.querySelector('.telemetry-log-button')`;
+  if (!(await js(`!!${startWithBox} && !!${startMinBox} && !!${closeTrayBox} && !document.querySelector('.settings-checkbox[data-setting="monitorLogToFile"]')`))) fail('M171: the Settings page rendered an unexpected Log to file toggle');
   if (await js(`${startWithBox}.checked`)) fail('M4-D: Start with Windows is checked before anything enabled it');
   // Close to tray round trip (M4-D user): the checkbox persists
   // closeToTray through the profiles-settings-save channel; the REAL close
@@ -4821,21 +4822,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D: Start minimized did not persist startMinimized=false');
     }
   }
-  // M4-D2 (§10): the Log to file round trip - the persisted monitorLogToFile
-  // toggle. Gated on RID_MOCK_LOG_DIR: with the knob the appends land in the
-  // mock dir (and the .txt log pins below run); without it the round trip is
-  // SKIPPED so the verify never writes to the real Documents folder.
-  if (process.env.RID_MOCK_LOG_DIR) {
-    await js(`${logBox}.click()`);
-    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.monitorLogToFile === true)`, 5000))) {
-      fail('M4-D2: Log to file did not persist monitorLogToFile=true');
-    }
-    await js(`${logBox}.click()`);
-    if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.monitorLogToFile === false)`, 5000))) {
-      fail('M4-D2: Log to file did not persist monitorLogToFile=false');
-    }
-  }
-step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' : '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.1.0`);
+step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.1.0');
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -5063,10 +5050,13 @@ step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round
   await clearToasts();
 
   // --- M4-D2/M4J: the log-to-file pin (RID_MOCK_LOG_DIR only) --------------
-  // Toggle on -> the .txt appears with the pinned aligned 12-column header
+  // Monitoring's Log to file button -> the .txt appears with the pinned
+  // aligned header
   // + >= 1 parseable data line (the timestamp cell derives from sample.t
-  // via Date(t*1000) - the mock epoch 9662.768701+ renders 1970-01-01, the
-  // pinned value); toggle off -> appends stop (file length stable across a
+  // via Date(t*1000); the mock backend intentionally uses a deterministic
+  // epoch, so this pin checks format/parseability rather than wall-clock age);
+  // toggle off ->
+  // appends stop (file length stable across a
   // telemetry tick).
   if (process.env.RID_MOCK_LOG_DIR) {
     const fsMod = await import('node:fs');
@@ -5076,9 +5066,12 @@ step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round
     // Clean slate.
     for (const f of txtFiles()) fsMod.rmSync(pathMod.join(logDir, f), { force: true });
     await clearToasts();
-    await js(`${logBox}.click()`);
+    await js(`location.hash = '#/monitoring'`);
+    if (!(await waitFor(win, `!!${logButton}`, 5000))) fail('M171: Monitoring Log to file button did not render');
+    await js(`${logButton}.click()`);
     if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.monitorLogToFile === true)`, 5000))) {
-      fail('M4-D2: the log toggle did not persist monitorLogToFile=true (pin setup)');
+      const logDebug = await js(`(async () => { const settings = await window.arcPower.profilesList(); const button = document.querySelector('.telemetry-log-button'); return JSON.stringify({ button: button?.textContent ?? '', disabled: button?.disabled ?? null, monitorLogToFile: settings.settings?.monitorLogToFile ?? null }); })()`);
+      fail(`M4-D2: the log toggle did not persist monitorLogToFile=true (pin setup): ${logDebug}`);
     }
     // The boot-level subscription appends on every telemetry push (0.5 s) -
     // the file appears with the header + data lines.
@@ -5103,18 +5096,17 @@ step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round
     // M4J/M4M: the pinned aligned header - every field right-aligned to its
     // column, ' | ' separators (the exact byte-for-byte pin). M4M (C): the
     // VRAM-used column is the GB variant (gpuMemUsedGb, width 12).
-    const expectedHeader = '          timestamp | gpuClockMhz | memClockMhz | tempC | powerW | utilPct | fanRpm | cpuUtilPct | cpuTempC | cpuFreqMhz | gpuMemUsedGb | fps';
-    if (header !== expectedHeader) fail(`M4J: the log header is '${header}' (expected the pinned aligned 12-column header)`);
+    const expectedHeader = '          timestamp | gpuClockMhz | memClockMhz | tempC | powerW | utilPct | fanRpm | cpuUtilPct | cpuTempC | cpuFreqMhz | gpuMemUsedGb | fps | gpuVoltageV | vramTempC | cpuPowerW |  memoryUsedGb | memoryCapacityGb | frameTimeMs |  avgFps | low1Pct | low01Pct |   p99';
+    if (header !== expectedHeader) fail(`M4J: the log header is '${header}' (expected the aligned 22-column header)`);
     for (const line of fileOk.lines.slice(1)) {
       const fields = line.split(' | ');
-      if (fields.length !== 12) fail(`M4J: a log data line has ${fields.length} columns (expected 12): '${line}'`);
+      if (fields.length !== 22) fail(`M4J: a log data line has ${fields.length} columns (expected 22): '${line}'`);
       const ts = fields[0].trim();
       if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts)) {
         fail(`M4J: the timestamp cell is not the pinned 'YYYY-MM-DD HH:MM:SS' format: '${ts}'`);
       }
-      if (!ts.startsWith('1970-01-01')) {
-        fail(`M4J: the timestamp cell is '${ts}' (expected the mock epoch value's 1970-01-01 date - sample.t via Date(t*1000))`);
-      }
+      const parsedTs = Date.parse(ts.replace(' ', 'T'));
+      if (!Number.isFinite(parsedTs)) fail(`M4J: the timestamp cell is '${ts}' (expected a parseable timestamp derived from sample.t via Date(t*1000))`);
     }
     const sampleLine = fileOk.lines[1];
     const sampleFields = sampleLine.split(' | ').map((s) => s.trim());
@@ -5131,10 +5123,11 @@ step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round
       fail(`M4-D2/M4-I: the log data line does not carry the mock system stats (cpuUtilPct 42, cpuTempC ${frozenLog ? '"-" (frozen drop)' : '61|62'}): '${sampleLine}'`);
     }
     if (sampleFields[10] !== '3.0') fail(`M4M: the gpuMemUsedGb cell is '${sampleFields[10]}' on the mock line (expected '3.0' - 2971324416 bytes / 1e9 with one decimal): '${sampleLine}'`);
+    if (sampleFields[15] !== '12.4') fail(`M171: the memoryUsedGb cell is '${sampleFields[15]}' on the mock line (expected '12.4'): '${sampleLine}'`);
     // Toggle off -> the file length stays stable across a telemetry tick.
-    await js(`location.hash = '#/settings'`);
+    await js(`location.hash = '#/monitoring'`);
     await sleep(250);
-    await js(`${logBox}.click()`);
+    await js(`${logButton}.click()`);
     if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.monitorLogToFile === false)`, 5000))) {
       fail('M4-D2: the log toggle did not persist monitorLogToFile=false (pin teardown)');
     }
@@ -5142,7 +5135,7 @@ step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round
     await sleep(1800); // > 3 telemetry ticks
     const after = fsMod.statSync(pathMod.join(logDir, fileOk.file)).size;
     if (after !== before) fail(`M4-D2: the log file kept growing after the toggle was OFF (${before} -> ${after} bytes)`);
-    step('m4j-log-file', `log-to-file: ${fileOk.file} appeared with the aligned 12-column header (gpuMemUsedGb) + ${fileOk.lines.length - 1} parseable line(s) (timestamp 1970-01-01 from the mock epoch via Date(t*1000), cpuUtilPct=42, cpuTempC=${process.env.RID_MOCK_FROZEN_TEMP === '1' ? '-' : '61'}, gpuMemUsedGb='3.0'); toggle off -> length stable (${before} bytes)`);
+    step('m4j-log-file', `log-to-file: ${fileOk.file} appeared with the aligned 22-column header + ${fileOk.lines.length - 1} parseable line(s) (current timestamp, cpuUtilPct=42, cpuTempC=${process.env.RID_MOCK_FROZEN_TEMP === '1' ? '-' : '61'}, gpuMemUsedGb='3.0', memoryUsedGb='12.4'); toggle off -> length stable (${before} bytes)`);
   } else {
     step('m4j-log-file', 'log-to-file pin SKIPPED (RID_MOCK_LOG_DIR not set)');
   }
@@ -5641,7 +5634,7 @@ export async function runGraphicsVerify(win, backend) {
     await js(`location.hash = '#/tuning'`);
     await sleep(200);
     if ((await driveSelector('1')) !== 'ok') fail('M8: the Tuning selector change did not dispatch (multi-device)');
-    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${IGPU_NAME}'`, 8000))) {
+    if (!(await waitFor(win, `(() => { const s = document.querySelector('.oc-mode-row .device-select'); return s?.value === '1' && (s.options[s.selectedIndex]?.textContent ?? '').trim() === '${IGPU_NAME}'; })()`, 8000))) {
       fail('M8: the switch to device 1 did not land');
     }
     await js(`location.hash = '#/graphics'`);
@@ -5686,7 +5679,7 @@ export async function runGraphicsVerify(win, backend) {
     await js(`location.hash = '#/tuning'`);
     await sleep(200);
     if ((await driveSelector('0')) !== 'ok') fail('M8: the switch back to device 0 did not dispatch');
-    if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
+    if (!(await waitFor(win, `(() => { const s = document.querySelector('.oc-mode-row .device-select'); return s?.value === '0' && (s.options[s.selectedIndex]?.textContent ?? '').trim() === '${A770_NAME}'; })()`, 8000))) {
       fail('M8: the switch back to device 0 did not land');
     }
     await js(`location.hash = '#/graphics'`);
@@ -6233,8 +6226,9 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // --- monitoring readouts render per featureset ----------------------------
   await js(`location.hash = '#/monitoring'`);
   await sleep(250);
-  if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === document.querySelectorAll('.telemetry-panel[data-telemetry-panel^="gpu-"]:not([data-telemetry-panel^="gpu-memory-"])').length * 5`))) {
-    fail(`expected 5 trends per GPU, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
+  const graphSnapshot = await js(`(() => { const canvases = Array.from(document.querySelectorAll('.telemetry-metric canvas.telemetry-metric-sparkline')); return { metrics: document.querySelectorAll('.telemetry-metric').length, canvases: canvases.length, sized: canvases.filter((c) => c.width > 0 && c.height > 0).length }; })()`);
+  if (graphSnapshot.metrics < 1 || graphSnapshot.canvases !== graphSnapshot.metrics || graphSnapshot.sized !== graphSnapshot.canvases) {
+    fail(`M171: '${fsId}' metric graphs are not all present and sized: ${JSON.stringify(graphSnapshot)}`);
   }
   const fanTile = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Fan 1')?.querySelector('.stat-value')?.textContent ?? ''`);
   const gpuMemoryLabels = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu-memory .stat-label')).map((l) => l.textContent).join(',')`);

@@ -640,6 +640,8 @@ export interface ProfileSettingsState {
   closeToTray: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
+  /** Monitoring metrics selected for the Log to file card (absent on old files -> all). */
+  monitorLogMetrics?: string[];
   /** Persisted GPU selection; numeric ids without deviceKey are unverified. */
   deviceId: number | null;
   deviceKey: string | null;

@@ -11,9 +11,7 @@
 //
 // M168: the former two-group readout is replaced by the Metrics panel grid;
 // each panel owns its own dropdown and all fields stay bound to the matching
-// physical adapter. The M4-D2
-// "Log to file" card is DELETED from this page (item G - the Settings page
-// keeps the persisted toggle; the boot-level log writer is untouched).
+// physical adapter. The right rail is the single Log to file control surface.
 //
 // The graph math lives in pure/graph.ts (series push, time-window trim,
 // min/max scaling, downsampling - unit-tested); this file only owns the DOM
@@ -24,11 +22,12 @@ import type { AppState, Page, PageContext } from '../router.ts';
 import { consumeOverlayViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
 import type { DeviceInfo, FpsSample, TelemetrySample } from '../types.ts';
-import { getMonitorLogToFile, setLatestFps, setMonitorLogToFile } from '../log-state.ts';
+import { getMonitorLogMetrics, getMonitorLogToFile, setLatestFpsSample, setMonitorLogMetrics, setMonitorLogToFile } from '../log-state.ts';
 import { ghzFreq } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from '../pure/gpu-memory.ts';
 import { chipLabelGpu } from '../pure/chip-label.ts';
 import { deviceHardwareKey, stripVramSuffix } from '../pure/device.ts';
+import { dashboardGpuOrder } from '../pure/dashboard.ts';
 import { renderOverlaySettings } from './overlay-settings.ts';
 import {
   pushSeries,
@@ -36,13 +35,11 @@ import {
   sortSeriesByTime,
   autoScale,
   downsample,
-  nearestSampleIndex,
   GRAPH_WINDOW_S,
 } from '../pure/graph.ts';
 import type { SeriesPoint } from '../pure/graph.ts';
 
 const FPS_POLL_MS = 1000;
-const DRAW_MAX_POINTS = 240;
 // M4-D2 (plan-review M5): the PresentMon mention is gone - the FPS source is
 // the DXGI frame-statistics/duplication adapter; unavailable -> honest '-'.
 // M17c: the preferred source is the ETW/PresentMon lane (the foreground
@@ -52,39 +49,14 @@ const DRAW_MAX_POINTS = 240;
 const FPS_UNAVAILABLE_NOTE = 'FPS unavailable - no present data is being captured for the foreground program.';
 const FPS_CHECKING_NOTE = 'Checking FPS…';
 
-interface SegmentDef {
-  id: string;
-  label: string;
-  unit: string;
-  value: (s: TelemetrySample | null) => number | undefined;
-}
-
-const SEGMENTS: SegmentDef[] = [
-  { id: 'clock', label: 'Core clock', unit: 'MHz', value: (s) => s?.gpuClockMhz },
-  { id: 'temp', label: 'Temperature', unit: '°C', value: (s) => s?.tempC },
-  { id: 'power', label: 'Power', unit: 'W', value: (s) => s?.powerW },
-  // M4-I (D4): the util segment reads `gpuUtilPct ?? utilPct` - the no-Intel
-  // OS GPUEngine counter is the only source there; the IGCL activity counter
-  // wins on Intel when the OS counter is unpopulated.
-  { id: 'util', label: 'Utilization', unit: '%', value: (s) => s?.gpuUtilPct ?? s?.utilPct },
-  { id: 'fan', label: 'Fan', unit: 'RPM', value: (s) => s?.fanRpm?.[0] },
-];
-
 interface MonState {
   deviceId: number | null;
   series: Record<string, SeriesPoint[]>;
-  canvases: Map<string, HTMLCanvasElement>;
   metricCanvases: Map<string, HTMLCanvasElement>;
   fpsTileValue: HTMLElement | null;
   fpsNote: HTMLElement | null;
   metricBindings: MetricBinding[];
   fpsBindings: FpsBinding[];
-  // M4-C (round-1 fix): the last hover's crosshair position (canvas CSS
-  // px), persisted so a STATIONARY hover survives telemetry ticks -
-  // redrawAll passes it back into drawSeries. Without it the crosshair
-  // vanished on every tick (the popup stayed, the crosshair flickered out
-  // until the next pointermove). Cleared on pointer-leave / collapse.
-  hover: { segId: string; x: number; y: number } | null;
 }
 
 interface MetricReadout {
@@ -95,6 +67,7 @@ interface MetricReadout {
 interface MetricBinding {
   category: string;
   label: string;
+  logMetricId: string;
   node: HTMLElement;
   valueNode: HTMLElement;
   unitNode: HTMLElement;
@@ -105,7 +78,8 @@ interface FpsBinding {
   category: 'fps';
   label: string;
   node: HTMLElement;
-  id: 'fps' | 'frame-time' | 'gpu-busy' | 'average' | 'low-1' | 'low-01' | 'p99';
+  id: 'fps' | 'frame-time' | 'average' | 'low-1' | 'low-01' | 'p99';
+  seriesId: string;
   valueNode: HTMLElement;
   unitNode: HTMLElement;
 }
@@ -133,19 +107,6 @@ function statValue(v: number | null | undefined, decimals = 0): string {
 
 function memoryGb(bytes: number | null | undefined): string {
   return typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 ? (bytes / 1e9).toFixed(1) : '-';
-}
-
-function throttleText(sample: TelemetrySample | null): string {
-  if (!sample?.throttle) return '-';
-  const labels = [
-    ['power', 'Power'],
-    ['temp', 'Temperature'],
-    ['current', 'Current'],
-    ['voltage', 'Voltage'],
-    ['util', 'Utilization'],
-  ] as const;
-  const active = labels.filter(([key]) => sample.throttle?.[key]).map(([, label]) => label);
-  return active.length > 0 ? active.join(', ') : 'None';
 }
 
 function deviceKeyOf(device: DeviceInfo): string {
@@ -181,6 +142,23 @@ function graphKey(deviceId: number, segmentId: string): string {
   return `gpu-${deviceId}-${segmentId}`;
 }
 
+function systemGraphKey(segmentId: string): string {
+  return `system-${segmentId}`;
+}
+
+function fpsGraphKey(id: FpsBinding['id']): string {
+  return `fps-${id}`;
+}
+
+function pushMetricSeries(seriesId: string, t: number, value: number | undefined): void {
+  if (!mon || value === undefined || !Number.isFinite(value)) return;
+  mon.series[seriesId] = trimSeriesWindow(
+    sortSeriesByTime(pushSeries(mon.series[seriesId] ?? [], t, value)),
+    t,
+    GRAPH_WINDOW_S,
+  );
+}
+
 function updateMetricBindings(state: AppState): void {
   if (!mon) return;
   for (const binding of mon.metricBindings) {
@@ -197,6 +175,7 @@ function metricNode(
   extraClass = '',
   category = 'system',
   seriesId?: string,
+  logMetricId = `${category}:${label}`,
 ): HTMLElement {
   const readout = read(state);
   const valueNode = el('div', { class: 'telemetry-metric-value stat-value', text: readout.value });
@@ -213,7 +192,7 @@ function metricNode(
     sparkline,
   ]);
   if (mon) {
-    mon.metricBindings.push({ category, label, node, valueNode, unitNode, read });
+    mon.metricBindings.push({ category, label, logMetricId, node, valueNode, unitNode, read });
     if (seriesId && sparkline instanceof HTMLCanvasElement) mon.metricCanvases.set(seriesId, sparkline);
   }
   return node;
@@ -221,17 +200,17 @@ function metricNode(
 
 function cpuMetricNodes(state: AppState): HTMLElement[] {
   return [
-    metricNode('Util', (s) => ({ value: statValue(systemSample(s)?.cpuUtilPct), unit: '%' }), state, '', 'cpu'),
-    metricNode('Core Frequency', (s) => ({ value: ghzFreq(systemSample(s)?.cpuFreqMhz), unit: 'GHz' }), state, '', 'cpu'),
-    metricNode('Temperature', (s) => ({ value: statValue(systemSample(s)?.cpuTempC), unit: '°C' }), state, '', 'cpu'),
-    metricNode('Power', (s) => ({ value: statValue(systemSample(s)?.cpuPowerW, 1), unit: 'W' }), state, '', 'cpu'),
+    metricNode('Util', (s) => ({ value: statValue(systemSample(s)?.cpuUtilPct), unit: '%' }), state, '', 'cpu', systemGraphKey('cpu-util'), 'cpu-util'),
+    metricNode('Core Frequency', (s) => ({ value: ghzFreq(systemSample(s)?.cpuFreqMhz), unit: 'GHz' }), state, '', 'cpu', systemGraphKey('cpu-clock'), 'cpu-clock'),
+    metricNode('Temperature', (s) => ({ value: statValue(systemSample(s)?.cpuTempC), unit: '°C' }), state, '', 'cpu', systemGraphKey('cpu-temp'), 'cpu-temp'),
+    metricNode('Power', (s) => ({ value: statValue(systemSample(s)?.cpuPowerW, 1), unit: 'W' }), state, '', 'cpu', systemGraphKey('cpu-power'), 'cpu-power'),
   ];
 }
 
 function systemMetricNodes(state: AppState): HTMLElement[] {
   return [
-    metricNode('RAM in use', (s) => ({ value: memoryGb(systemSample(s)?.memoryUsedBytes), unit: 'GB' }), state, '', 'system-memory'),
-    metricNode('RAM capacity', (s) => ({ value: memoryGb(s.sysinfo?.ram.totalBytes), unit: 'GB' }), state, '', 'system-memory'),
+    metricNode('RAM in use', (s) => ({ value: memoryGb(systemSample(s)?.memoryUsedBytes), unit: 'GB' }), state, '', 'system-memory', systemGraphKey('ram-used'), 'system-memory'),
+    metricNode('RAM capacity', (s) => ({ value: memoryGb(s.sysinfo?.ram.totalBytes), unit: 'GB' }), state, '', 'system-memory', systemGraphKey('ram-capacity'), 'system-memory-capacity'),
   ];
 }
 
@@ -245,16 +224,15 @@ function gpuMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement
     metricNode('Util', (s) => {
       const v = readSample(s);
       return { value: statValue(v?.gpuUtilPct ?? v?.utilPct), unit: '%' };
-    }, state, '', category, series('util')),
-    metricNode('Core clock', (s) => ({ value: statValue(readSample(s)?.gpuClockMhz), unit: 'MHz' }), state, '', category, series('clock')),
-    metricNode('Voltage', (s) => ({ value: statValue(readSample(s)?.gpuVoltageV, 3), unit: 'V' }), state, '', category),
-    metricNode('Temperature', (s) => ({ value: statValue(readSample(s)?.tempC), unit: '°C' }), state, '', category, series('temp')),
-    metricNode('Power', (s) => ({ value: statValue(readSample(s)?.powerW, 1), unit: 'W' }), state, '', category, series('power')),
+    }, state, '', category, series('util'), 'gpu-util'),
+    metricNode('Core clock', (s) => ({ value: statValue(readSample(s)?.gpuClockMhz), unit: 'MHz' }), state, '', category, series('clock'), 'gpu-clock'),
+    metricNode('Voltage', (s) => ({ value: statValue(readSample(s)?.gpuVoltageV, 3), unit: 'V' }), state, '', category, series('voltage'), 'gpu-voltage'),
+    metricNode('Temperature', (s) => ({ value: statValue(readSample(s)?.tempC), unit: '°C' }), state, '', category, series('temp'), 'gpu-temperature'),
+    metricNode('Power', (s) => ({ value: statValue(readSample(s)?.powerW, 1), unit: 'W' }), state, '', category, series('power'), 'gpu-power'),
   ];
   for (let fan = 0; fan < fanCount; fan++) {
-    nodes.push(metricNode(`Fan ${fan + 1}`, (s) => ({ value: statValue(readSample(s)?.fanRpm?.[fan]), unit: 'RPM' }), state, '', category, fan === 0 ? series('fan') : undefined));
+    nodes.push(metricNode(`Fan ${fan + 1}`, (s) => ({ value: statValue(readSample(s)?.fanRpm?.[fan]), unit: 'RPM' }), state, '', category, fan === 0 ? series('fan') : undefined, fan === 0 ? 'gpu-fan' : `gpu-fan-${fan + 1}`));
   }
-  nodes.push(metricNode('Throttle', (s) => ({ value: throttleText(readSample(s)), unit: '' }), state, '', category));
   return nodes;
 }
 
@@ -265,32 +243,29 @@ function gpuMemoryMetricNodes(device: DeviceInfo | null, state: AppState): HTMLE
     metricNode('VRAM in use', (s) => {
       const v = readSample(s);
       return { value: formatGpuMemoryGb(v?.gpuMemUsedBytes), unit: gpuMemoryLabel(v?.gpuMemorySource) === 'VRAM' ? 'GB' : 'GB shared' };
-    }, state, '', category),
-    metricNode('Memory clock', (s) => ({ value: statValue(readSample(s)?.memClockMhz), unit: 'MHz' }), state, '', category),
-    metricNode('VramTemp', (s) => ({ value: statValue(readSample(s)?.vramTempC), unit: '°C' }), state, '', category),
-  ];
-}
-
-function latencyMetricNodes(state: AppState): HTMLElement[] {
-  return [
-    // The current FPS adapters expose frame time, not a measured end-to-end
-    // input/render/present latency. Keep this honest until that source exists.
-    metricNode('Render latency', () => ({ value: '-', unit: 'ms' }), state, '', 'latency'),
+    }, state, '', category, graphKey(device?.id ?? 0, 'vram'), 'gpu-vram'),
+    metricNode('Memory clock', (s) => ({ value: statValue(readSample(s)?.memClockMhz), unit: 'MHz' }), state, '', category, graphKey(device?.id ?? 0, 'mem-clock'), 'gpu-memory-clock'),
+    metricNode('VramTemp', (s) => ({ value: statValue(readSample(s)?.vramTempC), unit: '°C' }), state, '', category, graphKey(device?.id ?? 0, 'vram-temp'), 'gpu-vram-temperature'),
   ];
 }
 
 function fpsMetricNode(label: string, id: FpsBinding['id'], unit: string): HTMLElement {
   const valueNode = el('div', { class: 'telemetry-metric-value stat-value', text: '-' });
   const unitNode = el('div', { class: 'telemetry-metric-unit stat-unit', text: unit });
+  const seriesId = fpsGraphKey(id);
   const node = el('div', { class: `telemetry-metric stat-tile${id === 'fps' ? ' mon-fps-tile' : ''}`, dataset: { metricId: `fps:${label}` } }, [
     el('div', { class: 'telemetry-metric-copy' }, [
       valueNode,
       unitNode,
       el('div', { class: 'telemetry-metric-label stat-label', text: label }),
     ]),
-    el('div', { class: 'telemetry-metric-sparkline telemetry-metric-sparkline-empty', 'aria-hidden': 'true' }),
+    el('canvas', { class: 'telemetry-metric-sparkline' }),
   ]);
-  if (mon) mon.fpsBindings.push({ category: 'fps', label, node, id, valueNode, unitNode });
+  if (mon) {
+    mon.fpsBindings.push({ category: 'fps', label, node, id, seriesId, valueNode, unitNode });
+    const canvas = node.querySelector('canvas');
+    if (canvas instanceof HTMLCanvasElement) mon.metricCanvases.set(seriesId, canvas);
+  }
   return node;
 }
 
@@ -299,21 +274,31 @@ function refreshFpsMetrics(sample: FpsSample | null): void {
   const values: Record<FpsBinding['id'], { value: string; unit: string }> = {
     fps: { value: statValue(sample?.fps), unit: 'FPS' },
     'frame-time': { value: statValue(sample?.frameTimeMs, 1), unit: 'ms' },
-    'gpu-busy': { value: statValue(sample?.gpuBusy), unit: '%' },
     average: { value: statValue(sample?.avgFps), unit: 'FPS' },
     'low-1': { value: statValue(sample?.low1Pct), unit: 'FPS' },
     'low-01': { value: statValue(sample?.low01Pct), unit: 'FPS' },
     p99: { value: statValue(sample?.p99), unit: 'FPS' },
   };
+  const rawValue = (id: FpsBinding['id']): number | undefined => {
+    if (!sample) return undefined;
+    switch (id) {
+      case 'fps': return sample.fps ?? undefined;
+      case 'frame-time': return sample.frameTimeMs ?? undefined;
+      case 'average': return sample.avgFps ?? undefined;
+      case 'low-1': return sample.low1Pct ?? undefined;
+      case 'low-01': return sample.low01Pct ?? undefined;
+      case 'p99': return sample.p99 ?? undefined;
+    }
+  };
+  const now = Date.now() / 1000;
   for (const binding of mon.fpsBindings) {
     binding.valueNode.textContent = values[binding.id].value;
     binding.unitNode.textContent = values[binding.id].unit;
+    pushMetricSeries(binding.seriesId, now, rawValue(binding.id));
   }
 }
 
-/** AMD-style compact history strip for the readout rows. The larger trend
- * inspector below keeps the detailed grid/hover experience; these strips are
- * intentionally quiet so the current value remains the visual focus. */
+/** AMD-style compact history strip for each readout row. */
 function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[]): void {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
@@ -364,100 +349,6 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[]): void 
   ctx.stroke();
 }
 
-/**
- * Thin Canvas 2D draw: grid + min/max labels + the downsampled polyline.
- * Pure data in, pixels out - no math of consequence lives here.
- * M4-C: an optional `crosshair` ({x, y} in CSS pixels, from the nearest
- * sample of a hover) draws the dashed crosshair + a dot on the sample.
- */
-function drawSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], crosshair: { x: number; y: number } | null = null): void {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (w === 0 || h === 0) return;
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-
-  const scale = autoScale(points);
-  if (!scale) {
-    ctx.fillStyle = cssVar('--text-dim');
-    ctx.font = '11px system-ui';
-    ctx.fillText('Waiting for telemetry…', 8, 18);
-    return;
-  }
-
-  const padL = 42;
-  const padR = 8;
-  const padT = 8;
-  const padB = 16;
-  const pw = Math.max(10, w - padL - padR);
-  const ph = Math.max(10, h - padT - padB);
-  const span = scale.max - scale.min;
-  const y = (v: number): number => padT + (1 - (v - scale.min) / span) * ph;
-  const tMin = points[0].t;
-  const tMax = points[points.length - 1].t;
-  const tSpan = tMax - tMin > 0 ? tMax - tMin : GRAPH_WINDOW_S;
-  const x = (t: number): number => padL + ((t - tMin) / tSpan) * pw;
-
-  const dim = cssVar('--text-dim');
-  const border = cssVar('--border');
-  const accent = cssVar('--accent');
-
-  ctx.strokeStyle = border;
-  ctx.lineWidth = 1;
-  ctx.font = '10px system-ui';
-  ctx.fillStyle = dim;
-  for (let i = 0; i <= 4; i++) {
-    const gy = padT + (ph / 4) * i;
-    ctx.beginPath();
-    ctx.moveTo(padL, gy);
-    ctx.lineTo(w - padR, gy);
-    ctx.stroke();
-    const gv = scale.max - (span / 4) * i;
-    ctx.fillText(`${gv.toFixed(gv >= 100 ? 0 : 1)}`, 2, gy + 3);
-  }
-  ctx.fillText(`${tSpan.toFixed(0)}s`, padL, h - 4);
-
-  const drawn = downsample(points, DRAW_MAX_POINTS);
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 1.5;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  drawn.forEach((p, i) => {
-    const px = x(p.t);
-    const py = y(p.v);
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  });
-  ctx.stroke();
-
-  // M4-C: the hover crosshair - dashed cross lines through the nearest
-  // sample + a dot on the sample itself.
-  if (crosshair) {
-    ctx.strokeStyle = dim;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(crosshair.x, padT);
-    ctx.lineTo(crosshair.x, h - padB);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(padL, crosshair.y);
-    ctx.lineTo(w - padR, crosshair.y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = accent;
-    ctx.beginPath();
-    ctx.arc(crosshair.x, crosshair.y, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
 async function pollFps(): Promise<void> {
   if (!mon || mon.deviceId === null) return;
   let sample: FpsSample | null = null;
@@ -471,7 +362,7 @@ async function pollFps(): Promise<void> {
   // shared module - the log line carries the best-effort fps even when the
   // Monitoring page is not the current page (the BOOT-level subscription
   // does the logging).
-  setLatestFps(sample?.fps ?? null);
+  setLatestFpsSample(sample as unknown as Record<string, unknown> | null);
   refreshFpsMetrics(sample);
   if (mon.fpsTileValue && mon.fpsNote) {
     if (sample && sample.fps !== null && Number.isFinite(sample.fps)) {
@@ -497,13 +388,11 @@ export const monitoringPage: Page = {
     mon = {
       deviceId: defaultFpsDevice(s)?.id ?? null,
       series: {},
-      canvases: new Map(),
       metricCanvases: new Map(),
       fpsTileValue: null,
       fpsNote: null,
       metricBindings: [],
       fpsBindings: [],
-      hover: null,
     };
 
     // M9: the old #/overlay hash + the Settings-button path arrive with the
@@ -543,8 +432,8 @@ export const monitoringPage: Page = {
     );
     // M9: the view switch re-renders ONLY the sub-view container - the
     // telemetry series (module-level mon.series) survive the round trip,
-    // and every monitoring-view rebuild re-registers the canvases + the
-    // FPS tile + the note (the S2 contract in renderMonitoringView).
+    // and every monitoring-view rebuild re-registers the metric canvases +
+    // the FPS tile + the note (the S2 contract in renderMonitoringView).
     const renderMonView = (): void => {
       if (!viewContainer) return;
       if (monView === 'overlay') {
@@ -585,32 +474,41 @@ export const monitoringPage: Page = {
     for (const device of telemetryDevices) {
       const sample = device ? sampleForDevice(state, device) : systemSample(state);
       const now = sample?.t ?? Date.now();
-      for (const seg of SEGMENTS) {
-        const value = seg.value(sample);
-        if (value !== undefined) {
-          const key = graphKey(device?.id ?? 0, seg.id);
-          // The real driver's telemetry timestamp can occasionally tick
-          // backwards. Sorting before drawing prevents a folded polyline.
-          mon.series[key] = trimSeriesWindow(
-            sortSeriesByTime(pushSeries(mon.series[key] ?? [], sample?.t ?? now, value)),
-            now,
-            GRAPH_WINDOW_S,
-          );
-        }
-      }
+      const t = now > 10_000_000_000 ? now / 1000 : now;
+      const id = device?.id ?? 0;
+      pushMetricSeries(graphKey(id, 'util'), t, sample?.gpuUtilPct ?? sample?.utilPct);
+      pushMetricSeries(graphKey(id, 'clock'), t, sample?.gpuClockMhz);
+      pushMetricSeries(graphKey(id, 'voltage'), t, sample?.gpuVoltageV);
+      pushMetricSeries(graphKey(id, 'temp'), t, sample?.tempC);
+      pushMetricSeries(graphKey(id, 'power'), t, sample?.powerW);
+      pushMetricSeries(graphKey(id, 'fan'), t, sample?.fanRpm?.[0]);
+      pushMetricSeries(graphKey(id, 'vram'), t, sample?.gpuMemUsedBytes === null || sample?.gpuMemUsedBytes === undefined
+        ? undefined
+        : sample.gpuMemUsedBytes / 1e9);
+      pushMetricSeries(graphKey(id, 'mem-clock'), t, sample?.memClockMhz);
+      pushMetricSeries(graphKey(id, 'vram-temp'), t, sample?.vramTempC);
     }
+    const sample = systemSample(state);
+    const now = sample?.t ?? Date.now();
+    const t = now > 10_000_000_000 ? now / 1000 : now;
+    pushMetricSeries(systemGraphKey('cpu-util'), t, sample?.cpuUtilPct ?? undefined);
+    pushMetricSeries(systemGraphKey('cpu-clock'), t, sample?.cpuFreqMhz ?? undefined);
+    pushMetricSeries(systemGraphKey('cpu-temp'), t, sample?.cpuTempC ?? undefined);
+    pushMetricSeries(systemGraphKey('cpu-power'), t, sample?.cpuPowerW ?? undefined);
+    pushMetricSeries(systemGraphKey('ram-used'), t, sample?.memoryUsedBytes === null || sample?.memoryUsedBytes === undefined
+      ? undefined
+      : sample.memoryUsedBytes / 1e9);
+    pushMetricSeries(systemGraphKey('ram-capacity'), t, state.sysinfo?.ram.totalBytes === null || state.sysinfo?.ram.totalBytes === undefined
+      ? undefined
+      : state.sysinfo.ram.totalBytes / 1e9);
     updateMetricBindings(state);
     redrawAll();
   },
 };
 
-/** M9: the monitoring sub-view build - the readout grid + the canvas
- *  segments (the old render() body, extracted so the view switch can
- *  rebuild it). THE RE-REGISTRATION CONTRACT (plan-review S2): every
- *  (re)build re-registers mon.canvases, mon.fpsTileValue and mon.fpsNote,
- *  so pollFps + redrawAll always write into the LIVE view and never into
- *  the detached nodes a clear(viewContainer) orphans (a re-shown view
- *  would otherwise show a frozen FPS tile + empty graphs). */
+/** M9: the monitoring sub-view build. Every rebuild re-registers the live
+ *  metric canvases, FPS tile and note so navigation never leaves detached
+ *  controls receiving updates. */
 function telemetryPanel(
   key: string,
   title: string,
@@ -643,7 +541,7 @@ function telemetryPanel(
 
 interface TrackingEntry {
   label: string;
-  node: HTMLElement;
+  metricId: string;
 }
 
 function trackingGroup(key: string, title: string, subtitle: string, entries: TrackingEntry[]): HTMLElement {
@@ -668,21 +566,37 @@ function trackingGroup(key: string, title: string, subtitle: string, entries: Tr
     el('span', { class: 'telemetry-tracking-count', text: `${entries.length}` }),
   ]);
   for (const entry of entries) {
+    const isEnabled = getMonitorLogMetrics().includes(entry.metricId);
     const toggle = el('button', {
-      class: 'telemetry-tracking-toggle active',
+      class: `telemetry-tracking-toggle${isEnabled ? ' active' : ''}`,
       type: 'button',
-      'aria-pressed': 'true',
-      title: `Show or hide ${entry.label}`,
-      onClick: () => {
-        const active = entry.node.hidden;
-        entry.node.hidden = !active;
-        toggle.classList.toggle('active', active);
-        toggle.setAttribute('aria-pressed', String(active));
-        toggle.querySelector('.telemetry-tracking-toggle-state')!.textContent = active ? 'On' : 'Off';
+      'aria-pressed': String(isEnabled),
+      dataset: { logMetric: entry.metricId },
+      title: `Include ${entry.label} in the log file`,
+      onClick: async () => {
+        const nextEnabled = !getMonitorLogMetrics().includes(entry.metricId);
+        const next = getMonitorLogMetrics().filter((metric) => metric !== entry.metricId);
+        if (nextEnabled) next.push(entry.metricId);
+        toggle.disabled = true;
+        try {
+          await api.profilesSettingsSave({ monitorLogMetrics: next });
+          setMonitorLogMetrics(next);
+          document.querySelectorAll<HTMLButtonElement>('[data-log-metric]').forEach((button) => {
+            if (button.dataset.logMetric !== entry.metricId) return;
+            button.classList.toggle('active', nextEnabled);
+            button.setAttribute('aria-pressed', String(nextEnabled));
+            const state = button.querySelector('.telemetry-tracking-toggle-state');
+            if (state) state.textContent = nextEnabled ? 'On' : 'Off';
+          });
+        } catch {
+          // Keep the previous persisted selection when the settings write fails.
+        } finally {
+          toggle.disabled = false;
+        }
       },
     }, [
       el('span', { class: 'telemetry-tracking-option-label', text: entry.label }),
-      el('span', { class: 'telemetry-tracking-toggle-state', text: 'On' }),
+      el('span', { class: 'telemetry-tracking-toggle-state', text: isEnabled ? 'On' : 'Off' }),
     ]);
     body.append(el('div', { class: 'telemetry-tracking-option' }, [el('span', { class: 'telemetry-tracking-option-mark', text: '•' }), el('span', { class: 'telemetry-tracking-option-copy' }, [el('span', { text: entry.label })]), toggle]));
   }
@@ -692,20 +606,19 @@ function trackingGroup(key: string, title: string, subtitle: string, entries: Tr
 function renderTrackingPanel(state: AppState): HTMLElement {
   if (!mon) return el('aside', { class: 'card telemetry-tracking-card' });
   const byCategory = new Map<string, TrackingEntry[]>();
-  const add = (category: string, label: string, node: HTMLElement): void => {
+  const add = (category: string, label: string, metricId: string): void => {
     const list = byCategory.get(category) ?? [];
-    list.push({ label, node });
+    if (!list.some((entry) => entry.metricId === metricId)) list.push({ label, metricId });
     byCategory.set(category, list);
   };
-  mon.metricBindings.forEach((binding) => add(binding.category, binding.label, binding.node));
-  mon.fpsBindings.forEach((binding) => add(binding.category, binding.label, binding.node));
+  mon.metricBindings.forEach((binding) => add(binding.category, binding.label, binding.logMetricId));
+  mon.fpsBindings.forEach((binding) => add(binding.category, binding.label, binding.id === 'fps' ? 'fps' : binding.id === 'frame-time' ? 'frame-time' : binding.id === 'average' ? 'fps-average' : binding.id === 'low-1' ? 'fps-1-low' : binding.id === 'low-01' ? 'fps-0.1-low' : 'fps-p99'));
   const groups: Array<{ key: string; title: string; subtitle: string }> = [
     { key: 'fps', title: 'FPS', subtitle: 'Frame pacing' },
-    { key: 'latency', title: 'Latency', subtitle: 'Render timing' },
     { key: 'cpu', title: 'CPU', subtitle: 'Processor' },
     { key: 'system-memory', title: 'System Memory', subtitle: 'RAM' },
   ];
-  state.devices.forEach((device, index) => {
+  dashboardGpuOrder(state.devices).forEach((device, index) => {
     const label = `GPU ${index + 1}`;
     const badge = shortGpuName(device);
     groups.push({ key: `gpu-${device.id}`, title: label, subtitle: badge });
@@ -740,17 +653,17 @@ function renderTrackingPanel(state: AppState): HTMLElement {
     },
   });
   const list = el('div', { class: 'telemetry-tracking-list' }, groupNodes);
-  return el('aside', { class: 'card telemetry-tracking-card' }, [
+  return el('aside', { class: 'card telemetry-tracking-card', dataset: { logCard: 'true' } }, [
     el('div', { class: 'telemetry-tracking-heading' }, [
-      el('div', {}, [el('h2', { class: 'card-title', text: 'Tracking' }), el('p', { class: 'card-note', text: 'Choose which readouts stay visible.' })]),
-      el('span', { class: 'telemetry-tracking-live', text: 'Live' }),
+      el('div', {}, [el('h2', { class: 'card-title', text: 'Log to file' }), el('p', { class: 'card-note', text: 'Choose the metrics written to the telemetry log.' })]),
+      el('span', { class: 'telemetry-tracking-live', text: getMonitorLogToFile() ? 'Logging' : 'Ready' }),
     ]),
     logButton,
     el('div', { class: 'telemetry-sampling-row' }, [
       el('span', { text: 'Sampling interval' }),
       el('strong', { text: '1 s' }),
     ]),
-    el('div', { class: 'telemetry-tracking-label', text: 'Select metrics' }),
+    el('div', { class: 'telemetry-tracking-label', text: 'Metrics to log' }),
     list,
   ]);
 }
@@ -760,7 +673,6 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   if (!m) return;
   clear(container);
   const s = ctx.store.get();
-  m.canvases = new Map();
   m.metricCanvases = new Map();
   m.metricBindings = [];
   m.fpsBindings = [];
@@ -769,21 +681,19 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
 
   const monitoringSummary = el('div', { class: 'monitoring-summary-strip' }, [
     el('div', { class: 'monitoring-summary-live' }, [el('span', { class: 'status-dot status-ok' }), el('strong', { text: 'Live telemetry' })]),
-    el('span', { class: 'monitoring-summary-note', text: '60-second rolling window · hover a graph for detail' }),
+    el('span', { class: 'monitoring-summary-note', text: 'Live values with compact rolling history' }),
   ]);
 
   const panels = el('div', { class: 'telemetry-metrics' });
   panels.append(
-    telemetryPanel('fps', 'FPS & frame pacing', 'Display output', [
+    telemetryPanel('fps', 'FPS & frame pacing', 'Present data', [
       fpsMetricNode('Frame rate', 'fps', 'FPS'),
       fpsMetricNode('Frame time', 'frame-time', 'ms'),
-      fpsMetricNode('GPU busy', 'gpu-busy', '%'),
       fpsMetricNode('Average', 'average', 'FPS'),
       fpsMetricNode('1% low', 'low-1', 'FPS'),
       fpsMetricNode('0.1% low', 'low-01', 'FPS'),
       fpsMetricNode('P99', 'p99', 'FPS'),
     ], true, 'mon-readout-fps'),
-    telemetryPanel('latency', 'Latency', 'Unavailable', latencyMetricNodes(s), true, 'mon-readout-latency'),
     telemetryPanel('cpu', 'CPU', 'System', cpuMetricNodes(s), true, 'mon-readout-cpu'),
     telemetryPanel('system-memory', 'System memory', 'System', systemMetricNodes(s), true, 'mon-readout-system-memory'),
   );
@@ -793,9 +703,8 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     const memoryPanel = telemetryPanel(`gpu-memory-${device?.id ?? 'vendor'}`, `${label} memory`, badge, gpuMemoryMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu-memory' : `mon-readout-gpu-memory-${index + 1}`);
     panels.append(el('div', { class: 'telemetry-gpu-pair', dataset: { telemetryGpuPair: String(device?.id ?? 'vendor') } }, [gpuPanel, memoryPanel]));
   };
-  s.devices.forEach((device, index) => {
-    const badge = device.displayActive === true ? `${shortGpuName(device)} · Display output` : shortGpuName(device);
-    appendGpuPair(device, index, badge);
+  dashboardGpuOrder(s.devices).forEach((device, index) => {
+    appendGpuPair(device, index, shortGpuName(device));
   });
   if (s.devices.length === 0 && s.osGpu) {
     const badge = shortGpuNameFromName(s.osGpu.name);
@@ -812,139 +721,11 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     fpsNote,
   ]);
 
-  const graphDevices: Array<DeviceInfo | null> = s.devices.length > 0 ? s.devices : [null];
-  const graphEntries = graphDevices.flatMap((device, deviceIndex) => SEGMENTS.map((seg) => ({ device, deviceIndex, seg })));
-  const graphs = el('section', { class: 'seg-stack telemetry-trend-stack' }, graphEntries.map(({ device, deviceIndex, seg }) => {
-    const seriesId = graphKey(device?.id ?? 0, seg.id);
-    const canvas = el('canvas', { class: 'seg-canvas' });
-    m.canvases.set(seriesId, canvas);
-    const popup = el('div', { class: 'seg-popup', hidden: true });
-    // Keep the canvas and its absolutely-positioned popup inside one grid
-    // child.  With two direct children, the collapsed grid only removed the
-    // first implicit row and left a visible popup row behind.
-    const bodyInner = el('div', { class: 'seg-body-inner' }, [canvas, popup]);
-    const body = el('div', { class: 'seg-body is-collapsed', 'aria-hidden': 'true' }, [bodyInner]);
-    const head = el('button', {
-      class: 'seg-head',
-      'aria-expanded': 'false',
-      onClick: () => {
-        const collapsed = body.classList.contains('is-collapsed');
-        body.classList.toggle('is-collapsed', !collapsed);
-        body.setAttribute('aria-hidden', String(collapsed));
-        head.setAttribute('aria-expanded', String(collapsed));
-        head.querySelector('.seg-chevron')!.textContent = collapsed ? '▾' : '▸';
-        // M4-C: collapsing the segment hides any stale hover popup and
-        // clears the persisted crosshair.
-        if (!collapsed) {
-          popup.hidden = true;
-          if (mon) mon.hover = null;
-        }
-        drawSeries(canvas, mon?.series[seriesId] ?? []);
-      },
-    }, [
-      el('span', { class: 'seg-chevron', text: '▸' }),
-      el('span', { class: 'seg-label', text: `GPU ${deviceIndex + 1} · ${seg.label}` }),
-      el('span', { class: 'seg-source', text: device ? shortGpuName(device) : shortGpuNameFromName(s.osGpu?.name) }),
-      el('span', { class: 'seg-unit', text: seg.unit }),
-    ]);
-    // All segments are collapsed by default; expanding one draws its current
-    // series and keeps the initial monitoring paint compact.
-    // M4-C: hover crosshair + nearest-sample popup - only while the
-    // segment is EXPANDED (the collapsed body is visually closed, and the handler
-    // re-checks so a collapse mid-hover can never leave a popup behind).
-    const hideHover = () => {
-      popup.hidden = true;
-      if (mon) mon.hover = null;
-      drawSeries(canvas, mon?.series[seriesId] ?? []);
-    };
-    canvas.addEventListener('pointermove', (ev) => {
-      if (body.classList.contains('is-collapsed')) return;
-      const points = mon?.series[seriesId] ?? [];
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      if (w === 0 || h === 0 || points.length === 0) return;
-      const rect = canvas.getBoundingClientRect();
-      const padL = 42;
-      const padR = 8;
-      const padT = 8;
-      const padB = 16;
-      const pw = Math.max(10, w - padL - padR);
-      const xNorm = (ev.clientX - rect.left - padL) / pw;
-      const idx = nearestSampleIndex(points, xNorm);
-      if (idx < 0) return;
-      const p = points[idx];
-      const scale = autoScale(points);
-      if (!scale) return;
-      const ph = Math.max(10, h - padT - padB);
-      const span = scale.max - scale.min;
-      const x = padL + xNorm * pw;
-      const y = padT + (1 - (p.v - scale.min) / span) * ph;
-      // Relative time against the newest sample in the drawn window.
-      const nowT = points[points.length - 1].t;
-      popup.textContent = `${Math.round(p.v)} ${seg.unit} · ${Math.round(nowT - p.t)} s ago`;
-      // The canvas starts at the body's padding box + 10px/8px padding.
-      // M4-C (round-2 fix): the popup must stay FULLY inside the card -
-      // the old unclamped `left: 10 + x` (x reaches w - 8 at the canvas's
-      // right edge) centered the ~120px box up to ~60px past the card's
-      // right edge, and .seg-card{overflow:hidden} clipped the "· N s
-      // ago" tail - and the rightmost ~5 s of the graph is where the
-      // NEWEST sample (the common hover) sits. Top-edge samples
-      // (v = max -> y = padT = 8) parked the box ~12px above the canvas,
-      // over the segment header. Mirror the fan readout's round-1 fix:
-      // measure the segment body + box, clamp horizontally in px so the
-      // box never leaves the card, and flip BELOW the sample (the
-      // .seg-popup-below class) when there is no room above. The
-      // %-positioned default stays as the fallback when the body cannot
-      // be measured.
-      popup.hidden = false;
-      const bodyEl = popup.parentElement;
-      const br = bodyEl ? bodyEl.getBoundingClientRect() : null;
-      if (br && br.width > 0 && br.height > 0) {
-        const box = popup.getBoundingClientRect();
-        const px = 10 + x;
-        const py = 8 + y;
-        const flipBelow = py - 6 - box.height < 0 && py + 10 + box.height <= br.height;
-        popup.classList.toggle('seg-popup-below', flipBelow);
-        // The inner graph wrapper can be wider than the visible card while a
-        // responsive grid is settling. Clamp in viewport space against the
-        // card itself, then convert the final center back to the popup's
-        // containing block; this prevents the newest-sample tooltip from
-        // escaping through the right edge.
-        const cardRect = bodyEl?.closest('.seg-card')?.getBoundingClientRect() ?? br;
-        const desiredCenter = br.left + px;
-        const minCenter = cardRect.left + box.width / 2 + 2;
-        const maxCenter = cardRect.right - box.width / 2 - 2;
-        const center = Math.min(Math.max(desiredCenter, minCenter), Math.max(minCenter, maxCenter));
-        popup.style.left = `${center - br.left}px`;
-        popup.style.top = `${py}px`;
-      } else {
-        popup.classList.remove('seg-popup-below');
-        popup.style.left = `${10 + x}px`;
-        popup.style.top = `${8 + y}px`;
-      }
-      // M4-C (round-1 fix): persist the hover so redrawAll can re-draw
-      // the crosshair on telemetry ticks (a stationary hover used to lose
-      // it every second while the popup stayed).
-      if (mon) mon.hover = { segId: seriesId, x, y };
-      drawSeries(canvas, points, { x, y });
-    });
-    canvas.addEventListener('pointerleave', hideHover);
-    return el('div', { class: 'card seg-card' }, [head, body]);
-  }));
-
-  const trends = el('section', { class: 'telemetry-trends card' }, [
-    el('div', { class: 'telemetry-section-heading' }, [
-      el('div', {}, [el('h2', { class: 'card-title', text: 'Trends' }), el('p', { class: 'card-note', text: 'GPU history over the last 60 seconds. Expand a signal to inspect it.' })]),
-      el('span', { class: 'telemetry-live-badge telemetry-live-badge-muted', text: `${graphEntries.length} signals` }),
-    ]),
-    graphs,
-  ]);
-
   const workspace = el('div', { class: 'monitoring-workspace' }, [
     el('main', { class: 'monitoring-metrics-column' }, [monitoringSummary, readout]),
     renderTrackingPanel(s),
   ]);
-  container.append(workspace, trends);
+  container.append(workspace);
   redrawAll();
 }
 
@@ -953,19 +734,11 @@ function redrawAll(): void {
   for (const [id, canvas] of mon.metricCanvases) {
     drawMiniSeries(canvas, mon.series[id] ?? []);
   }
-  for (const [id, canvas] of mon.canvases) {
-    // M4-C (round-1 fix): pass the persisted hover crosshair through every
-    // redraw - without it a stationary hover lost the crosshair on each
-    // telemetry tick (the popup stayed but the crosshair vanished until the
-    // next pointermove).
-    const crosshair = mon.hover && mon.hover.segId === id ? { x: mon.hover.x, y: mon.hover.y } : null;
-    drawSeries(canvas, mon.series[id] ?? [], crosshair);
-  }
 }
 
 /**
  * 1.0.1 (N9): redraw the canvases NOW - a theme switch recolors the graphs
- * immediately (drawSeries reads the CSS vars at draw time; without this
+ * immediately (drawMiniSeries reads the CSS vars at draw time; without this
  * hook the graphs would keep the old palette until the next telemetry
  * tick). No-op when the Monitoring page is not mounted.
  */

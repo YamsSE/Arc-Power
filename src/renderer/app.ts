@@ -19,7 +19,7 @@ import { recordingPage } from './pages/recording.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
-import { setMonitorLogToFile, getMonitorLogToFile, getLatestFps } from './log-state.ts';
+import { getLatestFpsSample, getMonitorLogToFile, filterMonitorLogSample, setMonitorLogMetrics, setMonitorLogToFile } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
 import { deviceHardwareKey, resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
 import { isValidTheme } from './pure/theme.ts';
@@ -118,7 +118,7 @@ function renderGlobalRecordingStatus(): HTMLElement {
 }
 
 // 1.0.1 Themes: apply a theme id to <html> + recolor the monitoring
-// canvases NOW (N9 - drawSeries reads the CSS vars at draw time; a theme
+// canvases NOW (N9 - drawMiniSeries reads the CSS vars at draw time; a theme
 // switch must not wait for the next telemetry tick). The dataset write
 // lives HERE (and in settings.ts), never in pure/theme.ts (N8 - that module
 // stays DOM-free). An invalid id degrades to 'dark' (the same fallback the
@@ -493,8 +493,10 @@ async function boot() {
     const env = await api.profilesList();
     persistedTheme = isValidTheme(env.settings.theme) ? env.settings.theme : 'dark';
     setMonitorLogToFile(env.settings.monitorLogToFile === true);
+    setMonitorLogMetrics(env.settings.monitorLogMetrics);
   } catch {
     setMonitorLogToFile(false);
+    setMonitorLogMetrics(undefined);
   }
   applyTheme(persistedTheme);
 
@@ -792,7 +794,11 @@ async function boot() {
       });
     }
     if (getMonitorLogToFile()) {
-      void api.monitorLogAppend({ ...sample, fps: getLatestFps() })
+      void api.monitorLogAppend(filterMonitorLogSample({
+        ...sample,
+        ...getLatestFpsSample(),
+        memoryCapacityBytes: live.sysinfo?.ram.totalBytes ?? null,
+      }) as unknown as TelemetrySample & { fps?: number | null })
         .catch(() => { /* a failed append never breaks the UI */ });
     }
   };

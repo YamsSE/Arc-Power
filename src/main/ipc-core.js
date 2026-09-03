@@ -40,7 +40,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, activeProfileEntries } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
 // koffi, hook = the no-device telemetry path, mock fixtures under
 // RID_MOCK_VENDOR).
@@ -1270,6 +1270,10 @@ export function createIpcHandlers({
    * The advanced overlay can open between timer ticks, so it needs a
    * read-on-demand snapshot in addition to the push stream. */
   const latestTelemetry = new Map();
+  // Settings patches are read-modify-write operations. Serialize them so a
+  // Monitoring log toggle cannot be overwritten by an unrelated Settings,
+  // Profiles, or Overlay save that started from the previous snapshot.
+  let settingsSaveQueue = Promise.resolve();
   const emitTelemetry = (payload) => {
     const key = Number.isInteger(payload?.deviceId) ? payload.deviceId : NULL_DEVICE_KEY;
     latestTelemetry.set(key, payload);
@@ -3307,6 +3311,7 @@ export function createIpcHandlers({
       // intent - the renderer's catch re-queries startup-get and the
       // mismatch hint explains the disagreement honestly.
       'profiles-settings-save': async (patch) => {
+        const save = async () => {
         if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
           throw new Error('profiles-settings-save: patch must be an object');
         }
@@ -3350,6 +3355,16 @@ export function createIpcHandlers({
           monitorLogToFile: patch.monitorLogToFile === undefined
             ? cur.monitorLogToFile
             : patch.monitorLogToFile === true,
+          // Monitoring log field selection is independent of the on/off
+          // switch. Keep the field additive for legacy settings envelopes;
+          // an explicit [] is valid and means log no metrics.
+          ...(patch.monitorLogMetrics !== undefined || cur.monitorLogMetrics !== undefined
+            ? {
+                monitorLogMetrics: patch.monitorLogMetrics === undefined
+                  ? cur.monitorLogMetrics
+                  : normalizeMonitorLogMetrics(patch.monitorLogMetrics),
+              }
+            : {}),
           // M4-F (S3): the persisted GPU selection is NEVER chosen by the
           // profiles patch - the envelope carries it read-modify-write so
           // a Settings/Profiles save can never clobber device-set's write
@@ -3587,6 +3602,10 @@ export function createIpcHandlers({
           }
         }
         return next;
+        };
+        const queued = settingsSaveQueue.then(save, save);
+        settingsSaveQueue = queued.then(() => undefined, () => undefined);
+        return queued;
       },
 
       // M3-C-E/M157: the OC mode is persisted per physical GPU. The scalar

@@ -47,6 +47,7 @@ import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS, errorMessage } from '../pure/errors.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { chipState } from '../pure/chip.ts';
+import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
   FRAME_GEN_OPTIONS,
   FLIP_MODE_OPTIONS,
@@ -1195,8 +1196,14 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   if (supportedOf(state, 'enduranceGaming')) mobileCards.push(buildEnduranceCard());
   if (supportedOf(state, 'sharedMemoryOverride')) mobileCards.push(buildSharedMemoryCard());
 
+  const selectedDevice = ctx.store.get().devices.find((device) => device.id === ctx.store.get().deviceId);
+  const prebuiltShaderCard = buildPrebuiltShaderCard();
+  const battlemage = isBattlemageGpuName(selectedDevice?.name, selectedDevice);
+
   // The standard cards remain in the established order; the mobile/iGPU-only
-  // controls sit together at the top of the list.
+  // controls sit together at the top of the list. Battlemage puts the
+  // precompiled-shader control at the bottom so its tuning-related controls
+  // stay together first.
   view.append(
     el('div', { class: 'graphics-general-actions' }, [
       ...(applyBtn ? [applyBtn as Node] : []),
@@ -1204,11 +1211,12 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     ]),
     el('div', { class: 'card-stack graphics-stack' }, [
       ...mobileCards,
-      buildPrebuiltShaderCard(),
+      ...(!battlemage ? [prebuiltShaderCard] : []),
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),
       buildFrameLimitCard(),
       buildDropdownCard('lowLatency'),
+      ...(battlemage ? [prebuiltShaderCard] : []),
     ]),
   );
   updateFloating();

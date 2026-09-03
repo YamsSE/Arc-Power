@@ -45,6 +45,28 @@ const OVERLAY_THEME_DEFAULT = 'arc';
 // to 'right' at the STORE. NO scale key - the panel is a fixed compact size.
 const ADVANCED_OVERLAY_POSITIONS = ['left', 'right'];
 
+// Monitoring log fields are additive so old settings files retain their
+// existing shape. An explicit empty array is valid (log no metrics), while a
+// malformed/non-array value falls back to the complete set.
+const MONITOR_LOG_METRICS = [
+  'gpu-util', 'gpu-clock', 'gpu-voltage', 'gpu-temperature', 'gpu-power', 'gpu-fan',
+  'gpu-vram', 'gpu-memory-clock', 'gpu-vram-temperature',
+  'cpu-util', 'cpu-clock', 'cpu-temperature', 'cpu-power',
+  'system-memory', 'system-memory-capacity',
+  'fps', 'frame-time', 'fps-average', 'fps-1-low', 'fps-0.1-low', 'fps-p99',
+];
+
+function normalizeMonitorLogMetrics(v) {
+  if (!Array.isArray(v)) return [...MONITOR_LOG_METRICS];
+  const allowed = new Set(MONITOR_LOG_METRICS);
+  const seen = new Set();
+  return v.filter((metric) => {
+    if (typeof metric !== 'string' || !allowed.has(metric) || seen.has(metric)) return false;
+    seen.add(metric);
+    return true;
+  });
+}
+
 // M6: the canonical overlay stat ids - the persisted-truth owner of the
 // list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
 // src/renderer/pure/overlay.ts and the envelope validation in
@@ -197,7 +219,7 @@ export function activeProfileEntries(settings, profiles) {
 }
 
 
-export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RECORDING_PILL_DEFAULT, normalizeActiveProfileIds, normalizeOcModes, normalizeProfileGpuKey, normalizeProfileGpuLabel };
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RECORDING_PILL_DEFAULT, MONITOR_LOG_METRICS, normalizeMonitorLogMetrics, normalizeActiveProfileIds, normalizeOcModes, normalizeProfileGpuKey, normalizeProfileGpuLabel };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -408,7 +430,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -574,11 +596,14 @@ export class ProfileStore {
     // keep the scalar compatibility mode until a device-specific toggle is
     // saved.
     if (data.ocModes !== undefined) out.ocModes = normalizeOcModes(data.ocModes);
+    // Monitoring log selection is additive for the same reason: old settings
+    // default to every field, while an explicit [] means log nothing.
+    if (data.monitorLogMetrics !== undefined) out.monitorLogMetrics = normalizeMonitorLogMetrics(data.monitorLogMetrics);
     return out;
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     const persisted = {
@@ -660,6 +685,13 @@ export class ProfileStore {
         ? settings.advancedOverlayPosition
         : 'right',
     };
+    // Monitoring log selection is additive. Do not add the field when a
+    // legacy caller did not provide it, but preserve an explicit [] and the
+    // cached value across read-modify-write saves.
+    const monitorLogMetrics = settings.monitorLogMetrics !== undefined
+      ? normalizeMonitorLogMetrics(settings.monitorLogMetrics)
+      : this._settingsCache?.monitorLogMetrics;
+    if (monitorLogMetrics !== undefined) persisted.monitorLogMetrics = normalizeMonitorLogMetrics(monitorLogMetrics);
     // M152: read-modify-write callers that predate the map (including the
     // existing IPC settings patch) must not erase active profiles for other
     // adapters. An explicit map, including {}, is authoritative; omission
@@ -679,6 +711,7 @@ export class ProfileStore {
       ...settings,
       ...(activeProfileMap !== undefined ? { activeProfileIds: activeProfileMap } : {}),
       ...(ocModeMap !== undefined ? { ocModes: ocModeMap } : {}),
+      ...(monitorLogMetrics !== undefined ? { monitorLogMetrics } : {}),
       schemaVersion: SCHEMA_VERSION,
     });
   }

@@ -4,7 +4,7 @@
 //   <Documents>\Arc Power\monitor-YYYYMMDD.txt
 // The line format is fixed-width monospace columns (right-aligned, ' | '
 // separators, a '-' for null values) with a ONE-TIME header row per file
-// (all 12 fields). The timestamp derives from sample.t (epoch SECONDS -
+// (all 22 fields). The timestamp derives from sample.t (epoch SECONDS -
 // the real telemetry's timeStamp) via Date(t*1000), formatted locally as
 // "YYYY-MM-DD HH:MM:SS". IO errors are reported as { ok: false, error } -
 // the app NEVER crashes on a log write. The env knob RID_MOCK_LOG_DIR
@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// M4J (E): the 12 columns - key + fixed display width. The header is the
+// M4J (E): the 22 columns - key + fixed display width. The header is the
 // column NAMES right-aligned to the same widths (the header + the data
 // lines align in a monospace viewer). M4M (C): the VRAM-used column reads
 // decimal GB ('gpuMemUsedGb', width 12 so the 12-char header still fits
@@ -33,6 +33,16 @@ const COLUMNS = [
   { key: 'cpuFreqMhz', width: 10 },
   { key: 'gpuMemUsedGb', width: 12 },
   { key: 'fps', width: 3 },
+  { key: 'gpuVoltageV', width: 11 },
+  { key: 'vramTempC', width: 9 },
+  { key: 'cpuPowerW', width: 9 },
+  { key: 'memoryUsedGb', width: 13 },
+  { key: 'memoryCapacityGb', width: 16 },
+  { key: 'frameTimeMs', width: 11 },
+  { key: 'avgFps', width: 7 },
+  { key: 'low1Pct', width: 7 },
+  { key: 'low01Pct', width: 8 },
+  { key: 'p99', width: 5 },
 ];
 
 export const MONITOR_LOG_HEADER = COLUMNS.map((c) => c.key.padStart(c.width)).join(' | ');
@@ -91,6 +101,14 @@ export function formatLogLine(sample) {
     // payload key stays gpuMemUsedBytes).
     if (c.key === 'gpuMemUsedGb') {
       const gb = formatGb(sample.gpuMemUsedBytes);
+      return gb === null ? '-'.padStart(c.width) : gb.padStart(c.width);
+    }
+    if (c.key === 'memoryUsedGb') {
+      const gb = formatGb(sample.memoryUsedBytes);
+      return gb === null ? '-'.padStart(c.width) : gb.padStart(c.width);
+    }
+    if (c.key === 'memoryCapacityGb') {
+      const gb = formatGb(sample.memoryCapacityBytes);
       return gb === null ? '-'.padStart(c.width) : gb.padStart(c.width);
     }
     return formatCell(sample[c.key], c.width);

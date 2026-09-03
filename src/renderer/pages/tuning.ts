@@ -1295,7 +1295,7 @@ export const tuningPage: Page = {
         // only (single line; the freed space makes the tab more compact).
         el('div', { class: 'oc-meta' }, [
           el('span', { class: 'oc-range', text: controlRangeText(key, sliderRange, caps.deviceName) }),
-          ...(key === 'gpuFreqOffsetMhz' && caps.controlStatus?.gpuLock?.reason
+          ...(key === 'gpuFreqOffsetMhz' && lockSupported && caps.controlStatus?.gpuLock?.reason
             ? [el('span', { class: 'oc-control-status', text: caps.controlStatus.gpuLock.reason })]
             : []),
           // M17f: the power-limit card's sysman PL1/PL2 read-out line - the

@@ -3,9 +3,7 @@
 // startMinimized - the app starts hidden in the system tray at boot, the tray
 // click restores), Close to tray (persisted closeToTray - closing the
 // window hides it to the icon list instead of quitting; the tray menu's
-// Quit still exits), Log to file (persisted monitorLogToFile - the actual
-// log writes happen in the BOOT-LEVEL telemetry subscription in app.ts),
-// and the app version row.
+// Quit still exits), and the app version row.
 //
 // M4-D2 (r2 F4/F6): the Run value is SHARED with the Profiles page's
 // "start at boot" (ocOnBoot) - one value serves both toggles. Honesty
@@ -37,7 +35,6 @@ import { toast } from '../components/toast.ts';
 // define its OWN `displayVersion` local (the version-row formatter); the
 // alias keeps the header's pure helper without a name collision.
 import { displayVersion as displayVersionLine } from '../components/header.ts';
-import { setMonitorLogToFile } from '../log-state.ts';
 import { applyTheme } from '../app.ts';
 import { isValidTheme, reconcileThemeSave, THEMES, type Theme } from '../pure/theme.ts';
 import type { StartupGetState } from '../types.ts';
@@ -76,7 +73,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // M6-amd3: the shrunk Overlay card is BUTTON-ONLY (the enable toggle
   // moved to the Overlay view - M6 the #/overlay page, M9 the Monitoring
   // page's Overlay view; the old #/overlay page is gone).
-  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; monitorLogToFile: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
+  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
   // Theme chips apply immediately, so rapid clicks can enqueue overlapping
   // read-modify-write IPC calls. Serialize only the theme writes to preserve
   // click order in the ProfileStore and keep the final chip persistent.
@@ -93,7 +90,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       startWithWindows: envelope.settings.startWithWindows === true,
       startMinimized: envelope.settings.startMinimized === true,
       closeToTray: envelope.settings.closeToTray === true,
-      monitorLogToFile: envelope.settings.monitorLogToFile === true,
       // M4-D2 (r2 F6): the mismatch formula also reads the profile's
       // start-at-boot intent (ocOnBoot + activeProfileId) - the Run value
       // is shared, so the Settings checkbox can legitimately be ON because
@@ -213,33 +209,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
-    // M4-D2 (§10): the "Log to file" toggle. The persisted value rides in
-    // profiles-settings (monitorLogToFile); the actual log writes live in
-    // the BOOT-LEVEL telemetry subscription (app.ts) so logging continues
-    // across page navigation. M4M (G): this Settings card is now the ONLY
-    // home of the toggle - the Monitoring page's duplicate card is REMOVED.
-    const logCard = el('section', { class: 'card settings-card' }, [
-      el('h2', { class: 'card-title', text: 'Log to file' }),
-      el('div', { class: 'settings-row' }, [
-        el('label', { class: 'boot-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox',
-            dataset: { setting: 'monitorLogToFile' },
-            checked: persisted.monitorLogToFile,
-            onchange: (ev: Event) => void onLogToggle((ev.target as HTMLInputElement).checked),
-          }),
-          el('span', { text: 'Write every telemetry sample to a text file' }),
-        ]),
-      ]),
-      el('p', {
-        class: 'card-note settings-state',
-        text: persisted.monitorLogToFile
-          ? 'Every telemetry sample is appended to a daily text file (monitor-YYYYMMDD.txt) in your Documents folder.'
-          : 'No log file is written.',
-      }),
-    ]);
-
     // 1.0.1 Themes: the Theme card - one swatch per theme
     // (button[data-theme-option="dark|midnight|light"]). The color chips
     // are CSS-class driven (.swatch-*) - CSP style-src 'self' blocks inline
@@ -306,7 +275,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
     ]);
 
-    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, logCard, overlayCard, maintenanceCard, themeCard, aboutCard];
+    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, overlayCard, maintenanceCard, themeCard, aboutCard];
     const search = el('input', {
       class: 'settings-search',
       type: 'search',
@@ -399,24 +368,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast(checked ? 'success' : 'info', checked ? 'Close to tray enabled' : 'Close to tray disabled', '');
     } catch (err) {
       toast('error', 'Close to tray could not be changed', err instanceof Error ? err.message : String(err));
-      if (box) box.checked = !checked;
-      return;
-    }
-    await refresh();
-  };
-
-  const onLogToggle = async (checked: boolean): Promise<void> => {
-    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="monitorLogToFile"]');
-    try {
-      await api.profilesSettingsSave({ monitorLogToFile: checked });
-      persisted.monitorLogToFile = checked;
-      // M4-D2: the boot-level telemetry subscription reads the shared
-      // module state - the toggle takes effect on the next tick, no
-      // navigation needed.
-      setMonitorLogToFile(checked);
-      toast(checked ? 'success' : 'info', checked ? 'Log to file enabled' : 'Log to file disabled', '');
-    } catch (err) {
-      toast('error', 'Log to file could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = !checked;
       return;
     }

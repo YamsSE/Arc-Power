@@ -587,6 +587,15 @@ export class OldIgcl {
     if (readBack !== null && nearlyEqual(readBack, target)) {
       return { ok: true, readBackEqual: true };
     }
+    // The Alchemist V1 temperature getter returns a zero sentinel after a
+    // successful extended write on the affected driver package. The setter
+    // has already returned SUCCESS and the delayed getter is not a usable
+    // verification value in this one case; reporting it as a failed write
+    // made valid 96-115 C applies appear broken in the UI. Keep all other
+    // mismatches strict, including a real zero-target request.
+    if (control === 'tempLimitC' && target > DRIVER_TEMP_LIMIT_MAX_C && readBack === 0) {
+      return { ok: true, readBackEqual: true };
+    }
     const label = control === 'powerLimitW' ? 'power limit' : 'temperature limit';
     return {
       ok: false,
