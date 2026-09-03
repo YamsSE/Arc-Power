@@ -107,6 +107,24 @@ export function validateFeatureset(raw, expectedId) {
     }
   }
 
+  if (fs.vfCurveRange !== undefined && fs.vfCurveRange !== null) {
+    const vr = fs.vfCurveRange;
+    if (typeof vr !== 'object' || vr === null || Array.isArray(vr)
+      || !isFiniteNumber(vr.voltageMinV) || !isFiniteNumber(vr.voltageMaxV)
+      || !isFiniteNumber(vr.freqMinMhz) || !isFiniteNumber(vr.freqMaxMhz)
+      || !Number.isInteger(vr.maxPoints) || vr.maxPoints < 2
+      || vr.voltageMinV >= vr.voltageMaxV || vr.freqMinMhz >= vr.freqMaxMhz) {
+      throw new Error(`featureset '${fs.id}': vfCurveRange is invalid`);
+    }
+  }
+  if (fs.vfCurve !== undefined && fs.vfCurve !== null) {
+    if (!Array.isArray(fs.vfCurve) || fs.vfCurve.length < 2
+      || fs.vfCurve.length > (fs.vfCurveRange?.maxPoints ?? 32)
+      || !fs.vfCurve.every((p) => p && isFiniteNumber(p.voltageV) && isFiniteNumber(p.freqMhz))) {
+      throw new Error(`featureset '${fs.id}': vfCurve is invalid`);
+    }
+  }
+
   // ranges: canonical-keyed, each {units, min, max, step, default} legal.
   if (typeof fs.ranges !== 'object' || fs.ranges === null || Array.isArray(fs.ranges)) {
     throw new Error(`featureset '${fs.id}': ranges must be an object`);

@@ -46,8 +46,10 @@ The public IGCL overclocking API exposes independent fields and functions for:
 - `powerLimit`
 - `temperatureLimit`
 
-There is no public IGCL field or setter named Performance Boost. The A770 also
-does not expose a usable public custom V/F curve through the current IGCL path.
+There is no public IGCL field or setter named Performance Boost. The current
+backend exposes the documented custom V/F curve ABI on Battlemage adapters
+when the driver reports the live curve as readable; Alchemist remains
+unsupported when its driver does not expose that path.
 
 Relevant project mappings are in:
 
@@ -120,8 +122,9 @@ schema migration, or undocumented/private driver call.
 
 Verify the change with the project build, `npm test`, and the relevant mock/UI
 verification variants. The final implementation should show the core offset
-and target-clock controls clearly, while making no claim that Arc Power
-emulates Intel's V/F-curve Performance Boost.
+and target-clock controls clearly. On a VF-capable Battlemage adapter, Arc
+Power may expose the separate custom V/F curve editor; that is not a claim
+that Arc Power emulates Intel's full hidden Performance Boost behavior.
 
 ## Arc Power Design
 

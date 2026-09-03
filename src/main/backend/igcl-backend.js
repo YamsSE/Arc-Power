@@ -68,6 +68,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // props do not report the VF-curve limits; the live A770 driver answers
 // bSupported:false - the probe-3 evidence).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
+import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -2164,9 +2165,12 @@ export class IgclBackend {
               ? 'Fixed Clock / Voltage lock is not exposed for this adapter’s native voltage units.'
               : 'The driver does not expose both GPU lock read/write symbols.',
           };
-        // vfCurve: supported only when the read path answers (on Alchemist it
-        // errors with DATA_READ - report unsupported so the UI hides it).
-        caps.controls.vfCurve = this._vfCurveReadable(dev.handle);
+        // Custom live VF curves are a Battlemage surface. Alchemist exposes
+        // the legacy symbols on some runtimes but rejects this curve ABI.
+        const battlemage = isBattlemageGpuName(dev.name, dev);
+        caps.controls.vfCurve = battlemage
+          && this._vfCurveReadable(dev.handle)
+          && !this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve);
         // M17e (round-1 S3): the per-device gpuLock bounds - derived from the
         // props' gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit (the
         // bounds the custom-VF-curve validation references) THROUGH the units
@@ -2187,6 +2191,17 @@ export class IgclBackend {
             freqMin: Math.max(0, igclToCanonical(vfFreq.min, vfFreq.units)),
             freqMax: igclToCanonical(vfFreq.max, vfFreq.units),
           };
+        }
+        if (battlemage && vfVolt && vfFreq && vfVolt.bSupported && vfFreq.bSupported
+          && Number.isFinite(vfVolt.min) && Number.isFinite(vfVolt.max)
+          && Number.isFinite(vfFreq.min) && Number.isFinite(vfFreq.max)) {
+          const voltageMinV = Math.max(0, igclToCanonical(vfVolt.min, vfVolt.units));
+          const voltageMaxV = igclToCanonical(vfVolt.max, vfVolt.units);
+          const freqMinMhz = Math.max(0, igclToCanonical(vfFreq.min, vfFreq.units));
+          const freqMaxMhz = igclToCanonical(vfFreq.max, vfFreq.units);
+          if (voltageMaxV > voltageMinV && freqMaxMhz > freqMinMhz) {
+            caps.vfCurveRange = { voltageMinV, voltageMaxV, freqMinMhz, freqMaxMhz, maxPoints: 32 };
+          }
         }
       }
     }
@@ -2475,7 +2490,7 @@ export class IgclBackend {
     try {
       const numBuf = koffi.alloc('uint32', 1);
       koffi.encode(numBuf, 'uint32', 0);
-      const result = lib.ctlOverclockReadVFCurve(handle, 0 /* STOCK */, 2 /* ELABORATE */, numBuf, null);
+      const result = lib.ctlOverclockReadVFCurve(handle, 1 /* LIVE */, 2 /* ELABORATE */, numBuf, null);
       return result === CTL_RESULT.SUCCESS;
     } catch {
       return false;
@@ -2531,34 +2546,24 @@ export class IgclBackend {
       }
     }
 
-    // vfCurve (read-only in M1; unsupported on Alchemist)
+    // VF curve is the LIVE Battlemage curve shown by the editor. Voltage is
+    // documented by IGCL as millivolts; the renderer/backend contract uses V.
     if (caps.controls.vfCurve && !this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
       const numBuf = koffi.alloc('uint32', 1);
       koffi.encode(numBuf, 'uint32', 0);
-      let result = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, null);
+      let result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, null);
       const num = koffi.decode(numBuf, 'uint32');
       if (result === CTL_RESULT.SUCCESS && num > 0 && num < 10000) {
         const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
-        result = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, curveBuf);
+        result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, curveBuf);
         if (result === CTL_RESULT.SUCCESS) {
           const sz = koffi.sizeof('ctl_voltage_frequency_point_t');
           state.vfCurve = [];
           for (let i = 0; i < num; i++) {
             const pt = koffi.decode(curveBuf, i * sz, 'ctl_voltage_frequency_point_t');
-            // M17e (round-1 N9): ctl_voltage_frequency_point_t.Voltage is a
-            // uint32 and the IGCL header documents NO unit for it - the
-            // struct comment-free field cannot hold volts (volts are
-            // untenable in a uint32), and the lock API's mV-vs-V lie (probe
-            // 2: the @brief says mV while the pair struct says Volts) is
-            // the strongest signal the sibling VF struct is the same
-            // contract. But NO blind conversion: the RAW uint32 is surfaced
-            // into the canonical voltageV field + the named status records
-            // the unverified units until a vfCurve-capable device probe
-            // (Battlemage) pins the scale. Live impact today is zero - the
-            // A770's curve read answers ERROR_DATA_READ (Alchemist).
-            state.vfCurve.push({ voltageV: pt.Voltage, freqMhz: pt.Frequency });
-            state.vfCurveUnits = 'vf-curve-units-unverified';
+            state.vfCurve.push({ voltageV: pt.Voltage / 1000, freqMhz: pt.Frequency });
           }
+          state.vfCurveUnits = 'V';
         }
       }
     }
@@ -2879,6 +2884,10 @@ export class IgclBackend {
         frameLimit: features.has(CTL_3D_FEATURE.FRAME_LIMIT),
         lowLatency: features.has(CTL_3D_FEATURE.LOW_LATENCY),
       };
+      const prebuiltDetail = features.get(CTL_3D_FEATURE.PREBUILT_SHADER_DOWNLOAD);
+      const prebuiltSupported = isBattlemageGpuName(dev.name, dev)
+        && prebuiltDetail?.valueType === CTL_PROPERTY_VALUE_TYPE.BOOL;
+      if (prebuiltSupported) supported.prebuiltShaderDownload = true;
       const flipDetail = features.get(CTL_3D_FEATURE.GAMING_FLIP_MODES);
       const llDetail = features.get(CTL_3D_FEATURE.LOW_LATENCY);
       const supportedOptions = {
@@ -2909,12 +2918,24 @@ export class IgclBackend {
           return null;
         }
       };
+      const readBool = (featureType) => {
+        try {
+          const gs = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.BOOL, bSet: false });
+          const r = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+          return r === CTL_RESULT.SUCCESS
+            ? decode3dFeatureGetsetValue(gs.buf, CTL_PROPERTY_VALUE_TYPE.BOOL).enable === true
+            : null;
+        } catch {
+          return null;
+        }
+      };
       const values = {
         frameGenOverride: supported.frameGen ? readEnum(CTL_3D_FEATURE.FRAME_GENERATION, GRAPHICS_FG_FROM_IGCL) : null,
         flipMode: supported.flipModes ? readEnum(CTL_3D_FEATURE.GAMING_FLIP_MODES, GRAPHICS_FLIP_FROM_IGCL) : null,
         frameLimit: null,
         lowLatency: supported.lowLatency ? readEnum(CTL_3D_FEATURE.LOW_LATENCY, GRAPHICS_LL_FROM_IGCL) : null,
       };
+      if (prebuiltSupported) values.prebuiltShaderDownload = readBool(CTL_3D_FEATURE.PREBUILT_SHADER_DOWNLOAD);
       if (supported.frameLimit) {
         try {
           const gs = encode3dFeatureGetset({ featureType: CTL_3D_FEATURE.FRAME_LIMIT, valueType: CTL_PROPERTY_VALUE_TYPE.INT32, bSet: false });
@@ -3015,7 +3036,7 @@ export class IgclBackend {
     const featureMap = threeDSurface ? await this._graphicsCapsOf(deviceId, dev.handle) : null;
     const features = featureMap ?? new Map();
     const surfaceUp = featureMap !== null && threeDSurface;
-    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
 
     // Shared GPU/NPU memory is a Windows graphics-memory-manager setting and
@@ -3096,6 +3117,47 @@ export class IgclBackend {
       };
       if (!readBackEqual) result.ok = false;
     };
+
+    const setBool = (control, featureType, requested) => {
+      const detail = features.get(featureType);
+      if (!detail || detail.valueType !== CTL_PROPERTY_VALUE_TYPE.BOOL) {
+        fail(control, 'unsupported', `${control} is not supported by this driver`);
+        return;
+      }
+      if (appScope && detail.perAppSupport !== true) {
+        fail(control, 'unsupported', `${control} is not exposed as a per-game driver setting`);
+        return;
+      }
+      const gs = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.BOOL, bSet: true, intEnable: requested, applicationName: appScope });
+      const setResult = lib.ctlGetSet3DFeature(dev.handle, gs.buf);
+      if (setResult !== CTL_RESULT.SUCCESS) {
+        fail(control, igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+        return;
+      }
+      const rb = encode3dFeatureGetset({ featureType, valueType: CTL_PROPERTY_VALUE_TYPE.BOOL, bSet: false, applicationName: appScope });
+      const getResult = lib.ctlGetSet3DFeature(dev.handle, rb.buf);
+      const got = getResult === CTL_RESULT.SUCCESS
+        ? decode3dFeatureGetsetValue(rb.buf, CTL_PROPERTY_VALUE_TYPE.BOOL).enable === true
+        : null;
+      const readBackEqual = got === (requested === true);
+      result.perControl[control] = {
+        ok: readBackEqual,
+        errorCode: readBackEqual ? undefined : 'io-failed',
+        message: readBackEqual ? undefined : `read-back ${got} != requested ${requested === true}`,
+        readBackEqual,
+        silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+      };
+      if (!readBackEqual) result.ok = false;
+    };
+
+    if (settings.prebuiltShaderDownload !== null && settings.prebuiltShaderDownload !== undefined) {
+      if (!features.has(CTL_3D_FEATURE.PREBUILT_SHADER_DOWNLOAD)
+        || !isBattlemageGpuName(dev.name, dev)) {
+        fail('prebuiltShaderDownload', 'unsupported', 'Precompiled Shaders are not supported on this GPU');
+      } else {
+        setBool('prebuiltShaderDownload', CTL_3D_FEATURE.PREBUILT_SHADER_DOWNLOAD, settings.prebuiltShaderDownload);
+      }
+    }
 
     if ((settings.enduranceGaming !== null && settings.enduranceGaming !== undefined)
       || (settings.enduranceGamingMode !== null && settings.enduranceGamingMode !== undefined)) {
@@ -5147,23 +5209,31 @@ export class IgclBackend {
     }
     await applyFan();
 
-    // vfCurve write path (Battlemage; not exercised in M1 on Alchemist).
+    // VF curve write path. The public contract is canonical volts/MHz while
+    // the IGCL point struct is millivolts/MHz.
     if (settings.vfCurve !== null && settings.vfCurve !== undefined) {
       if (!caps.controls.vfCurve || this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve)) {
         fail('vfCurve', 'unsupported', 'custom VF curve not supported on this device');
       } else {
-        // M17e (round-1 N9): ctl_voltage_frequency_point_t.Voltage is a
-        // uint32 - a fractional volt (0.9) encodes into it by TRUNCATION
-        // (~0): a uint32 truncation must NEVER silently write 0. The scale
-        // is unverified (the same mV-vs-V hazard the lock API proved), so
-        // the honest gate refuses non-INTEGER volts - integer volts are the
-        // only values representable in the field regardless of the scale.
-        const nonInteger = settings.vfCurve.filter((p) => !Number.isInteger(p.voltageV));
-        if (nonInteger.length > 0) {
-          fail('vfCurve', 'out-of-range', `VF curve voltages must be whole volts - the ctl_voltage_frequency_point_t.Voltage field is a uint32 (a fractional volt would truncate to 0) and its unit is unverified on this device`);
+        const curve = settings.vfCurve;
+        const curveRange = caps.vfCurveRange;
+        const validShape = Array.isArray(curve) && curve.length >= 2 && curve.length <= (curveRange?.maxPoints ?? 32)
+          && curve.every((p) => Number.isFinite(p?.voltageV) && Number.isFinite(p?.freqMhz));
+        const validOrder = validShape && curve.every((p, i) => i === 0
+          || (p.voltageV > curve[i - 1].voltageV && p.freqMhz > curve[i - 1].freqMhz));
+        const validRange = validShape && (!curveRange || curve.every((p) =>
+          p.voltageV >= curveRange.voltageMinV && p.voltageV <= curveRange.voltageMaxV
+          && p.freqMhz >= curveRange.freqMinMhz && p.freqMhz <= curveRange.freqMaxMhz));
+        if (!validShape || !validOrder || !validRange) {
+          fail('vfCurve', 'out-of-range', 'VF curve points must be ordered and stay within the driver voltage/frequency range');
         } else {
-          const points = settings.vfCurve.map((p) => ({ Voltage: p.voltageV, Frequency: p.freqMhz }));
-          const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, points);
+          const points = curve.map((p) => ({ Voltage: Math.round(p.voltageV * 1000), Frequency: Math.round(p.freqMhz) }));
+          const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
+          const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
+          points.forEach((point, index) => {
+            koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
+          });
+          const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
           if (setResult !== CTL_RESULT.SUCCESS) {
             fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
           } else {
@@ -5175,7 +5245,7 @@ export class IgclBackend {
             } else {
               const numBuf = koffi.alloc('uint32', 1);
               koffi.encode(numBuf, 'uint32', 0);
-              let res = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, null);
+              let res = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, null);
               const num = koffi.decode(numBuf, 'uint32');
               if (res !== CTL_RESULT.SUCCESS) {
                 v = { ok: false, message: `VF curve write succeeded but read-back failed (${describeResult(res)})` };
@@ -5183,22 +5253,29 @@ export class IgclBackend {
                 v = { ok: false, message: `VF curve read-back ${num} points != requested ${points.length}` };
               } else {
                 const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
-                res = lib.ctlOverclockReadVFCurve(dev.handle, 0, 2, numBuf, curveBuf);
+                res = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, curveBuf);
                 if (res !== CTL_RESULT.SUCCESS) {
                   v = { ok: false, message: `VF curve read-back failed (${describeResult(res)})` };
                 } else {
                   const sz = koffi.sizeof('ctl_voltage_frequency_point_t');
-                  v = { ok: true };
+                  v = { ok: true, previousVoltage: 0, previousFrequency: 0 };
                   for (let i = 0; i < num; i++) {
                     const pt = koffi.decode(curveBuf, i * sz, 'ctl_voltage_frequency_point_t');
-                    const want = points[i];
-                    // M17e (finding 4): the raw uint32 is NEVER labeled as V
-                    // (the units are unverified - N9) - the message labels the
-                    // read-back honestly as the raw field value.
-                    if (!nearlyEqual(pt.Voltage, want.Voltage, 1e-6) || !nearlyEqual(pt.Frequency, want.Frequency, 1e-6)) {
-                      v = { ok: false, message: `VF curve point ${i} read-back ${pt.Voltage} (raw uint32, units unverified) / ${pt.Frequency} MHz != requested ${want.Voltage} V / ${want.Frequency} MHz` };
+                    if (!Number.isFinite(pt.Voltage) || !Number.isFinite(pt.Frequency)
+                      || (i > 0 && (pt.Voltage <= v.previousVoltage || pt.Frequency <= v.previousFrequency))) {
+                      v = { ok: false, message: `VF curve point ${i} read-back is not a valid ordered LIVE point` };
                       break;
                     }
+                    // The native fields are integer millivolts/MHz. Allow
+                    // one native unit of driver quantization, but do not
+                    // accept an unrelated ordered curve as applied.
+                    if (Math.abs(pt.Voltage - points[i].Voltage) > 1
+                      || Math.abs(pt.Frequency - points[i].Frequency) > 1) {
+                      v = { ok: false, message: `VF curve point ${i} read-back ${pt.Voltage} mV / ${pt.Frequency} MHz != requested ${points[i].Voltage} mV / ${points[i].Frequency} MHz` };
+                      break;
+                    }
+                    v.previousVoltage = pt.Voltage;
+                    v.previousFrequency = pt.Frequency;
                   }
                 }
               }

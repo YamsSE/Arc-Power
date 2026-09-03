@@ -71,6 +71,7 @@
  *   flipMode?: 'application-default' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame' | 'smart-vsync',
  *   frameLimit?: { enabled: boolean, value: number },
  *   lowLatency?: 'off' | 'on' | 'on-boost',
+ *   prebuiltShaderDownload?: boolean,
  * }} GraphicsSettings
  */
 
@@ -81,7 +82,7 @@
  * the driver's SupportedTypes-gated option lists (Speed Sync etc.) - the
  * page's dropdown gating source.
  * @typedef {{
- *   supported: { frameGen: boolean, flipModes: boolean, frameLimit: boolean, lowLatency: boolean, enduranceGaming?: boolean, sharedMemoryOverride?: boolean },
+ *   supported: { frameGen: boolean, flipModes: boolean, frameLimit: boolean, lowLatency: boolean, enduranceGaming?: boolean, sharedMemoryOverride?: boolean, prebuiltShaderDownload?: boolean },
  *   supportedOptions: { frameGen: string[], flipModes: string[], lowLatency: string[], enduranceGaming?: string[], enduranceGamingModes?: string[] },
  *   frameLimitRange: { min: number, max: number, step: number, default: number } | null,
  *   sharedMemoryRange?: { min: number, max: number, step: number, default: number } | null,
@@ -93,6 +94,7 @@
  *     enduranceGaming?: string | null,
  *     enduranceGamingMode?: string | null,
  *     sharedMemoryOverride?: { enabled: boolean, percentage: number } | null,
+ *     prebuiltShaderDownload?: boolean | null,
  *   },
  * }} GraphicsState
  */
@@ -176,6 +178,7 @@
  *     powerLimit?: boolean, tempLimit?: boolean, vfCurve?: boolean,
  *   },
  *   ranges: Record<string, { min: number, max: number, step: number, default: number, units: string }>,
+ *   vfCurveRange?: { voltageMinV: number, voltageMaxV: number, freqMinMhz: number, freqMaxMhz: number, maxPoints: number },
  *   fan: { canControl: boolean, modes: string[], maxRpm: number, maxCurvePoints: number, speedUnits?: 'percent'|'rpm' },
  * }} Capabilities
  */

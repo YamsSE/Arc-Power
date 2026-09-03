@@ -22,9 +22,10 @@ export interface ControlDisplay {
  * the other two controls are one-to-one driver steps.
  */
 export function battlemagePowerReferenceW(deviceName = ''): number {
+  if (/\bB580\b/i.test(deviceName)) return 217;
   if (/\bB570\b/i.test(deviceName)) return 150;
   if (/\bB50\b/i.test(deviceName)) return 70;
-  return 190;
+  return 217;
 }
 
 export function controlValueToDisplay(value: number, key: string, range: RangeInfo, deviceName = ''): number {
@@ -44,7 +45,9 @@ export function controlDisplayRange(key: string, range: RangeInfo, deviceName = 
     min: display.toDisplay(range.min),
     max: display.toDisplay(range.max),
     default: display.toDisplay(range.default),
-    step: key === 'vramFreqOffsetGts' && range.units === 'MHz'
+    step: key === 'powerLimitW' && range.units === '%'
+      ? 1
+      : key === 'vramFreqOffsetGts' && range.units === 'MHz'
       ? 1
       : Math.abs(display.toDisplay(range.min + range.step) - display.toDisplay(range.min)) || range.step,
     units: display.units,

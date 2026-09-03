@@ -98,6 +98,7 @@ export const CARD_NOTES: Record<string, string> = {
   flipMode: 'Choose how frames are synchronized with your display.',
   frameLimit: 'A driver-level frame-rate cap. The limiter works independently of Arc Power.',
   lowLatency: 'The driver\'s XeLL-based low-latency mode.',
+  prebuiltShaderDownload: 'Automatically download and cache precompiled shaders for smoother game startup and fewer shader-compilation hitches.',
 };
 
 // Display-view notes for the driver-backed IGS-style controls.
@@ -117,6 +118,7 @@ export const CARD_TITLES: Record<string, string> = {
   flipMode: 'Frame Synchronization',
   frameLimit: 'FPS Limit',
   lowLatency: 'Low Latency Mode',
+  prebuiltShaderDownload: 'Precompiled Shaders',
 };
 
 export const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
@@ -231,6 +233,7 @@ let applied: GraphicsSettings = {};
 // M10b: the Display view's per-render state (loaded via display:get at
 // render; the apply envelope carries the fresh read-back).
 let displayState: DisplayState | null = null;
+let displayDeviceId: number | null = null;
 let selectedDisplayId: number | null = null;
 let selectedDisplayKey: string | null = null;
 let displayDraft: DisplaySettings = {};
@@ -254,7 +257,7 @@ const sliderNodes = new Map<string, HTMLInputElement>();
 const sliderRowNodes = new Map<string, HTMLElement>();
 const toggleNodes = new Map<string, HTMLSelectElement>();
 const selectNodes = new Map<string, HTMLSelectElement>();
-const GRAPHICS_REFRESH_KEYS = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
+const GRAPHICS_REFRESH_KEYS = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload'];
 let viewContainer: HTMLElement | null = null;
 let displayPickerHost: HTMLElement | null = null;
 let currentCtx: PageContext | null = null;
@@ -292,6 +295,7 @@ function resetPageState() {
   draft = {};
   applied = {};
   displayState = null;
+  displayDeviceId = null;
   selectedDisplayId = null;
   selectedDisplayKey = null;
   displayDraft = {};
@@ -685,6 +689,7 @@ function supportedOf(state: GraphicsState, key: string): boolean {
     case 'flipMode': return state.supported.flipModes;
     case 'frameLimit': return state.supported.frameLimit;
     case 'lowLatency': return state.supported.lowLatency;
+    case 'prebuiltShaderDownload': return state.supported.prebuiltShaderDownload === true;
     default: return false;
   }
 }
@@ -727,7 +732,8 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   // null driver values would otherwise count as dirty and show the button).
   const anySupported = state.supported.frameGen || state.supported.flipModes
     || state.supported.frameLimit || state.supported.lowLatency
-    || supportedOf(state, 'enduranceGaming') || supportedOf(state, 'sharedMemoryOverride');
+    || supportedOf(state, 'enduranceGaming') || supportedOf(state, 'sharedMemoryOverride')
+    || supportedOf(state, 'prebuiltShaderDownload');
   applyBtn = anySupported ? el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT }) : null;
   applyBtn?.addEventListener('click', () => {
     if (applying) return;
@@ -746,6 +752,11 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
           const select = key === 'enduranceGaming' ? toggleNodes.get(key) : selectNodes.get(key);
           if (select) select.value = defaultValue;
         }
+      }
+      if (supportedOf(state, 'prebuiltShaderDownload')) {
+        draft.prebuiltShaderDownload = false;
+        const prebuilt = toggleNodes.get('prebuiltShaderDownload');
+        if (prebuilt) prebuilt.value = 'off';
       }
       const range = frameLimitRange(state);
       draft.frameLimit = { enabled: false, value: range.default };
@@ -1132,6 +1143,51 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     return card;
   };
 
+  const buildPrebuiltShaderCard = (): HTMLElement => {
+    if (!supportedOf(state, 'prebuiltShaderDownload')) return el('span', { hidden: true });
+    const current = draft.prebuiltShaderDownload === true;
+    const toggle = el('select', {
+      class: 'graphics-select graphics-toggle',
+      dataset: { graphicsToggle: 'prebuiltShaderDownload' },
+      onchange: (e: Event) => {
+        draft.prebuiltShaderDownload = (e.target as HTMLSelectElement).value === 'on';
+        refreshChip('prebuiltShaderDownload');
+        updateFloating();
+      },
+    }, [
+      el('option', { value: 'off', text: 'Off', selected: !current }),
+      el('option', { value: 'on', text: 'On', selected: current }),
+    ]);
+    toggleNodes.set('prebuiltShaderDownload', toggle);
+    const card = el('section', { class: 'card graphics-card', dataset: { control: 'prebuiltShaderDownload' } }, [
+      el('div', { class: 'graphics-card-heading' }, [
+        el('h2', { class: 'card-title', text: CARD_TITLES.prebuiltShaderDownload }),
+        el('div', { class: 'graphics-control graphics-inline-control' }, [toggle]),
+      ]),
+      el('p', { class: 'card-note', text: CARD_NOTES.prebuiltShaderDownload }),
+      el('div', { class: 'graphics-card-actions' }, [
+        el('span', { class: 'chip oc-chip-status', hidden: true }),
+        el('button', {
+          class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply',
+          onClick: () => { if (!applying) void apply(ctx, 'prebuiltShaderDownload'); },
+        }),
+        el('button', {
+          class: 'btn btn-ghost btn-sm', text: 'Reset to default',
+          onClick: () => {
+            draft.prebuiltShaderDownload = false;
+            toggle.value = 'off';
+            refreshChip('prebuiltShaderDownload');
+            updateFloating();
+          },
+        }),
+      ]),
+    ]);
+    chipNodes.set('prebuiltShaderDownload', card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+    chipApplyNodes.set('prebuiltShaderDownload', card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+    refreshChip('prebuiltShaderDownload');
+    return card;
+  };
+
   const mobileCards: HTMLElement[] = [];
   // These cards are appended only when the backend proves the selected
   // adapter is integrated or mobile Intel Arc graphics. Real desktop dGPUs
@@ -1148,6 +1204,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     ]),
     el('div', { class: 'card-stack graphics-stack' }, [
       ...mobileCards,
+      buildPrebuiltShaderCard(),
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),
       buildFrameLimitCard(),
@@ -1169,22 +1226,37 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
 async function renderDisplayView(view: HTMLElement, ctx: PageContext, generation: number): Promise<void> {
   const s = ctx.store.get();
   if (s.deviceId === null) return; // the render guard already handled this
-  const selected = s.devices.find((device) => device.id === s.deviceId);
-  const deviceKey = selected?.deviceKey ?? s.caps?.deviceKey ?? null;
   const isCurrentRender = (): boolean => {
-    const live = ctx.store.get();
-    const liveSelected = live.devices.find((device) => device.id === live.deviceId);
     return renderGeneration === generation
       && currentCtx === ctx
-      && view.isConnected
-      && live.deviceId === s.deviceId
-      && (liveSelected?.deviceKey ?? live.caps?.deviceKey ?? null) === deviceKey;
+      && view.isConnected;
   };
   clear(view);
   view.append(el('p', { class: 'page-subtitle', text: 'Loading display information…' }));
-  let state: DisplayState;
+  let state: DisplayState | null = null;
   try {
-    state = await api.displayGet(s.deviceId);
+    const candidates = [...s.devices].sort((a, b) => {
+      const displayRank = Number(b.displayActive === true) - Number(a.displayActive === true);
+      if (displayRank !== 0) return displayRank;
+      const discreteRank = Number(a.integrated === true) - Number(b.integrated === true);
+      return discreteRank;
+    });
+    let fallback: DisplayState | null = null;
+    let foundDeviceId: number | null = null;
+    for (const candidate of candidates) {
+      const candidateState = await api.displayGet(candidate.id);
+      fallback ??= candidateState;
+      if (candidateState.displays.length > 0) {
+        state = candidateState;
+        foundDeviceId = candidate.id;
+        break;
+      }
+    }
+    if (!state) {
+      state = fallback ?? await api.displayGet(s.deviceId);
+      foundDeviceId = candidates.find((candidate) => candidate.id === s.deviceId)?.id ?? s.deviceId;
+    }
+    displayDeviceId = foundDeviceId;
   } catch (err) {
     if (!isCurrentRender()) return;
     clear(view);
@@ -1192,6 +1264,7 @@ async function renderDisplayView(view: HTMLElement, ctx: PageContext, generation
     return;
   }
   if (!isCurrentRender()) return;
+  if (!state) return;
   displayState = state;
   // The first display is the default (the IGS left-pane analogue); the
   // draft + the applied reference reset for the newly selected display.
@@ -2008,7 +2081,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
     return;
   }
   const live = ctx.store.get();
-  const deviceId = live.deviceId;
+  const deviceId = displayDeviceId;
   const display = selectedDisplay();
   if (deviceId === null || !display || !displayState) return;
   const payload: DisplaySettings = {};

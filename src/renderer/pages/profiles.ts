@@ -243,6 +243,9 @@ export function settingsFromState(state: DeviceState): Settings {
   // profile-load RE-write the table (flipping the mode back to curve) -
   // auto never carries a table.
   if (state.fanCurve && state.fanMode !== 'auto') out.fanCurve = state.fanCurve;
+  if (state.vfCurve && state.vfCurve.length >= 2) {
+    out.vfCurve = state.vfCurve.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
+  }
   return out;
 }
 

@@ -10,7 +10,7 @@ export const CONTROL_LABELS: Record<string, string> = {
   // toggle modes - the mode is the input presentation, not the name.
   gpuFreqOffsetMhz: 'Core clock',
   tempLimitC: 'Temperature limit',
-  vramFreqOffsetGts: 'VRAM frequency offset',
+  vramFreqOffsetGts: 'VRAM clock',
   vramVoltOffsetV: 'VRAM voltage offset',
   gpuLock: 'GPU lock',
   vfCurve: 'Custom VF curve',

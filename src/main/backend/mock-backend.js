@@ -50,6 +50,7 @@ import { deviceLimitsOf, defaultLimitsOf } from '../../renderer/pure/device-limi
 // backend's caps-level fallback when the fixture carries no lockRange row
 // on a gpuLock-capable device).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
+import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 // M17c: the session refused-ceiling store (the mock mirrors the real
 // backend's parent-side merge - getCapabilities merges the store so the
 // mock-refusal fixture exercises the same merge the renderer sees).
@@ -567,6 +568,7 @@ export class MockBackend {
       // type source - the fixture supplies it; the mock name token would
       // derive it anyway).
       deviceName: formatDeviceName(fs.deviceName, fs.vramBytes ?? null, fs.memType ?? undefined),
+      ...(fs.vfCurveRange ? { vfCurveRange: { ...fs.vfCurveRange } } : {}),
       memType: fs.memType ?? null,
       controls,
       // M17: mirror IgclBackend - a device with no OC control (pro-b50 /
@@ -736,7 +738,7 @@ export class MockBackend {
   _buildState(fs) {
     const state = {
       gpuLock: fs.supportedControls.includes('gpuLock') ? { voltageV: 0, freqMhz: 0 } : null,
-      vfCurve: null,
+      vfCurve: Array.isArray(fs.vfCurve) ? fs.vfCurve.map((p) => ({ ...p })) : null,
       vfCurveUnits: null,
       fanMode: null,
       fanCurve: null,
@@ -1082,6 +1084,8 @@ export class MockBackend {
     }
     const optional = mobileControls;
     const supported = { ...GRAPHICS_FIXTURE.supported };
+    const prebuiltSupported = isBattlemageGpuName(e.device?.name) === true;
+    if (prebuiltSupported) supported.prebuiltShaderDownload = true;
     const supportedOptions = JSON.parse(JSON.stringify(GRAPHICS_FIXTURE.supportedOptions));
     if (optional) {
       supported.enduranceGaming = true;
@@ -1090,12 +1094,14 @@ export class MockBackend {
       supportedOptions.enduranceGaming = ['off', 'on', 'auto'];
       supportedOptions.enduranceGamingModes = ['performance', 'balanced', 'battery'];
     }
+    const values = JSON.parse(JSON.stringify(e.graphics));
+    if (!prebuiltSupported) delete values.prebuiltShaderDownload;
     return {
       supported,
       supportedOptions,
       frameLimitRange: { ...GRAPHICS_FIXTURE.frameLimitRange },
       ...(optional ? { sharedMemoryRange: { min: 13, max: 87, step: 1, default: 57 } } : {}),
-      values: JSON.parse(JSON.stringify(e.graphics)),
+      values,
     };
   }
 
@@ -1183,7 +1189,7 @@ export class MockBackend {
   async setGraphicsSettings(deviceId = 0, settings = {}) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const result = { ok: true, perControl: {} };
-    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
     const e = this._entry(id);
     const mobileControls = (e.device?.integrated === true || e.device?.mobile === true) && this._enduranceGamingSupported;
@@ -1248,6 +1254,18 @@ export class MockBackend {
       const clamped = clampAndSnap(settings.frameLimit.value, GRAPHICS_FIXTURE.frameLimitRange);
       e.graphics.frameLimit = { enabled: settings.frameLimit.enabled === true, value: clamped };
       result.perControl.frameLimit = { ok: true, readBackEqual: true };
+    }
+    if (settings.prebuiltShaderDownload !== undefined && settings.prebuiltShaderDownload !== null) {
+      if (!isBattlemageGpuName(e.device?.name)) {
+        result.perControl.prebuiltShaderDownload = { ok: false, errorCode: 'unsupported', message: 'Precompiled Shaders are not supported on this GPU' };
+        result.ok = false;
+      } else if (typeof settings.prebuiltShaderDownload !== 'boolean') {
+        result.perControl.prebuiltShaderDownload = { ok: false, errorCode: 'out-of-range', message: 'Precompiled Shaders requires a boolean value' };
+        result.ok = false;
+      } else {
+        e.graphics.prebuiltShaderDownload = settings.prebuiltShaderDownload;
+        result.perControl.prebuiltShaderDownload = { ok: true, readBackEqual: true };
+      }
     }
     return result;
   }
@@ -1644,20 +1662,22 @@ export class MockBackend {
         result.perControl.vfCurve = { ok: false, errorCode: 'unsupported', message: 'custom VF curve not supported on this device' };
         result.ok = false;
       } else {
-        // M17e (N9, mock parity): mirror IgclBackend's non-integer-volts
-        // gate - the real ctl_voltage_frequency_point_t.Voltage is a uint32
-        // (a fractional volt truncates to 0), so the mock refuses the same
-        // payloads the real backend refuses (the drift guard).
-        const nonInteger = settings.vfCurve.filter((p) => !Number.isInteger(p.voltageV));
-        if (nonInteger.length > 0) {
-          result.perControl.vfCurve = { ok: false, errorCode: 'out-of-range', message: 'VF curve voltages must be whole volts - the ctl_voltage_frequency_point_t.Voltage field is a uint32 (a fractional volt would truncate to 0) and its unit is unverified on this device' };
+        const curveRange = caps.vfCurveRange;
+        const curve = settings.vfCurve;
+        const validShape = Array.isArray(curve) && curve.length >= 2 && curve.length <= (curveRange?.maxPoints ?? MAX_VF_POINTS)
+          && curve.every((p) => Number.isFinite(p?.voltageV) && Number.isFinite(p?.freqMhz));
+        const validOrder = validShape && curve.every((p, i) => i === 0
+          || (p.voltageV > curve[i - 1].voltageV && p.freqMhz > curve[i - 1].freqMhz));
+        const validRange = validShape && (!curveRange || curve.every((p) =>
+          p.voltageV >= curveRange.voltageMinV && p.voltageV <= curveRange.voltageMaxV
+          && p.freqMhz >= curveRange.freqMinMhz && p.freqMhz <= curveRange.freqMaxMhz));
+        if (!validShape || !validOrder || !validRange) {
+          result.perControl.vfCurve = { ok: false, errorCode: 'out-of-range', message: 'VF curve points must be ordered and stay within the driver voltage/frequency range' };
           result.ok = false;
         } else {
           // M2D (b580 featureset): vfCurve R/W - store a sanitized copy (the
           // driver curve table cap), mirroring the driver accepting the write.
-          state.vfCurve = settings.vfCurve
-            .slice(0, MAX_VF_POINTS)
-            .map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
+          state.vfCurve = curve.map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
           result.perControl.vfCurve = { ok: true, readBackEqual: true };
         }
       }

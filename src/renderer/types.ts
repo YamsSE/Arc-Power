@@ -59,13 +59,10 @@ export interface DeviceState {
   vramVoltOffsetV: number | null;
   gpuLock: { voltageV: number; freqMhz: number } | null;
   vfCurve: Array<{ voltageV: number; freqMhz: number }> | null;
-  /** M17e (N9): the VF-curve read-back UNITS status. The real backend
-   *  surfaces the raw uint32 Voltage into `vfCurve` (the header documents
-   *  no unit for it - the lock API's mV-vs-V lie is the suspicion, but NO
-   *  blind conversion) + sets this token until a vfCurve-capable device
-   *  probe pins the scale. Null/absent = the units are the canonical volts
-   *  shape (the mock's stored curve). */
-  vfCurveUnits?: string | null;
+  /** The VF-curve voltage unit used by the backend contract. IGCL exposes the
+   *  native point field in millivolts; the app normalizes it to volts before
+   *  handing it to the renderer and converts it back on write. */
+  vfCurveUnits?: 'V' | null;
   fanMode: FanMode | null;
   fanCurve: Array<{ t: number; speedPct: number }> | null;
   fixedFanPct: number | null;
@@ -86,6 +83,14 @@ export interface RangeInfo {
  *  gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit THROUGH the units
  *  decode (igclToCanonical - never a raw pass: the fields carry a units
  *  int32 with the same mV hazard the lock API proved). */
+export interface VfCurveRange {
+  voltageMinV: number;
+  voltageMaxV: number;
+  freqMinMhz: number;
+  freqMaxMhz: number;
+  maxPoints: number;
+}
+
 export interface LockRange {
   voltMin: number;
   voltMax: number;
@@ -139,6 +144,7 @@ export interface Capabilities {
    *  lock-ranges table). The card inputs + the renderer clamp consume it;
    *  main's applyLock is the authoritative clamp. */
   lockRange?: LockRange;
+  vfCurveRange?: VfCurveRange;
 }
 
 export interface PerControlResult {
@@ -782,6 +788,7 @@ export interface GraphicsSettings {
   flipMode?: FlipMode;
   frameLimit?: { enabled: boolean; value: number };
   lowLatency?: LowLatency;
+  prebuiltShaderDownload?: boolean;
 }
 
 /** M8: the driver read-back (getGraphicsSettings) - never throws; the
@@ -794,6 +801,7 @@ export interface GraphicsState {
     lowLatency: boolean;
     enduranceGaming?: boolean;
     sharedMemoryOverride?: boolean;
+    prebuiltShaderDownload?: boolean;
   };
   /** M8: the driver's SupportedTypes-gated option lists (Speed Sync etc.) -
    *  the page's dropdown gating source. */
@@ -814,6 +822,7 @@ export interface GraphicsState {
     enduranceGaming?: EnduranceGaming | null;
     enduranceGamingMode?: EnduranceGamingMode | null;
     sharedMemoryOverride?: { enabled: boolean; percentage: number } | null;
+    prebuiltShaderDownload?: boolean | null;
   };
 }
 

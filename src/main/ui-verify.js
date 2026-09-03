@@ -784,9 +784,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // M131: the 1.0.6 release pins the titlebar version surface.
-  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.0.6'`))) {
-    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.0.6')`);
+  // M166: the 1.1.0 release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.1.0'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.1.0')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -3105,8 +3105,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // Swap to the Battlemage featureset via the dropdown: the OC page
   // re-renders live with user-facing watt/mV/C units + the b580 defaults/control set.
   await swapTo('b580');
-  if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`))) {
-    fail(`M2D swap: PL readout is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' (expected '190 W')`);
+  if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '217 W'`))) {
+    fail(`M2D swap: PL readout is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`)}' (expected '217 W')`);
   }
   // M30: stable device ids are intentionally not renumbered when a physical
   // adapter disappears during a featureset swap. Read the renderer's current
@@ -3138,7 +3138,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await js(`!!document.querySelector('.oc-card[data-control="vramFreqOffsetGts"]')`))) {
     fail('M4J (D): the VRAM clock editor is missing on the b580 swap (vramFreqOffset native)');
   }
-  step('fs-swap-b580', `swap -> b580: PL readout '190 W', user-facing watt units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
+  step('fs-swap-b580', `swap -> b580: PL readout '217 W', user-facing watt units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
 
   // M2D: the swap payload replaces the boot driver date - the HEALTH card's
   // driver row (the GPU card's Driver version row is REMOVED - M4-H) must
@@ -4726,9 +4726,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// M131: the 1.0.6 stable bump - Settings displays 'Arc Power Ver. 1.0.6'.
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.0.6'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.0.6')`);
+// M166: the 1.1.0 stable bump - Settings displays 'Arc Power Ver. 1.1.0'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.0'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.0')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -4790,7 +4790,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D2: Log to file did not persist monitorLogToFile=false');
     }
   }
-step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' : '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.0.6`);
+step('m4d-settings-roundtrips', `Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save${process.env.RID_MOCK_LOG_DIR ? '; Log to file round trip persisted true/false' : '; Log to file round trip SKIPPED (RID_MOCK_LOG_DIR not set)'}; version row 1.1.0`);
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -5865,14 +5865,14 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
     const plValue = await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? ''`);
     if (fsId === 'b580') {
       if (!plRange.includes('W')) fail(`b580 PL range does not show W units: '${plRange}'`);
-      if (plValue.trim() !== '190 W') fail(`b580 PL readout is '${plValue}' (expected '190 W')`);
+      if (plValue.trim() !== '217 W') fail(`b580 PL readout is '${plValue}' (expected '217 W')`);
       // M17f: the sysman PL2 read-out is always in actual watts. The
       // Battlemage fixture stores the IGCL value as a percentage, so the
-      // mock converts the 100% stock value through the B580 190 W reference.
-      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 190 W / PL2 190 W'`, 5000))) {
-        fail(`M17f: the b580 PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected actual-watt 'PL1 190 W / PL2 190 W')`);
+      // mock converts the 100% stock value through the B580 217 W reference.
+      if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? '').trim() === 'PL1 217 W / PL2 217 W'`, 5000))) {
+        fail(`M17f: the b580 PL2 read-out is '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected actual-watt 'PL1 217 W / PL2 217 W')`);
       }
-      step('m17f-pl2-b580', `M17f: the b580 power-limit card converts its percent-unit fixture to the actual-watt sysman read-out 'PL1 190 W / PL2 190 W'`);
+      step('m17f-pl2-b580', `M17f: the b580 power-limit card converts its percent-unit fixture to the actual-watt sysman read-out 'PL1 217 W / PL2 217 W'`);
       // M17g: a Battlemage apply is expressed in the canonical percent
       // payload internally, while the visible/sysman read-out remains W.
       const b580Pl2Env = await js(`window.arcPower.applySettings(0, { powerLimitW: 120 })`);
@@ -6235,9 +6235,10 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   if (!a770Row.includes('Jul 05, 2026')) fail(`swap to a770: driver date missing on the health row: '${a770Row}'`);
   await gotoOverclocking();
   await swapTo(fsId);
-  // M17c: the a750 swap-back restores the W-unit surface (190 W readout).
+  // M17c: the swapped GPU restores its own W-unit surface (217 W for B580;
+  // 190 W for the A750 fixtures).
   const backOk = fsId === 'b580'
-    ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`)
+    ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '217 W'`)
     : (fsId === 'a750' || fsId === 'acer-a750')
       ? await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`)
       : await waitFor(win, `document.querySelectorAll('.oc-card').length === 0`);
@@ -6290,11 +6291,11 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
       fail(`b580 watt apply: driverstore controls not all applied: ${JSON.stringify(applied)}`);
     }
     await clearToasts();
-    await setSlider(190);
+    await setSlider(217);
     if (!(await clickApply())) fail('floating Apply did not reappear for the b580 restore');
     if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('b580 watt restore did not apply');
     if (await js(`!!document.querySelector('.toast-error')`)) fail('b580 watt restore showed a per-control error toast');
-    step('b580-apply', `b580 watt apply round trip: 228 W -> backend read-back ${applied.powerLimitW} W, restored to 190 W (all 4 controls driverstore, no error toast)`);
+    step('b580-apply', `b580 watt apply round trip: 228 W -> backend read-back ${applied.powerLimitW} W, restored to 217 W (all 4 controls driverstore, no error toast)`);
 
     // --- M4J (D): the VRAM-OC card round trip (b580 only) ---------------
     // M25 moved the VRAM control into the main scalar card stack. The

@@ -43,6 +43,7 @@ const CONTROL_SUPPORT_KEY: Record<string, keyof GraphicsState['supported']> = {
   flipMode: 'flipModes',
   frameLimit: 'frameLimit',
   lowLatency: 'lowLatency',
+  prebuiltShaderDownload: 'prebuiltShaderDownload',
 };
 const CONTROL_OPTIONS_KEY: Record<string, keyof GraphicsState['supportedOptions']> = {
   enduranceGaming: 'enduranceGaming',
@@ -157,6 +158,9 @@ export function normalizeGraphicsSettings(state: GraphicsState | null | undefine
     const fl = values?.frameLimit;
     out.frameLimit = { enabled: fl?.enabled === true, value: clampFrameLimitValue(fl?.value, range) };
   }
+  if (isGraphicsControlSupported(state, 'prebuiltShaderDownload')) {
+    out.prebuiltShaderDownload = values?.prebuiltShaderDownload === true;
+  }
   return out;
 }
 
@@ -205,6 +209,8 @@ export function validateGraphicsSettings(value: unknown): value is GraphicsSetti
         || typeof (v as { enabled?: unknown }).enabled !== 'boolean'
         || typeof (v as { value?: unknown }).value !== 'number'
         || !Number.isFinite((v as { value: number }).value)) return false;
+    } else if (key === 'prebuiltShaderDownload') {
+      if (typeof v !== 'boolean') return false;
     } else {
       return false; // unknown key
     }
@@ -244,6 +250,7 @@ export function isGraphicsControlDirty(control: string, draft: GraphicsSettings,
   const driver = state.values[control as keyof GraphicsState['values']];
   if (driver === null || driver === undefined) return true;
   if (typeof wanted === 'string') return wanted !== driver;
+  if (control === 'prebuiltShaderDownload') return wanted !== driver;
   if (control === 'sharedMemoryOverride') return !sameSharedMemory(wanted as GraphicsSettings['sharedMemoryOverride'], driver as GraphicsSettings['sharedMemoryOverride']);
   return !sameFrameLimit(wanted as { enabled: boolean; value: number }, driver as { enabled: boolean; value: number } | null);
 }
@@ -264,6 +271,7 @@ export function isGraphicsControlDirtyVsApplied(control: string, draft: Graphics
   if (control in applied) {
     const appliedValue = (applied as Record<string, unknown>)[control];
     if (typeof wanted === 'string') return wanted !== appliedValue;
+    if (control === 'prebuiltShaderDownload') return wanted !== appliedValue;
     if (control === 'sharedMemoryOverride') return !sameSharedMemory(wanted as GraphicsSettings['sharedMemoryOverride'], appliedValue as GraphicsSettings['sharedMemoryOverride']);
     return !sameFrameLimit(wanted as { enabled: boolean; value: number }, appliedValue as { enabled: boolean; value: number });
   }

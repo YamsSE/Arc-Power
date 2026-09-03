@@ -257,6 +257,9 @@ export function sanitizeGraphicsSettings(payload, range = null) {
     } else if (key === 'lowLatency') {
       if (!GRAPHICS_LOW_LATENCY_OPTIONS.includes(value)) throw new Error(`lowLatency must be one of: ${GRAPHICS_LOW_LATENCY_OPTIONS.join(', ')}`);
       out[key] = value;
+    } else if (key === 'prebuiltShaderDownload') {
+      if (typeof value !== 'boolean') throw new Error('prebuiltShaderDownload must be enabled or disabled');
+      out[key] = value;
     } else if (key === 'frameLimit') {
       if (typeof value !== 'object' || value === null
         || typeof value.enabled !== 'boolean'

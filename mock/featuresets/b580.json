@@ -18,6 +18,13 @@
   "fanMaxCurvePoints": 10,
   "extendedRanges": false,
   "extended": { "plMax": 0, "tlMax": 0 },
+  "vfCurveRange": { "voltageMinV": 0.4, "voltageMaxV": 1.5, "freqMinMhz": 400, "freqMaxMhz": 4300, "maxPoints": 32 },
+  "vfCurve": [
+    { "voltageV": 0.7, "freqMhz": 1800 },
+    { "voltageV": 0.8, "freqMhz": 2200 },
+    { "voltageV": 0.9, "freqMhz": 2600 },
+    { "voltageV": 1.0, "freqMhz": 2850 }
+  ],
   "ranges": {
     "gpuFreqOffsetMhz": { "units": "MHz", "min": -500, "max": 500, "step": 1, "default": 0 },
     "gpuVoltOffsetV": { "units": "%", "min": -100, "max": 100, "step": 1, "default": 0 },

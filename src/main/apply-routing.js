@@ -1053,6 +1053,28 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
+      // M165: some active DriverStore packages expose the bundled V1
+      // temperature getter but leave its output at zero, even though the V1
+      // setter has applied the requested extended limit. The normal backend
+      // reads the same physical adapter through the current driver API and
+      // is the independent verification source for this getter defect.
+      // Promote only an io-failed V1 read-back mismatch when that second
+      // physical read-back exactly matches; hard native refusals and a
+      // still-mismatched driver value remain failures.
+      if (key === 'tempLimitC' && per?.ok === false && per.errorCode === 'io-failed'
+        && typeof backend?.getCurrentSettings === 'function') {
+        try {
+          const driverState = await backend.getCurrentSettings(deviceId);
+          if (typeof driverState?.tempLimitC === 'number'
+            && nearlyEqual(driverState.tempLimitC, value)) {
+            log(`[apply] extended temperature V1 getter returned an invalid read-back; current driver read-back matched ${value} °C on the requested adapter`);
+            per = { ok: true, readBackEqual: true };
+          }
+        } catch {
+          // Keep the original V1 verification failure when the independent
+          // current-driver read is unavailable.
+        }
+      }
       perControl[key] = per;
     }
     // M17d (Run E): the V1-path G2 mirror - the DriverStore runtime's own

@@ -61,7 +61,7 @@
 // rows are REMOVED entirely (they said nothing the empty space could not);
 // supported-but-M5 rows keep their honest note.
 
-import { el, clear } from '../dom.ts';
+import { el, clear, svgEl } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { consumeFanViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
@@ -172,6 +172,11 @@ let lockApplyBtn: HTMLButtonElement | null = null;
 // reference for the lock editor's dirty judgment - the B5 pattern: the chip
 // clears even while the driver read-back lags).
 let appliedLock: { voltageV: number; freqMhz: number } | null = null;
+let vfCurveMode = false;
+let vfCurveSupported = false;
+let vfCurveDraft: Array<{ voltageV: number; freqMhz: number }> = [];
+let vfCurveApplied: Array<{ voltageV: number; freqMhz: number }> = [];
+let vfCurveWasApplied = false;
 // M17f: the power-limit card's sysman PL1/PL2 read-out line - the
 // Level Zero Sysman layer's sustained (PL1) + burst (PL2) limits. The
 // freshness = per-apply (the apply paths re-fetch) + one-shot at render
@@ -228,6 +233,11 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   // full re-render too). A caps-change re-render mid-Lock-mode must keep
   // the mode; renderView re-applies the presentation from it.
   appliedLock = null;
+  vfCurveMode = false;
+  vfCurveSupported = false;
+  vfCurveDraft = [];
+  vfCurveApplied = [];
+  vfCurveWasApplied = false;
   cards.clear();
   valueNodes.clear();
   valueInputs.clear();
@@ -247,6 +257,9 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
 }
 
 function isPendingControl(key: string): boolean {
+  if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode) {
+    return JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied);
+  }
   const rawDriverValue = currentState?.[key as keyof DeviceState];
   const driverValue = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
     && typeof rawDriverValue === 'number' && rawDriverValue < 0 && !(key in applied) ? 0 : rawDriverValue;
@@ -255,7 +268,8 @@ function isPendingControl(key: string): boolean {
 
 function refreshPendingSummary(): void {
   if (!pendingSummaryNode) return;
-  const count = Object.keys(values).filter(isPendingControl).length;
+  const count = Object.keys(values).filter(isPendingControl).length
+    + (vfCurveSupported && vfCurveMode && JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied) ? 1 : 0);
   pendingSummaryNode.textContent = count > 0
     ? `${count} pending ${count === 1 ? 'change' : 'changes'}`
     : 'No pending changes';
@@ -279,6 +293,15 @@ function setCardResult(key: string, ok: boolean, text: string): void {
 function refreshChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
+  if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode) {
+    const dirty = JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied);
+    chip.hidden = !(!dirty && vfCurveWasApplied);
+    chip.textContent = !dirty && vfCurveWasApplied ? 'Applied' : '';
+    chip.className = !dirty && vfCurveWasApplied ? 'chip oc-chip-status chip-ok' : 'chip oc-chip-status';
+    const curveApply = chipApplyNodes.get(key);
+    if (curveApply) curveApply.hidden = !dirty;
+    return;
+  }
   const rawDriverValue = currentState?.[key as keyof DeviceState];
   const driverValue = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
     && typeof rawDriverValue === 'number' && rawDriverValue < 0 && !(key in applied) ? 0 : rawDriverValue;
@@ -436,6 +459,11 @@ function updateFloating() {
     applyBtn.hidden = true;
     return;
   }
+  if (vfCurveSupported && vfCurveMode
+    && JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied)) {
+    applyBtn.hidden = false;
+    return;
+  }
   applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(values, { hiddenNegativeControls }), currentState as DeviceState, applied, hiddenNegativeControls);
 }
 
@@ -468,6 +496,19 @@ export const tuningPage: Page = {
 
     // M25: the Advanced (Expert) section is REMOVED - VRAM clock now lives
     // in the main card stack (CONTROL_ORDER) on Battlemage devices.
+    vfCurveSupported = isBattlemageGpuName(caps.deviceName) && caps.controls.vfCurve === true;
+    vfCurveMode = false;
+    const curveBounds = caps.vfCurveRange ?? {
+      voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300, maxPoints: 32,
+    };
+    const initialCurve = Array.isArray(state.vfCurve) && state.vfCurve.length >= 2
+      ? state.vfCurve
+      : [
+          { voltageV: Math.max(curveBounds.voltageMinV, 0.7), freqMhz: Math.max(curveBounds.freqMinMhz, 1800) },
+          { voltageV: Math.min(curveBounds.voltageMaxV, 1.0), freqMhz: Math.min(curveBounds.freqMaxMhz, 2850) },
+        ];
+    vfCurveDraft = initialCurve.map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
+    vfCurveApplied = vfCurveDraft.map((p) => ({ ...p }));
 
     // M17e (Run B): the gpuLock-capable freq card's Lock-mode editor element
     // references - created inside buildCard (the freq-card branch), read by
@@ -539,6 +580,133 @@ export const tuningPage: Page = {
       applyBtn.textContent = busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
     };
 
+    const drawVfCurve = (svg: SVGSVGElement, pointInputs: Array<[HTMLInputElement, HTMLInputElement]>): void => {
+      const width = 640;
+      const height = 260;
+      const pad = 30;
+      const xOf = (v: number) => pad + ((v - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * (width - pad * 2);
+      const yOf = (f: number) => height - pad - ((f - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * (height - pad * 2);
+      const clampPoint = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+      svg.replaceChildren();
+      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      svg.append(svgEl('rect', { x: pad, y: pad, width: width - pad * 2, height: height - pad * 2, class: 'vf-curve-plot' }));
+      for (let i = 0; i <= 4; i += 1) {
+        const x = pad + (width - pad * 2) * i / 4;
+        const y = pad + (height - pad * 2) * i / 4;
+        svg.append(
+          svgEl('line', { x1: x, y1: pad, x2: x, y2: height - pad, class: 'vf-curve-grid' }),
+          svgEl('line', { x1: pad, y1: y, x2: width - pad, y2: y, class: 'vf-curve-grid' }),
+        );
+      }
+      const points = vfCurveDraft.map((p) => `${xOf(p.voltageV)},${yOf(p.freqMhz)}`).join(' ');
+      svg.append(svgEl('polyline', { points, class: 'vf-curve-line' }));
+      let dragIndex = -1;
+      const updateDraggedPoint = (event: PointerEvent): void => {
+        if (dragIndex < 0) return;
+        const rect = svg.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const x = clampPoint((event.clientX - rect.left) / rect.width * width, pad, width - pad);
+        const y = clampPoint((event.clientY - rect.top) / rect.height * height, pad, height - pad);
+        const prior = vfCurveDraft[dragIndex - 1];
+        const next = vfCurveDraft[dragIndex + 1];
+        const voltageFloor = Math.max(curveBounds.voltageMinV, (prior?.voltageV ?? curveBounds.voltageMinV) + 0.001);
+        const voltageCeiling = Math.min(curveBounds.voltageMaxV, (next?.voltageV ?? curveBounds.voltageMaxV) - 0.001);
+        const freqFloor = Math.max(curveBounds.freqMinMhz, prior?.freqMhz ?? curveBounds.freqMinMhz);
+        const freqCeiling = Math.min(curveBounds.freqMaxMhz, next?.freqMhz ?? curveBounds.freqMaxMhz);
+        vfCurveDraft[dragIndex] = {
+          voltageV: Number(clampPoint(curveBounds.voltageMinV + (x - pad) / (width - pad * 2) * (curveBounds.voltageMaxV - curveBounds.voltageMinV), voltageFloor, voltageCeiling).toFixed(3)),
+          freqMhz: Math.round(clampPoint(curveBounds.freqMaxMhz - (y - pad) / (height - pad * 2) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz), freqFloor, freqCeiling)),
+        };
+        const inputPair = pointInputs[dragIndex];
+        if (inputPair) {
+          inputPair[0].value = String(vfCurveDraft[dragIndex].voltageV);
+          inputPair[1].value = String(vfCurveDraft[dragIndex].freqMhz);
+        }
+        drawVfCurve(svg, pointInputs);
+        refreshChip('gpuFreqOffsetMhz');
+        updateFloating();
+      };
+      svg.onpointermove = updateDraggedPoint;
+      svg.onpointerup = (event: PointerEvent) => {
+        dragIndex = -1;
+        try { svg.releasePointerCapture(event.pointerId); } catch { /* pointer already released */ }
+      };
+      vfCurveDraft.forEach((point, index) => {
+        const circle = svgEl('circle', { cx: xOf(point.voltageV), cy: yOf(point.freqMhz), r: 7, class: 'vf-curve-point', tabindex: 0, 'aria-label': `Point ${index + 1}` });
+        circle.onpointerdown = (event: PointerEvent) => {
+          event.preventDefault();
+          dragIndex = index;
+          try { svg.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
+        };
+        svg.append(circle);
+      });
+    };
+
+    const buildVfCurveEditor = (): HTMLElement => {
+      const host = el('div', { class: 'vf-curve-editor', hidden: !vfCurveMode });
+      const svg = svgEl('svg', { class: 'vf-curve-svg', role: 'img', 'aria-label': 'Voltage-frequency curve editor' });
+      const pointsHost = el('div', { class: 'vf-curve-points' });
+      const pointInputs: Array<[HTMLInputElement, HTMLInputElement]> = [];
+      const redraw = (): void => {
+        pointInputs.length = 0;
+        clear(pointsHost);
+        vfCurveDraft.forEach((point, index) => {
+          const voltage = el('input', { type: 'number', class: 'vf-curve-input', min: curveBounds.voltageMinV, max: curveBounds.voltageMaxV, step: '0.001', value: point.voltageV, 'aria-label': `Point ${index + 1} voltage in volts` }) as HTMLInputElement;
+          const frequency = el('input', { type: 'number', class: 'vf-curve-input', min: curveBounds.freqMinMhz, max: curveBounds.freqMaxMhz, step: '1', value: point.freqMhz, 'aria-label': `Point ${index + 1} frequency in MHz` }) as HTMLInputElement;
+          const pair: [HTMLInputElement, HTMLInputElement] = [voltage, frequency];
+          pointInputs.push(pair);
+          const commit = (): void => {
+            const v = Number(voltage.value);
+            const f = Number(frequency.value);
+            if (!Number.isFinite(v) || !Number.isFinite(f)) return;
+            vfCurveDraft[index] = { voltageV: Number(v.toFixed(3)), freqMhz: Math.round(f) };
+            drawVfCurve(svg, pointInputs);
+            refreshChip('gpuFreqOffsetMhz');
+            updateFloating();
+          };
+          voltage.addEventListener('change', commit);
+          frequency.addEventListener('change', commit);
+          pointsHost.append(el('div', { class: 'vf-curve-point-row' }, [
+            el('span', { class: 'vf-curve-point-label', text: `Point ${index + 1}` }),
+            el('label', { class: 'vf-curve-field' }, [el('span', { text: 'Voltage (V)' }), voltage]),
+            el('label', { class: 'vf-curve-field' }, [el('span', { text: 'Frequency (MHz)' }), frequency]),
+            el('button', { class: 'btn btn-ghost btn-sm', text: 'Remove', disabled: vfCurveDraft.length <= 2, onClick: () => { vfCurveDraft.splice(index, 1); redraw(); drawVfCurve(svg, pointInputs); refreshChip('gpuFreqOffsetMhz'); updateFloating(); } }),
+          ]));
+        });
+        drawVfCurve(svg, pointInputs);
+      };
+      redraw();
+      host.append(
+        el('p', { class: 'card-note', text: `Drag points or edit them below. Voltage ${curveBounds.voltageMinV.toFixed(3)}–${curveBounds.voltageMaxV.toFixed(3)} V · frequency ${curveBounds.freqMinMhz}–${curveBounds.freqMaxMhz} MHz.` }),
+        svg,
+        pointsHost,
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Add point', disabled: vfCurveDraft.length >= curveBounds.maxPoints, onClick: () => {
+          const last = vfCurveDraft[vfCurveDraft.length - 1];
+          const voltage = Math.min(curveBounds.voltageMaxV, Number((last.voltageV + 0.05).toFixed(3)));
+          const frequency = Math.min(curveBounds.freqMaxMhz, Math.max(last.freqMhz, last.freqMhz + 100));
+          if (voltage <= last.voltageV || frequency < last.freqMhz) return;
+          vfCurveDraft.push({ voltageV: voltage, freqMhz: frequency });
+          redraw();
+          refreshChip('gpuFreqOffsetMhz');
+          updateFloating();
+        } }),
+      );
+      return host;
+    };
+
+    const setVfCurveMode = (mode: 'offset' | 'curve'): void => {
+      vfCurveMode = mode === 'curve';
+      const card = cards.get('gpuFreqOffsetMhz');
+      card?.querySelector<HTMLElement>('.oc-slider-row')?.toggleAttribute('hidden', vfCurveMode);
+      card?.querySelector<HTMLElement>('.oc-meta')?.toggleAttribute('hidden', vfCurveMode);
+      const editor = card?.querySelector<HTMLElement>('.vf-curve-editor');
+      if (editor) editor.hidden = !vfCurveMode;
+      card?.querySelector<HTMLElement>('.card-title')?.replaceChildren(document.createTextNode(vfCurveMode ? 'Voltage-Frequency Curve' : (CONTROL_LABELS.gpuFreqOffsetMhz ?? 'Core clock')));
+      card?.querySelectorAll<HTMLButtonElement>('.oc-vf-mode-btn').forEach((button) => button.classList.toggle('active', button.dataset.vfMode === mode));
+      refreshChip('gpuFreqOffsetMhz');
+      updateFloating();
+    };
+
     const buildCard = (key: string): HTMLElement => {
       // F3 PT clamp (M2C-A) / M2C-C extended ranges: the temp-limit range is
       // pinned to 90 C max unless the device reports extended ranges (then
@@ -567,6 +735,8 @@ export const tuningPage: Page = {
       // card with NO toggle + NO editor).
       let lockEditorEl: HTMLElement | null = null;
       let lockCurrentLine: HTMLElement | null = null;
+      let vfCurveEditorEl: HTMLElement | null = null;
+      if (key === 'gpuFreqOffsetMhz' && vfCurveSupported) vfCurveEditorEl = buildVfCurveEditor();
       if (key === 'gpuFreqOffsetMhz' && lockSupported) {
         const lockBounds = caps.lockRange;
         const lockVoltMax = Number.isFinite(lockBounds?.voltMax) ? (lockBounds?.voltMax as number) : GPU_LOCK_VOLT_MAX_V;
@@ -880,6 +1050,7 @@ export const tuningPage: Page = {
           ]),
           valueText,
         ]),
+        ...(vfCurveEditorEl ? [vfCurveEditorEl] : []),
         // M17e (Run B): the Offset|Lock segmented toggle replaces the M4-B
         // Offset/Clock toggle on the freq card - ONLY on gpuLock-capable
         // cards (a card WITHOUT lock support - b580 - shows the offset card
@@ -904,6 +1075,20 @@ export const tuningPage: Page = {
                   text: 'Lock',
                   title: 'Lock the GPU to an absolute voltage/frequency pair (switching resets the offsets to 0)',
                   onClick: () => setLockMode('lock'),
+                }),
+              ]),
+            ])]
+          : []),
+        ...(key === 'gpuFreqOffsetMhz' && vfCurveSupported
+          ? [el('div', { class: 'oc-freq-mode-row' }, [
+              el('div', { class: 'oc-mode-toggle oc-vf-mode-toggle', role: 'group', 'aria-label': 'Core clock mode' }, [
+                el('button', {
+                  class: 'oc-mode-btn oc-vf-mode-btn active', dataset: { vfMode: 'offset' }, text: 'Offset',
+                  onClick: () => setVfCurveMode('offset'),
+                }),
+                el('button', {
+                  class: 'oc-mode-btn oc-vf-mode-btn', dataset: { vfMode: 'curve' }, text: 'Voltage-Frequency Curve',
+                  onClick: () => setVfCurveMode('curve'),
                 }),
               ]),
             ])]
@@ -944,7 +1129,7 @@ export const tuningPage: Page = {
             text: 'Apply',
             onClick: () => {
               if (applying) return;
-              void apply(ctx, key);
+              void apply(ctx, key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode ? 'vfCurve' : key);
             },
           }),
           el('button', {
@@ -955,6 +1140,14 @@ export const tuningPage: Page = {
               // mode died) - the default is the range default, always.
               values[key] = snapToRange(range.default, range);
               hiddenNegativeControls.delete(key);
+              if (key === 'gpuFreqOffsetMhz' && vfCurveSupported) {
+                vfCurveDraft = vfCurveApplied.map((point) => ({ ...point }));
+                if (vfCurveEditorEl) {
+                  const replacement = buildVfCurveEditor();
+                  vfCurveEditorEl.replaceWith(replacement);
+                  vfCurveEditorEl = replacement;
+                }
+              }
               refreshCard(key);
             },
           }),
@@ -1385,10 +1578,15 @@ export const tuningPage: Page = {
       // lock). The LOCK apply is composed by the lock editor itself (the
       // lock-mode branch - the floating apply is force-hidden in Lock mode).
       let settings: Settings;
-      if (only !== undefined) {
+      if (only === 'vfCurve') {
+        settings = { vfCurve: vfCurveDraft.map((point) => ({ ...point })) };
+      } else if (only !== undefined) {
         settings = buildScalarSettings({ [only]: values[only] }, { hiddenNegativeControls });
       } else {
-        settings = buildScalarSettings(values, { hiddenNegativeControls });
+        const scalarValues = { ...values };
+        if (vfCurveSupported && vfCurveMode) delete scalarValues.gpuFreqOffsetMhz;
+        settings = buildScalarSettings(scalarValues, { hiddenNegativeControls });
+        if (vfCurveSupported && vfCurveMode) settings.vfCurve = vfCurveDraft.map((point) => ({ ...point }));
       }
       if (!validateSettingsPayload(settings)) {
         toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -1480,7 +1678,7 @@ export const tuningPage: Page = {
             // message wins, the errorCode mapping is the driver-shaped
             // fallback - never the 'clamps' lie for a gate refusal).
             toast('error', `${CONTROL_LABELS[key] ?? key} failed`, applyFailureText(per, key));
-            setCardResult(key, false, 'Not applied');
+            setCardResult(key === 'vfCurve' ? 'gpuFreqOffsetMhz' : key, false, 'Not applied');
           } else {
             // B5(a): a control that applied becomes the APPLIED reference -
             // its chip clears and the button hides even while the driver
@@ -1488,6 +1686,11 @@ export const tuningPage: Page = {
             // the pre-apply read-back.
             const wanted = settings[key as keyof typeof settings];
             if (typeof wanted === 'number') applied[key] = wanted;
+            if (key === 'vfCurve' && Array.isArray(settings.vfCurve)) {
+              vfCurveApplied = settings.vfCurve.map((point) => ({ ...point }));
+              vfCurveDraft = vfCurveApplied.map((point) => ({ ...point }));
+              vfCurveWasApplied = true;
+            }
             // M17e/M22: the (0,0) unlock entries RODE the M17e-era offset
             // applies - that companion is REMOVED (a {0,0} GpuLockSet write
             // switches the 8974 driver into a lock mode, it never unlocks),
@@ -1496,7 +1699,7 @@ export const tuningPage: Page = {
             if (!isNoopApply(key, settings, before as DeviceState)) {
               toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof wanted === 'number' && range ? formatControlValue(wanted, key, range, caps.deviceName) : '');
             }
-            setCardResult(key, true, isNoopApply(key, settings, before as DeviceState) ? 'No change' : 'Applied');
+            setCardResult(key === 'vfCurve' ? 'gpuFreqOffsetMhz' : key, true, isNoopApply(key, settings, before as DeviceState) ? 'No change' : 'Applied');
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }
         }
@@ -1636,6 +1839,10 @@ export const tuningPage: Page = {
     // current) - no full rebuild, no navigation.
     if (ocStateChanged(currentState, s.state)) {
       currentState = s.state;
+      if (vfCurveSupported && !vfCurveWasApplied && Array.isArray(s.state?.vfCurve) && s.state.vfCurve.length >= 2) {
+        vfCurveDraft = s.state.vfCurve.map((point) => ({ ...point }));
+        vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
+      }
       // Re-sync slider values from the driver for controls that were never
       // applied in this render (external state changes - profile load, tray
       // apply). Controls with an applied reference keep the user's position

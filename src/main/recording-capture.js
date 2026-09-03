@@ -44,7 +44,7 @@ public static class ArcPowerCaptureNative {
 
   public sealed class WindowTarget {
     public uint handle;
-    public string title;
+    public string titleBase64;
     public string processName;
     public int x;
     public int y;
@@ -119,7 +119,10 @@ public static class ArcPowerCaptureNative {
       try { processName = Process.GetProcessById((int)processId).ProcessName + ".exe"; } catch { }
       result.windows.Add(new WindowTarget {
         handle = unchecked((uint)hwnd.ToInt64()),
-        title = title,
+        // PowerShell 5's ConvertTo-Json can emit a quote in a reflected
+        // Add-Type string without escaping it. Base64 keeps the native query
+        // valid for every window title; the Node side decodes it for display.
+        titleBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(title)),
         processName = processName,
         x = rect.Left,
         y = rect.Top,
@@ -165,7 +168,14 @@ function normalizeDisplayTarget(value) {
 function normalizeWindowTarget(value) {
   const item = value && typeof value === 'object' ? value : {};
   const handle = safeHandle(item.handle);
-  const title = boundedString(item.title, '', 512);
+  let title = boundedString(item.title, '', 512);
+  if (!title && typeof item.titleBase64 === 'string') {
+    try {
+      title = boundedString(Buffer.from(item.titleBase64, 'base64').toString('utf8'), '', 512);
+    } catch {
+      title = '';
+    }
+  }
   const width = Number.isFinite(item.width) && item.width > 1 ? Math.round(item.width) : 0;
   const height = Number.isFinite(item.height) && item.height > 1 ? Math.round(item.height) : 0;
   if (!handle || !title || !width || !height) return null;
